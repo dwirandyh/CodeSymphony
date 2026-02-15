@@ -1,9 +1,39 @@
 import type { FastifyInstance } from "fastify";
+import type { ChatEvent } from "@codesymphony/shared-types";
 import { z } from "zod";
 
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
 const eventQuery = z.object({ afterIdx: z.string().optional() });
+
+function parseNonNegativeInt(input: unknown): number | null {
+  const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
+  if (typeof rawValue !== "string" && typeof rawValue !== "number") {
+    return null;
+  }
+
+  const parsed = Number(rawValue);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
+export function parseStreamStartCursor(afterIdx: unknown, lastEventId: unknown): number | undefined {
+  const queryCursor = parseNonNegativeInt(afterIdx);
+  const headerCursor = parseNonNegativeInt(lastEventId);
+
+  if (queryCursor == null && headerCursor == null) {
+    return undefined;
+  }
+
+  return Math.max(queryCursor ?? -1, headerCursor ?? -1);
+}
+
+export function formatSseEvent(event: ChatEvent): string {
+  return `id: ${event.idx}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+}
 
 export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/worktrees/:id/threads", async (request, reply) => {
@@ -39,6 +69,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
 
     return { data: thread };
+  });
+
+  app.delete("/threads/:id", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.deleteThread(params.id);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to delete thread";
+      return reply.code(400).send({ error: message });
+    }
   });
 
   app.get("/threads/:id/messages", async (request, reply) => {
@@ -81,6 +123,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
   app.get("/threads/:id/events/stream", async (request, reply) => {
     const params = threadParams.parse(request.params);
+    const query = eventQuery.parse(request.query);
+    const startCursor = parseStreamStartCursor(query.afterIdx, request.headers["last-event-id"]);
 
     const requestOrigin = request.headers.origin;
 
@@ -94,15 +138,13 @@ export async function registerChatRoutes(app: FastifyInstance) {
     reply.raw.setHeader("Connection", "keep-alive");
     reply.raw.setHeader("X-Accel-Buffering", "no");
 
-    const history = await app.chatService.listEvents(params.id);
+    const history = await app.chatService.listEvents(params.id, startCursor);
     for (const event of history) {
-      reply.raw.write(`event: ${event.type}\n`);
-      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      reply.raw.write(formatSseEvent(event));
     }
 
     const unsubscribe = app.eventHub.subscribe(params.id, (event) => {
-      reply.raw.write(`event: ${event.type}\n`);
-      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      reply.raw.write(formatSseEvent(event));
     });
 
     const heartbeat = setInterval(() => {

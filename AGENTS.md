@@ -8,6 +8,13 @@
 - `packages/orchestrator-core`: standalone utility package; not required by runtime flow.
 
 ## Build, Test, and Development Commands
+- Preferred shortcuts (Makefile):
+  - `make help`: list available shortcuts.
+  - `make install`: install all workspace dependencies.
+  - `make dev`: start runtime + web together.
+  - `make dev-runtime`, `make dev-web`, `make dev-desktop`: run a single app.
+  - `make db-init`: run DB generate + migrate + seed.
+  - `make lint`, `make test`, `make build`: lint, test, and build all workspaces.
 - `pnpm install`: install all workspace dependencies.
 - `pnpm dev`: start runtime + web together.
 - `pnpm dev:runtime`, `pnpm dev:web`, `pnpm dev:desktop`: run a single app.

@@ -10,7 +10,12 @@ import type {
   Worktree,
 } from "@codesymphony/shared-types";
 
-const API_BASE = import.meta.env.VITE_RUNTIME_URL ?? "http://127.0.0.1:4321/api";
+const DEFAULT_RUNTIME_URL =
+  typeof window === "undefined"
+    ? "http://127.0.0.1:4321/api"
+    : `${window.location.protocol}//${window.location.hostname}:4321/api`;
+
+const API_BASE = import.meta.env.VITE_RUNTIME_URL ?? DEFAULT_RUNTIME_URL;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -42,7 +47,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  createWorktree: (repositoryId: string, input: CreateWorktreeInput) =>
+  createWorktree: (repositoryId: string, input: CreateWorktreeInput = {}) =>
     request<Worktree>(`/repositories/${repositoryId}/worktrees`, {
       method: "POST",
       body: JSON.stringify(input),
@@ -65,6 +70,16 @@ export const api = {
       body: JSON.stringify(input),
     }),
   getThread: (id: string) => request<ChatThread>(`/threads/${id}`),
+  deleteThread: async (threadId: string) => {
+    const response = await fetch(`${API_BASE}/threads/${threadId}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to delete thread");
+    }
+  },
   listMessages: (threadId: string) => request<ChatMessage[]>(`/threads/${threadId}/messages`),
   sendMessage: (threadId: string, input: SendChatMessageInput) =>
     request<ChatMessage>(`/threads/${threadId}/messages`, {

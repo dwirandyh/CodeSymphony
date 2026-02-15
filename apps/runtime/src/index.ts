@@ -78,7 +78,7 @@ function createApp() {
   return app;
 }
 
-const host = process.env.RUNTIME_HOST ?? "127.0.0.1";
+const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
 const port = Number(process.env.RUNTIME_PORT ?? "4321");
 
 const app = createApp();

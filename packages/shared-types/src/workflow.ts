@@ -70,7 +70,7 @@ export const CreateRepositoryInputSchema = z.object({
 });
 
 export const CreateWorktreeInputSchema = z.object({
-  branch: z.string().trim().min(1),
+  branch: z.string().trim().min(1).optional(),
   baseBranch: z.string().trim().min(1).optional(),
 });
 

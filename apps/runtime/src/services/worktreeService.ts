@@ -6,6 +6,47 @@ import { CreateWorktreeInputSchema, type CreateWorktreeInput, type Worktree } fr
 import { createGitWorktree, removeGitWorktree } from "./git";
 import { mapWorktree } from "./mappers";
 
+const INDONESIAN_PROVINCES = [
+  "Aceh",
+  "North Sumatra",
+  "West Sumatra",
+  "Riau",
+  "Riau Islands",
+  "Jambi",
+  "South Sumatra",
+  "Bengkulu",
+  "Lampung",
+  "Bangka Belitung Islands",
+  "Jakarta",
+  "West Java",
+  "Central Java",
+  "East Java",
+  "Banten",
+  "Yogyakarta",
+  "Bali",
+  "West Nusa Tenggara",
+  "East Nusa Tenggara",
+  "West Kalimantan",
+  "Central Kalimantan",
+  "South Kalimantan",
+  "East Kalimantan",
+  "North Kalimantan",
+  "North Sulawesi",
+  "Gorontalo",
+  "Central Sulawesi",
+  "West Sulawesi",
+  "South Sulawesi",
+  "Southeast Sulawesi",
+  "Maluku",
+  "North Maluku",
+  "West Papua",
+  "Southwest Papua",
+  "Central Papua",
+  "Highland Papua",
+  "South Papua",
+  "Papua",
+] as const;
+
 function slugify(value: string): string {
   return value
     .trim()
@@ -37,6 +78,18 @@ function buildWorktreePath(repositoryName: string, repositoryId: string, branch:
   return path.join(resolveWorktreeRoot(), repositorySegment, branchSegment);
 }
 
+function buildProvinceBranchName(attempt: number): string {
+  const provinceIndex = attempt % INDONESIAN_PROVINCES.length;
+  const cycle = Math.floor(attempt / INDONESIAN_PROVINCES.length);
+  const provinceSlug = slugify(INDONESIAN_PROVINCES[provinceIndex]);
+  return cycle === 0 ? provinceSlug : `${provinceSlug}-${cycle + 1}`;
+}
+
+function isBranchAlreadyExistsError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return message.includes("already exists");
+}
+
 export function createWorktreeService(prisma: PrismaClient) {
   return {
     async getById(id: string): Promise<Worktree | null> {
@@ -45,67 +98,102 @@ export function createWorktreeService(prisma: PrismaClient) {
     },
 
     async create(repositoryId: string, rawInput: unknown): Promise<Worktree> {
-      const input: CreateWorktreeInput = CreateWorktreeInputSchema.parse(rawInput);
+      const input: CreateWorktreeInput = CreateWorktreeInputSchema.parse(rawInput ?? {});
 
       const repository = await prisma.repository.findUnique({ where: { id: repositoryId } });
       if (!repository) {
         throw new Error("Repository not found");
       }
 
-      const existingByBranch = await prisma.worktree.findFirst({
-        where: {
-          repositoryId,
-          branch: input.branch,
-        },
+      const existingWorktrees = await prisma.worktree.findMany({
+        where: { repositoryId },
+        select: { branch: true },
       });
+      const existingBranches = new Set(existingWorktrees.map((worktree) => worktree.branch));
 
-      if (existingByBranch) {
+      const requestedBranch = input.branch?.trim() || null;
+      const isAutomaticBranch = requestedBranch === null;
+      const baseBranch = input.baseBranch ?? (isAutomaticBranch ? "main" : repository.defaultBranch);
+
+      if (requestedBranch && existingBranches.has(requestedBranch)) {
         throw new Error("Branch already has a worktree in this repository");
       }
 
-      const baseBranch = input.baseBranch ?? repository.defaultBranch;
-      const worktreePath = buildWorktreePath(repository.name, repository.id, input.branch);
+      const maxAttempts = INDONESIAN_PROVINCES.length * 30;
 
-      const existingPath = await stat(worktreePath).catch(() => null);
-      if (existingPath) {
-        throw new Error(`Worktree path already exists: ${worktreePath}`);
-      }
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const branch = requestedBranch ?? buildProvinceBranchName(attempt);
 
-      await mkdir(path.dirname(worktreePath), { recursive: true });
-
-      try {
-        await createGitWorktree({
-          repositoryPath: repository.rootPath,
-          worktreePath,
-          branch: input.branch,
-          baseBranch,
-        });
-
-        const created = await prisma.worktree.create({
-          data: {
-            repositoryId,
-            branch: input.branch,
-            path: worktreePath,
-            baseBranch,
-            status: "active",
-          },
-        });
-
-        await prisma.chatThread.create({
-          data: {
-            worktreeId: created.id,
-            title: "Main Thread",
-          },
-        });
-
-        return mapWorktree(created);
-      } catch (error) {
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-          throw new Error("Branch already has a worktree in this repository");
+        if (existingBranches.has(branch)) {
+          if (requestedBranch) {
+            throw new Error("Branch already has a worktree in this repository");
+          }
+          continue;
         }
-        await rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
-        throw error;
+
+        const worktreePath = buildWorktreePath(repository.name, repository.id, branch);
+        const existingPath = await stat(worktreePath).catch(() => null);
+        if (existingPath) {
+          if (requestedBranch) {
+            throw new Error(`Worktree path already exists: ${worktreePath}`);
+          }
+          existingBranches.add(branch);
+          continue;
+        }
+
+        await mkdir(path.dirname(worktreePath), { recursive: true });
+
+        try {
+          await createGitWorktree({
+            repositoryPath: repository.rootPath,
+            worktreePath,
+            branch,
+            baseBranch,
+          });
+
+          const created = await prisma.worktree.create({
+            data: {
+              repositoryId,
+              branch,
+              path: worktreePath,
+              baseBranch,
+              status: "active",
+            },
+          });
+
+          await prisma.chatThread.create({
+            data: {
+              worktreeId: created.id,
+              title: "Main Thread",
+            },
+          });
+
+          return mapWorktree(created);
+        } catch (error) {
+          await rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
+
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+            if (requestedBranch) {
+              throw new Error("Branch already has a worktree in this repository");
+            }
+            existingBranches.add(branch);
+            continue;
+          }
+
+          if (!requestedBranch && isBranchAlreadyExistsError(error)) {
+            existingBranches.add(branch);
+            continue;
+          }
+
+          throw error;
+        }
       }
+
+      if (requestedBranch) {
+        throw new Error("Unable to create worktree");
+      }
+
+      throw new Error("Unable to allocate an automatic worktree name. Try deleting unused worktrees first.");
     },
 
     async remove(id: string): Promise<void> {
