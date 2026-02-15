@@ -1,34 +1,30 @@
-import type { Prisma, RunEvent as DbRunEvent, RunEventType as DbRunEventType } from "@prisma/client";
-import type { RunEvent, RunEventType } from "@codesymphony/shared-types";
+import type { Prisma, ChatEvent as DbChatEvent, ChatEventType as DbChatEventType } from "@prisma/client";
+import type { ChatEvent, ChatEventType } from "@codesymphony/shared-types";
 import type { RuntimeEventHub } from "../types";
 import type { PrismaClient } from "@prisma/client";
 
-const typeToDb: Record<RunEventType, DbRunEventType> = {
-  "run.status_changed": "run_status_changed",
-  "run.completed": "run_completed",
-  "run.failed": "run_failed",
-  "step.started": "step_started",
-  "step.log": "step_log",
-  "step.completed": "step_completed",
-  "approval.requested": "approval_requested",
-  "approval.decided": "approval_decided",
+const typeToDb: Record<ChatEventType, DbChatEventType> = {
+  "message.delta": "message_delta",
+  "tool.started": "tool_started",
+  "tool.output": "tool_output",
+  "tool.finished": "tool_finished",
+  "chat.completed": "chat_completed",
+  "chat.failed": "chat_failed",
 };
 
-const typeFromDb: Record<DbRunEventType, RunEventType> = {
-  run_status_changed: "run.status_changed",
-  run_completed: "run.completed",
-  run_failed: "run.failed",
-  step_started: "step.started",
-  step_log: "step.log",
-  step_completed: "step.completed",
-  approval_requested: "approval.requested",
-  approval_decided: "approval.decided",
+const typeFromDb: Record<DbChatEventType, ChatEventType> = {
+  message_delta: "message.delta",
+  tool_started: "tool.started",
+  tool_output: "tool.output",
+  tool_finished: "tool.finished",
+  chat_completed: "chat.completed",
+  chat_failed: "chat.failed",
 };
 
-function mapDbEvent(event: DbRunEvent): RunEvent {
+function mapDbEvent(event: DbChatEvent): ChatEvent {
   return {
     id: event.id,
-    runId: event.runId,
+    threadId: event.threadId,
     idx: event.idx,
     type: typeFromDb[event.type],
     payload: event.payload as Record<string, unknown>,
@@ -36,26 +32,26 @@ function mapDbEvent(event: DbRunEvent): RunEvent {
   };
 }
 
-type ListenerMap = Map<string, Set<(event: RunEvent) => void>>;
+type ListenerMap = Map<string, Set<(event: ChatEvent) => void>>;
 
 export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
   const listeners: ListenerMap = new Map();
 
-  async function nextIdx(tx: Prisma.TransactionClient, runId: string): Promise<number> {
-    const result = await tx.runEvent.aggregate({
-      where: { runId },
+  async function nextIdx(tx: Prisma.TransactionClient, threadId: string): Promise<number> {
+    const result = await tx.chatEvent.aggregate({
+      where: { threadId },
       _max: { idx: true },
     });
 
     return (result._max.idx ?? -1) + 1;
   }
 
-  async function emit(runId: string, type: RunEventType, payload: Record<string, unknown>): Promise<RunEvent> {
+  async function emit(threadId: string, type: ChatEventType, payload: Record<string, unknown>): Promise<ChatEvent> {
     const dbEvent = await prisma.$transaction(async (tx) => {
-      const idx = await nextIdx(tx, runId);
-      return tx.runEvent.create({
+      const idx = await nextIdx(tx, threadId);
+      return tx.chatEvent.create({
         data: {
-          runId,
+          threadId,
           idx,
           type: typeToDb[type],
           payload: payload as Prisma.InputJsonValue,
@@ -64,16 +60,16 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
     });
 
     const event = mapDbEvent(dbEvent);
-    const runListeners = listeners.get(runId);
-    runListeners?.forEach((listener) => listener(event));
+    const threadListeners = listeners.get(threadId);
+    threadListeners?.forEach((listener) => listener(event));
 
     return event;
   }
 
-  async function list(runId: string, afterIdx?: number): Promise<RunEvent[]> {
-    const dbEvents = await prisma.runEvent.findMany({
+  async function list(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
+    const dbEvents = await prisma.chatEvent.findMany({
       where: {
-        runId,
+        threadId,
         ...(typeof afterIdx === "number" ? { idx: { gt: afterIdx } } : {}),
       },
       orderBy: { idx: "asc" },
@@ -82,18 +78,18 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
     return dbEvents.map(mapDbEvent);
   }
 
-  function subscribe(runId: string, listener: (event: RunEvent) => void): () => void {
-    if (!listeners.has(runId)) {
-      listeners.set(runId, new Set());
+  function subscribe(threadId: string, listener: (event: ChatEvent) => void): () => void {
+    if (!listeners.has(threadId)) {
+      listeners.set(threadId, new Set());
     }
 
-    const runListeners = listeners.get(runId)!;
-    runListeners.add(listener);
+    const threadListeners = listeners.get(threadId)!;
+    threadListeners.add(listener);
 
     return () => {
-      runListeners.delete(listener);
-      if (runListeners.size === 0) {
-        listeners.delete(runId);
+      threadListeners.delete(listener);
+      if (threadListeners.size === 0) {
+        listeners.delete(threadId);
       }
     };
   }

@@ -17,9 +17,6 @@
     "test": "vitest run",
     "lint": "tsc --noEmit -p tsconfig.json"
   },
-  "dependencies": {
-    "@codesymphony/shared-types": "workspace:*"
-  },
   "devDependencies": {
     "typescript": "^5.8.2",
     "vitest": "^3.0.8"

@@ -1,4 +1,5 @@
-import { RunStatusSchema, type ApprovalDecision, type RunStatus } from "@codesymphony/shared-types";
+export type RunStatus = "queued" | "running" | "waiting_approval" | "succeeded" | "failed";
+export type ApprovalDecision = "approved" | "rejected";
 
 export type RunMachineState = {
   status: RunStatus;
@@ -20,7 +21,11 @@ export class InvalidTransitionError extends Error {
 }
 
 function ensureValidState(state: RunMachineState) {
-  RunStatusSchema.parse(state.status);
+  const allowedStatuses: RunStatus[] = ["queued", "running", "waiting_approval", "succeeded", "failed"];
+
+  if (!allowedStatuses.includes(state.status)) {
+    throw new Error("Invalid run status");
+  }
 
   if (state.totalSteps < 1) {
     throw new Error("Run must have at least one step");

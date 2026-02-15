@@ -1,68 +1,58 @@
-# CodeSymphony MVP
+# CodeSymphony Workspace MVP
 
-Local-first conductor.build-inspired MVP with:
+Local-first conductor.build-style workspace with:
 
-- Linear workflows
-- Sequential step execution via Claude Agent SDK
-- Live run logs (SSE)
-- Approval checkpoints
-- Web (React) and desktop (Tauri) local clients
+- Repository onboarding from local filesystem paths
+- Git worktree branch creation per repository
+- Threaded Claude chat sessions bound to a selected worktree
+- Live chat + tool events over SSE
+- Web client (React + Vite) and optional desktop shell (Tauri)
 
 ## Architecture
 
-- `apps/runtime` — local runtime service (Fastify + Prisma + SQLite + Claude Agent SDK)
-- `apps/web` — web UI (React + Vite)
-- `apps/desktop` — desktop shell (Tauri)
-- `packages/shared-types` — shared schemas/types
-- `packages/orchestrator-core` — deterministic run state machine
-- `infra/docker` — optional Docker runtime setup
+- `apps/runtime` - local API service (Fastify + Prisma + SQLite + Claude Agent SDK)
+- `apps/web` - web UI with repository sidebar and chat panel
+- `apps/desktop` - Tauri shell
+- `packages/shared-types` - shared API schemas/types
+- `packages/orchestrator-core` - standalone utility package (not required by runtime)
 
-Both web and desktop connect to the same local runtime (`http://127.0.0.1:4321`).
-
----
+Both clients connect to `http://127.0.0.1:4321` by default.
 
 ## Prerequisites
 
 - Node.js 22+
 - pnpm 10+
-- Claude runtime/auth configured for Agent SDK execution
-  - Install Claude Code CLI and run `claude login`
-- For desktop mode only: Rust + Cargo + Tauri prerequisites
-- For Docker mode only: Docker + Docker Compose
+- Git installed and available in PATH
+- Claude Code CLI installed and authenticated (`claude login`)
 
----
+Optional:
+- Rust + Cargo + Tauri prerequisites (desktop)
 
-## 1) Install dependencies
+## Setup
+
+1. Install dependencies:
 
 ```bash
 pnpm install
 ```
 
----
-
-## 2) Configure runtime environment
+2. Configure runtime:
 
 ```bash
 cp apps/runtime/.env.example apps/runtime/.env
 ```
 
-Edit `apps/runtime/.env`:
+Recommended `.env` values:
 
 ```env
 RUNTIME_HOST=127.0.0.1
 RUNTIME_PORT=4321
 DATABASE_URL="file:./dev.db"
 CLAUDE_CODE_EXECUTABLE=claude
+WORKTREE_ROOT="~/.codesymphony/worktrees"
 ```
 
-Notes:
-- `DATABASE_URL` is required.
-- Runtime prompt steps use your installed Claude Code CLI session (`claude login`).
-- Set `CLAUDE_CODE_EXECUTABLE` if `claude` is not on PATH for the runtime user.
-
----
-
-## 3) Initialize database
+3. Initialize database:
 
 ```bash
 pnpm db:generate
@@ -70,13 +60,9 @@ pnpm db:migrate
 pnpm db:seed
 ```
 
-This creates SQLite schema and seeds an example workflow.
+## Run
 
----
-
-## 4) Run the app
-
-### Web + runtime (recommended)
+Web + runtime:
 
 ```bash
 pnpm dev
@@ -85,112 +71,55 @@ pnpm dev
 - Web: `http://127.0.0.1:5173`
 - Runtime: `http://127.0.0.1:4321`
 
-### Runtime only
+Runtime only:
 
 ```bash
 pnpm dev:runtime
 ```
 
-### Web only
+Web only:
 
 ```bash
 pnpm dev:web
 ```
 
-### Desktop (Tauri)
+Desktop shell:
 
 ```bash
 pnpm dev:desktop
 ```
 
-Desktop auto-starts the runtime process from the workspace root.
+## Core Flow
 
----
+1. Add a repository by local path in the sidebar.
+2. Select the repository and create a worktree branch.
+3. Select that worktree and open/create a chat thread.
+4. Send prompts; Claude executes in that worktree `cwd`.
+5. Watch message deltas and tool logs stream in real time.
 
-## 5) Use the MVP
-
-1. Open web UI (`/`) and create a workflow.
-2. Add ordered steps:
-   - `prompt`: sends prompt to Claude
-   - `approval`: pauses run for human decision
-3. Click **Run** on a workflow.
-4. On run detail page:
-   - Watch live event/log stream
-   - Approve or reject when checkpoint appears
-5. Run reaches terminal state:
-   - `succeeded` if all steps complete
-   - `failed` on step error or rejection
-
-Run statuses:
-- `queued`
-- `running`
-- `waiting_approval`
-- `succeeded`
-- `failed`
-
----
-
-## API quick reference
+## API Quick Reference
 
 Base URL: `http://127.0.0.1:4321/api`
 
-- `GET /workflows`
-- `GET /workflows/:id`
-- `POST /workflows`
-- `PUT /workflows/:id`
-- `GET /runs`
-- `GET /runs/:runId`
-- `POST /runs`
-- `GET /runs/:runId/events`
-- `GET /runs/:runId/events/stream` (SSE)
-- `POST /runs/:runId/approval`
-
-Health:
+- `GET /repositories`
+- `GET /repositories/:id`
+- `POST /repositories`
+- `POST /repositories/:id/worktrees`
+- `GET /worktrees/:id`
+- `DELETE /worktrees/:id`
+- `GET /worktrees/:id/threads`
+- `POST /worktrees/:id/threads`
+- `GET /threads/:id`
+- `GET /threads/:id/messages`
+- `POST /threads/:id/messages`
+- `GET /threads/:id/events`
+- `GET /threads/:id/events/stream`
 - `GET /health`
 
----
-
-## Testing
-
-Run all tests:
+## Test and Build
 
 ```bash
 pnpm test
-```
-
-Run lint/typecheck:
-
-```bash
 pnpm lint
-```
-
-Build all packages:
-
-```bash
 pnpm build
 ```
-
----
-
-## Optional: Docker runtime
-
-Run runtime in Docker:
-
-```bash
-docker compose -f infra/docker/docker-compose.yml up --build
-```
-
-Then point web/desktop to runtime at `http://127.0.0.1:4321`.
-
----
-
-## Troubleshooting
-
-### `Internal server error` with Prisma / `DATABASE_URL` missing
-Ensure `apps/runtime/.env` exists and includes `DATABASE_URL`.
-
-### Prompt step fails with `Claude Code process exited with code 1`
-Usually Claude CLI/auth is not configured for the runtime user. Verify `claude` is installed and run `claude login`.
-
-### Desktop build fails on Cargo/Rust
-Install Rust toolchain and Tauri prerequisites, then re-run `pnpm dev:desktop`.

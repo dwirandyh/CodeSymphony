@@ -3,32 +3,44 @@ import cors from "@fastify/cors";
 import { ZodError } from "zod";
 import { prisma } from "./db/prisma";
 import { createEventHub } from "./events/eventHub";
-import { runPromptStepWithClaude } from "./claude/sessionRunner";
-import { createRunService } from "./services/runService";
-import { registerWorkflowRoutes } from "./routes/workflows";
-import { registerRunRoutes } from "./routes/runs";
-import { registerApprovalRoutes } from "./routes/approvals";
+import { runClaudeWithStreaming } from "./claude/sessionRunner";
+import { createRepositoryService } from "./services/repositoryService";
+import { createWorktreeService } from "./services/worktreeService";
+import { createChatService } from "./services/chatService";
+import { createSystemService } from "./services/systemService";
+import { registerRepositoryRoutes } from "./routes/repositories";
+import { registerChatRoutes } from "./routes/chats";
+import { registerSystemRoutes } from "./routes/system";
 
 declare module "fastify" {
   interface FastifyInstance {
     prisma: typeof prisma;
     eventHub: ReturnType<typeof createEventHub>;
-    runService: ReturnType<typeof createRunService>;
+    repositoryService: ReturnType<typeof createRepositoryService>;
+    worktreeService: ReturnType<typeof createWorktreeService>;
+    chatService: ReturnType<typeof createChatService>;
+    systemService: ReturnType<typeof createSystemService>;
   }
 }
 
 function createApp() {
   const app = Fastify({ logger: true });
   const eventHub = createEventHub(prisma);
-  const runService = createRunService({
+  const repositoryService = createRepositoryService(prisma);
+  const worktreeService = createWorktreeService(prisma);
+  const systemService = createSystemService();
+  const chatService = createChatService({
     prisma,
     eventHub,
-    promptStepRunner: runPromptStepWithClaude,
+    claudeRunner: runClaudeWithStreaming,
   });
 
   app.decorate("prisma", prisma);
   app.decorate("eventHub", eventHub);
-  app.decorate("runService", runService);
+  app.decorate("repositoryService", repositoryService);
+  app.decorate("worktreeService", worktreeService);
+  app.decorate("chatService", chatService);
+  app.decorate("systemService", systemService);
 
   app.register(cors, {
     origin: true,
@@ -59,9 +71,9 @@ function createApp() {
     });
   });
 
-  app.register(registerWorkflowRoutes, { prefix: "/api" });
-  app.register(registerRunRoutes, { prefix: "/api" });
-  app.register(registerApprovalRoutes, { prefix: "/api" });
+  app.register(registerRepositoryRoutes, { prefix: "/api" });
+  app.register(registerChatRoutes, { prefix: "/api" });
+  app.register(registerSystemRoutes, { prefix: "/api" });
 
   return app;
 }

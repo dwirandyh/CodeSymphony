@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { execFileSync } from "node:child_process";
-import type { PromptStepRunner } from "../types";
+import type { ClaudeRunner } from "../types";
 
 const MAX_CAPTURED_STDERR_LINES = 12;
 const DEFAULT_CLAUDE_EXECUTABLE = "claude";
@@ -49,8 +49,8 @@ function withClaudeSetupHint(error: unknown, recentStderr: string[], claudeExecu
   }
 
   const hintLines = [
-    `Claude Code failed to start. This runtime is configured to use the installed Claude Code CLI (${claudeExecutable}).`,
-    "Ensure the executable exists for the runtime user and run `claude login` for that same user account.",
+    `Claude Code failed to start. Runtime is using Claude CLI (${claudeExecutable}).`,
+    "Ensure the executable exists for the runtime user and run `claude login` for the same user account.",
     "Set CLAUDE_CODE_EXECUTABLE in apps/runtime/.env if your binary path is different.",
   ];
 
@@ -61,10 +61,20 @@ function withClaudeSetupHint(error: unknown, recentStderr: string[], claudeExecu
   return new Error(hintLines.join("\n"), { cause: error });
 }
 
-export const runPromptStepWithClaude: PromptStepRunner = async ({ prompt, sessionId, onLog }) => {
+export const runClaudeWithStreaming: ClaudeRunner = async ({
+  prompt,
+  sessionId,
+  cwd,
+  onText,
+  onToolStarted,
+  onToolOutput,
+  onToolFinished,
+}) => {
   let latestSessionId: string | null = sessionId;
   let finalOutput = "";
   const recentStderr: string[] = [];
+  const startedToolUseIds = new Set<string>();
+
   const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;
   const claudeExecutable = resolveExecutablePath(configuredExecutable);
 
@@ -85,6 +95,7 @@ export const runPromptStepWithClaude: PromptStepRunner = async ({ prompt, sessio
         permissionMode: "acceptEdits",
         pathToClaudeCodeExecutable: claudeExecutable,
         settingSources: ["user"],
+        cwd,
         env: runtimeEnv,
         stderr: (data: string) => {
           captureStderrLine(recentStderr, data);
@@ -102,8 +113,35 @@ export const runPromptStepWithClaude: PromptStepRunner = async ({ prompt, sessio
         const event = message.event;
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           finalOutput += event.delta.text;
-          await onLog(event.delta.text);
+          await onText(event.delta.text);
         }
+        continue;
+      }
+
+      if (message.type === "tool_progress") {
+        if (!startedToolUseIds.has(message.tool_use_id)) {
+          startedToolUseIds.add(message.tool_use_id);
+          await onToolStarted({
+            toolName: message.tool_name,
+            toolUseId: message.tool_use_id,
+            parentToolUseId: message.parent_tool_use_id,
+          });
+        }
+
+        await onToolOutput({
+          toolName: message.tool_name,
+          toolUseId: message.tool_use_id,
+          parentToolUseId: message.parent_tool_use_id,
+          elapsedTimeSeconds: message.elapsed_time_seconds,
+        });
+        continue;
+      }
+
+      if (message.type === "tool_use_summary") {
+        await onToolFinished({
+          summary: message.summary,
+          precedingToolUseIds: message.preceding_tool_use_ids,
+        });
         continue;
       }
 

@@ -1,145 +1,93 @@
 import { z } from "zod";
 
-export const StepKindSchema = z.enum(["prompt", "approval"]);
-export type StepKind = z.infer<typeof StepKindSchema>;
+export const WorktreeStatusSchema = z.enum(["active", "archived"]);
+export type WorktreeStatus = z.infer<typeof WorktreeStatusSchema>;
 
-const WorkflowStepBaseSchema = z.object({
-  id: z.string().optional(),
-  order: z.number().int().nonnegative(),
-  title: z.string().min(1),
-  kind: StepKindSchema,
-  prompt: z.string().trim().min(1).optional().nullable(),
+export const ChatRoleSchema = z.enum(["user", "assistant", "system"]);
+export type ChatRole = z.infer<typeof ChatRoleSchema>;
+
+export const ChatEventTypeSchema = z.enum([
+  "message.delta",
+  "tool.started",
+  "tool.output",
+  "tool.finished",
+  "chat.completed",
+  "chat.failed",
+]);
+export type ChatEventType = z.infer<typeof ChatEventTypeSchema>;
+
+export const WorktreeSchema = z.object({
+  id: z.string(),
+  repositoryId: z.string(),
+  branch: z.string().min(1),
+  path: z.string().min(1),
+  baseBranch: z.string().min(1),
+  status: WorktreeStatusSchema,
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
 });
 
-const refineWorkflowStep = <T extends { kind: StepKind; prompt?: string | null }>(schema: z.ZodType<T>) =>
-  schema.superRefine((step, ctx) => {
-    if (step.kind === "prompt" && !step.prompt) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["prompt"],
-        message: "Prompt step requires prompt text",
-      });
-    }
-  });
-
-export const WorkflowStepSchema = refineWorkflowStep(WorkflowStepBaseSchema);
-const WorkflowStepInputSchema = refineWorkflowStep(WorkflowStepBaseSchema.omit({ id: true }));
-
-export const WorkflowSchema = z.object({
+export const RepositorySchema = z.object({
   id: z.string(),
   name: z.string().min(1),
+  rootPath: z.string().min(1),
+  defaultBranch: z.string().min(1),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  steps: z.array(WorkflowStepSchema),
+  worktrees: z.array(WorktreeSchema),
 });
 
-export const CreateWorkflowInputSchema = z.object({
-  name: z.string().trim().min(1),
-  steps: z.array(WorkflowStepInputSchema).min(1),
-});
-
-export const UpdateWorkflowInputSchema = z.object({
-  name: z.string().trim().min(1),
-  steps: z.array(WorkflowStepInputSchema).min(1),
-});
-
-export const RunStatusSchema = z.enum([
-  "queued",
-  "running",
-  "waiting_approval",
-  "succeeded",
-  "failed",
-]);
-export type RunStatus = z.infer<typeof RunStatusSchema>;
-
-export const RunStepStatusSchema = z.enum([
-  "pending",
-  "running",
-  "waiting_approval",
-  "approved",
-  "rejected",
-  "succeeded",
-  "failed",
-]);
-export type RunStepStatus = z.infer<typeof RunStepStatusSchema>;
-
-export const RunStepSchema = z.object({
+export const ChatThreadSchema = z.object({
   id: z.string(),
-  runId: z.string(),
-  workflowStepId: z.string(),
-  order: z.number().int().nonnegative(),
-  title: z.string(),
-  kind: StepKindSchema,
-  prompt: z.string().nullable(),
-  status: RunStepStatusSchema,
-  output: z.string().nullable(),
-  error: z.string().nullable(),
-  startedAt: z.string().datetime().nullable(),
-  finishedAt: z.string().datetime().nullable(),
-});
-
-export const RunSchema = z.object({
-  id: z.string(),
-  workflowId: z.string(),
-  status: RunStatusSchema,
-  currentStepIndex: z.number().int().nonnegative(),
-  sessionId: z.string().nullable(),
-  error: z.string().nullable(),
-  startedAt: z.string().datetime().nullable(),
-  finishedAt: z.string().datetime().nullable(),
+  worktreeId: z.string(),
+  title: z.string().min(1),
+  claudeSessionId: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  steps: z.array(RunStepSchema),
 });
 
-export const CreateRunInputSchema = z.object({
-  workflowId: z.string().min(1),
-});
-
-export const ApprovalDecisionSchema = z.enum(["approved", "rejected"]);
-export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
-
-export const ApprovalCheckpointSchema = z.object({
-  runId: z.string(),
-  runStepId: z.string(),
-  decision: ApprovalDecisionSchema,
-  comment: z.string().nullable(),
+export const ChatMessageSchema = z.object({
+  id: z.string(),
+  threadId: z.string(),
+  seq: z.number().int().nonnegative(),
+  role: ChatRoleSchema,
+  content: z.string(),
   createdAt: z.string().datetime(),
 });
 
-export const ApproveRunInputSchema = z.object({
-  decision: ApprovalDecisionSchema,
-  comment: z.string().trim().min(1).optional(),
-});
-
-export const RunEventTypeSchema = z.enum([
-  "run.status_changed",
-  "run.completed",
-  "run.failed",
-  "step.started",
-  "step.log",
-  "step.completed",
-  "approval.requested",
-  "approval.decided",
-]);
-export type RunEventType = z.infer<typeof RunEventTypeSchema>;
-
-export const RunEventSchema = z.object({
+export const ChatEventSchema = z.object({
   id: z.string(),
-  runId: z.string(),
+  threadId: z.string(),
   idx: z.number().int().nonnegative(),
-  type: RunEventTypeSchema,
+  type: ChatEventTypeSchema,
   payload: z.record(z.string(), z.any()),
   createdAt: z.string().datetime(),
 });
 
-export type Workflow = z.infer<typeof WorkflowSchema>;
-export type WorkflowStep = z.infer<typeof WorkflowStepSchema>;
-export type CreateWorkflowInput = z.infer<typeof CreateWorkflowInputSchema>;
-export type UpdateWorkflowInput = z.infer<typeof UpdateWorkflowInputSchema>;
-export type Run = z.infer<typeof RunSchema>;
-export type RunStep = z.infer<typeof RunStepSchema>;
-export type CreateRunInput = z.infer<typeof CreateRunInputSchema>;
-export type ApprovalCheckpoint = z.infer<typeof ApprovalCheckpointSchema>;
-export type ApproveRunInput = z.infer<typeof ApproveRunInputSchema>;
-export type RunEvent = z.infer<typeof RunEventSchema>;
+export const CreateRepositoryInputSchema = z.object({
+  path: z.string().trim().min(1),
+  name: z.string().trim().min(1).optional(),
+});
+
+export const CreateWorktreeInputSchema = z.object({
+  branch: z.string().trim().min(1),
+  baseBranch: z.string().trim().min(1).optional(),
+});
+
+export const CreateChatThreadInputSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+});
+
+export const SendChatMessageInputSchema = z.object({
+  content: z.string().trim().min(1),
+});
+
+export type Repository = z.infer<typeof RepositorySchema>;
+export type Worktree = z.infer<typeof WorktreeSchema>;
+export type ChatThread = z.infer<typeof ChatThreadSchema>;
+export type ChatMessage = z.infer<typeof ChatMessageSchema>;
+export type ChatEvent = z.infer<typeof ChatEventSchema>;
+export type CreateRepositoryInput = z.infer<typeof CreateRepositoryInputSchema>;
+export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInputSchema>;
+export type CreateChatThreadInput = z.infer<typeof CreateChatThreadInputSchema>;
+export type SendChatMessageInput = z.infer<typeof SendChatMessageInputSchema>;

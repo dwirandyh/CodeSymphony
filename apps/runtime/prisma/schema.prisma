@@ -7,137 +7,92 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum StepKind {
-  prompt
-  approval
+enum WorktreeStatus {
+  active
+  archived
 }
 
-enum RunStatus {
-  queued
-  running
-  waiting_approval
-  succeeded
-  failed
+enum ChatRole {
+  user
+  assistant
+  system
 }
 
-enum RunStepStatus {
-  pending
-  running
-  waiting_approval
-  approved
-  rejected
-  succeeded
-  failed
+enum ChatEventType {
+  message_delta
+  tool_started
+  tool_output
+  tool_finished
+  chat_completed
+  chat_failed
 }
 
-enum ApprovalDecisionType {
-  approved
-  rejected
+model Repository {
+  id            String     @id @default(cuid())
+  name          String
+  rootPath      String     @unique
+  defaultBranch String
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  worktrees     Worktree[]
 }
 
-enum RunEventType {
-  run_status_changed
-  run_completed
-  run_failed
-  step_started
-  step_log
-  step_completed
-  approval_requested
-  approval_decided
+model Worktree {
+  id           String         @id @default(cuid())
+  repositoryId String
+  branch       String
+  path         String         @unique
+  baseBranch   String
+  status       WorktreeStatus @default(active)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  repository Repository   @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  threads    ChatThread[]
+
+  @@unique([repositoryId, branch])
+  @@index([repositoryId])
 }
 
-model Workflow {
-  id        String         @id @default(cuid())
-  name      String
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
-  steps     WorkflowStep[]
-  runs      Run[]
+model ChatThread {
+  id              String        @id @default(cuid())
+  worktreeId      String
+  title           String
+  claudeSessionId String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  worktree Worktree     @relation(fields: [worktreeId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+  events   ChatEvent[]
+
+  @@index([worktreeId])
 }
 
-model WorkflowStep {
-  id         String   @id @default(cuid())
-  workflowId String
-  order      Int
-  title      String
-  kind       StepKind
-  prompt     String?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+model ChatMessage {
+  id        String   @id @default(cuid())
+  threadId  String
+  seq       Int
+  role      ChatRole
+  content   String
+  createdAt DateTime @default(now())
 
-  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  thread ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
-  @@unique([workflowId, order])
-  @@index([workflowId])
+  @@unique([threadId, seq])
+  @@index([threadId])
 }
 
-model Run {
-  id               String             @id @default(cuid())
-  workflowId       String
-  status           RunStatus
-  currentStepIndex Int
-  sessionId        String?
-  error            String?
-  startedAt        DateTime?
-  finishedAt       DateTime?
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
-
-  workflow  Workflow           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
-  steps     RunStep[]
-  approvals ApprovalDecision[]
-  events    RunEvent[]
-
-  @@index([workflowId])
-  @@index([status])
-}
-
-model RunStep {
-  id             String        @id @default(cuid())
-  runId          String
-  workflowStepId String
-  order          Int
-  title          String
-  kind           StepKind
-  prompt         String?
-  status         RunStepStatus
-  output         String?
-  error          String?
-  startedAt      DateTime?
-  finishedAt     DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-
-  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@unique([runId, order])
-  @@index([runId])
-}
-
-model ApprovalDecision {
-  id        String               @id @default(cuid())
-  runId     String
-  runStepId String
-  decision  ApprovalDecisionType
-  comment   String?
-  createdAt DateTime             @default(now())
-
-  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@index([runId])
-  @@index([runStepId])
-}
-
-model RunEvent {
-  id        String       @id @default(cuid())
-  runId     String
+model ChatEvent {
+  id        String        @id @default(cuid())
+  threadId  String
   idx       Int
-  type      RunEventType
+  type      ChatEventType
   payload   Json
-  createdAt DateTime     @default(now())
+  createdAt DateTime      @default(now())
 
-  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+  thread ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
-  @@unique([runId, idx])
-  @@index([runId])
+  @@unique([threadId, idx])
+  @@index([threadId])
 }
