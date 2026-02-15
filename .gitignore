@@ -1,0 +1,17 @@
+node_modules
+.pnpm-store
+.turbo
+dist
+build
+coverage
+.DS_Store
+.env
+.env.*
+!.env.example
+apps/runtime/dev.db
+apps/runtime/dev.db-journal
+apps/runtime/prisma/dev.db
+apps/runtime/prisma/dev.db-journal
+apps/runtime/prisma/test.db
+apps/runtime/prisma/test.db-journal
+apps/runtime/.tmp

@@ -1,0 +1,31 @@
+FROM node:22-alpine
+
+WORKDIR /app
+
+RUN corepack enable
+
+COPY package.json pnpm-workspace.yaml turbo.json tsconfig.base.json ./
+COPY apps/runtime/package.json ./apps/runtime/package.json
+COPY packages/shared-types/package.json ./packages/shared-types/package.json
+COPY packages/orchestrator-core/package.json ./packages/orchestrator-core/package.json
+
+RUN pnpm install
+
+COPY apps/runtime ./apps/runtime
+COPY packages/shared-types ./packages/shared-types
+COPY packages/orchestrator-core ./packages/orchestrator-core
+
+WORKDIR /app/apps/runtime
+
+ENV RUNTIME_HOST=0.0.0.0
+ENV RUNTIME_PORT=4321
+ENV DATABASE_URL=file:/data/dev.db
+
+RUN pnpm --filter @codesymphony/shared-types build
+RUN pnpm --filter @codesymphony/orchestrator-core build
+RUN pnpm prisma:generate
+RUN pnpm build
+
+EXPOSE 4321
+
+CMD ["sh", "-c", "pnpm prisma migrate deploy && pnpm start"]

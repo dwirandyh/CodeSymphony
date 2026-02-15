@@ -1,0 +1,143 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum StepKind {
+  prompt
+  approval
+}
+
+enum RunStatus {
+  queued
+  running
+  waiting_approval
+  succeeded
+  failed
+}
+
+enum RunStepStatus {
+  pending
+  running
+  waiting_approval
+  approved
+  rejected
+  succeeded
+  failed
+}
+
+enum ApprovalDecisionType {
+  approved
+  rejected
+}
+
+enum RunEventType {
+  run_status_changed
+  run_completed
+  run_failed
+  step_started
+  step_log
+  step_completed
+  approval_requested
+  approval_decided
+}
+
+model Workflow {
+  id        String         @id @default(cuid())
+  name      String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  steps     WorkflowStep[]
+  runs      Run[]
+}
+
+model WorkflowStep {
+  id         String   @id @default(cuid())
+  workflowId String
+  order      Int
+  title      String
+  kind       StepKind
+  prompt     String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, order])
+  @@index([workflowId])
+}
+
+model Run {
+  id               String             @id @default(cuid())
+  workflowId       String
+  status           RunStatus
+  currentStepIndex Int
+  sessionId        String?
+  error            String?
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  workflow  Workflow           @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  steps     RunStep[]
+  approvals ApprovalDecision[]
+  events    RunEvent[]
+
+  @@index([workflowId])
+  @@index([status])
+}
+
+model RunStep {
+  id             String        @id @default(cuid())
+  runId          String
+  workflowStepId String
+  order          Int
+  title          String
+  kind           StepKind
+  prompt         String?
+  status         RunStepStatus
+  output         String?
+  error          String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, order])
+  @@index([runId])
+}
+
+model ApprovalDecision {
+  id        String               @id @default(cuid())
+  runId     String
+  runStepId String
+  decision  ApprovalDecisionType
+  comment   String?
+  createdAt DateTime             @default(now())
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([runStepId])
+}
+
+model RunEvent {
+  id        String       @id @default(cuid())
+  runId     String
+  idx       Int
+  type      RunEventType
+  payload   Json
+  createdAt DateTime     @default(now())
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, idx])
+  @@index([runId])
+}

@@ -1,0 +1,22 @@
+{
+  "name": "codesymphony",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.5.0",
+  "scripts": {
+    "dev": "turbo run dev --parallel --filter=@codesymphony/runtime --filter=@codesymphony/web",
+    "dev:web": "pnpm --filter @codesymphony/web dev",
+    "dev:runtime": "pnpm --filter @codesymphony/runtime dev",
+    "dev:desktop": "pnpm --filter @codesymphony/desktop dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "db:generate": "pnpm --filter @codesymphony/runtime prisma:generate",
+    "db:migrate": "pnpm --filter @codesymphony/runtime prisma:migrate",
+    "db:seed": "DATABASE_URL=\"file:./dev.db\" pnpm --filter @codesymphony/runtime prisma:seed"
+  },
+  "devDependencies": {
+    "turbo": "^2.4.4",
+    "typescript": "^5.8.2"
+  }
+}

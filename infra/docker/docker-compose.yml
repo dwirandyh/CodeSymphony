@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  runtime:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.runtime
+    ports:
+      - "4321:4321"
+    environment:
+      RUNTIME_HOST: 0.0.0.0
+      RUNTIME_PORT: 4321
+      DATABASE_URL: file:/data/dev.db
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+    volumes:
+      - runtime_data:/data
+
+volumes:
+  runtime_data:

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CodeSymphony",
+  "version": "0.1.0",
+  "identifier": "com.codesymphony.app",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @codesymphony/web dev",
+    "beforeBuildCommand": "pnpm --filter @codesymphony/web build",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../../web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CodeSymphony",
+        "width": 1280,
+        "height": 820
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all"
+  }
+}
