@@ -19,14 +19,31 @@ export type ClaudeRunner = (args: {
   sessionId: string | null;
   cwd: string;
   onText: (chunk: string) => Promise<void> | void;
-  onToolStarted: (payload: { toolName: string; toolUseId: string; parentToolUseId: string | null }) => Promise<void> | void;
+  onToolStarted: (payload: {
+    toolName: string;
+    toolUseId: string;
+    parentToolUseId: string | null;
+    command?: string;
+    shell?: "bash";
+    isBash?: true;
+  }) => Promise<void> | void;
   onToolOutput: (payload: {
     toolName: string;
     toolUseId: string;
     parentToolUseId: string | null;
     elapsedTimeSeconds: number;
   }) => Promise<void> | void;
-  onToolFinished: (payload: { summary: string; precedingToolUseIds: string[] }) => Promise<void> | void;
+  onToolFinished: (payload: {
+    summary: string;
+    precedingToolUseIds: string[];
+    command?: string;
+    output?: string;
+    error?: string;
+    shell?: "bash";
+    isBash?: true;
+    truncated?: boolean;
+    outputBytes?: number;
+  }) => Promise<void> | void;
   onPermissionRequest: (payload: {
     requestId: string;
     toolName: string;

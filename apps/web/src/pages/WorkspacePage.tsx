@@ -88,6 +88,10 @@ function isReadToolEvent(event: ChatEvent): boolean {
     return false;
   }
 
+  if (isBashToolEvent(event)) {
+    return false;
+  }
+
   return READ_TOOL_PATTERN.test(eventPayloadText(event));
 }
 
@@ -383,6 +387,201 @@ function buildActivityIntroText(content: string): string | null {
   }
 
   return `${intro.slice(0, 217).trimEnd()}...`;
+}
+
+type BashRun = {
+  id: string;
+  toolUseId: string;
+  startIdx: number;
+  anchorIdx: number;
+  summary: string | null;
+  command: string | null;
+  output: string | null;
+  error: string | null;
+  truncated: boolean;
+  durationSeconds: number | null;
+  status: "running" | "success" | "failed";
+  createdAt: string;
+  eventIds: Set<string>;
+};
+
+function payloadStringOrNull(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  return value.length > 0 ? value : null;
+}
+
+function isBashPayload(payload: Record<string, unknown>): boolean {
+  if (payload.isBash === true || payload.shell === "bash") {
+    return true;
+  }
+
+  const toolName = payload.toolName;
+  return typeof toolName === "string" && toolName.trim().toLowerCase() === "bash";
+}
+
+function isBashToolEvent(event: ChatEvent): boolean {
+  if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
+    return false;
+  }
+
+  return isBashPayload(event.payload);
+}
+
+function extractBashRuns(context: ChatEvent[]): BashRun[] {
+  const ordered = [...context].sort((a, b) => a.idx - b.idx);
+  const byToolUseId = new Map<string, BashRun>();
+  const hasBashToolLifecycleEvents = ordered.some((event) => isBashToolEvent(event));
+
+  function ensureRun(toolUseId: string, event: ChatEvent): BashRun {
+    const existing = byToolUseId.get(toolUseId);
+    if (existing) {
+      existing.anchorIdx = Math.min(existing.anchorIdx, event.idx);
+      existing.eventIds.add(event.id);
+      return existing;
+    }
+
+    const created: BashRun = {
+      id: `bash:${toolUseId}`,
+      toolUseId,
+      startIdx: event.idx,
+      anchorIdx: event.idx,
+      summary: null,
+      command: payloadStringOrNull(event.payload.command),
+      output: null,
+      error: null,
+      truncated: false,
+      durationSeconds: null,
+      status: "running",
+      createdAt: event.createdAt,
+      eventIds: new Set([event.id]),
+    };
+    byToolUseId.set(toolUseId, created);
+    return created;
+  }
+
+  for (const event of ordered) {
+    if ((event.type === "tool.started" || event.type === "tool.output") && isBashToolEvent(event)) {
+      const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+      if (!toolUseId) {
+        continue;
+      }
+      const run = ensureRun(toolUseId, event);
+      run.startIdx = Math.min(run.startIdx, event.idx);
+      run.command = run.command ?? payloadStringOrNull(event.payload.command);
+      if (event.type === "tool.output") {
+        const elapsed = Number(event.payload.elapsedTimeSeconds ?? 0);
+        if (Number.isFinite(elapsed) && elapsed > 0) {
+          run.durationSeconds = Math.max(run.durationSeconds ?? 0, elapsed);
+        }
+      }
+      continue;
+    }
+
+    if (event.type !== "tool.finished") {
+      continue;
+    }
+
+    const precedingToolUseIds = Array.isArray(event.payload.precedingToolUseIds)
+      ? event.payload.precedingToolUseIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : [];
+
+    const bashToolUseIds = precedingToolUseIds.length > 0
+      ? precedingToolUseIds
+      : isBashToolEvent(event)
+        ? [`event:${event.id}`]
+        : [];
+
+    for (const toolUseId of bashToolUseIds) {
+      const run = ensureRun(toolUseId, event);
+      run.summary = payloadStringOrNull(event.payload.summary);
+      run.command = run.command ?? payloadStringOrNull(event.payload.command);
+      run.output = payloadStringOrNull(event.payload.output);
+      run.error = payloadStringOrNull(event.payload.error);
+      run.truncated = event.payload.truncated === true;
+      const summaryLower = (run.summary ?? "").toLowerCase();
+      run.status = run.error
+        ? "failed"
+        : summaryLower.includes("failed") || summaryLower.includes("error")
+          ? "failed"
+          : "success";
+      if (run.durationSeconds == null) {
+        const startedAt = Date.parse(run.createdAt);
+        const finishedAt = Date.parse(event.createdAt);
+        if (Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt > startedAt) {
+          run.durationSeconds = (finishedAt - startedAt) / 1000;
+        }
+      }
+      run.eventIds.add(event.id);
+    }
+  }
+
+  if (!hasBashToolLifecycleEvents) {
+    for (const event of ordered) {
+      if (event.type === "permission.requested") {
+        const requestId = payloadStringOrNull(event.payload.requestId);
+        const toolName = payloadStringOrNull(event.payload.toolName);
+        const command = payloadStringOrNull(event.payload.command);
+        if (!requestId || !toolName || toolName.toLowerCase() !== "bash" || !command) {
+          continue;
+        }
+
+        byToolUseId.set(`permission:${requestId}`, {
+          id: `bash:permission:${requestId}`,
+          toolUseId: `permission:${requestId}`,
+          startIdx: event.idx,
+          anchorIdx: event.idx,
+          summary: "Awaiting approval",
+          command,
+          output: null,
+          error: null,
+          truncated: false,
+          durationSeconds: null,
+          status: "running",
+          createdAt: event.createdAt,
+          eventIds: new Set([event.id]),
+        });
+        continue;
+      }
+
+      if (event.type !== "permission.resolved") {
+        continue;
+      }
+
+      const requestId = payloadStringOrNull(event.payload.requestId);
+      if (!requestId) {
+        continue;
+      }
+
+      const key = `permission:${requestId}`;
+      const run = byToolUseId.get(key);
+      if (!run) {
+        continue;
+      }
+
+      const decision = payloadStringOrNull(event.payload.decision);
+      const message = payloadStringOrNull(event.payload.message);
+        run.summary = message ?? run.summary;
+        run.eventIds.add(event.id);
+        if (run.durationSeconds == null) {
+          const startedAt = Date.parse(run.createdAt);
+          const finishedAt = Date.parse(event.createdAt);
+          if (Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt > startedAt) {
+            run.durationSeconds = (finishedAt - startedAt) / 1000;
+          }
+        }
+        if (decision === "deny") {
+          run.status = "failed";
+          run.error = message ?? "Denied by user";
+      } else if (decision === "allow" || decision === "allow_always") {
+        run.status = "success";
+      }
+    }
+  }
+
+  return Array.from(byToolUseId.values()).sort((a, b) => a.startIdx - b.startIdx);
 }
 
 type PendingPermissionRequest = {
@@ -1026,6 +1225,22 @@ export function WorkspacePage() {
     }
 
     const inlineToolEvents = orderedEventsByIdx.filter((event) => INLINE_TOOL_EVENT_TYPES.has(event.type));
+    const assistantDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
+    for (const event of orderedEventsByIdx) {
+      if (event.type !== "message.delta" || event.payload.role !== "assistant") {
+        continue;
+      }
+
+      const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : null;
+      if (!messageId) {
+        continue;
+      }
+
+      const existing = assistantDeltaEventsByMessageId.get(messageId) ?? [];
+      existing.push(event);
+      assistantDeltaEventsByMessageId.set(messageId, existing);
+    }
+
     const assistantContextById = new Map<string, ChatEvent[]>();
     const assistantMessages = sortedMessages.filter((message) => message.role === "assistant");
     const nextAssistantStartIdxByMessageId = new Map<string, number>();
@@ -1174,16 +1389,43 @@ export function WorkspacePage() {
             })()
           : undefined;
 
-      if (message.role === "assistant" && context.length > 0) {
-        const steps = buildActivitySteps(context);
-        const contextTimestamp = parseTimestamp(context[0]?.createdAt ?? message.createdAt);
-        context.forEach((event) => assignedToolEventIds.add(event.id));
+      const bashRuns = message.role === "assistant" ? extractBashRuns(context) : [];
+      const bashRunEventIds = new Set<string>();
+      if (message.role === "assistant") {
+        for (const run of bashRuns) {
+          run.eventIds.forEach((eventId) => bashRunEventIds.add(eventId));
+        }
+      }
+
+      const nonBashContext = message.role === "assistant"
+        ? context.filter((event) => {
+            if (isBashToolEvent(event) || bashRunEventIds.has(event.id)) {
+              return false;
+            }
+
+            if (bashRuns.length > 0 && (event.type === "permission.requested" || event.type === "permission.resolved")) {
+              return false;
+            }
+
+            return true;
+          })
+        : context;
+      if (message.role === "assistant") {
+        for (const run of bashRuns) {
+          run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+        }
+      }
+
+      if (message.role === "assistant" && nonBashContext.length > 0 && bashRuns.length === 0) {
+        const steps = buildActivitySteps(nonBashContext);
+        const contextTimestamp = parseTimestamp(nonBashContext[0]?.createdAt ?? message.createdAt);
+        nonBashContext.forEach((event) => assignedToolEventIds.add(event.id));
         pushRenderDebug({
           source: "WorkspacePage",
           event: "activityStepsBuilt",
           messageId: message.id,
           details: {
-            contextSize: context.length,
+            contextSize: nonBashContext.length,
             stepSize: steps.length,
             steps,
           },
@@ -1192,7 +1434,7 @@ export function WorkspacePage() {
           item: {
             kind: "activity",
             messageId: message.id,
-            durationSeconds: computeDurationSecondsFromEvents(context),
+            durationSeconds: computeDurationSecondsFromEvents(nonBashContext),
             introText: buildActivityIntroText(message.content),
             steps,
             defaultExpanded: isStreamingMessage,
@@ -1204,6 +1446,131 @@ export function WorkspacePage() {
         });
       }
 
+      if (message.role === "assistant" && bashRuns.length > 0) {
+        const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
+        const segmentBuckets = Array.from({ length: bashRuns.length + 1 }, () => ({
+          content: "",
+          anchorIdx: null as number | null,
+          timestamp: null as number | null,
+        }));
+
+        for (const deltaEvent of messageDeltaEvents) {
+          const deltaText = typeof deltaEvent.payload.delta === "string" ? deltaEvent.payload.delta : "";
+          if (deltaText.length === 0) {
+            continue;
+          }
+
+          let bucketIndex = bashRuns.findIndex((run) => deltaEvent.idx < run.startIdx);
+          if (bucketIndex < 0) {
+            bucketIndex = bashRuns.length;
+          }
+
+          const bucket = segmentBuckets[bucketIndex];
+          bucket.content += deltaText;
+          bucket.anchorIdx = bucket.anchorIdx == null ? deltaEvent.idx : Math.min(bucket.anchorIdx, deltaEvent.idx);
+          if (bucket.timestamp == null) {
+            bucket.timestamp = parseTimestamp(deltaEvent.createdAt);
+          }
+        }
+
+        const hasSegmentContent = segmentBuckets.some((bucket) => bucket.content.length > 0);
+        if (!hasSegmentContent && message.content.length > 0) {
+          segmentBuckets[0] = {
+            content: message.content,
+            anchorIdx,
+            timestamp,
+          };
+        }
+
+        const hasLeadingText = segmentBuckets[0].content.length > 0;
+        const hasAnyTrailingText = segmentBuckets.slice(1).some((bucket) => bucket.content.length > 0);
+        const deferFirstRunUntilText = !hasLeadingText && hasAnyTrailingText && bashRuns.length > 0;
+        let delayedFirstRunInserted = false;
+        let stableOffset = 0;
+        for (let bucketIndex = 0; bucketIndex < segmentBuckets.length; bucketIndex += 1) {
+          const bucket = segmentBuckets[bucketIndex];
+          if (bucket.content.length > 0) {
+            const segmentMessage: ChatMessage = {
+              ...message,
+              id: `${message.id}:segment:${bucketIndex}`,
+              content: bucket.content,
+            };
+            sortable.push({
+              item: {
+                kind: "message",
+                message: segmentMessage,
+                renderHint: renderHint === "diff" ? "diff" : "markdown",
+                rawFileLanguage: undefined,
+                isCompleted,
+                context: nonBashContext,
+              },
+              anchorIdx: bucket.anchorIdx ?? anchorIdx,
+              timestamp: bucket.timestamp ?? timestamp,
+              rank: 3,
+              stableOrder: message.seq + stableOffset,
+            });
+            stableOffset += 0.001;
+
+            if (deferFirstRunUntilText && !delayedFirstRunInserted) {
+              const run = bashRuns[0];
+              sortable.push({
+                item: {
+                  kind: "bash-command",
+                  id: `${message.id}:${run.toolUseId}:deferred`,
+                  toolUseId: run.toolUseId,
+                  shell: "bash",
+                  command: run.command,
+                  summary: run.summary,
+                  output: run.output,
+                  error: run.error,
+                  truncated: run.truncated,
+                  durationSeconds: run.durationSeconds,
+                  status: run.status,
+                },
+                anchorIdx: run.anchorIdx,
+                timestamp: parseTimestamp(run.createdAt) ?? timestamp,
+                rank: 3,
+                stableOrder: message.seq + stableOffset,
+              });
+              stableOffset += 0.001;
+              delayedFirstRunInserted = true;
+            }
+          }
+
+          if (bucketIndex >= bashRuns.length) {
+            continue;
+          }
+
+          if (deferFirstRunUntilText && bucketIndex === 0) {
+            continue;
+          }
+
+          const run = bashRuns[bucketIndex];
+          sortable.push({
+            item: {
+              kind: "bash-command",
+              id: `${message.id}:${run.toolUseId}:${bucketIndex}`,
+              toolUseId: run.toolUseId,
+              shell: "bash",
+              command: run.command,
+              summary: run.summary,
+              output: run.output,
+              error: run.error,
+              truncated: run.truncated,
+              durationSeconds: run.durationSeconds,
+              status: run.status,
+            },
+            anchorIdx: run.anchorIdx,
+            timestamp: parseTimestamp(run.createdAt) ?? timestamp,
+            rank: 3,
+            stableOrder: message.seq + stableOffset,
+          });
+          stableOffset += 0.001;
+        }
+
+        continue;
+      }
+
       sortable.push({
         item: {
           kind: "message",
@@ -1211,7 +1578,7 @@ export function WorkspacePage() {
           renderHint,
           rawFileLanguage: message.role === "assistant" && shouldRenderRawFile ? stickyLanguage ?? inferredLanguage : undefined,
           isCompleted,
-          context,
+          context: nonBashContext,
         },
         anchorIdx,
         timestamp,

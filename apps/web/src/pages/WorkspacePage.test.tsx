@@ -1139,7 +1139,7 @@ describe("WorkspacePage", () => {
     expect(container.textContent).toContain("Analyzed");
   });
 
-  it("keeps activity trace when tools run after the first assistant delta", async () => {
+  it("renders bash command card between assistant text deltas", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
         id: "msg-user-late-tools",
@@ -1172,7 +1172,7 @@ describe("WorkspacePage", () => {
         threadId: "thread-1",
         idx: 2,
         type: "tool.started",
-        payload: { toolName: "Bash", toolUseId: "tool-1", parentToolUseId: null },
+        payload: { toolName: "Bash", toolUseId: "tool-1", parentToolUseId: null, command: "pwd", isBash: true, shell: "bash" },
         createdAt: "2026-01-01T10:00:01.200Z",
       },
       {
@@ -1188,7 +1188,7 @@ describe("WorkspacePage", () => {
         threadId: "thread-1",
         idx: 4,
         type: "tool.finished",
-        payload: { summary: "Ran pwd", precedingToolUseIds: ["tool-1"] },
+        payload: { summary: "Ran pwd", precedingToolUseIds: ["tool-1"], command: "pwd", output: "/tmp/project", isBash: true, shell: "bash" },
         createdAt: "2026-01-01T10:00:02.000Z",
       },
       {
@@ -1215,10 +1215,161 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="timeline-activity"]')).not.toBeNull();
-    expect(container.textContent).toContain("Activity for");
+    expect(container.querySelector('[data-testid="timeline-bash-command"]')).not.toBeNull();
     expect(container.textContent).toContain("Ran pwd");
+    expect(container.textContent).toContain("$ pwd");
+    expect(container.textContent).toContain("/tmp/project");
     expect(container.querySelector('[data-testid="timeline-tool.output"]')).toBeNull();
+    expect(container.querySelector('[data-testid="timeline-activity"]')).toBeNull();
+    const content = container.textContent ?? "";
+    expect(content.indexOf("Saya cek dulu.")).toBeLessThan(content.indexOf("Ran pwd"));
+    expect(content.indexOf("Ran pwd")).toBeLessThan(content.indexOf("Hasilnya sudah ada."));
+  });
+
+  it("shows truncated marker for long bash output", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-bash-truncated",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "jalankan command",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-bash-truncated",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Saya jalankan command. Selesai.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-bash-msg-before",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-bash-truncated", role: "assistant", delta: "Saya jalankan command." },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-bash-start",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "tool-trunc", parentToolUseId: null, command: "cat logs.txt", isBash: true, shell: "bash" },
+        createdAt: "2026-01-01T10:00:01.100Z",
+      },
+      {
+        id: "evt-bash-finish",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.finished",
+        payload: {
+          summary: "Ran cat logs.txt",
+          precedingToolUseIds: ["tool-trunc"],
+          command: "cat logs.txt",
+          output: "x".repeat(100),
+          truncated: true,
+          isBash: true,
+          shell: "bash",
+        },
+        createdAt: "2026-01-01T10:00:01.900Z",
+      },
+      {
+        id: "evt-bash-msg-after",
+        threadId: "thread-1",
+        idx: 4,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-bash-truncated", role: "assistant", delta: " Selesai." },
+        createdAt: "2026-01-01T10:00:02.200Z",
+      },
+      {
+        id: "evt-bash-complete",
+        threadId: "thread-1",
+        idx: 5,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-bash-truncated" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-bash-command"]')).not.toBeNull();
+    expect(container.textContent).toContain("... [output truncated]");
+    expect(container.textContent).toContain("$ cat logs.txt");
+  });
+
+  it("shows failed status and error output for bash command", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-bash-failed",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "jalankan command error",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-bash-failed",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Command gagal.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-bash-failed-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "tool-failed", parentToolUseId: null, command: "pnpm unknown", isBash: true, shell: "bash" },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-bash-failed-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Command failed",
+          precedingToolUseIds: ["tool-failed"],
+          command: "pnpm unknown",
+          error: "ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL",
+          isBash: true,
+          shell: "bash",
+        },
+        createdAt: "2026-01-01T10:00:01.500Z",
+      },
+      {
+        id: "evt-bash-failed-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-bash-failed", role: "assistant", delta: "Command gagal." },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-bash-command"]')).not.toBeNull();
+    expect(container.textContent).toContain("Failed");
+    expect(container.textContent).toContain("ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL");
+    expect(container.querySelector('[data-testid="timeline-activity"]')).toBeNull();
   });
 
   it("creates a new thread via header action", async () => {

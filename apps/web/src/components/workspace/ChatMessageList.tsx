@@ -36,6 +36,19 @@ export type ChatTimelineItem =
   | {
       kind: "tool";
       event: ChatEvent;
+    }
+  | {
+      kind: "bash-command";
+      id: string;
+      toolUseId: string;
+      shell: "bash";
+      command: string | null;
+      summary: string | null;
+      output: string | null;
+      error: string | null;
+      truncated: boolean;
+      durationSeconds: number | null;
+      status: "running" | "success" | "failed";
     };
 
 type ChatMessageListProps = {
@@ -552,6 +565,76 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                   <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-muted-foreground">
                     {JSON.stringify(item.event.payload, null, 2)}
                   </pre>
+                </details>
+              </article>
+            );
+          }
+
+          if (item.kind === "bash-command") {
+            const commandText = item.command ?? item.summary ?? "bash";
+            const statusLabel = item.status === "failed" ? "Failed" : item.status === "running" ? "Running" : "Success";
+            const durationLabel =
+              typeof item.durationSeconds === "number" && Number.isFinite(item.durationSeconds) && item.durationSeconds > 0
+                ? `${Math.max(1, Math.round(item.durationSeconds))}s`
+                : null;
+            const summaryLabel =
+              durationLabel != null ? `Ran ${commandText} for ${durationLabel}` : `Ran ${commandText}`;
+
+            return (
+              <article
+                key={`bash-${item.id}`}
+                className="text-xs"
+                data-testid="timeline-bash-command"
+              >
+                <details open={item.status === "running"}>
+                  <summary className="cursor-pointer text-[12px] text-muted-foreground">
+                    <span className="font-semibold text-foreground">{summaryLabel}</span>
+                  </summary>
+
+                  <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
+                    <div className="border-b border-border/35 px-3 py-2 text-xs font-semibold lowercase tracking-wide text-muted-foreground">
+                      {item.shell}
+                    </div>
+
+                    <pre className="border-b border-border/35 px-4 py-3 font-mono text-sm leading-relaxed text-foreground">
+                      {`$ ${commandText}`}
+                    </pre>
+
+                    {item.output ? (
+                      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-sm leading-relaxed text-foreground">
+                        {item.output}
+                      </pre>
+                    ) : null}
+
+                    {item.error ? (
+                      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words border-t border-border/35 px-4 py-3 font-mono text-sm leading-relaxed text-destructive">
+                        {item.error}
+                      </pre>
+                    ) : null}
+
+                    {!item.output && !item.error && item.summary ? (
+                      <div className="px-4 py-3 text-sm text-muted-foreground">{item.summary}</div>
+                    ) : null}
+
+                    {item.truncated ? (
+                      <div className="border-t border-border/35 px-3 py-2 text-[11px] text-muted-foreground">... [output truncated]</div>
+                    ) : null}
+
+                    <div className="border-t border-border/35 px-3 py-2 text-right text-xs">
+                      <span
+                        className={cn(
+                          "font-medium",
+                          item.status === "failed"
+                            ? "text-destructive"
+                            : item.status === "running"
+                              ? "text-muted-foreground"
+                              : "text-foreground",
+                        )}
+                      >
+                        {statusLabel}
+                      </span>
+                    </div>
+                  </div>
                 </details>
               </article>
             );

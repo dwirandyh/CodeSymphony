@@ -213,6 +213,60 @@ describe("chatService permission flow", () => {
     expect(assistantMessage?.content).toContain("Perintah berhasil dijalankan.");
   });
 
+  it("persists bash command output metadata in tool events", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onToolStarted, onToolFinished, onText }) => {
+      await onToolStarted({
+        toolName: "Bash",
+        toolUseId: "tool-metadata",
+        parentToolUseId: null,
+        command: "git status --short",
+        shell: "bash",
+        isBash: true,
+      });
+
+      await onToolFinished({
+        summary: "Ran git status --short",
+        precedingToolUseIds: ["tool-metadata"],
+        command: "git status --short",
+        output: "M README.md",
+        error: "",
+        shell: "bash",
+        isBash: true,
+        truncated: false,
+        outputBytes: 11,
+      });
+
+      await onText("Done.");
+      return {
+        output: "Done.",
+        sessionId: "session-metadata",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "cek status git",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const started = events.find((event) => event.type === "tool.started");
+    const finished = events.find((event) => event.type === "tool.finished" && event.payload.summary === "Ran git status --short");
+
+    expect(started?.payload.command).toBe("git status --short");
+    expect(started?.payload.isBash).toBe(true);
+    expect(finished?.payload.command).toBe("git status --short");
+    expect(finished?.payload.output).toBe("M README.md");
+    expect(finished?.payload.error).toBe("");
+    expect(finished?.payload.truncated).toBe(false);
+    expect(finished?.payload.outputBytes).toBe(11);
+  });
+
   it("emits permission requested and proceeds with deny decision", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
       const decision = await onPermissionRequest({
