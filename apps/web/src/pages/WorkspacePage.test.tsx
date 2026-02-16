@@ -1520,7 +1520,7 @@ describe("WorkspacePage", () => {
     if (!detailsAfterToggle) {
       throw new Error("Expected bash command details block after toggle");
     }
-    expect(detailsAfterToggle.open).toBe(true);
+    expect(detailsAfterToggle.open).toBe(false);
 
     expect(container.textContent).toContain("Failed");
     expect(container.textContent).toContain("ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL");

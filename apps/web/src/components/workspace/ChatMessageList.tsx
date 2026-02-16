@@ -776,8 +776,8 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
           if (item.kind === "bash-command") {
             const commandText = item.command ?? item.summary ?? "command";
             const statusLabel = item.status === "failed" ? "Failed" : item.status === "running" ? "Running" : "Success";
-            const keepExpanded = item.status === "failed";
-            const expanded = keepExpanded ? true : isBashExpanded(item.id, false);
+            const defaultExpanded = item.status === "failed";
+            const expanded = isBashExpanded(item.id, defaultExpanded);
             const summaryLabel = expanded ? "Ran command" : item.command ? `Ran ${item.command}` : "Ran command";
 
             return (
@@ -788,27 +788,16 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
               >
                 <details
                   open={expanded}
-                  onToggle={keepExpanded
-                    ? (event) => {
-                        (event.currentTarget as HTMLDetailsElement).open = true;
-                      }
-                    : (event) => {
-                        const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-                        setBashExpandedById((current) => {
-                          const next = new Map(current);
-                          next.set(item.id, nextOpen);
-                          return next;
-                        });
-                      }}
+                  onToggle={(event) => {
+                    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                    setBashExpandedById((current) => {
+                      const next = new Map(current);
+                      next.set(item.id, nextOpen);
+                      return next;
+                    });
+                  }}
                 >
-                  <summary
-                    className={cn("text-[12px] text-muted-foreground", keepExpanded ? "cursor-default" : "cursor-pointer")}
-                    onClick={keepExpanded
-                      ? (event) => {
-                          event.preventDefault();
-                        }
-                      : undefined}
-                  >
+                  <summary className="cursor-pointer text-[12px] text-muted-foreground">
                     <span className="font-semibold text-foreground">{summaryLabel}</span>
                   </summary>
 
