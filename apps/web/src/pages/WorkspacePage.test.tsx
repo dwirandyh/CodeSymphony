@@ -1139,6 +1139,64 @@ describe("WorkspacePage", () => {
     expect(container.textContent).toContain("Analyzed");
   });
 
+  it("does not render tool.started events in timeline", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-started-only",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: {
+          toolName: "Bash",
+          toolUseId: "tool-started-only",
+          parentToolUseId: null,
+          command: "pwd",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-tool.started"]')).toBeNull();
+    expect(container.textContent).not.toContain("tool.started");
+  });
+
+  it("renders orphan tool row without raw JSON details panel", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-orphan-finished",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          toolName: "Read",
+          summary: "Read src/main.ts",
+          command: "cat src/main.ts",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const toolRow = container.querySelector('[data-testid="timeline-tool.finished"]');
+    expect(toolRow).not.toBeNull();
+    expect(toolRow?.textContent).not.toContain("Details");
+    expect(toolRow?.textContent).not.toContain("\"toolName\"");
+    expect(toolRow?.textContent).not.toContain("\"command\"");
+  });
+
   it("renders bash command card between assistant text deltas", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
@@ -1215,15 +1273,37 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="timeline-bash-command"]')).not.toBeNull();
+    const bashCard = container.querySelector('[data-testid="timeline-bash-command"]');
+    if (!bashCard) {
+      throw new Error("Expected bash command card");
+    }
+    const details = bashCard.querySelector("details") as HTMLDetailsElement | null;
+    if (!details) {
+      throw new Error("Expected bash command details block");
+    }
+
+    expect(details.open).toBe(false);
     expect(container.textContent).toContain("Ran pwd");
+    expect(container.textContent).not.toContain("Ran command");
     expect(container.textContent).toContain("$ pwd");
     expect(container.textContent).toContain("/tmp/project");
     expect(container.querySelector('[data-testid="timeline-tool.output"]')).toBeNull();
     expect(container.querySelector('[data-testid="timeline-activity"]')).toBeNull();
-    const content = container.textContent ?? "";
-    expect(content.indexOf("Saya cek dulu.")).toBeLessThan(content.indexOf("Ran pwd"));
-    expect(content.indexOf("Ran pwd")).toBeLessThan(content.indexOf("Hasilnya sudah ada."));
+    const collapsedContent = container.textContent ?? "";
+    expect(collapsedContent.indexOf("Saya cek dulu.")).toBeLessThan(collapsedContent.indexOf("Ran pwd"));
+    expect(collapsedContent.indexOf("Ran pwd")).toBeLessThan(collapsedContent.indexOf("Hasilnya sudah ada."));
+
+    act(() => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle", { bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(container.textContent).toContain("Ran command");
+    const expandedContent = container.textContent ?? "";
+    expect(expandedContent.indexOf("Saya cek dulu.")).toBeLessThan(expandedContent.indexOf("Ran command"));
+    expect(expandedContent.indexOf("Ran command")).toBeLessThan(expandedContent.indexOf("Hasilnya sudah ada."));
   });
 
   it("shows truncated marker for long bash output", async () => {
@@ -1856,6 +1936,66 @@ describe("WorkspacePage", () => {
     await flushEffects();
 
     expect(container.querySelector('[data-testid=\"permission-prompt-perm-1\"]')).toBeNull();
+  });
+
+  it("shows only one final permission activity line without command or path details", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-perm-activity-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-activity",
+          toolName: "Read",
+          command: "cat /etc/hosts",
+          blockedPath: "/etc/hosts",
+          decisionReason: "Path outside project directory",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-perm-activity-resolved-1",
+        threadId: "thread-1",
+        idx: 4,
+        type: "permission.resolved",
+        payload: {
+          requestId: "perm-activity",
+          decision: "allow",
+          resolver: "user",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+      {
+        id: "evt-perm-activity-resolved-2",
+        threadId: "thread-1",
+        idx: 5,
+        type: "permission.resolved",
+        payload: {
+          requestId: "perm-activity",
+          decision: "deny",
+          resolver: "user",
+        },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-activity"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="timeline-permission.requested"]')).toBeNull();
+    expect(container.querySelector('[data-testid="timeline-permission.resolved"]')).toBeNull();
+    expect(container.textContent).toContain("Permission denied");
+    expect(container.textContent).not.toContain("Permission requested");
+    expect(container.textContent).not.toContain("Permission allowed");
+    expect(container.textContent).not.toContain("cat /etc/hosts");
+    expect(container.textContent).not.toContain("/etc/hosts");
+    expect(container.textContent).not.toContain("Path outside project directory");
+    expect(container.querySelector('[data-testid="permission-prompt-perm-activity"]')).toBeNull();
   });
 
   it("renders permission prompts inside chat-width container", async () => {

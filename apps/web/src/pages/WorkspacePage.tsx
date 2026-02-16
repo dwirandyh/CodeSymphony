@@ -202,24 +202,19 @@ function toolEventDetail(event: ChatEvent): string {
   }
 
   if (event.type === "permission.requested") {
-    const toolName = typeof event.payload.toolName === "string" ? event.payload.toolName : "Tool";
-    const command = typeof event.payload.command === "string" ? event.payload.command : "";
-    if (command.length > 0) {
-      return `Awaiting approval for ${toolName}: ${command}`;
-    }
-    return `Awaiting approval for ${toolName}`;
+    return "Permission requested";
   }
 
   if (event.type === "permission.resolved") {
     const decision = event.payload.decision;
     if (decision === "allow") {
-      return "Allowed once by user";
+      return "Permission allowed";
     }
     if (decision === "allow_always") {
-      return "Always allowed in this workspace";
+      return "Permission allowed (always)";
     }
     if (decision === "deny") {
-      return "Denied by user";
+      return "Permission denied";
     }
     return "Permission resolved";
   }
@@ -276,8 +271,32 @@ function buildActivitySteps(context: ChatEvent[]): ActivityTraceStep[] {
       continue;
     }
 
+    if (event.type === "permission.requested") {
+      continue;
+    }
+
+    if (event.type === "tool.started") {
+      continue;
+    }
+
     const detail = toolEventDetail(event);
     const label = activityStepLabel(event, detail);
+
+    if (event.type === "permission.resolved") {
+      const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+      const key = requestId.length > 0 ? `permission:${requestId}` : `permission:${event.id}`;
+      candidates.push({
+        key,
+        priority: 2,
+        idx: event.idx,
+        step: {
+          id: event.id,
+          label,
+          detail,
+        },
+      });
+      continue;
+    }
 
     if (event.type === "tool.finished") {
       const precedingToolUseIds = Array.isArray(event.payload.precedingToolUseIds)
@@ -1419,7 +1438,6 @@ export function WorkspacePage() {
       if (message.role === "assistant" && nonBashContext.length > 0 && bashRuns.length === 0) {
         const steps = buildActivitySteps(nonBashContext);
         const contextTimestamp = parseTimestamp(nonBashContext[0]?.createdAt ?? message.createdAt);
-        nonBashContext.forEach((event) => assignedToolEventIds.add(event.id));
         pushRenderDebug({
           source: "WorkspacePage",
           event: "activityStepsBuilt",
@@ -1430,20 +1448,23 @@ export function WorkspacePage() {
             steps,
           },
         });
-        sortable.push({
-          item: {
-            kind: "activity",
-            messageId: message.id,
-            durationSeconds: computeDurationSecondsFromEvents(nonBashContext),
-            introText: buildActivityIntroText(message.content),
-            steps,
-            defaultExpanded: isStreamingMessage,
-          },
-          anchorIdx,
-          timestamp: contextTimestamp,
-          rank: 2,
-          stableOrder: message.seq,
-        });
+        if (steps.length > 0) {
+          nonBashContext.forEach((event) => assignedToolEventIds.add(event.id));
+          sortable.push({
+            item: {
+              kind: "activity",
+              messageId: message.id,
+              durationSeconds: computeDurationSecondsFromEvents(nonBashContext),
+              introText: buildActivityIntroText(message.content),
+              steps,
+              defaultExpanded: isStreamingMessage,
+            },
+            anchorIdx,
+            timestamp: contextTimestamp,
+            rank: 2,
+            stableOrder: message.seq,
+          });
+        }
       }
 
       if (message.role === "assistant" && bashRuns.length > 0) {
@@ -1587,7 +1608,42 @@ export function WorkspacePage() {
       });
     }
 
-    const orphanToolEvents = inlineToolEvents.filter((event) => !assignedToolEventIds.has(event.id));
+    const rawOrphanToolEvents = inlineToolEvents.filter((event) => !assignedToolEventIds.has(event.id));
+    const orphanNonPermissionEvents: ChatEvent[] = [];
+    const latestPermissionResolvedByRequestId = new Map<string, ChatEvent>();
+    const orphanPermissionResolvedWithoutRequestId: ChatEvent[] = [];
+
+    for (const event of rawOrphanToolEvents) {
+      if (event.type === "permission.requested") {
+        continue;
+      }
+
+      if (event.type === "tool.started") {
+        continue;
+      }
+
+      if (event.type !== "permission.resolved") {
+        orphanNonPermissionEvents.push(event);
+        continue;
+      }
+
+      const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+      if (requestId.length === 0) {
+        orphanPermissionResolvedWithoutRequestId.push(event);
+        continue;
+      }
+
+      const existing = latestPermissionResolvedByRequestId.get(requestId);
+      if (!existing || event.idx > existing.idx) {
+        latestPermissionResolvedByRequestId.set(requestId, event);
+      }
+    }
+
+    const orphanToolEvents = [
+      ...orphanNonPermissionEvents,
+      ...orphanPermissionResolvedWithoutRequestId,
+      ...Array.from(latestPermissionResolvedByRequestId.values()),
+    ].sort((a, b) => a.idx - b.idx);
     pushRenderDebug({
       source: "WorkspacePage",
       event: "activityOrphanToolEvents",

@@ -237,21 +237,19 @@ function toolSubtitle(event: ChatEvent): string {
   }
 
   if (event.type === "permission.requested") {
-    const toolName = typeof event.payload.toolName === "string" ? event.payload.toolName : "Tool";
-    const command = typeof event.payload.command === "string" ? event.payload.command : "";
-    return command.length > 0 ? `${toolName}: ${command}` : `${toolName} needs approval`;
+    return "Permission requested";
   }
 
   if (event.type === "permission.resolved") {
     const decision = event.payload.decision;
     if (decision === "allow") {
-      return "Allowed once by user";
+      return "Permission allowed";
     }
     if (decision === "allow_always") {
-      return "Always allowed in workspace";
+      return "Permission allowed (always)";
     }
     if (decision === "deny") {
-      return "Denied by user";
+      return "Permission denied";
     }
     return "Permission resolved";
   }
@@ -428,6 +426,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
   const [activityExpandedByMessageId, setActivityExpandedByMessageId] = useState<Map<string, boolean>>(new Map());
+  const [bashExpandedById, setBashExpandedById] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
@@ -468,6 +467,14 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
 
   function isActivityExpanded(messageId: string, defaultExpanded: boolean): boolean {
     const explicit = activityExpandedByMessageId.get(messageId);
+    if (typeof explicit === "boolean") {
+      return explicit;
+    }
+    return defaultExpanded;
+  }
+
+  function isBashExpanded(id: string, defaultExpanded: boolean): boolean {
+    const explicit = bashExpandedById.get(id);
     if (typeof explicit === "boolean") {
       return explicit;
     }
@@ -559,26 +566,16 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                     </pre>
                   </div>
                 ) : null}
-
-                <details className="mt-1.5">
-                  <summary className="cursor-pointer text-[11px] text-muted-foreground">Details</summary>
-                  <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-muted-foreground">
-                    {JSON.stringify(item.event.payload, null, 2)}
-                  </pre>
-                </details>
               </article>
             );
           }
 
           if (item.kind === "bash-command") {
-            const commandText = item.command ?? item.summary ?? "bash";
+            const commandText = item.command ?? item.summary ?? "command";
             const statusLabel = item.status === "failed" ? "Failed" : item.status === "running" ? "Running" : "Success";
-            const durationLabel =
-              typeof item.durationSeconds === "number" && Number.isFinite(item.durationSeconds) && item.durationSeconds > 0
-                ? `${Math.max(1, Math.round(item.durationSeconds))}s`
-                : null;
-            const summaryLabel =
-              durationLabel != null ? `Ran ${commandText} for ${durationLabel}` : `Ran ${commandText}`;
+            const defaultExpanded = item.status === "running";
+            const expanded = isBashExpanded(item.id, defaultExpanded);
+            const summaryLabel = expanded ? "Ran command" : item.command ? `Ran ${item.command}` : "Ran command";
 
             return (
               <article
@@ -586,7 +583,17 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                 className="text-xs"
                 data-testid="timeline-bash-command"
               >
-                <details open={item.status === "running"}>
+                <details
+                  open={expanded}
+                  onToggle={(event) => {
+                    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                    setBashExpandedById((current) => {
+                      const next = new Map(current);
+                      next.set(item.id, nextOpen);
+                      return next;
+                    });
+                  }}
+                >
                   <summary className="cursor-pointer text-[12px] text-muted-foreground">
                     <span className="font-semibold text-foreground">{summaryLabel}</span>
                   </summary>
