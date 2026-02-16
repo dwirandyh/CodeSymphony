@@ -1,0 +1,500 @@
+import { PrismaClient } from "@prisma/client";
+import type { ChatEvent } from "@codesymphony/shared-types";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createEventHub } from "../src/events/eventHub";
+import { createChatService } from "../src/services/chatService";
+import type { ClaudeRunner } from "../src/types";
+
+const TEST_DATABASE_URL =
+  process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
+    ? process.env.DATABASE_URL
+    : "file:./test.db";
+
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: TEST_DATABASE_URL,
+    },
+  },
+});
+
+function uniqueSuffix(): string {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function resetDatabase(): Promise<void> {
+  await prisma.chatEvent.deleteMany();
+  await prisma.chatMessage.deleteMany();
+  await prisma.chatThread.deleteMany();
+  await prisma.worktree.deleteMany();
+  await prisma.repository.deleteMany();
+}
+
+async function seedThread(): Promise<{ threadId: string; worktreePath: string }> {
+  const suffix = uniqueSuffix();
+  const worktreePath = `/tmp/codesymphony-worktree-${suffix}`;
+  const repository = await prisma.repository.create({
+    data: {
+      name: `repo-${suffix}`,
+      rootPath: `/tmp/codesymphony-root-${suffix}`,
+      defaultBranch: "main",
+    },
+  });
+  const worktree = await prisma.worktree.create({
+    data: {
+      repositoryId: repository.id,
+      branch: "main",
+      baseBranch: "main",
+      path: worktreePath,
+      status: "active",
+    },
+  });
+  mkdirSync(worktreePath, { recursive: true });
+  const thread = await prisma.chatThread.create({
+    data: {
+      worktreeId: worktree.id,
+      title: "Main Thread",
+    },
+  });
+
+  return { threadId: thread.id, worktreePath };
+}
+
+async function waitForTerminalEvent(
+  chatService: ReturnType<typeof createChatService>,
+  threadId: string,
+  timeoutMs = 4000,
+  afterIdx?: number,
+): Promise<ChatEvent[]> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const events = await chatService.listEvents(threadId, afterIdx);
+    const done = events.some((event) => event.type === "chat.completed" || event.type === "chat.failed");
+    if (done) {
+      return events;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  throw new Error("Timed out waiting for assistant completion");
+}
+
+async function waitForEvent(
+  chatService: ReturnType<typeof createChatService>,
+  threadId: string,
+  matcher: (event: ChatEvent) => boolean,
+  timeoutMs = 4000,
+): Promise<ChatEvent> {
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    const events = await chatService.listEvents(threadId);
+    const matched = events.find(matcher);
+    if (matched) {
+      return matched;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  throw new Error("Timed out waiting for matching event");
+}
+
+describe("chatService permission flow", () => {
+  beforeEach(async () => {
+    await resetDatabase();
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
+  });
+
+  it("does not emit integrity warning and keeps plain assistant output", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+      await onText("Siap, saya jalankan flutter analyze sekarang.");
+      return {
+        output: "Siap, saya jalankan flutter analyze sekarang.",
+        sessionId: "session-no-guard",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan flutter analyze ya",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(events.some((event) => event.type === "permission.requested")).toBe(false);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "tool.finished"
+          && String(event.payload.source ?? "") === "integrity.warning",
+      ),
+    ).toBe(false);
+
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Siap, saya jalankan flutter analyze sekarang.");
+    expect(assistantMessage?.content).not.toContain("runtime-integrity-warning");
+    expect(claudeRunner).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits permission requested and proceeds after approve", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onToolStarted, onToolFinished, onText }) => {
+      const decision = await onPermissionRequest({
+        requestId: "perm-1",
+        toolName: "Bash",
+        toolInput: { command: "cat /etc/hosts" },
+        blockedPath: "/etc/hosts",
+        decisionReason: "Path outside project directory",
+        suggestions: [{ type: "addRules" }],
+      });
+
+      if (decision.decision === "allow") {
+        await onToolStarted({
+          toolName: "Bash",
+          toolUseId: "tool-1",
+          parentToolUseId: null,
+        });
+        await onToolFinished({
+          summary: "Ran cat /etc/hosts",
+          precedingToolUseIds: ["tool-1"],
+        });
+        await onText("Perintah berhasil dijalankan.");
+      }
+
+      return {
+        output: "Perintah berhasil dijalankan.",
+        sessionId: "session-approve",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan bash untuk baca /etc/hosts",
+    });
+
+    const requested = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-1",
+    );
+    expect(requested.payload.toolName).toBe("Bash");
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-1",
+      decision: "allow",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(
+      events.some((event) => event.type === "permission.resolved" && event.payload.requestId === "perm-1"),
+    ).toBe(true);
+    expect(events.some((event) => event.type === "tool.started")).toBe(true);
+
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Perintah berhasil dijalankan.");
+  });
+
+  it("emits permission requested and proceeds with deny decision", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const decision = await onPermissionRequest({
+        requestId: "perm-2",
+        toolName: "Bash",
+        toolInput: { command: "cat /etc/hosts" },
+        blockedPath: "/etc/hosts",
+        decisionReason: "Path outside project directory",
+        suggestions: [{ type: "addRules" }],
+      });
+
+      if (decision.decision === "deny") {
+        await onText(`Ditolak user: ${decision.message ?? "unknown"}`);
+      }
+
+      return {
+        output: "Unexpected",
+        sessionId: "session-deny",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan bash untuk baca /etc/hosts",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-2",
+    );
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-2",
+      decision: "deny",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(events.some((event) => event.type === "permission.resolved")).toBe(true);
+    expect(events.some((event) => event.type === "tool.started")).toBe(false);
+
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Tool execution denied by user.");
+  });
+
+  it("rejects duplicate or missing permission resolve", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const decision = await onPermissionRequest({
+        requestId: "perm-3",
+        toolName: "Bash",
+        toolInput: { command: "cat /etc/hosts" },
+        blockedPath: "/etc/hosts",
+        decisionReason: "Path outside project directory",
+        suggestions: [{ type: "addRules" }],
+      });
+
+      await onText(`Decision: ${decision.decision}`);
+      return {
+        output: `Decision: ${decision.decision}`,
+        sessionId: "session-resolve-errors",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan bash untuk baca /etc/hosts",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-3",
+    );
+
+    await expect(
+      chatService.resolvePermission(threadId, {
+        requestId: "missing",
+        decision: "deny",
+      }),
+    ).rejects.toThrow("Permission request not found");
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-3",
+      decision: "allow",
+    });
+
+    await expect(
+      chatService.resolvePermission(threadId, {
+        requestId: "perm-3",
+        decision: "deny",
+      }),
+    ).rejects.toThrow("Permission request not found");
+
+    await waitForTerminalEvent(chatService, threadId);
+  });
+
+  it("treats duplicate permission callback for same requestId as idempotent", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const first = onPermissionRequest({
+        requestId: "perm-dup",
+        toolName: "Bash",
+        toolInput: { command: "flutter analyze" },
+        blockedPath: null,
+        decisionReason: "Tool requires approval",
+        suggestions: [],
+      });
+      const second = onPermissionRequest({
+        requestId: "perm-dup",
+        toolName: "Bash",
+        toolInput: { command: "flutter analyze" },
+        blockedPath: null,
+        decisionReason: "Tool requires approval",
+        suggestions: [],
+      });
+
+      const [firstDecision, secondDecision] = await Promise.all([first, second]);
+      await onText(`Decisions: ${firstDecision.decision}/${secondDecision.decision}`);
+      return {
+        output: `Decisions: ${firstDecision.decision}/${secondDecision.decision}`,
+        sessionId: "session-dup",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan flutter analyze ya",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-dup",
+    );
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-dup",
+      decision: "allow",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const requestEvents = events.filter(
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-dup",
+    );
+    expect(requestEvents.length).toBe(1);
+
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Decisions: allow/allow");
+  });
+
+  it("persists allow_always rule to local workspace settings", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const firstDecision = await onPermissionRequest({
+        requestId: "perm-always-1",
+        toolName: "Bash",
+        toolInput: { command: "flutter analyze" },
+        blockedPath: null,
+        decisionReason: "Tool requires approval",
+        suggestions: [],
+      });
+
+      await onText(`Decision: ${firstDecision.decision}`);
+      return {
+        output: `Decision: ${firstDecision.decision}`,
+        sessionId: "session-always",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId, worktreePath } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan flutter analyze ya",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-always-1",
+    );
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-always-1",
+      decision: "allow_always",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "permission.resolved"
+          && event.payload.requestId === "perm-always-1"
+          && event.payload.decision === "allow_always",
+      ),
+    ).toBe(true);
+
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toContain("Decision: allow");
+
+    const settingsPath = join(worktreePath, ".claude", "settings.local.json");
+    expect(existsSync(settingsPath)).toBe(true);
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      permissions?: { allow?: string[] };
+    };
+    expect(settings.permissions?.allow).toContain("Bash(flutter analyze:*)");
+  });
+
+  it("returns error for allow_always when local settings file has invalid JSON", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+      const decision = await onPermissionRequest({
+        requestId: "perm-always-invalid",
+        toolName: "Bash",
+        toolInput: { command: "flutter analyze" },
+        blockedPath: null,
+        decisionReason: "Tool requires approval",
+        suggestions: [],
+      });
+
+      await onText(`Decision: ${decision.decision}`);
+      return {
+        output: `Decision: ${decision.decision}`,
+        sessionId: "session-always-invalid",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId, worktreePath } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan flutter analyze ya",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-always-invalid",
+    );
+
+    const settingsDir = join(worktreePath, ".claude");
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(join(settingsDir, "settings.local.json"), "{invalid json", "utf8");
+
+    await expect(
+      chatService.resolvePermission(threadId, {
+        requestId: "perm-always-invalid",
+        decision: "allow_always",
+      }),
+    ).rejects.toThrow("Invalid JSON in");
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-always-invalid",
+      decision: "allow",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+  });
+});

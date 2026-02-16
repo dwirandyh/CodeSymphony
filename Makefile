@@ -1,10 +1,11 @@
 PNPM ?= pnpm
 
-.PHONY: help install dev dev-runtime dev-web dev-desktop db-generate db-migrate db-seed db-init build test lint
+.PHONY: help install stop-dev dev dev-runtime dev-web dev-desktop db-generate db-migrate db-seed db-init build test lint
 
 help:
 	@echo "Available targets:"
 	@echo "  make install       - Install workspace dependencies"
+	@echo "  make stop-dev      - Stop local runtime/web/desktop dev processes"
 	@echo "  make dev           - Run runtime + web"
 	@echo "  make dev-runtime   - Run runtime only"
 	@echo "  make dev-web       - Run web only"
@@ -20,7 +21,15 @@ help:
 install:
 	$(PNPM) install
 
-dev:
+stop-dev:
+	-@pkill -f "turbo run dev --parallel --filter=@codesymphony/runtime --filter=@codesymphony/web"
+	-@pkill -f "tsx watch --env-file .env src/index.ts"
+	-@pkill -f "pnpm --filter @codesymphony/web dev"
+	-@pkill -f "pnpm --filter @codesymphony/desktop dev"
+	-@pkill -f "vite"
+	-@pkill -f "tauri dev"
+
+dev: stop-dev
 	$(PNPM) dev
 
 dev-runtime:

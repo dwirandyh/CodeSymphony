@@ -20,6 +20,7 @@ vi.mock("../lib/api", () => ({
     deleteThread: vi.fn(),
     listMessages: vi.fn(),
     sendMessage: vi.fn(),
+    resolvePermission: vi.fn(),
     listEvents: vi.fn(),
     runtimeBaseUrl: "http://127.0.0.1:4321",
   },
@@ -208,6 +209,7 @@ describe("WorkspacePage", () => {
     (api.listThreads as Mock).mockResolvedValue(threadFixture);
     (api.listMessages as Mock).mockResolvedValue(messageFixture);
     (api.listEvents as Mock).mockResolvedValue(eventFixture);
+    (api.resolvePermission as Mock).mockResolvedValue(undefined);
     (api.createThread as Mock).mockResolvedValue({ ...threadFixture[0], id: "thread-2", title: "Thread 2" });
     (api.deleteThread as Mock).mockResolvedValue(undefined);
     (api.createWorktree as Mock).mockResolvedValue({
@@ -308,16 +310,17 @@ describe("WorkspacePage", () => {
     promptSpy.mockRestore();
   });
 
-  it("shows tool events inline in chat timeline", async () => {
+  it("groups tool events into inline activity trace blocks", async () => {
     await act(async () => {
       root.render(<WorkspacePage />);
     });
 
     await flushEffects();
 
-    expect(container.textContent).toContain("tool.output");
-    expect(container.textContent).toContain('"git status"');
-    expect(container.querySelector('[data-testid="timeline-tool.output"]')).not.toBeNull();
+    expect(container.textContent).toContain("Activity for");
+    expect(container.textContent).toContain("git status");
+    expect(container.querySelector('[data-testid="timeline-activity"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="timeline-tool.output"]')).toBeNull();
   });
 
   it("renders any read-file response in raw file mode and infers language", async () => {
@@ -375,7 +378,7 @@ describe("WorkspacePage", () => {
     expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).not.toBeNull();
     expect(container.textContent).toContain("export const main = () => 42;");
     expect(container.textContent).toContain("ts");
-    expect(container.textContent).toContain("Read file");
+    expect(container.textContent).toContain("Analyzed");
   });
 
   it("keeps read-file output in markdown until a code fence appears during stream", async () => {
@@ -1076,7 +1079,7 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.textContent).toContain("tool.finished");
+    expect(container.textContent).toContain("Activity for");
     expect(container.textContent).toContain("Edited 1 file");
     expect(container.textContent).not.toContain("Edited files");
   });
@@ -1125,15 +1128,97 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    const toolRow = container.querySelector('[data-testid="timeline-tool.finished"]');
+    const toolRow = container.querySelector('[data-testid="timeline-activity"]');
     const assistantRow = container.querySelector('[data-testid="message-assistant"]');
     if (!toolRow || !assistantRow) {
-      throw new Error("Expected inline tool row and assistant row");
+      throw new Error("Expected inline activity row and assistant row");
     }
 
     const relation = toolRow.compareDocumentPosition(assistantRow);
     expect((relation & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
-    expect(container.textContent).toContain("Read file");
+    expect(container.textContent).toContain("Analyzed");
+  });
+
+  it("keeps activity trace when tools run after the first assistant delta", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-late-tools",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "cek folder sekarang",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-late-tools",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Saya cek dulu lalu kasih hasil pwd.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-late-msg-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-late-tools", role: "assistant", delta: "Saya cek dulu." },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-late-tool-start",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "tool-1", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-late-tool-output",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.output",
+        payload: { toolName: "Bash", toolUseId: "tool-1", parentToolUseId: null, elapsedTimeSeconds: 0.6 },
+        createdAt: "2026-01-01T10:00:01.800Z",
+      },
+      {
+        id: "evt-late-tool-finish",
+        threadId: "thread-1",
+        idx: 4,
+        type: "tool.finished",
+        payload: { summary: "Ran pwd", precedingToolUseIds: ["tool-1"] },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-late-msg-end",
+        threadId: "thread-1",
+        idx: 5,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-late-tools", role: "assistant", delta: " Hasilnya sudah ada." },
+        createdAt: "2026-01-01T10:00:02.500Z",
+      },
+      {
+        id: "evt-late-complete",
+        threadId: "thread-1",
+        idx: 6,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-late-tools" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-activity"]')).not.toBeNull();
+    expect(container.textContent).toContain("Activity for");
+    expect(container.textContent).toContain("Ran pwd");
+    expect(container.querySelector('[data-testid="timeline-tool.output"]')).toBeNull();
   });
 
   it("creates a new thread via header action", async () => {
@@ -1234,6 +1319,31 @@ describe("WorkspacePage", () => {
     expect(api.createWorktree).toHaveBeenCalledWith("repo-1");
   });
 
+  it("shows create action when repository has no active worktree yet", async () => {
+    (api.listRepositories as Mock).mockResolvedValueOnce([
+      {
+        ...repositoryFixture[0],
+        worktrees: [],
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.textContent).toContain("No active worktrees yet.");
+
+    act(() => {
+      click(findButtonByAriaLabel(container, "Create first worktree for alpha"));
+    });
+
+    await flushEffects();
+
+    expect(api.createWorktree).toHaveBeenCalledWith("repo-1");
+  });
+
   it("supports multi-expand repositories in the workspace list", async () => {
     (api.listRepositories as Mock).mockResolvedValueOnce(repositoryFixtureMultiExpand);
 
@@ -1327,6 +1437,303 @@ describe("WorkspacePage", () => {
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("shows thinking placeholder before first assistant delta, then hides it", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const textarea = container.querySelector("textarea");
+    if (!textarea) {
+      throw new Error("Composer textarea not found");
+    }
+
+    act(() => {
+      changeTextareaValue(textarea as HTMLTextAreaElement, "please respond");
+    });
+
+    await flushEffects();
+
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("message.delta", {
+        id: "evt-thinking-first-delta",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-thinking",
+          role: "assistant",
+          delta: "Hello from assistant",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
+    expect(container.textContent).toContain("Hello from assistant");
+  });
+
+  it("hides thinking placeholder on chat.failed and chat.completed", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const textarea = container.querySelector("textarea");
+    if (!textarea) {
+      throw new Error("Composer textarea not found");
+    }
+
+    act(() => {
+      changeTextareaValue(textarea as HTMLTextAreaElement, "first try");
+    });
+
+    await flushEffects();
+
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("chat.failed", {
+        id: "evt-thinking-failed",
+        threadId: "thread-1",
+        idx: 3,
+        type: "chat.failed",
+        payload: { message: "failed early" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
+
+    act(() => {
+      changeTextareaValue(textarea as HTMLTextAreaElement, "second try");
+    });
+
+    await flushEffects();
+
+    act(() => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+
+    act(() => {
+      stream.emit("chat.completed", {
+        id: "evt-thinking-completed",
+        threadId: "thread-1",
+        idx: 4,
+        type: "chat.completed",
+        payload: { messageId: "msg-thinking-complete" },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
+  });
+
+  it("shows permission prompt card from event history and disables composer", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-perm-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-1",
+          toolName: "Bash",
+          command: "cat /etc/hosts",
+          blockedPath: "/etc/hosts",
+          decisionReason: "Path outside project directory",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.textContent).toContain("Permission Required");
+    expect(container.textContent).toContain("cat /etc/hosts");
+
+    const sendButton = findButtonByAriaLabel(container, "Send message");
+    expect(sendButton.disabled).toBe(true);
+  });
+
+  it("resolves permission when approve is clicked", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-perm-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-1",
+          toolName: "Bash",
+          command: "cat /etc/hosts",
+          blockedPath: "/etc/hosts",
+          decisionReason: "Path outside project directory",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const approveButton = findButtonByAriaLabel(container, "Allow once perm-1");
+    act(() => {
+      click(approveButton);
+    });
+
+    await flushEffects();
+
+    expect(api.resolvePermission).toHaveBeenCalledWith("thread-1", {
+      requestId: "perm-1",
+      decision: "allow",
+    });
+  });
+
+  it("resolves permission when always allow is clicked", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-perm-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-2",
+          toolName: "Bash",
+          command: "flutter analyze",
+          blockedPath: null,
+          decisionReason: "Tool requires approval",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const alwaysAllowButton = findButtonByAriaLabel(container, "Always allow in workspace perm-2");
+    act(() => {
+      click(alwaysAllowButton);
+    });
+
+    await flushEffects();
+
+    expect(api.resolvePermission).toHaveBeenCalledWith("thread-1", {
+      requestId: "perm-2",
+      decision: "allow_always",
+    });
+  });
+
+  it("removes permission prompt card when permission is resolved from stream", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-perm-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-1",
+          toolName: "Bash",
+          command: "cat /etc/hosts",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid=\"permission-prompt-perm-1\"]')).not.toBeNull();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("permission.resolved", {
+        id: "evt-perm-resolved",
+        threadId: "thread-1",
+        idx: 4,
+        type: "permission.resolved",
+        payload: {
+          requestId: "perm-1",
+          decision: "deny",
+          resolver: "user",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid=\"permission-prompt-perm-1\"]')).toBeNull();
+  });
+
+  it("renders permission prompts inside chat-width container", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-perm-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-width",
+          toolName: "Bash",
+          command: "cat /etc/hosts",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const containerElement = container.querySelector('[data-testid="permission-prompts-container"]');
+    expect(containerElement).not.toBeNull();
+    expect(containerElement?.className).toContain("max-w-3xl");
+  });
+
   it("renders error alert when loading repositories fails", async () => {
     (api.listRepositories as Mock).mockRejectedValueOnce(new Error("boom"));
 
@@ -1337,5 +1744,22 @@ describe("WorkspacePage", () => {
     await flushEffects();
 
     expect(container.textContent).toContain("boom");
+  });
+
+  it("shows instrumentation panel when render debug mode is enabled", async () => {
+    window.localStorage.setItem("cs.debug.render", "1");
+
+    try {
+      await act(async () => {
+        root.render(<WorkspacePage />);
+      });
+
+      await flushEffects();
+
+      expect(container.querySelector('[data-testid="render-debug-panel"]')).not.toBeNull();
+      expect(container.textContent).toContain("Instrumentation");
+    } finally {
+      window.localStorage.removeItem("cs.debug.render");
+    }
   });
 });

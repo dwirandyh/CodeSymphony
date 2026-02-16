@@ -107,6 +107,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/threads/:id/permissions/resolve", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.resolvePermission(params.id, request.body);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to resolve permission";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.get("/threads/:id/events", async (request, reply) => {
     const params = threadParams.parse(request.params);
     const query = eventQuery.parse(request.query);

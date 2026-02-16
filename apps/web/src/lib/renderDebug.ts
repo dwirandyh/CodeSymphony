@@ -1,4 +1,4 @@
-type RenderDebugEntry = {
+export type RenderDebugEntry = {
   ts: string;
   source: string;
   event: string;
@@ -12,11 +12,28 @@ type RenderDebugApi = {
   dump: () => string;
 };
 
+type RenderDebugListener = (entries: RenderDebugEntry[]) => void;
+
 type WindowWithRenderDebug = Window & {
   __CS_RENDER_DEBUG__?: RenderDebugApi;
 };
 
 const MAX_ENTRIES = 2000;
+const listeners = new Set<RenderDebugListener>();
+
+function notifyListenersAsync(entries: RenderDebugEntry[]): void {
+  const snapshot = [...entries];
+  const notify = () => {
+    listeners.forEach((listener) => listener(snapshot));
+  };
+
+  if (typeof queueMicrotask === "function") {
+    queueMicrotask(notify);
+    return;
+  }
+
+  setTimeout(notify, 0);
+}
 
 function getWindow(): WindowWithRenderDebug | null {
   if (typeof window === "undefined") {
@@ -52,6 +69,7 @@ function ensureRenderDebugApi(): RenderDebugApi | null {
       entries,
       clear: () => {
         entries.length = 0;
+        notifyListenersAsync([]);
       },
       dump: () => JSON.stringify(entries, null, 2),
     };
@@ -75,10 +93,37 @@ export function pushRenderDebug(entry: Omit<RenderDebugEntry, "ts">): void {
   if (api.entries.length > MAX_ENTRIES) {
     api.entries.splice(0, api.entries.length - MAX_ENTRIES);
   }
+  notifyListenersAsync(api.entries);
 
   // Keep immediate visibility for local diagnosis.
   // eslint-disable-next-line no-console
   console.debug("[cs-render-debug]", payload);
+}
+
+export function getRenderDebugEntries(): RenderDebugEntry[] {
+  const api = ensureRenderDebugApi();
+  if (!api) {
+    return [];
+  }
+
+  return [...api.entries];
+}
+
+export function clearRenderDebugEntries(): void {
+  const api = ensureRenderDebugApi();
+  if (!api) {
+    return;
+  }
+
+  api.clear();
+}
+
+export function subscribeRenderDebug(listener: RenderDebugListener): () => void {
+  listeners.add(listener);
+  listener(getRenderDebugEntries());
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 export async function copyRenderDebugLog(): Promise<boolean> {

@@ -1,0 +1,2 @@
+-- ChatEventType enum extension for permission.requested / permission.resolved.
+-- SQLite stores enum columns as TEXT; no SQL table rewrite required for this migration.

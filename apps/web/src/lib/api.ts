@@ -5,6 +5,7 @@ import type {
   CreateChatThreadInput,
   CreateRepositoryInput,
   CreateWorktreeInput,
+  ResolvePermissionInput,
   Repository,
   SendChatMessageInput,
   Worktree,
@@ -86,6 +87,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  resolvePermission: async (threadId: string, input: ResolvePermissionInput) => {
+    const response = await fetch(`${API_BASE}/threads/${threadId}/permissions/resolve`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to resolve permission");
+    }
+  },
   listEvents: (threadId: string) => request<ChatEvent[]>(`/threads/${threadId}/events`),
   runtimeBaseUrl: API_BASE.replace(/\/api$/, ""),
 };

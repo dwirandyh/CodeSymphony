@@ -10,6 +10,12 @@ import { copyRenderDebugLog, isRenderDebugEnabled, pushRenderDebug } from "../..
 
 export type AssistantRenderHint = "markdown" | "raw-file" | "raw-fallback" | "diff";
 
+export type ActivityTraceStep = {
+  id: string;
+  label: string;
+  detail: string;
+};
+
 export type ChatTimelineItem =
   | {
       kind: "message";
@@ -20,12 +26,21 @@ export type ChatTimelineItem =
       context?: ChatEvent[];
     }
   | {
+      kind: "activity";
+      messageId: string;
+      durationSeconds: number;
+      introText: string | null;
+      steps: ActivityTraceStep[];
+      defaultExpanded: boolean;
+    }
+  | {
       kind: "tool";
       event: ChatEvent;
     };
 
 type ChatMessageListProps = {
   items: ChatTimelineItem[];
+  showThinkingPlaceholder?: boolean;
 };
 
 function isLikelyDiff(code: string, language?: string): boolean {
@@ -175,6 +190,14 @@ function toolTitle(event: ChatEvent): string {
     return "chat.failed";
   }
 
+  if (event.type === "permission.requested") {
+    return "permission.requested";
+  }
+
+  if (event.type === "permission.resolved") {
+    return "permission.resolved";
+  }
+
   if (looksLikeReadTool) {
     return "Read file";
   }
@@ -198,6 +221,26 @@ function toolSubtitle(event: ChatEvent): string {
   if (event.payload.source === "worktree.diff") {
     const summary = event.payload.summary;
     return typeof summary === "string" && summary.length > 0 ? summary : "Detected file edits";
+  }
+
+  if (event.type === "permission.requested") {
+    const toolName = typeof event.payload.toolName === "string" ? event.payload.toolName : "Tool";
+    const command = typeof event.payload.command === "string" ? event.payload.command : "";
+    return command.length > 0 ? `${toolName}: ${command}` : `${toolName} needs approval`;
+  }
+
+  if (event.type === "permission.resolved") {
+    const decision = event.payload.decision;
+    if (decision === "allow") {
+      return "Allowed once by user";
+    }
+    if (decision === "allow_always") {
+      return "Always allowed in workspace";
+    }
+    if (decision === "deny") {
+      return "Denied by user";
+    }
+    return "Permission resolved";
   }
 
   if (event.type === "tool.started") {
@@ -367,10 +410,11 @@ function AssistantContent({
   return <MarkdownBody content={content} testId="assistant-render-markdown" />;
 }
 
-export function ChatMessageList({ items }: ChatMessageListProps) {
+export function ChatMessageList({ items, showThinkingPlaceholder = false }: ChatMessageListProps) {
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
+  const [activityExpandedByMessageId, setActivityExpandedByMessageId] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
@@ -409,14 +453,62 @@ export function ChatMessageList({ items }: ChatMessageListProps) {
     }, 1200);
   }
 
+  function isActivityExpanded(messageId: string, defaultExpanded: boolean): boolean {
+    const explicit = activityExpandedByMessageId.get(messageId);
+    if (typeof explicit === "boolean") {
+      return explicit;
+    }
+    return defaultExpanded;
+  }
+
   return (
     <ScrollArea className="h-full" data-testid="chat-scroll">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 pb-6 pt-3">
-        {items.length === 0 ? (
+        {items.length === 0 && !showThinkingPlaceholder ? (
           <div className="py-10 text-center text-xs text-muted-foreground">No messages yet. Send a prompt to start.</div>
         ) : null}
 
         {items.map((item) => {
+          if (item.kind === "activity") {
+            const expanded = isActivityExpanded(item.messageId, item.defaultExpanded);
+            return (
+              <article
+                key={`activity-${item.messageId}`}
+                className="rounded-md border border-border/30 bg-background/20 px-3 py-2 text-xs"
+                data-testid="timeline-activity"
+              >
+                <details
+                  open={expanded}
+                  onToggle={(event) => {
+                    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                    setActivityExpandedByMessageId((current) => {
+                      const next = new Map(current);
+                      next.set(item.messageId, nextOpen);
+                      return next;
+                    });
+                  }}
+                >
+                  <summary className="cursor-pointer text-[12px] text-muted-foreground">
+                    <span className="font-semibold text-foreground">Activity for {item.durationSeconds}s</span>
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    {item.introText ? <p className="text-[12px] text-foreground/90">{item.introText}</p> : null}
+                    {item.steps.length > 0 ? (
+                      <ul className="space-y-1.5">
+                        {item.steps.map((step) => (
+                          <li key={step.id} className="rounded-md border border-border/35 bg-secondary/20 px-2.5 py-1.5">
+                            <div className="font-medium text-foreground">{step.label}</div>
+                            <div className="text-muted-foreground">{step.detail}</div>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                </details>
+              </article>
+            );
+          }
+
           if (item.kind === "tool") {
             const changedFiles = getChangedFiles(item.event);
             const diffPreview = getDiffPreview(item.event);
@@ -568,6 +660,16 @@ export function ChatMessageList({ items }: ChatMessageListProps) {
             </article>
           );
         })}
+
+        {showThinkingPlaceholder ? (
+          <article className="flex w-full justify-start" data-testid="thinking-placeholder">
+            <div className="max-w-[85%] px-1 text-sm text-foreground">
+              <div className="rounded-xl border border-border/35 bg-secondary/20 px-3 py-2.5">
+                <span className="thinking-shimmer font-medium">Thinking...</span>
+              </div>
+            </div>
+          </article>
+        ) : null}
       </div>
     </ScrollArea>
   );

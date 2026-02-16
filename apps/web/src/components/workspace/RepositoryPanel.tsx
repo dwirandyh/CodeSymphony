@@ -99,13 +99,13 @@ export function RepositoryPanel({
                 className={cn("p-0.5", isSelected && "text-foreground")}
                 data-testid={`repository-${repository.id}`}
               >
-                <div className="flex items-center gap-1.5">
+                <div className="flex min-w-0 items-center gap-1.5">
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     className={cn(
-                      "h-8 flex-1 justify-start gap-1.5 overflow-hidden px-2 text-muted-foreground hover:text-foreground",
+                      "h-8 min-w-0 flex-1 justify-start gap-1.5 overflow-hidden px-2 text-muted-foreground hover:text-foreground",
                       isSelected && "text-foreground",
                     )}
                     onClick={() => toggleRepository(repository.id)}
@@ -127,7 +127,7 @@ export function RepositoryPanel({
                     aria-label={`Add worktree for ${repository.name}`}
                     title="Create worktree from main"
                     disabled={submittingWorktree}
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
                     onClick={() => {
                       onSelectRepository(repository.id);
                       onCreateWorktree(repository.id);
@@ -140,7 +140,25 @@ export function RepositoryPanel({
                 {isExpanded ? (
                   <div className="ml-4 mt-1 space-y-1">
                     {activeWorktrees.length === 0 ? (
-                      <div className="py-1 text-xs text-muted-foreground">No active worktrees yet.</div>
+                      <div className="flex items-center gap-2 py-1">
+                        <div className="text-xs text-muted-foreground">No active worktrees yet.</div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Create first worktree for ${repository.name}`}
+                          title="Create first worktree"
+                          className="ml-auto h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+                          disabled={submittingWorktree}
+                          onClick={() => {
+                            onSelectRepository(repository.id);
+                            onCreateWorktree(repository.id);
+                          }}
+                        >
+                          <Plus className="mr-1 h-3.5 w-3.5" />
+                          <span>Create worktree</span>
+                        </Button>
+                      </div>
                     ) : null}
 
                     {activeWorktrees.map((worktree) => {

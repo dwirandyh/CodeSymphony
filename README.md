@@ -164,6 +164,7 @@ Base URL (same machine): `http://127.0.0.1:4321/api`
 - `GET /threads/:id`
 - `GET /threads/:id/messages`
 - `POST /threads/:id/messages`
+- `POST /threads/:id/permissions/resolve`
 - `GET /threads/:id/events`
 - `GET /threads/:id/events/stream`
 - `GET /health`
@@ -175,3 +176,38 @@ pnpm test
 pnpm lint
 pnpm build
 ```
+
+## Permission Approval Testing
+
+Automated checks:
+
+```bash
+pnpm --filter @codesymphony/runtime test -- chatService.permissions.test.ts chats.stream.test.ts
+pnpm --filter @codesymphony/web test -- WorkspacePage.test.tsx
+pnpm test
+```
+
+Manual end-to-end:
+
+1. Start app with `make dev`.
+2. Open web app, choose repository/worktree/thread.
+3. Send prompt such as `jalankan bash untuk baca /etc/hosts lalu jelaskan`.
+4. Verify permission card shows tool/command/reason.
+5. Click `Deny`, verify card disappears and chat continues with deny context.
+6. Send same prompt again.
+7. Click `Approve`, verify tool events (`tool.started`, `tool.output`, `tool.finished`) and assistant completes.
+8. Refresh while approval is pending, verify pending card is replayed from event history.
+
+Negative/edge checks:
+
+1. Click `Approve`/`Deny` repeatedly for the same request. Only the first decision should be accepted.
+2. Call `POST /threads/:id/permissions/resolve` with unknown `requestId`, expect `400`.
+3. While approval is pending, ensure no tool execution event appears before decision.
+4. On runtime restart during pending approval, the turn should fail clearly instead of hanging indefinitely.
+
+QA exit criteria:
+
+1. No `runtime-integrity-warning` message appears in assistant output.
+2. Permission-gated operations are controlled only by UI approve/deny.
+3. After approve/deny, stream proceeds to `chat.completed` or `chat.failed`.
+4. `permission.requested` and `permission.resolved` events are visible and replay correctly after reload.

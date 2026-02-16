@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import type { ChatEvent, ChatEventType } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatEventType, PermissionDecision } from "@codesymphony/shared-types";
 
 export type RuntimeEventPayload = Record<string, unknown>;
 
@@ -27,6 +27,14 @@ export type ClaudeRunner = (args: {
     elapsedTimeSeconds: number;
   }) => Promise<void> | void;
   onToolFinished: (payload: { summary: string; precedingToolUseIds: string[] }) => Promise<void> | void;
+  onPermissionRequest: (payload: {
+    requestId: string;
+    toolName: string;
+    toolInput: Record<string, unknown>;
+    blockedPath: string | null;
+    decisionReason: string | null;
+    suggestions: unknown[] | null;
+  }) => Promise<{ decision: PermissionDecision; message?: string }> | { decision: PermissionDecision; message?: string };
 }) => Promise<ClaudeRunnerResult>;
 
 export type RuntimeDeps = {

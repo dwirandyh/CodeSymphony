@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage, ChatThread, Repository } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/Composer";
-import { ChatMessageList, type AssistantRenderHint, type ChatTimelineItem } from "../components/workspace/ChatMessageList";
+import {
+  ChatMessageList,
+  type ActivityTraceStep,
+  type AssistantRenderHint,
+  type ChatTimelineItem,
+} from "../components/workspace/ChatMessageList";
+import { RenderDebugPanel } from "../components/workspace/RenderDebugPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
+import { PermissionPromptCard } from "../components/workspace/PermissionPromptCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { api } from "../lib/api";
 import { pushRenderDebug } from "../lib/renderDebug";
@@ -12,13 +19,24 @@ const EVENT_TYPES = [
   "tool.started",
   "tool.output",
   "tool.finished",
+  "permission.requested",
+  "permission.resolved",
   "chat.completed",
   "chat.failed",
 ] as const;
 
-const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>(["tool.started", "tool.output", "tool.finished", "chat.failed"]);
+const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
+  "tool.started",
+  "tool.output",
+  "tool.finished",
+  "permission.requested",
+  "permission.resolved",
+  "chat.failed",
+]);
 const MAX_ORDER_INDEX = Number.MAX_SAFE_INTEGER;
 const READ_TOOL_PATTERN = /\b(read|open|cat)\b/i;
+const SEARCH_TOOL_PATTERN = /\b(glob|grep|search|find|list|scan|ls)\b/i;
+const MCP_TOOL_PATTERN = /\bmcp\b/i;
 const READ_PROMPT_PATTERN =
   /\b(read|open|show|cat|display|view|find|locate|buka\w*|lihat\w*|isi\w*|lengkap|full|ulang|repeat|cari\w*|temu\w*|kasih\s*tau)\b/i;
 const FILE_PATH_PATTERN = /(?:[~./\w-]+\/)?[\w.-]+\.[a-z0-9]{1,10}\b|readme(?:\.md)?\b/gi;
@@ -66,7 +84,7 @@ function eventPayloadText(event: ChatEvent): string {
 }
 
 function isReadToolEvent(event: ChatEvent): boolean {
-  if (event.type === "chat.failed") {
+  if (event.type === "chat.failed" || event.type === "permission.requested" || event.type === "permission.resolved") {
     return false;
   }
 
@@ -138,6 +156,244 @@ function isLikelyDiffContent(content: string): boolean {
   return /^(diff --git|---\s|\+\+\+\s|@@\s)/m.test(content);
 }
 
+function activityStepLabel(event: ChatEvent, detail: string): string {
+  const payload = eventPayloadText(event);
+  const source = `${payload} ${detail}`.toLowerCase();
+  const payloadSource = typeof event.payload.source === "string" ? event.payload.source.toLowerCase() : "";
+
+  if (event.type === "chat.failed") {
+    return "Error";
+  }
+
+  if (payloadSource === "integrity.warning" || source.includes("integrity warning") || source.includes("runtime-integrity-warning")) {
+    return "Warning";
+  }
+
+  if (event.type === "permission.requested") {
+    return "Permission";
+  }
+
+  if (event.type === "permission.resolved") {
+    return "Permission";
+  }
+
+  if (READ_TOOL_PATTERN.test(source)) {
+    return "Analyzed";
+  }
+
+  if (SEARCH_TOOL_PATTERN.test(source)) {
+    return "Searched";
+  }
+
+  if (MCP_TOOL_PATTERN.test(source)) {
+    return "MCP Tool";
+  }
+
+  return "Step";
+}
+
+function toolEventDetail(event: ChatEvent): string {
+  if (event.type === "chat.failed") {
+    return String(event.payload.message ?? "Chat failed");
+  }
+
+  if (event.type === "permission.requested") {
+    const toolName = typeof event.payload.toolName === "string" ? event.payload.toolName : "Tool";
+    const command = typeof event.payload.command === "string" ? event.payload.command : "";
+    if (command.length > 0) {
+      return `Awaiting approval for ${toolName}: ${command}`;
+    }
+    return `Awaiting approval for ${toolName}`;
+  }
+
+  if (event.type === "permission.resolved") {
+    const decision = event.payload.decision;
+    if (decision === "allow") {
+      return "Allowed once by user";
+    }
+    if (decision === "allow_always") {
+      return "Always allowed in this workspace";
+    }
+    if (decision === "deny") {
+      return "Denied by user";
+    }
+    return "Permission resolved";
+  }
+
+  if (event.type === "tool.finished") {
+    const summary = event.payload.summary;
+    if (typeof summary === "string" && summary.trim().length > 0) {
+      return summary.trim();
+    }
+  }
+
+  const toolName = event.payload.toolName;
+  if (typeof toolName === "string" && toolName.trim().length > 0) {
+    if (event.type === "tool.output") {
+      const elapsed = Number(event.payload.elapsedTimeSeconds ?? 0);
+      if (Number.isFinite(elapsed) && elapsed > 0) {
+        return `${toolName.trim()} (${elapsed.toFixed(1)}s)`;
+      }
+    }
+    return toolName.trim();
+  }
+
+  const command = event.payload.command;
+  if (typeof command === "string" && command.trim().length > 0) {
+    return command.trim();
+  }
+
+  return "Tool step";
+}
+
+type StepCandidate = {
+  key: string | null;
+  priority: number;
+  idx: number;
+  step: ActivityTraceStep;
+};
+
+function buildActivitySteps(context: ChatEvent[]): ActivityTraceStep[] {
+  const candidates: StepCandidate[] = [];
+
+  for (const event of context) {
+    if (event.type === "chat.failed") {
+      const detail = toolEventDetail(event);
+      candidates.push({
+        key: null,
+        priority: 3,
+        idx: event.idx,
+        step: {
+          id: event.id,
+          label: activityStepLabel(event, detail),
+          detail,
+        },
+      });
+      continue;
+    }
+
+    const detail = toolEventDetail(event);
+    const label = activityStepLabel(event, detail);
+
+    if (event.type === "tool.finished") {
+      const precedingToolUseIds = Array.isArray(event.payload.precedingToolUseIds)
+        ? event.payload.precedingToolUseIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : [];
+
+      if (precedingToolUseIds.length === 0) {
+        candidates.push({
+          key: null,
+          priority: 2,
+          idx: event.idx,
+          step: {
+            id: event.id,
+            label,
+            detail,
+          },
+        });
+      } else {
+        for (const toolUseId of precedingToolUseIds) {
+          candidates.push({
+            key: toolUseId,
+            priority: 2,
+            idx: event.idx,
+            step: {
+              id: `${event.id}:${toolUseId}`,
+              label,
+              detail,
+            },
+          });
+        }
+      }
+      continue;
+    }
+
+    const toolUseId = event.payload.toolUseId;
+    candidates.push({
+      key: typeof toolUseId === "string" && toolUseId.length > 0 ? toolUseId : null,
+      priority: event.type === "tool.output" ? 1 : 0,
+      idx: event.idx,
+      step: {
+        id: event.id,
+        label,
+        detail,
+      },
+    });
+  }
+
+  const chosenByKey = new Map<string, StepCandidate>();
+  const unkeyed: StepCandidate[] = [];
+
+  for (const candidate of candidates) {
+    if (!candidate.key) {
+      unkeyed.push(candidate);
+      continue;
+    }
+
+    const existing = chosenByKey.get(candidate.key);
+    if (!existing || candidate.priority > existing.priority || (candidate.priority === existing.priority && candidate.idx > existing.idx)) {
+      chosenByKey.set(candidate.key, candidate);
+    }
+  }
+
+  return [...Array.from(chosenByKey.values()), ...unkeyed]
+    .sort((a, b) => a.idx - b.idx)
+    .map((candidate) => candidate.step);
+}
+
+function computeDurationSecondsFromEvents(events: ChatEvent[]): number {
+  if (events.length === 0) {
+    return 0;
+  }
+
+  const timestamps = events.map((event) => parseTimestamp(event.createdAt)).filter((value): value is number => value != null);
+  if (timestamps.length >= 2) {
+    const first = Math.min(...timestamps);
+    const last = Math.max(...timestamps);
+    const seconds = Math.max(1, Math.round((last - first) / 1000));
+    return Number.isFinite(seconds) ? seconds : 1;
+  }
+
+  const maxElapsed = events
+    .filter((event) => event.type === "tool.output")
+    .map((event) => Number(event.payload.elapsedTimeSeconds ?? 0))
+    .filter((value) => Number.isFinite(value))
+    .reduce((max, value) => Math.max(max, value), 0);
+
+  if (maxElapsed > 0) {
+    return Math.max(1, Math.round(maxElapsed));
+  }
+
+  return 1;
+}
+
+function buildActivityIntroText(content: string): string | null {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 0);
+  const intro = (sentences.length > 0 ? sentences.slice(0, 2).join(" ") : normalized).trim();
+  if (intro.length <= 220) {
+    return intro;
+  }
+
+  return `${intro.slice(0, 217).trimEnd()}...`;
+}
+
+type PendingPermissionRequest = {
+  requestId: string;
+  toolName: string;
+  command: string | null;
+  blockedPath: string | null;
+  decisionReason: string | null;
+  idx: number;
+};
+
 export function WorkspacePage() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>([]);
@@ -155,6 +411,8 @@ export function WorkspacePage() {
   const [submittingRepo, setSubmittingRepo] = useState(false);
   const [submittingWorktree, setSubmittingWorktree] = useState(false);
   const [closingThreadId, setClosingThreadId] = useState<string | null>(null);
+  const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
+  const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const seenEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const lastEventIdxByThreadRef = useRef<Map<string, number>>(new Map());
@@ -280,6 +538,7 @@ export function WorkspacePage() {
 
   useEffect(() => {
     if (!selectedWorktreeId) {
+      setWaitingAssistant(null);
       setThreads([]);
       setSelectedThreadId(null);
       setMessages([]);
@@ -311,6 +570,8 @@ export function WorkspacePage() {
 
   useEffect(() => {
     if (!selectedThreadId) {
+      setWaitingAssistant(null);
+      setResolvingPermissionIds(new Set());
       streamingMessageIdsRef.current = new Set();
       stickyRawFileMessageIdsRef.current = new Set();
       stickyRawFallbackMessageIdsRef.current = new Set();
@@ -324,6 +585,8 @@ export function WorkspacePage() {
     stickyRawFileMessageIdsRef.current = new Set();
     stickyRawFallbackMessageIdsRef.current = new Set();
     stickyRawFileLanguageByMessageIdRef.current = new Map();
+    setWaitingAssistant(null);
+    setResolvingPermissionIds(new Set());
 
     let disposed = false;
     let stream: EventSource | null = null;
@@ -381,7 +644,24 @@ export function WorkspacePage() {
             eventId: payload.id,
             type: payload.type,
             idx: payload.idx,
+            payload: payload.payload,
           },
+        });
+
+        setWaitingAssistant((current) => {
+          if (!current || current.threadId !== selectedThreadId || payload.idx <= current.afterIdx) {
+            return current;
+          }
+
+          if (
+            payload.type === "chat.completed" ||
+            payload.type === "chat.failed" ||
+            (payload.type === "message.delta" && payload.payload.role === "assistant")
+          ) {
+            return null;
+          }
+
+          return current;
         });
 
         setEvents((current) => [...current, payload].sort((a, b) => a.idx - b.idx));
@@ -472,6 +752,32 @@ export function WorkspacePage() {
       stream?.close();
     };
   }, [selectedThreadId]);
+
+  useEffect(() => {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    setWaitingAssistant((current) => {
+      if (!current || current.threadId !== selectedThreadId) {
+        return current;
+      }
+
+      const shouldClear = events.some((event) => {
+        if (event.idx <= current.afterIdx) {
+          return false;
+        }
+
+        if (event.type === "chat.completed" || event.type === "chat.failed") {
+          return true;
+        }
+
+        return event.type === "message.delta" && event.payload.role === "assistant";
+      });
+
+      return shouldClear ? null : current;
+    });
+  }, [events, selectedThreadId]);
 
   async function attachRepository() {
     setSubmittingRepo(true);
@@ -574,6 +880,7 @@ export function WorkspacePage() {
 
         if (selectedThreadId === threadId) {
           const nextThreadId = updated[0]?.id ?? null;
+          setWaitingAssistant(null);
           setSelectedThreadId(nextThreadId);
 
           if (!nextThreadId) {
@@ -596,6 +903,11 @@ export function WorkspacePage() {
       return;
     }
 
+    const afterIdx = lastEventIdxByThreadRef.current.get(selectedThreadId) ?? -1;
+    setWaitingAssistant({
+      threadId: selectedThreadId,
+      afterIdx,
+    });
     setSendingMessage(true);
     setError(null);
 
@@ -606,9 +918,71 @@ export function WorkspacePage() {
       setChatInput("");
       await loadThreadData(selectedThreadId);
     } catch (sendError) {
+      setWaitingAssistant(null);
       setError(sendError instanceof Error ? sendError.message : "Failed to send message");
     } finally {
       setSendingMessage(false);
+    }
+  }
+
+  const pendingPermissionRequests = useMemo<PendingPermissionRequest[]>(() => {
+    const pendingById = new Map<string, PendingPermissionRequest>();
+    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+
+    for (const event of orderedEvents) {
+      if (event.type === "permission.requested") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length === 0) {
+          continue;
+        }
+
+        pendingById.set(requestId, {
+          requestId,
+          toolName: typeof event.payload.toolName === "string" ? event.payload.toolName : "Tool",
+          command: typeof event.payload.command === "string" ? event.payload.command : null,
+          blockedPath: typeof event.payload.blockedPath === "string" ? event.payload.blockedPath : null,
+          decisionReason: typeof event.payload.decisionReason === "string" ? event.payload.decisionReason : null,
+          idx: event.idx,
+        });
+        continue;
+      }
+
+      if (event.type === "permission.resolved") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length > 0) {
+          pendingById.delete(requestId);
+        }
+      }
+    }
+
+    return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
+  }, [events]);
+
+  async function resolvePermission(requestId: string, decision: "allow" | "allow_always" | "deny") {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    setResolvingPermissionIds((current) => {
+      const next = new Set(current);
+      next.add(requestId);
+      return next;
+    });
+    setError(null);
+
+    try {
+      await api.resolvePermission(selectedThreadId, {
+        requestId,
+        decision,
+      });
+    } catch (resolveError) {
+      setError(resolveError instanceof Error ? resolveError.message : "Failed to resolve permission");
+    } finally {
+      setResolvingPermissionIds((current) => {
+        const next = new Set(current);
+        next.delete(requestId);
+        return next;
+      });
     }
   }
 
@@ -617,6 +991,7 @@ export function WorkspacePage() {
 
     const firstMessageEventIdxById = new Map<string, number>();
     const completedMessageIds = new Set<string>();
+    const completedEventIdxByMessageId = new Map<string, number>();
     for (const event of orderedEventsByIdx) {
       const messageId = getEventMessageId(event);
       if (messageId) {
@@ -629,6 +1004,10 @@ export function WorkspacePage() {
       const completedId = getCompletedMessageId(event);
       if (completedId) {
         completedMessageIds.add(completedId);
+        const currentCompletedIdx = completedEventIdxByMessageId.get(completedId);
+        if (currentCompletedIdx == null || event.idx < currentCompletedIdx) {
+          completedEventIdxByMessageId.set(completedId, event.idx);
+        }
       }
     }
 
@@ -648,156 +1027,226 @@ export function WorkspacePage() {
 
     const inlineToolEvents = orderedEventsByIdx.filter((event) => INLINE_TOOL_EVENT_TYPES.has(event.type));
     const assistantContextById = new Map<string, ChatEvent[]>();
-    let previousAssistantBoundaryIdx = -1;
-    let previousAssistantBoundaryTime: number | null = null;
-    for (const message of sortedMessages) {
-      if (message.role !== "assistant") {
-        continue;
+    const assistantMessages = sortedMessages.filter((message) => message.role === "assistant");
+    const nextAssistantStartIdxByMessageId = new Map<string, number>();
+    for (let index = 0; index < assistantMessages.length; index += 1) {
+      const currentMessage = assistantMessages[index];
+      for (let nextIndex = index + 1; nextIndex < assistantMessages.length; nextIndex += 1) {
+        const nextStartIdx = firstMessageEventIdxById.get(assistantMessages[nextIndex].id);
+        if (typeof nextStartIdx === "number") {
+          nextAssistantStartIdxByMessageId.set(currentMessage.id, nextStartIdx);
+          break;
+        }
       }
+    }
 
-      const anchorIdx = firstMessageEventIdxById.get(message.id) ?? MAX_ORDER_INDEX;
-      const messageTimestamp = parseTimestamp(message.createdAt);
+    let previousAssistantBoundaryIdx = -1;
+    for (const message of assistantMessages) {
+      const completedIdx = completedEventIdxByMessageId.get(message.id);
+      const nextAssistantStartIdx = nextAssistantStartIdxByMessageId.get(message.id);
+      const upperBoundaryIdx =
+        typeof completedIdx === "number"
+          ? completedIdx
+          : typeof nextAssistantStartIdx === "number"
+            ? nextAssistantStartIdx - 1
+            : Number.POSITIVE_INFINITY;
       const context = inlineToolEvents.filter((event) => {
         if (event.idx <= previousAssistantBoundaryIdx) {
           return false;
         }
-
-        if (anchorIdx !== MAX_ORDER_INDEX) {
-          return event.idx <= anchorIdx;
-        }
-
-        const eventTimestamp = parseTimestamp(event.createdAt);
-        if (messageTimestamp == null || eventTimestamp == null) {
-          return true;
-        }
-
-        const afterPreviousBoundary =
-          previousAssistantBoundaryTime == null ? true : eventTimestamp > previousAssistantBoundaryTime;
-        return afterPreviousBoundary && eventTimestamp <= messageTimestamp;
+        return event.idx <= upperBoundaryIdx;
       });
 
       assistantContextById.set(message.id, context);
-      if (anchorIdx !== MAX_ORDER_INDEX) {
-        previousAssistantBoundaryIdx = anchorIdx;
-      }
-      if (messageTimestamp != null) {
-        previousAssistantBoundaryTime = messageTimestamp;
+      pushRenderDebug({
+        source: "WorkspacePage",
+        event: "activityContextCollected",
+        messageId: message.id,
+        details: {
+          upperBoundaryIdx,
+          contextSize: context.length,
+          contextEvents: context.map((event) => ({
+            id: event.id,
+            idx: event.idx,
+            type: event.type,
+          })),
+        },
+      });
+      if (Number.isFinite(upperBoundaryIdx)) {
+        previousAssistantBoundaryIdx = Math.max(previousAssistantBoundaryIdx, upperBoundaryIdx);
       }
     }
 
-    const sortable = [
-      ...messages.map((message) => {
-        const anchorIdx = firstMessageEventIdxById.get(message.id) ?? MAX_ORDER_INDEX;
-        const timestamp = parseTimestamp(message.createdAt);
-        const context = message.role === "assistant" ? assistantContextById.get(message.id) ?? [] : [];
-        const nearestUserPrompt = latestUserPromptByAssistantId.get(message.id) ?? "";
-        const hasReadContext = context.some((event) => isReadToolEvent(event));
-        const looksLikeFileRead = promptLooksLikeFileRead(nearestUserPrompt);
-        const shouldRenderRawFileNow = hasReadContext || looksLikeFileRead;
-        const isCompleted = message.role === "assistant" ? completedMessageIds.has(message.id) : false;
-        const hasUnclosedFence = message.role === "assistant" ? hasUnclosedCodeFence(message.content) : false;
-        if (message.role === "assistant" && shouldRenderRawFileNow) {
-          stickyRawFileMessageIdsRef.current.add(message.id);
+    type SortableEntry = {
+      item: ChatTimelineItem;
+      anchorIdx: number;
+      timestamp: number | null;
+      rank: number;
+      stableOrder: number;
+    };
+    const sortable: SortableEntry[] = [];
+    const assignedToolEventIds = new Set<string>();
+
+    for (const message of sortedMessages) {
+      const anchorIdx = firstMessageEventIdxById.get(message.id) ?? MAX_ORDER_INDEX;
+      const timestamp = parseTimestamp(message.createdAt);
+      const context = message.role === "assistant" ? assistantContextById.get(message.id) ?? [] : [];
+      const nearestUserPrompt = latestUserPromptByAssistantId.get(message.id) ?? "";
+      const hasReadContext = context.some((event) => isReadToolEvent(event));
+      const looksLikeFileRead = promptLooksLikeFileRead(nearestUserPrompt);
+      const shouldRenderRawFileNow = hasReadContext || looksLikeFileRead;
+      const hasMessageDelta = firstMessageEventIdxById.has(message.id);
+      const isCompleted = message.role === "assistant" ? completedMessageIds.has(message.id) : false;
+
+      if (message.role === "assistant" && message.content.trim().length === 0 && !isCompleted && !hasMessageDelta) {
+        continue;
+      }
+
+      const hasUnclosedFence = message.role === "assistant" ? hasUnclosedCodeFence(message.content) : false;
+      if (message.role === "assistant" && shouldRenderRawFileNow) {
+        stickyRawFileMessageIdsRef.current.add(message.id);
+      }
+      if (message.role === "assistant" && !isCompleted && hasUnclosedFence) {
+        stickyRawFallbackMessageIdsRef.current.add(message.id);
+      }
+      if (message.role === "assistant" && isCompleted) {
+        stickyRawFallbackMessageIdsRef.current.delete(message.id);
+      }
+      const shouldRenderRawFile = message.role === "assistant" && stickyRawFileMessageIdsRef.current.has(message.id);
+      const shouldRenderRawFallback =
+        message.role === "assistant" && !isCompleted && stickyRawFallbackMessageIdsRef.current.has(message.id);
+      const isStreamingMessage = message.role === "assistant" && streamingMessageIdsRef.current.has(message.id) && !isCompleted;
+      const inferredLanguage = shouldRenderRawFile ? inferRawFileLanguage(context, nearestUserPrompt) : undefined;
+      if (message.role === "assistant" && shouldRenderRawFile && inferredLanguage && inferredLanguage !== "text") {
+        stickyRawFileLanguageByMessageIdRef.current.set(message.id, inferredLanguage);
+      }
+      const stickyLanguage = stickyRawFileLanguageByMessageIdRef.current.get(message.id);
+      if (message.role === "assistant") {
+        const decisionSignature = [
+          shouldRenderRawFileNow ? "now:1" : "now:0",
+          shouldRenderRawFile ? "sticky:1" : "sticky:0",
+          shouldRenderRawFallback ? "fallback:1" : "fallback:0",
+          inferredLanguage ?? "infer:none",
+          stickyLanguage ?? "stickyLang:none",
+          `ctx:${context.length}`,
+          `len:${message.content.length}`,
+        ].join("|");
+        const previousSignature = renderDecisionByMessageIdRef.current.get(message.id);
+        if (decisionSignature !== previousSignature) {
+          renderDecisionByMessageIdRef.current.set(message.id, decisionSignature);
+          pushRenderDebug({
+            source: "WorkspacePage",
+            event: "rawFileDecision",
+            messageId: message.id,
+            details: {
+              shouldRenderRawFileNow,
+              shouldRenderRawFile,
+              inferredLanguage,
+              stickyLanguage,
+              contextCount: context.length,
+              contentLength: message.content.length,
+            },
+          });
         }
-        if (message.role === "assistant" && !isCompleted && hasUnclosedFence) {
-          stickyRawFallbackMessageIdsRef.current.add(message.id);
-        }
-        if (message.role === "assistant" && isCompleted) {
-          stickyRawFallbackMessageIdsRef.current.delete(message.id);
-        }
-        const shouldRenderRawFile =
-          message.role === "assistant" && stickyRawFileMessageIdsRef.current.has(message.id);
-        const shouldRenderRawFallback =
-          message.role === "assistant" && !isCompleted && stickyRawFallbackMessageIdsRef.current.has(message.id);
-        const isStreamingMessage =
-          message.role === "assistant" && streamingMessageIdsRef.current.has(message.id) && !isCompleted;
-        const inferredLanguage = shouldRenderRawFile ? inferRawFileLanguage(context, nearestUserPrompt) : undefined;
-        if (message.role === "assistant" && shouldRenderRawFile && inferredLanguage && inferredLanguage !== "text") {
-          stickyRawFileLanguageByMessageIdRef.current.set(message.id, inferredLanguage);
-        }
-        const stickyLanguage = stickyRawFileLanguageByMessageIdRef.current.get(message.id);
-        if (message.role === "assistant") {
-          const decisionSignature = [
-            shouldRenderRawFileNow ? "now:1" : "now:0",
-            shouldRenderRawFile ? "sticky:1" : "sticky:0",
-            shouldRenderRawFallback ? "fallback:1" : "fallback:0",
-            inferredLanguage ?? "infer:none",
-            stickyLanguage ?? "stickyLang:none",
-            `ctx:${context.length}`,
-            `len:${message.content.length}`,
-          ].join("|");
-          const previousSignature = renderDecisionByMessageIdRef.current.get(message.id);
-          if (decisionSignature !== previousSignature) {
-            renderDecisionByMessageIdRef.current.set(message.id, decisionSignature);
-            pushRenderDebug({
-              source: "WorkspacePage",
-              event: "rawFileDecision",
-              messageId: message.id,
-              details: {
-                shouldRenderRawFileNow,
-                shouldRenderRawFile,
-                inferredLanguage,
-                stickyLanguage,
-                contextCount: context.length,
-                contentLength: message.content.length,
-              },
-            });
-          }
-        }
-        const renderHint: AssistantRenderHint | undefined =
-          message.role === "assistant"
-            ? (() => {
-                if (isLikelyDiffContent(message.content)) {
-                  return "diff";
+      }
+      const renderHint: AssistantRenderHint | undefined =
+        message.role === "assistant"
+          ? (() => {
+              if (isLikelyDiffContent(message.content)) {
+                return "diff";
+              }
+
+              if (shouldRenderRawFile) {
+                if (isStreamingMessage) {
+                  return "markdown";
                 }
+                return "raw-file";
+              }
 
-                if (shouldRenderRawFile) {
-                  if (isStreamingMessage) {
-                    return "markdown";
-                  }
-                  return "raw-file";
+              if (shouldRenderRawFallback) {
+                if (isStreamingMessage) {
+                  return "markdown";
                 }
+                return "raw-fallback";
+              }
 
-                if (shouldRenderRawFallback) {
-                  if (isStreamingMessage) {
-                    return "markdown";
-                  }
-                  return "raw-fallback";
-                }
+              return "markdown";
+            })()
+          : undefined;
 
-                return "markdown";
-              })()
-            : undefined;
-
-        return {
+      if (message.role === "assistant" && context.length > 0) {
+        const steps = buildActivitySteps(context);
+        const contextTimestamp = parseTimestamp(context[0]?.createdAt ?? message.createdAt);
+        context.forEach((event) => assignedToolEventIds.add(event.id));
+        pushRenderDebug({
+          source: "WorkspacePage",
+          event: "activityStepsBuilt",
+          messageId: message.id,
+          details: {
+            contextSize: context.length,
+            stepSize: steps.length,
+            steps,
+          },
+        });
+        sortable.push({
           item: {
-            kind: "message" as const,
-            message,
-            renderHint,
-            rawFileLanguage:
-              message.role === "assistant" && shouldRenderRawFile
-                ? stickyLanguage ?? inferredLanguage
-                : undefined,
-            isCompleted,
-            context,
+            kind: "activity",
+            messageId: message.id,
+            durationSeconds: computeDurationSecondsFromEvents(context),
+            introText: buildActivityIntroText(message.content),
+            steps,
+            defaultExpanded: isStreamingMessage,
           },
           anchorIdx,
-          timestamp,
-          rank: message.role === "assistant" ? 2 : message.role === "user" ? 1 : 3,
+          timestamp: contextTimestamp,
+          rank: 2,
           stableOrder: message.seq,
-        };
-      }),
-      ...inlineToolEvents.map((event) => ({
+        });
+      }
+
+      sortable.push({
         item: {
-          kind: "tool" as const,
+          kind: "message",
+          message,
+          renderHint,
+          rawFileLanguage: message.role === "assistant" && shouldRenderRawFile ? stickyLanguage ?? inferredLanguage : undefined,
+          isCompleted,
+          context,
+        },
+        anchorIdx,
+        timestamp,
+        rank: message.role === "assistant" ? 3 : message.role === "user" ? 1 : 4,
+        stableOrder: message.seq,
+      });
+    }
+
+    const orphanToolEvents = inlineToolEvents.filter((event) => !assignedToolEventIds.has(event.id));
+    pushRenderDebug({
+      source: "WorkspacePage",
+      event: "activityOrphanToolEvents",
+      details: {
+        inlineToolEventCount: inlineToolEvents.length,
+        assignedToolEventCount: assignedToolEventIds.size,
+        orphanCount: orphanToolEvents.length,
+        orphanEvents: orphanToolEvents.map((event) => ({
+          id: event.id,
+          idx: event.idx,
+          type: event.type,
+        })),
+      },
+    });
+    for (const event of orphanToolEvents) {
+      sortable.push({
+        item: {
+          kind: "tool",
           event,
         },
         anchorIdx: event.idx,
         timestamp: parseTimestamp(event.createdAt),
         rank: 0,
         stableOrder: event.idx,
-      })),
-    ];
+      });
+    }
 
     sortable.sort((a, b) => {
       const aTime = a.timestamp ?? MAX_ORDER_INDEX;
@@ -819,6 +1268,9 @@ export function WorkspacePage() {
 
     return sortable.map((entry) => entry.item);
   }, [messages, events]);
+
+  const showThinkingPlaceholder = waitingAssistant?.threadId === selectedThreadId;
+  const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
 
   return (
     <div className="h-full p-2 sm:p-3">
@@ -869,13 +1321,35 @@ export function WorkspacePage() {
 
             <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="min-h-0 flex-1">
-                <ChatMessageList items={timelineItems} />
+                <ChatMessageList items={timelineItems} showThinkingPlaceholder={showThinkingPlaceholder} />
               </div>
             </section>
+            {pendingPermissionRequests.length > 0 ? (
+              <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
+                <div className="space-y-2">
+                  {pendingPermissionRequests.map((request) => (
+                    <PermissionPromptCard
+                      key={request.requestId}
+                      requestId={request.requestId}
+                      toolName={request.toolName}
+                      command={request.command}
+                      blockedPath={request.blockedPath}
+                      decisionReason={request.decisionReason}
+                      busy={resolvingPermissionIds.has(request.requestId)}
+                      canAlwaysAllow={Boolean(request.command)}
+                      onAllowOnce={(requestId) => void resolvePermission(requestId, "allow")}
+                      onAllowAlways={(requestId) => void resolvePermission(requestId, "allow_always")}
+                      onDeny={(requestId) => void resolvePermission(requestId, "deny")}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            <RenderDebugPanel />
 
             <Composer
               value={chatInput}
-              disabled={!selectedThreadId || sendingMessage}
+              disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests}
               sending={sendingMessage}
               onChange={setChatInput}
               onSubmit={() => void submitMessage()}
