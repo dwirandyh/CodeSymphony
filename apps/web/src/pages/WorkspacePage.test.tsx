@@ -1503,10 +1503,83 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="timeline-bash-command"]')).not.toBeNull();
+    const bashCard = container.querySelector('[data-testid="timeline-bash-command"]');
+    expect(bashCard).not.toBeNull();
+    const details = bashCard?.querySelector("details") as HTMLDetailsElement | null;
+    if (!details) {
+      throw new Error("Expected bash command details block");
+    }
+
+    expect(details.open).toBe(true);
+    act(() => {
+      details.open = false;
+      details.dispatchEvent(new Event("toggle", { bubbles: true }));
+    });
+    await flushEffects();
+    const detailsAfterToggle = container.querySelector('[data-testid="timeline-bash-command"] details') as HTMLDetailsElement | null;
+    if (!detailsAfterToggle) {
+      throw new Error("Expected bash command details block after toggle");
+    }
+    expect(detailsAfterToggle.open).toBe(true);
+
     expect(container.textContent).toContain("Failed");
     expect(container.textContent).toContain("ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL");
     expect(container.querySelector('[data-testid="timeline-activity"]')).toBeNull();
+  });
+
+  it("keeps running bash command collapsed by default", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-bash-running",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "cek path sekarang",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-bash-running",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Saya cek path dulu.",
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-bash-running-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "tool-running", parentToolUseId: null, command: "pwd", isBash: true, shell: "bash" },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-bash-running-msg",
+        threadId: "thread-1",
+        idx: 2,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-bash-running", role: "assistant", delta: "Saya cek path dulu." },
+        createdAt: "2026-01-01T10:00:01.500Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const bashCard = container.querySelector('[data-testid="timeline-bash-command"]');
+    expect(bashCard).not.toBeNull();
+    const details = bashCard?.querySelector("details") as HTMLDetailsElement | null;
+    if (!details) {
+      throw new Error("Expected bash command details block");
+    }
+
+    expect(container.textContent).toContain("Running");
+    expect(details.open).toBe(false);
   });
 
   it("creates a new thread via header action", async () => {
