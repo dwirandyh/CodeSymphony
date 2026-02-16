@@ -1534,6 +1534,7 @@ export function WorkspacePage() {
 
             if (deferFirstRunUntilText && !delayedFirstRunInserted) {
               const run = bashRuns[0];
+              const status = run.status === "running" && isCompleted ? "success" : run.status;
               sortable.push({
                 item: {
                   kind: "bash-command",
@@ -1546,7 +1547,7 @@ export function WorkspacePage() {
                   error: run.error,
                   truncated: run.truncated,
                   durationSeconds: run.durationSeconds,
-                  status: run.status,
+                  status,
                 },
                 anchorIdx: run.anchorIdx,
                 timestamp: parseTimestamp(run.createdAt) ?? timestamp,
@@ -1567,6 +1568,7 @@ export function WorkspacePage() {
           }
 
           const run = bashRuns[bucketIndex];
+          const status = run.status === "running" && isCompleted ? "success" : run.status;
           sortable.push({
             item: {
               kind: "bash-command",
@@ -1579,7 +1581,7 @@ export function WorkspacePage() {
               error: run.error,
               truncated: run.truncated,
               durationSeconds: run.durationSeconds,
-              status: run.status,
+              status,
             },
             anchorIdx: run.anchorIdx,
             timestamp: parseTimestamp(run.createdAt) ?? timestamp,

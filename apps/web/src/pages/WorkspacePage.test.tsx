@@ -1167,6 +1167,63 @@ describe("WorkspacePage", () => {
     expect(container.textContent).not.toContain("tool.started");
   });
 
+  it("marks bash command as success when message already completed", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-bash-completed",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "cek path",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-bash-completed",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Path sudah saya cek.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-bash-completed-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "tool-completed", parentToolUseId: null, command: "pwd", isBash: true, shell: "bash" },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-bash-completed-msg",
+        threadId: "thread-1",
+        idx: 2,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-bash-completed", role: "assistant", delta: "Path sudah saya cek." },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-bash-completed-done",
+        threadId: "thread-1",
+        idx: 3,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-bash-completed" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-bash-command"]')).not.toBeNull();
+    expect(container.textContent).toContain("Success");
+    expect(container.textContent).not.toContain("Running");
+  });
+
   it("renders orphan tool row without raw JSON details panel", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([]);
     (api.listEvents as Mock).mockResolvedValueOnce([

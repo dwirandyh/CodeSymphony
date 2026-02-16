@@ -245,20 +245,115 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function firstNonEmptyString(values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    const normalized = value.trim();
+    if (normalized.length > 0) {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+function contentToString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (!Array.isArray(value)) {
+    return "";
+  }
+
+  const chunks: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      chunks.push(entry);
+      continue;
+    }
+
+    if (typeof entry !== "object" || entry == null || Array.isArray(entry)) {
+      continue;
+    }
+
+    const text = (entry as Record<string, unknown>).text;
+    if (typeof text === "string" && text.length > 0) {
+      chunks.push(text);
+    }
+  }
+
+  return chunks.join("\n").trim();
+}
+
 function extractBashToolResult(toolResponse: unknown): BashToolResult | null {
+  if (typeof toolResponse === "string") {
+    const normalized = toolResponse.trim();
+    if (normalized.length === 0) {
+      return null;
+    }
+
+    const likelyError = normalized.toLowerCase().startsWith("error:");
+    return likelyError
+      ? truncateBashResult("", normalized)
+      : truncateBashResult(toolResponse, "");
+  }
+
   if (typeof toolResponse !== "object" || toolResponse == null || Array.isArray(toolResponse)) {
     return null;
   }
 
   const response = toolResponse as Record<string, unknown>;
-  const output = asString(response.output);
-  const error = asString(response.error);
-  if (output.length === 0 && error.length === 0) {
-    return null;
+  const nested = typeof response.result === "object" && response.result != null && !Array.isArray(response.result)
+    ? (response.result as Record<string, unknown>)
+    : null;
+  const output = firstNonEmptyString([
+    response.output,
+    response.stdout,
+    nested?.output,
+    nested?.stdout,
+  ]);
+  const error = firstNonEmptyString([
+    response.error,
+    response.stderr,
+    nested?.error,
+    nested?.stderr,
+  ]);
+  if (output.length > 0 || error.length > 0) {
+    return truncateBashResult(output, error);
   }
 
-  return truncateBashResult(output, error);
+  const content = contentToString(response.content);
+  if (content.length > 0) {
+    if (response.is_error === true) {
+      return truncateBashResult("", content);
+    }
+
+    return truncateBashResult(content, "");
+  }
+
+  const toolUseResultText = asString(response.toolUseResult);
+  if (toolUseResultText.trim().length > 0) {
+    const likelyError = toolUseResultText.trim().toLowerCase().startsWith("error:");
+    return likelyError
+      ? truncateBashResult("", toolUseResultText)
+      : truncateBashResult(toolUseResultText, "");
+  }
+
+  const rawError = asString(response.message);
+  if (rawError.trim().length > 0 && response.is_error === true) {
+    return truncateBashResult("", rawError);
+  }
+
+  return null;
 }
+
+export const __testing = {
+  extractBashToolResult,
+};
 
 export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
@@ -397,11 +492,64 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
                   const metadata = toolMetadataByUseId.get(hookToolUseId);
                   const bashResult = extractBashToolResult(hookInput.tool_response);
-                  if (!metadata?.isBash || !bashResult) {
+                  if (!metadata?.isBash) {
                     return { continue: true };
                   }
 
-                  bashResultByToolUseId.set(hookToolUseId, bashResult);
+                  if (bashResult) {
+                    bashResultByToolUseId.set(hookToolUseId, bashResult);
+                  }
+
+                  if (!finishedToolUseIds.has(hookToolUseId)) {
+                    await onToolFinished({
+                      summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
+                      precedingToolUseIds: [hookToolUseId],
+                      command: metadata.command,
+                      shell: "bash",
+                      isBash: true,
+                      output: bashResult?.output,
+                      error: bashResult?.error,
+                      truncated: bashResult?.truncated ?? false,
+                      outputBytes: bashResult?.outputBytes ?? 0,
+                    });
+                    finishedToolUseIds.add(hookToolUseId);
+                  }
+
+                  return { continue: true };
+                },
+              ],
+            },
+          ],
+          PostToolUseFailure: [
+            {
+              hooks: [
+                async (hookInput, toolUseID) => {
+                  if (hookInput.hook_event_name !== "PostToolUseFailure") {
+                    return { continue: true };
+                  }
+
+                  const hookToolUseId = hookInput.tool_use_id || toolUseID;
+                  if (!hookToolUseId || !isBashTool(hookInput.tool_name)) {
+                    return { continue: true };
+                  }
+
+                  const metadata = toolMetadataByUseId.get(hookToolUseId);
+                  const command = metadata?.command ?? commandFromUnknownToolInput(hookInput.tool_input);
+                  if (finishedToolUseIds.has(hookToolUseId)) {
+                    return { continue: true };
+                  }
+
+                  await onToolFinished({
+                    summary: command ? `Failed ${command}` : "Bash command failed",
+                    precedingToolUseIds: [hookToolUseId],
+                    command,
+                    shell: "bash",
+                    isBash: true,
+                    error: hookInput.error,
+                    truncated: false,
+                    outputBytes: Buffer.byteLength(hookInput.error, "utf8"),
+                  });
+                  finishedToolUseIds.add(hookToolUseId);
                   return { continue: true };
                 },
               ],
@@ -462,15 +610,24 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       }
 
       if (message.type === "tool_use_summary") {
-        const bashToolUseId = message.preceding_tool_use_ids.find((toolUseId) => toolMetadataByUseId.get(toolUseId)?.isBash);
+        const pendingToolUseIds = message.preceding_tool_use_ids.filter((toolUseId) => !finishedToolUseIds.has(toolUseId));
+        if (pendingToolUseIds.length === 0) {
+          for (const toolUseId of message.preceding_tool_use_ids) {
+            toolMetadataByUseId.delete(toolUseId);
+            bashResultByToolUseId.delete(toolUseId);
+          }
+          continue;
+        }
+
+        const bashToolUseId = pendingToolUseIds.find((toolUseId) => toolMetadataByUseId.get(toolUseId)?.isBash);
         const bashToolMetadata = bashToolUseId ? toolMetadataByUseId.get(bashToolUseId) : undefined;
         const bashToolResult = bashToolUseId ? bashResultByToolUseId.get(bashToolUseId) : undefined;
-        for (const toolUseId of message.preceding_tool_use_ids) {
+        for (const toolUseId of pendingToolUseIds) {
           finishedToolUseIds.add(toolUseId);
         }
         await onToolFinished({
           summary: message.summary,
-          precedingToolUseIds: message.preceding_tool_use_ids,
+          precedingToolUseIds: pendingToolUseIds,
           ...(bashToolMetadata?.isBash
             ? {
                 command: bashToolMetadata.command,
