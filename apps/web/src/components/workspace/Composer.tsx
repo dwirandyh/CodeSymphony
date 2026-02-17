@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileText, Folder, Lightbulb, Send, Zap } from "lucide-react";
+import { ArrowUp, FileText, Folder, Lightbulb, Square, Zap } from "lucide-react";
 import type { ChatMode, FileEntry } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
@@ -8,11 +8,14 @@ type ComposerProps = {
   value: string;
   disabled: boolean;
   sending: boolean;
+  showStop: boolean;
+  stopping: boolean;
   mode: ChatMode;
   worktreeId: string | null;
   onChange: (nextValue: string) => void;
   onModeChange: (mode: ChatMode) => void;
   onSubmitMessage: (content: string) => void;
+  onStop: () => void;
 };
 
 type MentionState = {
@@ -150,11 +153,14 @@ export function Composer({
   value,
   disabled,
   sending,
+  showStop,
+  stopping,
   mode,
   worktreeId,
   onChange,
   onModeChange,
   onSubmitMessage,
+  onStop,
 }: ComposerProps) {
   const isPlan = mode === "plan";
 
@@ -364,10 +370,14 @@ export function Composer({
         return;
       }
 
+      if (showStop) {
+        return;
+      }
+
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, handleSubmit],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit],
   );
 
   useEffect(() => {
@@ -468,14 +478,16 @@ export function Composer({
 
           <Button
             type="button"
-            onClick={handleSubmit}
-            disabled={cannotSend}
+            onClick={showStop ? onStop : handleSubmit}
+            disabled={showStop ? stopping : cannotSend}
             size="icon"
-            aria-label="Send message"
-            className="absolute bottom-3 right-3 h-8 w-8 rounded-full"
+            aria-label={showStop ? "Stop run" : "Send message"}
+            className="absolute bottom-3 right-3 h-8 w-8 rounded-full bg-white text-black hover:bg-white/90 disabled:bg-white/80 disabled:text-black/70"
           >
-            <Send className="h-3.5 w-3.5" />
-            <span className="sr-only">{sending ? "Running..." : "Send message"}</span>
+            {showStop ? <Square className="h-3.5 w-3.5" /> : <ArrowUp className="h-3.5 w-3.5" />}
+            <span className="sr-only">
+              {showStop ? (stopping ? "Stopping..." : "Stop run") : sending ? "Running..." : "Send message"}
+            </span>
           </Button>
         </div>
       </div>

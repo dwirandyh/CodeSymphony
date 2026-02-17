@@ -186,8 +186,26 @@ function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeStateSnaps
   };
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || /abort|cancel|interrupt/i.test(error.message));
+}
+
 export function createChatService(deps: RuntimeDeps) {
   const activeThreads = new Set<string>();
+  const scheduledAssistantRunsByThread = new Map<string, ReturnType<typeof setTimeout>>();
+  const runningAbortControllersByThread = new Map<string, AbortController>();
+
+  function clearScheduledAssistantRun(threadId: string): boolean {
+    const timer = scheduledAssistantRunsByThread.get(threadId);
+    if (!timer) {
+      return false;
+    }
+
+    clearTimeout(timer);
+    scheduledAssistantRunsByThread.delete(threadId);
+    return true;
+  }
+
   type PermissionDecisionResult = { decision: "allow" | "deny"; message?: string };
   type PendingPermissionEntry = {
     status: "pending" | "resolved";
@@ -270,6 +288,8 @@ export function createChatService(deps: RuntimeDeps) {
   async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
     let assistantMessageId: string | null = null;
     let fullOutput = "";
+    const abortController = new AbortController();
+    runningAbortControllersByThread.set(threadId, abortController);
 
     try {
       const thread = await deps.prisma.chatThread.findUnique({
@@ -309,6 +329,7 @@ export function createChatService(deps: RuntimeDeps) {
         prompt,
         sessionId: thread.claudeSessionId,
         cwd: worktreePath,
+        abortController,
         permissionMode: mode,
         autoAcceptTools: options?.autoAcceptTools,
         onText: async (chunk) => {
@@ -452,20 +473,30 @@ export function createChatService(deps: RuntimeDeps) {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown chat error";
+      const wasCancelled = abortController.signal.aborted || isAbortError(error);
 
       if (assistantMessageId) {
         await deps.prisma.chatMessage.update({
           where: { id: assistantMessageId },
           data: {
-            content: fullOutput.length > 0 ? fullOutput : `[runtime-error] ${errorMessage}`,
+            content: wasCancelled ? fullOutput : fullOutput.length > 0 ? fullOutput : `[runtime-error] ${errorMessage}`,
           },
         });
       }
 
-      await deps.eventHub.emit(threadId, "chat.failed", {
-        message: errorMessage,
-      });
+      if (wasCancelled) {
+        await deps.eventHub.emit(threadId, "chat.completed", {
+          ...(assistantMessageId ? { messageId: assistantMessageId } : {}),
+          cancelled: true,
+        });
+      } else {
+        await deps.eventHub.emit(threadId, "chat.failed", {
+          message: errorMessage,
+        });
+      }
     } finally {
+      runningAbortControllersByThread.delete(threadId);
+      scheduledAssistantRunsByThread.delete(threadId);
       rejectPendingPermissions(threadId, "Permission request cancelled because the chat run ended.");
       rejectPendingQuestions(threadId, "Question cancelled because the chat run ended.");
       activeThreads.delete(threadId);
@@ -473,9 +504,12 @@ export function createChatService(deps: RuntimeDeps) {
   }
 
   function scheduleAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): void {
-    setTimeout(() => {
+    clearScheduledAssistantRun(threadId);
+    const timer = setTimeout(() => {
+      scheduledAssistantRunsByThread.delete(threadId);
       void runAssistant(threadId, prompt, mode, options);
     }, AUTO_EXECUTE_DELAY_MS);
+    scheduledAssistantRunsByThread.set(threadId, timer);
   }
 
   return {
@@ -540,6 +574,38 @@ export function createChatService(deps: RuntimeDeps) {
 
     async listEvents(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
       return deps.eventHub.list(threadId, afterIdx);
+    },
+
+    async stopRun(threadId: string): Promise<void> {
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      if (!activeThreads.has(threadId)) {
+        throw new Error("No active assistant run for this thread");
+      }
+
+      rejectPendingPermissions(threadId, "Permission request cancelled by user.");
+      rejectPendingQuestions(threadId, "Question cancelled by user.");
+
+      const cancelledScheduledRun = clearScheduledAssistantRun(threadId);
+      if (cancelledScheduledRun) {
+        activeThreads.delete(threadId);
+        await deps.eventHub.emit(threadId, "chat.completed", {
+          cancelled: true,
+        });
+        return;
+      }
+
+      const abortController = runningAbortControllersByThread.get(threadId);
+      if (!abortController) {
+        throw new Error("Assistant run is not cancellable right now");
+      }
+
+      abortController.abort();
     },
 
     async resolvePermission(threadId: string, rawInput: unknown): Promise<void> {

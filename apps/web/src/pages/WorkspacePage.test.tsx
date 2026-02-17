@@ -20,6 +20,7 @@ vi.mock("../lib/api", () => ({
     deleteThread: vi.fn(),
     listMessages: vi.fn(),
     sendMessage: vi.fn(),
+    stopRun: vi.fn(),
     answerQuestion: vi.fn(),
     resolvePermission: vi.fn(),
     approvePlan: vi.fn(),
@@ -27,6 +28,14 @@ vi.mock("../lib/api", () => ({
     listEvents: vi.fn(),
     searchFiles: vi.fn(),
     runtimeBaseUrl: "http://127.0.0.1:4321",
+  },
+}));
+
+vi.mock("../components/workspace/BottomPanel", () => ({
+  BottomPanel: () => {
+    const enabled =
+      typeof window !== "undefined" && window.localStorage.getItem("cs.debug.render") === "1";
+    return enabled ? <div data-testid="render-debug-panel">Instrumentation</div> : null;
   },
 }));
 
@@ -233,6 +242,7 @@ describe("WorkspacePage", () => {
     (api.listThreads as Mock).mockResolvedValue(threadFixture);
     (api.listMessages as Mock).mockResolvedValue(messageFixture);
     (api.listEvents as Mock).mockResolvedValue(eventFixture);
+    (api.stopRun as Mock).mockResolvedValue(undefined);
     (api.answerQuestion as Mock).mockResolvedValue(undefined);
     (api.resolvePermission as Mock).mockResolvedValue(undefined);
     (api.approvePlan as Mock).mockResolvedValue(undefined);
@@ -2001,6 +2011,70 @@ describe("WorkspacePage", () => {
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("shows stop button while assistant run is active", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const editor = findComposerEditor(container);
+    act(() => {
+      changeComposerValue(editor, "please respond");
+    });
+
+    await flushEffects();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await flushEffects();
+
+    const stopButton = findButtonByAriaLabel(container, "Stop run");
+    expect(stopButton.disabled).toBe(false);
+    expect(container.querySelector('button[aria-label="Send message"]')).toBeNull();
+  });
+
+  it("stops active assistant run when stop button is clicked", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const editor = findComposerEditor(container);
+    act(() => {
+      changeComposerValue(editor, "please stop this");
+    });
+
+    await flushEffects();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await flushEffects();
+
+    const stopButton = findButtonByAriaLabel(container, "Stop run");
+    act(() => {
+      click(stopButton);
+    });
+
+    await flushEffects();
+
+    expect(api.stopRun).toHaveBeenCalledWith("thread-1");
+    expect(stopButton.disabled).toBe(true);
+
+    act(() => {
+      click(stopButton);
+    });
+
+    await flushEffects();
+
+    expect(api.stopRun).toHaveBeenCalledTimes(1);
+  });
+
   it("shows thinking placeholder before first assistant delta, then hides it", async () => {
     await act(async () => {
       root.render(<WorkspacePage />);
@@ -2022,7 +2096,10 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+    const thinkingPlaceholder = container.querySelector('[data-testid="thinking-placeholder"]');
+    expect(thinkingPlaceholder).not.toBeNull();
+    expect(thinkingPlaceholder?.querySelector(".rounded-xl")).toBeNull();
+    expect(thinkingPlaceholder?.querySelector(".border")).toBeNull();
 
     const stream = latestEventSource();
     act(() => {
@@ -2044,6 +2121,138 @@ describe("WorkspacePage", () => {
 
     expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
     expect(container.textContent).toContain("Hello from assistant");
+  });
+
+  it("hides thinking placeholder when waiting for permission approval", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const editor = findComposerEditor(container);
+    act(() => {
+      changeComposerValue(editor, "run command please");
+    });
+
+    await flushEffects();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("permission.requested", {
+        id: "evt-thinking-permission-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-thinking",
+          toolName: "Bash",
+          command: "cat /etc/hosts",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
+    expect(container.querySelector('[data-testid="permission-prompt-perm-thinking"]')).not.toBeNull();
+  });
+
+  it("hides thinking placeholder when waiting for question answer", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const editor = findComposerEditor(container);
+    act(() => {
+      changeComposerValue(editor, "need clarification?");
+    });
+
+    await flushEffects();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("question.requested", {
+        id: "evt-thinking-question-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "question.requested",
+        payload: {
+          requestId: "question-thinking",
+          questions: [{ question: "Target environment?" }],
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
+    expect(container.querySelector('[data-testid="question-card-question-thinking"]')).not.toBeNull();
+  });
+
+  it("hides thinking placeholder when waiting for plan decision", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const editor = findComposerEditor(container);
+    act(() => {
+      changeComposerValue(editor, "create plan");
+    });
+
+    await flushEffects();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("plan.created", {
+        id: "evt-thinking-plan-created",
+        threadId: "thread-1",
+        idx: 3,
+        type: "plan.created",
+        payload: {
+          messageId: "msg-plan-waiting",
+          content: "# Plan\n\n- Step 1",
+          filePath: "/tmp/project/.claude/plans/plan-thinking.md",
+          source: "claude_plan_file",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
+    expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).not.toBeNull();
   });
 
   it("hides thinking placeholder on chat.failed and chat.completed", async () => {
@@ -2183,6 +2392,77 @@ describe("WorkspacePage", () => {
     });
   });
 
+  it("shows thinking again after allowing permission and waits for assistant response", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-perm-requested-resume",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-resume",
+          toolName: "Bash",
+          command: "cat /etc/hosts",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
+
+    const approveButton = findButtonByAriaLabel(container, "Allow once perm-resume");
+    act(() => {
+      click(approveButton);
+    });
+
+    await flushEffects();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("permission.resolved", {
+        id: "evt-perm-resolved-resume",
+        threadId: "thread-1",
+        idx: 4,
+        type: "permission.resolved",
+        payload: {
+          requestId: "perm-resume",
+          decision: "allow",
+          resolver: "user",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+
+    act(() => {
+      stream.emit("message.delta", {
+        id: "evt-perm-resume-first-delta",
+        threadId: "thread-1",
+        idx: 5,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-perm-resume",
+          role: "assistant",
+          delta: "Thanks, proceeding.",
+        },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
+  });
+
   it("resolves permission when always allow is clicked", async () => {
     (api.listEvents as Mock).mockResolvedValueOnce([
       {
@@ -2218,6 +2498,85 @@ describe("WorkspacePage", () => {
       requestId: "perm-2",
       decision: "allow_always",
     });
+  });
+
+  it("shows thinking again after answering question and waits for assistant response", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-question-requested-resume",
+        threadId: "thread-1",
+        idx: 3,
+        type: "question.requested",
+        payload: {
+          requestId: "question-resume",
+          questions: [{ question: "Target environment?" }],
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const answerInput = container.querySelector('input[placeholder="Type your answer..."]');
+    if (!answerInput) {
+      throw new Error("Question answer input not found");
+    }
+
+    act(() => {
+      changeInputValue(answerInput as HTMLInputElement, "production");
+    });
+
+    await flushEffects();
+
+    const submitAnswerButton = findButtonByAriaLabel(container, "Submit answer question-resume");
+    act(() => {
+      click(submitAnswerButton);
+    });
+
+    await flushEffects();
+
+    expect(api.answerQuestion).toHaveBeenCalledWith("thread-1", {
+      requestId: "question-resume",
+      answers: { "Target environment?": "production" },
+    });
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("question.answered", {
+        id: "evt-question-answered-resume",
+        threadId: "thread-1",
+        idx: 4,
+        type: "question.answered",
+        payload: {
+          requestId: "question-resume",
+          answers: { "Target environment?": "production" },
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+
+    act(() => {
+      stream.emit("chat.completed", {
+        id: "evt-question-completed-resume",
+        threadId: "thread-1",
+        idx: 5,
+        type: "chat.completed",
+        payload: { messageId: "msg-question-resume" },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
   });
 
   it("removes permission prompt card when permission is resolved from stream", async () => {
@@ -2540,6 +2899,7 @@ describe("WorkspacePage", () => {
     await flushEffects();
 
     expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
 
     const submitButton = findButtonByAriaLabel(container, "Submit plan acceptance");
     act(() => {
@@ -2550,7 +2910,28 @@ describe("WorkspacePage", () => {
 
     expect(api.approvePlan).toHaveBeenCalledWith("thread-1");
     expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).toBeNull();
-    expect(container.querySelector('button[aria-label="Send message"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Stop run"]')).not.toBeNull();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("message.delta", {
+        id: "evt-plan-approve-first-delta",
+        threadId: "thread-1",
+        idx: 5,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-plan-approve-exec",
+          role: "assistant",
+          delta: "Executing approved plan.",
+        },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
   });
 
   it("submits revise feedback from plan decision panel", async () => {
@@ -2634,7 +3015,24 @@ describe("WorkspacePage", () => {
       feedback: "Mohon tambah detail rollback plan.",
     });
     expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).toBeNull();
-    expect(container.querySelector('button[aria-label="Send message"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Stop run"]')).not.toBeNull();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("chat.completed", {
+        id: "evt-plan-revise-completed",
+        threadId: "thread-1",
+        idx: 5,
+        type: "chat.completed",
+        payload: { messageId: "msg-plan-revise-exec" },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
   });
 
   it("renders plan mode assistant message as markdown when no plan.created event exists", async () => {

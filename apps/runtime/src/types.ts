@@ -20,6 +20,7 @@ export type ClaudeRunner = (args: {
   prompt: string;
   sessionId: string | null;
   cwd: string;
+  abortController?: AbortController;
   permissionMode?: ChatMode;
   autoAcceptTools?: boolean;
   onText: (chunk: string) => Promise<void> | void;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage, ChatMode, ChatThread, Repository } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/Composer";
 import {
@@ -761,6 +761,8 @@ export function WorkspacePage() {
 
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
+  const [stopRequestedThreadId, setStopRequestedThreadId] = useState<string | null>(null);
   const [submittingRepo, setSubmittingRepo] = useState(false);
   const [submittingWorktree, setSubmittingWorktree] = useState(false);
   const [closingThreadId, setClosingThreadId] = useState<string | null>(null);
@@ -933,6 +935,8 @@ export function WorkspacePage() {
   useEffect(() => {
     if (!selectedThreadId) {
       setWaitingAssistant(null);
+      setStoppingThreadId(null);
+      setStopRequestedThreadId(null);
       setResolvingPermissionIds(new Set());
       streamingMessageIdsRef.current = new Set();
       stickyRawFileMessageIdsRef.current = new Set();
@@ -948,6 +952,8 @@ export function WorkspacePage() {
     stickyRawFallbackMessageIdsRef.current = new Set();
     stickyRawFileLanguageByMessageIdRef.current = new Map();
     setWaitingAssistant(null);
+    setStoppingThreadId(null);
+    setStopRequestedThreadId(null);
     setResolvingPermissionIds(new Set());
 
     let disposed = false;
@@ -1274,6 +1280,30 @@ export function WorkspacePage() {
       setError(sendError instanceof Error ? sendError.message : "Failed to send message");
     } finally {
       setSendingMessage(false);
+    }
+  }
+
+  async function stopAssistantRun() {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    const threadId = selectedThreadId;
+    if (stopRequestedThreadId === threadId) {
+      return;
+    }
+
+    setStopRequestedThreadId(threadId);
+    setStoppingThreadId(threadId);
+    setError(null);
+
+    try {
+      await api.stopRun(threadId);
+    } catch (stopError) {
+      setError(stopError instanceof Error ? stopError.message : "Failed to stop run");
+      setStopRequestedThreadId((current) => (current === threadId ? null : current));
+    } finally {
+      setStoppingThreadId((current) => (current === threadId ? null : current));
     }
   }
 
@@ -2142,6 +2172,20 @@ export function WorkspacePage() {
   const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
   const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
   const hasPendingPlan = pendingPlan !== null && pendingPlan.status === "pending";
+  const hasStreamingAssistantMessage =
+    selectedThreadId != null
+      && messages.some(
+        (message) =>
+          message.threadId === selectedThreadId
+          && message.role === "assistant"
+          && streamingMessageIdsRef.current.has(message.id),
+      );
+  const showStopAction =
+    selectedThreadId != null
+      && (sendingMessage || waitingAssistant?.threadId === selectedThreadId || hasStreamingAssistantMessage);
+  const stopRequestedForActiveThread = selectedThreadId != null && stopRequestedThreadId === selectedThreadId;
+  const stoppingRun =
+    selectedThreadId != null && (stoppingThreadId === selectedThreadId || stopRequestedForActiveThread);
   const hidePlanDecisionByOptimisticClose =
     hasPendingPlan &&
     selectedThreadId != null &&
@@ -2151,10 +2195,52 @@ export function WorkspacePage() {
   const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
   const showThinkingPlaceholder = waitingAssistant?.threadId === selectedThreadId && !isWaitingForUserGate;
 
+  useEffect(() => {
+    if (!showStopAction) {
+      setStopRequestedThreadId(null);
+    }
+  }, [showStopAction]);
+
+  // ── Sidebar resize state ──
+  const [sidebarWidth, setSidebarWidth] = useState(300);
+  const [sidebarDragging, setSidebarDragging] = useState(false);
+  const sidebarStartXRef = useRef(0);
+  const sidebarStartWidthRef = useRef(0);
+
+  const handleSidebarMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setSidebarDragging(true);
+    sidebarStartXRef.current = e.clientX;
+    sidebarStartWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (!sidebarDragging) return;
+
+    function onMove(e: MouseEvent) {
+      const delta = e.clientX - sidebarStartXRef.current;
+      setSidebarWidth(Math.max(200, Math.min(500, sidebarStartWidthRef.current + delta)));
+    }
+    function onUp() {
+      setSidebarDragging(false);
+    }
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, [sidebarDragging]);
+
   return (
-    <div className="flex h-full flex-col p-2 sm:p-3">
-      <div className="mx-auto grid min-h-0 flex-1 w-full max-w-[1860px] grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]">
-        <aside className="min-h-0 border-b border-border/30 p-2 lg:border-b-0 lg:border-r lg:p-3">
+    <div className="flex h-full p-2 sm:p-3">
+      <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
+        {/* ── Resizable sidebar ── */}
+        <aside
+          className="hidden min-h-0 shrink-0 rounded-2xl bg-card/75 p-2 lg:block lg:p-3"
+          style={{ width: `${sidebarWidth}px` }}
+        >
           <div className="mb-3">
             <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
             <p className="text-xs text-muted-foreground">Local code conductor</p>
@@ -2178,8 +2264,21 @@ export function WorkspacePage() {
           />
         </aside>
 
-        <main className="min-h-0 p-2.5 lg:p-3">
-          <div className="flex h-full min-h-0 flex-col gap-2">
+        {/* ── Sidebar resize handle ── */}
+        <div
+          className={`hidden w-1 cursor-col-resize items-center justify-center transition-colors hover:bg-primary/20 lg:flex ${sidebarDragging ? "bg-primary/30" : ""
+            }`}
+          onMouseDown={handleSidebarMouseDown}
+        >
+          <div
+            className={`h-8 w-[2px] rounded-full transition-colors ${sidebarDragging ? "bg-primary/60" : "bg-border/30"
+              }`}
+          />
+        </div>
+
+        {/* ── Main content area (chat + bottom panel) ── */}
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col p-2.5 lg:p-3">
+          <div className="flex min-h-0 flex-1 flex-col gap-2">
             <WorkspaceHeader
               selectedRepositoryName={selectedRepository?.name ?? "No repository selected"}
               selectedWorktreeLabel={selectedWorktree ? `Worktree: ${selectedWorktree.branch}` : "Choose a worktree"}
@@ -2252,17 +2351,21 @@ export function WorkspacePage() {
                 value={chatInput}
                 disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests || hasPendingQuestionRequests || planActionBusy}
                 sending={sendingMessage}
+                showStop={showStopAction}
+                stopping={stoppingRun}
                 mode={chatMode}
                 worktreeId={selectedWorktreeId}
                 onChange={setChatInput}
                 onModeChange={setChatMode}
                 onSubmitMessage={(content) => void submitMessage(content)}
+                onStop={() => void stopAssistantRun()}
               />
             )}
           </div>
+
+          <BottomPanel worktreeId={selectedWorktreeId} worktreePath={selectedWorktree?.path ?? null} />
         </main>
       </div>
-      <BottomPanel />
     </div>
   );
 }

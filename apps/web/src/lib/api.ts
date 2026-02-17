@@ -90,6 +90,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  stopRun: async (threadId: string) => {
+    const response = await fetch(`${API_BASE}/threads/${threadId}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to stop run");
+    }
+  },
   answerQuestion: async (threadId: string, input: AnswerQuestionInput) => {
     const response = await fetch(`${API_BASE}/threads/${threadId}/questions/answer`, {
       method: "POST",

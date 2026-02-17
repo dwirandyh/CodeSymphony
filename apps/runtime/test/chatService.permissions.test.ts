@@ -436,6 +436,78 @@ describe("chatService permission flow", () => {
     expect(assistantMessage?.content).toContain("Decisions: allow/allow");
   });
 
+  it("stops active run and keeps partial assistant output", async () => {
+    let receivedAbortController: AbortController | undefined;
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, abortController }) => {
+      receivedAbortController = abortController;
+      if (!abortController) {
+        throw new Error("Missing abort controller");
+      }
+
+      await onText("Partial output before stop.");
+
+      await new Promise<void>((resolve) => {
+        if (abortController.signal.aborted) {
+          resolve();
+          return;
+        }
+        abortController.signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+
+      throw new Error("Aborted by user.");
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "tolong jalankan proses lama",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) =>
+        event.type === "message.delta"
+        && event.payload.role === "assistant"
+        && String(event.payload.delta ?? "").includes("Partial output before stop."),
+    );
+
+    await chatService.stopRun(threadId);
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const completedEvent = events.find((event) => event.type === "chat.completed" && event.payload.cancelled === true);
+    expect(completedEvent).toBeDefined();
+    expect(events.some((event) => event.type === "chat.failed")).toBe(false);
+
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toBe("Partial output before stop.");
+    expect(assistantMessage?.content).not.toContain("[runtime-error]");
+    expect(receivedAbortController).toBeDefined();
+    expect(receivedAbortController?.signal.aborted).toBe(true);
+  });
+
+  it("rejects stop when no active run exists", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: "session-noop",
+    }));
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await expect(chatService.stopRun(threadId)).rejects.toThrow("No active assistant run for this thread");
+  });
+
   it("persists allow_always rule to local workspace settings", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
       const firstDecision = await onPermissionRequest({

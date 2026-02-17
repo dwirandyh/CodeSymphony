@@ -396,6 +396,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
   sessionId,
   cwd,
+  abortController,
   permissionMode,
   autoAcceptTools,
   onText,
@@ -432,6 +433,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     const stream = query({
       prompt,
       options: {
+        abortController,
         includePartialMessages: true,
         resume: sessionId ?? undefined,
         permissionMode: permissionMode ?? "default",

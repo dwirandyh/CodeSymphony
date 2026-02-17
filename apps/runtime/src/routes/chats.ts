@@ -107,6 +107,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/threads/:id/stop", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.stopRun(params.id);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to stop run";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.post("/threads/:id/questions/answer", async (request, reply) => {
     const params = threadParams.parse(request.params);
 

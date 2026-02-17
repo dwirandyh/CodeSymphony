@@ -9,20 +9,29 @@ const WS_BASE =
         ? "ws://127.0.0.1:4321/api"
         : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:4321/api`;
 
-export function TerminalTab() {
+interface TerminalTabProps {
+    sessionId: string;
+    cwd: string | null;
+}
+
+export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const disposedRef = useRef(false);
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const currentSessionRef = useRef(sessionId);
     const [connected, setConnected] = useState(false);
 
+    // When sessionId changes (worktree switch), tear down and reconnect
     useEffect(() => {
         if (!containerRef.current) {
             return;
         }
 
+        // If switching session, close old WS first
+        currentSessionRef.current = sessionId;
         disposedRef.current = false;
 
         const terminal = new Terminal({
@@ -81,7 +90,12 @@ export function TerminalTab() {
                 return;
             }
 
-            const ws = new WebSocket(`${WS_BASE}/terminal/ws?sessionId=default`);
+            const params = new URLSearchParams({ sessionId });
+            if (cwd) {
+                params.set("cwd", cwd);
+            }
+
+            const ws = new WebSocket(`${WS_BASE}/terminal/ws?${params.toString()}`);
             wsRef.current = ws;
 
             ws.onopen = () => {
@@ -149,7 +163,7 @@ export function TerminalTab() {
             terminalRef.current = null;
             fitAddonRef.current = null;
         };
-    }, []);
+    }, [sessionId, cwd]);
 
     return (
         <div className="relative flex h-full flex-col">

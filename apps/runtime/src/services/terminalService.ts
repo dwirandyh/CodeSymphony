@@ -1,9 +1,13 @@
 import * as pty from "node-pty";
 
+const MAX_SCROLLBACK_BYTES = 50_000;
+
 export interface TerminalSession {
     id: string;
     ptyProcess: pty.IPty;
     listeners: Set<(data: string) => void>;
+    scrollback: string[];
+    scrollbackSize: number;
 }
 
 export function createTerminalService() {
@@ -35,9 +39,19 @@ export function createTerminalService() {
             id: sessionId,
             ptyProcess,
             listeners: new Set(),
+            scrollback: [],
+            scrollbackSize: 0,
         };
 
         ptyProcess.onData((data) => {
+            // Buffer output for replay on reconnect
+            session.scrollback.push(data);
+            session.scrollbackSize += data.length;
+            while (session.scrollbackSize > MAX_SCROLLBACK_BYTES && session.scrollback.length > 1) {
+                const removed = session.scrollback.shift()!;
+                session.scrollbackSize -= removed.length;
+            }
+
             for (const listener of session.listeners) {
                 listener(data);
             }
@@ -72,6 +86,12 @@ export function createTerminalService() {
         const session = sessions.get(sessionId);
         if (!session) {
             return () => { };
+        }
+
+        // Replay buffered output so reconnected clients see the prompt
+        if (session.scrollback.length > 0) {
+            const replay = session.scrollback.join("");
+            callback(replay);
         }
 
         session.listeners.add(callback);
