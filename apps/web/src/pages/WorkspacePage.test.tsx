@@ -1169,7 +1169,7 @@ describe("WorkspacePage", () => {
           source: "worktree.diff",
           summary: "Edited 2 files",
           changedFiles: ["src/main.ts", "src/util.ts"],
-          diff: "diff --git a/src/main.ts b/src/main.ts\nindex 111..222 100644\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1 +1 @@\n-export const main = () => 1;\n+export const main = () => 2;\n diff --git a/src/util.ts b/src/util.ts\n@@ -3,0 +4 @@\n+export const next = 3;",
+          diff: "diff --git a/src/main.ts b/src/main.ts\nindex 111..222 100644\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1 +1 @@\n-export const main = () => 1;\n+export const main = () => 2;\ndiff --git a/src/util.ts b/src/util.ts\n@@ -3,0 +4 @@\n+export const next = 3;",
           diffTruncated: false,
         },
         createdAt: "2026-01-01T10:00:01.500Z",
@@ -1204,7 +1204,14 @@ describe("WorkspacePage", () => {
     }
 
     expect(container.querySelector('[data-testid="timeline-tool-diff-preview"]')).toBeNull();
-    expect(editedCard.textContent).toContain("Edited src/main.ts +2 -1 (2 files)");
+    const summaryEl = editedCard.querySelector("summary");
+    if (!summaryEl) {
+      throw new Error("Expected summary element in edited diff card");
+    }
+    expect(summaryEl.textContent).toContain("Edited src/main.ts");
+    expect(summaryEl.textContent).toContain("+2");
+    expect(summaryEl.textContent).toContain("-1");
+    expect(summaryEl.textContent).toContain("(2 files)");
 
     const details = editedCard.querySelector("details") as HTMLDetailsElement | null;
     if (!details) {
@@ -1213,8 +1220,8 @@ describe("WorkspacePage", () => {
 
     expect(details.open).toBe(false);
     const collapsedContent = container.textContent ?? "";
-    expect(collapsedContent.indexOf("Saya update dulu.")).toBeLessThan(collapsedContent.indexOf("Edited src/main.ts +2 -1 (2 files)"));
-    expect(collapsedContent.indexOf("Edited src/main.ts +2 -1 (2 files)")).toBeLessThan(collapsedContent.indexOf("Sudah beres."));
+    expect(collapsedContent.indexOf("Saya update dulu.")).toBeLessThan(collapsedContent.indexOf("Edited src/main.ts"));
+    expect(collapsedContent.indexOf("Edited src/main.ts")).toBeLessThan(collapsedContent.indexOf("Sudah beres."));
 
     act(() => {
       details.open = true;

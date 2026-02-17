@@ -713,19 +713,22 @@ function editedSummaryLabel({
   additions: number;
   deletions: number;
   expanded?: boolean;
-}): string {
+}): React.ReactNode {
   if (expanded) {
     return "Edited file";
   }
 
   const firstFile = changedFiles[0] ?? "changes";
-  const stats = `+${additions} -${deletions}`;
+  const fileCount = changedFiles.length > 1 ? ` (${changedFiles.length} files)` : "";
 
-  if (changedFiles.length <= 1) {
-    return `Edited ${firstFile} ${stats}`;
-  }
-
-  return `Edited ${firstFile} ${stats} (${changedFiles.length} files)`;
+  return (
+    <>
+      Edited {firstFile}{" "}
+      <span className="text-emerald-400">+{additions}</span>{" "}
+      <span className="text-red-400">-{deletions}</span>
+      {fileCount}
+    </>
+  );
 }
 
 type FileDiffSection = {
@@ -1373,13 +1376,20 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
 
           if (item.kind === "edited-diff") {
             const expanded = isEditedExpanded(item.id, false);
+            const fileSections = splitDiffByFile(item.diff);
+            // Derive file list from actual diff content — more reliable than
+            // the backend's changedFiles which can include unrelated worktree
+            // files and may truncate names from git-status parsing.
+            const diffFileNames = fileSections
+              .map((s) => s.fileName)
+              .filter((n) => n !== "changes" && n !== "unknown");
+            const resolvedFiles = diffFileNames.length > 0 ? diffFileNames : item.changedFiles;
             const summaryLabel = editedSummaryLabel({
-              changedFiles: item.changedFiles,
+              changedFiles: resolvedFiles,
               additions: item.additions,
               deletions: item.deletions,
               expanded,
             });
-            const fileSections = splitDiffByFile(item.diff);
 
             return (
               <article
