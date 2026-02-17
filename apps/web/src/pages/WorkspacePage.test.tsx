@@ -1204,7 +1204,7 @@ describe("WorkspacePage", () => {
     }
 
     expect(container.querySelector('[data-testid="timeline-tool-diff-preview"]')).toBeNull();
-    expect(editedCard.textContent).toContain("Edited src/main.ts (+2 -1) (2 files)");
+    expect(editedCard.textContent).toContain("Edited src/main.ts +2 -1 (2 files)");
 
     const details = editedCard.querySelector("details") as HTMLDetailsElement | null;
     if (!details) {
@@ -1213,8 +1213,8 @@ describe("WorkspacePage", () => {
 
     expect(details.open).toBe(false);
     const collapsedContent = container.textContent ?? "";
-    expect(collapsedContent.indexOf("Saya update dulu.")).toBeLessThan(collapsedContent.indexOf("Edited src/main.ts (+2 -1) (2 files)"));
-    expect(collapsedContent.indexOf("Edited src/main.ts (+2 -1) (2 files)")).toBeLessThan(collapsedContent.indexOf("Sudah beres."));
+    expect(collapsedContent.indexOf("Saya update dulu.")).toBeLessThan(collapsedContent.indexOf("Edited src/main.ts +2 -1 (2 files)"));
+    expect(collapsedContent.indexOf("Edited src/main.ts +2 -1 (2 files)")).toBeLessThan(collapsedContent.indexOf("Sudah beres."));
 
     act(() => {
       details.open = true;
@@ -1266,7 +1266,7 @@ describe("WorkspacePage", () => {
       throw new Error("Expected edited diff orphan card");
     }
 
-    expect(editedCard.textContent).toContain("Edited src/main.ts (+1 -1)");
+    expect(editedCard.textContent).toContain("Edited src/main.ts +1 -1");
     const diffDetails = editedCard.querySelector("details") as HTMLDetailsElement | null;
     if (!diffDetails) {
       throw new Error("Expected diff preview details");

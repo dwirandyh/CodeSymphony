@@ -689,23 +689,48 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
   return Array.from(byToolUseId.values()).sort((a, b) => a.startIdx - b.startIdx);
 }
 
-function extractEditedRuns(context: ChatEvent[]): EditedRun[] {
+function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): EditedRun[] {
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
   const runs: EditedRun[] = [];
+
+  // Determine the best anchor position for the edited-diff card. Claude Code
+  // emits all message.delta events before the final worktree.diff, so using
+  // the worktree.diff's own idx would place the card after ALL text.
+  //
+  // Instead, anchor to the last permission/tool event that occurred during the
+  // conversation — these fire *between* text deltas (planning text before,
+  // confirmation text after), giving a natural inline split point.
+  const anchorSource = fullContext ? [...fullContext].sort((a, b) => a.idx - b.idx) : ordered;
+  let bestAnchorIdx: number | null = null;
+  for (const event of anchorSource) {
+    if (isWorktreeDiffEvent(event)) {
+      continue;
+    }
+    if (
+      event.type === "permission.resolved" ||
+      event.type === "permission.requested" ||
+      event.type === "tool.finished" ||
+      event.type === "tool.output" ||
+      event.type === "tool.started"
+    ) {
+      bestAnchorIdx = event.idx;
+    }
+  }
 
   for (const event of ordered) {
     if (!isWorktreeDiffEvent(event)) {
       continue;
     }
 
+    const anchorIdx = bestAnchorIdx ?? event.idx;
     const diff = payloadStringOrNull(event.payload.diff) ?? "";
     const changedFiles = payloadStringArray(event.payload.changedFiles);
     const { additions, deletions } = countDiffStats(diff);
     runs.push({
       id: `edited:${event.id}`,
       eventId: event.id,
-      startIdx: event.idx,
-      anchorIdx: event.idx,
+      startIdx: anchorIdx,
+      anchorIdx,
       changedFiles,
       diff,
       diffTruncated: event.payload.diffTruncated === true,
@@ -1809,7 +1834,7 @@ export function WorkspacePage() {
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
       }
-      const editedRuns = message.role === "assistant" ? extractEditedRuns(nonBashContext) : [];
+      const editedRuns = message.role === "assistant" ? extractEditedRuns(nonBashContext, context) : [];
       if (message.role === "assistant") {
         for (const run of editedRuns) {
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
@@ -1937,7 +1962,7 @@ export function WorkspacePage() {
         let delayedFirstInsertInserted = false;
         let stableOffset = 0;
 
-        function pushInlineInsert(insert: InlineInsert) {
+        function pushInlineInsert(insert: InlineInsert, bucketTimestamp?: number | null) {
           if (insert.kind === "bash") {
             const run = insert.run;
             const status = run.status === "running" && isCompleted ? "success" : run.status;
@@ -1978,7 +2003,7 @@ export function WorkspacePage() {
               createdAt: run.createdAt,
             },
             anchorIdx: run.anchorIdx,
-            timestamp: parseTimestamp(run.createdAt) ?? timestamp,
+            timestamp: bucketTimestamp ?? timestamp,
             rank: 3,
             stableOrder: message.seq + stableOffset,
           });
@@ -2010,7 +2035,7 @@ export function WorkspacePage() {
             stableOffset += 0.001;
 
             if (deferFirstInsertUntilText && !delayedFirstInsertInserted) {
-              pushInlineInsert(inlineInserts[0]);
+              pushInlineInsert(inlineInserts[0], bucket.timestamp);
               delayedFirstInsertInserted = true;
             }
           }
@@ -2023,7 +2048,7 @@ export function WorkspacePage() {
             continue;
           }
 
-          pushInlineInsert(inlineInserts[bucketIndex]);
+          pushInlineInsert(inlineInserts[bucketIndex], segmentBuckets[bucketIndex]?.timestamp);
         }
 
         continue;
@@ -2174,15 +2199,15 @@ export function WorkspacePage() {
   const hasPendingPlan = pendingPlan !== null && pendingPlan.status === "pending";
   const hasStreamingAssistantMessage =
     selectedThreadId != null
-      && messages.some(
-        (message) =>
-          message.threadId === selectedThreadId
-          && message.role === "assistant"
-          && streamingMessageIdsRef.current.has(message.id),
-      );
+    && messages.some(
+      (message) =>
+        message.threadId === selectedThreadId
+        && message.role === "assistant"
+        && streamingMessageIdsRef.current.has(message.id),
+    );
   const showStopAction =
     selectedThreadId != null
-      && (sendingMessage || waitingAssistant?.threadId === selectedThreadId || hasStreamingAssistantMessage);
+    && (sendingMessage || waitingAssistant?.threadId === selectedThreadId || hasStreamingAssistantMessage);
   const stopRequestedForActiveThread = selectedThreadId != null && stopRequestedThreadId === selectedThreadId;
   const stoppingRun =
     selectedThreadId != null && (stoppingThreadId === selectedThreadId || stopRequestedForActiveThread);

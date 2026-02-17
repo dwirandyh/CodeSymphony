@@ -20,57 +20,57 @@ export type ActivityTraceStep = {
 
 export type ChatTimelineItem =
   | {
-      kind: "message";
-      message: ChatMessage;
-      renderHint?: AssistantRenderHint;
-      rawFileLanguage?: string;
-      isCompleted?: boolean;
-      context?: ChatEvent[];
-    }
+    kind: "message";
+    message: ChatMessage;
+    renderHint?: AssistantRenderHint;
+    rawFileLanguage?: string;
+    isCompleted?: boolean;
+    context?: ChatEvent[];
+  }
   | {
-      kind: "plan-file-output";
-      id: string;
-      messageId: string;
-      content: string;
-      filePath: string;
-      createdAt: string;
-    }
+    kind: "plan-file-output";
+    id: string;
+    messageId: string;
+    content: string;
+    filePath: string;
+    createdAt: string;
+  }
   | {
-      kind: "activity";
-      messageId: string;
-      durationSeconds: number;
-      introText: string | null;
-      steps: ActivityTraceStep[];
-      defaultExpanded: boolean;
-    }
+    kind: "activity";
+    messageId: string;
+    durationSeconds: number;
+    introText: string | null;
+    steps: ActivityTraceStep[];
+    defaultExpanded: boolean;
+  }
   | {
-      kind: "tool";
-      event: ChatEvent;
-    }
+    kind: "tool";
+    event: ChatEvent;
+  }
   | {
-      kind: "bash-command";
-      id: string;
-      toolUseId: string;
-      shell: "bash";
-      command: string | null;
-      summary: string | null;
-      output: string | null;
-      error: string | null;
-      truncated: boolean;
-      durationSeconds: number | null;
-      status: "running" | "success" | "failed";
-    }
+    kind: "bash-command";
+    id: string;
+    toolUseId: string;
+    shell: "bash";
+    command: string | null;
+    summary: string | null;
+    output: string | null;
+    error: string | null;
+    truncated: boolean;
+    durationSeconds: number | null;
+    status: "running" | "success" | "failed";
+  }
   | {
-      kind: "edited-diff";
-      id: string;
-      eventId: string;
-      changedFiles: string[];
-      diff: string;
-      diffTruncated: boolean;
-      additions: number;
-      deletions: number;
-      createdAt: string;
-    };
+    kind: "edited-diff";
+    id: string;
+    eventId: string;
+    changedFiles: string[];
+    diff: string;
+    diffTruncated: boolean;
+    additions: number;
+    deletions: number;
+    createdAt: string;
+  };
 
 type ChatMessageListProps = {
   items: ChatTimelineItem[];
@@ -249,13 +249,13 @@ function toAnsiSegments(input: string): AnsiSegment[] {
   return segments.length > 0
     ? segments
     : [
-        {
-          text: input,
-          fgColor: null,
-          bold: false,
-          dim: false,
-        },
-      ];
+      {
+        text: input,
+        fgColor: null,
+        bold: false,
+        dim: false,
+      },
+    ];
 }
 
 function TerminalOutputPre({ text, className }: { text: string; className: string }) {
@@ -707,19 +707,68 @@ function editedSummaryLabel({
   changedFiles,
   additions,
   deletions,
+  expanded,
 }: {
   changedFiles: string[];
   additions: number;
   deletions: number;
+  expanded?: boolean;
 }): string {
+  if (expanded) {
+    return "Edited file";
+  }
+
   const firstFile = changedFiles[0] ?? "changes";
   const stats = `+${additions} -${deletions}`;
 
   if (changedFiles.length <= 1) {
-    return `Edited ${firstFile} (${stats})`;
+    return `Edited ${firstFile} ${stats}`;
   }
 
-  return `Edited ${firstFile} (${stats}) (${changedFiles.length} files)`;
+  return `Edited ${firstFile} ${stats} (${changedFiles.length} files)`;
+}
+
+type FileDiffSection = {
+  fileName: string;
+  additions: number;
+  deletions: number;
+  lines: string[];
+};
+
+function splitDiffByFile(diff: string): FileDiffSection[] {
+  const sections: FileDiffSection[] = [];
+  const rawLines = diff.split(/\r?\n/);
+  let current: FileDiffSection | null = null;
+
+  for (const line of rawLines) {
+    if (line.startsWith("diff --git ")) {
+      if (current) {
+        sections.push(current);
+      }
+      const match = /diff --git a\/.+ b\/(.+)/.exec(line);
+      const fileName = match ? match[1] : "unknown";
+      current = { fileName, additions: 0, deletions: 0, lines: [line] };
+      continue;
+    }
+
+    if (!current) {
+      current = { fileName: "changes", additions: 0, deletions: 0, lines: [line] };
+      continue;
+    }
+
+    current.lines.push(line);
+    if (line.startsWith("+") && !line.startsWith("+++ ")) {
+      current.additions += 1;
+    } else if (line.startsWith("-") && !line.startsWith("--- ")) {
+      current.deletions += 1;
+    }
+  }
+
+  if (current) {
+    sections.push(current);
+  }
+
+  return sections;
 }
 
 export function MarkdownBody({
@@ -1328,8 +1377,9 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
               changedFiles: item.changedFiles,
               additions: item.additions,
               deletions: item.deletions,
+              expanded,
             });
-            const lines = item.diff.split(/\r?\n/);
+            const fileSections = splitDiffByFile(item.diff);
 
             return (
               <article
@@ -1348,25 +1398,48 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                     });
                   }}
                 >
-                  <summary className="cursor-pointer text-[12px] text-muted-foreground">
-                    <span className="font-semibold text-foreground">{summaryLabel}</span>
+                  <summary
+                    className={cn(
+                      "group/edited-summary inline-flex list-none cursor-pointer items-center gap-1.5 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
+                      expanded ? "text-foreground" : "text-foreground hover:text-foreground",
+                    )}
+                  >
+                    <span
+                      className="inline-flex shrink-0 text-muted-foreground transition-transform"
+                      style={expanded ? { transform: "rotate(90deg)" } : undefined}
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </span>
+                    <span className="font-medium">{summaryLabel}</span>
                   </summary>
 
                   <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
-                    <div className="max-h-72 overflow-auto font-mono text-xs leading-relaxed">
-                      {lines.map((line, index) => {
-                        const kind = classifyDiffLine(line);
-                        return (
-                          <div
-                            key={`${item.id}:line:${index}`}
-                            data-line-kind={kind}
-                            className={cn("whitespace-pre-wrap break-words px-4 py-0.5", diffLineClassName(kind))}
-                          >
-                            {line.length > 0 ? line : " "}
-                          </div>
-                        );
-                      })}
-                    </div>
+                    {fileSections.map((section, sectionIndex) => (
+                      <div key={`${item.id}:section:${sectionIndex}`}>
+                        <div className="flex items-center gap-2 border-b border-border/25 px-3 py-1.5 text-xs">
+                          <span className="font-semibold text-foreground">{section.fileName}</span>
+                          <span className="text-muted-foreground">
+                            <span className="text-emerald-400">+{section.additions}</span>
+                            {" "}
+                            <span className="text-red-400">-{section.deletions}</span>
+                          </span>
+                        </div>
+                        <div className="max-h-72 overflow-auto font-mono text-xs leading-relaxed">
+                          {section.lines.map((line, lineIndex) => {
+                            const kind = classifyDiffLine(line);
+                            return (
+                              <div
+                                key={`${item.id}:${sectionIndex}:line:${lineIndex}`}
+                                data-line-kind={kind}
+                                className={cn("whitespace-pre-wrap break-words px-4 py-0.5", diffLineClassName(kind))}
+                              >
+                                {line.length > 0 ? line : " "}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
 
                     {item.diffTruncated ? (
                       <div className="px-3 pt-1.5 pb-2 text-[11px] text-muted-foreground">... [diff truncated]</div>
