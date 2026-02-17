@@ -50,6 +50,17 @@ export type ChatTimelineItem =
       truncated: boolean;
       durationSeconds: number | null;
       status: "running" | "success" | "failed";
+    }
+  | {
+      kind: "edited-diff";
+      id: string;
+      eventId: string;
+      changedFiles: string[];
+      diff: string;
+      diffTruncated: boolean;
+      additions: number;
+      deletions: number;
+      createdAt: string;
     };
 
 type ChatMessageListProps = {
@@ -492,7 +503,78 @@ function getDiffPreview(event: ChatEvent): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-function MarkdownBody({
+type DiffLineKind = "addition" | "deletion" | "hunk" | "meta" | "context";
+
+function classifyDiffLine(line: string): DiffLineKind {
+  if (line.startsWith("@@")) {
+    return "hunk";
+  }
+
+  if (
+    line.startsWith("diff --git") ||
+    line.startsWith("index ") ||
+    line.startsWith("new file mode ") ||
+    line.startsWith("deleted file mode ") ||
+    line.startsWith("similarity index ") ||
+    line.startsWith("rename from ") ||
+    line.startsWith("rename to ") ||
+    line.startsWith("--- ") ||
+    line.startsWith("+++ ")
+  ) {
+    return "meta";
+  }
+
+  if (line.startsWith("+")) {
+    return "addition";
+  }
+
+  if (line.startsWith("-")) {
+    return "deletion";
+  }
+
+  return "context";
+}
+
+function diffLineClassName(kind: DiffLineKind): string {
+  if (kind === "addition") {
+    return "bg-emerald-500/10 text-emerald-300";
+  }
+
+  if (kind === "deletion") {
+    return "bg-red-500/10 text-red-300";
+  }
+
+  if (kind === "hunk") {
+    return "bg-sky-500/10 text-sky-300";
+  }
+
+  if (kind === "meta") {
+    return "text-muted-foreground";
+  }
+
+  return "text-foreground";
+}
+
+function editedSummaryLabel({
+  changedFiles,
+  additions,
+  deletions,
+}: {
+  changedFiles: string[];
+  additions: number;
+  deletions: number;
+}): string {
+  const firstFile = changedFiles[0] ?? "changes";
+  const stats = `+${additions} -${deletions}`;
+
+  if (changedFiles.length <= 1) {
+    return `Edited ${firstFile} (${stats})`;
+  }
+
+  return `Edited ${firstFile} (${stats}) (${changedFiles.length} files)`;
+}
+
+export function MarkdownBody({
   content,
   testId,
 }: {
@@ -631,6 +713,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
   const [copiedDebug, setCopiedDebug] = useState(false);
   const [activityExpandedByMessageId, setActivityExpandedByMessageId] = useState<Map<string, boolean>>(new Map());
   const [bashExpandedById, setBashExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
@@ -679,6 +762,14 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
 
   function isBashExpanded(id: string, defaultExpanded: boolean): boolean {
     const explicit = bashExpandedById.get(id);
+    if (typeof explicit === "boolean") {
+      return explicit;
+    }
+    return defaultExpanded;
+  }
+
+  function isEditedExpanded(id: string, defaultExpanded: boolean): boolean {
+    const explicit = editedExpandedById.get(id);
     if (typeof explicit === "boolean") {
       return explicit;
     }
@@ -761,14 +852,17 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                 ) : null}
 
                 {diffPreview ? (
-                  <div className="mt-2 rounded-md border border-border/40 bg-secondary/20 p-2.5">
-                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  <details
+                    className="mt-2 rounded-md border border-border/40 bg-secondary/20 p-2.5"
+                    data-testid="timeline-tool-diff-preview"
+                  >
+                    <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                       Diff Preview
-                    </div>
-                    <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+                    </summary>
+                    <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
                       {diffPreview}
                     </pre>
-                  </div>
+                  </details>
                 ) : null}
               </article>
             );
@@ -849,6 +943,61 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                         {statusLabel}
                       </span>
                     </div>
+                  </div>
+                </details>
+              </article>
+            );
+          }
+
+          if (item.kind === "edited-diff") {
+            const expanded = isEditedExpanded(item.id, false);
+            const summaryLabel = editedSummaryLabel({
+              changedFiles: item.changedFiles,
+              additions: item.additions,
+              deletions: item.deletions,
+            });
+            const lines = item.diff.split(/\r?\n/);
+
+            return (
+              <article
+                key={`edited-diff-${item.id}`}
+                className="text-xs"
+                data-testid="timeline-edited-diff"
+              >
+                <details
+                  open={expanded}
+                  onToggle={(event) => {
+                    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                    setEditedExpandedById((current) => {
+                      const next = new Map(current);
+                      next.set(item.id, nextOpen);
+                      return next;
+                    });
+                  }}
+                >
+                  <summary className="cursor-pointer text-[12px] text-muted-foreground">
+                    <span className="font-semibold text-foreground">{summaryLabel}</span>
+                  </summary>
+
+                  <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
+                    <div className="max-h-72 overflow-auto font-mono text-xs leading-relaxed">
+                      {lines.map((line, index) => {
+                        const kind = classifyDiffLine(line);
+                        return (
+                          <div
+                            key={`${item.id}:line:${index}`}
+                            data-line-kind={kind}
+                            className={cn("whitespace-pre-wrap break-words px-4 py-0.5", diffLineClassName(kind))}
+                          >
+                            {line.length > 0 ? line : " "}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {item.diffTruncated ? (
+                      <div className="px-3 pt-1.5 pb-2 text-[11px] text-muted-foreground">... [diff truncated]</div>
+                    ) : null}
                   </div>
                 </details>
               </article>

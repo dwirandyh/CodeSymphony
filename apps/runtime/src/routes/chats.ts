@@ -119,6 +119,30 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/threads/:id/plan/approve", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.approvePlan(params.id);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to approve plan";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/threads/:id/plan/revise", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.revisePlan(params.id, request.body);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to revise plan";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.post("/threads/:id/permissions/resolve", async (request, reply) => {
     const params = threadParams.parse(request.params);
 

@@ -6,6 +6,7 @@ import type {
   CreateChatThreadInput,
   CreateRepositoryInput,
   CreateWorktreeInput,
+  PlanRevisionInput,
   ResolvePermissionInput,
   Repository,
   SendChatMessageInput,
@@ -112,6 +113,30 @@ export const api = {
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to resolve permission");
+    }
+  },
+  approvePlan: async (threadId: string) => {
+    const response = await fetch(`${API_BASE}/threads/${threadId}/plan/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to approve plan");
+    }
+  },
+  revisePlan: async (threadId: string, input: PlanRevisionInput) => {
+    const response = await fetch(`${API_BASE}/threads/${threadId}/plan/revise`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to revise plan");
     }
   },
   listEvents: (threadId: string) => request<ChatEvent[]>(`/threads/${threadId}/events`),

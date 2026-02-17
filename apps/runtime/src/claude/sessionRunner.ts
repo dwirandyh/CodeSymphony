@@ -1,6 +1,8 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ClaudeRunner } from "../types";
 
 const MAX_CAPTURED_STDERR_LINES = 12;
@@ -355,21 +357,60 @@ export const __testing = {
   extractBashToolResult,
 };
 
+function findLatestPlanFile(afterTimestamp: number): { filePath: string; content: string } | null {
+  const plansDir = join(homedir(), ".claude", "plans");
+  if (!existsSync(plansDir)) {
+    return null;
+  }
+
+  let latestFile: { filePath: string; mtime: number } | null = null;
+  try {
+    const entries = readdirSync(plansDir);
+    for (const entry of entries) {
+      if (!entry.endsWith(".md")) {
+        continue;
+      }
+      const filePath = join(plansDir, entry);
+      const stat = statSync(filePath);
+      if (stat.mtimeMs > afterTimestamp && (!latestFile || stat.mtimeMs > latestFile.mtime)) {
+        latestFile = { filePath, mtime: stat.mtimeMs };
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  if (!latestFile) {
+    return null;
+  }
+
+  try {
+    const content = readFileSync(latestFile.filePath, "utf-8");
+    return content.trim().length > 0 ? { filePath: latestFile.filePath, content } : null;
+  } catch {
+    return null;
+  }
+}
+
 export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
   sessionId,
   cwd,
   permissionMode,
+  autoAcceptTools,
   onText,
   onToolStarted,
   onToolOutput,
   onToolFinished,
   onQuestionRequest,
   onPermissionRequest,
+  onPlanFileDetected,
 }) => {
   let latestSessionId: string | null = sessionId;
   let finalOutput = "";
   const recentStderr: string[] = [];
+  const queryStartTimestamp = Date.now();
+  let planFileDetected = false;
   const startedToolUseIds = new Set<string>();
   const finishedToolUseIds = new Set<string>();
   const toolMetadataByUseId = new Map<string, ToolMetadata>();
@@ -395,6 +436,21 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         resume: sessionId ?? undefined,
         permissionMode: permissionMode ?? "default",
         canUseTool: async (toolName, input, options) => {
+          if (permissionMode === "plan" && toolName !== "AskUserQuestion") {
+            if (!planFileDetected && finalOutput.trim().length > 0) {
+              planFileDetected = true;
+              const planFile = findLatestPlanFile(queryStartTimestamp);
+              await onPlanFileDetected({
+                filePath: planFile?.filePath ?? "streaming-plan",
+                content: planFile?.content ?? finalOutput.trim(),
+              });
+            }
+            return {
+              behavior: "deny",
+              message: "Plan requires user approval before execution.",
+            };
+          }
+
           if (toolName === "AskUserQuestion") {
             const questions = Array.isArray(input.questions) ? input.questions : [];
             const result = await onQuestionRequest({
@@ -422,6 +478,13 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           );
 
           if (!requiresUserApproval) {
+            return {
+              behavior: "allow",
+              updatedInput: input,
+            };
+          }
+
+          if (autoAcceptTools) {
             return {
               behavior: "allow",
               updatedInput: input,
@@ -662,6 +725,25 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         continue;
       }
 
+      if (message.type === "system" && "subtype" in message && message.subtype === "files_persisted") {
+        const filesPersistedMessage = message as { files?: Array<{ filename: string; file_id: string }> };
+        const files = filesPersistedMessage.files ?? [];
+        for (const file of files) {
+          if (file.filename.includes(".claude/plans/") && file.filename.endsWith(".md")) {
+            try {
+              const content = readFileSync(file.filename, "utf-8");
+              if (content.trim().length > 0) {
+                planFileDetected = true;
+                await onPlanFileDetected({ filePath: file.filename, content });
+              }
+            } catch {
+              // Plan file could not be read; skip.
+            }
+          }
+        }
+        continue;
+      }
+
       if (message.type === "assistant") {
         const textParts: string[] = [];
 
@@ -674,6 +756,18 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         if (textParts.length > 0 && finalOutput.length === 0) {
           finalOutput = textParts.join("\n");
         }
+      }
+    }
+
+    if (permissionMode === "plan" && !planFileDetected) {
+      const planFile = findLatestPlanFile(queryStartTimestamp);
+      if (planFile) {
+        await onPlanFileDetected(planFile);
+      } else if (finalOutput.trim().length > 0) {
+        await onPlanFileDetected({
+          filePath: "streaming-plan",
+          content: finalOutput.trim(),
+        });
       }
     }
 

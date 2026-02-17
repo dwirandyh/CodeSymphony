@@ -19,6 +19,7 @@ export type ClaudeRunner = (args: {
   sessionId: string | null;
   cwd: string;
   permissionMode?: ChatMode;
+  autoAcceptTools?: boolean;
   onText: (chunk: string) => Promise<void> | void;
   onToolStarted: (payload: {
     toolName: string;
@@ -62,6 +63,10 @@ export type ClaudeRunner = (args: {
     decisionReason: string | null;
     suggestions: unknown[] | null;
   }) => Promise<{ decision: PermissionDecision; message?: string }> | { decision: PermissionDecision; message?: string };
+  onPlanFileDetected: (payload: {
+    filePath: string;
+    content: string;
+  }) => Promise<void> | void;
 }) => Promise<ClaudeRunnerResult>;
 
 export type RuntimeDeps = {

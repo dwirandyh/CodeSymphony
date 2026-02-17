@@ -1084,6 +1084,162 @@ describe("WorkspacePage", () => {
     expect(container.textContent).not.toContain("Edited files");
   });
 
+  it("renders edited diff card inline between assistant text segments", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edited-inline",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "update file sekarang",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edited-inline",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Saya update dulu. Sudah beres.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edited-inline-msg-before",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edited-inline", role: "assistant", delta: "Saya update dulu." },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-edited-inline-worktree",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          source: "worktree.diff",
+          summary: "Edited 2 files",
+          changedFiles: ["src/main.ts", "src/util.ts"],
+          diff: "diff --git a/src/main.ts b/src/main.ts\nindex 111..222 100644\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1 +1 @@\n-export const main = () => 1;\n+export const main = () => 2;\n diff --git a/src/util.ts b/src/util.ts\n@@ -3,0 +4 @@\n+export const next = 3;",
+          diffTruncated: false,
+        },
+        createdAt: "2026-01-01T10:00:01.500Z",
+      },
+      {
+        id: "evt-edited-inline-msg-after",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edited-inline", role: "assistant", delta: " Sudah beres." },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-edited-inline-complete",
+        threadId: "thread-1",
+        idx: 4,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-edited-inline" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected edited diff card");
+    }
+
+    expect(container.querySelector('[data-testid="timeline-tool-diff-preview"]')).toBeNull();
+    expect(editedCard.textContent).toContain("Edited src/main.ts (+2 -1) (2 files)");
+
+    const details = editedCard.querySelector("details") as HTMLDetailsElement | null;
+    if (!details) {
+      throw new Error("Expected edited diff details block");
+    }
+
+    expect(details.open).toBe(false);
+    const collapsedContent = container.textContent ?? "";
+    expect(collapsedContent.indexOf("Saya update dulu.")).toBeLessThan(collapsedContent.indexOf("Edited src/main.ts (+2 -1) (2 files)"));
+    expect(collapsedContent.indexOf("Edited src/main.ts (+2 -1) (2 files)")).toBeLessThan(collapsedContent.indexOf("Sudah beres."));
+
+    act(() => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle", { bubbles: true }));
+    });
+
+    await flushEffects();
+
+    const detailsAfterToggle = container.querySelector('[data-testid="timeline-edited-diff"] details') as HTMLDetailsElement | null;
+    if (!detailsAfterToggle) {
+      throw new Error("Expected edited diff details block after toggle");
+    }
+
+    expect(detailsAfterToggle.open).toBe(true);
+    expect(detailsAfterToggle.textContent).toContain("diff --git a/src/main.ts b/src/main.ts");
+    expect(detailsAfterToggle.querySelector('[data-line-kind="addition"]')).not.toBeNull();
+    expect(detailsAfterToggle.querySelector('[data-line-kind="deletion"]')).not.toBeNull();
+    expect(detailsAfterToggle.querySelector('[data-line-kind="hunk"]')).not.toBeNull();
+    expect(detailsAfterToggle.querySelector('[data-line-kind="meta"]')).not.toBeNull();
+  });
+
+  it("renders edited diff card as orphan when no assistant timeline segment is available", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edited-orphan",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          source: "worktree.diff",
+          summary: "Edited 1 file",
+          changedFiles: ["src/main.ts"],
+          diff: "diff --git a/src/main.ts b/src/main.ts\n@@ -1 +1 @@\n-export const main = () => 1;\n+export const main = () => 2;",
+          diffTruncated: false,
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected edited diff orphan card");
+    }
+
+    expect(editedCard.textContent).toContain("Edited src/main.ts (+1 -1)");
+    const diffDetails = editedCard.querySelector("details") as HTMLDetailsElement | null;
+    if (!diffDetails) {
+      throw new Error("Expected diff preview details");
+    }
+
+    expect(diffDetails.open).toBe(false);
+    act(() => {
+      diffDetails.open = true;
+      diffDetails.dispatchEvent(new Event("toggle", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const diffDetailsAfterToggle = container.querySelector('[data-testid="timeline-edited-diff"] details') as HTMLDetailsElement | null;
+    if (!diffDetailsAfterToggle) {
+      throw new Error("Expected diff preview details after toggle");
+    }
+
+    expect(diffDetailsAfterToggle.open).toBe(true);
+    expect(diffDetailsAfterToggle.textContent).toContain("diff --git a/src/main.ts b/src/main.ts");
+  });
+
   it("keeps read tool events before assistant output in inline timeline", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {

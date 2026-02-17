@@ -10,6 +10,7 @@ import {
 import { RenderDebugPanel } from "../components/workspace/RenderDebugPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
 import { PermissionPromptCard } from "../components/workspace/PermissionPromptCard";
+import { PlanCard } from "../components/workspace/PlanCard";
 import { QuestionCard } from "../components/workspace/QuestionCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { api } from "../lib/api";
@@ -24,6 +25,9 @@ const EVENT_TYPES = [
   "permission.resolved",
   "question.requested",
   "question.answered",
+  "plan.created",
+  "plan.approved",
+  "plan.revision_requested",
   "chat.completed",
   "chat.failed",
 ] as const;
@@ -36,6 +40,9 @@ const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "permission.resolved",
   "question.requested",
   "question.answered",
+  "plan.created",
+  "plan.approved",
+  "plan.revision_requested",
   "chat.failed",
 ]);
 const MAX_ORDER_INDEX = Number.MAX_SAFE_INTEGER;
@@ -163,6 +170,32 @@ function hasUnclosedCodeFence(content: string): boolean {
 
 function isLikelyDiffContent(content: string): boolean {
   return /^(diff --git|---\s|\+\+\+\s|@@\s)/m.test(content);
+}
+
+function isWorktreeDiffEvent(event: ChatEvent): boolean {
+  return event.type === "tool.finished" && event.payload.source === "worktree.diff";
+}
+
+function countDiffStats(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("+++ ") || line.startsWith("--- ")) {
+      continue;
+    }
+
+    if (line.startsWith("+")) {
+      additions += 1;
+      continue;
+    }
+
+    if (line.startsWith("-")) {
+      deletions += 1;
+    }
+  }
+
+  return { additions, deletions };
 }
 
 function activityStepLabel(event: ChatEvent, detail: string): string {
@@ -429,12 +462,34 @@ type BashRun = {
   eventIds: Set<string>;
 };
 
+type EditedRun = {
+  id: string;
+  eventId: string;
+  startIdx: number;
+  anchorIdx: number;
+  changedFiles: string[];
+  diff: string;
+  diffTruncated: boolean;
+  additions: number;
+  deletions: number;
+  createdAt: string;
+  eventIds: Set<string>;
+};
+
 function payloadStringOrNull(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
   }
 
   return value.length > 0 ? value : null;
+}
+
+function payloadStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
 }
 
 function isBashPayload(payload: Record<string, unknown>): boolean {
@@ -606,6 +661,36 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
   }
 
   return Array.from(byToolUseId.values()).sort((a, b) => a.startIdx - b.startIdx);
+}
+
+function extractEditedRuns(context: ChatEvent[]): EditedRun[] {
+  const ordered = [...context].sort((a, b) => a.idx - b.idx);
+  const runs: EditedRun[] = [];
+
+  for (const event of ordered) {
+    if (!isWorktreeDiffEvent(event)) {
+      continue;
+    }
+
+    const diff = payloadStringOrNull(event.payload.diff) ?? "";
+    const changedFiles = payloadStringArray(event.payload.changedFiles);
+    const { additions, deletions } = countDiffStats(diff);
+    runs.push({
+      id: `edited:${event.id}`,
+      eventId: event.id,
+      startIdx: event.idx,
+      anchorIdx: event.idx,
+      changedFiles,
+      diff,
+      diffTruncated: event.payload.diffTruncated === true,
+      additions,
+      deletions,
+      createdAt: event.createdAt,
+      eventIds: new Set([event.id]),
+    });
+  }
+
+  return runs;
 }
 
 type PendingPermissionRequest = {
@@ -1294,6 +1379,73 @@ export function WorkspacePage() {
     }
   }
 
+  type PendingPlan = {
+    content: string;
+    filePath: string;
+    status: "pending" | "revising" | "sending" | "approved" | "superseded";
+  };
+
+  const pendingPlan = useMemo<PendingPlan | null>(() => {
+    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    let latestPlan: PendingPlan | null = null;
+
+    for (const event of orderedEvents) {
+      if (event.type === "plan.created") {
+        const content = typeof event.payload.content === "string" ? event.payload.content : "";
+        const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
+        if (content.length > 0) {
+          latestPlan = { content, filePath, status: "pending" };
+        }
+      } else if (event.type === "plan.approved") {
+        if (latestPlan) {
+          latestPlan = { content: latestPlan.content, filePath: latestPlan.filePath, status: "approved" };
+        }
+      } else if (event.type === "plan.revision_requested") {
+        if (latestPlan) {
+          latestPlan = { content: latestPlan.content, filePath: latestPlan.filePath, status: "sending" };
+        }
+      }
+    }
+
+    return latestPlan;
+  }, [events]);
+
+  const [planActionBusy, setPlanActionBusy] = useState(false);
+
+  async function handleApprovePlan() {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    setPlanActionBusy(true);
+    setError(null);
+
+    try {
+      await api.approvePlan(selectedThreadId);
+    } catch (approveError) {
+      setError(approveError instanceof Error ? approveError.message : "Failed to approve plan");
+    } finally {
+      setPlanActionBusy(false);
+    }
+  }
+
+  async function handleRevisePlan(feedback: string) {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    setPlanActionBusy(true);
+    setError(null);
+
+    try {
+      await api.revisePlan(selectedThreadId, { feedback });
+    } catch (reviseError) {
+      setError(reviseError instanceof Error ? reviseError.message : "Failed to revise plan");
+    } finally {
+      setPlanActionBusy(false);
+    }
+  }
+
   const timelineItems = useMemo<ChatTimelineItem[]>(() => {
     const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
 
@@ -1529,32 +1681,41 @@ export function WorkspacePage() {
             return true;
           })
         : context;
+      const activityContext = message.role === "assistant"
+        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event))
+        : nonBashContext;
       if (message.role === "assistant") {
         for (const run of bashRuns) {
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
       }
+      const editedRuns = message.role === "assistant" ? extractEditedRuns(nonBashContext) : [];
+      if (message.role === "assistant") {
+        for (const run of editedRuns) {
+          run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+        }
+      }
 
-      if (message.role === "assistant" && nonBashContext.length > 0 && bashRuns.length === 0) {
-        const steps = buildActivitySteps(nonBashContext);
-        const contextTimestamp = parseTimestamp(nonBashContext[0]?.createdAt ?? message.createdAt);
+      if (message.role === "assistant" && activityContext.length > 0 && bashRuns.length === 0) {
+        const steps = buildActivitySteps(activityContext);
+        const contextTimestamp = parseTimestamp(activityContext[0]?.createdAt ?? message.createdAt);
         pushRenderDebug({
           source: "WorkspacePage",
           event: "activityStepsBuilt",
           messageId: message.id,
           details: {
-            contextSize: nonBashContext.length,
+            contextSize: activityContext.length,
             stepSize: steps.length,
             steps,
           },
         });
         if (steps.length > 0) {
-          nonBashContext.forEach((event) => assignedToolEventIds.add(event.id));
+          activityContext.forEach((event) => assignedToolEventIds.add(event.id));
           sortable.push({
             item: {
               kind: "activity",
               messageId: message.id,
-              durationSeconds: computeDurationSecondsFromEvents(nonBashContext),
+              durationSeconds: computeDurationSecondsFromEvents(activityContext),
               introText: buildActivityIntroText(message.content),
               steps,
               defaultExpanded: isStreamingMessage,
@@ -1567,9 +1728,56 @@ export function WorkspacePage() {
         }
       }
 
-      if (message.role === "assistant" && bashRuns.length > 0) {
+      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0)) {
+        type InlineInsert =
+          | {
+              kind: "bash";
+              id: string;
+              startIdx: number;
+              anchorIdx: number;
+              createdAt: string;
+              run: BashRun;
+            }
+          | {
+              kind: "edited";
+              id: string;
+              startIdx: number;
+              anchorIdx: number;
+              createdAt: string;
+              run: EditedRun;
+            };
+
+        const inlineInserts: InlineInsert[] = [
+          ...bashRuns.map((run, index) => ({
+            kind: "bash" as const,
+            id: `bash:${run.toolUseId}:${index}`,
+            startIdx: run.startIdx,
+            anchorIdx: run.anchorIdx,
+            createdAt: run.createdAt,
+            run,
+          })),
+          ...editedRuns.map((run, index) => ({
+            kind: "edited" as const,
+            id: `edited:${run.eventId}:${index}`,
+            startIdx: run.startIdx,
+            anchorIdx: run.anchorIdx,
+            createdAt: run.createdAt,
+            run,
+          })),
+        ].sort((a, b) => {
+          if (a.startIdx !== b.startIdx) {
+            return a.startIdx - b.startIdx;
+          }
+
+          if (a.anchorIdx !== b.anchorIdx) {
+            return a.anchorIdx - b.anchorIdx;
+          }
+
+          return a.id.localeCompare(b.id);
+        });
+
         const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
-        const segmentBuckets = Array.from({ length: bashRuns.length + 1 }, () => ({
+        const segmentBuckets = Array.from({ length: inlineInserts.length + 1 }, () => ({
           content: "",
           anchorIdx: null as number | null,
           timestamp: null as number | null,
@@ -1581,9 +1789,9 @@ export function WorkspacePage() {
             continue;
           }
 
-          let bucketIndex = bashRuns.findIndex((run) => deltaEvent.idx < run.startIdx);
+          let bucketIndex = inlineInserts.findIndex((insert) => deltaEvent.idx < insert.startIdx);
           if (bucketIndex < 0) {
-            bucketIndex = bashRuns.length;
+            bucketIndex = inlineInserts.length;
           }
 
           const bucket = segmentBuckets[bucketIndex];
@@ -1605,9 +1813,58 @@ export function WorkspacePage() {
 
         const hasLeadingText = segmentBuckets[0].content.length > 0;
         const hasAnyTrailingText = segmentBuckets.slice(1).some((bucket) => bucket.content.length > 0);
-        const deferFirstRunUntilText = !hasLeadingText && hasAnyTrailingText && bashRuns.length > 0;
-        let delayedFirstRunInserted = false;
+        const deferFirstInsertUntilText = !hasLeadingText && hasAnyTrailingText && inlineInserts.length > 0;
+        let delayedFirstInsertInserted = false;
         let stableOffset = 0;
+
+        function pushInlineInsert(insert: InlineInsert) {
+          if (insert.kind === "bash") {
+            const run = insert.run;
+            const status = run.status === "running" && isCompleted ? "success" : run.status;
+            sortable.push({
+              item: {
+                kind: "bash-command",
+                id: `${message.id}:${run.toolUseId}:${insert.id}`,
+                toolUseId: run.toolUseId,
+                shell: "bash",
+                command: run.command,
+                summary: run.summary,
+                output: run.output,
+                error: run.error,
+                truncated: run.truncated,
+                durationSeconds: run.durationSeconds,
+                status,
+              },
+              anchorIdx: run.anchorIdx,
+              timestamp: parseTimestamp(run.createdAt) ?? timestamp,
+              rank: 3,
+              stableOrder: message.seq + stableOffset,
+            });
+            stableOffset += 0.001;
+            return;
+          }
+
+          const run = insert.run;
+          sortable.push({
+            item: {
+              kind: "edited-diff",
+              id: `${message.id}:${run.eventId}:${insert.id}`,
+              eventId: run.eventId,
+              changedFiles: run.changedFiles,
+              diff: run.diff,
+              diffTruncated: run.diffTruncated,
+              additions: run.additions,
+              deletions: run.deletions,
+              createdAt: run.createdAt,
+            },
+            anchorIdx: run.anchorIdx,
+            timestamp: parseTimestamp(run.createdAt) ?? timestamp,
+            rank: 3,
+            stableOrder: message.seq + stableOffset,
+          });
+          stableOffset += 0.001;
+        }
+
         for (let bucketIndex = 0; bucketIndex < segmentBuckets.length; bucketIndex += 1) {
           const bucket = segmentBuckets[bucketIndex];
           if (bucket.content.length > 0) {
@@ -1633,63 +1890,21 @@ export function WorkspacePage() {
             });
             stableOffset += 0.001;
 
-            if (deferFirstRunUntilText && !delayedFirstRunInserted) {
-              const run = bashRuns[0];
-              const status = run.status === "running" && isCompleted ? "success" : run.status;
-              sortable.push({
-                item: {
-                  kind: "bash-command",
-                  id: `${message.id}:${run.toolUseId}:deferred`,
-                  toolUseId: run.toolUseId,
-                  shell: "bash",
-                  command: run.command,
-                  summary: run.summary,
-                  output: run.output,
-                  error: run.error,
-                  truncated: run.truncated,
-                  durationSeconds: run.durationSeconds,
-                  status,
-                },
-                anchorIdx: run.anchorIdx,
-                timestamp: parseTimestamp(run.createdAt) ?? timestamp,
-                rank: 3,
-                stableOrder: message.seq + stableOffset,
-              });
-              stableOffset += 0.001;
-              delayedFirstRunInserted = true;
+            if (deferFirstInsertUntilText && !delayedFirstInsertInserted) {
+              pushInlineInsert(inlineInserts[0]);
+              delayedFirstInsertInserted = true;
             }
           }
 
-          if (bucketIndex >= bashRuns.length) {
+          if (bucketIndex >= inlineInserts.length) {
             continue;
           }
 
-          if (deferFirstRunUntilText && bucketIndex === 0) {
+          if (deferFirstInsertUntilText && bucketIndex === 0) {
             continue;
           }
 
-          const run = bashRuns[bucketIndex];
-          const status = run.status === "running" && isCompleted ? "success" : run.status;
-          sortable.push({
-            item: {
-              kind: "bash-command",
-              id: `${message.id}:${run.toolUseId}:${bucketIndex}`,
-              toolUseId: run.toolUseId,
-              shell: "bash",
-              command: run.command,
-              summary: run.summary,
-              output: run.output,
-              error: run.error,
-              truncated: run.truncated,
-              durationSeconds: run.durationSeconds,
-              status,
-            },
-            anchorIdx: run.anchorIdx,
-            timestamp: parseTimestamp(run.createdAt) ?? timestamp,
-            rank: 3,
-            stableOrder: message.seq + stableOffset,
-          });
-          stableOffset += 0.001;
+          pushInlineInsert(inlineInserts[bucketIndex]);
         }
 
         continue;
@@ -1763,6 +1978,29 @@ export function WorkspacePage() {
       },
     });
     for (const event of orphanToolEvents) {
+      if (isWorktreeDiffEvent(event)) {
+        const diff = payloadStringOrNull(event.payload.diff) ?? "";
+        const { additions, deletions } = countDiffStats(diff);
+        sortable.push({
+          item: {
+            kind: "edited-diff",
+            id: `orphan:${event.id}`,
+            eventId: event.id,
+            changedFiles: payloadStringArray(event.payload.changedFiles),
+            diff,
+            diffTruncated: event.payload.diffTruncated === true,
+            additions,
+            deletions,
+            createdAt: event.createdAt,
+          },
+          anchorIdx: event.idx,
+          timestamp: parseTimestamp(event.createdAt),
+          rank: 0,
+          stableOrder: event.idx,
+        });
+        continue;
+      }
+
       sortable.push({
         item: {
           kind: "tool",
@@ -1799,6 +2037,7 @@ export function WorkspacePage() {
   const showThinkingPlaceholder = waitingAssistant?.threadId === selectedThreadId;
   const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
   const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
+  const hasPendingPlan = pendingPlan !== null && pendingPlan.status === "pending";
 
   return (
     <div className="h-full p-2 sm:p-3">
@@ -1888,11 +2127,22 @@ export function WorkspacePage() {
                 </div>
               </section>
             ) : null}
+            {pendingPlan && pendingPlan.status !== "superseded" ? (
+              <section className="mx-auto w-full max-w-3xl px-3" data-testid="plan-card-container">
+                <PlanCard
+                  content={pendingPlan.content}
+                  filePath={pendingPlan.filePath}
+                  status={pendingPlan.status}
+                  onApprove={() => void handleApprovePlan()}
+                  onRevise={(feedback) => void handleRevisePlan(feedback)}
+                />
+              </section>
+            ) : null}
             <RenderDebugPanel />
 
             <Composer
               value={chatInput}
-              disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests || hasPendingQuestionRequests}
+              disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan || planActionBusy}
               sending={sendingMessage}
               mode={chatMode}
               onChange={setChatInput}

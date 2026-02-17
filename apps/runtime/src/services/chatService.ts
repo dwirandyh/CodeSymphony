@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   AnswerQuestionInputSchema,
   CreateChatThreadInputSchema,
+  PlanRevisionInputSchema,
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   type AnswerQuestionInput,
@@ -14,6 +15,7 @@ import {
   type ChatMode,
   type ChatThread,
   type CreateChatThreadInput,
+  type PlanRevisionInput,
   type ResolvePermissionInput,
   type SendChatMessageInput,
 } from "@codesymphony/shared-types";
@@ -251,7 +253,13 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default"): Promise<void> {
+  type PendingPlanEntry = {
+    content: string;
+    filePath: string;
+  };
+  const pendingPlanByThread = new Map<string, PendingPlanEntry>();
+
+  async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
     let assistantMessageId: string | null = null;
     let fullOutput = "";
 
@@ -294,6 +302,7 @@ export function createChatService(deps: RuntimeDeps) {
         sessionId: thread.claudeSessionId,
         cwd: worktreePath,
         permissionMode: mode,
+        autoAcceptTools: options?.autoAcceptTools,
         onText: async (chunk) => {
           fullOutput += chunk;
           await deps.eventHub.emit(threadId, "message.delta", {
@@ -341,6 +350,16 @@ export function createChatService(deps: RuntimeDeps) {
             throw error;
           }
           return entry.promise;
+        },
+        onPlanFileDetected: async (payload) => {
+          pendingPlanByThread.set(threadId, {
+            content: payload.content,
+            filePath: payload.filePath,
+          });
+          await deps.eventHub.emit(threadId, "plan.created", {
+            content: payload.content,
+            filePath: payload.filePath,
+          });
         },
         onPermissionRequest: async (payload) => {
           const pendingMap = ensureThreadPermissionMap(threadId);
@@ -442,9 +461,9 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  function scheduleAssistant(threadId: string, prompt: string, mode: ChatMode = "default"): void {
+  function scheduleAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): void {
     setTimeout(() => {
-      void runAssistant(threadId, prompt, mode);
+      void runAssistant(threadId, prompt, mode, options);
     }, AUTO_EXECUTE_DELAY_MS);
   }
 
@@ -609,6 +628,61 @@ export function createChatService(deps: RuntimeDeps) {
         entry.reject = undefined;
         resolve?.({ answers: input.answers });
       }
+    },
+
+    async approvePlan(threadId: string): Promise<void> {
+      const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      const plan = pendingPlanByThread.get(threadId);
+      if (!plan) {
+        throw new Error("No pending plan to approve for this thread");
+      }
+
+      if (activeThreads.has(threadId)) {
+        throw new Error("Assistant is still processing");
+      }
+
+      pendingPlanByThread.delete(threadId);
+      activeThreads.add(threadId);
+
+      await deps.eventHub.emit(threadId, "plan.approved", {
+        filePath: plan.filePath,
+      });
+
+      const executePrompt = `The user has approved the following plan. Please execute it now:\n\n${plan.content}`;
+      scheduleAssistant(threadId, executePrompt, "default", { autoAcceptTools: true });
+    },
+
+    async revisePlan(threadId: string, rawInput: unknown): Promise<void> {
+      const input: PlanRevisionInput = PlanRevisionInputSchema.parse(rawInput);
+
+      const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      const plan = pendingPlanByThread.get(threadId);
+      if (!plan) {
+        throw new Error("No pending plan to revise for this thread");
+      }
+
+      if (activeThreads.has(threadId)) {
+        throw new Error("Assistant is still processing");
+      }
+
+      pendingPlanByThread.delete(threadId);
+      activeThreads.add(threadId);
+
+      await deps.eventHub.emit(threadId, "plan.revision_requested", {
+        feedback: input.feedback,
+        filePath: plan.filePath,
+      });
+
+      const revisePrompt = `The user wants to revise the plan. Here is their feedback:\n\n${input.feedback}\n\nPlease update the plan accordingly.`;
+      scheduleAssistant(threadId, revisePrompt, "plan");
     },
 
     async sendMessage(threadId: string, rawInput: unknown): Promise<ChatMessage> {

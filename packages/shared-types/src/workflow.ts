@@ -15,6 +15,9 @@ export const ChatEventTypeSchema = z.enum([
   "permission.resolved",
   "question.requested",
   "question.answered",
+  "plan.created",
+  "plan.approved",
+  "plan.revision_requested",
   "chat.completed",
   "chat.failed",
 ]);
@@ -104,6 +107,11 @@ export const AnswerQuestionInputSchema = z.object({
   answers: z.record(z.string(), z.string()),
 });
 export type AnswerQuestionInput = z.infer<typeof AnswerQuestionInputSchema>;
+
+export const PlanRevisionInputSchema = z.object({
+  feedback: z.string().trim().min(1),
+});
+export type PlanRevisionInput = z.infer<typeof PlanRevisionInputSchema>;
 
 export type Repository = z.infer<typeof RepositorySchema>;
 export type Worktree = z.infer<typeof WorktreeSchema>;
