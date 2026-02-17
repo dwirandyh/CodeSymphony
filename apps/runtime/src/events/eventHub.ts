@@ -10,6 +10,8 @@ const typeToDb: Record<ChatEventType, DbChatEventType> = {
   "tool.finished": "tool_finished",
   "permission.requested": "permission_requested",
   "permission.resolved": "permission_resolved",
+  "question.requested": "question_requested",
+  "question.answered": "question_answered",
   "chat.completed": "chat_completed",
   "chat.failed": "chat_failed",
 };
@@ -21,6 +23,8 @@ const typeFromDb: Record<DbChatEventType, ChatEventType> = {
   tool_finished: "tool.finished",
   permission_requested: "permission.requested",
   permission_resolved: "permission.resolved",
+  question_requested: "question.requested",
+  question_answered: "question.answered",
   chat_completed: "chat.completed",
   chat_failed: "chat.failed",
 };

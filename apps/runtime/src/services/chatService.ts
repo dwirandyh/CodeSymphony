@@ -4,11 +4,14 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
+  AnswerQuestionInputSchema,
   CreateChatThreadInputSchema,
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
+  type AnswerQuestionInput,
   type ChatEvent,
   type ChatMessage,
+  type ChatMode,
   type ChatThread,
   type CreateChatThreadInput,
   type ResolvePermissionInput,
@@ -213,7 +216,42 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  async function runAssistant(threadId: string, prompt: string): Promise<void> {
+  type QuestionAnswerResult = { answers: Record<string, string> };
+  type PendingQuestionEntry = {
+    status: "pending" | "resolved";
+    promise: Promise<QuestionAnswerResult>;
+    resolve?: (result: QuestionAnswerResult) => void;
+    reject?: (error: Error) => void;
+  };
+  const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
+
+  function ensureThreadQuestionMap(threadId: string): Map<string, PendingQuestionEntry> {
+    const existing = pendingQuestionsByThread.get(threadId);
+    if (existing) {
+      return existing;
+    }
+
+    const created = new Map<string, PendingQuestionEntry>();
+    pendingQuestionsByThread.set(threadId, created);
+    return created;
+  }
+
+  function rejectPendingQuestions(threadId: string, message: string): void {
+    const pendingMap = pendingQuestionsByThread.get(threadId);
+    if (!pendingMap) {
+      return;
+    }
+
+    pendingQuestionsByThread.delete(threadId);
+    for (const pending of pendingMap.values()) {
+      if (pending.status !== "pending" || !pending.reject) {
+        continue;
+      }
+      pending.reject(new Error(message));
+    }
+  }
+
+  async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default"): Promise<void> {
     let assistantMessageId: string | null = null;
     let fullOutput = "";
 
@@ -255,12 +293,14 @@ export function createChatService(deps: RuntimeDeps) {
         prompt,
         sessionId: thread.claudeSessionId,
         cwd: worktreePath,
+        permissionMode: mode,
         onText: async (chunk) => {
           fullOutput += chunk;
           await deps.eventHub.emit(threadId, "message.delta", {
             messageId: assistantMessage.id,
             role: "assistant",
             delta: chunk,
+            ...(mode === "plan" ? { mode: "plan" } : {}),
           });
         },
         onToolStarted: async (payload) => {
@@ -271,6 +311,36 @@ export function createChatService(deps: RuntimeDeps) {
         },
         onToolFinished: async (payload) => {
           await deps.eventHub.emit(threadId, "tool.finished", payload);
+        },
+        onQuestionRequest: async (payload) => {
+          const pendingMap = ensureThreadQuestionMap(threadId);
+          const existing = pendingMap.get(payload.requestId);
+          if (existing) {
+            return existing.promise;
+          }
+
+          const entry = {} as PendingQuestionEntry;
+          entry.status = "pending";
+          entry.promise = new Promise<QuestionAnswerResult>((resolve, reject) => {
+            entry.resolve = resolve;
+            entry.reject = reject;
+          });
+          pendingMap.set(payload.requestId, entry);
+
+          try {
+            await deps.eventHub.emit(threadId, "question.requested", {
+              requestId: payload.requestId,
+              questions: payload.questions,
+            });
+          } catch (error) {
+            pendingMap.delete(payload.requestId);
+            if (pendingMap.size === 0) {
+              pendingQuestionsByThread.delete(threadId);
+            }
+            entry.reject?.(error instanceof Error ? error : new Error("Failed to emit question.requested event"));
+            throw error;
+          }
+          return entry.promise;
         },
         onPermissionRequest: async (payload) => {
           const pendingMap = ensureThreadPermissionMap(threadId);
@@ -367,13 +437,14 @@ export function createChatService(deps: RuntimeDeps) {
       });
     } finally {
       rejectPendingPermissions(threadId, "Permission request cancelled because the chat run ended.");
+      rejectPendingQuestions(threadId, "Question cancelled because the chat run ended.");
       activeThreads.delete(threadId);
     }
   }
 
-  function scheduleAssistant(threadId: string, prompt: string): void {
+  function scheduleAssistant(threadId: string, prompt: string, mode: ChatMode = "default"): void {
     setTimeout(() => {
-      void runAssistant(threadId, prompt);
+      void runAssistant(threadId, prompt, mode);
     }, AUTO_EXECUTE_DELAY_MS);
   }
 
@@ -509,6 +580,37 @@ export function createChatService(deps: RuntimeDeps) {
       }
     },
 
+    async answerQuestion(threadId: string, rawInput: unknown): Promise<void> {
+      const input: AnswerQuestionInput = AnswerQuestionInputSchema.parse(rawInput);
+
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      const pendingMap = pendingQuestionsByThread.get(threadId);
+      const entry = pendingMap?.get(input.requestId);
+      if (!entry || entry.status !== "pending" || !entry.resolve) {
+        throw new Error("Question request not found");
+      }
+
+      try {
+        await deps.eventHub.emit(threadId, "question.answered", {
+          requestId: input.requestId,
+          answers: input.answers,
+        });
+      } finally {
+        const resolve = entry.resolve;
+        entry.status = "resolved";
+        entry.resolve = undefined;
+        entry.reject = undefined;
+        resolve?.({ answers: input.answers });
+      }
+    },
+
     async sendMessage(threadId: string, rawInput: unknown): Promise<ChatMessage> {
       const input: SendChatMessageInput = SendChatMessageInputSchema.parse(rawInput);
 
@@ -542,7 +644,7 @@ export function createChatService(deps: RuntimeDeps) {
           delta: input.content,
         });
 
-        scheduleAssistant(threadId, input.content);
+        scheduleAssistant(threadId, input.content, input.mode);
 
         return mapChatMessage(message);
       } catch (error) {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChatEvent, ChatMessage, ChatThread, Repository } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatMode, ChatThread, Repository } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/Composer";
 import {
   ChatMessageList,
@@ -10,6 +10,7 @@ import {
 import { RenderDebugPanel } from "../components/workspace/RenderDebugPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
 import { PermissionPromptCard } from "../components/workspace/PermissionPromptCard";
+import { QuestionCard } from "../components/workspace/QuestionCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { api } from "../lib/api";
 import { pushRenderDebug } from "../lib/renderDebug";
@@ -21,6 +22,8 @@ const EVENT_TYPES = [
   "tool.finished",
   "permission.requested",
   "permission.resolved",
+  "question.requested",
+  "question.answered",
   "chat.completed",
   "chat.failed",
 ] as const;
@@ -31,6 +34,8 @@ const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "tool.finished",
   "permission.requested",
   "permission.resolved",
+  "question.requested",
+  "question.answered",
   "chat.failed",
 ]);
 const MAX_ORDER_INDEX = Number.MAX_SAFE_INTEGER;
@@ -612,6 +617,24 @@ type PendingPermissionRequest = {
   idx: number;
 };
 
+type QuestionOption = {
+  label: string;
+  description?: string;
+};
+
+type QuestionItem = {
+  question: string;
+  header?: string;
+  options?: QuestionOption[];
+  multiSelect?: boolean;
+};
+
+type PendingQuestionRequest = {
+  requestId: string;
+  questions: QuestionItem[];
+  idx: number;
+};
+
 export function WorkspacePage() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>([]);
@@ -623,6 +646,7 @@ export function WorkspacePage() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
 
   const [chatInput, setChatInput] = useState("");
+  const [chatMode, setChatMode] = useState<ChatMode>("default");
 
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -631,6 +655,7 @@ export function WorkspacePage() {
   const [closingThreadId, setClosingThreadId] = useState<string | null>(null);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(new Set());
+  const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const seenEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const lastEventIdxByThreadRef = useRef<Map<string, number>>(new Map());
@@ -1132,6 +1157,7 @@ export function WorkspacePage() {
     try {
       await api.sendMessage(selectedThreadId, {
         content: chatInput,
+        mode: chatMode,
       });
       setChatInput("");
       await loadThreadData(selectedThreadId);
@@ -1204,6 +1230,70 @@ export function WorkspacePage() {
     }
   }
 
+  const pendingQuestionRequests = useMemo<PendingQuestionRequest[]>(() => {
+    const pendingById = new Map<string, PendingQuestionRequest>();
+    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+
+    for (const event of orderedEvents) {
+      if (event.type === "question.requested") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length === 0) {
+          continue;
+        }
+
+        const rawQuestions = Array.isArray(event.payload.questions) ? event.payload.questions : [];
+        const questions: QuestionItem[] = rawQuestions.map((q: Record<string, unknown>) => ({
+          question: typeof q.question === "string" ? q.question : "",
+          header: typeof q.header === "string" ? q.header : undefined,
+          options: Array.isArray(q.options)
+            ? q.options.map((o: Record<string, unknown>) => ({
+                label: typeof o.label === "string" ? o.label : "",
+                description: typeof o.description === "string" ? o.description : undefined,
+              }))
+            : undefined,
+          multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : undefined,
+        }));
+
+        pendingById.set(requestId, { requestId, questions, idx: event.idx });
+        continue;
+      }
+
+      if (event.type === "question.answered") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length > 0) {
+          pendingById.delete(requestId);
+        }
+      }
+    }
+
+    return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
+  }, [events]);
+
+  async function answerQuestion(requestId: string, answers: Record<string, string>) {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    setAnsweringQuestionIds((current) => {
+      const next = new Set(current);
+      next.add(requestId);
+      return next;
+    });
+    setError(null);
+
+    try {
+      await api.answerQuestion(selectedThreadId, { requestId, answers });
+    } catch (answerError) {
+      setError(answerError instanceof Error ? answerError.message : "Failed to answer question");
+    } finally {
+      setAnsweringQuestionIds((current) => {
+        const next = new Set(current);
+        next.delete(requestId);
+        return next;
+      });
+    }
+  }
+
   const timelineItems = useMemo<ChatTimelineItem[]>(() => {
     const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
 
@@ -1225,6 +1315,16 @@ export function WorkspacePage() {
         const currentCompletedIdx = completedEventIdxByMessageId.get(completedId);
         if (currentCompletedIdx == null || event.idx < currentCompletedIdx) {
           completedEventIdxByMessageId.set(completedId, event.idx);
+        }
+      }
+    }
+
+    const planModeMessageIds = new Set<string>();
+    for (const event of orderedEventsByIdx) {
+      if (event.type === "message.delta" && event.payload.role === "assistant" && event.payload.mode === "plan") {
+        const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
+        if (messageId.length > 0) {
+          planModeMessageIds.add(messageId);
         }
       }
     }
@@ -1523,6 +1623,7 @@ export function WorkspacePage() {
                 renderHint: renderHint === "diff" ? "diff" : "markdown",
                 rawFileLanguage: undefined,
                 isCompleted,
+                isPlanMode: planModeMessageIds.has(message.id),
                 context: nonBashContext,
               },
               anchorIdx: bucket.anchorIdx ?? anchorIdx,
@@ -1601,6 +1702,7 @@ export function WorkspacePage() {
           renderHint,
           rawFileLanguage: message.role === "assistant" && shouldRenderRawFile ? stickyLanguage ?? inferredLanguage : undefined,
           isCompleted,
+          isPlanMode: message.role === "assistant" && planModeMessageIds.has(message.id),
           context: nonBashContext,
         },
         anchorIdx,
@@ -1696,6 +1798,7 @@ export function WorkspacePage() {
 
   const showThinkingPlaceholder = waitingAssistant?.threadId === selectedThreadId;
   const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
+  const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
 
   return (
     <div className="h-full p-2 sm:p-3">
@@ -1770,13 +1873,30 @@ export function WorkspacePage() {
                 </div>
               </section>
             ) : null}
+            {pendingQuestionRequests.length > 0 ? (
+              <section className="mx-auto w-full max-w-3xl px-3" data-testid="question-prompts-container">
+                <div className="space-y-2">
+                  {pendingQuestionRequests.map((request) => (
+                    <QuestionCard
+                      key={request.requestId}
+                      requestId={request.requestId}
+                      questions={request.questions}
+                      busy={answeringQuestionIds.has(request.requestId)}
+                      onAnswer={(requestId, answers) => void answerQuestion(requestId, answers)}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
             <RenderDebugPanel />
 
             <Composer
               value={chatInput}
-              disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests}
+              disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests || hasPendingQuestionRequests}
               sending={sendingMessage}
+              mode={chatMode}
               onChange={setChatInput}
+              onModeChange={setChatMode}
               onSubmit={() => void submitMessage()}
             />
           </div>

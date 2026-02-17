@@ -107,6 +107,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/threads/:id/questions/answer", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.answerQuestion(params.id, request.body);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to answer question";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.post("/threads/:id/permissions/resolve", async (request, reply) => {
     const params = threadParams.parse(request.params);
 

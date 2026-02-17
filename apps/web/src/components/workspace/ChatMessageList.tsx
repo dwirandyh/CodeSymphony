@@ -23,6 +23,7 @@ export type ChatTimelineItem =
       renderHint?: AssistantRenderHint;
       rawFileLanguage?: string;
       isCompleted?: boolean;
+      isPlanMode?: boolean;
       context?: ChatEvent[];
     }
   | {
@@ -802,11 +803,11 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                   </summary>
 
                   <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
-                    <div className="border-b border-border/35 px-3 py-2 text-xs font-semibold lowercase tracking-wide text-muted-foreground">
+                    <div className="px-3 pt-2 pb-1 text-xs font-semibold lowercase tracking-wide text-muted-foreground">
                       {item.shell}
                     </div>
 
-                    <pre className="border-b border-border/35 px-4 py-3 font-mono text-sm leading-relaxed text-foreground">
+                    <pre className="px-4 py-2.5 font-mono text-sm leading-relaxed text-foreground">
                       <span style={{ color: "#98c379" }}>$</span>
                       <span> </span>
                       <span style={{ color: "#61afef" }}>{commandText}</span>
@@ -822,7 +823,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                     {item.error ? (
                       <TerminalOutputPre
                         text={item.error}
-                        className="max-h-64 overflow-auto whitespace-pre-wrap break-words border-t border-border/35 px-4 py-3 font-mono text-sm leading-relaxed text-destructive"
+                        className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-sm leading-relaxed text-destructive"
                       />
                     ) : null}
 
@@ -831,10 +832,10 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                     ) : null}
 
                     {item.truncated ? (
-                      <div className="border-t border-border/35 px-3 py-2 text-[11px] text-muted-foreground">... [output truncated]</div>
+                      <div className="mt-1 px-3 py-2 text-[11px] text-muted-foreground">... [output truncated]</div>
                     ) : null}
 
-                    <div className="border-t border-border/35 px-3 py-2 text-right text-xs">
+                    <div className="px-3 pt-1.5 pb-2 text-right text-xs">
                       <span
                         className={cn(
                           "font-medium",
@@ -899,6 +900,11 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                 {message.role === "assistant" ? (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      {item.isPlanMode ? (
+                        <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
+                          Plan
+                        </span>
+                      ) : null}
                       <button
                         type="button"
                         aria-label="Copy output"

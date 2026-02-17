@@ -25,6 +25,8 @@ enum ChatEventType {
   tool_finished
   permission_requested
   permission_resolved
+  question_requested
+  question_answered
   chat_completed
   chat_failed
 }

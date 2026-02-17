@@ -359,10 +359,12 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
   sessionId,
   cwd,
+  permissionMode,
   onText,
   onToolStarted,
   onToolOutput,
   onToolFinished,
+  onQuestionRequest,
   onPermissionRequest,
 }) => {
   let latestSessionId: string | null = sessionId;
@@ -391,8 +393,20 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       options: {
         includePartialMessages: true,
         resume: sessionId ?? undefined,
-        permissionMode: "default",
+        permissionMode: permissionMode ?? "default",
         canUseTool: async (toolName, input, options) => {
+          if (toolName === "AskUserQuestion") {
+            const questions = Array.isArray(input.questions) ? input.questions : [];
+            const result = await onQuestionRequest({
+              requestId: options.toolUseID,
+              questions,
+            });
+            return {
+              behavior: "allow",
+              updatedInput: { ...input, answers: result.answers },
+            };
+          }
+
           const command = commandFromToolInput(input);
           const isBash = isBashTool(toolName);
           if (isBash) {

@@ -1,4 +1,5 @@
 import type {
+  AnswerQuestionInput,
   ChatEvent,
   ChatMessage,
   ChatThread,
@@ -87,6 +88,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  answerQuestion: async (threadId: string, input: AnswerQuestionInput) => {
+    const response = await fetch(`${API_BASE}/threads/${threadId}/questions/answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to answer question");
+    }
+  },
   resolvePermission: async (threadId: string, input: ResolvePermissionInput) => {
     const response = await fetch(`${API_BASE}/threads/${threadId}/permissions/resolve`, {
       method: "POST",

@@ -1779,7 +1779,7 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(api.sendMessage).toHaveBeenCalledWith("thread-1", { content: "first message" });
+    expect(api.sendMessage).toHaveBeenCalledWith("thread-1", { content: "first message", mode: "default" });
 
     (api.sendMessage as Mock).mockClear();
 

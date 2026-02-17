@@ -13,6 +13,8 @@ export const ChatEventTypeSchema = z.enum([
   "tool.finished",
   "permission.requested",
   "permission.resolved",
+  "question.requested",
+  "question.answered",
   "chat.completed",
   "chat.failed",
 ]);
@@ -80,8 +82,12 @@ export const CreateChatThreadInputSchema = z.object({
   title: z.string().trim().min(1).optional(),
 });
 
+export const ChatModeSchema = z.enum(["default", "plan"]);
+export type ChatMode = z.infer<typeof ChatModeSchema>;
+
 export const SendChatMessageInputSchema = z.object({
   content: z.string().trim().min(1),
+  mode: ChatModeSchema.optional().default("default"),
 });
 
 export const PermissionDecisionSchema = z.enum(["allow", "allow_always", "deny"]);
@@ -92,6 +98,12 @@ export const ResolvePermissionInputSchema = z.object({
   decision: PermissionDecisionSchema,
 });
 export type ResolvePermissionInput = z.infer<typeof ResolvePermissionInputSchema>;
+
+export const AnswerQuestionInputSchema = z.object({
+  requestId: z.string().trim().min(1),
+  answers: z.record(z.string(), z.string()),
+});
+export type AnswerQuestionInput = z.infer<typeof AnswerQuestionInputSchema>;
 
 export type Repository = z.infer<typeof RepositorySchema>;
 export type Worktree = z.infer<typeof WorktreeSchema>;
