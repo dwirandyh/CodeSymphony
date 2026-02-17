@@ -19,7 +19,7 @@ import {
   type ResolvePermissionInput,
   type SendChatMessageInput,
 } from "@codesymphony/shared-types";
-import type { PlanDetectionSource, RuntimeDeps } from "../types";
+import type { ClaudeToolInstrumentationEvent, PlanDetectionSource, RuntimeDeps } from "../types";
 import { mapChatMessage, mapChatThread } from "./mappers";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
@@ -190,6 +190,30 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || /abort|cancel|interrupt/i.test(error.message));
 }
 
+function instrumentationMessage(event: ClaudeToolInstrumentationEvent): string {
+  if (event.stage === "anomaly") {
+    return event.anomaly?.message ?? `Tool anomaly (${event.toolName})`;
+  }
+
+  if (event.stage === "decision") {
+    return `${event.toolName} decision: ${event.decision ?? "unknown"}`;
+  }
+
+  if (event.stage === "requested") {
+    return `${event.toolName} requested`;
+  }
+
+  if (event.stage === "started") {
+    return `${event.toolName} started`;
+  }
+
+  if (event.stage === "failed") {
+    return `${event.toolName} failed`;
+  }
+
+  return event.summary?.trim().length ? event.summary : `${event.toolName} finished`;
+}
+
 export function createChatService(deps: RuntimeDeps) {
   const activeThreads = new Set<string>();
   const scheduledAssistantRunsByThread = new Map<string, ReturnType<typeof setTimeout>>();
@@ -349,6 +373,22 @@ export function createChatService(deps: RuntimeDeps) {
         },
         onToolFinished: async (payload) => {
           await deps.eventHub.emit(threadId, "tool.finished", payload);
+        },
+        onToolInstrumentation: async (event) => {
+          if (!deps.logService) {
+            return;
+          }
+
+          const isAnomaly = event.stage === "anomaly";
+          deps.logService.log(
+            isAnomaly ? "warn" : "debug",
+            isAnomaly ? "claude.tool.sync" : "claude.tool",
+            instrumentationMessage(event),
+            {
+              threadId,
+              ...event,
+            },
+          );
         },
         onQuestionRequest: async (payload) => {
           const pendingMap = ensureThreadQuestionMap(threadId);

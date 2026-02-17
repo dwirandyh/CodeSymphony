@@ -4,6 +4,7 @@ import type { ChatEvent, ChatMessage, ChatThread, Repository } from "@codesympho
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { WorkspacePage } from "./WorkspacePage";
 import { api } from "../lib/api";
+import { logService } from "../lib/logService";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -234,7 +235,16 @@ describe("WorkspacePage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: { accepted: 1 } }),
+      }),
+    );
     MockEventSource.instances = [];
+    logService.clear();
 
     (api.pickDirectory as Mock).mockResolvedValue({ path: "/tmp/alpha" });
     (api.listRepositories as Mock).mockResolvedValue(repositoryFixture);
@@ -271,6 +281,8 @@ describe("WorkspacePage", () => {
       root.unmount();
     });
     container.remove();
+    logService.clear();
+    vi.unstubAllGlobals();
   });
 
   it("renders workspace sections and loaded data", async () => {
@@ -1433,7 +1445,7 @@ describe("WorkspacePage", () => {
 
   it("renders orphan tool row without raw JSON details panel", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([]);
-    (api.listEvents as Mock).mockResolvedValueOnce([
+    (api.listEvents as Mock).mockResolvedValue([
       {
         id: "evt-orphan-finished",
         threadId: "thread-1",
@@ -1459,6 +1471,156 @@ describe("WorkspacePage", () => {
     expect(toolRow?.textContent).not.toContain("Details");
     expect(toolRow?.textContent).not.toContain("\"toolName\"");
     expect(toolRow?.textContent).not.toContain("\"command\"");
+  });
+
+  it("logs orphan tool event to chat.sync once per event id", async () => {
+    (api.listMessages as Mock).mockResolvedValue([
+      {
+        id: "msg-user-orphan",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "cek",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValue([
+      {
+        id: "evt-orphan-sync",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          toolName: "Read",
+          toolUseId: "tool-orphan-sync",
+          summary: "Read README.md",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("chat.completed", {
+        id: "evt-chat-complete-orphan-sync",
+        threadId: "thread-1",
+        idx: 2,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-orphan-sync" },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      });
+    });
+    await flushEffects();
+
+    const warnings = logService.getEntries().filter(
+      (entry) => entry.source === "chat.sync"
+        && typeof entry.data === "object"
+        && entry.data != null
+        && (entry.data as Record<string, unknown>).eventId === "evt-orphan-sync",
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("does not log chat.sync warning for tool event attached to assistant timeline", async () => {
+    (api.listMessages as Mock).mockResolvedValue([
+      {
+        id: "msg-user-attached",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "open readme",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-attached",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Done.",
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValue([
+      {
+        id: "evt-tool-attached",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          toolName: "Read",
+          toolUseId: "tool-attached",
+          summary: "Read README.md",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-msg-attached",
+        threadId: "thread-1",
+        idx: 2,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-attached", role: "assistant", delta: "Done." },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-complete-attached",
+        threadId: "thread-1",
+        idx: 3,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-attached" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const warnings = logService.getEntries().filter(
+      (entry) => entry.source === "chat.sync"
+        && typeof entry.data === "object"
+        && entry.data != null
+        && (entry.data as Record<string, unknown>).eventId === "evt-tool-attached",
+    );
+    expect(warnings).toHaveLength(0);
+  });
+
+  it("logs incoming stream tool events to chat.stream", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("tool.output", {
+        id: "evt-stream-tool-log",
+        threadId: "thread-1",
+        idx: 99,
+        type: "tool.output",
+        payload: {
+          toolName: "Read",
+          toolUseId: "tool-stream-log",
+          parentToolUseId: null,
+          elapsedTimeSeconds: 0.2,
+        },
+        createdAt: "2026-01-01T10:00:10.000Z",
+      });
+    });
+    await flushEffects();
+
+    const streamEntries = logService.getEntries().filter(
+      (entry) => entry.source === "chat.stream"
+        && typeof entry.data === "object"
+        && entry.data != null
+        && (entry.data as Record<string, unknown>).eventId === "evt-stream-tool-log",
+    );
+    expect(streamEntries).toHaveLength(1);
   });
 
   it("renders bash command card between assistant text deltas", async () => {

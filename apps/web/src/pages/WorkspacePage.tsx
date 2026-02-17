@@ -14,6 +14,7 @@ import { PlanDecisionComposer } from "../components/workspace/PlanDecisionCompos
 import { QuestionCard } from "../components/workspace/QuestionCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { api } from "../lib/api";
+import { logService } from "../lib/logService";
 import { pushRenderDebug } from "../lib/renderDebug";
 
 const EVENT_TYPES = [
@@ -865,6 +866,7 @@ export function WorkspacePage() {
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
   const stickyRawFileLanguageByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
+  const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
 
   function ensureSeenEventIds(threadId: string): Set<string> {
     const existing = seenEventIdsByThreadRef.current.get(threadId);
@@ -882,6 +884,17 @@ export function WorkspacePage() {
     if (current == null || idx > current) {
       lastEventIdxByThreadRef.current.set(threadId, idx);
     }
+  }
+
+  function ensureLoggedOrphanEventIds(threadId: string): Set<string> {
+    const existing = loggedOrphanEventIdsByThreadRef.current.get(threadId);
+    if (existing) {
+      return existing;
+    }
+
+    const created = new Set<string>();
+    loggedOrphanEventIdsByThreadRef.current.set(threadId, created);
+    return created;
   }
 
   function startWaitingAssistant(threadId: string) {
@@ -1103,6 +1116,16 @@ export function WorkspacePage() {
             payload: payload.payload,
           },
         });
+        if (payload.type === "tool.started" || payload.type === "tool.output" || payload.type === "tool.finished") {
+          logService.log("debug", "chat.stream", "Tool event received from stream", {
+            threadId: selectedThreadId,
+            eventId: payload.id,
+            idx: payload.idx,
+            type: payload.type,
+            toolUseId: typeof payload.payload.toolUseId === "string" ? payload.payload.toolUseId : null,
+            toolName: typeof payload.payload.toolName === "string" ? payload.payload.toolName : null,
+          });
+        }
 
         setWaitingAssistant((current) => {
           if (!current || current.threadId !== selectedThreadId || payload.idx <= current.afterIdx) {
@@ -2260,6 +2283,24 @@ export function WorkspacePage() {
         })),
       },
     });
+    if (selectedThreadId) {
+      const loggedOrphanEventIds = ensureLoggedOrphanEventIds(selectedThreadId);
+      for (const event of orphanToolEvents) {
+        if (loggedOrphanEventIds.has(event.id)) {
+          continue;
+        }
+
+        loggedOrphanEventIds.add(event.id);
+        logService.log("warn", "chat.sync", "Tool event not attached to assistant timeline", {
+          threadId: selectedThreadId,
+          eventId: event.id,
+          idx: event.idx,
+          type: event.type,
+          toolUseId: typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : null,
+          toolName: typeof event.payload.toolName === "string" ? event.payload.toolName : null,
+        });
+      }
+    }
     for (const event of orphanToolEvents) {
       if (isWorktreeDiffEvent(event)) {
         const diff = payloadStringOrNull(event.payload.diff) ?? "";
@@ -2315,7 +2356,7 @@ export function WorkspacePage() {
     });
 
     return sortable.map((entry) => entry.item);
-  }, [messages, events]);
+  }, [messages, events, selectedThreadId]);
 
   const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
   const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;

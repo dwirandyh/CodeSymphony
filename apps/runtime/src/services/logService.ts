@@ -17,7 +17,42 @@ const MAX_ENTRIES = 1000;
 
 export function createLogService() {
     const entries: LogEntry[] = [];
+    const entryIds = new Set<string>();
     const subscribers = new Set<LogSubscriber>();
+
+    function notifySubscribers(entry: LogEntry): void {
+        for (const subscriber of subscribers) {
+            try {
+                subscriber(entry);
+            } catch {
+                // ignore subscriber errors
+            }
+        }
+    }
+
+    function trimOverflow(): void {
+        if (entries.length <= MAX_ENTRIES) {
+            return;
+        }
+
+        const overflowCount = entries.length - MAX_ENTRIES;
+        const removed = entries.splice(0, overflowCount);
+        for (const entry of removed) {
+            entryIds.delete(entry.id);
+        }
+    }
+
+    function appendEntry(entry: LogEntry): boolean {
+        if (entryIds.has(entry.id)) {
+            return false;
+        }
+
+        entries.push(entry);
+        entryIds.add(entry.id);
+        trimOverflow();
+        notifySubscribers(entry);
+        return true;
+    }
 
     function log(
         level: LogLevel,
@@ -34,18 +69,11 @@ export function createLogService() {
             data,
         };
 
-        entries.push(entry);
-        if (entries.length > MAX_ENTRIES) {
-            entries.splice(0, entries.length - MAX_ENTRIES);
-        }
+        appendEntry(entry);
+    }
 
-        for (const subscriber of subscribers) {
-            try {
-                subscriber(entry);
-            } catch {
-                // ignore subscriber errors
-            }
-        }
+    function ingest(entry: LogEntry): boolean {
+        return appendEntry(entry);
     }
 
     function getEntries(since?: string): LogEntry[] {
@@ -68,7 +96,8 @@ export function createLogService() {
 
     function clear(): void {
         entries.length = 0;
+        entryIds.clear();
     }
 
-    return { log, getEntries, subscribe, clear };
+    return { log, ingest, getEntries, subscribe, clear };
 }

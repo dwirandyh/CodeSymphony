@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chatService";
+import { createLogService } from "../src/services/logService";
 import type { ClaudeRunner } from "../src/types";
 
 const TEST_DATABASE_URL =
@@ -265,6 +266,61 @@ describe("chatService permission flow", () => {
     expect(finished?.payload.error).toBe("");
     expect(finished?.payload.truncated).toBe(false);
     expect(finished?.payload.outputBytes).toBe(11);
+  });
+
+  it("writes tool instrumentation logs with thread context", async () => {
+    const runtimeLogService = createLogService();
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onToolInstrumentation, onText }) => {
+      await onToolInstrumentation?.({
+        stage: "requested",
+        toolUseId: "tool-log-1",
+        toolName: "Read",
+        parentToolUseId: null,
+        preview: {
+          input: {
+            path: "README.md",
+          },
+        },
+      });
+      await onToolInstrumentation?.({
+        stage: "anomaly",
+        toolUseId: "tool-log-1",
+        toolName: "Read",
+        parentToolUseId: null,
+        anomaly: {
+          code: "started_not_finished",
+          message: "Tool started but no finish event was observed.",
+        },
+      });
+      await onText("Done.");
+      return {
+        output: "Done.",
+        sessionId: "session-log-instrumentation",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      logService: runtimeLogService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "cek instrumentation",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+
+    const entries = runtimeLogService.getEntries();
+    const lifecycleEntry = entries.find((entry) => entry.source === "claude.tool");
+    const anomalyEntry = entries.find((entry) => entry.source === "claude.tool.sync");
+    expect(lifecycleEntry).toBeDefined();
+    expect(anomalyEntry).toBeDefined();
+    expect((lifecycleEntry?.data as Record<string, unknown>).threadId).toBe(threadId);
+    expect((lifecycleEntry?.data as Record<string, unknown>).toolUseId).toBe("tool-log-1");
+    expect((anomalyEntry?.data as Record<string, unknown>).stage).toBe("anomaly");
   });
 
   it("emits permission requested and proceeds with deny decision", async () => {

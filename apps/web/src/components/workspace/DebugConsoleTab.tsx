@@ -42,6 +42,7 @@ export function DebugConsoleTab() {
     const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
     const bottomRef = useRef<HTMLDivElement>(null);
     const [autoScroll, setAutoScroll] = useState(true);
+    const lastRemoteTimestampRef = useRef<string | null>(null);
 
     useEffect(() => {
         return logService.subscribe((nextEntries) => {
@@ -49,32 +50,111 @@ export function DebugConsoleTab() {
         });
     }, []);
 
-    // Connect to backend SSE stream
     useEffect(() => {
         let eventSource: EventSource | null = null;
         let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+        let disposed = false;
 
-        function connect() {
+        function rememberRemoteTimestamp(timestamp: string): void {
+            const parsed = Date.parse(timestamp);
+            if (!Number.isFinite(parsed)) {
+                return;
+            }
+
+            const current = lastRemoteTimestampRef.current;
+            if (!current) {
+                lastRemoteTimestampRef.current = new Date(parsed).toISOString();
+                return;
+            }
+
+            const currentParsed = Date.parse(current);
+            if (!Number.isFinite(currentParsed) || parsed > currentParsed) {
+                lastRemoteTimestampRef.current = new Date(parsed).toISOString();
+            }
+        }
+
+        async function fetchLogs(since?: string): Promise<void> {
+            const url = new URL(`${RUNTIME_BASE}/logs`);
+            if (since) {
+                url.searchParams.set("since", since);
+            }
+
+            const response = await fetch(url.toString());
+            if (!response.ok) {
+                throw new Error(`Failed to fetch logs: ${response.status}`);
+            }
+
+            const payload = (await response.json()) as { data?: LogEntry[] };
+            const remoteEntries = Array.isArray(payload.data) ? payload.data : [];
+            if (remoteEntries.length > 0) {
+                logService.addRemoteEntries(remoteEntries);
+                for (const entry of remoteEntries) {
+                    rememberRemoteTimestamp(entry.timestamp);
+                }
+            }
+
+            logService.log("debug", "debug.console", "Backfilled runtime logs", {
+                since: since ?? null,
+                count: remoteEntries.length,
+            });
+        }
+
+        async function connect(isReconnect = false): Promise<void> {
+            const since = isReconnect ? lastRemoteTimestampRef.current ?? undefined : undefined;
+            try {
+                await fetchLogs(since);
+            } catch (error) {
+                logService.log("warn", "debug.console", "Failed to backfill runtime logs", {
+                    since: since ?? null,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+
+            if (disposed) {
+                return;
+            }
+
             eventSource = new EventSource(`${RUNTIME_BASE}/logs/stream`);
+            logService.log("info", "debug.console", "Connected to runtime log stream", {
+                reconnect: isReconnect,
+            });
 
             eventSource.onmessage = (event) => {
                 try {
                     const entry = JSON.parse(event.data as string) as LogEntry;
                     logService.addRemoteEntry(entry);
+                    rememberRemoteTimestamp(entry.timestamp);
                 } catch {
-                    // ignore parse errors
+                    logService.log("warn", "debug.console", "Failed to parse log stream entry");
                 }
             };
 
             eventSource.onerror = () => {
+                if (disposed) {
+                    return;
+                }
                 eventSource?.close();
-                reconnectTimer = setTimeout(connect, 3000);
+                eventSource = null;
+
+                if (reconnectTimer) {
+                    return;
+                }
+
+                const delayMs = 3000;
+                logService.log("warn", "debug.console", "Runtime log stream disconnected; scheduling reconnect", {
+                    delayMs,
+                });
+                reconnectTimer = setTimeout(() => {
+                    reconnectTimer = null;
+                    void connect(true);
+                }, delayMs);
             };
         }
 
-        connect();
+        void connect(false);
 
         return () => {
+            disposed = true;
             eventSource?.close();
             if (reconnectTimer) {
                 clearTimeout(reconnectTimer);

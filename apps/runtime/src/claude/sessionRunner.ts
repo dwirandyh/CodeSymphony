@@ -3,10 +3,15 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ClaudeRunner } from "../types";
+import type { ClaudeRunner, ClaudeToolInstrumentationDecision, ClaudeToolInstrumentationEvent } from "../types";
 
 const MAX_CAPTURED_STDERR_LINES = 12;
 const MAX_BASH_OUTPUT_BYTES = 20 * 1024;
+const MAX_LOG_PREVIEW_STRING_CHARS = 500;
+const MAX_LOG_PREVIEW_DEPTH = 4;
+const MAX_LOG_PREVIEW_ARRAY_ITEMS = 20;
+const MAX_LOG_PREVIEW_OBJECT_KEYS = 30;
+const SENSITIVE_KEY_PATTERN = /(token|secret|password|api[_-]?key|authorization|cookie)/i;
 const DEFAULT_CLAUDE_EXECUTABLE = "claude";
 const COMMON_CLAUDE_EXECUTABLE_PATHS = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"];
 let cachedClaudeExecutable: string | null = null;
@@ -23,6 +28,64 @@ type BashToolResult = {
   truncated: boolean;
   outputBytes: number;
 };
+
+function truncateForPreview(input: string): string {
+  if (input.length <= MAX_LOG_PREVIEW_STRING_CHARS) {
+    return input;
+  }
+
+  return `${input.slice(0, MAX_LOG_PREVIEW_STRING_CHARS)}...`;
+}
+
+function sanitizeForLog(value: unknown, depth = 0, keyHint?: string): unknown {
+  if (depth > MAX_LOG_PREVIEW_DEPTH) {
+    return "[TruncatedDepth]";
+  }
+
+  if (value == null || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    if (keyHint && SENSITIVE_KEY_PATTERN.test(keyHint)) {
+      return "[REDACTED]";
+    }
+
+    return truncateForPreview(value);
+  }
+
+  if (Array.isArray(value)) {
+    const sliced = value.slice(0, MAX_LOG_PREVIEW_ARRAY_ITEMS);
+    const mapped = sliced.map((entry) => sanitizeForLog(entry, depth + 1));
+    if (value.length > MAX_LOG_PREVIEW_ARRAY_ITEMS) {
+      mapped.push(`[+${value.length - MAX_LOG_PREVIEW_ARRAY_ITEMS} more]`);
+    }
+    return mapped;
+  }
+
+  if (typeof value !== "object") {
+    return String(value);
+  }
+
+  const record = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  const keys = Object.keys(record).slice(0, MAX_LOG_PREVIEW_OBJECT_KEYS);
+  for (const key of keys) {
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      output[key] = "[REDACTED]";
+      continue;
+    }
+    output[key] = sanitizeForLog(record[key], depth + 1, key);
+  }
+  if (Object.keys(record).length > MAX_LOG_PREVIEW_OBJECT_KEYS) {
+    output.__truncatedKeys = Object.keys(record).length - MAX_LOG_PREVIEW_OBJECT_KEYS;
+  }
+  return output;
+}
+
+function toIso(timestampMs: number): string {
+  return new Date(timestampMs).toISOString();
+}
 
 function resolveExecutablePath(commandOrPath: string): string {
   function findCommonInstalledPath(): string | null {
@@ -355,6 +418,7 @@ function extractBashToolResult(toolResponse: unknown): BashToolResult | null {
 
 export const __testing = {
   extractBashToolResult,
+  sanitizeForLog,
 };
 
 function findLatestPlanFile(afterTimestamp: number): { filePath: string; content: string } | null {
@@ -406,6 +470,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   onQuestionRequest,
   onPermissionRequest,
   onPlanFileDetected,
+  onToolInstrumentation,
 }) => {
   let latestSessionId: string | null = sessionId;
   let finalOutput = "";
@@ -416,6 +481,88 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   const finishedToolUseIds = new Set<string>();
   const toolMetadataByUseId = new Map<string, ToolMetadata>();
   const bashResultByToolUseId = new Map<string, BashToolResult>();
+  const requestedToolByUseId = new Map<string, { toolName: string; parentToolUseId: string | null; requestedAtMs: number }>();
+  const decisionByToolUseId = new Map<string, ClaudeToolInstrumentationDecision>();
+  const startedAtMsByToolUseId = new Map<string, number>();
+  const progressByToolUseId = new Map<string, { count: number; maxElapsedTimeSeconds: number }>();
+  const summaryUnknownToolUseIds = new Set<string>();
+  const instrumentContext = {
+    cwd,
+    sessionId,
+    permissionMode: permissionMode ?? "default",
+    autoAcceptTools: Boolean(autoAcceptTools),
+  };
+
+  async function emitInstrumentation(event: ClaudeToolInstrumentationEvent): Promise<void> {
+    if (!onToolInstrumentation) {
+      return;
+    }
+
+    try {
+      await onToolInstrumentation(event);
+    } catch {
+      // Instrumentation must never break the Claude stream.
+    }
+  }
+
+  async function emitDecision(
+    toolUseId: string,
+    decision: ClaudeToolInstrumentationDecision,
+    toolName: string,
+    parentToolUseId: string | null,
+    preview: ClaudeToolInstrumentationEvent["preview"],
+  ): Promise<void> {
+    decisionByToolUseId.set(toolUseId, decision);
+    await emitInstrumentation({
+      stage: "decision",
+      toolUseId,
+      toolName,
+      parentToolUseId,
+      decision,
+      threadContext: instrumentContext,
+      preview,
+    });
+  }
+
+  async function markStarted(
+    toolUseId: string,
+    toolName: string,
+    parentToolUseId: string | null,
+    metadata?: ToolMetadata,
+  ): Promise<void> {
+    if (startedToolUseIds.has(toolUseId)) {
+      return;
+    }
+
+    startedToolUseIds.add(toolUseId);
+    const startedAtMs = Date.now();
+    startedAtMsByToolUseId.set(toolUseId, startedAtMs);
+    await onToolStarted({
+      toolName,
+      toolUseId,
+      parentToolUseId,
+      ...(metadata?.isBash
+        ? {
+            command: metadata.command,
+            shell: "bash" as const,
+            isBash: true as const,
+          }
+        : {}),
+    });
+    await emitInstrumentation({
+      stage: "started",
+      toolUseId,
+      toolName,
+      parentToolUseId,
+      threadContext: instrumentContext,
+      timing: {
+        startedAt: toIso(startedAtMs),
+      },
+      preview: {
+        ...(metadata?.command ? { command: metadata.command } : {}),
+      },
+    });
+  }
 
   const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;
 
@@ -438,6 +585,39 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         resume: sessionId ?? undefined,
         permissionMode: permissionMode ?? "default",
         canUseTool: async (toolName, input, options) => {
+          const toolUseId = options.toolUseID;
+          const command = commandFromToolInput(input);
+          const isBash = isBashTool(toolName);
+          const nowMs = Date.now();
+
+          toolMetadataByUseId.set(toolUseId, {
+            toolName,
+            command,
+            isBash,
+          });
+          requestedToolByUseId.set(toolUseId, {
+            toolName,
+            parentToolUseId: null,
+            requestedAtMs: nowMs,
+          });
+          await emitInstrumentation({
+            stage: "requested",
+            toolUseId,
+            toolName,
+            parentToolUseId: null,
+            threadContext: instrumentContext,
+            timing: {
+              startedAt: toIso(nowMs),
+            },
+            preview: {
+              ...(command ? { command } : {}),
+              input: sanitizeForLog(input),
+              blockedPath: options.blockedPath ?? null,
+              decisionReason: options.decisionReason ?? null,
+              suggestionsCount: options.suggestions?.length ?? 0,
+            },
+          });
+
           if (permissionMode === "plan" && toolName !== "AskUserQuestion") {
             if (!planFileDetected && finalOutput.trim().length > 0) {
               planFileDetected = true;
@@ -448,6 +628,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                 source: planFile ? "claude_plan_file" : "streaming_fallback",
               });
             }
+            await emitDecision(toolUseId, "plan_deny", toolName, null, {
+              ...(command ? { command } : {}),
+              input: sanitizeForLog(input),
+              decisionReason: "Plan requires user approval before execution.",
+            });
             return {
               behavior: "deny",
               message: "Plan requires user approval before execution.",
@@ -457,8 +642,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           if (toolName === "AskUserQuestion") {
             const questions = Array.isArray(input.questions) ? input.questions : [];
             const result = await onQuestionRequest({
-              requestId: options.toolUseID,
+              requestId: toolUseId,
               questions,
+            });
+            await emitDecision(toolUseId, "allow", toolName, null, {
+              input: sanitizeForLog(input),
             });
             return {
               behavior: "allow",
@@ -466,21 +654,15 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             };
           }
 
-          const command = commandFromToolInput(input);
-          const isBash = isBashTool(toolName);
-          if (isBash) {
-            toolMetadataByUseId.set(options.toolUseID, {
-              toolName,
-              command,
-              isBash,
-            });
-          }
-
           const requiresUserApproval = Boolean(
             options.blockedPath || options.decisionReason || (options.suggestions?.length ?? 0) > 0,
           );
 
           if (!requiresUserApproval) {
+            await emitDecision(toolUseId, "allow", toolName, null, {
+              ...(command ? { command } : {}),
+              input: sanitizeForLog(input),
+            });
             return {
               behavior: "allow",
               updatedInput: input,
@@ -488,6 +670,13 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           }
 
           if (autoAcceptTools) {
+            await emitDecision(toolUseId, "auto_allow", toolName, null, {
+              ...(command ? { command } : {}),
+              input: sanitizeForLog(input),
+              blockedPath: options.blockedPath ?? null,
+              decisionReason: options.decisionReason ?? null,
+              suggestionsCount: options.suggestions?.length ?? 0,
+            });
             return {
               behavior: "allow",
               updatedInput: input,
@@ -495,7 +684,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           }
 
           const decision = await onPermissionRequest({
-            requestId: options.toolUseID,
+            requestId: toolUseId,
             toolName,
             toolInput: input,
             blockedPath: options.blockedPath ?? null,
@@ -504,11 +693,26 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           });
 
           if (decision.decision === "allow") {
+            await emitDecision(toolUseId, "allow", toolName, null, {
+              ...(command ? { command } : {}),
+              input: sanitizeForLog(input),
+              blockedPath: options.blockedPath ?? null,
+              decisionReason: options.decisionReason ?? null,
+              suggestionsCount: options.suggestions?.length ?? 0,
+            });
             return {
               behavior: "allow",
               updatedInput: input,
             };
           }
+
+          await emitDecision(toolUseId, "deny", toolName, null, {
+            ...(command ? { command } : {}),
+            input: sanitizeForLog(input),
+            blockedPath: options.blockedPath ?? null,
+            decisionReason: options.decisionReason ?? null,
+            suggestionsCount: options.suggestions?.length ?? 0,
+          });
 
           return {
             behavior: "deny",
@@ -539,18 +743,13 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     command,
                     isBash: true,
                   });
+                  requestedToolByUseId.set(hookToolUseId, {
+                    toolName: hookInput.tool_name,
+                    parentToolUseId: null,
+                    requestedAtMs: Date.now(),
+                  });
 
-                  if (!startedToolUseIds.has(hookToolUseId)) {
-                    startedToolUseIds.add(hookToolUseId);
-                    await onToolStarted({
-                      toolName: hookInput.tool_name,
-                      toolUseId: hookToolUseId,
-                      parentToolUseId: null,
-                      command,
-                      shell: "bash",
-                      isBash: true,
-                    });
-                  }
+                  await markStarted(hookToolUseId, hookInput.tool_name, null, toolMetadataByUseId.get(hookToolUseId));
 
                   return { continue: true };
                 },
@@ -581,6 +780,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   }
 
                   if (!finishedToolUseIds.has(hookToolUseId)) {
+                    const progress = progressByToolUseId.get(hookToolUseId);
+                    const finishedAtMs = Date.now();
+                    const startedAtMs = startedAtMsByToolUseId.get(hookToolUseId);
                     await onToolFinished({
                       summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
                       precedingToolUseIds: [hookToolUseId],
@@ -591,6 +793,32 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                       error: bashResult?.error,
                       truncated: bashResult?.truncated ?? false,
                       outputBytes: bashResult?.outputBytes ?? 0,
+                    });
+                    await emitInstrumentation({
+                      stage: "finished",
+                      toolUseId: hookToolUseId,
+                      toolName: metadata.toolName,
+                      parentToolUseId: null,
+                      summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
+                      threadContext: instrumentContext,
+                      timing: {
+                        progressCount: progress?.count ?? 0,
+                        maxElapsedTimeSeconds: progress?.maxElapsedTimeSeconds ?? 0,
+                        ...(startedAtMs
+                          ? {
+                              startedAt: toIso(startedAtMs),
+                              durationMs: finishedAtMs - startedAtMs,
+                            }
+                          : {}),
+                        finishedAt: toIso(finishedAtMs),
+                      },
+                      preview: {
+                        ...(metadata.command ? { command: metadata.command } : {}),
+                        output: sanitizeForLog(bashResult?.output) as string | undefined,
+                        error: sanitizeForLog(bashResult?.error) as string | undefined,
+                        truncated: bashResult?.truncated ?? false,
+                        outputBytes: bashResult?.outputBytes ?? 0,
+                      },
                     });
                     finishedToolUseIds.add(hookToolUseId);
                   }
@@ -619,6 +847,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     return { continue: true };
                   }
 
+                  const progress = progressByToolUseId.get(hookToolUseId);
+                  const finishedAtMs = Date.now();
+                  const startedAtMs = startedAtMsByToolUseId.get(hookToolUseId);
                   await onToolFinished({
                     summary: command ? `Failed ${command}` : "Bash command failed",
                     precedingToolUseIds: [hookToolUseId],
@@ -628,6 +859,31 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     error: hookInput.error,
                     truncated: false,
                     outputBytes: Buffer.byteLength(hookInput.error, "utf8"),
+                  });
+                  await emitInstrumentation({
+                    stage: "failed",
+                    toolUseId: hookToolUseId,
+                    toolName: metadata?.toolName ?? hookInput.tool_name,
+                    parentToolUseId: null,
+                    summary: command ? `Failed ${command}` : "Bash command failed",
+                    threadContext: instrumentContext,
+                    timing: {
+                      progressCount: progress?.count ?? 0,
+                      maxElapsedTimeSeconds: progress?.maxElapsedTimeSeconds ?? 0,
+                      ...(startedAtMs
+                        ? {
+                            startedAt: toIso(startedAtMs),
+                            durationMs: finishedAtMs - startedAtMs,
+                          }
+                        : {}),
+                      finishedAt: toIso(finishedAtMs),
+                    },
+                    preview: {
+                      ...(command ? { command } : {}),
+                      error: sanitizeForLog(hookInput.error) as string,
+                      truncated: false,
+                      outputBytes: Buffer.byteLength(hookInput.error, "utf8"),
+                    },
                   });
                   finishedToolUseIds.add(hookToolUseId);
                   return { continue: true };
@@ -663,22 +919,35 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
       if (message.type === "tool_progress") {
         const metadata = toolMetadataByUseId.get(message.tool_use_id);
-
-        if (!startedToolUseIds.has(message.tool_use_id)) {
-          startedToolUseIds.add(message.tool_use_id);
-          await onToolStarted({
+        requestedToolByUseId.set(message.tool_use_id, {
+          toolName: message.tool_name,
+          parentToolUseId: message.parent_tool_use_id,
+          requestedAtMs: Date.now(),
+        });
+        if (!metadata) {
+          toolMetadataByUseId.set(message.tool_use_id, {
             toolName: message.tool_name,
-            toolUseId: message.tool_use_id,
-            parentToolUseId: message.parent_tool_use_id,
-            ...(metadata?.isBash
-              ? {
-                  command: metadata.command,
-                  shell: "bash" as const,
-                  isBash: true as const,
-                }
-              : {}),
+            isBash: isBashTool(message.tool_name),
           });
         }
+
+        const currentProgress = progressByToolUseId.get(message.tool_use_id) ?? {
+          count: 0,
+          maxElapsedTimeSeconds: 0,
+        };
+        currentProgress.count += 1;
+        currentProgress.maxElapsedTimeSeconds = Math.max(
+          currentProgress.maxElapsedTimeSeconds,
+          message.elapsed_time_seconds,
+        );
+        progressByToolUseId.set(message.tool_use_id, currentProgress);
+
+        await markStarted(
+          message.tool_use_id,
+          message.tool_name,
+          message.parent_tool_use_id,
+          toolMetadataByUseId.get(message.tool_use_id),
+        );
 
         await onToolOutput({
           toolName: message.tool_name,
@@ -691,10 +960,16 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
       if (message.type === "tool_use_summary") {
         const pendingToolUseIds = message.preceding_tool_use_ids.filter((toolUseId) => !finishedToolUseIds.has(toolUseId));
+        for (const toolUseId of pendingToolUseIds) {
+          if (!toolMetadataByUseId.has(toolUseId)) {
+            summaryUnknownToolUseIds.add(toolUseId);
+          }
+        }
         if (pendingToolUseIds.length === 0) {
           for (const toolUseId of message.preceding_tool_use_ids) {
             toolMetadataByUseId.delete(toolUseId);
             bashResultByToolUseId.delete(toolUseId);
+            progressByToolUseId.delete(toolUseId);
           }
           continue;
         }
@@ -720,10 +995,47 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
               }
             : {}),
         });
+        const finishedAtMs = Date.now();
+        for (const toolUseId of pendingToolUseIds) {
+          const metadata = toolMetadataByUseId.get(toolUseId);
+          const progress = progressByToolUseId.get(toolUseId);
+          const startedAtMs = startedAtMsByToolUseId.get(toolUseId);
+          await emitInstrumentation({
+            stage: "finished",
+            toolUseId,
+            toolName: metadata?.toolName ?? "unknown",
+            parentToolUseId: null,
+            summary: message.summary,
+            threadContext: instrumentContext,
+            timing: {
+              progressCount: progress?.count ?? 0,
+              maxElapsedTimeSeconds: progress?.maxElapsedTimeSeconds ?? 0,
+              ...(startedAtMs
+                ? {
+                    startedAt: toIso(startedAtMs),
+                    durationMs: finishedAtMs - startedAtMs,
+                  }
+                : {}),
+              finishedAt: toIso(finishedAtMs),
+            },
+            preview: {
+              ...(bashToolMetadata?.command ? { command: bashToolMetadata.command } : {}),
+              ...(bashToolMetadata?.isBash
+                ? {
+                    output: sanitizeForLog(bashToolResult?.output) as string | undefined,
+                    error: sanitizeForLog(bashToolResult?.error) as string | undefined,
+                    truncated: bashToolResult?.truncated ?? false,
+                    outputBytes: bashToolResult?.outputBytes ?? 0,
+                  }
+                : {}),
+            },
+          });
+        }
 
         for (const toolUseId of message.preceding_tool_use_ids) {
           toolMetadataByUseId.delete(toolUseId);
           bashResultByToolUseId.delete(toolUseId);
+          progressByToolUseId.delete(toolUseId);
         }
         continue;
       }
@@ -784,6 +1096,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       }
 
       const bashToolResult = bashResultByToolUseId.get(toolUseId);
+      const progress = progressByToolUseId.get(toolUseId);
+      const finishedAtMs = Date.now();
+      const startedAtMs = startedAtMsByToolUseId.get(toolUseId);
       await onToolFinished({
         summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
         precedingToolUseIds: [toolUseId],
@@ -795,7 +1110,87 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         truncated: bashToolResult?.truncated ?? false,
         outputBytes: bashToolResult?.outputBytes ?? 0,
       });
+      await emitInstrumentation({
+        stage: "finished",
+        toolUseId,
+        toolName: metadata.toolName,
+        parentToolUseId: null,
+        summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
+        threadContext: instrumentContext,
+        timing: {
+          progressCount: progress?.count ?? 0,
+          maxElapsedTimeSeconds: progress?.maxElapsedTimeSeconds ?? 0,
+          ...(startedAtMs
+            ? {
+                startedAt: toIso(startedAtMs),
+                durationMs: finishedAtMs - startedAtMs,
+              }
+            : {}),
+          finishedAt: toIso(finishedAtMs),
+        },
+        preview: {
+          ...(metadata.command ? { command: metadata.command } : {}),
+          output: sanitizeForLog(bashToolResult?.output) as string | undefined,
+          error: sanitizeForLog(bashToolResult?.error) as string | undefined,
+          truncated: bashToolResult?.truncated ?? false,
+          outputBytes: bashToolResult?.outputBytes ?? 0,
+        },
+      });
       finishedToolUseIds.add(toolUseId);
+    }
+
+    for (const [toolUseId, requested] of requestedToolByUseId.entries()) {
+      const decision = decisionByToolUseId.get(toolUseId);
+      const shouldFlag = decision === "allow" || decision === "auto_allow";
+      if (!shouldFlag || startedToolUseIds.has(toolUseId)) {
+        continue;
+      }
+
+      await emitInstrumentation({
+        stage: "anomaly",
+        toolUseId,
+        toolName: requested.toolName,
+        parentToolUseId: requested.parentToolUseId,
+        threadContext: instrumentContext,
+        anomaly: {
+          code: "requested_not_started",
+          message: "Tool was allowed but no start event was observed.",
+        },
+      });
+    }
+
+    for (const toolUseId of startedToolUseIds) {
+      if (finishedToolUseIds.has(toolUseId)) {
+        continue;
+      }
+
+      const metadata = toolMetadataByUseId.get(toolUseId);
+      await emitInstrumentation({
+        stage: "anomaly",
+        toolUseId,
+        toolName: metadata?.toolName ?? requestedToolByUseId.get(toolUseId)?.toolName ?? "unknown",
+        parentToolUseId: requestedToolByUseId.get(toolUseId)?.parentToolUseId ?? null,
+        threadContext: instrumentContext,
+        anomaly: {
+          code: "started_not_finished",
+          message: "Tool started but no finish event was observed.",
+        },
+      });
+    }
+
+    for (const toolUseId of summaryUnknownToolUseIds) {
+      await emitInstrumentation({
+        stage: "anomaly",
+        toolUseId,
+        toolName: "unknown",
+        parentToolUseId: null,
+        threadContext: instrumentContext,
+        anomaly: {
+          code: "summary_unknown_tool",
+          message: "Tool summary referenced an unknown tool use id.",
+          relatedToolUseIds: [toolUseId],
+        },
+      });
     }
   } catch (error) {
     throw withClaudeSetupHint(error, recentStderr, claudeExecutable);

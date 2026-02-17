@@ -45,6 +45,7 @@ function createApp() {
     prisma,
     eventHub,
     claudeRunner: runClaudeWithStreaming,
+    logService,
   });
 
   app.decorate("prisma", prisma);

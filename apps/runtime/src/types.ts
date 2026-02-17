@@ -16,6 +16,54 @@ export type ClaudeRunnerResult = {
 
 export type PlanDetectionSource = "claude_plan_file" | "streaming_fallback";
 
+export type ClaudeToolInstrumentationStage = "requested" | "decision" | "started" | "finished" | "failed" | "anomaly";
+
+export type ClaudeToolInstrumentationDecision = "allow" | "deny" | "auto_allow" | "plan_deny";
+
+export type ClaudeToolInstrumentationAnomalyCode =
+  | "requested_not_started"
+  | "started_not_finished"
+  | "summary_unknown_tool";
+
+export type ClaudeToolInstrumentationEvent = {
+  stage: ClaudeToolInstrumentationStage;
+  toolUseId: string;
+  toolName: string;
+  parentToolUseId: string | null;
+  decision?: ClaudeToolInstrumentationDecision;
+  summary?: string;
+  threadContext?: {
+    cwd: string;
+    sessionId: string | null;
+    permissionMode: ChatMode | "default";
+    autoAcceptTools: boolean;
+  };
+  timing?: {
+    progressCount?: number;
+    maxElapsedTimeSeconds?: number;
+    elapsedTimeSeconds?: number;
+    startedAt?: string;
+    finishedAt?: string;
+    durationMs?: number;
+  };
+  preview?: {
+    command?: string;
+    input?: unknown;
+    output?: string;
+    error?: string;
+    truncated?: boolean;
+    outputBytes?: number;
+    blockedPath?: string | null;
+    decisionReason?: string | null;
+    suggestionsCount?: number;
+  };
+  anomaly?: {
+    code: ClaudeToolInstrumentationAnomalyCode;
+    message: string;
+    relatedToolUseIds?: string[];
+  };
+};
+
 export type ClaudeRunner = (args: {
   prompt: string;
   sessionId: string | null;
@@ -71,10 +119,14 @@ export type ClaudeRunner = (args: {
     content: string;
     source?: PlanDetectionSource;
   }) => Promise<void> | void;
+  onToolInstrumentation?: (event: ClaudeToolInstrumentationEvent) => Promise<void> | void;
 }) => Promise<ClaudeRunnerResult>;
 
 export type RuntimeDeps = {
   prisma: PrismaClient;
   eventHub: RuntimeEventHub;
   claudeRunner: ClaudeRunner;
+  logService?: {
+    log: (level: "debug" | "info" | "warn" | "error", source: string, message: string, data?: unknown) => void;
+  };
 };
