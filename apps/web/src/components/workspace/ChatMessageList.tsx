@@ -703,6 +703,44 @@ function diffLineClassName(kind: DiffLineKind): string {
   return "text-foreground";
 }
 
+type DiffLineNumber = {
+  oldLine: number | null;
+  newLine: number | null;
+};
+
+function computeDiffLineNumbers(lines: string[]): DiffLineNumber[] {
+  const result: DiffLineNumber[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+
+  for (const line of lines) {
+    const kind = classifyDiffLine(line);
+
+    if (kind === "hunk") {
+      const match = /^@@ -(?<oldStart>\d+)(?:,\d+)? \+(?<newStart>\d+)(?:,\d+)? @@/.exec(line);
+      if (match?.groups) {
+        oldLine = Number(match.groups.oldStart);
+        newLine = Number(match.groups.newStart);
+      }
+      result.push({ oldLine: null, newLine: null });
+    } else if (kind === "meta") {
+      result.push({ oldLine: null, newLine: null });
+    } else if (kind === "addition") {
+      result.push({ oldLine: null, newLine });
+      newLine += 1;
+    } else if (kind === "deletion") {
+      result.push({ oldLine, newLine: null });
+      oldLine += 1;
+    } else {
+      result.push({ oldLine, newLine });
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+
+  return result;
+}
+
 function editedSummaryLabel({
   changedFiles,
   additions,
@@ -1435,18 +1473,28 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                           </span>
                         </div>
                         <div className="max-h-72 overflow-auto font-mono text-xs leading-relaxed">
-                          {section.lines.map((line, lineIndex) => {
-                            const kind = classifyDiffLine(line);
-                            return (
-                              <div
-                                key={`${item.id}:${sectionIndex}:line:${lineIndex}`}
-                                data-line-kind={kind}
-                                className={cn("whitespace-pre-wrap break-words px-4 py-0.5", diffLineClassName(kind))}
-                              >
-                                {line.length > 0 ? line : " "}
-                              </div>
-                            );
-                          })}
+                          {(() => {
+                            const lineNumbers = computeDiffLineNumbers(section.lines);
+                            return section.lines.map((line, lineIndex) => {
+                              const kind = classifyDiffLine(line);
+                              const ln = lineNumbers[lineIndex];
+                              return (
+                                <div
+                                  key={`${item.id}:${sectionIndex}:line:${lineIndex}`}
+                                  data-line-kind={kind}
+                                  className={cn("flex whitespace-pre-wrap break-words", diffLineClassName(kind))}
+                                >
+                                  <span className="inline-block w-8 shrink-0 select-none text-right text-muted-foreground/40 pr-1">
+                                    {ln?.oldLine ?? ""}
+                                  </span>
+                                  <span className="inline-block w-8 shrink-0 select-none text-right text-muted-foreground/40 pr-2">
+                                    {ln?.newLine ?? ""}
+                                  </span>
+                                  <span className="flex-1 px-1">{line.length > 0 ? line : " "}</span>
+                                </div>
+                              );
+                            });
+                          })()}
                         </div>
                       </div>
                     ))}
