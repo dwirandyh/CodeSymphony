@@ -355,9 +355,7 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.textContent).toContain("Activity for");
-    expect(container.textContent).toContain("git status");
-    expect(container.querySelector('[data-testid="timeline-activity"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="timeline-activity"]')).toBeNull();
     expect(container.querySelector('[data-testid="timeline-tool.output"]')).toBeNull();
   });
 
@@ -416,7 +414,7 @@ describe("WorkspacePage", () => {
     expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).not.toBeNull();
     expect(container.textContent).toContain("export const main = () => 42;");
     expect(container.textContent).toContain("ts");
-    expect(container.textContent).toContain("Analyzed");
+
   });
 
   it("keeps read-file output in markdown until a code fence appears during stream", async () => {
@@ -1127,8 +1125,8 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.textContent).toContain("Activity for");
-    expect(container.textContent).toContain("Edited 1 file");
+
+    expect(container.querySelector('[data-testid="timeline-edited-diff"]')).toBeNull();
     expect(container.textContent).not.toContain("Edited files");
   });
 
@@ -1339,15 +1337,13 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    const toolRow = container.querySelector('[data-testid="timeline-activity"]');
+    // Activity is no longer rendered as a visible card, so just check
+    // the assistant row is present and contains the expected content.
     const assistantRow = container.querySelector('[data-testid="message-assistant"]');
-    if (!toolRow || !assistantRow) {
-      throw new Error("Expected inline activity row and assistant row");
+    if (!assistantRow) {
+      throw new Error("Expected assistant row");
     }
-
-    const relation = toolRow.compareDocumentPosition(assistantRow);
-    expect((relation & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
-    expect(container.textContent).toContain("Analyzed");
+    expect(container.textContent).toContain("README content here");
   });
 
   it("does not render tool.started events in timeline", async () => {
@@ -2679,10 +2675,10 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="timeline-activity"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="timeline-activity"]')).toBeNull();
     expect(container.querySelector('[data-testid="timeline-permission.requested"]')).toBeNull();
     expect(container.querySelector('[data-testid="timeline-permission.resolved"]')).toBeNull();
-    expect(container.textContent).toContain("Permission denied");
+
     expect(container.textContent).not.toContain("Permission requested");
     expect(container.textContent).not.toContain("Permission allowed");
     expect(container.textContent).not.toContain("cat /etc/hosts");

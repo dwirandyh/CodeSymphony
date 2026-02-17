@@ -1230,43 +1230,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
           }
 
           if (item.kind === "activity") {
-            const expanded = isActivityExpanded(item.messageId, item.defaultExpanded);
-            return (
-              <article
-                key={`activity-${item.messageId}`}
-                className="rounded-md border border-border/30 bg-background/20 px-3 py-2 text-xs"
-                data-testid="timeline-activity"
-              >
-                <details
-                  open={expanded}
-                  onToggle={(event) => {
-                    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-                    setActivityExpandedByMessageId((current) => {
-                      const next = new Map(current);
-                      next.set(item.messageId, nextOpen);
-                      return next;
-                    });
-                  }}
-                >
-                  <summary className="cursor-pointer text-[12px] text-muted-foreground">
-                    <span className="font-semibold text-foreground">Activity for {item.durationSeconds}s</span>
-                  </summary>
-                  <div className="mt-2 space-y-2">
-                    {item.introText ? <p className="text-[12px] text-foreground/90">{item.introText}</p> : null}
-                    {item.steps.length > 0 ? (
-                      <ul className="space-y-1.5">
-                        {item.steps.map((step) => (
-                          <li key={step.id} className="rounded-md border border-border/35 bg-secondary/20 px-2.5 py-1.5">
-                            <div className="font-medium text-foreground">{step.label}</div>
-                            <div className="text-muted-foreground">{step.detail}</div>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                  </div>
-                </details>
-              </article>
-            );
+            return null;
           }
 
           if (item.kind === "tool") {
@@ -1326,7 +1290,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
             return (
               <article
                 key={`bash-${item.id}`}
-                className="text-xs"
+                className="px-1 text-xs"
                 data-testid="timeline-bash-command"
               >
                 <details
@@ -1432,7 +1396,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
             return (
               <article
                 key={`edited-diff-${item.id}`}
-                className="text-xs"
+                className="px-1 text-xs"
                 data-testid="timeline-edited-diff"
               >
                 <details
@@ -1448,17 +1412,21 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                 >
                   <summary
                     className={cn(
-                      "group/edited-summary inline-flex list-none cursor-pointer items-center gap-1.5 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
-                      expanded ? "text-foreground" : "text-foreground hover:text-foreground",
+                      "group/edited-summary inline-flex list-none cursor-pointer items-center gap-1 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
+                      expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
                     )}
                   >
+                    <span className="font-medium">{summaryLabel}</span>
                     <span
-                      className="inline-flex shrink-0 text-muted-foreground transition-transform"
-                      style={expanded ? { transform: "rotate(90deg)" } : undefined}
+                      className={cn(
+                        "inline-flex shrink-0 text-[11px] leading-none opacity-0 transition-[opacity,transform,color] group-hover/edited-summary:opacity-100",
+                        expanded
+                          ? "rotate-90 text-muted-foreground"
+                          : "text-muted-foreground group-hover/edited-summary:text-foreground",
+                      )}
                     >
                       <ChevronRight className="h-3.5 w-3.5" />
                     </span>
-                    <span className="font-medium">{summaryLabel}</span>
                   </summary>
 
                   <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
