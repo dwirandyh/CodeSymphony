@@ -1358,7 +1358,7 @@ describe("WorkspacePage", () => {
     expect(container.textContent).toContain("README content here");
   });
 
-  it("does not render tool.started events in timeline", async () => {
+  it("renders tool.started events in timeline as running step", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([]);
     (api.listEvents as Mock).mockResolvedValueOnce([
       {
@@ -1367,10 +1367,9 @@ describe("WorkspacePage", () => {
         idx: 1,
         type: "tool.started",
         payload: {
-          toolName: "Bash",
+          toolName: "Read",
           toolUseId: "tool-started-only",
           parentToolUseId: null,
-          command: "pwd",
         },
         createdAt: "2026-01-01T10:00:01.000Z",
       },
@@ -1382,8 +1381,162 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="timeline-tool.started"]')).toBeNull();
-    expect(container.textContent).not.toContain("tool.started");
+    expect(container.querySelector('[data-testid="timeline-tool.started"]')).not.toBeNull();
+    expect(container.textContent).toContain("Read (running)");
+  });
+
+  it("does not render non-bash tool summaries as bash command cards", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-read",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "read readme",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-read",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Done.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-read-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-read-1", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-read-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Read README.md",
+          precedingToolUseIds: ["tool-read-1"],
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-read-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-read", role: "assistant", delta: "Done." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-read-complete",
+        threadId: "thread-1",
+        idx: 4,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-read" },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-bash-command"]')).toBeNull();
+    expect(container.textContent).not.toContain("Ran commands");
+    expect(container.textContent).toContain("Read README.md");
+  });
+
+  it("groups read summaries into explored files without duplicate started rows", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-read-group",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "read docs",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-read-group",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Summary done.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-read-group-start-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-read-group-1", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-read-group-finish-1",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Read README.md",
+          precedingToolUseIds: ["tool-read-group-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-read-group-start-2",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-read-group-2", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.300Z",
+      },
+      {
+        id: "evt-read-group-finish-2",
+        threadId: "thread-1",
+        idx: 4,
+        type: "tool.finished",
+        payload: {
+          summary: "Read docs/guide.md",
+          precedingToolUseIds: ["tool-read-group-2"],
+        },
+        createdAt: "2026-01-01T10:00:01.600Z",
+      },
+      {
+        id: "evt-read-group-msg",
+        threadId: "thread-1",
+        idx: 5,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-read-group", role: "assistant", delta: "Summary done." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-read-group-complete",
+        threadId: "thread-1",
+        idx: 6,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-read-group" },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    expect(container.textContent).toContain("Explored 2 files");
+    expect(container.textContent).toContain("Read README.md");
+    expect(container.textContent).toContain("Read docs/guide.md");
+    expect(container.textContent).not.toContain("Read Completed Read");
   });
 
   it("marks bash command as success when message already completed", async () => {

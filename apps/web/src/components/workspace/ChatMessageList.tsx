@@ -449,7 +449,7 @@ function toolTitle(event: ChatEvent): string {
   }
 
   if (event.type === "tool.started") {
-    return "tool.started";
+    return "Running";
   }
 
   if (event.type === "tool.output") {
@@ -484,7 +484,8 @@ function toolSubtitle(event: ChatEvent): string {
   }
 
   if (event.type === "tool.started") {
-    return String(event.payload.toolName ?? "Tool started");
+    const name = String(event.payload.toolName ?? "Tool");
+    return `${name} (running)`;
   }
 
   if (event.type === "tool.output") {

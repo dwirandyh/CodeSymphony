@@ -293,6 +293,10 @@ function toolEventDetail(event: ChatEvent): string {
 
   const toolName = event.payload.toolName;
   if (typeof toolName === "string" && toolName.trim().length > 0) {
+    if (event.type === "tool.started") {
+      return `${toolName.trim()} (running)`;
+    }
+
     if (event.type === "tool.output") {
       const elapsed = Number(event.payload.elapsedTimeSeconds ?? 0);
       if (Number.isFinite(elapsed) && elapsed > 0) {
@@ -337,10 +341,6 @@ function buildActivitySteps(context: ChatEvent[]): ActivityTraceStep[] {
     }
 
     if (event.type === "permission.requested") {
-      continue;
-    }
-
-    if (event.type === "tool.started") {
       continue;
     }
 
@@ -539,6 +539,7 @@ function isBashToolEvent(event: ChatEvent): boolean {
 function extractBashRuns(context: ChatEvent[]): BashRun[] {
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
   const byToolUseId = new Map<string, BashRun>();
+  const knownBashToolUseIds = new Set<string>();
   const hasBashToolLifecycleEvents = ordered.some((event) => isBashToolEvent(event));
 
   function ensureRun(toolUseId: string, event: ChatEvent): BashRun {
@@ -574,6 +575,7 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
       if (!toolUseId) {
         continue;
       }
+      knownBashToolUseIds.add(toolUseId);
       const run = ensureRun(toolUseId, event);
       run.startIdx = Math.min(run.startIdx, event.idx);
       run.command = run.command ?? payloadStringOrNull(event.payload.command);
@@ -595,7 +597,7 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
       : [];
 
     const bashToolUseIds = precedingToolUseIds.length > 0
-      ? precedingToolUseIds
+      ? precedingToolUseIds.filter((toolUseId) => knownBashToolUseIds.has(toolUseId) || byToolUseId.has(toolUseId))
       : isBashToolEvent(event)
         ? [`event:${event.id}`]
         : [];
@@ -757,6 +759,10 @@ type ReadRunGroup = {
 function extractReadFilename(event: ChatEvent): string {
   const summary = payloadStringOrNull(event.payload.summary);
   if (summary) {
+    if (/^completed\s+read$/i.test(summary.trim())) {
+      return "file";
+    }
+
     // Strip common prefixes like "Read ", "Opened " to get the filename
     const stripped = summary.replace(/^(Read|Opened|Cat)\s+/i, "").trim();
     if (stripped.length > 0) {
@@ -784,8 +790,14 @@ function extractReadRunGroups(context: ChatEvent[]): ReadRunGroup[] {
     if (!isReadToolEvent(event)) {
       continue;
     }
+    if (event.type !== "tool.finished") {
+      continue;
+    }
 
     const filename = extractReadFilename(event);
+    if (filename === "file") {
+      continue;
+    }
     if (currentGroup) {
       currentGroup.files.push(filename);
       currentGroup.eventIds.add(event.id);
@@ -2240,10 +2252,6 @@ export function WorkspacePage() {
 
     for (const event of rawOrphanToolEvents) {
       if (event.type === "permission.requested") {
-        continue;
-      }
-
-      if (event.type === "tool.started") {
         continue;
       }
 

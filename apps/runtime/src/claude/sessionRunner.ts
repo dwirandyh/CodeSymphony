@@ -19,6 +19,7 @@ let cachedClaudeExecutable: string | null = null;
 type ToolMetadata = {
   toolName: string;
   command?: string;
+  readTarget?: string;
   isBash: boolean;
 };
 
@@ -266,6 +267,88 @@ function commandFromUnknownToolInput(input: unknown): string | undefined {
   }
 
   return commandFromToolInput(input as Record<string, unknown>);
+}
+
+function stringFromUnknown(input: unknown): string | undefined {
+  if (typeof input !== "string") {
+    return undefined;
+  }
+
+  const normalized = input.trim();
+  if (normalized.length === 0) {
+    return undefined;
+  }
+
+  return truncateForPreview(normalized);
+}
+
+function readTargetFromUnknownToolInput(toolName: string, input: unknown): string | undefined {
+  if (toolName.trim().toLowerCase() !== "read") {
+    return undefined;
+  }
+
+  if (typeof input !== "object" || input == null || Array.isArray(input)) {
+    return undefined;
+  }
+
+  const record = input as Record<string, unknown>;
+  const directKeyCandidates = ["path", "file_path", "filepath", "file", "target", "url"];
+  for (const key of directKeyCandidates) {
+    const candidate = stringFromUnknown(record[key]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  const listKeyCandidates = ["paths", "files"];
+  for (const key of listKeyCandidates) {
+    const value = record[key];
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    for (const entry of value) {
+      const candidate = stringFromUnknown(entry);
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function completionSummaryFromMetadata(metadata: ToolMetadata, toolInput?: unknown): string {
+  if (metadata.command) {
+    return `Ran ${metadata.command}`;
+  }
+
+  if (metadata.isBash) {
+    return "Ran bash command";
+  }
+
+  const readTarget = metadata.readTarget ?? readTargetFromUnknownToolInput(metadata.toolName, toolInput);
+  if (readTarget) {
+    return `Read ${readTarget}`;
+  }
+
+  return `Completed ${metadata.toolName}`;
+}
+
+function failureSummaryFromMetadata(metadata: ToolMetadata, toolInput: unknown, command?: string): string {
+  if (command) {
+    return `Failed ${command}`;
+  }
+
+  if (metadata.isBash) {
+    return "Bash command failed";
+  }
+
+  const readTarget = metadata.readTarget ?? readTargetFromUnknownToolInput(metadata.toolName, toolInput);
+  if (readTarget) {
+    return `Failed to read ${readTarget}`;
+  }
+
+  return `${metadata.toolName} failed`;
 }
 
 function truncateUtf8(input: string, maxBytes: number): string {
@@ -528,6 +611,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     toolUseId: string,
     toolName: string,
     parentToolUseId: string | null,
+    startSource: "sdk.hook.pre_tool_use" | "sdk.stream.tool_progress",
     metadata?: ToolMetadata,
   ): Promise<void> {
     if (startedToolUseIds.has(toolUseId)) {
@@ -560,6 +644,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       },
       preview: {
         ...(metadata?.command ? { command: metadata.command } : {}),
+        startSource,
       },
     });
   }
@@ -593,6 +678,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           toolMetadataByUseId.set(toolUseId, {
             toolName,
             command,
+            readTarget: readTargetFromUnknownToolInput(toolName, input),
             isBash,
           });
           requestedToolByUseId.set(toolUseId, {
@@ -733,7 +819,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   }
 
                   const hookToolUseId = hookInput.tool_use_id || toolUseID;
-                  if (!hookToolUseId || !isBashTool(hookInput.tool_name)) {
+                  if (!hookToolUseId) {
                     return { continue: true };
                   }
 
@@ -741,7 +827,8 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   toolMetadataByUseId.set(hookToolUseId, {
                     toolName: hookInput.tool_name,
                     command,
-                    isBash: true,
+                    readTarget: readTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
+                    isBash: isBashTool(hookInput.tool_name),
                   });
                   requestedToolByUseId.set(hookToolUseId, {
                     toolName: hookInput.tool_name,
@@ -749,7 +836,13 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     requestedAtMs: Date.now(),
                   });
 
-                  await markStarted(hookToolUseId, hookInput.tool_name, null, toolMetadataByUseId.get(hookToolUseId));
+                  await markStarted(
+                    hookToolUseId,
+                    hookInput.tool_name,
+                    null,
+                    "sdk.hook.pre_tool_use",
+                    toolMetadataByUseId.get(hookToolUseId),
+                  );
 
                   return { continue: true };
                 },
@@ -769,13 +862,18 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     return { continue: true };
                   }
 
-                  const metadata = toolMetadataByUseId.get(hookToolUseId);
-                  const bashResult = extractBashToolResult(hookInput.tool_response);
-                  if (!metadata?.isBash) {
-                    return { continue: true };
+                  const metadata = toolMetadataByUseId.get(hookToolUseId) ?? {
+                    toolName: hookInput.tool_name,
+                    command: commandFromUnknownToolInput(hookInput.tool_input),
+                    readTarget: readTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
+                    isBash: isBashTool(hookInput.tool_name),
+                  };
+                  if (!metadata.readTarget) {
+                    metadata.readTarget = readTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
                   }
-
-                  if (bashResult) {
+                  toolMetadataByUseId.set(hookToolUseId, metadata);
+                  const bashResult = extractBashToolResult(hookInput.tool_response);
+                  if (metadata.isBash && bashResult) {
                     bashResultByToolUseId.set(hookToolUseId, bashResult);
                   }
 
@@ -783,23 +881,28 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     const progress = progressByToolUseId.get(hookToolUseId);
                     const finishedAtMs = Date.now();
                     const startedAtMs = startedAtMsByToolUseId.get(hookToolUseId);
+                    const completionSummary = completionSummaryFromMetadata(metadata, hookInput.tool_input);
                     await onToolFinished({
-                      summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
+                      summary: completionSummary,
                       precedingToolUseIds: [hookToolUseId],
-                      command: metadata.command,
-                      shell: "bash",
-                      isBash: true,
-                      output: bashResult?.output,
-                      error: bashResult?.error,
-                      truncated: bashResult?.truncated ?? false,
-                      outputBytes: bashResult?.outputBytes ?? 0,
+                      ...(metadata.isBash
+                        ? {
+                            command: metadata.command,
+                            shell: "bash" as const,
+                            isBash: true as const,
+                            output: bashResult?.output,
+                            error: bashResult?.error,
+                            truncated: bashResult?.truncated ?? false,
+                            outputBytes: bashResult?.outputBytes ?? 0,
+                          }
+                        : {}),
                     });
                     await emitInstrumentation({
                       stage: "finished",
                       toolUseId: hookToolUseId,
                       toolName: metadata.toolName,
                       parentToolUseId: null,
-                      summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
+                      summary: completionSummary,
                       threadContext: instrumentContext,
                       timing: {
                         progressCount: progress?.count ?? 0,
@@ -814,10 +917,18 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                       },
                       preview: {
                         ...(metadata.command ? { command: metadata.command } : {}),
-                        output: sanitizeForLog(bashResult?.output) as string | undefined,
-                        error: sanitizeForLog(bashResult?.error) as string | undefined,
-                        truncated: bashResult?.truncated ?? false,
-                        outputBytes: bashResult?.outputBytes ?? 0,
+                        ...(metadata.isBash
+                          ? {
+                              output: sanitizeForLog(bashResult?.output) as string | undefined,
+                              error: sanitizeForLog(bashResult?.error) as string | undefined,
+                              truncated: bashResult?.truncated ?? false,
+                              outputBytes: bashResult?.outputBytes ?? 0,
+                            }
+                          : {
+                              output: typeof hookInput.tool_response === "string"
+                                ? truncateForPreview(hookInput.tool_response)
+                                : undefined,
+                            }),
                       },
                     });
                     finishedToolUseIds.add(hookToolUseId);
@@ -837,11 +948,20 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   }
 
                   const hookToolUseId = hookInput.tool_use_id || toolUseID;
-                  if (!hookToolUseId || !isBashTool(hookInput.tool_name)) {
+                  if (!hookToolUseId) {
                     return { continue: true };
                   }
 
-                  const metadata = toolMetadataByUseId.get(hookToolUseId);
+                  const metadata = toolMetadataByUseId.get(hookToolUseId) ?? {
+                    toolName: hookInput.tool_name,
+                    command: commandFromUnknownToolInput(hookInput.tool_input),
+                    readTarget: readTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
+                    isBash: isBashTool(hookInput.tool_name),
+                  };
+                  if (!metadata.readTarget) {
+                    metadata.readTarget = readTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
+                  }
+                  toolMetadataByUseId.set(hookToolUseId, metadata);
                   const command = metadata?.command ?? commandFromUnknownToolInput(hookInput.tool_input);
                   if (finishedToolUseIds.has(hookToolUseId)) {
                     return { continue: true };
@@ -850,12 +970,17 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   const progress = progressByToolUseId.get(hookToolUseId);
                   const finishedAtMs = Date.now();
                   const startedAtMs = startedAtMsByToolUseId.get(hookToolUseId);
+                  const failureSummary = failureSummaryFromMetadata(metadata, hookInput.tool_input, command);
                   await onToolFinished({
-                    summary: command ? `Failed ${command}` : "Bash command failed",
+                    summary: failureSummary,
                     precedingToolUseIds: [hookToolUseId],
-                    command,
-                    shell: "bash",
-                    isBash: true,
+                    ...(metadata.isBash
+                      ? {
+                          command,
+                          shell: "bash" as const,
+                          isBash: true as const,
+                        }
+                      : {}),
                     error: hookInput.error,
                     truncated: false,
                     outputBytes: Buffer.byteLength(hookInput.error, "utf8"),
@@ -865,7 +990,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     toolUseId: hookToolUseId,
                     toolName: metadata?.toolName ?? hookInput.tool_name,
                     parentToolUseId: null,
-                    summary: command ? `Failed ${command}` : "Bash command failed",
+                    summary: failureSummary,
                     threadContext: instrumentContext,
                     timing: {
                       progressCount: progress?.count ?? 0,
@@ -946,6 +1071,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           message.tool_use_id,
           message.tool_name,
           message.parent_tool_use_id,
+          "sdk.stream.tool_progress",
           toolMetadataByUseId.get(message.tool_use_id),
         );
 
@@ -959,14 +1085,29 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       }
 
       if (message.type === "tool_use_summary") {
-        const pendingToolUseIds = message.preceding_tool_use_ids.filter((toolUseId) => !finishedToolUseIds.has(toolUseId));
-        for (const toolUseId of pendingToolUseIds) {
+        const unresolvedStartedToolUseIds = Array.from(startedToolUseIds).filter((toolUseId) => !finishedToolUseIds.has(toolUseId));
+        const summaryToolUseIds = message.preceding_tool_use_ids.length > 0
+          ? message.preceding_tool_use_ids
+          : unresolvedStartedToolUseIds
+            .sort((left, right) => {
+              const leftTimestamp = startedAtMsByToolUseId.get(left)
+                ?? requestedToolByUseId.get(left)?.requestedAtMs
+                ?? 0;
+              const rightTimestamp = startedAtMsByToolUseId.get(right)
+                ?? requestedToolByUseId.get(right)?.requestedAtMs
+                ?? 0;
+              return rightTimestamp - leftTimestamp;
+            })
+            .slice(0, 1);
+
+        const pendingToolUseIds = summaryToolUseIds.filter((toolUseId) => !finishedToolUseIds.has(toolUseId));
+        for (const toolUseId of summaryToolUseIds) {
           if (!toolMetadataByUseId.has(toolUseId)) {
             summaryUnknownToolUseIds.add(toolUseId);
           }
         }
         if (pendingToolUseIds.length === 0) {
-          for (const toolUseId of message.preceding_tool_use_ids) {
+          for (const toolUseId of summaryToolUseIds) {
             toolMetadataByUseId.delete(toolUseId);
             bashResultByToolUseId.delete(toolUseId);
             progressByToolUseId.delete(toolUseId);
@@ -1032,7 +1173,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           });
         }
 
-        for (const toolUseId of message.preceding_tool_use_ids) {
+        for (const toolUseId of summaryToolUseIds) {
           toolMetadataByUseId.delete(toolUseId);
           bashResultByToolUseId.delete(toolUseId);
           progressByToolUseId.delete(toolUseId);
@@ -1090,32 +1231,41 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       }
     }
 
-    for (const [toolUseId, metadata] of toolMetadataByUseId.entries()) {
-      if (!metadata.isBash || !startedToolUseIds.has(toolUseId) || finishedToolUseIds.has(toolUseId)) {
+    for (const toolUseId of startedToolUseIds) {
+      if (finishedToolUseIds.has(toolUseId)) {
         continue;
       }
 
+      const metadata = toolMetadataByUseId.get(toolUseId) ?? {
+        toolName: requestedToolByUseId.get(toolUseId)?.toolName ?? "unknown",
+        isBash: false,
+      };
       const bashToolResult = bashResultByToolUseId.get(toolUseId);
       const progress = progressByToolUseId.get(toolUseId);
       const finishedAtMs = Date.now();
       const startedAtMs = startedAtMsByToolUseId.get(toolUseId);
+      const completionSummary = completionSummaryFromMetadata(metadata);
       await onToolFinished({
-        summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
+        summary: completionSummary,
         precedingToolUseIds: [toolUseId],
-        command: metadata.command,
-        shell: "bash",
-        isBash: true,
-        output: bashToolResult?.output,
-        error: bashToolResult?.error,
-        truncated: bashToolResult?.truncated ?? false,
-        outputBytes: bashToolResult?.outputBytes ?? 0,
+        ...(metadata.isBash
+          ? {
+              command: metadata.command,
+              shell: "bash" as const,
+              isBash: true as const,
+              output: bashToolResult?.output,
+              error: bashToolResult?.error,
+              truncated: bashToolResult?.truncated ?? false,
+              outputBytes: bashToolResult?.outputBytes ?? 0,
+            }
+          : {}),
       });
       await emitInstrumentation({
         stage: "finished",
         toolUseId,
         toolName: metadata.toolName,
-        parentToolUseId: null,
-        summary: metadata.command ? `Ran ${metadata.command}` : "Ran bash command",
+        parentToolUseId: requestedToolByUseId.get(toolUseId)?.parentToolUseId ?? null,
+        summary: completionSummary,
         threadContext: instrumentContext,
         timing: {
           progressCount: progress?.count ?? 0,
@@ -1130,10 +1280,14 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         },
         preview: {
           ...(metadata.command ? { command: metadata.command } : {}),
-          output: sanitizeForLog(bashToolResult?.output) as string | undefined,
-          error: sanitizeForLog(bashToolResult?.error) as string | undefined,
-          truncated: bashToolResult?.truncated ?? false,
-          outputBytes: bashToolResult?.outputBytes ?? 0,
+          ...(metadata.isBash
+            ? {
+                output: sanitizeForLog(bashToolResult?.output) as string | undefined,
+                error: sanitizeForLog(bashToolResult?.error) as string | undefined,
+                truncated: bashToolResult?.truncated ?? false,
+                outputBytes: bashToolResult?.outputBytes ?? 0,
+              }
+            : {}),
         },
       });
       finishedToolUseIds.add(toolUseId);

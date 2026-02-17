@@ -48,6 +48,7 @@ export type ClaudeToolInstrumentationEvent = {
   };
   preview?: {
     command?: string;
+    startSource?: "sdk.hook.pre_tool_use" | "sdk.stream.tool_progress";
     input?: unknown;
     output?: string;
     error?: string;

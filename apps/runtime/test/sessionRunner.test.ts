@@ -139,9 +139,92 @@ describe("tool instrumentation", () => {
     const requested = instrumentationEvents.find((event) => event.stage === "requested");
     const preview = (requested?.preview as Record<string, unknown>) ?? {};
     expect((preview.input as Record<string, unknown>).token).toBe("[REDACTED]");
+
+    const started = instrumentationEvents.find((event) => event.stage === "started");
+    const startedPreview = (started?.preview as Record<string, unknown>) ?? {};
+    expect(started?.toolName).toBe("Read");
+    expect(startedPreview.startSource).toBe("sdk.stream.tool_progress");
   });
 
-  it("emits started_not_finished anomaly when lifecycle is incomplete", async () => {
+  it("emits started instrumentation from PreToolUse hook for non-bash tools", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+        await canUseTool("Read", { path: "README.md" }, {
+          toolUseID: "tool-hook-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+        };
+        const preToolUseHook = hooks.PreToolUse[0]?.hooks[0];
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-hook-1",
+            tool_name: "Read",
+            tool_input: { path: "README.md" },
+          },
+          "tool-hook-1",
+        );
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-hook-1",
+            tool_name: "Read",
+            tool_input: { path: "README.md" },
+            tool_response: "README content",
+          },
+          "tool-hook-1",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-hook-1" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    const instrumentationEvents: Array<Record<string, unknown>> = [];
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "read readme",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onToolInstrumentation: (event) => {
+        instrumentationEvents.push(event as unknown as Record<string, unknown>);
+      },
+    });
+
+    const started = instrumentationEvents.find(
+      (event) => event.stage === "started" && event.toolUseId === "tool-hook-1",
+    );
+    expect(started?.toolName).toBe("Read");
+    expect((started?.preview as Record<string, unknown>)?.startSource).toBe("sdk.hook.pre_tool_use");
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({ summary: "Read README.md" }));
+  });
+
+  it("emits synthetic finish for incomplete non-bash lifecycle", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return (async function* () {
         const canUseTool = options.canUseTool as (
@@ -174,6 +257,62 @@ describe("tool instrumentation", () => {
     });
 
     const instrumentationEvents: Array<Record<string, unknown>> = [];
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "read readme",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onToolInstrumentation: (event) => {
+        instrumentationEvents.push(event as unknown as Record<string, unknown>);
+      },
+    });
+
+    expect(onToolFinished).toHaveBeenCalled();
+    const finished = instrumentationEvents.find((event) => event.stage === "finished");
+    expect(finished).toBeDefined();
+    const startedNotFinished = instrumentationEvents.find(
+      (event) =>
+        event.stage === "anomaly"
+        && typeof event.anomaly === "object"
+        && event.anomaly != null
+        && (event.anomaly as Record<string, unknown>).code === "started_not_finished",
+    );
+    expect(startedNotFinished).toBeUndefined();
+  });
+
+  it("emits requested_not_started anomaly when tool is allowed but never starts", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+        await canUseTool("Read", { path: "README.md" }, {
+          toolUseID: "tool-never-started",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        yield { type: "system", subtype: "init", session_id: "session-3" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    const instrumentationEvents: Array<Record<string, unknown>> = [];
     await runClaudeWithStreaming({
       prompt: "read readme",
       sessionId: null,
@@ -195,7 +334,7 @@ describe("tool instrumentation", () => {
         event.stage === "anomaly"
         && typeof event.anomaly === "object"
         && event.anomaly != null
-        && (event.anomaly as Record<string, unknown>).code === "started_not_finished",
+        && (event.anomaly as Record<string, unknown>).code === "requested_not_started",
     );
     expect(anomalyEvent).toBeDefined();
   });
