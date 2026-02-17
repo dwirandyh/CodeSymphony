@@ -1236,11 +1236,11 @@ describe("WorkspacePage", () => {
     }
 
     expect(detailsAfterToggle.open).toBe(true);
-    expect(detailsAfterToggle.textContent).toContain("diff --git a/src/main.ts b/src/main.ts");
+    expect(detailsAfterToggle.textContent).toContain("export const main");
     expect(detailsAfterToggle.querySelector('[data-line-kind="addition"]')).not.toBeNull();
     expect(detailsAfterToggle.querySelector('[data-line-kind="deletion"]')).not.toBeNull();
     expect(detailsAfterToggle.querySelector('[data-line-kind="hunk"]')).not.toBeNull();
-    expect(detailsAfterToggle.querySelector('[data-line-kind="meta"]')).not.toBeNull();
+    expect(detailsAfterToggle.querySelector('[data-line-kind="meta"]')).toBeNull();
   });
 
   it("renders edited diff card as orphan when no assistant timeline segment is available", async () => {
@@ -1292,7 +1292,7 @@ describe("WorkspacePage", () => {
     }
 
     expect(diffDetailsAfterToggle.open).toBe(true);
-    expect(diffDetailsAfterToggle.textContent).toContain("diff --git a/src/main.ts b/src/main.ts");
+    expect(diffDetailsAfterToggle.textContent).toContain("export const main");
   });
 
   it("keeps read tool events before assistant output in inline timeline", async () => {

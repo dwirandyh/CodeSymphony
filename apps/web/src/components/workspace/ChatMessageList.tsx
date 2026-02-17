@@ -1477,6 +1477,9 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                             const lineNumbers = computeDiffLineNumbers(section.lines);
                             return section.lines.map((line, lineIndex) => {
                               const kind = classifyDiffLine(line);
+                              if (kind === "meta") {
+                                return null;
+                              }
                               const ln = lineNumbers[lineIndex];
                               return (
                                 <div
