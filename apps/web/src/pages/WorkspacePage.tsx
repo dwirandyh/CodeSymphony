@@ -7,7 +7,7 @@ import {
   type AssistantRenderHint,
   type ChatTimelineItem,
 } from "../components/workspace/ChatMessageList";
-import { RenderDebugPanel } from "../components/workspace/RenderDebugPanel";
+import { BottomPanel } from "../components/workspace/BottomPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
 import { PermissionPromptCard } from "../components/workspace/PermissionPromptCard";
 import { PlanDecisionComposer } from "../components/workspace/PlanDecisionComposer";
@@ -103,6 +103,18 @@ function getCompletedMessageId(event: ChatEvent): string | null {
 
   const messageId = event.payload.messageId;
   return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
+}
+
+function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
+  if (event.type === "chat.completed" || event.type === "chat.failed") {
+    return true;
+  }
+
+  if (event.type === "message.delta") {
+    return event.payload.role === "assistant";
+  }
+
+  return event.type === "permission.requested" || event.type === "question.requested" || event.type === "plan.created";
 }
 
 function eventPayloadText(event: ChatEvent): string {
@@ -656,18 +668,18 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
 
       const decision = payloadStringOrNull(event.payload.decision);
       const message = payloadStringOrNull(event.payload.message);
-        run.summary = message ?? run.summary;
-        run.eventIds.add(event.id);
-        if (run.durationSeconds == null) {
-          const startedAt = Date.parse(run.createdAt);
-          const finishedAt = Date.parse(event.createdAt);
-          if (Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt > startedAt) {
-            run.durationSeconds = (finishedAt - startedAt) / 1000;
-          }
+      run.summary = message ?? run.summary;
+      run.eventIds.add(event.id);
+      if (run.durationSeconds == null) {
+        const startedAt = Date.parse(run.createdAt);
+        const finishedAt = Date.parse(event.createdAt);
+        if (Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt > startedAt) {
+          run.durationSeconds = (finishedAt - startedAt) / 1000;
         }
-        if (decision === "deny") {
-          run.status = "failed";
-          run.error = message ?? "Denied by user";
+      }
+      if (decision === "deny") {
+        run.status = "failed";
+        run.error = message ?? "Denied by user";
       } else if (decision === "allow" || decision === "allow_always") {
         run.status = "success";
       }
@@ -780,6 +792,14 @@ export function WorkspacePage() {
     if (current == null || idx > current) {
       lastEventIdxByThreadRef.current.set(threadId, idx);
     }
+  }
+
+  function startWaitingAssistant(threadId: string) {
+    const afterIdx = lastEventIdxByThreadRef.current.get(threadId) ?? -1;
+    setWaitingAssistant({
+      threadId,
+      afterIdx,
+    });
   }
 
   const selectedRepository = useMemo(() => {
@@ -995,11 +1015,7 @@ export function WorkspacePage() {
             return current;
           }
 
-          if (
-            payload.type === "chat.completed" ||
-            payload.type === "chat.failed" ||
-            (payload.type === "message.delta" && payload.payload.role === "assistant")
-          ) {
+          if (shouldClearWaitingAssistantOnEvent(payload)) {
             return null;
           }
 
@@ -1055,9 +1071,9 @@ export function WorkspacePage() {
             return current.map((message) =>
               message.id === messageId
                 ? {
-                    ...message,
-                    content: message.content + delta,
-                  }
+                  ...message,
+                  content: message.content + delta,
+                }
                 : message,
             );
           });
@@ -1110,11 +1126,7 @@ export function WorkspacePage() {
           return false;
         }
 
-        if (event.type === "chat.completed" || event.type === "chat.failed") {
-          return true;
-        }
-
-        return event.type === "message.delta" && event.payload.role === "assistant";
+        return shouldClearWaitingAssistantOnEvent(event);
       });
 
       return shouldClear ? null : current;
@@ -1246,11 +1258,7 @@ export function WorkspacePage() {
       return;
     }
 
-    const afterIdx = lastEventIdxByThreadRef.current.get(selectedThreadId) ?? -1;
-    setWaitingAssistant({
-      threadId: selectedThreadId,
-      afterIdx,
-    });
+    startWaitingAssistant(selectedThreadId);
     setSendingMessage(true);
     setError(null);
 
@@ -1307,6 +1315,9 @@ export function WorkspacePage() {
       return;
     }
 
+    if (decision !== "deny") {
+      startWaitingAssistant(selectedThreadId);
+    }
     setResolvingPermissionIds((current) => {
       const next = new Set(current);
       next.add(requestId);
@@ -1320,6 +1331,9 @@ export function WorkspacePage() {
         decision,
       });
     } catch (resolveError) {
+      if (decision !== "deny") {
+        setWaitingAssistant((current) => (current?.threadId === selectedThreadId ? null : current));
+      }
       setError(resolveError instanceof Error ? resolveError.message : "Failed to resolve permission");
     } finally {
       setResolvingPermissionIds((current) => {
@@ -1347,9 +1361,9 @@ export function WorkspacePage() {
           header: typeof q.header === "string" ? q.header : undefined,
           options: Array.isArray(q.options)
             ? q.options.map((o: Record<string, unknown>) => ({
-                label: typeof o.label === "string" ? o.label : "",
-                description: typeof o.description === "string" ? o.description : undefined,
-              }))
+              label: typeof o.label === "string" ? o.label : "",
+              description: typeof o.description === "string" ? o.description : undefined,
+            }))
             : undefined,
           multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : undefined,
         }));
@@ -1374,6 +1388,7 @@ export function WorkspacePage() {
       return;
     }
 
+    startWaitingAssistant(selectedThreadId);
     setAnsweringQuestionIds((current) => {
       const next = new Set(current);
       next.add(requestId);
@@ -1384,6 +1399,7 @@ export function WorkspacePage() {
     try {
       await api.answerQuestion(selectedThreadId, { requestId, answers });
     } catch (answerError) {
+      setWaitingAssistant((current) => (current?.threadId === selectedThreadId ? null : current));
       setError(answerError instanceof Error ? answerError.message : "Failed to answer question");
     } finally {
       setAnsweringQuestionIds((current) => {
@@ -1444,6 +1460,7 @@ export function WorkspacePage() {
       return;
     }
 
+    startWaitingAssistant(selectedThreadId);
     setPlanActionBusy(true);
     setError(null);
 
@@ -1453,6 +1470,7 @@ export function WorkspacePage() {
         setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
       }
     } catch (approveError) {
+      setWaitingAssistant((current) => (current?.threadId === selectedThreadId ? null : current));
       setError(approveError instanceof Error ? approveError.message : "Failed to approve plan");
     } finally {
       setPlanActionBusy(false);
@@ -1464,6 +1482,7 @@ export function WorkspacePage() {
       return;
     }
 
+    startWaitingAssistant(selectedThreadId);
     setPlanActionBusy(true);
     setError(null);
 
@@ -1473,6 +1492,7 @@ export function WorkspacePage() {
         setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
       }
     } catch (reviseError) {
+      setWaitingAssistant((current) => (current?.threadId === selectedThreadId ? null : current));
       setError(reviseError instanceof Error ? reviseError.message : "Failed to revise plan");
     } finally {
       setPlanActionBusy(false);
@@ -1708,26 +1728,26 @@ export function WorkspacePage() {
       const renderHint: AssistantRenderHint | undefined =
         message.role === "assistant"
           ? (() => {
-              if (isLikelyDiffContent(message.content)) {
-                return "diff";
-              }
+            if (isLikelyDiffContent(message.content)) {
+              return "diff";
+            }
 
-              if (shouldRenderRawFile) {
-                if (isStreamingMessage) {
-                  return "markdown";
-                }
-                return "raw-file";
+            if (shouldRenderRawFile) {
+              if (isStreamingMessage) {
+                return "markdown";
               }
+              return "raw-file";
+            }
 
-              if (shouldRenderRawFallback) {
-                if (isStreamingMessage) {
-                  return "markdown";
-                }
-                return "raw-fallback";
+            if (shouldRenderRawFallback) {
+              if (isStreamingMessage) {
+                return "markdown";
               }
+              return "raw-fallback";
+            }
 
-              return "markdown";
-            })()
+            return "markdown";
+          })()
           : undefined;
 
       const bashRuns = message.role === "assistant" ? extractBashRuns(context) : [];
@@ -1740,16 +1760,16 @@ export function WorkspacePage() {
 
       const nonBashContext = message.role === "assistant"
         ? context.filter((event) => {
-            if (isBashToolEvent(event) || bashRunEventIds.has(event.id)) {
-              return false;
-            }
+          if (isBashToolEvent(event) || bashRunEventIds.has(event.id)) {
+            return false;
+          }
 
-            if (bashRuns.length > 0 && (event.type === "permission.requested" || event.type === "permission.resolved")) {
-              return false;
-            }
+          if (bashRuns.length > 0 && (event.type === "permission.requested" || event.type === "permission.resolved")) {
+            return false;
+          }
 
-            return true;
-          })
+          return true;
+        })
         : context;
       const activityContext = message.role === "assistant"
         ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event))
@@ -1801,21 +1821,21 @@ export function WorkspacePage() {
       if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0)) {
         type InlineInsert =
           | {
-              kind: "bash";
-              id: string;
-              startIdx: number;
-              anchorIdx: number;
-              createdAt: string;
-              run: BashRun;
-            }
+            kind: "bash";
+            id: string;
+            startIdx: number;
+            anchorIdx: number;
+            createdAt: string;
+            run: BashRun;
+          }
           | {
-              kind: "edited";
-              id: string;
-              startIdx: number;
-              anchorIdx: number;
-              createdAt: string;
-              run: EditedRun;
-            };
+            kind: "edited";
+            id: string;
+            startIdx: number;
+            anchorIdx: number;
+            createdAt: string;
+            run: EditedRun;
+          };
 
         const inlineInserts: InlineInsert[] = [
           ...bashRuns.map((run, index) => ({
@@ -2119,7 +2139,6 @@ export function WorkspacePage() {
     return sortable.map((entry) => entry.item);
   }, [messages, events]);
 
-  const showThinkingPlaceholder = waitingAssistant?.threadId === selectedThreadId;
   const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
   const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
   const hasPendingPlan = pendingPlan !== null && pendingPlan.status === "pending";
@@ -2129,10 +2148,12 @@ export function WorkspacePage() {
     closedPlanDecision?.threadId === selectedThreadId &&
     closedPlanDecision.createdIdx === pendingPlan.createdIdx;
   const showPlanDecisionComposer = hasPendingPlan && !hidePlanDecisionByOptimisticClose;
+  const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
+  const showThinkingPlaceholder = waitingAssistant?.threadId === selectedThreadId && !isWaitingForUserGate;
 
   return (
-    <div className="h-full p-2 sm:p-3">
-      <div className="mx-auto grid h-full max-w-[1860px] grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]">
+    <div className="flex h-full flex-col p-2 sm:p-3">
+      <div className="mx-auto grid min-h-0 flex-1 w-full max-w-[1860px] grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)]">
         <aside className="min-h-0 border-b border-border/30 p-2 lg:border-b-0 lg:border-r lg:p-3">
           <div className="mb-3">
             <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
@@ -2218,7 +2239,7 @@ export function WorkspacePage() {
                 </div>
               </section>
             ) : null}
-            <RenderDebugPanel />
+
 
             {showPlanDecisionComposer ? (
               <PlanDecisionComposer
@@ -2241,6 +2262,7 @@ export function WorkspacePage() {
           </div>
         </main>
       </div>
+      <BottomPanel />
     </div>
   );
 }

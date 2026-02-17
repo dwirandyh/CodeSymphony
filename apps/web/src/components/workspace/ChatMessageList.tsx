@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { ChevronDown, ChevronUp, Copy, Download, FileText, Folder } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -496,6 +496,145 @@ function toolSubtitle(event: ChatEvent): string {
   }
 
   return String(event.payload.message ?? "Chat failed");
+}
+
+function formatCompactDurationSeconds(durationSeconds: number | null): string | null {
+  if (durationSeconds == null) {
+    return null;
+  }
+
+  const value = Number(durationSeconds);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return `${Math.max(1, Math.round(value))}s`;
+}
+
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | null = null;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+
+    if (quote !== null) {
+      if (char === quote) {
+        quote = null;
+        continue;
+      }
+
+      if (char === "\\") {
+        const next = command[index + 1];
+        if (next === quote || next === "\\") {
+          current += next;
+          index += 1;
+          continue;
+        }
+      }
+
+      current += char;
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    if (char === "\\") {
+      const next = command[index + 1];
+      if (typeof next === "string") {
+        current += next;
+        index += 1;
+        continue;
+      }
+    }
+
+    current += char;
+  }
+
+  if (current.length > 0) {
+    tokens.push(current);
+  }
+
+  return tokens;
+}
+
+function isPathLikeToken(token: string): boolean {
+  if (token.length === 0) {
+    return false;
+  }
+
+  if (token.includes("/") || token.includes("\\")) {
+    return true;
+  }
+
+  return token.startsWith("~/") || token.startsWith("./") || token.startsWith("../");
+}
+
+function basenameFromTokenPath(token: string): string {
+  const normalized = token.replace(/[\\/]+$/g, "");
+  const parts = normalized.split(/[\\/]/).filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return token;
+  }
+  return parts[parts.length - 1];
+}
+
+function shortenCommandToken(token: string): string {
+  const equalIndex = token.indexOf("=");
+  if (equalIndex > 0) {
+    const key = token.slice(0, equalIndex);
+    const value = token.slice(equalIndex + 1);
+    if (isPathLikeToken(value)) {
+      return `${key}=${basenameFromTokenPath(value)}`;
+    }
+  }
+
+  if (isPathLikeToken(token)) {
+    return basenameFromTokenPath(token);
+  }
+
+  return token;
+}
+
+function truncateSummaryText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  if (maxLength <= 3) {
+    return text.slice(0, maxLength);
+  }
+  return `${text.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function shortenCommandForSummary(command: string | null): string | null {
+  if (typeof command !== "string") {
+    return null;
+  }
+
+  const trimmed = command.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const tokens = tokenizeCommand(trimmed);
+  if (tokens.length === 0) {
+    return truncateSummaryText(trimmed, 90);
+  }
+
+  const shortened = tokens.map(shortenCommandToken).join(" ");
+  return truncateSummaryText(shortened, 90);
 }
 
 function getChangedFiles(event: ChatEvent): string[] {
@@ -1089,7 +1228,10 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
             const statusLabel = item.status === "failed" ? "Failed" : item.status === "running" ? "Running" : "Success";
             const defaultExpanded = item.status === "failed";
             const expanded = isBashExpanded(item.id, defaultExpanded);
-            const summaryLabel = expanded ? "Ran command" : item.command ? `Ran ${item.command}` : "Ran command";
+            const durationLabel = formatCompactDurationSeconds(item.durationSeconds);
+            const shortCommandLabel = shortenCommandForSummary(item.command);
+            const summaryPrefix = expanded ? "Ran commands" : shortCommandLabel ? `Ran ${shortCommandLabel}` : "Ran command";
+            const summaryLabel = durationLabel ? `${summaryPrefix} for ${durationLabel}` : summaryPrefix;
 
             return (
               <article
@@ -1108,8 +1250,23 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                     });
                   }}
                 >
-                  <summary className="cursor-pointer text-[12px] text-muted-foreground">
-                    <span className="font-semibold text-foreground">{summaryLabel}</span>
+                  <summary
+                    className={cn(
+                      "group/bash-summary inline-flex list-none cursor-pointer items-center gap-1 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
+                      expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    <span className="font-medium">{summaryLabel}</span>
+                    <span
+                      className={cn(
+                        "inline-flex shrink-0 text-[11px] leading-none opacity-0 transition-[opacity,transform,color] group-hover/bash-summary:opacity-100",
+                        expanded
+                          ? "rotate-90 text-muted-foreground"
+                          : "text-muted-foreground group-hover/bash-summary:text-foreground",
+                      )}
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </span>
                   </summary>
 
                   <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
@@ -1264,24 +1421,24 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
               >
                 {message.role === "assistant" ? (
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                      <button
-                        type="button"
-                        aria-label="Copy output"
-                        className="rounded-md border border-border/50 px-2 py-0.5 transition-colors hover:text-foreground"
-                        onClick={() => copyOutput(message.id, message.content)}
-                      >
-                        {copiedMessageId === message.id ? "Copied" : "Copy"}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Toggle raw output"
-                        className="rounded-md border border-border/50 px-2 py-0.5 transition-colors hover:text-foreground"
-                        onClick={() => toggleRawOutput(message.id)}
-                      >
-                        {isRawOutputMode ? "Beauty View" : "Raw Claude"}
-                      </button>
-                      {renderDebugEnabled ? (
+                    {renderDebugEnabled ? (
+                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <button
+                          type="button"
+                          aria-label="Copy output"
+                          className="rounded-md border border-border/50 px-2 py-0.5 transition-colors hover:text-foreground"
+                          onClick={() => copyOutput(message.id, message.content)}
+                        >
+                          {copiedMessageId === message.id ? "Copied" : "Copy"}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Toggle raw output"
+                          className="rounded-md border border-border/50 px-2 py-0.5 transition-colors hover:text-foreground"
+                          onClick={() => toggleRawOutput(message.id)}
+                        >
+                          {isRawOutputMode ? "Beauty View" : "Raw Claude"}
+                        </button>
                         <button
                           type="button"
                           aria-label="Copy render debug log"
@@ -1292,8 +1449,8 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                         >
                           {copiedDebug ? "Debug Copied" : "Copy Debug"}
                         </button>
-                      ) : null}
-                    </div>
+                      </div>
+                    ) : null}
 
                     {isRawOutputMode ? (
                       <div
@@ -1326,10 +1483,8 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
 
         {showThinkingPlaceholder ? (
           <article className="flex w-full justify-start" data-testid="thinking-placeholder">
-            <div className="max-w-[85%] px-1 text-sm text-foreground">
-              <div className="rounded-xl border border-border/35 bg-secondary/20 px-3 py-2.5">
-                <span className="thinking-shimmer font-medium">Thinking...</span>
-              </div>
+            <div className="max-w-[85%] px-1 text-sm text-muted-foreground">
+              <span className="thinking-shimmer font-medium">Thinking...</span>
             </div>
           </article>
         ) : null}

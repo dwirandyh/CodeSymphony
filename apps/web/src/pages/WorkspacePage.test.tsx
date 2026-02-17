@@ -841,94 +841,104 @@ describe("WorkspacePage", () => {
   });
 
   it("toggles between beauty view and raw claude output", async () => {
-    (api.listMessages as Mock).mockResolvedValueOnce([
-      {
-        id: "msg-assistant-toggle",
-        threadId: "thread-1",
-        seq: 0,
-        role: "assistant",
-        content: "## Title\n\nSome formatted text",
-        createdAt: "2026-01-01T10:00:00.000Z",
-      },
-    ]);
-    (api.listEvents as Mock).mockResolvedValueOnce([
-      {
-        id: "evt-toggle-msg",
-        threadId: "thread-1",
-        idx: 1,
-        type: "message.delta",
-        payload: { messageId: "msg-assistant-toggle", role: "assistant", delta: "## Title\n\nSome formatted text" },
-        createdAt: "2026-01-01T10:00:00.000Z",
-      },
-    ]);
+    window.localStorage.setItem("cs.debug.render", "1");
+    try {
+      (api.listMessages as Mock).mockResolvedValueOnce([
+        {
+          id: "msg-assistant-toggle",
+          threadId: "thread-1",
+          seq: 0,
+          role: "assistant",
+          content: "## Title\n\nSome formatted text",
+          createdAt: "2026-01-01T10:00:00.000Z",
+        },
+      ]);
+      (api.listEvents as Mock).mockResolvedValueOnce([
+        {
+          id: "evt-toggle-msg",
+          threadId: "thread-1",
+          idx: 1,
+          type: "message.delta",
+          payload: { messageId: "msg-assistant-toggle", role: "assistant", delta: "## Title\n\nSome formatted text" },
+          createdAt: "2026-01-01T10:00:00.000Z",
+        },
+      ]);
 
-    await act(async () => {
-      root.render(<WorkspacePage />);
-    });
+      await act(async () => {
+        root.render(<WorkspacePage />);
+      });
 
-    await flushEffects();
+      await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-output"]')).toBeNull();
+      expect(container.querySelector('[data-testid="assistant-render-raw-output"]')).toBeNull();
 
-    act(() => {
-      click(findButtonByAriaLabel(container, "Toggle raw output"));
-    });
+      act(() => {
+        click(findButtonByAriaLabel(container, "Toggle raw output"));
+      });
 
-    await flushEffects();
+      await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-output"]')).not.toBeNull();
-    expect(container.textContent).toContain("raw");
-    expect(container.textContent).toContain("## Title");
+      expect(container.querySelector('[data-testid="assistant-render-raw-output"]')).not.toBeNull();
+      expect(container.textContent).toContain("raw");
+      expect(container.textContent).toContain("## Title");
 
-    act(() => {
-      click(findButtonByAriaLabel(container, "Toggle raw output"));
-    });
+      act(() => {
+        click(findButtonByAriaLabel(container, "Toggle raw output"));
+      });
 
-    await flushEffects();
+      await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-output"]')).toBeNull();
+      expect(container.querySelector('[data-testid="assistant-render-raw-output"]')).toBeNull();
+    } finally {
+      window.localStorage.removeItem("cs.debug.render");
+    }
   });
 
   it("copies raw assistant output with one click from copy button", async () => {
-    const writeTextMock = vi.fn();
-    Object.assign(navigator, {
-      clipboard: {
-        writeText: writeTextMock,
-      },
-    });
+    window.localStorage.setItem("cs.debug.render", "1");
+    try {
+      const writeTextMock = vi.fn();
+      Object.assign(navigator, {
+        clipboard: {
+          writeText: writeTextMock,
+        },
+      });
 
-    (api.listMessages as Mock).mockResolvedValueOnce([
-      {
-        id: "msg-assistant-copy",
-        threadId: "thread-1",
-        seq: 0,
-        role: "assistant",
-        content: "raw-from-claude",
-        createdAt: "2026-01-01T10:00:00.000Z",
-      },
-    ]);
-    (api.listEvents as Mock).mockResolvedValueOnce([
-      {
-        id: "evt-copy-msg",
-        threadId: "thread-1",
-        idx: 1,
-        type: "message.delta",
-        payload: { messageId: "msg-assistant-copy", role: "assistant", delta: "raw-from-claude" },
-        createdAt: "2026-01-01T10:00:00.000Z",
-      },
-    ]);
+      (api.listMessages as Mock).mockResolvedValueOnce([
+        {
+          id: "msg-assistant-copy",
+          threadId: "thread-1",
+          seq: 0,
+          role: "assistant",
+          content: "raw-from-claude",
+          createdAt: "2026-01-01T10:00:00.000Z",
+        },
+      ]);
+      (api.listEvents as Mock).mockResolvedValueOnce([
+        {
+          id: "evt-copy-msg",
+          threadId: "thread-1",
+          idx: 1,
+          type: "message.delta",
+          payload: { messageId: "msg-assistant-copy", role: "assistant", delta: "raw-from-claude" },
+          createdAt: "2026-01-01T10:00:00.000Z",
+        },
+      ]);
 
-    await act(async () => {
-      root.render(<WorkspacePage />);
-    });
+      await act(async () => {
+        root.render(<WorkspacePage />);
+      });
 
-    await flushEffects();
+      await flushEffects();
 
-    act(() => {
-      click(findButtonByAriaLabel(container, "Copy output"));
-    });
+      act(() => {
+        click(findButtonByAriaLabel(container, "Copy output"));
+      });
 
-    expect(writeTextMock).toHaveBeenCalledWith("raw-from-claude");
+      expect(writeTextMock).toHaveBeenCalledWith("raw-from-claude");
+    } finally {
+      window.localStorage.removeItem("cs.debug.render");
+    }
   });
 
   it("does not append duplicate replayed message.delta events from stream history", async () => {
@@ -1439,6 +1449,7 @@ describe("WorkspacePage", () => {
   });
 
   it("renders bash command card between assistant text deltas", async () => {
+    const longPathCommand = "ls -la /Users/dwirandyh/.codesymphony/worktrees/dws-bssn-cmlonlrm/north-sumatra/lib/hello_world.dart";
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
         id: "msg-user-late-tools",
@@ -1471,7 +1482,7 @@ describe("WorkspacePage", () => {
         threadId: "thread-1",
         idx: 2,
         type: "tool.started",
-        payload: { toolName: "Bash", toolUseId: "tool-1", parentToolUseId: null, command: "pwd", isBash: true, shell: "bash" },
+        payload: { toolName: "Bash", toolUseId: "tool-1", parentToolUseId: null, command: longPathCommand, isBash: true, shell: "bash" },
         createdAt: "2026-01-01T10:00:01.200Z",
       },
       {
@@ -1479,7 +1490,7 @@ describe("WorkspacePage", () => {
         threadId: "thread-1",
         idx: 3,
         type: "tool.output",
-        payload: { toolName: "Bash", toolUseId: "tool-1", parentToolUseId: null, elapsedTimeSeconds: 0.6 },
+        payload: { toolName: "Bash", toolUseId: "tool-1", parentToolUseId: null, elapsedTimeSeconds: 2 },
         createdAt: "2026-01-01T10:00:01.800Z",
       },
       {
@@ -1487,7 +1498,7 @@ describe("WorkspacePage", () => {
         threadId: "thread-1",
         idx: 4,
         type: "tool.finished",
-        payload: { summary: "Ran pwd", precedingToolUseIds: ["tool-1"], command: "pwd", output: "/tmp/project", isBash: true, shell: "bash" },
+        payload: { summary: "Ran ls -la", precedingToolUseIds: ["tool-1"], command: longPathCommand, output: "/tmp/project", isBash: true, shell: "bash" },
         createdAt: "2026-01-01T10:00:02.000Z",
       },
       {
@@ -1522,17 +1533,28 @@ describe("WorkspacePage", () => {
     if (!details) {
       throw new Error("Expected bash command details block");
     }
+    const summary = details.querySelector("summary");
+    const chevron = summary?.querySelector("span:last-child");
+    const summaryClassName = typeof summary?.className === "string" ? summary.className : "";
+    const chevronClassName = typeof chevron?.className === "string" ? chevron.className : "";
+    const summaryText = summary?.textContent ?? "";
 
     expect(details.open).toBe(false);
-    expect(container.textContent).toContain("Ran pwd");
+    expect(summaryText).toContain("Ran ls -la hello_world.dart for 2s");
+    expect(summaryText).not.toContain("/Users/dwirandyh/.codesymphony/worktrees/dws-bssn-cmlonlrm/north-sumatra/lib/hello_world.dart");
+    expect(summaryClassName).toContain("inline-flex");
+    expect(summaryClassName).not.toContain("justify-between");
+    expect(chevronClassName).toContain("opacity-0");
+    expect(chevronClassName).toContain("group-hover/bash-summary:opacity-100");
+    expect(chevronClassName).not.toContain("border");
     expect(container.textContent).not.toContain("Ran command");
-    expect(container.textContent).toContain("$ pwd");
+    expect(container.textContent).toContain(`$ ${longPathCommand}`);
     expect(container.textContent).toContain("/tmp/project");
     expect(container.querySelector('[data-testid="timeline-tool.output"]')).toBeNull();
     expect(container.querySelector('[data-testid="timeline-activity"]')).toBeNull();
     const collapsedContent = container.textContent ?? "";
-    expect(collapsedContent.indexOf("Saya cek dulu.")).toBeLessThan(collapsedContent.indexOf("Ran pwd"));
-    expect(collapsedContent.indexOf("Ran pwd")).toBeLessThan(collapsedContent.indexOf("Hasilnya sudah ada."));
+    expect(collapsedContent.indexOf("Saya cek dulu.")).toBeLessThan(collapsedContent.indexOf("Ran ls -la hello_world.dart for 2s"));
+    expect(collapsedContent.indexOf("Ran ls -la hello_world.dart for 2s")).toBeLessThan(collapsedContent.indexOf("Hasilnya sudah ada."));
 
     act(() => {
       details.open = true;
@@ -1541,10 +1563,10 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.textContent).toContain("Ran command");
+    expect(container.textContent).toContain("Ran commands for 2s");
     const expandedContent = container.textContent ?? "";
-    expect(expandedContent.indexOf("Saya cek dulu.")).toBeLessThan(expandedContent.indexOf("Ran command"));
-    expect(expandedContent.indexOf("Ran command")).toBeLessThan(expandedContent.indexOf("Hasilnya sudah ada."));
+    expect(expandedContent.indexOf("Saya cek dulu.")).toBeLessThan(expandedContent.indexOf("Ran commands for 2s"));
+    expect(expandedContent.indexOf("Ran commands for 2s")).toBeLessThan(expandedContent.indexOf("Hasilnya sudah ada."));
   });
 
   it("shows truncated marker for long bash output", async () => {
