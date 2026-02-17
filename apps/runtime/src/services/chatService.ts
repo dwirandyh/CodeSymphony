@@ -19,7 +19,7 @@ import {
   type ResolvePermissionInput,
   type SendChatMessageInput,
 } from "@codesymphony/shared-types";
-import type { RuntimeDeps } from "../types";
+import type { PlanDetectionSource, RuntimeDeps } from "../types";
 import { mapChatMessage, mapChatThread } from "./mappers";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
@@ -27,6 +27,14 @@ const MAX_DIFF_PREVIEW_CHARS = 20000;
 const CLAUDE_SETTINGS_DIR = ".claude";
 const CLAUDE_LOCAL_SETTINGS_FILE = "settings.local.json";
 const execFile = promisify(execFileRaw);
+
+function inferPlanDetectionSource(filePath: string, source?: PlanDetectionSource): PlanDetectionSource {
+  if (source === "claude_plan_file" || source === "streaming_fallback") {
+    return source;
+  }
+
+  return filePath.includes(".claude/plans/") && filePath.endsWith(".md") ? "claude_plan_file" : "streaming_fallback";
+}
 
 type WorktreeStateSnapshot = {
   statusOutput: string;
@@ -352,6 +360,7 @@ export function createChatService(deps: RuntimeDeps) {
           return entry.promise;
         },
         onPlanFileDetected: async (payload) => {
+          const source = inferPlanDetectionSource(payload.filePath, payload.source);
           pendingPlanByThread.set(threadId, {
             content: payload.content,
             filePath: payload.filePath,
@@ -359,6 +368,8 @@ export function createChatService(deps: RuntimeDeps) {
           await deps.eventHub.emit(threadId, "plan.created", {
             content: payload.content,
             filePath: payload.filePath,
+            messageId: assistantMessage.id,
+            source,
           });
         },
         onPermissionRequest: async (payload) => {

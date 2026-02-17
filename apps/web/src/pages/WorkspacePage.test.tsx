@@ -20,8 +20,12 @@ vi.mock("../lib/api", () => ({
     deleteThread: vi.fn(),
     listMessages: vi.fn(),
     sendMessage: vi.fn(),
+    answerQuestion: vi.fn(),
     resolvePermission: vi.fn(),
+    approvePlan: vi.fn(),
+    revisePlan: vi.fn(),
     listEvents: vi.fn(),
+    searchFiles: vi.fn(),
     runtimeBaseUrl: "http://127.0.0.1:4321",
   },
 }));
@@ -185,6 +189,26 @@ function changeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function changeInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function findComposerEditor(container: HTMLElement): HTMLElement {
+  const editor = container.querySelector('[role="textbox"][aria-multiline="true"]');
+  if (!editor) {
+    throw new Error("Composer editor not found");
+  }
+
+  return editor as HTMLElement;
+}
+
+function changeComposerValue(editor: HTMLElement, value: string) {
+  editor.textContent = value;
+  editor.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function findButtonByAriaLabel(container: HTMLElement, label: string): HTMLButtonElement {
   const button = container.querySelector(`button[aria-label="${label}"]`);
   if (!button) {
@@ -209,7 +233,11 @@ describe("WorkspacePage", () => {
     (api.listThreads as Mock).mockResolvedValue(threadFixture);
     (api.listMessages as Mock).mockResolvedValue(messageFixture);
     (api.listEvents as Mock).mockResolvedValue(eventFixture);
+    (api.answerQuestion as Mock).mockResolvedValue(undefined);
     (api.resolvePermission as Mock).mockResolvedValue(undefined);
+    (api.approvePlan as Mock).mockResolvedValue(undefined);
+    (api.revisePlan as Mock).mockResolvedValue(undefined);
+    (api.searchFiles as Mock).mockResolvedValue([]);
     (api.createThread as Mock).mockResolvedValue({ ...threadFixture[0], id: "thread-2", title: "Thread 2" });
     (api.deleteThread as Mock).mockResolvedValue(undefined);
     (api.createWorktree as Mock).mockResolvedValue({
@@ -1918,19 +1946,16 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    const textarea = container.querySelector("textarea");
-    if (!textarea) {
-      throw new Error("Composer textarea not found");
-    }
+    const editor = findComposerEditor(container);
 
     act(() => {
-      changeTextareaValue(textarea as HTMLTextAreaElement, "first message");
+      changeComposerValue(editor, "first message");
     });
 
     await flushEffects();
 
     act(() => {
-      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     await flushEffects();
@@ -1940,13 +1965,13 @@ describe("WorkspacePage", () => {
     (api.sendMessage as Mock).mockClear();
 
     act(() => {
-      changeTextareaValue(textarea as HTMLTextAreaElement, "second message");
+      changeComposerValue(editor, "second message");
     });
 
     await flushEffects();
 
     act(() => {
-      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
     });
 
     await flushEffects();
@@ -1961,19 +1986,16 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    const textarea = container.querySelector("textarea");
-    if (!textarea) {
-      throw new Error("Composer textarea not found");
-    }
+    const editor = findComposerEditor(container);
 
     act(() => {
-      changeTextareaValue(textarea as HTMLTextAreaElement, "please respond");
+      changeComposerValue(editor, "please respond");
     });
 
     await flushEffects();
 
     act(() => {
-      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     await flushEffects();
@@ -2009,19 +2031,16 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    const textarea = container.querySelector("textarea");
-    if (!textarea) {
-      throw new Error("Composer textarea not found");
-    }
+    const editor = findComposerEditor(container);
 
     act(() => {
-      changeTextareaValue(textarea as HTMLTextAreaElement, "first try");
+      changeComposerValue(editor, "first try");
     });
 
     await flushEffects();
 
     act(() => {
-      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     await flushEffects();
@@ -2045,13 +2064,13 @@ describe("WorkspacePage", () => {
     expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
 
     act(() => {
-      changeTextareaValue(textarea as HTMLTextAreaElement, "second try");
+      changeComposerValue(editor, "second try");
     });
 
     await flushEffects();
 
     act(() => {
-      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     await flushEffects();
@@ -2309,6 +2328,433 @@ describe("WorkspacePage", () => {
     const containerElement = container.querySelector('[data-testid="permission-prompts-container"]');
     expect(containerElement).not.toBeNull();
     expect(containerElement?.className).toContain("max-w-3xl");
+  });
+
+  it("renders plan inline with bounded height and supports expand/collapse", async () => {
+    const planContent = [
+      "# Plan",
+      "",
+      "Ringkasan",
+      "",
+      ...Array.from({ length: 90 }, (_, index) => `${index + 1}. Langkah implementasi yang cukup panjang untuk menguji overflow plan.`),
+    ].join("\n");
+
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-plan",
+        threadId: "thread-1",
+        seq: 0,
+        role: "assistant",
+        content: planContent,
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-plan-delta",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-plan",
+          role: "assistant",
+          mode: "plan",
+          delta: planContent,
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-plan-created",
+        threadId: "thread-1",
+        idx: 4,
+        type: "plan.created",
+        payload: {
+          content: planContent,
+          filePath: "/tmp/project/.claude/plans/plan-1.md",
+          messageId: "msg-plan",
+          source: "claude_plan_file",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="plan-inline-card"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Send message"]')).toBeNull();
+    const planTimelineRow = container.querySelector('[data-testid="timeline-plan-file-output"] > div');
+    expect(planTimelineRow?.className).toContain("w-full");
+    expect(planTimelineRow?.className).not.toContain("max-w-[85%]");
+
+    const planBody = container.querySelector('[data-testid="plan-inline-content"]');
+    expect(planBody?.className).toContain("max-h-[45vh]");
+
+    const expandButton = findButtonByAriaLabel(container, "Expand plan");
+    act(() => {
+      click(expandButton);
+    });
+
+    await flushEffects();
+
+    const expandedBody = container.querySelector('[data-testid="plan-inline-content"]');
+    expect(expandedBody?.className).not.toContain("max-h-[45vh]");
+
+    const collapseButton = findButtonByAriaLabel(container, "Collapse plan message");
+    act(() => {
+      click(collapseButton);
+    });
+
+    await flushEffects();
+
+    const collapsedBody = container.querySelector('[data-testid="plan-inline-content"]');
+    expect(collapsedBody?.className).toContain("max-h-[45vh]");
+  });
+
+  it("keeps assistant preamble as markdown and renders plan file output as separate card", async () => {
+    const preamble = "I'll help you create a plan for adding a new Hello World page.";
+    const planContent = "# Hello World Plan\n\n1. Create page widget\n2. Add route\n3. Verify navigation";
+
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-plan-mixed",
+        threadId: "thread-1",
+        seq: 0,
+        role: "assistant",
+        content: preamble,
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-plan-mixed-delta",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-plan-mixed",
+          role: "assistant",
+          mode: "plan",
+          delta: preamble,
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-plan-mixed-created",
+        threadId: "thread-1",
+        idx: 4,
+        type: "plan.created",
+        payload: {
+          content: planContent,
+          filePath: "/tmp/project/.claude/plans/hello-world.md",
+          messageId: "msg-plan-mixed",
+          source: "claude_plan_file",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.textContent).toContain(preamble);
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="plan-inline-card"]')).not.toBeNull();
+    expect(container.textContent).toContain("Hello World Plan");
+  });
+
+  it("replaces composer with plan decision panel and approves plan", async () => {
+    const planContent = "# Plan\n\n- Step 1\n- Step 2";
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-plan-delta-approve",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-plan-approve",
+          role: "assistant",
+          mode: "plan",
+          delta: planContent,
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-plan-created-approve",
+        threadId: "thread-1",
+        idx: 4,
+        type: "plan.created",
+        payload: {
+          content: planContent,
+          filePath: "/tmp/project/.claude/plans/plan-approve.md",
+          messageId: "msg-plan-approve",
+          source: "claude_plan_file",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-plan-approve",
+        threadId: "thread-1",
+        seq: 0,
+        role: "assistant",
+        content: planContent,
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).not.toBeNull();
+
+    const submitButton = findButtonByAriaLabel(container, "Submit plan acceptance");
+    act(() => {
+      click(submitButton);
+    });
+
+    await flushEffects();
+
+    expect(api.approvePlan).toHaveBeenCalledWith("thread-1");
+    expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Send message"]')).not.toBeNull();
+  });
+
+  it("submits revise feedback from plan decision panel", async () => {
+    const planContent = "# Plan\n\n- Step 1\n- Step 2";
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-plan-delta-revise",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-plan-revise",
+          role: "assistant",
+          mode: "plan",
+          delta: planContent,
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-plan-created-revise",
+        threadId: "thread-1",
+        idx: 4,
+        type: "plan.created",
+        payload: {
+          content: planContent,
+          filePath: "/tmp/project/.claude/plans/plan-revise.md",
+          messageId: "msg-plan-revise",
+          source: "claude_plan_file",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-plan-revise",
+        threadId: "thread-1",
+        seq: 0,
+        role: "assistant",
+        content: planContent,
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const reviseOption = container.querySelector('[data-testid="plan-revise-option"]');
+    if (!reviseOption) {
+      throw new Error("Revise plan option not found");
+    }
+    act(() => {
+      click(reviseOption);
+    });
+
+    await flushEffects();
+
+    const feedback = container.querySelector('input[aria-label="Plan revision feedback"]');
+    if (!feedback) {
+      throw new Error("Plan revision feedback input not found");
+    }
+    expect(feedback.getAttribute("placeholder")).toBe("Revise this plan");
+    expect(feedback.closest('[data-testid="plan-revise-option"]')).not.toBeNull();
+
+    act(() => {
+      changeInputValue(feedback as HTMLInputElement, "Mohon tambah detail rollback plan.");
+    });
+
+    await flushEffects();
+
+    const submitRevision = findButtonByAriaLabel(container, "Submit plan revision");
+    act(() => {
+      click(submitRevision);
+    });
+
+    await flushEffects();
+
+    expect(api.revisePlan).toHaveBeenCalledWith("thread-1", {
+      feedback: "Mohon tambah detail rollback plan.",
+    });
+    expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Send message"]')).not.toBeNull();
+  });
+
+  it("renders plan mode assistant message as markdown when no plan.created event exists", async () => {
+    const planLikeContent = "# Draft Plan\n\nIni masih draft, bukan plan file.";
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-plan-mode-only",
+        threadId: "thread-1",
+        seq: 0,
+        role: "assistant",
+        content: planLikeContent,
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-plan-mode-only-delta",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-plan-mode-only",
+          role: "assistant",
+          mode: "plan",
+          delta: planLikeContent,
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="plan-inline-card"]')).toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.textContent).toContain("Draft Plan");
+  });
+
+  it("does not render plan card for streaming fallback plan", async () => {
+    const fallbackContent = "# Plan\n\nFallback dari output stream.";
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-plan-fallback",
+        threadId: "thread-1",
+        seq: 0,
+        role: "assistant",
+        content: fallbackContent,
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-plan-fallback-delta",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-plan-fallback",
+          role: "assistant",
+          mode: "plan",
+          delta: fallbackContent,
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-plan-fallback-created",
+        threadId: "thread-1",
+        idx: 4,
+        type: "plan.created",
+        payload: {
+          content: fallbackContent,
+          filePath: "streaming-plan",
+          messageId: "msg-plan-fallback",
+          source: "streaming_fallback",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="plan-inline-card"]')).toBeNull();
+    expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+  });
+
+  it("keeps compatibility for plan.created without messageId and avoids plan card", async () => {
+    const planContent = "# Plan\n\nLegacy event payload tanpa messageId.";
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-plan-legacy",
+        threadId: "thread-1",
+        seq: 0,
+        role: "assistant",
+        content: planContent,
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-plan-legacy-delta",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-plan-legacy",
+          role: "assistant",
+          mode: "plan",
+          delta: planContent,
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-plan-legacy-created",
+        threadId: "thread-1",
+        idx: 4,
+        type: "plan.created",
+        payload: {
+          content: planContent,
+          filePath: "/tmp/project/.claude/plans/legacy-plan.md",
+          source: "claude_plan_file",
+        },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="plan-inline-card"]')).toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="plan-decision-composer-container"]')).not.toBeNull();
   });
 
   it("renders error alert when loading repositories fails", async () => {

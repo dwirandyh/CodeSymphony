@@ -443,6 +443,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
               await onPlanFileDetected({
                 filePath: planFile?.filePath ?? "streaming-plan",
                 content: planFile?.content ?? finalOutput.trim(),
+                source: planFile ? "claude_plan_file" : "streaming_fallback",
               });
             }
             return {
@@ -734,7 +735,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
               const content = readFileSync(file.filename, "utf-8");
               if (content.trim().length > 0) {
                 planFileDetected = true;
-                await onPlanFileDetected({ filePath: file.filename, content });
+                await onPlanFileDetected({ filePath: file.filename, content, source: "claude_plan_file" });
               }
             } catch {
               // Plan file could not be read; skip.
@@ -762,11 +763,15 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     if (permissionMode === "plan" && !planFileDetected) {
       const planFile = findLatestPlanFile(queryStartTimestamp);
       if (planFile) {
-        await onPlanFileDetected(planFile);
+        await onPlanFileDetected({
+          ...planFile,
+          source: "claude_plan_file",
+        });
       } else if (finalOutput.trim().length > 0) {
         await onPlanFileDetected({
           filePath: "streaming-plan",
           content: finalOutput.trim(),
+          source: "streaming_fallback",
         });
       }
     }

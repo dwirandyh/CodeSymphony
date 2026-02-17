@@ -1,10 +1,12 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { Copy, FileText, Folder } from "lucide-react";
+import { ChevronDown, ChevronUp, Copy, Download, FileText, Folder } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { ScrollArea } from "../ui/scroll-area";
+import { Button } from "../ui/button";
+import { Card, CardContent, CardHeader } from "../ui/card";
 import { cn } from "../../lib/utils";
 import { copyRenderDebugLog, isRenderDebugEnabled, pushRenderDebug } from "../../lib/renderDebug";
 
@@ -23,8 +25,15 @@ export type ChatTimelineItem =
       renderHint?: AssistantRenderHint;
       rawFileLanguage?: string;
       isCompleted?: boolean;
-      isPlanMode?: boolean;
       context?: ChatEvent[];
+    }
+  | {
+      kind: "plan-file-output";
+      id: string;
+      messageId: string;
+      content: string;
+      filePath: string;
+      createdAt: string;
     }
   | {
       kind: "activity";
@@ -773,6 +782,131 @@ function UserMessageContent({ content }: { content: string }) {
   );
 }
 
+function downloadTextFile(fileName: string, content: string) {
+  const blob = new Blob([content], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function PlanInlineMessage({
+  id,
+  content,
+  filePath,
+  copied,
+  onCopy,
+}: {
+  id: string;
+  content: string;
+  filePath: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [canExpand, setCanExpand] = useState(content.length > 900);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const contentEl = contentRef.current;
+    const fallbackCanExpand = content.length > 900;
+    if (!contentEl) {
+      setCanExpand(fallbackCanExpand);
+      return;
+    }
+
+    const evaluate = () => {
+      const hasOverflow = contentEl.scrollHeight > contentEl.clientHeight + 4;
+      setCanExpand(hasOverflow || fallbackCanExpand);
+    };
+
+    evaluate();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      evaluate();
+    });
+    observer.observe(contentEl);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [content, expanded]);
+
+  const showToggle = canExpand || expanded;
+
+  return (
+    <Card className="overflow-hidden rounded-3xl border-border/50 bg-card/90" data-testid="plan-inline-card">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
+            Plan
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:text-foreground"
+            onClick={() => downloadTextFile(filePath.split("/").pop() ?? `plan-${id}.md`, content)}
+            aria-label="Download plan message"
+          >
+            <Download className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            className="rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:text-foreground"
+            onClick={onCopy}
+            aria-label="Copy plan message"
+          >
+            {copied ? "Copied" : <Copy className="h-3.5 w-3.5" />}
+          </button>
+          {showToggle ? (
+            <button
+              type="button"
+              className="rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:text-foreground"
+              onClick={() => setExpanded((current) => !current)}
+              aria-label={expanded ? "Collapse plan message" : "Expand plan message"}
+            >
+              {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            </button>
+          ) : null}
+        </div>
+      </CardHeader>
+
+      <CardContent className="px-4 pb-4 pt-0">
+        <div
+          ref={contentRef}
+          className={cn("relative text-sm text-foreground/95", !expanded && "max-h-[45vh] overflow-hidden sm:max-h-[60vh]")}
+          data-testid="plan-inline-content"
+        >
+          <MarkdownBody content={content} testId="assistant-render-plan-markdown" />
+          {!expanded && canExpand ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-card/95 via-card/70 to-transparent" />
+          ) : null}
+          {!expanded && canExpand ? (
+            <div className="absolute inset-x-0 bottom-3 flex justify-center">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                className="pointer-events-auto rounded-full bg-background/95 px-5"
+                onClick={() => setExpanded(true)}
+                aria-label="Expand plan"
+              >
+                Expand plan
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ChatMessageList({ items, showThinkingPlaceholder = false }: ChatMessageListProps) {
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -850,6 +984,22 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
         ) : null}
 
         {items.map((item) => {
+          if (item.kind === "plan-file-output") {
+            return (
+              <article key={`plan-file-${item.id}`} className="flex w-full justify-start" data-testid="timeline-plan-file-output">
+                <div className="w-full px-1 text-sm text-foreground">
+                  <PlanInlineMessage
+                    id={item.id}
+                    content={item.content}
+                    filePath={item.filePath}
+                    copied={copiedMessageId === item.id}
+                    onCopy={() => copyOutput(item.id, item.content)}
+                  />
+                </div>
+              </article>
+            );
+          }
+
           if (item.kind === "activity") {
             const expanded = isActivityExpanded(item.messageId, item.defaultExpanded);
             return (
@@ -1115,11 +1265,6 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                 {message.role === "assistant" ? (
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                      {item.isPlanMode ? (
-                        <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
-                          Plan
-                        </span>
-                      ) : null}
                       <button
                         type="button"
                         aria-label="Copy output"

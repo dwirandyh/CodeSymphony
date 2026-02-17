@@ -10,7 +10,7 @@ import {
 import { RenderDebugPanel } from "../components/workspace/RenderDebugPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
 import { PermissionPromptCard } from "../components/workspace/PermissionPromptCard";
-import { PlanCard } from "../components/workspace/PlanCard";
+import { PlanDecisionComposer } from "../components/workspace/PlanDecisionComposer";
 import { QuestionCard } from "../components/workspace/QuestionCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { api } from "../lib/api";
@@ -53,6 +53,20 @@ const READ_PROMPT_PATTERN =
   /\b(read|open|show|cat|display|view|find|locate|buka\w*|lihat\w*|isi\w*|lengkap|full|ulang|repeat|cari\w*|temu\w*|kasih\s*tau)\b/i;
 const FILE_PATH_PATTERN = /(?:[~./\w-]+\/)?[\w.-]+\.[a-z0-9]{1,10}\b|readme(?:\.md)?\b/gi;
 const TRIM_FILE_TOKEN_PATTERN = /^[`"'([{<\s]+|[`"',.;:)\]}>/\\\s]+$/g;
+
+function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
+  const rawSource = payload.source;
+  if (rawSource === "claude_plan_file") {
+    return true;
+  }
+
+  if (rawSource === "streaming_fallback") {
+    return false;
+  }
+
+  const filePath = typeof payload.filePath === "string" ? payload.filePath : "";
+  return filePath.includes(".claude/plans/") && filePath.endsWith(".md");
+}
 
 function findRepositoryByWorktree(repositories: Repository[], worktreeId: string | null): Repository | null {
   if (!worktreeId) {
@@ -1383,6 +1397,7 @@ export function WorkspacePage() {
   type PendingPlan = {
     content: string;
     filePath: string;
+    createdIdx: number;
     status: "pending" | "revising" | "sending" | "approved" | "superseded";
   };
 
@@ -1395,15 +1410,25 @@ export function WorkspacePage() {
         const content = typeof event.payload.content === "string" ? event.payload.content : "";
         const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
         if (content.length > 0) {
-          latestPlan = { content, filePath, status: "pending" };
+          latestPlan = { content, filePath, createdIdx: event.idx, status: "pending" };
         }
       } else if (event.type === "plan.approved") {
         if (latestPlan) {
-          latestPlan = { content: latestPlan.content, filePath: latestPlan.filePath, status: "approved" };
+          latestPlan = {
+            content: latestPlan.content,
+            filePath: latestPlan.filePath,
+            createdIdx: latestPlan.createdIdx,
+            status: "approved",
+          };
         }
       } else if (event.type === "plan.revision_requested") {
         if (latestPlan) {
-          latestPlan = { content: latestPlan.content, filePath: latestPlan.filePath, status: "sending" };
+          latestPlan = {
+            content: latestPlan.content,
+            filePath: latestPlan.filePath,
+            createdIdx: latestPlan.createdIdx,
+            status: "sending",
+          };
         }
       }
     }
@@ -1412,6 +1437,7 @@ export function WorkspacePage() {
   }, [events]);
 
   const [planActionBusy, setPlanActionBusy] = useState(false);
+  const [closedPlanDecision, setClosedPlanDecision] = useState<{ threadId: string; createdIdx: number } | null>(null);
 
   async function handleApprovePlan() {
     if (!selectedThreadId) {
@@ -1423,6 +1449,9 @@ export function WorkspacePage() {
 
     try {
       await api.approvePlan(selectedThreadId);
+      if (pendingPlan) {
+        setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
+      }
     } catch (approveError) {
       setError(approveError instanceof Error ? approveError.message : "Failed to approve plan");
     } finally {
@@ -1440,6 +1469,9 @@ export function WorkspacePage() {
 
     try {
       await api.revisePlan(selectedThreadId, { feedback });
+      if (pendingPlan) {
+        setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
+      }
     } catch (reviseError) {
       setError(reviseError instanceof Error ? reviseError.message : "Failed to revise plan");
     } finally {
@@ -1472,14 +1504,42 @@ export function WorkspacePage() {
       }
     }
 
-    const planModeMessageIds = new Set<string>();
+    const planFileOutputByMessageId = new Map<string, {
+      id: string;
+      messageId: string;
+      content: string;
+      filePath: string;
+      idx: number;
+      createdAt: string;
+    }>();
     for (const event of orderedEventsByIdx) {
-      if (event.type === "message.delta" && event.payload.role === "assistant" && event.payload.mode === "plan") {
-        const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
-        if (messageId.length > 0) {
-          planModeMessageIds.add(messageId);
-        }
+      if (event.type !== "plan.created") {
+        continue;
       }
+
+      const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
+      if (messageId.length === 0) {
+        continue;
+      }
+
+      if (!isClaudePlanFilePayload(event.payload)) {
+        continue;
+      }
+
+      const content = typeof event.payload.content === "string" ? event.payload.content : "";
+      const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "plan.md";
+      if (content.trim().length === 0) {
+        continue;
+      }
+
+      planFileOutputByMessageId.set(messageId, {
+        id: event.id,
+        messageId,
+        content,
+        filePath,
+        idx: event.idx,
+        createdAt: event.createdAt,
+      });
     }
 
     const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
@@ -1584,8 +1644,17 @@ export function WorkspacePage() {
       const shouldRenderRawFileNow = hasReadContext || looksLikeFileRead;
       const hasMessageDelta = firstMessageEventIdxById.has(message.id);
       const isCompleted = message.role === "assistant" ? completedMessageIds.has(message.id) : false;
+      const planFileOutput = message.role === "assistant" ? planFileOutputByMessageId.get(message.id) : undefined;
+      const shouldSkipMessageBecausePlanCard =
+        message.role === "assistant" &&
+        !!planFileOutput &&
+        message.content.trim().length > 0 &&
+        message.content.trim() === planFileOutput.content.trim();
 
-      if (message.role === "assistant" && message.content.trim().length === 0 && !isCompleted && !hasMessageDelta) {
+      if (
+        message.role === "assistant" &&
+        (shouldSkipMessageBecausePlanCard || (message.content.trim().length === 0 && !isCompleted && !hasMessageDelta))
+      ) {
         continue;
       }
 
@@ -1881,7 +1950,6 @@ export function WorkspacePage() {
                 renderHint: renderHint === "diff" ? "diff" : "markdown",
                 rawFileLanguage: undefined,
                 isCompleted,
-                isPlanMode: planModeMessageIds.has(message.id),
                 context: nonBashContext,
               },
               anchorIdx: bucket.anchorIdx ?? anchorIdx,
@@ -1918,13 +1986,29 @@ export function WorkspacePage() {
           renderHint,
           rawFileLanguage: message.role === "assistant" && shouldRenderRawFile ? stickyLanguage ?? inferredLanguage : undefined,
           isCompleted,
-          isPlanMode: message.role === "assistant" && planModeMessageIds.has(message.id),
           context: nonBashContext,
         },
         anchorIdx,
         timestamp,
         rank: message.role === "assistant" ? 3 : message.role === "user" ? 1 : 4,
         stableOrder: message.seq,
+      });
+    }
+
+    for (const planFileOutput of planFileOutputByMessageId.values()) {
+      sortable.push({
+        item: {
+          kind: "plan-file-output",
+          id: planFileOutput.id,
+          messageId: planFileOutput.messageId,
+          content: planFileOutput.content,
+          filePath: planFileOutput.filePath,
+          createdAt: planFileOutput.createdAt,
+        },
+        anchorIdx: planFileOutput.idx,
+        timestamp: parseTimestamp(planFileOutput.createdAt),
+        rank: 3,
+        stableOrder: planFileOutput.idx + 0.0005,
       });
     }
 
@@ -2039,6 +2123,12 @@ export function WorkspacePage() {
   const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
   const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
   const hasPendingPlan = pendingPlan !== null && pendingPlan.status === "pending";
+  const hidePlanDecisionByOptimisticClose =
+    hasPendingPlan &&
+    selectedThreadId != null &&
+    closedPlanDecision?.threadId === selectedThreadId &&
+    closedPlanDecision.createdIdx === pendingPlan.createdIdx;
+  const showPlanDecisionComposer = hasPendingPlan && !hidePlanDecisionByOptimisticClose;
 
   return (
     <div className="h-full p-2 sm:p-3">
@@ -2128,29 +2218,26 @@ export function WorkspacePage() {
                 </div>
               </section>
             ) : null}
-            {pendingPlan && pendingPlan.status !== "superseded" ? (
-              <section className="mx-auto w-full max-w-3xl px-3" data-testid="plan-card-container">
-                <PlanCard
-                  content={pendingPlan.content}
-                  filePath={pendingPlan.filePath}
-                  status={pendingPlan.status}
-                  onApprove={() => void handleApprovePlan()}
-                  onRevise={(feedback) => void handleRevisePlan(feedback)}
-                />
-              </section>
-            ) : null}
             <RenderDebugPanel />
 
-            <Composer
-              value={chatInput}
-              disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan || planActionBusy}
-              sending={sendingMessage}
-              mode={chatMode}
-              worktreeId={selectedWorktreeId}
-              onChange={setChatInput}
-              onModeChange={setChatMode}
-              onSubmitMessage={(content) => void submitMessage(content)}
-            />
+            {showPlanDecisionComposer ? (
+              <PlanDecisionComposer
+                busy={planActionBusy}
+                onApprove={() => void handleApprovePlan()}
+                onRevise={(feedback) => void handleRevisePlan(feedback)}
+              />
+            ) : (
+              <Composer
+                value={chatInput}
+                disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests || hasPendingQuestionRequests || planActionBusy}
+                sending={sendingMessage}
+                mode={chatMode}
+                worktreeId={selectedWorktreeId}
+                onChange={setChatInput}
+                onModeChange={setChatMode}
+                onSubmitMessage={(content) => void submitMessage(content)}
+              />
+            )}
           </div>
         </main>
       </div>

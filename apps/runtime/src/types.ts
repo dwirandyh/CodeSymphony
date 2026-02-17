@@ -14,6 +14,8 @@ export type ClaudeRunnerResult = {
   sessionId: string | null;
 };
 
+export type PlanDetectionSource = "claude_plan_file" | "streaming_fallback";
+
 export type ClaudeRunner = (args: {
   prompt: string;
   sessionId: string | null;
@@ -66,6 +68,7 @@ export type ClaudeRunner = (args: {
   onPlanFileDetected: (payload: {
     filePath: string;
     content: string;
+    source?: PlanDetectionSource;
   }) => Promise<void> | void;
 }) => Promise<ClaudeRunnerResult>;
 
