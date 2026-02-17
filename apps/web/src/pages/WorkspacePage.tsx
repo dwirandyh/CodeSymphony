@@ -744,6 +744,69 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
   return runs;
 }
 
+type ReadRunGroup = {
+  id: string;
+  files: string[];
+  startIdx: number;
+  anchorIdx: number;
+  createdAt: string;
+  eventIds: Set<string>;
+};
+
+function extractReadFilename(event: ChatEvent): string {
+  const summary = payloadStringOrNull(event.payload.summary);
+  if (summary) {
+    // Strip common prefixes like "Read ", "Opened " to get the filename
+    const stripped = summary.replace(/^(Read|Opened|Cat)\s+/i, "").trim();
+    if (stripped.length > 0) {
+      return stripped;
+    }
+  }
+  return "file";
+}
+
+function extractReadRunGroups(context: ChatEvent[]): ReadRunGroup[] {
+  const ordered = [...context].sort((a, b) => a.idx - b.idx);
+  const groups: ReadRunGroup[] = [];
+  let currentGroup: ReadRunGroup | null = null;
+
+  for (const event of ordered) {
+    // Only group tool.finished read events. message.delta breaks a run.
+    if (event.type === "message.delta") {
+      if (currentGroup) {
+        groups.push(currentGroup);
+        currentGroup = null;
+      }
+      continue;
+    }
+
+    if (!isReadToolEvent(event)) {
+      continue;
+    }
+
+    const filename = extractReadFilename(event);
+    if (currentGroup) {
+      currentGroup.files.push(filename);
+      currentGroup.eventIds.add(event.id);
+    } else {
+      currentGroup = {
+        id: `read:${event.id}`,
+        files: [filename],
+        startIdx: event.idx,
+        anchorIdx: event.idx,
+        createdAt: event.createdAt,
+        eventIds: new Set([event.id]),
+      };
+    }
+  }
+
+  if (currentGroup) {
+    groups.push(currentGroup);
+  }
+
+  return groups;
+}
+
 type PendingPermissionRequest = {
   requestId: string;
   toolName: string;
@@ -1826,8 +1889,13 @@ export function WorkspacePage() {
           return true;
         })
         : context;
+      const readRunGroups = message.role === "assistant" ? extractReadRunGroups(nonBashContext) : [];
+      const readEventIds = new Set<string>();
+      for (const group of readRunGroups) {
+        group.eventIds.forEach((id) => readEventIds.add(id));
+      }
       const activityContext = message.role === "assistant"
-        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event))
+        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event) && !readEventIds.has(event.id))
         : nonBashContext;
       if (message.role === "assistant") {
         for (const run of bashRuns) {
@@ -1838,6 +1906,9 @@ export function WorkspacePage() {
       if (message.role === "assistant") {
         for (const run of editedRuns) {
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+        }
+        for (const group of readRunGroups) {
+          group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
       }
 
@@ -1873,7 +1944,26 @@ export function WorkspacePage() {
         }
       }
 
+      // Push standalone read-files groups when no bash/edited runs trigger
+      // inline segmentation — we don't want read events to break text segments.
+      if (message.role === "assistant" && readRunGroups.length > 0 && bashRuns.length === 0 && editedRuns.length === 0) {
+        for (const group of readRunGroups) {
+          sortable.push({
+            item: {
+              kind: "read-files",
+              id: `${message.id}:${group.id}`,
+              files: group.files,
+            },
+            anchorIdx: group.anchorIdx,
+            timestamp: parseTimestamp(group.createdAt) ?? timestamp,
+            rank: 3,
+            stableOrder: message.seq + 0.0005,
+          });
+        }
+      }
+
       if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0)) {
+        const hasInlineReadRuns = readRunGroups.length > 0;
         type InlineInsert =
           | {
             kind: "bash";
@@ -1890,6 +1980,14 @@ export function WorkspacePage() {
             anchorIdx: number;
             createdAt: string;
             run: EditedRun;
+          }
+          | {
+            kind: "read-files";
+            id: string;
+            startIdx: number;
+            anchorIdx: number;
+            createdAt: string;
+            group: ReadRunGroup;
           };
 
         const inlineInserts: InlineInsert[] = [
@@ -1909,6 +2007,14 @@ export function WorkspacePage() {
             createdAt: run.createdAt,
             run,
           })),
+          ...(hasInlineReadRuns ? readRunGroups.map((group, index) => ({
+            kind: "read-files" as const,
+            id: `read:${group.id}:${index}`,
+            startIdx: group.startIdx,
+            anchorIdx: group.anchorIdx,
+            createdAt: group.createdAt,
+            group,
+          })) : []),
         ].sort((a, b) => {
           if (a.startIdx !== b.startIdx) {
             return a.startIdx - b.startIdx;
@@ -1989,20 +2095,37 @@ export function WorkspacePage() {
             return;
           }
 
-          const run = insert.run;
+          if (insert.kind === "edited") {
+            const run = insert.run;
+            sortable.push({
+              item: {
+                kind: "edited-diff",
+                id: `${message.id}:${run.eventId}:${insert.id}`,
+                eventId: run.eventId,
+                changedFiles: run.changedFiles,
+                diff: run.diff,
+                diffTruncated: run.diffTruncated,
+                additions: run.additions,
+                deletions: run.deletions,
+                createdAt: run.createdAt,
+              },
+              anchorIdx: run.anchorIdx,
+              timestamp: bucketTimestamp ?? timestamp,
+              rank: 3,
+              stableOrder: message.seq + stableOffset,
+            });
+            stableOffset += 0.001;
+            return;
+          }
+
+          const group = insert.group;
           sortable.push({
             item: {
-              kind: "edited-diff",
-              id: `${message.id}:${run.eventId}:${insert.id}`,
-              eventId: run.eventId,
-              changedFiles: run.changedFiles,
-              diff: run.diff,
-              diffTruncated: run.diffTruncated,
-              additions: run.additions,
-              deletions: run.deletions,
-              createdAt: run.createdAt,
+              kind: "read-files",
+              id: `${message.id}:${group.id}:${insert.id}`,
+              files: group.files,
             },
-            anchorIdx: run.anchorIdx,
+            anchorIdx: group.anchorIdx,
             timestamp: bucketTimestamp ?? timestamp,
             rank: 3,
             stableOrder: message.seq + stableOffset,

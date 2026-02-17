@@ -70,6 +70,11 @@ export type ChatTimelineItem =
     additions: number;
     deletions: number;
     createdAt: string;
+  }
+  | {
+    kind: "read-files";
+    id: string;
+    files: string[];
   };
 
 type ChatMessageListProps = {
@@ -1479,6 +1484,41 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
             );
           }
 
+          if (item.kind === "read-files") {
+            if (item.files.length === 1) {
+              return (
+                <article
+                  key={`read-files-${item.id}`}
+                  className="px-1 text-xs text-muted-foreground"
+                  data-testid="timeline-read-files"
+                >
+                  Read {item.files[0]}
+                </article>
+              );
+            }
+
+            return (
+              <article
+                key={`read-files-${item.id}`}
+                className="px-1 text-xs"
+                data-testid="timeline-read-files"
+              >
+                <details>
+                  <summary className="group/read-summary cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
+                    <span>Explored {item.files.length} files</span>
+                    <span className="opacity-0 group-hover/read-summary:opacity-100 transition-opacity">
+                      <ChevronRight className="h-3 w-3" />
+                    </span>
+                  </summary>
+                  <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
+                    {item.files.map((file, idx) => (
+                      <span key={idx}>Read {file}</span>
+                    ))}
+                  </div>
+                </details>
+              </article>
+            );
+          }
           const message = item.message;
           const isRawOutputMode = message.role === "assistant" && rawOutputMessageIds.has(message.id);
           if (message.role === "assistant") {
