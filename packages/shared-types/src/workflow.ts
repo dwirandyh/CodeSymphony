@@ -113,6 +113,11 @@ export const PlanRevisionInputSchema = z.object({
 });
 export type PlanRevisionInput = z.infer<typeof PlanRevisionInputSchema>;
 
+export const OpenWorktreeFileInputSchema = z.object({
+  path: z.string().trim().min(1),
+});
+export type OpenWorktreeFileInput = z.infer<typeof OpenWorktreeFileInputSchema>;
+
 export type Repository = z.infer<typeof RepositorySchema>;
 export type Worktree = z.infer<typeof WorktreeSchema>;
 export type ChatThread = z.infer<typeof ChatThreadSchema>;

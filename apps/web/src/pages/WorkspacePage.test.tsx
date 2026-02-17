@@ -28,6 +28,7 @@ vi.mock("../lib/api", () => ({
     revisePlan: vi.fn(),
     listEvents: vi.fn(),
     searchFiles: vi.fn(),
+    openWorktreeFile: vi.fn(),
     runtimeBaseUrl: "http://127.0.0.1:4321",
   },
 }));
@@ -258,6 +259,7 @@ describe("WorkspacePage", () => {
     (api.approvePlan as Mock).mockResolvedValue(undefined);
     (api.revisePlan as Mock).mockResolvedValue(undefined);
     (api.searchFiles as Mock).mockResolvedValue([]);
+    (api.openWorktreeFile as Mock).mockResolvedValue(undefined);
     (api.createThread as Mock).mockResolvedValue({ ...threadFixture[0], id: "thread-2", title: "Thread 2" });
     (api.deleteThread as Mock).mockResolvedValue(undefined);
     (api.createWorktree as Mock).mockResolvedValue({
@@ -371,7 +373,7 @@ describe("WorkspacePage", () => {
     expect(container.querySelector('[data-testid="timeline-tool.output"]')).toBeNull();
   });
 
-  it("renders any read-file response in raw file mode and infers language", async () => {
+  it("renders any read-file response in markdown mode", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
         id: "msg-user-file",
@@ -423,10 +425,9 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
     expect(container.textContent).toContain("export const main = () => 42;");
-    expect(container.textContent).toContain("ts");
-
   });
 
   it("keeps read-file output in markdown until a code fence appears during stream", async () => {
@@ -547,6 +548,56 @@ describe("WorkspacePage", () => {
     expect(container.querySelector('[data-testid="assistant-render-markdown"]')).toBeNull();
   });
 
+  it("keeps read responses with unclosed fence in markdown mode", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-read-unclosed",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "open src/read-unclosed.ts",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-read-unclosed",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "```ts\nexport const value = 1;",
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-read-unclosed-read",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: { summary: "Read src/read-unclosed.ts" },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-read-unclosed-msg",
+        threadId: "thread-1",
+        idx: 2,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-read-unclosed", role: "assistant", delta: "```ts\nexport const value = 1;" },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-fallback"]')).toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).toBeNull();
+    expect(container.textContent).toContain("export const value = 1;");
+  });
+
   it("keeps markdown fallback stable during stream until completion", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
@@ -625,7 +676,7 @@ describe("WorkspacePage", () => {
     expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
   });
 
-  it("keeps full raw-file content verbatim when text includes fenced blocks", async () => {
+  it("keeps read-file content visible in markdown when text includes fenced blocks", async () => {
     const rawContent = [
       "START",
       "```md",
@@ -681,13 +732,14 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).toBeNull();
     expect(container.textContent).toContain("START");
     expect(container.textContent).toContain("TAIL_MARKER");
-    expect(container.textContent).toContain("```json");
+    expect(container.textContent).toContain("{\"a\":1}");
   });
 
-  it("renders assistant narration around raw-file card in hybrid mode", async () => {
+  it("renders assistant narration in markdown mode for read responses", async () => {
     const content = [
       "Saya sudah buka filenya, berikut isi lengkap:",
       "```ts",
@@ -741,14 +793,14 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).toBeNull();
     expect(container.textContent).toContain("Saya sudah buka filenya, berikut isi lengkap:");
     expect(container.textContent).toContain("export function sum(a: number, b: number) {");
     expect(container.textContent).toContain("Perlu saya jelaskan baris per baris?");
-    expect(container.textContent).toContain("ts");
   });
 
-  it("shows narration progressively while raw-file fence is still incomplete", async () => {
+  it("shows narration progressively in markdown while read fence is still incomplete", async () => {
     const content = ["Saya sedang baca file ini:", "```ts", "export const inProgress = true;"].join("\n");
 
     (api.listMessages as Mock).mockResolvedValueOnce([
@@ -794,12 +846,14 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-fallback"]')).toBeNull();
     expect(container.textContent).toContain("Saya sedang baca file ini:");
     expect(container.textContent).toContain("export const inProgress = true;");
   });
 
-  it("keeps streaming raw-file stable when content has internal fenced sections", async () => {
+  it("keeps read responses in markdown when content has internal fenced sections", async () => {
     const content = [
       "Siap, saya ulangi lagi isi lengkap `README.md`:",
       "```md",
@@ -855,9 +909,11 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-file-stream"]')).not.toBeNull();
-    expect(container.textContent).toContain("Siap, saya ulangi lagi isi lengkap `README.md`:");
-    expect(container.textContent).toContain("## Main Dependencies");
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file-stream"]')).toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).toBeNull();
+    expect(container.textContent).toContain("Siap, saya ulangi lagi isi lengkap README.md:");
+    expect(container.textContent).toContain("Main Dependencies");
   });
 
   it("toggles between beauty view and raw claude output", async () => {
@@ -1017,7 +1073,7 @@ describe("WorkspacePage", () => {
     expect(container.textContent).not.toContain("AAB");
   });
 
-  it("keeps raw-file mode sticky across transient thread reloads", async () => {
+  it("keeps read responses in markdown across transient thread reloads", async () => {
     (api.listMessages as Mock)
       .mockResolvedValueOnce([
         {
@@ -1091,7 +1147,8 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).toBeNull();
 
     const stream = latestEventSource();
     act(() => {
@@ -1107,8 +1164,8 @@ describe("WorkspacePage", () => {
 
     await flushEffects();
 
-    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-raw-file"]')).toBeNull();
   });
 
   it("does not label non-diff tool summaries as edited files", async () => {
@@ -1535,8 +1592,454 @@ describe("WorkspacePage", () => {
 
     expect(container.textContent).toContain("Explored 2 files");
     expect(container.textContent).toContain("Read README.md");
-    expect(container.textContent).toContain("Read docs/guide.md");
+    expect(container.textContent).toContain("Read guide.md");
     expect(container.textContent).not.toContain("Read Completed Read");
+  });
+
+  it("rotates explored-files chevron when expanded", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-read-chevron",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "cek dua file",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-read-chevron",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Done.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-read-chevron-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          summary: "Read README.md",
+          precedingToolUseIds: ["tool-read-chevron-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-read-chevron-2",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Read docs/guide.md",
+          precedingToolUseIds: ["tool-read-chevron-2"],
+        },
+        createdAt: "2026-01-01T10:00:01.300Z",
+      },
+      {
+        id: "evt-read-chevron-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-read-chevron", role: "assistant", delta: "Done." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const readDetails = container.querySelector('[data-testid="timeline-read-files"] details') as HTMLDetailsElement | null;
+    if (!readDetails) {
+      throw new Error("Expected read-files details");
+    }
+
+    const chevronBefore = container.querySelector('[data-testid="timeline-read-files-chevron"]') as HTMLElement | null;
+    if (!chevronBefore) {
+      throw new Error("Expected read-files chevron");
+    }
+    expect(chevronBefore.className).not.toContain("rotate-90");
+
+    act(() => {
+      readDetails.open = true;
+      readDetails.dispatchEvent(new Event("toggle", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const chevronAfter = container.querySelector('[data-testid="timeline-read-files-chevron"]') as HTMLElement | null;
+    if (!chevronAfter) {
+      throw new Error("Expected read-files chevron after toggle");
+    }
+    expect(chevronAfter.className).toContain("rotate-90");
+  });
+
+  it("shortens read path labels to basename, except hidden directories", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-read-path",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "baca file ini",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-read-path",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Ringkasan siap.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-read-path-finish",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          summary: "Read /Users/dwirandyh/.codesymphony/worktrees/dws-bssn-cmlonlrm/west-sumatra/README.md",
+          precedingToolUseIds: ["tool-read-path-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-read-path-msg",
+        threadId: "thread-1",
+        idx: 2,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-read-path", role: "assistant", delta: "Ringkasan siap." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-read-hidden-path-finish",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.finished",
+        payload: {
+          summary: "Read /Users/dwirandyh/.codesymphony/worktrees/dws-bssn-cmlonlrm/west-sumatra/.beads/README.md",
+          precedingToolUseIds: ["tool-read-path-2"],
+        },
+        createdAt: "2026-01-01T10:00:03.100Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const timelineText = container.textContent ?? "";
+    expect(timelineText).toContain("Read README.md");
+    expect(timelineText).toContain("Read .beads/README.md");
+    expect(timelineText).not.toContain("Read /Users/dwirandyh/.codesymphony/worktrees/dws-bssn-cmlonlrm/west-sumatra/README.md");
+  });
+
+  it("opens single read filename with default OS app via runtime API", async () => {
+    const absoluteReadPath = "/tmp/alpha/.worktrees/feature-ui/README.md";
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-open-single-read",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "buka readme",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-open-single-read",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Sudah saya baca.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-open-single-read-finish",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          summary: `Read ${absoluteReadPath}`,
+          precedingToolUseIds: ["tool-open-single-read-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-open-single-read-msg",
+        threadId: "thread-1",
+        idx: 2,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-open-single-read", role: "assistant", delta: "Sudah saya baca." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const readRow = container.querySelector('[data-testid="timeline-read-files"]');
+    if (!readRow) {
+      throw new Error("Expected single read-files row");
+    }
+    const filenameButton = readRow.querySelector("button");
+    if (!filenameButton) {
+      throw new Error("Expected clickable filename button");
+    }
+    expect(filenameButton.textContent).toBe("README.md");
+    expect(filenameButton.hasAttribute("title")).toBe(false);
+
+    act(() => {
+      click(filenameButton);
+    });
+    await flushEffects();
+
+    expect(api.openWorktreeFile).toHaveBeenCalledTimes(1);
+    expect(api.openWorktreeFile).toHaveBeenCalledWith("wt-1", { path: absoluteReadPath });
+  });
+
+  it("opens filename from expanded explored-files list", async () => {
+    const primaryPath = "/tmp/alpha/.worktrees/feature-ui/README.md";
+    const hiddenPath = "/tmp/alpha/.worktrees/feature-ui/.beads/README.md";
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-open-multi-read",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "cek dua file",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-open-multi-read",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Berikut hasilnya.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-open-multi-read-finish-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          summary: `Read ${primaryPath}`,
+          precedingToolUseIds: ["tool-open-multi-read-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-open-multi-read-finish-2",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: `Read ${hiddenPath}`,
+          precedingToolUseIds: ["tool-open-multi-read-2"],
+        },
+        createdAt: "2026-01-01T10:00:01.100Z",
+      },
+      {
+        id: "evt-open-multi-read-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-open-multi-read", role: "assistant", delta: "Berikut hasilnya." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const readDetails = container.querySelector('[data-testid="timeline-read-files"] details') as HTMLDetailsElement | null;
+    if (!readDetails) {
+      throw new Error("Expected read-files details");
+    }
+
+    act(() => {
+      readDetails.open = true;
+      readDetails.dispatchEvent(new Event("toggle", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const buttons = Array.from(container.querySelectorAll('[data-testid="timeline-read-files"] button'));
+    const hiddenFileButton = buttons.find((button) => button.textContent === ".beads/README.md");
+    if (!hiddenFileButton) {
+      throw new Error("Expected hidden read filename button");
+    }
+
+    act(() => {
+      click(hiddenFileButton);
+    });
+    await flushEffects();
+
+    expect(api.openWorktreeFile).toHaveBeenCalledTimes(1);
+    expect(api.openWorktreeFile).toHaveBeenCalledWith("wt-1", { path: hiddenPath });
+  });
+
+  it("keeps non-extractable read summary as non-clickable text", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-read-generic",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "read file",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-read-generic",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Selesai.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-read-generic-finish",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.finished",
+        payload: {
+          summary: "Completed read",
+          precedingToolUseIds: ["tool-read-generic-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-read-generic-msg",
+        threadId: "thread-1",
+        idx: 2,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-read-generic", role: "assistant", delta: "Selesai." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const readRow = container.querySelector('[data-testid="timeline-read-files"]');
+    if (!readRow) {
+      throw new Error("Expected read-files row");
+    }
+
+    expect(readRow.textContent).toContain("Read file");
+    expect(readRow.querySelector("button")).toBeNull();
+    expect(api.openWorktreeFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps read-files trace between assistant preamble and final summary after completion reload", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-read-order",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "tolong cari README dan rangkum",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-read-order",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content:
+          "I'll help you find and read the README.md file, then provide a summary.\n## Summary of README.md Files\nMain summary.",
+        createdAt: "2026-01-01T10:00:00.100Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-read-order-delta-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-read-order",
+          role: "assistant",
+          delta: "I'll help you find and read the README.md file, then provide a summary.",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-read-order-finish-1",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Read /README.md",
+          precedingToolUseIds: ["tool-read-order-1"],
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-read-order-finish-2",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.finished",
+        payload: {
+          summary: "Read docs/README.md",
+          precedingToolUseIds: ["tool-read-order-2"],
+        },
+        createdAt: "2026-01-01T10:00:02.100Z",
+      },
+      {
+        id: "evt-read-order-delta-2",
+        threadId: "thread-1",
+        idx: 4,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-read-order",
+          role: "assistant",
+          delta: "\n## Summary of README.md Files\nMain summary.",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-read-order-complete",
+        threadId: "thread-1",
+        idx: 5,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-read-order" },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const timelineText = container.textContent ?? "";
+    const preambleIdx = timelineText.indexOf("I'll help you find and read the README.md file, then provide a summary.");
+    const exploredIdx = timelineText.indexOf("Explored 2 files");
+    const summaryIdx = timelineText.indexOf("Summary of README.md Files");
+
+    expect(preambleIdx).toBeGreaterThanOrEqual(0);
+    expect(exploredIdx).toBeGreaterThanOrEqual(0);
+    expect(summaryIdx).toBeGreaterThanOrEqual(0);
+    expect(exploredIdx).toBeGreaterThan(preambleIdx);
+    expect(exploredIdx).toBeLessThan(summaryIdx);
   });
 
   it("marks bash command as success when message already completed", async () => {

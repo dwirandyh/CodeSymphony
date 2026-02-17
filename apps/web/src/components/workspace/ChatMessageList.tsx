@@ -12,6 +12,11 @@ import { copyRenderDebugLog, isRenderDebugEnabled, pushRenderDebug } from "../..
 
 export type AssistantRenderHint = "markdown" | "raw-file" | "raw-fallback" | "diff";
 
+export type ReadFileTimelineEntry = {
+  label: string;
+  openPath: string | null;
+};
+
 export type ActivityTraceStep = {
   id: string;
   label: string;
@@ -74,12 +79,13 @@ export type ChatTimelineItem =
   | {
     kind: "read-files";
     id: string;
-    files: string[];
+    files: ReadFileTimelineEntry[];
   };
 
 type ChatMessageListProps = {
   items: ChatTimelineItem[];
   showThinkingPlaceholder?: boolean;
+  onOpenReadFile?: (path: string) => void | Promise<void>;
 };
 
 type AnsiSegment = {
@@ -1142,13 +1148,14 @@ function PlanInlineMessage({
   );
 }
 
-export function ChatMessageList({ items, showThinkingPlaceholder = false }: ChatMessageListProps) {
+export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpenReadFile }: ChatMessageListProps) {
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
   const [activityExpandedByMessageId, setActivityExpandedByMessageId] = useState<Map<string, boolean>>(new Map());
   const [bashExpandedById, setBashExpandedById] = useState<Map<string, boolean>>(new Map());
   const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [readFilesExpandedById, setReadFilesExpandedById] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
@@ -1209,6 +1216,10 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
       return explicit;
     }
     return defaultExpanded;
+  }
+
+  function isReadFilesExpanded(id: string): boolean {
+    return readFilesExpandedById.get(id) === true;
   }
 
   return (
@@ -1486,6 +1497,29 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
           }
 
           if (item.kind === "read-files") {
+            const renderReadLabel = (file: ReadFileTimelineEntry, key: string) => (
+              <span key={key}>
+                Read{" "}
+                {file.openPath && onOpenReadFile ? (
+                  <button
+                    type="button"
+                    className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
+                    onClick={() => {
+                      const openPath = file.openPath;
+                      if (!openPath) {
+                        return;
+                      }
+                      void onOpenReadFile(openPath);
+                    }}
+                  >
+                    {file.label}
+                  </button>
+                ) : (
+                  <span>{file.label}</span>
+                )}
+              </span>
+            );
+
             if (item.files.length === 1) {
               return (
                 <article
@@ -1493,27 +1527,41 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                   className="px-1 text-xs text-muted-foreground"
                   data-testid="timeline-read-files"
                 >
-                  Read {item.files[0]}
+                  {renderReadLabel(item.files[0], `${item.id}:single`)}
                 </article>
               );
             }
 
+            const expanded = isReadFilesExpanded(item.id);
             return (
               <article
                 key={`read-files-${item.id}`}
                 className="px-1 text-xs"
                 data-testid="timeline-read-files"
               >
-                <details>
+                <details
+                  open={expanded}
+                  onToggle={(event) => {
+                    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                    setReadFilesExpandedById((current) => {
+                      const next = new Map(current);
+                      next.set(item.id, nextOpen);
+                      return next;
+                    });
+                  }}
+                >
                   <summary className="group/read-summary cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
                     <span>Explored {item.files.length} files</span>
-                    <span className="opacity-0 group-hover/read-summary:opacity-100 transition-opacity">
+                    <span
+                      data-testid="timeline-read-files-chevron"
+                      className={cn("inline-flex transition-transform duration-150", expanded ? "rotate-90" : "")}
+                    >
                       <ChevronRight className="h-3 w-3" />
                     </span>
                   </summary>
                   <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
                     {item.files.map((file, idx) => (
-                      <span key={idx}>Read {file}</span>
+                      renderReadLabel(file, `${item.id}:${idx}`)
                     ))}
                   </div>
                 </details>

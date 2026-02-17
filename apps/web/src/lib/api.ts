@@ -7,6 +7,7 @@ import type {
   CreateRepositoryInput,
   CreateWorktreeInput,
   FileEntry,
+  OpenWorktreeFileInput,
   PlanRevisionInput,
   ResolvePermissionInput,
   Repository,
@@ -155,5 +156,17 @@ export const api = {
   listEvents: (threadId: string) => request<ChatEvent[]>(`/threads/${threadId}/events`),
   searchFiles: (worktreeId: string, query: string) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`),
+  openWorktreeFile: async (worktreeId: string, input: OpenWorktreeFileInput) => {
+    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}/files/open`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to open file");
+    }
+  },
   runtimeBaseUrl: API_BASE.replace(/\/api$/, ""),
 };

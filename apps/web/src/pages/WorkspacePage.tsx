@@ -6,6 +6,7 @@ import {
   type ActivityTraceStep,
   type AssistantRenderHint,
   type ChatTimelineItem,
+  type ReadFileTimelineEntry,
 } from "../components/workspace/ChatMessageList";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
@@ -152,42 +153,6 @@ function extractFirstFilePath(text: string): string | null {
 
 function promptLooksLikeFileRead(prompt: string): boolean {
   return READ_PROMPT_PATTERN.test(prompt) && extractFirstFilePath(prompt) != null;
-}
-
-function inferLanguageFromPath(filePath: string | null): string | undefined {
-  if (!filePath) {
-    return undefined;
-  }
-
-  const normalizedPath = filePath.toLowerCase().split(/[?#]/, 1)[0];
-  if (normalizedPath.endsWith("readme") || normalizedPath.endsWith("readme.md")) {
-    return "md";
-  }
-
-  const lastDot = normalizedPath.lastIndexOf(".");
-  if (lastDot < 0 || lastDot === normalizedPath.length - 1) {
-    return undefined;
-  }
-
-  return normalizedPath.slice(lastDot + 1);
-}
-
-function inferRawFileLanguage(context: ChatEvent[], prompt: string): string {
-  for (let index = context.length - 1; index >= 0; index -= 1) {
-    const event = context[index];
-    if (!isReadToolEvent(event)) {
-      continue;
-    }
-
-    const pathFromEvent = extractFirstFilePath(JSON.stringify(event.payload ?? {}));
-    const language = inferLanguageFromPath(pathFromEvent);
-    if (language) {
-      return language;
-    }
-  }
-
-  const pathFromPrompt = extractFirstFilePath(prompt);
-  return inferLanguageFromPath(pathFromPrompt) ?? "text";
 }
 
 function hasUnclosedCodeFence(content: string): boolean {
@@ -749,27 +714,65 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
 
 type ReadRunGroup = {
   id: string;
-  files: string[];
+  files: ReadFileTimelineEntry[];
   startIdx: number;
   anchorIdx: number;
   createdAt: string;
   eventIds: Set<string>;
 };
 
-function extractReadFilename(event: ChatEvent): string {
+function shortenReadTargetForDisplay(target: string): string {
+  const cleaned = target.trim().replace(/^["'`]+|["'`]+$/g, "");
+  const normalized = cleaned.replace(/\\/g, "/");
+  const normalizedWithoutLine = normalized.replace(/:\d+(?::\d+)?$/, "");
+  const parts = normalizedWithoutLine.replace(/\/+$/, "").split("/").filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    return cleaned;
+  }
+
+  const basename = parts[parts.length - 1];
+  const parent = parts.length > 1 ? parts[parts.length - 2] : null;
+
+  // Keep hidden-directory context (for example ".beads/README.md"),
+  // otherwise prefer basename to avoid noisy long paths.
+  if (parent && parent.startsWith(".")) {
+    return `${parent}/${basename}`;
+  }
+
+  return basename;
+}
+
+function extractReadTargetFromSummary(summary: string): string | null {
+  if (/^completed\s+read$/i.test(summary.trim())) {
+    return null;
+  }
+
+  const stripped = summary.replace(/^(Read|Opened|Cat)\s+/i, "").trim();
+  if (stripped.length === 0) {
+    return null;
+  }
+
+  const cleaned = stripped.replace(/^["'`]+|["'`]+$/g, "");
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+function extractReadFileEntry(event: ChatEvent): ReadFileTimelineEntry | null {
   const summary = payloadStringOrNull(event.payload.summary);
   if (summary) {
-    if (/^completed\s+read$/i.test(summary.trim())) {
-      return "file";
+    const target = extractReadTargetFromSummary(summary);
+    if (target) {
+      return {
+        label: shortenReadTargetForDisplay(target),
+        openPath: target,
+      };
     }
 
-    // Strip common prefixes like "Read ", "Opened " to get the filename
-    const stripped = summary.replace(/^(Read|Opened|Cat)\s+/i, "").trim();
-    if (stripped.length > 0) {
-      return stripped;
-    }
+    return {
+      label: "file",
+      openPath: null,
+    };
   }
-  return "file";
+  return null;
 }
 
 function extractReadRunGroups(context: ChatEvent[]): ReadRunGroup[] {
@@ -794,17 +797,17 @@ function extractReadRunGroups(context: ChatEvent[]): ReadRunGroup[] {
       continue;
     }
 
-    const filename = extractReadFilename(event);
-    if (filename === "file") {
+    const readFile = extractReadFileEntry(event);
+    if (!readFile) {
       continue;
     }
     if (currentGroup) {
-      currentGroup.files.push(filename);
+      currentGroup.files.push(readFile);
       currentGroup.eventIds.add(event.id);
     } else {
       currentGroup = {
         id: `read:${event.id}`,
-        files: [filename],
+        files: [readFile],
         startIdx: event.idx,
         anchorIdx: event.idx,
         createdAt: event.createdAt,
@@ -874,9 +877,7 @@ export function WorkspacePage() {
   const seenEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const lastEventIdxByThreadRef = useRef<Map<string, number>>(new Map());
   const streamingMessageIdsRef = useRef<Set<string>>(new Set());
-  const stickyRawFileMessageIdsRef = useRef<Set<string>>(new Set());
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
-  const stickyRawFileLanguageByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
 
@@ -1052,18 +1053,14 @@ export function WorkspacePage() {
       setStopRequestedThreadId(null);
       setResolvingPermissionIds(new Set());
       streamingMessageIdsRef.current = new Set();
-      stickyRawFileMessageIdsRef.current = new Set();
       stickyRawFallbackMessageIdsRef.current = new Set();
-      stickyRawFileLanguageByMessageIdRef.current = new Map();
       setMessages([]);
       setEvents([]);
       return;
     }
 
     streamingMessageIdsRef.current = new Set();
-    stickyRawFileMessageIdsRef.current = new Set();
     stickyRawFallbackMessageIdsRef.current = new Set();
-    stickyRawFileLanguageByMessageIdRef.current = new Map();
     setWaitingAssistant(null);
     setStoppingThreadId(null);
     setStopRequestedThreadId(null);
@@ -1809,12 +1806,15 @@ export function WorkspacePage() {
 
     for (const message of sortedMessages) {
       const anchorIdx = firstMessageEventIdxById.get(message.id) ?? MAX_ORDER_INDEX;
-      const timestamp = parseTimestamp(message.createdAt);
+      const firstAssistantDeltaTimestamp = message.role === "assistant"
+        ? parseTimestamp(assistantDeltaEventsByMessageId.get(message.id)?.[0]?.createdAt ?? "")
+        : null;
+      const timestamp = firstAssistantDeltaTimestamp ?? parseTimestamp(message.createdAt);
       const context = message.role === "assistant" ? assistantContextById.get(message.id) ?? [] : [];
       const nearestUserPrompt = latestUserPromptByAssistantId.get(message.id) ?? "";
       const hasReadContext = context.some((event) => isReadToolEvent(event));
       const looksLikeFileRead = promptLooksLikeFileRead(nearestUserPrompt);
-      const shouldRenderRawFileNow = hasReadContext || looksLikeFileRead;
+      const isReadResponseContext = hasReadContext || looksLikeFileRead;
       const hasMessageDelta = firstMessageEventIdxById.has(message.id);
       const isCompleted = message.role === "assistant" ? completedMessageIds.has(message.id) : false;
       const planFileOutput = message.role === "assistant" ? planFileOutputByMessageId.get(message.id) : undefined;
@@ -1832,31 +1832,22 @@ export function WorkspacePage() {
       }
 
       const hasUnclosedFence = message.role === "assistant" ? hasUnclosedCodeFence(message.content) : false;
-      if (message.role === "assistant" && shouldRenderRawFileNow) {
-        stickyRawFileMessageIdsRef.current.add(message.id);
-      }
-      if (message.role === "assistant" && !isCompleted && hasUnclosedFence) {
+      if (message.role === "assistant" && !isCompleted && hasUnclosedFence && !isReadResponseContext) {
         stickyRawFallbackMessageIdsRef.current.add(message.id);
       }
       if (message.role === "assistant" && isCompleted) {
         stickyRawFallbackMessageIdsRef.current.delete(message.id);
       }
-      const shouldRenderRawFile = message.role === "assistant" && stickyRawFileMessageIdsRef.current.has(message.id);
       const shouldRenderRawFallback =
-        message.role === "assistant" && !isCompleted && stickyRawFallbackMessageIdsRef.current.has(message.id);
+        message.role === "assistant"
+        && !isCompleted
+        && !isReadResponseContext
+        && stickyRawFallbackMessageIdsRef.current.has(message.id);
       const isStreamingMessage = message.role === "assistant" && streamingMessageIdsRef.current.has(message.id) && !isCompleted;
-      const inferredLanguage = shouldRenderRawFile ? inferRawFileLanguage(context, nearestUserPrompt) : undefined;
-      if (message.role === "assistant" && shouldRenderRawFile && inferredLanguage && inferredLanguage !== "text") {
-        stickyRawFileLanguageByMessageIdRef.current.set(message.id, inferredLanguage);
-      }
-      const stickyLanguage = stickyRawFileLanguageByMessageIdRef.current.get(message.id);
       if (message.role === "assistant") {
         const decisionSignature = [
-          shouldRenderRawFileNow ? "now:1" : "now:0",
-          shouldRenderRawFile ? "sticky:1" : "sticky:0",
+          isReadResponseContext ? "read:1" : "read:0",
           shouldRenderRawFallback ? "fallback:1" : "fallback:0",
-          inferredLanguage ?? "infer:none",
-          stickyLanguage ?? "stickyLang:none",
           `ctx:${context.length}`,
           `len:${message.content.length}`,
         ].join("|");
@@ -1868,10 +1859,8 @@ export function WorkspacePage() {
             event: "rawFileDecision",
             messageId: message.id,
             details: {
-              shouldRenderRawFileNow,
-              shouldRenderRawFile,
-              inferredLanguage,
-              stickyLanguage,
+              isReadResponseContext,
+              shouldRenderRawFallback,
               contextCount: context.length,
               contentLength: message.content.length,
             },
@@ -1883,13 +1872,6 @@ export function WorkspacePage() {
           ? (() => {
             if (isLikelyDiffContent(message.content)) {
               return "diff";
-            }
-
-            if (shouldRenderRawFile) {
-              if (isStreamingMessage) {
-                return "markdown";
-              }
-              return "raw-file";
             }
 
             if (shouldRenderRawFallback) {
@@ -1979,25 +1961,7 @@ export function WorkspacePage() {
         }
       }
 
-      // Push standalone read-files groups when no bash/edited runs trigger
-      // inline segmentation — we don't want read events to break text segments.
-      if (message.role === "assistant" && readRunGroups.length > 0 && bashRuns.length === 0 && editedRuns.length === 0) {
-        for (const group of readRunGroups) {
-          sortable.push({
-            item: {
-              kind: "read-files",
-              id: `${message.id}:${group.id}`,
-              files: group.files,
-            },
-            anchorIdx: group.anchorIdx,
-            timestamp: parseTimestamp(group.createdAt) ?? timestamp,
-            rank: 3,
-            stableOrder: message.seq + 0.0005,
-          });
-        }
-      }
-
-      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0)) {
+      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || readRunGroups.length > 0)) {
         const hasInlineReadRuns = readRunGroups.length > 0;
         type InlineInsert =
           | {
@@ -2090,7 +2054,10 @@ export function WorkspacePage() {
 
         const hasSegmentContent = segmentBuckets.some((bucket) => bucket.content.length > 0);
         if (!hasSegmentContent && message.content.length > 0) {
-          segmentBuckets[0] = {
+          const shouldPlaceFallbackAfterInserts =
+            inlineInserts.length > 0 && inlineInserts.every((insert) => insert.startIdx <= anchorIdx);
+          const fallbackBucketIndex = shouldPlaceFallbackAfterInserts ? inlineInserts.length : 0;
+          segmentBuckets[fallbackBucketIndex] = {
             content: message.content,
             anchorIdx,
             timestamp,
@@ -2099,7 +2066,11 @@ export function WorkspacePage() {
 
         const hasLeadingText = segmentBuckets[0].content.length > 0;
         const hasAnyTrailingText = segmentBuckets.slice(1).some((bucket) => bucket.content.length > 0);
-        const deferFirstInsertUntilText = !hasLeadingText && hasAnyTrailingText && inlineInserts.length > 0;
+        const deferFirstInsertUntilText =
+          !hasLeadingText
+          && hasAnyTrailingText
+          && inlineInserts.length > 0
+          && inlineInserts[0]?.kind !== "read-files";
         let delayedFirstInsertInserted = false;
         let stableOffset = 0;
 
@@ -2217,7 +2188,7 @@ export function WorkspacePage() {
           kind: "message",
           message,
           renderHint,
-          rawFileLanguage: message.role === "assistant" && shouldRenderRawFile ? stickyLanguage ?? inferredLanguage : undefined,
+          rawFileLanguage: undefined,
           isCompleted,
           context: nonBashContext,
         },
@@ -2392,6 +2363,20 @@ export function WorkspacePage() {
   const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
   const showThinkingPlaceholder = waitingAssistant?.threadId === selectedThreadId && !isWaitingForUserGate;
 
+  const openReadFile = useCallback(async (filePath: string) => {
+    if (!selectedWorktreeId) {
+      setError("Worktree is not selected");
+      return;
+    }
+
+    try {
+      await api.openWorktreeFile(selectedWorktreeId, { path: filePath });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to open file";
+      setError(message);
+    }
+  }, [selectedWorktreeId]);
+
   useEffect(() => {
     if (!showStopAction) {
       setStopRequestedThreadId(null);
@@ -2496,7 +2481,11 @@ export function WorkspacePage() {
 
             <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="min-h-0 flex-1">
-                <ChatMessageList items={timelineItems} showThinkingPlaceholder={showThinkingPlaceholder} />
+                <ChatMessageList
+                  items={timelineItems}
+                  showThinkingPlaceholder={showThinkingPlaceholder}
+                  onOpenReadFile={openReadFile}
+                />
               </div>
             </section>
             {pendingPermissionRequests.length > 0 ? (

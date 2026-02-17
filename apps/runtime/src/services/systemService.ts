@@ -8,6 +8,39 @@ function normalizeSelectedPath(output: string): string {
 }
 
 export function createSystemService() {
+  async function openFileDefaultApp(targetPath: string): Promise<void> {
+    const trimmedPath = targetPath.trim();
+    if (trimmedPath.length === 0) {
+      throw new Error("File path is required");
+    }
+
+    try {
+      if (process.platform === "darwin") {
+        await execFile("open", [trimmedPath], { encoding: "utf8" });
+        return;
+      }
+
+      if (process.platform === "linux") {
+        await execFile("xdg-open", [trimmedPath], { encoding: "utf8" });
+        return;
+      }
+
+      if (process.platform === "win32") {
+        await execFile("cmd", ["/c", "start", "", trimmedPath], { encoding: "utf8" });
+        return;
+      }
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        throw new Error("No default file opener command found on this system");
+      }
+
+      const message = error instanceof Error ? error.message : "Unable to open file";
+      throw new Error(`Unable to open file with default app: ${message}`);
+    }
+
+    throw new Error(`Opening files is not supported on platform: ${process.platform}`);
+  }
+
   return {
     async pickDirectory(): Promise<{ path: string }> {
       if (process.platform !== "darwin") {
@@ -26,5 +59,6 @@ export function createSystemService() {
 
       return { path: selectedPath };
     },
+    openFileDefaultApp,
   };
 }
