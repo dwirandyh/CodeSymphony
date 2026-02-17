@@ -1226,8 +1226,9 @@ export function WorkspacePage() {
     }
   }
 
-  async function submitMessage() {
-    if (!selectedThreadId || !chatInput.trim()) {
+  async function submitMessage(content?: string) {
+    const messageContent = content ?? chatInput;
+    if (!selectedThreadId || !messageContent.trim()) {
       return;
     }
 
@@ -1241,7 +1242,7 @@ export function WorkspacePage() {
 
     try {
       await api.sendMessage(selectedThreadId, {
-        content: chatInput,
+        content: messageContent,
         mode: chatMode,
       });
       setChatInput("");
@@ -2145,9 +2146,10 @@ export function WorkspacePage() {
               disabled={!selectedThreadId || sendingMessage || hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan || planActionBusy}
               sending={sendingMessage}
               mode={chatMode}
+              worktreeId={selectedWorktreeId}
               onChange={setChatInput}
               onModeChange={setChatMode}
-              onSubmit={() => void submitMessage()}
+              onSubmitMessage={(content) => void submitMessage(content)}
             />
           </div>
         </main>

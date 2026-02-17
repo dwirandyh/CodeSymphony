@@ -8,6 +8,7 @@ import { createRepositoryService } from "./services/repositoryService";
 import { createWorktreeService } from "./services/worktreeService";
 import { createChatService } from "./services/chatService";
 import { createSystemService } from "./services/systemService";
+import { createFileService } from "./services/fileService";
 import { registerRepositoryRoutes } from "./routes/repositories";
 import { registerChatRoutes } from "./routes/chats";
 import { registerSystemRoutes } from "./routes/system";
@@ -20,6 +21,7 @@ declare module "fastify" {
     worktreeService: ReturnType<typeof createWorktreeService>;
     chatService: ReturnType<typeof createChatService>;
     systemService: ReturnType<typeof createSystemService>;
+    fileService: ReturnType<typeof createFileService>;
   }
 }
 
@@ -29,6 +31,7 @@ function createApp() {
   const repositoryService = createRepositoryService(prisma);
   const worktreeService = createWorktreeService(prisma);
   const systemService = createSystemService();
+  const fileService = createFileService();
   const chatService = createChatService({
     prisma,
     eventHub,
@@ -41,6 +44,7 @@ function createApp() {
   app.decorate("worktreeService", worktreeService);
   app.decorate("chatService", chatService);
   app.decorate("systemService", systemService);
+  app.decorate("fileService", fileService);
 
   app.register(cors, {
     origin: true,

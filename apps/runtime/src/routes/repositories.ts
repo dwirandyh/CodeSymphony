@@ -65,4 +65,24 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: message });
     }
   });
+
+  const filesQuery = z.object({ q: z.string().optional().default("") });
+
+  app.get("/worktrees/:id/files", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const query = filesQuery.parse(request.query);
+
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) {
+      return reply.code(404).send({ error: "Worktree not found" });
+    }
+
+    try {
+      const results = await app.fileService.searchFiles(worktree.path, query.q, 20);
+      return { data: results };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to search files";
+      return reply.code(500).send({ error: message });
+    }
+  });
 }

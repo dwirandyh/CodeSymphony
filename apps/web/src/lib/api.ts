@@ -6,6 +6,7 @@ import type {
   CreateChatThreadInput,
   CreateRepositoryInput,
   CreateWorktreeInput,
+  FileEntry,
   PlanRevisionInput,
   ResolvePermissionInput,
   Repository,
@@ -140,5 +141,7 @@ export const api = {
     }
   },
   listEvents: (threadId: string) => request<ChatEvent[]>(`/threads/${threadId}/events`),
+  searchFiles: (worktreeId: string, query: string) =>
+    request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`),
   runtimeBaseUrl: API_BASE.replace(/\/api$/, ""),
 };

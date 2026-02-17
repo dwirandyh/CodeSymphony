@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { Copy } from "lucide-react";
+import { Copy, FileText, Folder } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -707,6 +707,72 @@ function AssistantContent({
   return <MarkdownBody content={content} testId="assistant-render-markdown" />;
 }
 
+type MentionSegment = { kind: "text"; value: string } | { kind: "mention"; path: string; name: string; isDirectory: boolean };
+
+function parseUserMentions(content: string): MentionSegment[] {
+  const segments: MentionSegment[] = [];
+  const mentionRegex = /@(file|dir):([\w./_-][\w./_-]*[\w._-])/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionRegex.exec(content)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ kind: "text", value: content.slice(lastIndex, match.index) });
+    }
+
+    const typeTag = match[1];
+    const fullPath = match[2];
+    const name = fullPath.split("/").pop() ?? fullPath;
+    segments.push({ kind: "mention", path: fullPath, name, isDirectory: typeTag === "dir" });
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < content.length) {
+    segments.push({ kind: "text", value: content.slice(lastIndex) });
+  }
+
+  return segments;
+}
+
+function UserMessageContent({ content }: { content: string }) {
+  const segments = parseUserMentions(content);
+
+  if (segments.length === 1 && segments[0].kind === "text") {
+    return <p className="whitespace-pre-wrap break-words leading-relaxed">{content}</p>;
+  }
+
+  return (
+    <p className="whitespace-pre-wrap break-words leading-relaxed">
+      {segments.map((seg, i) => {
+        if (seg.kind === "text") {
+          return <span key={i}>{seg.value}</span>;
+        }
+
+        return (
+          <span
+            key={i}
+            title={seg.path}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-md border px-1.5 py-0 text-xs align-baseline",
+              seg.isDirectory
+                ? "border-amber-500/30 bg-amber-500/15 text-amber-400"
+                : "border-blue-500/30 bg-blue-500/15 text-blue-400",
+            )}
+          >
+            {seg.isDirectory ? (
+              <Folder className="h-3 w-3 shrink-0 inline-block" />
+            ) : (
+              <FileText className="h-3 w-3 shrink-0 inline-block" />
+            )}
+            <span className="max-w-[140px] truncate">{seg.name}</span>
+          </span>
+        );
+      })}
+    </p>
+  );
+}
+
 export function ChatMessageList({ items, showThinkingPlaceholder = false }: ChatMessageListProps) {
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -1106,7 +1172,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false }: Chat
                     )}
                   </div>
                 ) : (
-                  <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
+                  <UserMessageContent content={message.content} />
                 )}
               </div>
             </article>

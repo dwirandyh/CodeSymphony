@@ -122,3 +122,9 @@ export type CreateRepositoryInput = z.infer<typeof CreateRepositoryInputSchema>;
 export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInputSchema>;
 export type CreateChatThreadInput = z.infer<typeof CreateChatThreadInputSchema>;
 export type SendChatMessageInput = z.infer<typeof SendChatMessageInputSchema>;
+
+export const FileEntrySchema = z.object({
+  path: z.string(),
+  type: z.enum(["file", "directory"]),
+});
+export type FileEntry = z.infer<typeof FileEntrySchema>;
