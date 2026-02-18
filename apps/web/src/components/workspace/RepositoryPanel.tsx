@@ -142,22 +142,6 @@ export function RepositoryPanel({
                     {activeWorktrees.length === 0 ? (
                       <div className="flex items-center gap-2 py-1">
                         <div className="text-xs text-muted-foreground">No active worktrees yet.</div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Create first worktree for ${repository.name}`}
-                          title="Create first worktree"
-                          className="ml-auto h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
-                          disabled={submittingWorktree}
-                          onClick={() => {
-                            onSelectRepository(repository.id);
-                            onCreateWorktree(repository.id);
-                          }}
-                        >
-                          <Plus className="mr-1 h-3.5 w-3.5" />
-                          <span>Create worktree</span>
-                        </Button>
                       </div>
                     ) : null}
 
