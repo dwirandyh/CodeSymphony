@@ -512,6 +512,7 @@ type BashRun = {
   truncated: boolean;
   durationSeconds: number | null;
   status: "running" | "success" | "failed";
+  rejectedByUser: boolean;
   createdAt: string;
   eventIds: Set<string>;
 };
@@ -528,6 +529,7 @@ type EditedRun = {
   diffTruncated: boolean;
   additions: number;
   deletions: number;
+  rejectedByUser: boolean;
   createdAt: string;
   eventIds: Set<string>;
 };
@@ -707,6 +709,10 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
   const byToolUseId = new Map<string, BashRun>();
   const knownBashToolUseIds = new Set<string>();
   const hasBashToolLifecycleEvents = ordered.some((event) => isBashToolEvent(event));
+  const permissionRequestById = new Map<
+    string,
+    { idx: number; createdAt: string; command: string | null; eventId: string }
+  >();
 
   function ensureRun(toolUseId: string, event: ChatEvent): BashRun {
     const existing = byToolUseId.get(toolUseId);
@@ -728,6 +734,7 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
       truncated: false,
       durationSeconds: null,
       status: "running",
+      rejectedByUser: false,
       createdAt: event.createdAt,
       eventIds: new Set([event.id]),
     };
@@ -792,66 +799,77 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
     }
   }
 
-  if (!hasBashToolLifecycleEvents) {
-    for (const event of ordered) {
-      if (event.type === "permission.requested") {
-        const requestId = payloadStringOrNull(event.payload.requestId);
-        const toolName = payloadStringOrNull(event.payload.toolName);
-        const command = payloadStringOrNull(event.payload.command);
-        if (!requestId || !toolName || toolName.toLowerCase() !== "bash" || !command) {
-          continue;
-        }
-
-        byToolUseId.set(`permission:${requestId}`, {
-          id: `bash:permission:${requestId}`,
-          toolUseId: `permission:${requestId}`,
-          startIdx: event.idx,
-          anchorIdx: event.idx,
-          summary: "Awaiting approval",
-          command,
-          output: null,
-          error: null,
-          truncated: false,
-          durationSeconds: null,
-          status: "running",
-          createdAt: event.createdAt,
-          eventIds: new Set([event.id]),
-        });
-        continue;
-      }
-
-      if (event.type !== "permission.resolved") {
-        continue;
-      }
-
+  for (const event of ordered) {
+    if (event.type === "permission.requested") {
       const requestId = payloadStringOrNull(event.payload.requestId);
-      if (!requestId) {
+      const toolName = payloadStringOrNull(event.payload.toolName);
+      if (!requestId || !toolName || toolName.toLowerCase() !== "bash") {
         continue;
       }
 
-      const key = `permission:${requestId}`;
-      const run = byToolUseId.get(key);
-      if (!run) {
-        continue;
-      }
+      const command = payloadStringOrNull(event.payload.command);
+      permissionRequestById.set(requestId, {
+        idx: event.idx,
+        createdAt: event.createdAt,
+        command,
+        eventId: event.id,
+      });
 
-      const decision = payloadStringOrNull(event.payload.decision);
-      const message = payloadStringOrNull(event.payload.message);
-      run.summary = message ?? run.summary;
-      run.eventIds.add(event.id);
-      if (run.durationSeconds == null) {
-        const startedAt = Date.parse(run.createdAt);
-        const finishedAt = Date.parse(event.createdAt);
-        if (Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt > startedAt) {
-          run.durationSeconds = (finishedAt - startedAt) / 1000;
-        }
+      if (!hasBashToolLifecycleEvents) {
+        const run = ensureRun(`permission:${requestId}`, event);
+        run.summary = "Awaiting approval";
+        run.command = run.command ?? command;
       }
-      if (decision === "deny") {
-        run.status = "failed";
-        run.error = message ?? "Denied by user";
-      } else if (decision === "allow" || decision === "allow_always") {
-        run.status = "success";
+      continue;
+    }
+
+    if (event.type !== "permission.resolved") {
+      continue;
+    }
+
+    const requestId = payloadStringOrNull(event.payload.requestId);
+    if (!requestId) {
+      continue;
+    }
+
+    const decision = payloadStringOrNull(event.payload.decision);
+    const message = payloadStringOrNull(event.payload.message);
+    const key = `permission:${requestId}`;
+    const requestMeta = permissionRequestById.get(requestId);
+    let run = byToolUseId.get(key);
+    if (!run && decision === "deny" && requestMeta) {
+      run = ensureRun(key, event);
+      run.startIdx = Math.min(run.startIdx, requestMeta.idx);
+      run.anchorIdx = Math.min(run.anchorIdx, requestMeta.idx);
+      run.createdAt = requestMeta.createdAt;
+      run.command = run.command ?? requestMeta.command;
+      run.eventIds.add(requestMeta.eventId);
+    }
+
+    if (!run) {
+      continue;
+    }
+
+    run.summary = message ?? run.summary;
+    run.eventIds.add(event.id);
+    if (run.durationSeconds == null) {
+      const startedAt = Date.parse(run.createdAt);
+      const finishedAt = Date.parse(event.createdAt);
+      if (Number.isFinite(startedAt) && Number.isFinite(finishedAt) && finishedAt > startedAt) {
+        run.durationSeconds = (finishedAt - startedAt) / 1000;
       }
+    }
+
+    if (decision === "deny") {
+      run.status = "failed";
+      run.rejectedByUser = true;
+      run.error = message ?? "Rejected by user";
+      if (!run.summary) {
+        run.summary = "Rejected by user";
+      }
+    } else if (decision === "allow" || decision === "allow_always") {
+      run.status = "success";
+      run.rejectedByUser = false;
     }
   }
 
@@ -913,6 +931,7 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
       diffTruncated: false,
       additions: 0,
       deletions: 0,
+      rejectedByUser: false,
       createdAt: event.createdAt,
       eventIds: new Set([event.id]),
     };
@@ -934,6 +953,9 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
     const summary = payloadStringOrNull(event.payload.summary);
     const summaryLower = (summary ?? "").toLowerCase();
     run.status = hasError || summaryLower.includes("failed") || summaryLower.includes("error") ? "failed" : "success";
+    if (run.status !== "failed") {
+      run.rejectedByUser = false;
+    }
   }
 
   for (const event of ordered) {
@@ -944,6 +966,7 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
       const requestId = payloadStringOrNull(event.payload.requestId) ?? `permission:${event.id}`;
       const run = ensureRun(requestId, event);
       run.status = "running";
+      run.rejectedByUser = false;
 
       const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
       const target =
@@ -978,6 +1001,9 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
       const decision = payloadStringOrNull(event.payload.decision);
       if (decision === "deny") {
         run.status = "failed";
+        run.rejectedByUser = true;
+      } else if (decision === "allow" || decision === "allow_always") {
+        run.rejectedByUser = false;
       }
       continue;
     }
@@ -1046,6 +1072,7 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
     run.diffTruncated = event.payload.diffTruncated === true;
     run.additions = additions;
     run.deletions = deletions;
+    run.rejectedByUser = false;
     run.eventIds.add(event.id);
     if (changedFiles.length > 0) {
       run.changedFiles = changedFiles;
@@ -2717,6 +2744,7 @@ export function WorkspacePage() {
                 truncated: run.truncated,
                 durationSeconds: run.durationSeconds,
                 status,
+                rejectedByUser: run.rejectedByUser,
               },
               anchorIdx: bucketAnchorIdx ?? run.anchorIdx,
               timestamp: parseTimestamp(run.createdAt) ?? timestamp,
@@ -2741,6 +2769,7 @@ export function WorkspacePage() {
                 diffTruncated: run.diffTruncated,
                 additions: run.additions,
                 deletions: run.deletions,
+                rejectedByUser: run.rejectedByUser,
                 createdAt: run.createdAt,
               },
               anchorIdx: bucketAnchorIdx ?? run.anchorIdx,
@@ -2944,38 +2973,10 @@ export function WorkspacePage() {
       });
     }
 
-    const rawOrphanToolEvents = inlineToolEvents.filter((event) => !assignedToolEventIds.has(event.id));
-    const orphanNonPermissionEvents: ChatEvent[] = [];
-    const latestPermissionResolvedByRequestId = new Map<string, ChatEvent>();
-    const orphanPermissionResolvedWithoutRequestId: ChatEvent[] = [];
-
-    for (const event of rawOrphanToolEvents) {
-      if (event.type === "permission.requested") {
-        continue;
-      }
-
-      if (event.type !== "permission.resolved") {
-        orphanNonPermissionEvents.push(event);
-        continue;
-      }
-
-      const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
-      if (requestId.length === 0) {
-        orphanPermissionResolvedWithoutRequestId.push(event);
-        continue;
-      }
-
-      const existing = latestPermissionResolvedByRequestId.get(requestId);
-      if (!existing || event.idx > existing.idx) {
-        latestPermissionResolvedByRequestId.set(requestId, event);
-      }
-    }
-
-    const orphanToolEvents = [
-      ...orphanNonPermissionEvents,
-      ...orphanPermissionResolvedWithoutRequestId,
-      ...Array.from(latestPermissionResolvedByRequestId.values()),
-    ].sort((a, b) => a.idx - b.idx);
+    const orphanToolEvents = inlineToolEvents
+      .filter((event) => !assignedToolEventIds.has(event.id))
+      .filter((event) => event.type !== "permission.requested" && event.type !== "permission.resolved")
+      .sort((a, b) => a.idx - b.idx);
     pushRenderDebug({
       source: "WorkspacePage",
       event: "activityOrphanToolEvents",
@@ -3024,6 +3025,7 @@ export function WorkspacePage() {
             diffTruncated: event.payload.diffTruncated === true,
             additions,
             deletions,
+            rejectedByUser: false,
             createdAt: event.createdAt,
           },
           anchorIdx: event.idx,

@@ -72,6 +72,7 @@ export type ChatTimelineItem =
     truncated: boolean;
     durationSeconds: number | null;
     status: "running" | "success" | "failed";
+    rejectedByUser?: boolean;
   }
   | {
     kind: "edited-diff";
@@ -84,6 +85,7 @@ export type ChatTimelineItem =
     diffTruncated: boolean;
     additions: number;
     deletions: number;
+    rejectedByUser?: boolean;
     createdAt: string;
   }
   | {
@@ -772,6 +774,7 @@ function editedSummaryLabel({
   changedFiles,
   additions,
   deletions,
+  rejectedByUser,
   expanded,
 }: {
   status: "running" | "success" | "failed";
@@ -779,6 +782,7 @@ function editedSummaryLabel({
   changedFiles: string[];
   additions: number;
   deletions: number;
+  rejectedByUser?: boolean;
   expanded?: boolean;
 }): React.ReactNode {
   const firstFile = changedFiles[0] ?? "file";
@@ -789,6 +793,9 @@ function editedSummaryLabel({
   }
 
   if (status === "failed") {
+    if (rejectedByUser) {
+      return `Rejected by user: ${firstFile}${fileCount}`;
+    }
     return `Failed editing ${firstFile}${fileCount}`;
   }
 
@@ -1321,7 +1328,13 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
 
           if (item.kind === "bash-command") {
             const commandText = item.command ?? item.summary ?? "command";
-            const statusLabel = item.status === "failed" ? "Failed" : item.status === "running" ? "Running" : "Success";
+            const statusLabel = item.rejectedByUser
+              ? "Rejected by user"
+              : item.status === "failed"
+                ? "Failed"
+                : item.status === "running"
+                  ? "Running"
+                  : "Success";
             const defaultExpanded = item.status === "failed";
             const expanded = isBashExpanded(item.id, defaultExpanded);
             const durationLabel = formatCompactDurationSeconds(item.durationSeconds);
@@ -1434,6 +1447,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
               changedFiles: resolvedFiles,
               additions: item.additions,
               deletions: item.deletions,
+              rejectedByUser: item.rejectedByUser,
               expanded,
             });
 

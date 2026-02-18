@@ -1428,6 +1428,80 @@ describe("WorkspacePage", () => {
     expect(editedCard.textContent).toContain("+export const main = () => 2;");
   });
 
+  it("shows rejected by user on edited card and hides permission lifecycle rows", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edit-deny",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "ubah src/main.ts",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edit-deny",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Edit dibatalkan.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edit-deny-permission-requested",
+        threadId: "thread-1",
+        idx: 1,
+        type: "permission.requested",
+        payload: {
+          requestId: "edit-deny-1",
+          toolName: "Edit",
+          toolInput: {
+            file_path: "src/main.ts",
+            old_string: "export const main = () => 1;",
+            new_string: "export const main = () => 2;",
+          },
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-edit-deny-permission-resolved",
+        threadId: "thread-1",
+        idx: 2,
+        type: "permission.resolved",
+        payload: {
+          requestId: "edit-deny-1",
+          decision: "deny",
+          resolver: "user",
+          message: "Tool execution denied by user.",
+        },
+        createdAt: "2026-01-01T10:00:01.500Z",
+      },
+      {
+        id: "evt-edit-deny-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edit-deny", role: "assistant", delta: "Edit dibatalkan." },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected denied edited card");
+    }
+
+    expect(editedCard.textContent).toContain("Rejected by user: src/main.ts");
+    expect(container.querySelector('[data-testid="timeline-permission.requested"]')).toBeNull();
+    expect(container.querySelector('[data-testid="timeline-permission.resolved"]')).toBeNull();
+  });
+
   it("keeps edit proposed diff visible when bash tool events exist in the same assistant context", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
@@ -3177,6 +3251,143 @@ describe("WorkspacePage", () => {
     expect(container.textContent).not.toContain("Running");
   });
 
+  it("hides orphan permission resolved row while keeping bash card visible", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-bash-allow-hidden",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "jalankan bash",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-bash-allow-hidden",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Selesai.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-bash-allow-hidden-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "bash-allow-hidden-1", command: "pwd", isBash: true },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-bash-allow-hidden-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: { summary: "Ran pwd", precedingToolUseIds: ["bash-allow-hidden-1"], isBash: true },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-bash-allow-hidden-perm-resolved",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.resolved",
+        payload: {
+          requestId: "perm-allow-hidden",
+          decision: "allow",
+          resolver: "user",
+        },
+        createdAt: "2026-01-01T10:00:01.300Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-bash-command"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="timeline-permission.requested"]')).toBeNull();
+    expect(container.querySelector('[data-testid="timeline-permission.resolved"]')).toBeNull();
+    expect(container.textContent).not.toContain("Permission allowed");
+  });
+
+  it("shows rejected by user on bash card and hides permission lifecycle rows", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-bash-rejected",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "jalankan beberapa command",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-bash-rejected",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Satu command ditolak.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-bash-rejected-ok-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "bash-ok-1", command: "pwd", isBash: true },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-bash-rejected-ok-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: { summary: "Ran pwd", precedingToolUseIds: ["bash-ok-1"], output: "/tmp/project", isBash: true },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-bash-rejected-perm-requested",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "bash-deny-1",
+          toolName: "Bash",
+          command: "rm -rf /tmp/project",
+        },
+        createdAt: "2026-01-01T10:00:01.300Z",
+      },
+      {
+        id: "evt-bash-rejected-perm-resolved",
+        threadId: "thread-1",
+        idx: 4,
+        type: "permission.resolved",
+        payload: {
+          requestId: "bash-deny-1",
+          decision: "deny",
+          resolver: "user",
+          message: "Tool execution denied by user.",
+        },
+        createdAt: "2026-01-01T10:00:01.400Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="timeline-bash-command"]')).not.toBeNull();
+    expect(container.textContent).toContain("Rejected by user");
+    expect(container.querySelector('[data-testid="timeline-permission.requested"]')).toBeNull();
+    expect(container.querySelector('[data-testid="timeline-permission.resolved"]')).toBeNull();
+  });
+
   it("renders orphan tool row without raw JSON details panel", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([]);
     (api.listEvents as Mock).mockResolvedValue([
@@ -4561,7 +4772,7 @@ describe("WorkspacePage", () => {
     expect(container.querySelector('[data-testid=\"permission-prompt-perm-1\"]')).toBeNull();
   });
 
-  it("shows only one final permission activity line without command or path details", async () => {
+  it("hides permission lifecycle rows without leaking command or path details", async () => {
     (api.listEvents as Mock).mockResolvedValueOnce([
       {
         id: "evt-perm-activity-requested",
@@ -4615,6 +4826,7 @@ describe("WorkspacePage", () => {
 
     expect(container.textContent).not.toContain("Permission requested");
     expect(container.textContent).not.toContain("Permission allowed");
+    expect(container.textContent).not.toContain("Permission denied");
     expect(container.textContent).not.toContain("cat /etc/hosts");
     expect(container.textContent).not.toContain("/etc/hosts");
     expect(container.textContent).not.toContain("Path outside project directory");
