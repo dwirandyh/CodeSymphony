@@ -1610,7 +1610,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
                   }}
                 >
                   <summary className="group/read-summary cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
-                    <span>{summaryText}</span>
+                    <span className={item.status === "running" ? "thinking-shimmer" : ""}>{summaryText}</span>
                     <span
                       data-testid="timeline-explore-activity-chevron"
                       className={cn("inline-flex transition-transform duration-150", expanded ? "rotate-90" : "")}
