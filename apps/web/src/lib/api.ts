@@ -7,6 +7,9 @@ import type {
   CreateRepositoryInput,
   CreateWorktreeInput,
   FileEntry,
+  GitCommitInput,
+  GitDiff,
+  GitStatus,
   OpenWorktreeFileInput,
   PlanRevisionInput,
   ResolvePermissionInput,
@@ -154,6 +157,17 @@ export const api = {
     }
   },
   listEvents: (threadId: string) => request<ChatEvent[]>(`/threads/${threadId}/events`),
+  getGitStatus: (worktreeId: string) =>
+    request<GitStatus>(`/worktrees/${worktreeId}/git/status`),
+  getGitDiff: (worktreeId: string, opts?: { filePath?: string }) => {
+    const params = opts?.filePath ? `?filePath=${encodeURIComponent(opts.filePath)}` : "";
+    return request<GitDiff>(`/worktrees/${worktreeId}/git/diff${params}`);
+  },
+  gitCommit: (worktreeId: string, input: GitCommitInput) =>
+    request<{ result: string }>(`/worktrees/${worktreeId}/git/commit`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   searchFiles: (worktreeId: string, query: string) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`),
   openWorktreeFile: async (worktreeId: string, input: OpenWorktreeFileInput) => {

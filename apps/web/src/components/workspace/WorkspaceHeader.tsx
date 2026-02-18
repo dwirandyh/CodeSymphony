@@ -1,5 +1,5 @@
 import type { ChatThread } from "@codesymphony/shared-types";
-import { Plus, X } from "lucide-react";
+import { GitPullRequestArrow, Plus, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 
@@ -10,9 +10,13 @@ type WorkspaceHeaderProps = {
   selectedThreadId: string | null;
   disabled: boolean;
   closingThreadId: string | null;
+  showReviewTab?: boolean;
+  reviewTabActive?: boolean;
   onSelectThread: (threadId: string | null) => void;
   onCreateThread: () => void;
   onCloseThread: (threadId: string) => void;
+  onSelectReviewTab?: () => void;
+  onCloseReviewTab?: () => void;
 };
 
 export function WorkspaceHeader({
@@ -22,9 +26,13 @@ export function WorkspaceHeader({
   selectedThreadId,
   disabled,
   closingThreadId,
+  showReviewTab,
+  reviewTabActive,
   onSelectThread,
   onCreateThread,
   onCloseThread,
+  onSelectReviewTab,
+  onCloseReviewTab,
 }: WorkspaceHeaderProps) {
   return (
     <section className="space-y-1.5 pb-2">
@@ -40,7 +48,7 @@ export function WorkspaceHeader({
         <div className="min-w-0 flex-1 overflow-x-auto" role="tablist" aria-label="Sessions" data-testid="session-tabs-scroll">
           <div className="flex w-max min-w-full items-center gap-0.5 whitespace-nowrap">
             {threads.map((thread) => {
-              const isSelected = thread.id === selectedThreadId;
+              const isSelected = thread.id === selectedThreadId && !reviewTabActive;
               const isClosing = closingThreadId === thread.id;
 
               return (
@@ -82,6 +90,42 @@ export function WorkspaceHeader({
                 </div>
               );
             })}
+
+            {/* Review Changes tab */}
+            {showReviewTab && (
+              <div
+                className={cn(
+                  "group flex shrink-0 items-center border-b-2 border-b-transparent text-muted-foreground",
+                  reviewTabActive && "border-b-primary text-foreground",
+                )}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={reviewTabActive}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium transition-colors",
+                    reviewTabActive && "text-foreground",
+                  )}
+                  onClick={onSelectReviewTab}
+                >
+                  <GitPullRequestArrow className="h-3 w-3" />
+                  Review Changes
+                </button>
+                <button
+                  type="button"
+                  aria-label="Close review tab"
+                  title="Close review"
+                  className={cn(
+                    "rounded-sm p-1 text-muted-foreground transition-opacity hover:text-destructive",
+                    reviewTabActive ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                  )}
+                  onClick={onCloseReviewTab}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
           </div>
         </div>
 

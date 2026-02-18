@@ -133,3 +133,31 @@ export const FileEntrySchema = z.object({
   type: z.enum(["file", "directory"]),
 });
 export type FileEntry = z.infer<typeof FileEntrySchema>;
+
+// ── Git Types ──
+
+export const GitChangeStatusSchema = z.enum(["modified", "added", "deleted", "renamed", "untracked"]);
+export type GitChangeStatus = z.infer<typeof GitChangeStatusSchema>;
+
+export const GitChangeEntrySchema = z.object({
+  path: z.string(),
+  status: GitChangeStatusSchema,
+});
+export type GitChangeEntry = z.infer<typeof GitChangeEntrySchema>;
+
+export const GitStatusSchema = z.object({
+  branch: z.string(),
+  entries: z.array(GitChangeEntrySchema),
+});
+export type GitStatus = z.infer<typeof GitStatusSchema>;
+
+export const GitCommitInputSchema = z.object({
+  message: z.string().trim().min(1),
+});
+export type GitCommitInput = z.infer<typeof GitCommitInputSchema>;
+
+export const GitDiffSchema = z.object({
+  diff: z.string(),
+  summary: z.string(),
+});
+export type GitDiff = z.infer<typeof GitDiffSchema>;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export function useSidebarResize(initialWidth = 300) {
+export function useSidebarResize(initialWidth = 300, reverse = false) {
   const [sidebarWidth, setSidebarWidth] = useState(initialWidth);
   const [sidebarDragging, setSidebarDragging] = useState(false);
   const sidebarStartXRef = useRef(0);
@@ -17,7 +17,9 @@ export function useSidebarResize(initialWidth = 300) {
     if (!sidebarDragging) return;
 
     function onMove(e: MouseEvent) {
-      const delta = e.clientX - sidebarStartXRef.current;
+      const delta = reverse
+        ? sidebarStartXRef.current - e.clientX
+        : e.clientX - sidebarStartXRef.current;
       setSidebarWidth(Math.max(200, Math.min(500, sidebarStartWidthRef.current + delta)));
     }
     function onUp() {
@@ -30,7 +32,7 @@ export function useSidebarResize(initialWidth = 300) {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     };
-  }, [sidebarDragging]);
+  }, [sidebarDragging, reverse]);
 
   return { sidebarWidth, sidebarDragging, handleSidebarMouseDown };
 }

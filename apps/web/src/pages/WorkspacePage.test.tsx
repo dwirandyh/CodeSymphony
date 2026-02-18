@@ -29,6 +29,9 @@ vi.mock("../lib/api", () => ({
     listEvents: vi.fn(),
     searchFiles: vi.fn(),
     openWorktreeFile: vi.fn(),
+    getGitStatus: vi.fn(),
+    gitCommit: vi.fn(),
+    getGitDiff: vi.fn(),
     runtimeBaseUrl: "http://127.0.0.1:4321",
   },
 }));
@@ -260,6 +263,9 @@ describe("WorkspacePage", () => {
     (api.revisePlan as Mock).mockResolvedValue(undefined);
     (api.searchFiles as Mock).mockResolvedValue([]);
     (api.openWorktreeFile as Mock).mockResolvedValue(undefined);
+    (api.getGitStatus as Mock).mockResolvedValue({ branch: "feature/ui", entries: [] });
+    (api.gitCommit as Mock).mockResolvedValue({ result: "ok" });
+    (api.getGitDiff as Mock).mockResolvedValue({ diff: "", summary: "" });
     (api.createThread as Mock).mockResolvedValue({ ...threadFixture[0], id: "thread-2", title: "Thread 2" });
     (api.deleteThread as Mock).mockResolvedValue(undefined);
     (api.createWorktree as Mock).mockResolvedValue({
@@ -4061,7 +4067,7 @@ describe("WorkspacePage", () => {
     expect(container.textContent).toContain("No active worktrees yet.");
 
     act(() => {
-      click(findButtonByAriaLabel(container, "Create first worktree for alpha"));
+      click(findButtonByAriaLabel(container, "Add worktree for alpha"));
     });
 
     await flushEffects();
@@ -5551,5 +5557,94 @@ describe("WorkspacePage", () => {
     } finally {
       window.localStorage.removeItem("cs.debug.render");
     }
+  });
+
+  // ── Source Control panel integration ──
+
+  it("Source Control toggle has correct aria attributes when panel is closed", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const toggle = container.querySelector('button[aria-label="Source Control"]') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe("source-control-panel");
+  });
+
+  it("opens Source Control panel and sets aria-expanded to true", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const toggle = container.querySelector('button[aria-label="Source Control"]') as HTMLButtonElement;
+    act(() => {
+      toggle.click();
+    });
+
+    await flushEffects();
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const panel = container.querySelector("#source-control-panel");
+    expect(panel).not.toBeNull();
+    expect(panel?.getAttribute("aria-label")).toBe("Source Control panel");
+    expect(container.textContent).toContain("Source Control");
+  });
+
+  it("renders git entries in Source Control panel when status returns files", async () => {
+    (api.getGitStatus as Mock).mockResolvedValue({
+      branch: "feature/ui",
+      entries: [
+        { path: "src/main.ts", status: "modified" },
+        { path: "src/new-file.ts", status: "added" },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const toggle = container.querySelector('button[aria-label="Source Control"]') as HTMLButtonElement;
+    act(() => {
+      toggle.click();
+    });
+
+    await flushEffects();
+
+    expect(container.textContent).toContain("main.ts");
+    expect(container.textContent).toContain("new-file.ts");
+    const options = container.querySelectorAll('[role="option"]');
+    expect(options.length).toBe(2);
+  });
+
+  it("closes Source Control panel on toggle and resets aria-expanded", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const toggle = container.querySelector('button[aria-label="Source Control"]') as HTMLButtonElement;
+
+    act(() => {
+      toggle.click();
+    });
+
+    await flushEffects();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    act(() => {
+      toggle.click();
+    });
+
+    await flushEffects();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector("#source-control-panel")).toBeNull();
   });
 });

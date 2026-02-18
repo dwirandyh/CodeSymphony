@@ -314,6 +314,33 @@ export function useChatSession(
     }
   }
 
+  async function createThreadAndSendMessage(title: string, content: string) {
+    if (!selectedWorktreeId) return;
+    onError(null);
+
+    try {
+      const created = await api.createThread(selectedWorktreeId, { title });
+      setThreads((current) => {
+        if (current.some((t) => t.id === created.id)) return current;
+        return [...current, created];
+      });
+      setSelectedThreadId(created.id);
+      startWaitingAssistant(created.id);
+      setSendingMessage(true);
+      try {
+        await api.sendMessage(created.id, { content, mode: chatMode });
+        setChatInput("");
+      } catch (e) {
+        setWaitingAssistant(null);
+        throw e;
+      } finally {
+        setSendingMessage(false);
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to create review thread");
+    }
+  }
+
   async function closeThread(threadId: string) {
     onError(null);
     setClosingThreadId(threadId);
@@ -440,6 +467,7 @@ export function useChatSession(
     timelineItems,
 
     createAdditionalThread,
+    createThreadAndSendMessage,
     closeThread,
     submitMessage,
     stopAssistantRun,
