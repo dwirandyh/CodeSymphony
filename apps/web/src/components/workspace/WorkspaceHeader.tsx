@@ -55,6 +55,7 @@ export function WorkspaceHeader({
                     type="button"
                     role="tab"
                     aria-selected={isSelected}
+                    title={thread.title}
                     className={cn(
                       "max-w-[180px] truncate px-2 py-1.5 text-xs font-medium transition-colors",
                       isSelected && "text-foreground",

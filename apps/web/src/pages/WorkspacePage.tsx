@@ -1207,8 +1207,21 @@ export function WorkspacePage() {
 
         if (payload.type === "chat.completed") {
           const completedMessageId = String(payload.payload.messageId ?? "");
+          const completedThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
           if (completedMessageId.length > 0) {
             streamingMessageIdsRef.current.delete(completedMessageId);
+          }
+          if (completedThreadTitle) {
+            setThreads((current) =>
+              current.map((thread) =>
+                thread.id === selectedThreadId
+                  ? {
+                      ...thread,
+                      title: completedThreadTitle,
+                    }
+                  : thread,
+              ),
+            );
           }
           pushRenderDebug({
             source: "WorkspacePage",

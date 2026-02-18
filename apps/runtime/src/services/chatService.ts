@@ -24,6 +24,8 @@ import { mapChatMessage, mapChatThread } from "./mappers";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
+const MAX_THREAD_TITLE_LENGTH = 48;
+const TITLE_GENERATION_TIMEOUT_MS = 6000;
 const CLAUDE_SETTINGS_DIR = ".claude";
 const CLAUDE_LOCAL_SETTINGS_FILE = "settings.local.json";
 const execFile = promisify(execFileRaw);
@@ -228,6 +230,203 @@ export function createChatService(deps: RuntimeDeps) {
     clearTimeout(timer);
     scheduledAssistantRunsByThread.delete(threadId);
     return true;
+  }
+
+  function isDefaultThreadTitle(title: string): boolean {
+    const normalized = title.trim();
+    return normalized === "Main Thread" || /^Thread\s+\d+$/.test(normalized);
+  }
+
+  function clampThreadTitle(input: string, maxLength = MAX_THREAD_TITLE_LENGTH): string {
+    if (input.length <= maxLength) {
+      return input;
+    }
+
+    const sliced = input.slice(0, maxLength).trimEnd();
+    const minBoundary = Math.floor(maxLength * 0.6);
+    const lastSpace = sliced.lastIndexOf(" ");
+    if (lastSpace >= minBoundary) {
+      return sliced.slice(0, lastSpace).trim();
+    }
+
+    return sliced;
+  }
+
+  function normalizeGeneratedThreadTitle(raw: string): string | null {
+    const firstLine = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    if (!firstLine) {
+      return null;
+    }
+
+    let candidate = firstLine
+      .replace(/^[-*]\s*/, "")
+      .replace(/^title\s*[:\-]\s*/i, "")
+      .replace(/^["'`]+/, "")
+      .replace(/["'`]+$/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    candidate = candidate.replace(/[.!?,;:]+$/g, "").trim();
+    if (candidate.length === 0) {
+      return null;
+    }
+
+    const clamped = clampThreadTitle(candidate);
+    return clamped.length >= 3 ? clamped : null;
+  }
+
+  async function buildThreadTitleWithAi(
+    worktreePath: string,
+    firstUserContent: string,
+    firstAssistantContent: string,
+  ): Promise<string | null> {
+    const prompt = [
+      "You generate concise chat thread titles.",
+      "Return exactly one title line only.",
+      "Rules:",
+      "- Capture the user's core intent.",
+      "- Keep it concise (2-6 words, max 48 chars).",
+      "- No quotes.",
+      "- No trailing punctuation.",
+      "",
+      `User message: ${firstUserContent.trim()}`,
+      `Assistant reply: ${firstAssistantContent.trim()}`,
+    ].join("\n");
+
+    let streamedOutput = "";
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => {
+      abortController.abort();
+    }, TITLE_GENERATION_TIMEOUT_MS);
+
+    try {
+      const result = await deps.claudeRunner({
+        prompt,
+        sessionId: null,
+        cwd: worktreePath,
+        abortController,
+        permissionMode: "plan",
+        onText: (chunk) => {
+          streamedOutput += chunk;
+        },
+        onToolStarted: async () => {},
+        onToolOutput: async () => {},
+        onToolFinished: async () => {},
+        onQuestionRequest: async () => ({ answers: {} }),
+        onPermissionRequest: () => ({ decision: "deny", message: "Tool use is disabled for title generation." }),
+        onPlanFileDetected: async () => {},
+      });
+
+      const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
+      return normalizeGeneratedThreadTitle(raw);
+    } catch (error) {
+      deps.logService?.log(
+        "warn",
+        "chat.thread.title",
+        "AI title generation failed; keeping current title.",
+        {
+          worktreePath,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function maybeAutoRenameThreadAfterFirstAssistantReply(threadId: string): Promise<string | null> {
+    try {
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+        select: {
+          title: true,
+          worktree: {
+            select: {
+              path: true,
+            },
+          },
+        },
+      });
+      if (!thread) {
+        return null;
+      }
+
+      if (!isDefaultThreadTitle(thread.title)) {
+        return thread.title;
+      }
+
+      const assistantMessageCount = await deps.prisma.chatMessage.count({
+        where: {
+          threadId,
+          role: "assistant",
+        },
+      });
+      if (assistantMessageCount !== 1) {
+        return thread.title;
+      }
+
+      const firstUserMessage = await deps.prisma.chatMessage.findFirst({
+        where: {
+          threadId,
+          role: "user",
+        },
+        orderBy: {
+          seq: "asc",
+        },
+        select: {
+          content: true,
+        },
+      });
+      if (!firstUserMessage) {
+        return thread.title;
+      }
+
+      const firstAssistantMessage = await deps.prisma.chatMessage.findFirst({
+        where: {
+          threadId,
+          role: "assistant",
+        },
+        orderBy: {
+          seq: "asc",
+        },
+        select: {
+          content: true,
+        },
+      });
+      if (!firstAssistantMessage) {
+        return thread.title;
+      }
+
+      const nextTitle = await buildThreadTitleWithAi(
+        thread.worktree.path,
+        firstUserMessage.content,
+        firstAssistantMessage.content,
+      );
+      if (!nextTitle || nextTitle === thread.title) {
+        return thread.title;
+      }
+
+      const updated = await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: { title: nextTitle },
+        select: { title: true },
+      });
+      return updated.title;
+    } catch (error) {
+      deps.logService?.log(
+        "warn",
+        "chat.thread.title",
+        "Auto rename failed; keeping current title.",
+        {
+          threadId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return null;
+    }
   }
 
   type PermissionDecisionResult = { decision: "allow" | "deny"; message?: string };
@@ -491,6 +690,29 @@ export function createChatService(deps: RuntimeDeps) {
           },
         });
       });
+      const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(threadId);
+      let completionThreadTitle: string | null = renamedThreadTitle;
+      if (!completionThreadTitle) {
+        try {
+          const completionThread = await deps.prisma.chatThread.findUnique({
+            where: { id: threadId },
+            select: {
+              title: true,
+            },
+          });
+          completionThreadTitle = completionThread?.title ?? null;
+        } catch (error) {
+          deps.logService?.log(
+            "warn",
+            "chat.thread.title",
+            "Failed to read thread title for completion payload.",
+            {
+              threadId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
 
       const afterState = await captureWorktreeState(thread.worktree.path);
       const diffSnapshot = beforeState && afterState ? buildDiffDelta(beforeState, afterState) : null;
@@ -510,6 +732,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       await deps.eventHub.emit(threadId, "chat.completed", {
         messageId: assistantMessage.id,
+        ...(completionThreadTitle ? { threadTitle: completionThreadTitle } : {}),
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown chat error";

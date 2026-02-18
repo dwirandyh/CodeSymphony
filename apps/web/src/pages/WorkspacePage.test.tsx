@@ -2659,7 +2659,45 @@ describe("WorkspacePage", () => {
 
     expect(overflowContainer.className).toContain("overflow-x-auto");
     expect(activeTab.textContent).toContain("Main Thread");
+    expect(activeTab.getAttribute("title")).toBe("Main Thread");
+    expect(activeTab.className).toContain("max-w-[180px]");
+    expect(activeTab.className).toContain("truncate");
     expect(activeTab.parentElement?.className).toContain("border-b-primary");
+  });
+
+  it("updates thread tab title and close aria-label from chat.completed threadTitle payload", async () => {
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const updatedTitle = "Judul thread yang sangat panjang untuk validasi tooltip penuh";
+    const stream = latestEventSource();
+    act(() => {
+      stream.emit("chat.completed", {
+        id: "evt-thread-rename",
+        threadId: "thread-1",
+        idx: 3,
+        type: "chat.completed",
+        payload: {
+          messageId: "msg-assistant-renamed",
+          threadTitle: updatedTitle,
+        },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      });
+    });
+
+    await flushEffects();
+
+    const activeTab = container.querySelector('button[role="tab"][aria-selected="true"]');
+    if (!activeTab) {
+      throw new Error("Active session tab not found after thread rename");
+    }
+
+    expect(activeTab.textContent).toContain(updatedTitle);
+    expect(activeTab.getAttribute("title")).toBe(updatedTitle);
+    expect(findButtonByAriaLabel(container, `Close session ${updatedTitle}`)).toBeDefined();
   });
 
   it("closes an existing thread from session tabs", async () => {

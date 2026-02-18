@@ -33,7 +33,7 @@ async function resetDatabase(): Promise<void> {
   await prisma.repository.deleteMany();
 }
 
-async function seedThread(): Promise<{ threadId: string; worktreePath: string }> {
+async function seedThread(title = "Main Thread"): Promise<{ threadId: string; worktreePath: string }> {
   const suffix = uniqueSuffix();
   const worktreePath = `/tmp/codesymphony-worktree-${suffix}`;
   const repository = await prisma.repository.create({
@@ -56,7 +56,7 @@ async function seedThread(): Promise<{ threadId: string; worktreePath: string }>
   const thread = await prisma.chatThread.create({
     data: {
       worktreeId: worktree.id,
-      title: "Main Thread",
+      title,
     },
   });
 
@@ -114,7 +114,15 @@ describe("chatService permission flow", () => {
   });
 
   it("does not emit integrity warning and keeps plain assistant output", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Flutter analyze status");
+        return {
+          output: "Flutter analyze status",
+          sessionId: null,
+        };
+      }
+
       await onText("Siap, saya jalankan flutter analyze sekarang.");
       return {
         output: "Siap, saya jalankan flutter analyze sekarang.",
@@ -147,7 +155,74 @@ describe("chatService permission flow", () => {
     const assistantMessage = messages.find((message) => message.role === "assistant");
     expect(assistantMessage?.content).toContain("Siap, saya jalankan flutter analyze sekarang.");
     expect(assistantMessage?.content).not.toContain("runtime-integrity-warning");
-    expect(claudeRunner).toHaveBeenCalledTimes(1);
+    expect(claudeRunner).toHaveBeenCalledTimes(2);
+  });
+
+  it("auto renames default thread title after first assistant reply and emits threadTitle on completion", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Summarize README.md");
+        return {
+          output: "Summarize README.md",
+          sessionId: null,
+        };
+      }
+
+      await onText("Siap.");
+      return {
+        output: "Siap.",
+        sessionId: "session-thread-title-auto",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "i want you to find/search file README.md file and read if then summary it for me",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const completed = events.find((event) => event.type === "chat.completed");
+
+    expect(completed).toBeDefined();
+    expect(completed?.payload.threadTitle).toBe("Summarize README.md");
+
+    const thread = await chatService.getThreadById(threadId);
+    expect(thread?.title).toBe("Summarize README.md");
+  });
+
+  it("does not overwrite non-default thread title and still emits threadTitle on completion", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+      await onText("Done.");
+      return {
+        output: "Done.",
+        sessionId: "session-thread-title-preserve",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread("Session Integrasi API");
+
+    await chatService.sendMessage(threadId, {
+      content: "Tolong cek rute auth",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const completed = events.find((event) => event.type === "chat.completed");
+    expect(completed).toBeDefined();
+    expect(completed?.payload.threadTitle).toBe("Session Integrasi API");
+
+    const thread = await chatService.getThreadById(threadId);
+    expect(thread?.title).toBe("Session Integrasi API");
   });
 
   it("emits permission requested and proceeds after approve", async () => {
