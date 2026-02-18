@@ -17,6 +17,14 @@ export type ReadFileTimelineEntry = {
   openPath: string | null;
 };
 
+export type ExploreActivityEntry = {
+  kind: "read" | "search";
+  label: string;
+  openPath: string | null;
+  pending: boolean;
+  orderIdx: number;
+};
+
 export type ActivityTraceStep = {
   id: string;
   label: string;
@@ -77,9 +85,12 @@ export type ChatTimelineItem =
     createdAt: string;
   }
   | {
-    kind: "read-files";
+    kind: "explore-activity";
     id: string;
-    files: ReadFileTimelineEntry[];
+    status: "running" | "success";
+    fileCount: number;
+    searchCount: number;
+    entries: ExploreActivityEntry[];
   };
 
 type ChatMessageListProps = {
@@ -296,7 +307,7 @@ function isLikelyDiff(code: string, language?: string): boolean {
     return true;
   }
 
-  return /^(diff --git|---\s|\+\+\+\s|@@\s)/m.test(code);
+  return /^(diff --git .+|--- [^\r\n]+|\+\+\+ [^\r\n]+|@@ .+ @@)/m.test(code);
 }
 
 function hasUnclosedCodeFence(content: string): boolean {
@@ -1155,7 +1166,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
   const [activityExpandedByMessageId, setActivityExpandedByMessageId] = useState<Map<string, boolean>>(new Map());
   const [bashExpandedById, setBashExpandedById] = useState<Map<string, boolean>>(new Map());
   const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(new Map());
-  const [readFilesExpandedById, setReadFilesExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [exploreActivityExpandedById, setExploreActivityExpandedById] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
@@ -1218,8 +1229,8 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
     return defaultExpanded;
   }
 
-  function isReadFilesExpanded(id: string): boolean {
-    return readFilesExpandedById.get(id) === true;
+  function isExploreActivityExpanded(id: string): boolean {
+    return exploreActivityExpandedById.get(id) === true;
   }
 
   return (
@@ -1496,54 +1507,42 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
             );
           }
 
-          if (item.kind === "read-files") {
-            const renderReadLabel = (file: ReadFileTimelineEntry, key: string) => (
+          if (item.kind === "explore-activity") {
+            const renderReadLabel = (entry: ExploreActivityEntry, key: string) => (
               <span key={key}>
                 Read{" "}
-                {file.openPath && onOpenReadFile ? (
+                {entry.openPath && onOpenReadFile ? (
                   <button
                     type="button"
                     className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
                     onClick={() => {
-                      const openPath = file.openPath;
+                      const openPath = entry.openPath;
                       if (!openPath) {
                         return;
                       }
                       void onOpenReadFile(openPath);
                     }}
                   >
-                    {file.label}
+                    {entry.label}
                   </button>
                 ) : (
-                  <span>{file.label}</span>
+                  <span>{entry.label}</span>
                 )}
               </span>
             );
-
-            if (item.files.length === 1) {
-              return (
-                <article
-                  key={`read-files-${item.id}`}
-                  className="px-1 text-xs text-muted-foreground"
-                  data-testid="timeline-read-files"
-                >
-                  {renderReadLabel(item.files[0], `${item.id}:single`)}
-                </article>
-              );
-            }
-
-            const expanded = isReadFilesExpanded(item.id);
+            const expanded = isExploreActivityExpanded(item.id);
+            const summaryPrefix = item.status === "running" ? "Exploring" : "Explored";
             return (
               <article
-                key={`read-files-${item.id}`}
+                key={`explore-activity-${item.id}`}
                 className="px-1 text-xs"
-                data-testid="timeline-read-files"
+                data-testid="timeline-explore-activity"
               >
                 <details
                   open={expanded}
                   onToggle={(event) => {
                     const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-                    setReadFilesExpandedById((current) => {
+                    setExploreActivityExpandedById((current) => {
                       const next = new Map(current);
                       next.set(item.id, nextOpen);
                       return next;
@@ -1551,17 +1550,21 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
                   }}
                 >
                   <summary className="group/read-summary cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
-                    <span>Explored {item.files.length} files</span>
+                    <span>{summaryPrefix} {item.fileCount} files, {item.searchCount} searches</span>
                     <span
-                      data-testid="timeline-read-files-chevron"
+                      data-testid="timeline-explore-activity-chevron"
                       className={cn("inline-flex transition-transform duration-150", expanded ? "rotate-90" : "")}
                     >
                       <ChevronRight className="h-3 w-3" />
                     </span>
                   </summary>
                   <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
-                    {item.files.map((file, idx) => (
-                      renderReadLabel(file, `${item.id}:${idx}`)
+                    {item.entries.map((entry, idx) => (
+                      entry.pending
+                        ? <span key={`${item.id}:pending:${idx}`}>{entry.label}</span>
+                        : entry.kind === "read"
+                          ? renderReadLabel(entry, `${item.id}:${idx}`)
+                          : <span key={`${item.id}:${idx}`}>{entry.label}</span>
                     ))}
                   </div>
                 </details>

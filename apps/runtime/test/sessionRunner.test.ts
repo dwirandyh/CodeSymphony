@@ -224,6 +224,59 @@ describe("tool instrumentation", () => {
     expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({ summary: "Read README.md" }));
   });
 
+  it("includes search parameters in onToolStarted payload for search tools", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+        await canUseTool("Glob", { pattern: "README.md", path: "apps/web/src" }, {
+          toolUseID: "tool-glob-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        yield { type: "system", subtype: "init", session_id: "session-glob-1" };
+        yield {
+          type: "tool_progress",
+          tool_use_id: "tool-glob-1",
+          tool_name: "Glob",
+          parent_tool_use_id: null,
+          elapsed_time_seconds: 0.2,
+        };
+        yield {
+          type: "tool_use_summary",
+          summary: "Completed Glob",
+          preceding_tool_use_ids: ["tool-glob-1"],
+        };
+      })();
+    });
+
+    const onToolStarted = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "find readme",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => {},
+      onToolStarted,
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onToolInstrumentation: () => {},
+    });
+
+    expect(onToolStarted).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "Glob",
+      toolUseId: "tool-glob-1",
+      searchParams: "pattern=README.md, path=apps/web/src",
+    }));
+  });
+
   it("emits synthetic finish for incomplete non-bash lifecycle", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return (async function* () {

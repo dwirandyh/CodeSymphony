@@ -1199,6 +1199,42 @@ describe("WorkspacePage", () => {
     expect(container.textContent).not.toContain("Edited files");
   });
 
+  it("keeps markdown mode for horizontal rule content", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-hr-markdown",
+        threadId: "thread-1",
+        seq: 0,
+        role: "assistant",
+        content: "Saya akan cek dulu.\n\n---\n\nBerikut hasilnya.",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-hr-markdown-delta",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-hr-markdown",
+          role: "assistant",
+          delta: "Saya akan cek dulu.\n\n---\n\nBerikut hasilnya.",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="assistant-render-markdown"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="assistant-render-diff"]')).toBeNull();
+  });
+
   it("renders edited diff card inline between assistant text segments", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
@@ -1509,7 +1545,7 @@ describe("WorkspacePage", () => {
     expect(container.textContent).toContain("Read README.md");
   });
 
-  it("groups read summaries into explored files without duplicate started rows", async () => {
+  it("groups read and search traces into one exploring row in timeline order without duplicate started rows", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
         id: "msg-user-read-group",
@@ -1553,7 +1589,7 @@ describe("WorkspacePage", () => {
         threadId: "thread-1",
         idx: 3,
         type: "tool.started",
-        payload: { toolName: "Read", toolUseId: "tool-read-group-2", parentToolUseId: null },
+        payload: { toolName: "Grep", toolUseId: "tool-search-group-1", parentToolUseId: null },
         createdAt: "2026-01-01T10:00:01.300Z",
       },
       {
@@ -1562,25 +1598,144 @@ describe("WorkspacePage", () => {
         idx: 4,
         type: "tool.finished",
         payload: {
-          summary: "Read docs/guide.md",
-          precedingToolUseIds: ["tool-read-group-2"],
+          summary: "toolName: \"(Glob|Grep|Search|Find|LS|Ls|List)\"|summary: \".*(glob|grep|search|find|list|ls) in WorkspacePage.test.tsx",
+          precedingToolUseIds: ["tool-search-group-1"],
         },
         createdAt: "2026-01-01T10:00:01.600Z",
       },
       {
-        id: "evt-read-group-msg",
+        id: "evt-search-group-start-2",
         threadId: "thread-1",
         idx: 5,
+        type: "tool.started",
+        payload: { toolName: "Search", toolUseId: "tool-search-group-2", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.700Z",
+      },
+      {
+        id: "evt-search-group-finish-2",
+        threadId: "thread-1",
+        idx: 6,
+        type: "tool.finished",
+        payload: {
+          summary: "onToolStarted|onToolFinished|summary in test",
+          precedingToolUseIds: ["tool-search-group-2"],
+        },
+        createdAt: "2026-01-01T10:00:01.800Z",
+      },
+      {
+        id: "evt-read-group-start-3",
+        threadId: "thread-1",
+        idx: 7,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-read-group-2", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.900Z",
+      },
+      {
+        id: "evt-read-group-msg",
+        threadId: "thread-1",
+        idx: 8,
         type: "message.delta",
         payload: { messageId: "msg-assistant-read-group", role: "assistant", delta: "Summary done." },
         createdAt: "2026-01-01T10:00:03.000Z",
       },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const timelineText = container.textContent ?? "";
+    expect(timelineText).toContain("Exploring 2 files, 2 searches");
+    expect(container.textContent).toContain("Read README.md");
+    expect(container.textContent).toContain("Searched for toolName: \"(Glob|Grep|Search|Find|LS|Ls|List)\"|summary: \".*(glob|grep|search|find|list|ls) in WorkspacePage.test.tsx");
+    expect(container.textContent).toContain("Searched for onToolStarted|onToolFinished|summary in test");
+    expect(container.textContent).toContain("Reading...");
+    expect(container.querySelector('[data-testid="timeline-tool.started"]')).toBeNull();
+
+    const readReadmeIdx = timelineText.indexOf("Read README.md");
+    const firstSearchIdx = timelineText.indexOf("Searched for toolName: \"(Glob|Grep|Search|Find|LS|Ls|List)\"|summary: \".*(glob|grep|search|find|list|ls) in WorkspacePage.test.tsx");
+    const secondSearchIdx = timelineText.indexOf("Searched for onToolStarted|onToolFinished|summary in test");
+    const readingIdx = timelineText.indexOf("Reading...");
+
+    expect(readReadmeIdx).toBeGreaterThanOrEqual(0);
+    expect(firstSearchIdx).toBeGreaterThan(readReadmeIdx);
+    expect(secondSearchIdx).toBeGreaterThan(firstSearchIdx);
+    expect(readingIdx).toBeGreaterThan(secondSearchIdx);
+  });
+
+  it("renders explored summary when mixed read and search runs are fully completed", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
       {
-        id: "evt-read-group-complete",
+        id: "msg-user-explore-complete",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "search and read",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-explore-complete",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Done.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-explore-complete-read-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-explore-complete-read", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-explore-complete-read-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Read sessionRunner.test.ts",
+          precedingToolUseIds: ["tool-explore-complete-read"],
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-explore-complete-search-start",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.started",
+        payload: { toolName: "Search", toolUseId: "tool-explore-complete-search", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.300Z",
+      },
+      {
+        id: "evt-explore-complete-search-finish",
+        threadId: "thread-1",
+        idx: 4,
+        type: "tool.finished",
+        payload: {
+          summary: "onToolStarted|onToolFinished|summary in test",
+          precedingToolUseIds: ["tool-explore-complete-search"],
+        },
+        createdAt: "2026-01-01T10:00:01.500Z",
+      },
+      {
+        id: "evt-explore-complete-msg",
+        threadId: "thread-1",
+        idx: 5,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-explore-complete", role: "assistant", delta: "Done." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-explore-complete-chat-completed",
         threadId: "thread-1",
         idx: 6,
         type: "chat.completed",
-        payload: { messageId: "msg-assistant-read-group" },
+        payload: { messageId: "msg-assistant-explore-complete" },
         createdAt: "2026-01-01T10:00:04.000Z",
       },
     ]);
@@ -1590,10 +1745,73 @@ describe("WorkspacePage", () => {
     });
     await flushEffects();
 
-    expect(container.textContent).toContain("Explored 2 files");
-    expect(container.textContent).toContain("Read README.md");
-    expect(container.textContent).toContain("Read guide.md");
-    expect(container.textContent).not.toContain("Read Completed Read");
+    expect(container.textContent).toContain("Explored 1 files, 1 searches");
+    expect(container.textContent).toContain("Read sessionRunner.test.ts");
+    expect(container.textContent).toContain("Searched for onToolStarted|onToolFinished|summary in test");
+    expect(container.textContent).not.toContain("Exploring 1 files, 1 searches");
+  });
+
+  it("uses search tool parameters for generic completed search summaries", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-search-generic",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "run glob",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-search-generic",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Done.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-search-generic-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: {
+          toolName: "Glob",
+          toolUseId: "tool-search-generic",
+          parentToolUseId: null,
+          searchParams: "pattern=README.md, path=apps/web/src",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-search-generic-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Completed Glob",
+          precedingToolUseIds: ["tool-search-generic"],
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-search-generic-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-search-generic", role: "assistant", delta: "Done." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    expect(container.textContent).toContain("Searched Glob (pattern=README.md, path=apps/web/src)");
+    expect(container.textContent).not.toContain("Searched for Completed Glob");
   });
 
   it("rotates explored-files chevron when expanded", async () => {
@@ -1653,12 +1871,12 @@ describe("WorkspacePage", () => {
     });
     await flushEffects();
 
-    const readDetails = container.querySelector('[data-testid="timeline-read-files"] details') as HTMLDetailsElement | null;
+    const readDetails = container.querySelector('[data-testid="timeline-explore-activity"] details') as HTMLDetailsElement | null;
     if (!readDetails) {
       throw new Error("Expected read-files details");
     }
 
-    const chevronBefore = container.querySelector('[data-testid="timeline-read-files-chevron"]') as HTMLElement | null;
+    const chevronBefore = container.querySelector('[data-testid="timeline-explore-activity-chevron"]') as HTMLElement | null;
     if (!chevronBefore) {
       throw new Error("Expected read-files chevron");
     }
@@ -1670,7 +1888,7 @@ describe("WorkspacePage", () => {
     });
     await flushEffects();
 
-    const chevronAfter = container.querySelector('[data-testid="timeline-read-files-chevron"]') as HTMLElement | null;
+    const chevronAfter = container.querySelector('[data-testid="timeline-explore-activity-chevron"]') as HTMLElement | null;
     if (!chevronAfter) {
       throw new Error("Expected read-files chevron after toggle");
     }
@@ -1787,7 +2005,7 @@ describe("WorkspacePage", () => {
     });
     await flushEffects();
 
-    const readRow = container.querySelector('[data-testid="timeline-read-files"]');
+    const readRow = container.querySelector('[data-testid="timeline-explore-activity"]');
     if (!readRow) {
       throw new Error("Expected single read-files row");
     }
@@ -1866,7 +2084,7 @@ describe("WorkspacePage", () => {
     });
     await flushEffects();
 
-    const readDetails = container.querySelector('[data-testid="timeline-read-files"] details') as HTMLDetailsElement | null;
+    const readDetails = container.querySelector('[data-testid="timeline-explore-activity"] details') as HTMLDetailsElement | null;
     if (!readDetails) {
       throw new Error("Expected read-files details");
     }
@@ -1877,7 +2095,7 @@ describe("WorkspacePage", () => {
     });
     await flushEffects();
 
-    const buttons = Array.from(container.querySelectorAll('[data-testid="timeline-read-files"] button'));
+    const buttons = Array.from(container.querySelectorAll('[data-testid="timeline-explore-activity"] button'));
     const hiddenFileButton = buttons.find((button) => button.textContent === ".beads/README.md");
     if (!hiddenFileButton) {
       throw new Error("Expected hidden read filename button");
@@ -1938,7 +2156,7 @@ describe("WorkspacePage", () => {
     });
     await flushEffects();
 
-    const readRow = container.querySelector('[data-testid="timeline-read-files"]');
+    const readRow = container.querySelector('[data-testid="timeline-explore-activity"]');
     if (!readRow) {
       throw new Error("Expected read-files row");
     }
@@ -2034,6 +2252,289 @@ describe("WorkspacePage", () => {
     const preambleIdx = timelineText.indexOf("I'll help you find and read the README.md file, then provide a summary.");
     const exploredIdx = timelineText.indexOf("Explored 2 files");
     const summaryIdx = timelineText.indexOf("Summary of README.md Files");
+
+    expect(preambleIdx).toBeGreaterThanOrEqual(0);
+    expect(exploredIdx).toBeGreaterThanOrEqual(0);
+    expect(summaryIdx).toBeGreaterThanOrEqual(0);
+    expect(exploredIdx).toBeGreaterThan(preambleIdx);
+    expect(exploredIdx).toBeLessThan(summaryIdx);
+  });
+
+  it("keeps first sentence intact before explore activity when assistant text is split across deltas", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-stream-inline",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "cek networking flutter",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-stream-inline",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Saya akan mencari file-file terkait networking dalam proyek Flutter ini. Berikut adalah ringkasan file networking.",
+        createdAt: "2026-01-01T10:00:00.100Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-stream-inline-delta-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-stream-inline",
+          role: "assistant",
+          delta: "Saya",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-stream-inline-read-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Read api_client.dart",
+          precedingToolUseIds: ["tool-stream-inline-read-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.100Z",
+      },
+      {
+        id: "evt-stream-inline-search-start",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.started",
+        payload: {
+          toolName: "Glob",
+          toolUseId: "tool-stream-inline-search-1",
+          parentToolUseId: null,
+          searchParams: "pattern=**/api*.dart",
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-stream-inline-search-finish",
+        threadId: "thread-1",
+        idx: 4,
+        type: "tool.finished",
+        payload: {
+          summary: "Completed Glob",
+          precedingToolUseIds: ["tool-stream-inline-search-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.300Z",
+      },
+      {
+        id: "evt-stream-inline-delta-2",
+        threadId: "thread-1",
+        idx: 5,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-stream-inline",
+          role: "assistant",
+          delta: " akan mencari file-file terkait networking dalam proyek Flutter ini. Berikut adalah ringkasan file networking.",
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-stream-inline-complete",
+        threadId: "thread-1",
+        idx: 6,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-stream-inline" },
+        createdAt: "2026-01-01T10:00:02.100Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const timelineText = container.textContent ?? "";
+    const leadIdx = timelineText.indexOf("Saya");
+    const continuationIdx = timelineText.indexOf("akan mencari file-file terkait networking dalam proyek Flutter ini.");
+    const exploredIdx = timelineText.indexOf("Explored 1 files, 1 searches");
+    const summaryIdx = timelineText.indexOf("Berikut adalah ringkasan file networking.");
+
+    expect(leadIdx).toBeGreaterThanOrEqual(0);
+    expect(continuationIdx).toBeGreaterThan(leadIdx);
+    expect(exploredIdx).toBeGreaterThanOrEqual(0);
+    expect(summaryIdx).toBeGreaterThanOrEqual(0);
+    expect(exploredIdx).toBeGreaterThan(continuationIdx);
+    expect(exploredIdx).toBeLessThan(summaryIdx);
+  });
+
+  it("keeps first sentence contiguous before explore activity when boundary has no whitespace", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-stream-nospace",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "cek networking flutter",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-stream-nospace",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Saya akan mencari file terkait networking dalam project Flutter ini.Berikut adalah file-file terkait networking dalam project.",
+        createdAt: "2026-01-01T10:00:00.100Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-stream-nospace-delta-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-stream-nospace",
+          role: "assistant",
+          delta: "Saya",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-stream-nospace-search-start",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.started",
+        payload: {
+          toolName: "Glob",
+          toolUseId: "tool-stream-nospace-search-1",
+          parentToolUseId: null,
+          searchParams: "pattern=**/api*.dart",
+        },
+        createdAt: "2026-01-01T10:00:01.100Z",
+      },
+      {
+        id: "evt-stream-nospace-search-finish",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.finished",
+        payload: {
+          summary: "Completed Glob",
+          precedingToolUseIds: ["tool-stream-nospace-search-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-stream-nospace-delta-2",
+        threadId: "thread-1",
+        idx: 4,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-stream-nospace",
+          role: "assistant",
+          delta: " akan mencari file terkait networking dalam project Flutter ini.Berikut adalah file-file terkait networking dalam project.",
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-stream-nospace-complete",
+        threadId: "thread-1",
+        idx: 5,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-stream-nospace" },
+        createdAt: "2026-01-01T10:00:02.100Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const timelineText = container.textContent ?? "";
+    const firstSentenceIdx = timelineText.indexOf("Saya akan mencari file terkait networking dalam project Flutter ini.");
+    const exploredIdx = timelineText.indexOf("Explored 0 files, 1 searches");
+    const secondSentenceIdx = timelineText.indexOf("Berikut adalah file-file terkait networking dalam project.");
+
+    expect(firstSentenceIdx).toBeGreaterThanOrEqual(0);
+    expect(exploredIdx).toBeGreaterThan(firstSentenceIdx);
+    expect(secondSentenceIdx).toBeGreaterThan(exploredIdx);
+  });
+
+  it("prioritizes idx ordering over timestamps in inline timeline", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-order-idx",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "urutkan berdasarkan idx",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-order-idx",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Urutan idx dulu. Lalu ringkasan.",
+        createdAt: "2026-01-01T10:00:00.100Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-order-idx-delta-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-order-idx",
+          role: "assistant",
+          delta: "Urutan idx dulu. ",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-order-idx-read-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Read README.md",
+          precedingToolUseIds: ["tool-order-idx-read-1"],
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-order-idx-delta-2",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-order-idx",
+          role: "assistant",
+          delta: "Lalu ringkasan.",
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-order-idx-complete",
+        threadId: "thread-1",
+        idx: 4,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-order-idx" },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const timelineText = container.textContent ?? "";
+    const preambleIdx = timelineText.indexOf("Urutan idx dulu.");
+    const exploredIdx = timelineText.indexOf("Explored 1 files, 0 searches");
+    const summaryIdx = timelineText.indexOf("Lalu ringkasan.");
 
     expect(preambleIdx).toBeGreaterThanOrEqual(0);
     expect(exploredIdx).toBeGreaterThanOrEqual(0);

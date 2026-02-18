@@ -6,6 +6,7 @@ import {
   type ActivityTraceStep,
   type AssistantRenderHint,
   type ChatTimelineItem,
+  type ExploreActivityEntry,
   type ReadFileTimelineEntry,
 } from "../components/workspace/ChatMessageList";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -55,6 +56,8 @@ const READ_PROMPT_PATTERN =
   /\b(read|open|show|cat|display|view|find|locate|buka\w*|lihat\w*|isi\w*|lengkap|full|ulang|repeat|cari\w*|temu\w*|kasih\s*tau)\b/i;
 const FILE_PATH_PATTERN = /(?:[~./\w-]+\/)?[\w.-]+\.[a-z0-9]{1,10}\b|readme(?:\.md)?\b/gi;
 const TRIM_FILE_TOKEN_PATTERN = /^[`"'([{<\s]+|[`"',.;:)\]}>/\\\s]+$/g;
+const SENTENCE_BOUNDARY_PATTERN = /[.!?](?:["')\]]+)?(?:\s+|$|(?=[A-Z]))/;
+const SENTENCE_BOUNDARY_SCAN_LIMIT = 280;
 
 function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
   const rawSource = payload.source;
@@ -135,6 +138,18 @@ function isReadToolEvent(event: ChatEvent): boolean {
   return READ_TOOL_PATTERN.test(eventPayloadText(event));
 }
 
+function isSearchToolEvent(event: ChatEvent): boolean {
+  if (event.type === "chat.failed" || event.type === "permission.requested" || event.type === "permission.resolved") {
+    return false;
+  }
+
+  if (isBashToolEvent(event) || isReadToolEvent(event)) {
+    return false;
+  }
+
+  return SEARCH_TOOL_PATTERN.test(eventPayloadText(event));
+}
+
 function extractFirstFilePath(text: string): string | null {
   const matches = text.match(FILE_PATH_PATTERN);
   if (!matches || matches.length === 0) {
@@ -161,7 +176,7 @@ function hasUnclosedCodeFence(content: string): boolean {
 }
 
 function isLikelyDiffContent(content: string): boolean {
-  return /^(diff --git|---\s|\+\+\+\s|@@\s)/m.test(content);
+  return /^(diff --git .+|--- [^\r\n]+|\+\+\+ [^\r\n]+|@@ .+ @@)/m.test(content);
 }
 
 function isWorktreeDiffEvent(event: ChatEvent): boolean {
@@ -438,6 +453,48 @@ function buildActivityIntroText(content: string): string | null {
   return `${intro.slice(0, 217).trimEnd()}...`;
 }
 
+function splitAtFirstSentenceBoundary(text: string): { head: string; tail: string } | null {
+  if (text.length === 0) {
+    return null;
+  }
+
+  const scanTarget = text.slice(0, SENTENCE_BOUNDARY_SCAN_LIMIT);
+  const match = SENTENCE_BOUNDARY_PATTERN.exec(scanTarget);
+  if (!match) {
+    return null;
+  }
+
+  const boundaryIdx = match.index + match[0].length;
+  if (boundaryIdx <= 0) {
+    return null;
+  }
+
+  return {
+    head: text.slice(0, boundaryIdx),
+    tail: text.slice(boundaryIdx),
+  };
+}
+
+function hasSentenceBoundary(text: string): boolean {
+  return splitAtFirstSentenceBoundary(text) != null;
+}
+
+function shouldDelayFirstExploreInsert(
+  firstInsertKind: string | null,
+  leadingContent: string,
+  hasAnyTrailingText: boolean,
+): boolean {
+  if (firstInsertKind !== "explore-activity" || !hasAnyTrailingText) {
+    return false;
+  }
+
+  if (leadingContent.length === 0) {
+    return true;
+  }
+
+  return !hasSentenceBoundary(leadingContent);
+}
+
 type BashRun = {
   id: string;
   toolUseId: string;
@@ -712,9 +769,28 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
   return runs;
 }
 
-type ReadRunGroup = {
+type ExploreRunKind = "read" | "search";
+
+type ExploreRunState = {
   id: string;
-  files: ReadFileTimelineEntry[];
+  kind: ExploreRunKind;
+  pending: boolean;
+  label: string;
+  openPath: string | null;
+  searchToolName: string | null;
+  searchParams: string | null;
+  orderIdx: number;
+  startIdx: number;
+  createdAt: string;
+  eventIds: Set<string>;
+};
+
+type ExploreActivityGroup = {
+  id: string;
+  status: "running" | "success";
+  fileCount: number;
+  searchCount: number;
+  entries: ExploreActivityEntry[];
   startIdx: number;
   anchorIdx: number;
   createdAt: string;
@@ -775,51 +851,270 @@ function extractReadFileEntry(event: ChatEvent): ReadFileTimelineEntry | null {
   return null;
 }
 
-function extractReadRunGroups(context: ChatEvent[]): ReadRunGroup[] {
+function normalizeSearchSummary(summary: string): string {
+  const normalized = summary.trim();
+  if (normalized.length === 0) {
+    return "Searched";
+  }
+
+  if (/^searched\s+for\s+/i.test(normalized)) {
+    return normalized;
+  }
+
+  if (/^completed\s+(glob|grep|search|find|list|scan|ls)\b/i.test(normalized)) {
+    return "Searched";
+  }
+
+  return `Searched for ${normalized}`;
+}
+
+function searchContextFromEvent(event: ChatEvent): { toolName: string | null; searchParams: string | null } {
+  const toolName = payloadStringOrNull(event.payload.toolName);
+  const searchParams = payloadStringOrNull(event.payload.searchParams);
+  return {
+    toolName: toolName ? toolName.trim() : null,
+    searchParams: searchParams ? searchParams.trim() : null,
+  };
+}
+
+function buildSearchRunningLabel(toolName: string | null, searchParams: string | null): string {
+  const base = `Searching ${toolName && toolName.length > 0 ? toolName : "Search"}`;
+  if (searchParams && searchParams.length > 0) {
+    return `${base} (${searchParams})`;
+  }
+  return base;
+}
+
+function buildSearchCompletedFallbackLabel(toolName: string | null, searchParams: string | null): string {
+  const base = `Searched${toolName && toolName.length > 0 ? ` ${toolName}` : ""}`;
+  if (searchParams && searchParams.length > 0) {
+    return `${base} (${searchParams})`;
+  }
+  return base;
+}
+
+function extractSearchEntryLabel(
+  event: ChatEvent,
+  options?: { toolName?: string | null; searchParams?: string | null },
+): string {
+  const fallbackToolName = options?.toolName ?? null;
+  const fallbackSearchParams = options?.searchParams ?? null;
+  const summary = payloadStringOrNull(event.payload.summary);
+  if (summary) {
+    const normalized = summary.trim();
+    if (/^completed\s+(glob|grep|search|find|list|scan|ls)\b/i.test(normalized)) {
+      return buildSearchCompletedFallbackLabel(fallbackToolName, fallbackSearchParams);
+    }
+    return normalizeSearchSummary(summary);
+  }
+
+  return buildSearchCompletedFallbackLabel(fallbackToolName, fallbackSearchParams);
+}
+
+function extractExploreRunKind(event: ChatEvent): ExploreRunKind | null {
+  if (isReadToolEvent(event)) {
+    return "read";
+  }
+
+  if (isSearchToolEvent(event)) {
+    return "search";
+  }
+
+  return null;
+}
+
+function finishedToolUseIds(event: ChatEvent): string[] {
+  const precedingToolUseIds = Array.isArray(event.payload.precedingToolUseIds)
+    ? event.payload.precedingToolUseIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
+  if (precedingToolUseIds.length > 0) {
+    return precedingToolUseIds;
+  }
+
+  const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+  if (toolUseId) {
+    return [toolUseId];
+  }
+
+  return [`finished:${event.id}`];
+}
+
+function extractExploreActivityGroups(context: ChatEvent[]): ExploreActivityGroup[] {
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
-  const groups: ReadRunGroup[] = [];
-  let currentGroup: ReadRunGroup | null = null;
+  const groups: ExploreActivityGroup[] = [];
+  let currentRuns = new Map<string, ExploreRunState>();
+  let currentStartIdx: number | null = null;
+  let currentCreatedAt: string | null = null;
+  let currentFirstEventId: string | null = null;
+
+  function ensureRun(runId: string, kind: ExploreRunKind, event: ChatEvent): ExploreRunState {
+    const existing = currentRuns.get(runId);
+    if (existing) {
+      existing.startIdx = Math.min(existing.startIdx, event.idx);
+      existing.eventIds.add(event.id);
+      return existing;
+    }
+
+    const created: ExploreRunState = {
+      id: runId,
+      kind,
+      pending: true,
+      label: kind === "read" ? "file" : "Searching...",
+      openPath: null,
+      searchToolName: null,
+      searchParams: null,
+      orderIdx: event.idx,
+      startIdx: event.idx,
+      createdAt: event.createdAt,
+      eventIds: new Set([event.id]),
+    };
+    currentRuns.set(runId, created);
+    return created;
+  }
+
+  function flushGroup() {
+    if (currentRuns.size === 0 || currentStartIdx == null || currentCreatedAt == null || currentFirstEventId == null) {
+      currentRuns = new Map<string, ExploreRunState>();
+      currentStartIdx = null;
+      currentCreatedAt = null;
+      currentFirstEventId = null;
+      return;
+    }
+
+    const runs = Array.from(currentRuns.values());
+    const entries = runs
+      .map((run): ExploreActivityEntry => ({
+        kind: run.kind,
+        label: run.pending
+          ? (run.kind === "read"
+            ? "Reading..."
+            : (run.label.length > 0 ? run.label : "Searching..."))
+          : run.label,
+        openPath: run.pending ? null : run.openPath,
+        pending: run.pending,
+        orderIdx: run.orderIdx,
+      }))
+      .sort((a, b) => {
+        if (a.orderIdx !== b.orderIdx) {
+          return a.orderIdx - b.orderIdx;
+        }
+
+        if (a.pending !== b.pending) {
+          return a.pending ? 1 : -1;
+        }
+
+        return a.kind.localeCompare(b.kind);
+      });
+    const fileCount = runs.filter((run) => run.kind === "read").length;
+    const searchCount = runs.filter((run) => run.kind === "search").length;
+    if (fileCount === 0 && searchCount === 0) {
+      currentRuns = new Map<string, ExploreRunState>();
+      currentStartIdx = null;
+      currentCreatedAt = null;
+      currentFirstEventId = null;
+      return;
+    }
+
+    const eventIds = new Set<string>();
+    runs.forEach((run) => {
+      run.eventIds.forEach((eventId) => eventIds.add(eventId));
+    });
+    groups.push({
+      id: `explore:${currentFirstEventId}`,
+      status: runs.some((run) => run.pending) ? "running" : "success",
+      fileCount,
+      searchCount,
+      entries,
+      startIdx: currentStartIdx,
+      anchorIdx: currentStartIdx,
+      createdAt: currentCreatedAt,
+      eventIds,
+    });
+
+    currentRuns = new Map<string, ExploreRunState>();
+    currentStartIdx = null;
+    currentCreatedAt = null;
+    currentFirstEventId = null;
+  }
 
   for (const event of ordered) {
-    // Only group tool.finished read events. message.delta breaks a run.
+    // Keep inline grouping aligned with assistant text segments.
     if (event.type === "message.delta") {
-      if (currentGroup) {
-        groups.push(currentGroup);
-        currentGroup = null;
+      flushGroup();
+      continue;
+    }
+
+    if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
+      continue;
+    }
+
+    const kindFromEvent = extractExploreRunKind(event);
+    const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+
+    if (event.type === "tool.started" || event.type === "tool.output") {
+      const runId = toolUseId ?? `${event.type}:${event.id}`;
+      const existing = currentRuns.get(runId);
+      const kind = existing?.kind ?? kindFromEvent;
+      if (!kind) {
+        continue;
+      }
+
+      if (currentStartIdx == null) {
+        currentStartIdx = event.idx;
+        currentCreatedAt = event.createdAt;
+        currentFirstEventId = event.id;
+      }
+
+      const run = ensureRun(runId, kind, event);
+      run.pending = true;
+      run.orderIdx = Math.max(run.orderIdx, event.idx);
+      if (run.kind === "search") {
+        const context = searchContextFromEvent(event);
+        run.searchToolName = context.toolName ?? run.searchToolName;
+        run.searchParams = context.searchParams ?? run.searchParams;
+        run.label = buildSearchRunningLabel(run.searchToolName, run.searchParams);
       }
       continue;
     }
 
-    if (!isReadToolEvent(event)) {
-      continue;
-    }
-    if (event.type !== "tool.finished") {
-      continue;
+    const runIds = finishedToolUseIds(event);
+    if (currentStartIdx == null) {
+      currentStartIdx = event.idx;
+      currentCreatedAt = event.createdAt;
+      currentFirstEventId = event.id;
     }
 
-    const readFile = extractReadFileEntry(event);
-    if (!readFile) {
-      continue;
-    }
-    if (currentGroup) {
-      currentGroup.files.push(readFile);
-      currentGroup.eventIds.add(event.id);
-    } else {
-      currentGroup = {
-        id: `read:${event.id}`,
-        files: [readFile],
-        startIdx: event.idx,
-        anchorIdx: event.idx,
-        createdAt: event.createdAt,
-        eventIds: new Set([event.id]),
-      };
+    for (const runId of runIds) {
+      const existing = currentRuns.get(runId);
+      const kind = existing?.kind ?? kindFromEvent;
+      if (!kind) {
+        continue;
+      }
+
+      const run = existing ?? ensureRun(runId, kind, event);
+      run.pending = false;
+      run.orderIdx = event.idx;
+      run.eventIds.add(event.id);
+
+      if (run.kind === "read") {
+        const readFile = extractReadFileEntry(event);
+        run.label = readFile?.label ?? "file";
+        run.openPath = readFile?.openPath ?? null;
+        continue;
+      }
+
+      const context = searchContextFromEvent(event);
+      run.searchToolName = context.toolName ?? run.searchToolName;
+      run.searchParams = context.searchParams ?? run.searchParams;
+      run.label = extractSearchEntryLabel(event, {
+        toolName: run.searchToolName,
+        searchParams: run.searchParams,
+      });
+      run.openPath = null;
     }
   }
 
-  if (currentGroup) {
-    groups.push(currentGroup);
-  }
-
+  flushGroup();
   return groups;
 }
 
@@ -1919,13 +2214,13 @@ export function WorkspacePage() {
           return true;
         })
         : context;
-      const readRunGroups = message.role === "assistant" ? extractReadRunGroups(nonBashContext) : [];
-      const readEventIds = new Set<string>();
-      for (const group of readRunGroups) {
-        group.eventIds.forEach((id) => readEventIds.add(id));
+      const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(nonBashContext) : [];
+      const exploreEventIds = new Set<string>();
+      for (const group of exploreActivityGroups) {
+        group.eventIds.forEach((id) => exploreEventIds.add(id));
       }
       const activityContext = message.role === "assistant"
-        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event) && !readEventIds.has(event.id))
+        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event) && !exploreEventIds.has(event.id))
         : nonBashContext;
       if (message.role === "assistant") {
         for (const run of bashRuns) {
@@ -1937,7 +2232,7 @@ export function WorkspacePage() {
         for (const run of editedRuns) {
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
-        for (const group of readRunGroups) {
+        for (const group of exploreActivityGroups) {
           group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
       }
@@ -1974,8 +2269,8 @@ export function WorkspacePage() {
         }
       }
 
-      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || readRunGroups.length > 0)) {
-        const hasInlineReadRuns = readRunGroups.length > 0;
+      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0)) {
+        const hasInlineExploreRuns = exploreActivityGroups.length > 0;
         type InlineInsert =
           | {
             kind: "bash";
@@ -1994,12 +2289,12 @@ export function WorkspacePage() {
             run: EditedRun;
           }
           | {
-            kind: "read-files";
+            kind: "explore-activity";
             id: string;
             startIdx: number;
             anchorIdx: number;
             createdAt: string;
-            group: ReadRunGroup;
+            group: ExploreActivityGroup;
           };
 
         const inlineInserts: InlineInsert[] = [
@@ -2019,9 +2314,9 @@ export function WorkspacePage() {
             createdAt: run.createdAt,
             run,
           })),
-          ...(hasInlineReadRuns ? readRunGroups.map((group, index) => ({
-            kind: "read-files" as const,
-            id: `read:${group.id}:${index}`,
+          ...(hasInlineExploreRuns ? exploreActivityGroups.map((group, index) => ({
+            kind: "explore-activity" as const,
+            id: `explore:${group.id}:${index}`,
             startIdx: group.startIdx,
             anchorIdx: group.anchorIdx,
             createdAt: group.createdAt,
@@ -2079,15 +2374,25 @@ export function WorkspacePage() {
 
         const hasLeadingText = segmentBuckets[0].content.length > 0;
         const hasAnyTrailingText = segmentBuckets.slice(1).some((bucket) => bucket.content.length > 0);
+        const firstInsertKind = inlineInserts[0]?.kind ?? null;
         const deferFirstInsertUntilText =
           !hasLeadingText
           && hasAnyTrailingText
           && inlineInserts.length > 0
-          && inlineInserts[0]?.kind !== "read-files";
-        let delayedFirstInsertInserted = false;
+          && firstInsertKind !== "explore-activity";
+        const delayFirstExploreInsert = shouldDelayFirstExploreInsert(
+          firstInsertKind,
+          segmentBuckets[0]?.content ?? "",
+          hasAnyTrailingText,
+        );
+        let shouldDelayFirstInsert = deferFirstInsertUntilText || delayFirstExploreInsert;
+        let nextInsertIndex = 0;
         let stableOffset = 0;
+        let delayedFirstSegmentContent = "";
+        let delayedFirstSegmentAnchorIdx: number | null = null;
+        let delayedFirstSegmentTimestamp: number | null = null;
 
-        function pushInlineInsert(insert: InlineInsert, bucketTimestamp?: number | null) {
+        function pushInlineInsert(insert: InlineInsert, bucketTimestamp?: number | null, bucketAnchorIdx?: number | null) {
           if (insert.kind === "bash") {
             const run = insert.run;
             const status = run.status === "running" && isCompleted ? "success" : run.status;
@@ -2105,7 +2410,7 @@ export function WorkspacePage() {
                 durationSeconds: run.durationSeconds,
                 status,
               },
-              anchorIdx: run.anchorIdx,
+              anchorIdx: bucketAnchorIdx ?? run.anchorIdx,
               timestamp: parseTimestamp(run.createdAt) ?? timestamp,
               rank: 3,
               stableOrder: message.seq + stableOffset,
@@ -2128,7 +2433,7 @@ export function WorkspacePage() {
                 deletions: run.deletions,
                 createdAt: run.createdAt,
               },
-              anchorIdx: run.anchorIdx,
+              anchorIdx: bucketAnchorIdx ?? run.anchorIdx,
               timestamp: bucketTimestamp ?? timestamp,
               rank: 3,
               stableOrder: message.seq + stableOffset,
@@ -2140,12 +2445,42 @@ export function WorkspacePage() {
           const group = insert.group;
           sortable.push({
             item: {
-              kind: "read-files",
+              kind: "explore-activity",
               id: `${message.id}:${group.id}:${insert.id}`,
-              files: group.files,
+              status: group.status,
+              fileCount: group.fileCount,
+              searchCount: group.searchCount,
+              entries: group.entries,
             },
-            anchorIdx: group.anchorIdx,
+            anchorIdx: bucketAnchorIdx ?? group.anchorIdx,
             timestamp: bucketTimestamp ?? timestamp,
+            rank: 3,
+            stableOrder: message.seq + stableOffset,
+          });
+          stableOffset += 0.001;
+        }
+
+        function pushMessageSegment(content: string, segmentIdSuffix: string, segmentAnchorIdx: number | null, segmentTimestamp: number | null) {
+          if (content.length === 0) {
+            return;
+          }
+
+          const segmentMessage: ChatMessage = {
+            ...message,
+            id: `${message.id}:segment:${segmentIdSuffix}`,
+            content,
+          };
+          sortable.push({
+            item: {
+              kind: "message",
+              message: segmentMessage,
+              renderHint: renderHint === "diff" ? "diff" : "markdown",
+              rawFileLanguage: undefined,
+              isCompleted,
+              context: nonBashContext,
+            },
+            anchorIdx: segmentAnchorIdx ?? anchorIdx,
+            timestamp: segmentTimestamp ?? timestamp,
             rank: 3,
             stableOrder: message.seq + stableOffset,
           });
@@ -2155,42 +2490,108 @@ export function WorkspacePage() {
         for (let bucketIndex = 0; bucketIndex < segmentBuckets.length; bucketIndex += 1) {
           const bucket = segmentBuckets[bucketIndex];
           if (bucket.content.length > 0) {
-            const segmentMessage: ChatMessage = {
-              ...message,
-              id: `${message.id}:segment:${bucketIndex}`,
-              content: bucket.content,
-            };
-            sortable.push({
-              item: {
-                kind: "message",
-                message: segmentMessage,
-                renderHint: renderHint === "diff" ? "diff" : "markdown",
-                rawFileLanguage: undefined,
-                isCompleted,
-                context: nonBashContext,
-              },
-              anchorIdx: bucket.anchorIdx ?? anchorIdx,
-              timestamp: bucket.timestamp ?? timestamp,
-              rank: 3,
-              stableOrder: message.seq + stableOffset,
-            });
-            stableOffset += 0.001;
+            if (shouldDelayFirstInsert && nextInsertIndex === 0 && firstInsertKind === "explore-activity") {
+              delayedFirstSegmentContent += bucket.content;
+              delayedFirstSegmentAnchorIdx = delayedFirstSegmentAnchorIdx == null
+                ? bucket.anchorIdx
+                : bucket.anchorIdx == null
+                  ? delayedFirstSegmentAnchorIdx
+                  : Math.min(delayedFirstSegmentAnchorIdx, bucket.anchorIdx);
+              if (delayedFirstSegmentTimestamp == null) {
+                delayedFirstSegmentTimestamp = bucket.timestamp;
+              }
 
-            if (deferFirstInsertUntilText && !delayedFirstInsertInserted) {
-              pushInlineInsert(inlineInserts[0], bucket.timestamp);
-              delayedFirstInsertInserted = true;
+              const splitSegment = splitAtFirstSentenceBoundary(delayedFirstSegmentContent);
+              const isLastBucket = bucketIndex === segmentBuckets.length - 1;
+              if (!splitSegment && !isLastBucket) {
+                continue;
+              }
+
+              if (splitSegment) {
+                pushMessageSegment(
+                  splitSegment.head,
+                  `${bucketIndex}:delayed-head`,
+                  delayedFirstSegmentAnchorIdx,
+                  delayedFirstSegmentTimestamp,
+                );
+                pushInlineInsert(inlineInserts[0], bucket.timestamp, bucket.anchorIdx ?? delayedFirstSegmentAnchorIdx);
+                nextInsertIndex = 1;
+                shouldDelayFirstInsert = false;
+                if (splitSegment.tail.length > 0) {
+                  pushMessageSegment(
+                    splitSegment.tail,
+                    `${bucketIndex}:delayed-tail`,
+                    bucket.anchorIdx ?? delayedFirstSegmentAnchorIdx,
+                    bucket.timestamp ?? delayedFirstSegmentTimestamp,
+                  );
+                }
+              } else {
+                pushMessageSegment(
+                  delayedFirstSegmentContent,
+                  `${bucketIndex}:delayed-fallback`,
+                  delayedFirstSegmentAnchorIdx,
+                  delayedFirstSegmentTimestamp,
+                );
+                pushInlineInsert(inlineInserts[0], bucket.timestamp, bucket.anchorIdx ?? delayedFirstSegmentAnchorIdx);
+                nextInsertIndex = 1;
+                shouldDelayFirstInsert = false;
+              }
+
+              delayedFirstSegmentContent = "";
+              delayedFirstSegmentAnchorIdx = null;
+              delayedFirstSegmentTimestamp = null;
+              continue;
+            }
+
+            let segmentRendered = false;
+            if (
+              nextInsertIndex === 0
+              && firstInsertKind === "explore-activity"
+              && hasAnyTrailingText
+              && inlineInserts.length > 0
+            ) {
+              const splitSegment = hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null;
+              if (splitSegment) {
+                pushMessageSegment(splitSegment.head, `${bucketIndex}:head`, bucket.anchorIdx, bucket.timestamp);
+                pushInlineInsert(inlineInserts[0], bucket.timestamp, bucket.anchorIdx);
+                nextInsertIndex = 1;
+                shouldDelayFirstInsert = false;
+                pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, bucket.anchorIdx, bucket.timestamp);
+                segmentRendered = true;
+              }
+            }
+
+            if (!segmentRendered) {
+              pushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
+            }
+
+            if (shouldDelayFirstInsert && nextInsertIndex === 0 && bucketIndex > 0) {
+              pushInlineInsert(inlineInserts[0], bucket.timestamp, bucket.anchorIdx);
+              nextInsertIndex = 1;
+              shouldDelayFirstInsert = false;
             }
           }
 
-          if (bucketIndex >= inlineInserts.length) {
-            continue;
+          while (nextInsertIndex <= bucketIndex && nextInsertIndex < inlineInserts.length) {
+            const shouldHoldLeadingExploreInsert =
+              nextInsertIndex === 0
+              && firstInsertKind === "explore-activity"
+              && hasAnyTrailingText
+              && bucketIndex === 0;
+            if (shouldHoldLeadingExploreInsert) {
+              break;
+            }
+            if (shouldDelayFirstInsert && nextInsertIndex === 0) {
+              break;
+            }
+            pushInlineInsert(inlineInserts[nextInsertIndex], segmentBuckets[nextInsertIndex]?.timestamp);
+            nextInsertIndex += 1;
           }
+        }
 
-          if (deferFirstInsertUntilText && bucketIndex === 0) {
-            continue;
-          }
-
-          pushInlineInsert(inlineInserts[bucketIndex], segmentBuckets[bucketIndex]?.timestamp);
+        while (nextInsertIndex < inlineInserts.length) {
+          pushInlineInsert(inlineInserts[nextInsertIndex], segmentBuckets[nextInsertIndex]?.timestamp);
+          nextInsertIndex += 1;
         }
 
         continue;
@@ -2330,12 +2731,6 @@ export function WorkspacePage() {
     }
 
     sortable.sort((a, b) => {
-      const aTime = a.timestamp ?? MAX_ORDER_INDEX;
-      const bTime = b.timestamp ?? MAX_ORDER_INDEX;
-      if (aTime !== bTime) {
-        return aTime - bTime;
-      }
-
       if (a.anchorIdx !== b.anchorIdx) {
         return a.anchorIdx - b.anchorIdx;
       }
@@ -2344,7 +2739,13 @@ export function WorkspacePage() {
         return a.rank - b.rank;
       }
 
-      return a.stableOrder - b.stableOrder;
+      if (a.stableOrder !== b.stableOrder) {
+        return a.stableOrder - b.stableOrder;
+      }
+
+      const aTime = a.timestamp ?? MAX_ORDER_INDEX;
+      const bTime = b.timestamp ?? MAX_ORDER_INDEX;
+      return aTime - bTime;
     });
 
     return sortable.map((entry) => entry.item);

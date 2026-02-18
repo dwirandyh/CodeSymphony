@@ -20,6 +20,7 @@ type ToolMetadata = {
   toolName: string;
   command?: string;
   readTarget?: string;
+  searchParams?: string;
   isBash: boolean;
 };
 
@@ -251,6 +252,10 @@ function isBashTool(toolName: string): boolean {
   return toolName.trim().toLowerCase() === "bash";
 }
 
+function isSearchTool(toolName: string): boolean {
+  return /^(glob|grep|search|find|list|scan|ls)$/i.test(toolName.trim());
+}
+
 function commandFromToolInput(input: Record<string, unknown>): string | undefined {
   const command = input.command;
   if (typeof command !== "string") {
@@ -315,6 +320,90 @@ function readTargetFromUnknownToolInput(toolName: string, input: unknown): strin
   }
 
   return undefined;
+}
+
+function formatSearchParamValue(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return stringFromUnknown(value);
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const values: string[] = [];
+  for (const entry of value) {
+    const mapped = formatSearchParamValue(entry);
+    if (!mapped) {
+      continue;
+    }
+    values.push(mapped);
+    if (values.length >= 3) {
+      break;
+    }
+  }
+  if (values.length === 0) {
+    return undefined;
+  }
+
+  return values.join(" | ");
+}
+
+function searchParamsFromUnknownToolInput(toolName: string, input: unknown): string | undefined {
+  if (!isSearchTool(toolName)) {
+    return undefined;
+  }
+
+  if (typeof input !== "object" || input == null || Array.isArray(input)) {
+    return undefined;
+  }
+
+  const record = input as Record<string, unknown>;
+  const preferredKeys = [
+    "pattern",
+    "query",
+    "search",
+    "regex",
+    "glob",
+    "grep",
+    "path",
+    "file",
+    "file_path",
+    "filename",
+    "include",
+    "exclude",
+    "directory",
+    "dir",
+  ];
+  const queue = [
+    ...preferredKeys,
+    ...Object.keys(record).filter((key) => !preferredKeys.includes(key)),
+  ];
+
+  const parts: string[] = [];
+  for (const key of queue) {
+    if (parts.length >= 4) {
+      break;
+    }
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      continue;
+    }
+    const raw = formatSearchParamValue(record[key]);
+    if (!raw) {
+      continue;
+    }
+    parts.push(`${key}=${raw}`);
+  }
+
+  if (parts.length === 0) {
+    return undefined;
+  }
+
+  return truncateForPreview(parts.join(", "));
 }
 
 function completionSummaryFromMetadata(metadata: ToolMetadata, toolInput?: unknown): string {
@@ -631,7 +720,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             shell: "bash" as const,
             isBash: true as const,
           }
-        : {}),
+        : metadata?.searchParams
+          ? {
+              searchParams: metadata.searchParams,
+            }
+          : {}),
     });
     await emitInstrumentation({
       stage: "started",
@@ -679,6 +772,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             toolName,
             command,
             readTarget: readTargetFromUnknownToolInput(toolName, input),
+            searchParams: searchParamsFromUnknownToolInput(toolName, input),
             isBash,
           });
           requestedToolByUseId.set(toolUseId, {
@@ -828,6 +922,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     toolName: hookInput.tool_name,
                     command,
                     readTarget: readTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
+                    searchParams: searchParamsFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
                     isBash: isBashTool(hookInput.tool_name),
                   });
                   requestedToolByUseId.set(hookToolUseId, {
@@ -866,10 +961,14 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     toolName: hookInput.tool_name,
                     command: commandFromUnknownToolInput(hookInput.tool_input),
                     readTarget: readTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
+                    searchParams: searchParamsFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
                     isBash: isBashTool(hookInput.tool_name),
                   };
                   if (!metadata.readTarget) {
                     metadata.readTarget = readTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
+                  }
+                  if (!metadata.searchParams) {
+                    metadata.searchParams = searchParamsFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
                   }
                   toolMetadataByUseId.set(hookToolUseId, metadata);
                   const bashResult = extractBashToolResult(hookInput.tool_response);
@@ -895,7 +994,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                             truncated: bashResult?.truncated ?? false,
                             outputBytes: bashResult?.outputBytes ?? 0,
                           }
-                        : {}),
+                        : metadata.searchParams
+                          ? {
+                              searchParams: metadata.searchParams,
+                            }
+                          : {}),
                     });
                     await emitInstrumentation({
                       stage: "finished",
@@ -956,10 +1059,14 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     toolName: hookInput.tool_name,
                     command: commandFromUnknownToolInput(hookInput.tool_input),
                     readTarget: readTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
+                    searchParams: searchParamsFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
                     isBash: isBashTool(hookInput.tool_name),
                   };
                   if (!metadata.readTarget) {
                     metadata.readTarget = readTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
+                  }
+                  if (!metadata.searchParams) {
+                    metadata.searchParams = searchParamsFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
                   }
                   toolMetadataByUseId.set(hookToolUseId, metadata);
                   const command = metadata?.command ?? commandFromUnknownToolInput(hookInput.tool_input);
@@ -980,7 +1087,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                           shell: "bash" as const,
                           isBash: true as const,
                         }
-                      : {}),
+                      : metadata.searchParams
+                        ? {
+                            searchParams: metadata.searchParams,
+                          }
+                        : {}),
                     error: hookInput.error,
                     truncated: false,
                     outputBytes: Buffer.byteLength(hookInput.error, "utf8"),
@@ -1258,7 +1369,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
               truncated: bashToolResult?.truncated ?? false,
               outputBytes: bashToolResult?.outputBytes ?? 0,
             }
-          : {}),
+          : metadata.searchParams
+            ? {
+                searchParams: metadata.searchParams,
+              }
+            : {}),
       });
       await emitInstrumentation({
         stage: "finished",
