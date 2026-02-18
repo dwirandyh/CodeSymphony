@@ -1,0 +1,251 @@
+import { useMemo, useState } from "react";
+import type { ChatEvent } from "@codesymphony/shared-types";
+import { api } from "../../../lib/api";
+import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
+
+export interface PendingGatesDeps {
+  onError: (msg: string | null) => void;
+  startWaitingAssistant: (threadId: string) => void;
+  clearWaitingAssistantForThread: (threadId: string) => void;
+}
+
+export function usePendingGates(
+  events: ChatEvent[],
+  selectedThreadId: string | null,
+  deps: PendingGatesDeps,
+) {
+  const { onError, startWaitingAssistant, clearWaitingAssistantForThread } = deps;
+
+  const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(new Set());
+  const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(new Set());
+  const [planActionBusy, setPlanActionBusy] = useState(false);
+  const [closedPlanDecision, setClosedPlanDecision] = useState<{ threadId: string; createdIdx: number } | null>(null);
+
+  // ── Pending permission requests ──
+
+  const pendingPermissionRequests = useMemo<PendingPermissionRequest[]>(() => {
+    const pendingById = new Map<string, PendingPermissionRequest>();
+    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+
+    for (const event of orderedEvents) {
+      if (event.type === "permission.requested") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length === 0) continue;
+
+        pendingById.set(requestId, {
+          requestId,
+          toolName: typeof event.payload.toolName === "string" ? event.payload.toolName : "Tool",
+          command: typeof event.payload.command === "string" ? event.payload.command : null,
+          blockedPath: typeof event.payload.blockedPath === "string" ? event.payload.blockedPath : null,
+          decisionReason: typeof event.payload.decisionReason === "string" ? event.payload.decisionReason : null,
+          idx: event.idx,
+        });
+        continue;
+      }
+
+      if (event.type === "permission.resolved") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length > 0) pendingById.delete(requestId);
+      }
+    }
+
+    return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
+  }, [events]);
+
+  async function resolvePermission(requestId: string, decision: "allow" | "allow_always" | "deny") {
+    if (!selectedThreadId) return;
+
+    if (decision !== "deny") startWaitingAssistant(selectedThreadId);
+    setResolvingPermissionIds((current) => {
+      const next = new Set(current);
+      next.add(requestId);
+      return next;
+    });
+    onError(null);
+
+    try {
+      await api.resolvePermission(selectedThreadId, { requestId, decision });
+    } catch (e) {
+      if (decision !== "deny") clearWaitingAssistantForThread(selectedThreadId);
+      onError(e instanceof Error ? e.message : "Failed to resolve permission");
+    } finally {
+      setResolvingPermissionIds((current) => {
+        const next = new Set(current);
+        next.delete(requestId);
+        return next;
+      });
+    }
+  }
+
+  // ── Pending question requests ──
+
+  const pendingQuestionRequests = useMemo<PendingQuestionRequest[]>(() => {
+    const pendingById = new Map<string, PendingQuestionRequest>();
+    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+
+    for (const event of orderedEvents) {
+      if (event.type === "question.requested") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length === 0) continue;
+
+        const rawQuestions = Array.isArray(event.payload.questions) ? event.payload.questions : [];
+        const questions: QuestionItem[] = rawQuestions.map((q: Record<string, unknown>) => ({
+          question: typeof q.question === "string" ? q.question : "",
+          header: typeof q.header === "string" ? q.header : undefined,
+          options: Array.isArray(q.options)
+            ? q.options.map((o: Record<string, unknown>) => ({
+              label: typeof o.label === "string" ? o.label : "",
+              description: typeof o.description === "string" ? o.description : undefined,
+            }))
+            : undefined,
+          multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : undefined,
+        }));
+
+        pendingById.set(requestId, { requestId, questions, idx: event.idx });
+        continue;
+      }
+
+      if (event.type === "question.answered") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length > 0) pendingById.delete(requestId);
+      }
+    }
+
+    return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
+  }, [events]);
+
+  async function answerQuestion(requestId: string, answers: Record<string, string>) {
+    if (!selectedThreadId) return;
+
+    startWaitingAssistant(selectedThreadId);
+    setAnsweringQuestionIds((current) => {
+      const next = new Set(current);
+      next.add(requestId);
+      return next;
+    });
+    onError(null);
+
+    try {
+      await api.answerQuestion(selectedThreadId, { requestId, answers });
+    } catch (e) {
+      clearWaitingAssistantForThread(selectedThreadId);
+      onError(e instanceof Error ? e.message : "Failed to answer question");
+    } finally {
+      setAnsweringQuestionIds((current) => {
+        const next = new Set(current);
+        next.delete(requestId);
+        return next;
+      });
+    }
+  }
+
+  // ── Pending plan ──
+
+  const pendingPlan = useMemo<PendingPlan | null>(() => {
+    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    let latestPlan: PendingPlan | null = null;
+
+    for (const event of orderedEvents) {
+      if (event.type === "plan.created") {
+        const content = typeof event.payload.content === "string" ? event.payload.content : "";
+        const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
+        if (content.length > 0) {
+          latestPlan = { content, filePath, createdIdx: event.idx, status: "pending" };
+        }
+      } else if (event.type === "plan.approved") {
+        if (latestPlan) {
+          latestPlan = {
+            content: latestPlan.content,
+            filePath: latestPlan.filePath,
+            createdIdx: latestPlan.createdIdx,
+            status: "approved",
+          };
+        }
+      } else if (event.type === "plan.revision_requested") {
+        if (latestPlan) {
+          latestPlan = {
+            content: latestPlan.content,
+            filePath: latestPlan.filePath,
+            createdIdx: latestPlan.createdIdx,
+            status: "sending",
+          };
+        }
+      }
+    }
+
+    return latestPlan;
+  }, [events]);
+
+  async function handleApprovePlan() {
+    if (!selectedThreadId) return;
+
+    startWaitingAssistant(selectedThreadId);
+    setPlanActionBusy(true);
+    onError(null);
+
+    try {
+      await api.approvePlan(selectedThreadId);
+      if (pendingPlan) {
+        setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
+      }
+    } catch (e) {
+      clearWaitingAssistantForThread(selectedThreadId);
+      onError(e instanceof Error ? e.message : "Failed to approve plan");
+    } finally {
+      setPlanActionBusy(false);
+    }
+  }
+
+  async function handleRevisePlan(feedback: string) {
+    if (!selectedThreadId) return;
+
+    startWaitingAssistant(selectedThreadId);
+    setPlanActionBusy(true);
+    onError(null);
+
+    try {
+      await api.revisePlan(selectedThreadId, { feedback });
+      if (pendingPlan) {
+        setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
+      }
+    } catch (e) {
+      clearWaitingAssistantForThread(selectedThreadId);
+      onError(e instanceof Error ? e.message : "Failed to revise plan");
+    } finally {
+      setPlanActionBusy(false);
+    }
+  }
+
+  // ── Derived ──
+
+  const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
+  const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
+  const hasPendingPlan = pendingPlan !== null && pendingPlan.status === "pending";
+
+  const hidePlanDecisionByOptimisticClose =
+    hasPendingPlan &&
+    selectedThreadId != null &&
+    closedPlanDecision?.threadId === selectedThreadId &&
+    closedPlanDecision.createdIdx === pendingPlan!.createdIdx;
+
+  const showPlanDecisionComposer = hasPendingPlan && !hidePlanDecisionByOptimisticClose;
+
+  const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
+
+  return {
+    pendingPermissionRequests,
+    pendingQuestionRequests,
+    pendingPlan,
+    resolvingPermissionIds,
+    answeringQuestionIds,
+    planActionBusy,
+    showPlanDecisionComposer,
+    isWaitingForUserGate,
+    hasPendingPermissionRequests,
+    hasPendingQuestionRequests,
+    resolvePermission,
+    answerQuestion,
+    handleApprovePlan,
+    handleRevisePlan,
+  };
+}
