@@ -1422,13 +1422,12 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
             const hasDiffContent = item.diff.trim().length > 0;
             const expanded = hasDiffContent ? isEditedExpanded(item.id, true) : false;
             const fileSections = hasDiffContent ? splitDiffByFile(item.diff) : [];
-            // Derive file list from actual diff content — more reliable than
-            // the backend's changedFiles which can include unrelated worktree
-            // files and may truncate names from git-status parsing.
+            // Prefer backend-changedFiles (delta per run). Fall back to diff
+            // parsing for compatibility with older payloads.
             const diffFileNames = fileSections
               .map((s) => s.fileName)
               .filter((n) => n !== "changes" && n !== "unknown");
-            const resolvedFiles = diffFileNames.length > 0 ? diffFileNames : item.changedFiles;
+            const resolvedFiles = item.changedFiles.length > 0 ? item.changedFiles : diffFileNames;
             const summaryLabel = editedSummaryLabel({
               status: item.status,
               diffKind: item.diffKind,

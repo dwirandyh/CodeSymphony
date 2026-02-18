@@ -1693,6 +1693,76 @@ describe("WorkspacePage", () => {
     expect(editedCard.querySelector("details")).toBeNull();
   });
 
+  it("prefers changedFiles over parsed diff files for edited summary", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edited-priority",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "apply update",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edited-priority",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Done.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edited-priority-msg",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edited-priority", role: "assistant", delta: "Done." },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-edited-priority-worktree",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          source: "worktree.diff",
+          summary: "Edited 1 file",
+          changedFiles: ["src/real.ts"],
+          diff: "diff --git a/src/noisy.ts b/src/noisy.ts\n@@ -1 +1 @@\n-export const noisy = 1;\n+export const noisy = 2;",
+          diffTruncated: false,
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-edited-priority-complete",
+        threadId: "thread-1",
+        idx: 3,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-edited-priority" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected edited diff card");
+    }
+
+    const summary = editedCard.querySelector("summary");
+    if (!summary) {
+      throw new Error("Expected edited diff summary");
+    }
+    expect(summary.textContent).toContain("Edited src/real.ts");
+    expect(summary.textContent).not.toContain("src/noisy.ts");
+  });
+
   it("keeps first sentence intact before edited card when assistant text is split across deltas", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
