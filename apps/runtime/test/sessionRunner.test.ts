@@ -277,6 +277,69 @@ describe("tool instrumentation", () => {
     }));
   });
 
+  it("includes edit target metadata for edit lifecycle events", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+        await canUseTool("Edit", {
+          file_path: "src/main.ts",
+          old_string: "export const main = () => 1;",
+          new_string: "export const main = () => 2;",
+        }, {
+          toolUseID: "tool-edit-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        yield { type: "system", subtype: "init", session_id: "session-edit-1" };
+        yield {
+          type: "tool_progress",
+          tool_use_id: "tool-edit-1",
+          tool_name: "Edit",
+          parent_tool_use_id: null,
+          elapsed_time_seconds: 0.1,
+        };
+        yield {
+          type: "tool_use_summary",
+          summary: "Edited src/main.ts",
+          preceding_tool_use_ids: ["tool-edit-1"],
+        };
+      })();
+    });
+
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "update main",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => {},
+      onToolStarted,
+      onToolOutput: () => {},
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onToolInstrumentation: () => {},
+    });
+
+    expect(onToolStarted).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "Edit",
+      toolUseId: "tool-edit-1",
+      editTarget: "src/main.ts",
+    }));
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      summary: "Edited src/main.ts",
+      precedingToolUseIds: ["tool-edit-1"],
+      editTarget: "src/main.ts",
+    }));
+  });
+
   it("emits synthetic finish for incomplete non-bash lifecycle", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return (async function* () {

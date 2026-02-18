@@ -21,6 +21,7 @@ type ToolMetadata = {
   command?: string;
   readTarget?: string;
   searchParams?: string;
+  editTarget?: string;
   isBash: boolean;
 };
 
@@ -256,6 +257,10 @@ function isSearchTool(toolName: string): boolean {
   return /^(glob|grep|search|find|list|scan|ls)$/i.test(toolName.trim());
 }
 
+function isEditTool(toolName: string): boolean {
+  return /^(edit|multiedit|write)$/i.test(toolName.trim());
+}
+
 function commandFromToolInput(input: Record<string, unknown>): string | undefined {
   const command = input.command;
   if (typeof command !== "string") {
@@ -316,6 +321,27 @@ function readTargetFromUnknownToolInput(toolName: string, input: unknown): strin
       if (candidate) {
         return candidate;
       }
+    }
+  }
+
+  return undefined;
+}
+
+function editTargetFromUnknownToolInput(toolName: string, input: unknown): string | undefined {
+  if (!isEditTool(toolName)) {
+    return undefined;
+  }
+
+  if (typeof input !== "object" || input == null || Array.isArray(input)) {
+    return undefined;
+  }
+
+  const record = input as Record<string, unknown>;
+  const keyCandidates = ["file_path", "path", "file", "filepath", "target", "filename"];
+  for (const key of keyCandidates) {
+    const candidate = stringFromUnknown(record[key]);
+    if (candidate) {
+      return candidate;
     }
   }
 
@@ -420,6 +446,11 @@ function completionSummaryFromMetadata(metadata: ToolMetadata, toolInput?: unkno
     return `Read ${readTarget}`;
   }
 
+  const editTarget = metadata.editTarget ?? editTargetFromUnknownToolInput(metadata.toolName, toolInput);
+  if (editTarget) {
+    return `Edited ${editTarget}`;
+  }
+
   return `Completed ${metadata.toolName}`;
 }
 
@@ -435,6 +466,11 @@ function failureSummaryFromMetadata(metadata: ToolMetadata, toolInput: unknown, 
   const readTarget = metadata.readTarget ?? readTargetFromUnknownToolInput(metadata.toolName, toolInput);
   if (readTarget) {
     return `Failed to read ${readTarget}`;
+  }
+
+  const editTarget = metadata.editTarget ?? editTargetFromUnknownToolInput(metadata.toolName, toolInput);
+  if (editTarget) {
+    return `Failed to edit ${editTarget}`;
   }
 
   return `${metadata.toolName} failed`;
@@ -714,6 +750,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       toolName,
       toolUseId,
       parentToolUseId,
+      ...(metadata?.editTarget
+        ? {
+            editTarget: metadata.editTarget,
+          }
+        : {}),
       ...(metadata?.isBash
         ? {
             command: metadata.command,
@@ -773,6 +814,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             command,
             readTarget: readTargetFromUnknownToolInput(toolName, input),
             searchParams: searchParamsFromUnknownToolInput(toolName, input),
+            editTarget: editTargetFromUnknownToolInput(toolName, input),
             isBash,
           });
           requestedToolByUseId.set(toolUseId, {
@@ -962,6 +1004,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     command: commandFromUnknownToolInput(hookInput.tool_input),
                     readTarget: readTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
                     searchParams: searchParamsFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
+                    editTarget: editTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
                     isBash: isBashTool(hookInput.tool_name),
                   };
                   if (!metadata.readTarget) {
@@ -969,6 +1012,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   }
                   if (!metadata.searchParams) {
                     metadata.searchParams = searchParamsFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
+                  }
+                  if (!metadata.editTarget) {
+                    metadata.editTarget = editTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
                   }
                   toolMetadataByUseId.set(hookToolUseId, metadata);
                   const bashResult = extractBashToolResult(hookInput.tool_response);
@@ -984,6 +1030,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     await onToolFinished({
                       summary: completionSummary,
                       precedingToolUseIds: [hookToolUseId],
+                      ...(metadata.editTarget
+                        ? {
+                            editTarget: metadata.editTarget,
+                          }
+                        : {}),
                       ...(metadata.isBash
                         ? {
                             command: metadata.command,
@@ -1060,6 +1111,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     command: commandFromUnknownToolInput(hookInput.tool_input),
                     readTarget: readTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
                     searchParams: searchParamsFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
+                    editTarget: editTargetFromUnknownToolInput(hookInput.tool_name, hookInput.tool_input),
                     isBash: isBashTool(hookInput.tool_name),
                   };
                   if (!metadata.readTarget) {
@@ -1067,6 +1119,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   }
                   if (!metadata.searchParams) {
                     metadata.searchParams = searchParamsFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
+                  }
+                  if (!metadata.editTarget) {
+                    metadata.editTarget = editTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
                   }
                   toolMetadataByUseId.set(hookToolUseId, metadata);
                   const command = metadata?.command ?? commandFromUnknownToolInput(hookInput.tool_input);
@@ -1081,6 +1136,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   await onToolFinished({
                     summary: failureSummary,
                     precedingToolUseIds: [hookToolUseId],
+                    ...(metadata.editTarget
+                      ? {
+                          editTarget: metadata.editTarget,
+                        }
+                      : {}),
                     ...(metadata.isBash
                       ? {
                           command,
@@ -1229,12 +1289,22 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         const bashToolUseId = pendingToolUseIds.find((toolUseId) => toolMetadataByUseId.get(toolUseId)?.isBash);
         const bashToolMetadata = bashToolUseId ? toolMetadataByUseId.get(bashToolUseId) : undefined;
         const bashToolResult = bashToolUseId ? bashResultByToolUseId.get(bashToolUseId) : undefined;
+        const editToolUseId = pendingToolUseIds.find((toolUseId) => {
+          const editTarget = toolMetadataByUseId.get(toolUseId)?.editTarget;
+          return typeof editTarget === "string" && editTarget.length > 0;
+        });
+        const editTarget = editToolUseId ? toolMetadataByUseId.get(editToolUseId)?.editTarget : undefined;
         for (const toolUseId of pendingToolUseIds) {
           finishedToolUseIds.add(toolUseId);
         }
         await onToolFinished({
           summary: message.summary,
           precedingToolUseIds: pendingToolUseIds,
+          ...(editTarget
+            ? {
+                editTarget,
+              }
+            : {}),
           ...(bashToolMetadata?.isBash
             ? {
                 command: bashToolMetadata.command,
@@ -1359,6 +1429,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       await onToolFinished({
         summary: completionSummary,
         precedingToolUseIds: [toolUseId],
+        ...(metadata.editTarget
+          ? {
+              editTarget: metadata.editTarget,
+            }
+          : {}),
         ...(metadata.isBash
           ? {
               command: metadata.command,

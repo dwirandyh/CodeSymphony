@@ -77,6 +77,8 @@ export type ChatTimelineItem =
     kind: "edited-diff";
     id: string;
     eventId: string;
+    status: "running" | "success" | "failed";
+    diffKind: "proposed" | "actual" | "none";
     changedFiles: string[];
     diff: string;
     diffTruncated: boolean;
@@ -765,22 +767,34 @@ function computeDiffLineNumbers(lines: string[]): DiffLineNumber[] {
 }
 
 function editedSummaryLabel({
+  status,
+  diffKind,
   changedFiles,
   additions,
   deletions,
   expanded,
 }: {
+  status: "running" | "success" | "failed";
+  diffKind: "proposed" | "actual" | "none";
   changedFiles: string[];
   additions: number;
   deletions: number;
   expanded?: boolean;
 }): React.ReactNode {
-  if (expanded) {
-    return "Edited file";
+  const firstFile = changedFiles[0] ?? "file";
+  const fileCount = changedFiles.length > 1 ? ` (${changedFiles.length} files)` : "";
+
+  if (status === "running") {
+    return `Editing ${firstFile}${fileCount}`;
   }
 
-  const firstFile = changedFiles[0] ?? "changes";
-  const fileCount = changedFiles.length > 1 ? ` (${changedFiles.length} files)` : "";
+  if (status === "failed") {
+    return `Failed editing ${firstFile}${fileCount}`;
+  }
+
+  if (diffKind !== "actual") {
+    return `Edited ${firstFile}${fileCount}`;
+  }
 
   return (
     <>
@@ -1405,8 +1419,9 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
           }
 
           if (item.kind === "edited-diff") {
-            const expanded = isEditedExpanded(item.id, false);
-            const fileSections = splitDiffByFile(item.diff);
+            const hasDiffContent = item.diff.trim().length > 0;
+            const expanded = hasDiffContent ? isEditedExpanded(item.id, true) : false;
+            const fileSections = hasDiffContent ? splitDiffByFile(item.diff) : [];
             // Derive file list from actual diff content — more reliable than
             // the backend's changedFiles which can include unrelated worktree
             // files and may truncate names from git-status parsing.
@@ -1415,11 +1430,27 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
               .filter((n) => n !== "changes" && n !== "unknown");
             const resolvedFiles = diffFileNames.length > 0 ? diffFileNames : item.changedFiles;
             const summaryLabel = editedSummaryLabel({
+              status: item.status,
+              diffKind: item.diffKind,
               changedFiles: resolvedFiles,
               additions: item.additions,
               deletions: item.deletions,
               expanded,
             });
+
+            if (!hasDiffContent && !item.diffTruncated) {
+              return (
+                <article
+                  key={`edited-diff-${item.id}`}
+                  className="px-1 text-xs"
+                  data-testid="timeline-edited-diff"
+                >
+                  <div className="inline-flex items-center text-[12px] text-muted-foreground">
+                    <span className="font-medium">{summaryLabel}</span>
+                  </div>
+                </article>
+              );
+            }
 
             return (
               <article
@@ -1458,6 +1489,11 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
                   </summary>
 
                   <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
+                    {item.diffKind === "proposed" ? (
+                      <div className="border-b border-border/25 px-3 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Proposed diff
+                      </div>
+                    ) : null}
                     {fileSections.map((section, sectionIndex) => (
                       <div key={`${item.id}:section:${sectionIndex}`}>
                         <div className="flex items-center gap-2 border-b border-border/25 px-3 py-1.5 text-xs">

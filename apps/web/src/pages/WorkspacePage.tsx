@@ -51,6 +51,7 @@ const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
 const MAX_ORDER_INDEX = Number.MAX_SAFE_INTEGER;
 const READ_TOOL_PATTERN = /\b(read|open|cat)\b/i;
 const SEARCH_TOOL_PATTERN = /\b(glob|grep|search|find|list|scan|ls)\b/i;
+const EDIT_TOOL_NAME_PATTERN = /^(edit|multiedit|write)$/i;
 const MCP_TOOL_PATTERN = /\bmcp\b/i;
 const READ_PROMPT_PATTERN =
   /\b(read|open|show|cat|display|view|find|locate|buka\w*|lihat\w*|isi\w*|lengkap|full|ulang|repeat|cari\w*|temu\w*|kasih\s*tau)\b/i;
@@ -479,12 +480,16 @@ function hasSentenceBoundary(text: string): boolean {
   return splitAtFirstSentenceBoundary(text) != null;
 }
 
-function shouldDelayFirstExploreInsert(
+function isSentenceAwareInlineInsertKind(kind: string | null): boolean {
+  return kind === "explore-activity" || kind === "edited" || kind === "bash";
+}
+
+function shouldDelayFirstInlineInsert(
   firstInsertKind: string | null,
   leadingContent: string,
   hasAnyTrailingText: boolean,
 ): boolean {
-  if (firstInsertKind !== "explore-activity" || !hasAnyTrailingText) {
+  if (!isSentenceAwareInlineInsertKind(firstInsertKind) || !hasAnyTrailingText) {
     return false;
   }
 
@@ -516,6 +521,8 @@ type EditedRun = {
   eventId: string;
   startIdx: number;
   anchorIdx: number;
+  status: "running" | "success" | "failed";
+  diffKind: "proposed" | "actual" | "none";
   changedFiles: string[];
   diff: string;
   diffTruncated: boolean;
@@ -539,6 +546,143 @@ function payloadStringArray(value: unknown): string[] {
   }
 
   return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value != null && !Array.isArray(value);
+}
+
+function isEditToolName(toolName: string | null): boolean {
+  if (!toolName) {
+    return false;
+  }
+
+  return EDIT_TOOL_NAME_PATTERN.test(toolName.trim());
+}
+
+function extractEditTargetFromUnknownToolInput(input: unknown): string | null {
+  if (!isRecord(input)) {
+    return null;
+  }
+
+  const keyCandidates = ["file_path", "path", "file", "filepath", "target", "filename"];
+  for (const key of keyCandidates) {
+    const value = payloadStringOrNull(input[key]);
+    if (value) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function extractEditTargetFromSummary(summary: string): string | null {
+  const editedMatch = /^Edited\s+(.+)$/i.exec(summary.trim());
+  if (editedMatch?.[1]) {
+    const candidate = editedMatch[1].trim();
+    if (!/^(\d+\s+files?|files?|changes?)$/i.test(candidate)) {
+      return candidate;
+    }
+    return null;
+  }
+
+  const failedMatch = /^Failed to edit\s+(.+)$/i.exec(summary.trim());
+  if (failedMatch?.[1]) {
+    return failedMatch[1].trim();
+  }
+
+  return null;
+}
+
+function buildProposedEditDiffFromToolInput(toolInput: unknown, filePath: string): string | null {
+  if (!isRecord(toolInput)) {
+    return null;
+  }
+
+  function extractEditBlock(record: Record<string, unknown>): { oldText: string | null; newText: string | null } | null {
+    const oldText =
+      payloadStringOrNull(record.old_string)
+      ?? payloadStringOrNull(record.old_text)
+      ?? payloadStringOrNull(record.old)
+      ?? null;
+    const newText =
+      payloadStringOrNull(record.new_string)
+      ?? payloadStringOrNull(record.new_text)
+      ?? payloadStringOrNull(record.new)
+      ?? payloadStringOrNull(record.content)
+      ?? payloadStringOrNull(record.new_content)
+      ?? null;
+    if (!oldText && !newText) {
+      return null;
+    }
+    return { oldText, newText };
+  }
+
+  const blocks: Array<{ oldText: string | null; newText: string | null }> = [];
+  const rootBlock = extractEditBlock(toolInput);
+  if (rootBlock) {
+    blocks.push(rootBlock);
+  }
+
+  const edits = toolInput.edits;
+  if (Array.isArray(edits)) {
+    for (const edit of edits) {
+      if (!isRecord(edit)) {
+        continue;
+      }
+      const block = extractEditBlock(edit);
+      if (block) {
+        blocks.push(block);
+      }
+    }
+  }
+
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  const lines = [
+    `diff --git a/${filePath} b/${filePath}`,
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+  ];
+  for (const block of blocks) {
+    const oldLines = block.oldText ? block.oldText.split(/\r?\n/) : [];
+    const newLines = block.newText ? block.newText.split(/\r?\n/) : [];
+    const oldStart = oldLines.length === 0 ? "1,0" : oldLines.length === 1 ? "1" : `1,${oldLines.length}`;
+    const newStart = newLines.length === 0 ? "1,0" : newLines.length === 1 ? "1" : `1,${newLines.length}`;
+    lines.push(`@@ -${oldStart} +${newStart} @@`);
+    lines.push(...oldLines.map((line) => `-${line}`));
+    lines.push(...newLines.map((line) => `+${line}`));
+  }
+
+  return lines.join("\n");
+}
+
+function isEditToolLifecycleEvent(event: ChatEvent): boolean {
+  if (event.type === "tool.started" || event.type === "tool.output") {
+    const toolName = payloadStringOrNull(event.payload.toolName);
+    return isEditToolName(toolName);
+  }
+
+  if (event.type === "tool.finished") {
+    if (event.payload.source === "worktree.diff") {
+      return false;
+    }
+    const explicitTarget = payloadStringOrNull(event.payload.editTarget);
+    if (explicitTarget) {
+      return true;
+    }
+    const summary = payloadStringOrNull(event.payload.summary);
+    return Boolean(summary && extractEditTargetFromSummary(summary));
+  }
+
+  if (event.type === "permission.requested") {
+    const toolName = payloadStringOrNull(event.payload.toolName);
+    return isEditToolName(toolName);
+  }
+
+  return false;
 }
 
 function isBashPayload(payload: Record<string, unknown>): boolean {
@@ -716,7 +860,7 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
 
 function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): EditedRun[] {
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
-  const runs: EditedRun[] = [];
+  const byRunKey = new Map<string, EditedRun>();
 
   // Determine the best anchor position for the edited-diff card. Claude Code
   // emits all message.delta events before the final worktree.diff, so using
@@ -742,31 +886,173 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
     }
   }
 
+  function ensureRun(
+    runKey: string,
+    event: ChatEvent,
+    options?: { startIdx?: number; anchorIdx?: number },
+  ): EditedRun {
+    const existing = byRunKey.get(runKey);
+    const nextStartIdx = options?.startIdx ?? event.idx;
+    const nextAnchorIdx = options?.anchorIdx ?? nextStartIdx;
+    if (existing) {
+      existing.startIdx = Math.min(existing.startIdx, nextStartIdx);
+      existing.anchorIdx = Math.min(existing.anchorIdx, nextAnchorIdx);
+      existing.eventIds.add(event.id);
+      return existing;
+    }
+
+    const created: EditedRun = {
+      id: `edited:${runKey}`,
+      eventId: event.id,
+      startIdx: nextStartIdx,
+      anchorIdx: nextAnchorIdx,
+      status: "running",
+      diffKind: "none",
+      changedFiles: [],
+      diff: "",
+      diffTruncated: false,
+      additions: 0,
+      deletions: 0,
+      createdAt: event.createdAt,
+      eventIds: new Set([event.id]),
+    };
+    byRunKey.set(runKey, created);
+    return created;
+  }
+
+  function setRunTargetIfPresent(run: EditedRun, target: string | null): void {
+    if (!target) {
+      return;
+    }
+    if (!run.changedFiles.includes(target)) {
+      run.changedFiles.push(target);
+    }
+  }
+
+  function markRunFinishedFromEvent(run: EditedRun, event: ChatEvent): void {
+    const hasError = payloadStringOrNull(event.payload.error);
+    const summary = payloadStringOrNull(event.payload.summary);
+    const summaryLower = (summary ?? "").toLowerCase();
+    run.status = hasError || summaryLower.includes("failed") || summaryLower.includes("error") ? "failed" : "success";
+  }
+
   for (const event of ordered) {
+    if (event.type === "permission.requested") {
+      if (!isEditToolLifecycleEvent(event)) {
+        continue;
+      }
+      const requestId = payloadStringOrNull(event.payload.requestId) ?? `permission:${event.id}`;
+      const run = ensureRun(requestId, event);
+      run.status = "running";
+
+      const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+      const target =
+        payloadStringOrNull(event.payload.editTarget)
+        ?? extractEditTargetFromUnknownToolInput(toolInput)
+        ?? null;
+      setRunTargetIfPresent(run, target);
+      if (toolInput && target) {
+        const proposedDiff = buildProposedEditDiffFromToolInput(toolInput, target);
+        if (proposedDiff && run.diffKind !== "actual") {
+          run.diff = proposedDiff;
+          run.diffKind = "proposed";
+          run.diffTruncated = false;
+          const { additions, deletions } = countDiffStats(proposedDiff);
+          run.additions = additions;
+          run.deletions = deletions;
+        }
+      }
+      continue;
+    }
+
+    if (event.type === "permission.resolved") {
+      const requestId = payloadStringOrNull(event.payload.requestId);
+      if (!requestId) {
+        continue;
+      }
+      const run = byRunKey.get(requestId);
+      if (!run) {
+        continue;
+      }
+      run.eventIds.add(event.id);
+      const decision = payloadStringOrNull(event.payload.decision);
+      if (decision === "deny") {
+        run.status = "failed";
+      }
+      continue;
+    }
+
+    if (event.type === "tool.started" || event.type === "tool.output") {
+      if (!isEditToolLifecycleEvent(event)) {
+        continue;
+      }
+      const toolUseId = payloadStringOrNull(event.payload.toolUseId) ?? `${event.type}:${event.id}`;
+      const run = ensureRun(toolUseId, event);
+      if (run.status !== "failed") {
+        run.status = "running";
+      }
+      setRunTargetIfPresent(run, payloadStringOrNull(event.payload.editTarget));
+      continue;
+    }
+
+    if (event.type === "tool.finished" && !isWorktreeDiffEvent(event)) {
+      const runIds = finishedToolUseIds(event);
+      const summary = payloadStringOrNull(event.payload.summary);
+      const summaryTarget = summary ? extractEditTargetFromSummary(summary) : null;
+      const explicitTarget = payloadStringOrNull(event.payload.editTarget) ?? summaryTarget;
+
+      let matchedRun = false;
+      for (const runId of runIds) {
+        const existing = byRunKey.get(runId);
+        const shouldTrack = existing || isEditToolLifecycleEvent(event) || explicitTarget != null;
+        if (!shouldTrack) {
+          continue;
+        }
+        const run = ensureRun(runId, event);
+        setRunTargetIfPresent(run, explicitTarget);
+        markRunFinishedFromEvent(run, event);
+        matchedRun = true;
+      }
+
+      if (!matchedRun && (isEditToolLifecycleEvent(event) || explicitTarget != null)) {
+        const fallbackKey = `finished:${event.id}`;
+        const run = ensureRun(fallbackKey, event);
+        setRunTargetIfPresent(run, explicitTarget);
+        markRunFinishedFromEvent(run, event);
+      }
+      continue;
+    }
+
     if (!isWorktreeDiffEvent(event)) {
       continue;
     }
 
-    const anchorIdx = bestAnchorIdx ?? event.idx;
     const diff = payloadStringOrNull(event.payload.diff) ?? "";
     const changedFiles = payloadStringArray(event.payload.changedFiles);
     const { additions, deletions } = countDiffStats(diff);
-    runs.push({
-      id: `edited:${event.id}`,
-      eventId: event.id,
-      startIdx: anchorIdx,
-      anchorIdx,
-      changedFiles,
-      diff,
-      diffTruncated: event.payload.diffTruncated === true,
-      additions,
-      deletions,
-      createdAt: event.createdAt,
-      eventIds: new Set([event.id]),
-    });
+    const targetRun = Array.from(byRunKey.values())
+      .filter((run) => run.startIdx <= event.idx && run.diffKind !== "actual" && run.status !== "failed")
+      .sort((a, b) => b.startIdx - a.startIdx)[0];
+
+    const run = targetRun
+      ?? ensureRun(`worktree:${event.id}`, event, {
+        startIdx: bestAnchorIdx ?? event.idx,
+        anchorIdx: bestAnchorIdx ?? event.idx,
+      });
+    run.eventId = event.id;
+    run.status = "success";
+    run.diffKind = "actual";
+    run.diff = diff;
+    run.diffTruncated = event.payload.diffTruncated === true;
+    run.additions = additions;
+    run.deletions = deletions;
+    run.eventIds.add(event.id);
+    if (changedFiles.length > 0) {
+      run.changedFiles = changedFiles;
+    }
   }
 
-  return runs;
+  return Array.from(byRunKey.values()).sort((a, b) => a.startIdx - b.startIdx);
 }
 
 type ExploreRunKind = "read" | "search";
@@ -2195,7 +2481,19 @@ export function WorkspacePage() {
 
       const bashRuns = message.role === "assistant" ? extractBashRuns(context) : [];
       const bashRunEventIds = new Set<string>();
+      const permissionToolNameByRequestId = new Map<string, string>();
       if (message.role === "assistant") {
+        for (const event of context) {
+          if (event.type !== "permission.requested") {
+            continue;
+          }
+          const requestId = payloadStringOrNull(event.payload.requestId);
+          const toolName = payloadStringOrNull(event.payload.toolName);
+          if (!requestId || !toolName) {
+            continue;
+          }
+          permissionToolNameByRequestId.set(requestId, toolName.toLowerCase());
+        }
         for (const run of bashRuns) {
           run.eventIds.forEach((eventId) => bashRunEventIds.add(eventId));
         }
@@ -2208,7 +2506,17 @@ export function WorkspacePage() {
           }
 
           if (bashRuns.length > 0 && (event.type === "permission.requested" || event.type === "permission.resolved")) {
-            return false;
+            if (event.type === "permission.requested") {
+              const toolName = payloadStringOrNull(event.payload.toolName)?.toLowerCase();
+              if (toolName === "bash") {
+                return false;
+              }
+            } else {
+              const requestId = payloadStringOrNull(event.payload.requestId);
+              if (requestId && permissionToolNameByRequestId.get(requestId) === "bash") {
+                return false;
+              }
+            }
           }
 
           return true;
@@ -2379,13 +2687,13 @@ export function WorkspacePage() {
           !hasLeadingText
           && hasAnyTrailingText
           && inlineInserts.length > 0
-          && firstInsertKind !== "explore-activity";
-        const delayFirstExploreInsert = shouldDelayFirstExploreInsert(
+          && !isSentenceAwareInlineInsertKind(firstInsertKind);
+        const delayFirstInlineInsert = shouldDelayFirstInlineInsert(
           firstInsertKind,
           segmentBuckets[0]?.content ?? "",
           hasAnyTrailingText,
         );
-        let shouldDelayFirstInsert = deferFirstInsertUntilText || delayFirstExploreInsert;
+        let shouldDelayFirstInsert = deferFirstInsertUntilText || delayFirstInlineInsert;
         let nextInsertIndex = 0;
         let stableOffset = 0;
         let delayedFirstSegmentContent = "";
@@ -2426,6 +2734,8 @@ export function WorkspacePage() {
                 kind: "edited-diff",
                 id: `${message.id}:${run.eventId}:${insert.id}`,
                 eventId: run.eventId,
+                status: run.status,
+                diffKind: run.diffKind,
                 changedFiles: run.changedFiles,
                 diff: run.diff,
                 diffTruncated: run.diffTruncated,
@@ -2490,7 +2800,11 @@ export function WorkspacePage() {
         for (let bucketIndex = 0; bucketIndex < segmentBuckets.length; bucketIndex += 1) {
           const bucket = segmentBuckets[bucketIndex];
           if (bucket.content.length > 0) {
-            if (shouldDelayFirstInsert && nextInsertIndex === 0 && firstInsertKind === "explore-activity") {
+            if (
+              shouldDelayFirstInsert
+              && nextInsertIndex === 0
+              && isSentenceAwareInlineInsertKind(firstInsertKind)
+            ) {
               delayedFirstSegmentContent += bucket.content;
               delayedFirstSegmentAnchorIdx = delayedFirstSegmentAnchorIdx == null
                 ? bucket.anchorIdx
@@ -2546,7 +2860,7 @@ export function WorkspacePage() {
             let segmentRendered = false;
             if (
               nextInsertIndex === 0
-              && firstInsertKind === "explore-activity"
+              && isSentenceAwareInlineInsertKind(firstInsertKind)
               && hasAnyTrailingText
               && inlineInserts.length > 0
             ) {
@@ -2573,12 +2887,12 @@ export function WorkspacePage() {
           }
 
           while (nextInsertIndex <= bucketIndex && nextInsertIndex < inlineInserts.length) {
-            const shouldHoldLeadingExploreInsert =
+            const shouldHoldLeadingSentenceAwareInsert =
               nextInsertIndex === 0
-              && firstInsertKind === "explore-activity"
+              && isSentenceAwareInlineInsertKind(firstInsertKind)
               && hasAnyTrailingText
               && bucketIndex === 0;
-            if (shouldHoldLeadingExploreInsert) {
+            if (shouldHoldLeadingSentenceAwareInsert) {
               break;
             }
             if (shouldDelayFirstInsert && nextInsertIndex === 0) {
@@ -2703,6 +3017,8 @@ export function WorkspacePage() {
             kind: "edited-diff",
             id: `orphan:${event.id}`,
             eventId: event.id,
+            status: "success",
+            diffKind: "actual",
             changedFiles: payloadStringArray(event.payload.changedFiles),
             diff,
             diffTruncated: event.payload.diffTruncated === true,

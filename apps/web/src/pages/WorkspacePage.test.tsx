@@ -1321,7 +1321,7 @@ describe("WorkspacePage", () => {
       throw new Error("Expected edited diff details block");
     }
 
-    expect(details.open).toBe(false);
+    expect(details.open).toBe(true);
     const collapsedContent = container.textContent ?? "";
     expect(collapsedContent.indexOf("Saya update dulu.")).toBeLessThan(collapsedContent.indexOf("Edited src/main.ts"));
     expect(collapsedContent.indexOf("Edited src/main.ts")).toBeLessThan(collapsedContent.indexOf("Sudah beres."));
@@ -1344,6 +1344,513 @@ describe("WorkspacePage", () => {
     expect(detailsAfterToggle.querySelector('[data-line-kind="deletion"]')).not.toBeNull();
     expect(detailsAfterToggle.querySelector('[data-line-kind="hunk"]')).not.toBeNull();
     expect(detailsAfterToggle.querySelector('[data-line-kind="meta"]')).toBeNull();
+  });
+
+  it("renders editing status with proposed diff while waiting for edit approval", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edit-pending",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "ubah src/main.ts",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edit-pending",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Saya edit dulu. Menunggu izin.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edit-pending-before",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edit-pending", role: "assistant", delta: "Saya edit dulu." },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-edit-pending-permission",
+        threadId: "thread-1",
+        idx: 2,
+        type: "permission.requested",
+        payload: {
+          requestId: "edit-pending-1",
+          toolName: "MultiEdit",
+          toolInput: {
+            file_path: "src/main.ts",
+            edits: [
+              {
+                old_string: "export const main = () => 1;",
+                new_string: "export const main = () => 2;",
+              },
+            ],
+          },
+          blockedPath: null,
+          decisionReason: "File write requires approval.",
+        },
+        createdAt: "2026-01-01T10:00:01.500Z",
+      },
+      {
+        id: "evt-edit-pending-after",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edit-pending", role: "assistant", delta: " Menunggu izin." },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected editing diff card");
+    }
+    expect(editedCard.textContent).toContain("Editing src/main.ts");
+    expect(editedCard.textContent).toContain("Proposed diff");
+
+    const details = editedCard.querySelector("details") as HTMLDetailsElement | null;
+    if (!details) {
+      throw new Error("Expected editing diff details");
+    }
+    expect(details.open).toBe(true);
+
+    expect(editedCard.textContent).toContain("-export const main = () => 1;");
+    expect(editedCard.textContent).toContain("+export const main = () => 2;");
+  });
+
+  it("keeps edit proposed diff visible when bash tool events exist in the same assistant context", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edit-with-bash",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "update file",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edit-with-bash",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Sedang saya proses.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-bash-before-edit-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "bash-before-edit", parentToolUseId: null, isBash: true },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-bash-before-edit-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Ran pwd",
+          precedingToolUseIds: ["bash-before-edit"],
+          isBash: true,
+        },
+        createdAt: "2026-01-01T10:00:01.100Z",
+      },
+      {
+        id: "evt-edit-with-bash-permission",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "edit-with-bash-1",
+          toolName: "Edit",
+          toolInput: {
+            file_path: "src/main.ts",
+            old_string: "export const main = () => 1;",
+            new_string: "export const main = () => 2;",
+          },
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-edit-with-bash-msg",
+        threadId: "thread-1",
+        idx: 4,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edit-with-bash", role: "assistant", delta: "Sedang saya proses." },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected edited diff card with bash context");
+    }
+
+    expect(editedCard.textContent).toContain("Editing src/main.ts");
+    expect(editedCard.textContent).toContain("Proposed diff");
+  });
+
+  it("replaces proposed editing state with actual edited diff after worktree snapshot", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edit-transition",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "update src/main.ts",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edit-transition",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Saya update dulu. Sudah beres.",
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edit-transition-before",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edit-transition", role: "assistant", delta: "Saya update dulu." },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-edit-transition-permission",
+        threadId: "thread-1",
+        idx: 2,
+        type: "permission.requested",
+        payload: {
+          requestId: "edit-transition-1",
+          toolName: "Edit",
+          toolInput: {
+            file_path: "src/main.ts",
+            old_string: "export const main = () => 1;",
+            new_string: "export const main = () => 2;",
+          },
+        },
+        createdAt: "2026-01-01T10:00:01.300Z",
+      },
+      {
+        id: "evt-edit-transition-started",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.started",
+        payload: {
+          toolName: "Edit",
+          toolUseId: "edit-transition-1",
+          parentToolUseId: null,
+          editTarget: "src/main.ts",
+        },
+        createdAt: "2026-01-01T10:00:01.500Z",
+      },
+      {
+        id: "evt-edit-transition-finished",
+        threadId: "thread-1",
+        idx: 4,
+        type: "tool.finished",
+        payload: {
+          summary: "Edited src/main.ts",
+          precedingToolUseIds: ["edit-transition-1"],
+          editTarget: "src/main.ts",
+        },
+        createdAt: "2026-01-01T10:00:01.700Z",
+      },
+      {
+        id: "evt-edit-transition-worktree",
+        threadId: "thread-1",
+        idx: 5,
+        type: "tool.finished",
+        payload: {
+          source: "worktree.diff",
+          summary: "Edited 1 file",
+          changedFiles: ["src/main.ts"],
+          diff: "diff --git a/src/main.ts b/src/main.ts\n@@ -1 +1 @@\n-export const main = () => 1;\n+export const main = () => 2;",
+          diffTruncated: false,
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-edit-transition-after",
+        threadId: "thread-1",
+        idx: 6,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edit-transition", role: "assistant", delta: " Sudah beres." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-edit-transition-complete",
+        threadId: "thread-1",
+        idx: 7,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-edit-transition" },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected edited transition card");
+    }
+    expect(editedCard.textContent).toContain("Edited src/main.ts");
+    expect(editedCard.textContent).toContain("+1");
+    expect(editedCard.textContent).toContain("-1");
+    expect(editedCard.textContent).not.toContain("Editing src/main.ts");
+    expect(editedCard.textContent).not.toContain("Proposed diff");
+  });
+
+  it("renders edited summary fallback when edit succeeds without worktree diff", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edit-fallback",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "edit file",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edit-fallback",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Sudah saya edit.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edit-fallback-started",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: {
+          toolName: "Edit",
+          toolUseId: "edit-fallback-1",
+          parentToolUseId: null,
+          editTarget: "src/main.ts",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-edit-fallback-finished",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Edited src/main.ts",
+          precedingToolUseIds: ["edit-fallback-1"],
+          editTarget: "src/main.ts",
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-edit-fallback-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-edit-fallback", role: "assistant", delta: "Sudah saya edit." },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected edited fallback card");
+    }
+    expect(editedCard.textContent).toContain("Edited src/main.ts");
+    expect(editedCard.querySelector("details")).toBeNull();
+  });
+
+  it("keeps first sentence intact before edited card when assistant text is split across deltas", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edited-sentence",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "update README",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edited-sentence",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content:
+          "I can see that the README.md file already has a Last edited date at the end, which shows 18 Feb 2026 10.31. Since today's date is 18 Feb 2026, I need to update the time.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edited-sentence-delta-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-edited-sentence",
+          role: "assistant",
+          delta: "I can see that the README.md file already has a Last edited date at the end, which",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-edited-sentence-permission",
+        threadId: "thread-1",
+        idx: 2,
+        type: "permission.requested",
+        payload: {
+          requestId: "edit-sentence-1",
+          toolName: "Edit",
+          toolInput: {
+            file_path: "README.md",
+            old_string: "**Last edited:** 18 Feb 2026 10.31",
+            new_string: "**Last edited:** 18 Feb 2026",
+          },
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-edited-sentence-delta-2",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-edited-sentence",
+          role: "assistant",
+          delta: " shows 18 Feb 2026 10.31. Since today's date is 18 Feb 2026, I need to update the time.",
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const timelineText = container.textContent ?? "";
+    const firstSentenceIdx = timelineText.indexOf(
+      "I can see that the README.md file already has a Last edited date at the end, which shows 18 Feb 2026 10.31.",
+    );
+    const editedIdx = timelineText.indexOf("Editing README.md");
+    const tailIdx = timelineText.indexOf("Since today's date is 18 Feb 2026, I need to update the time.");
+
+    expect(firstSentenceIdx).toBeGreaterThanOrEqual(0);
+    expect(editedIdx).toBeGreaterThanOrEqual(0);
+    expect(tailIdx).toBeGreaterThanOrEqual(0);
+    expect(editedIdx).toBeGreaterThan(firstSentenceIdx);
+    expect(editedIdx).toBeLessThan(tailIdx);
+  });
+
+  it("renders edited card after available text when no sentence boundary is present", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-edited-noboundary",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "update README",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-edited-noboundary",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "I can see the last edited value which shows old timestamp and i will update it now",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edited-noboundary-delta-1",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-edited-noboundary",
+          role: "assistant",
+          delta: "I can see the last edited value which",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-edited-noboundary-permission",
+        threadId: "thread-1",
+        idx: 2,
+        type: "permission.requested",
+        payload: {
+          requestId: "edit-noboundary-1",
+          toolName: "Edit",
+          toolInput: {
+            file_path: "README.md",
+            old_string: "**Last edited:** old",
+            new_string: "**Last edited:** new",
+          },
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-edited-noboundary-delta-2",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-edited-noboundary",
+          role: "assistant",
+          delta: " shows old timestamp and i will update it now",
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const timelineText = container.textContent ?? "";
+    const textIdx = timelineText.indexOf(
+      "I can see the last edited value which shows old timestamp and i will update it now",
+    );
+    const editedIdx = timelineText.indexOf("Editing README.md");
+
+    expect(textIdx).toBeGreaterThanOrEqual(0);
+    expect(editedIdx).toBeGreaterThanOrEqual(0);
+    expect(editedIdx).toBeGreaterThan(textIdx);
   });
 
   it("renders edited diff card as orphan when no assistant timeline segment is available", async () => {
@@ -1382,7 +1889,7 @@ describe("WorkspacePage", () => {
       throw new Error("Expected diff preview details");
     }
 
-    expect(diffDetails.open).toBe(false);
+    expect(diffDetails.open).toBe(true);
     act(() => {
       diffDetails.open = true;
       diffDetails.dispatchEvent(new Event("toggle", { bubbles: true }));

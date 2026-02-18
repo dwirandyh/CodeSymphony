@@ -79,6 +79,7 @@ export type ClaudeRunner = (args: {
     parentToolUseId: string | null;
     command?: string;
     searchParams?: string;
+    editTarget?: string;
     shell?: "bash";
     isBash?: true;
   }) => Promise<void> | void;
@@ -93,6 +94,7 @@ export type ClaudeRunner = (args: {
     precedingToolUseIds: string[];
     command?: string;
     searchParams?: string;
+    editTarget?: string;
     output?: string;
     error?: string;
     shell?: "bash";
