@@ -10,7 +10,7 @@ async function runGit(args: string[], cwd?: string): Promise<string> {
       encoding: "utf8",
     });
 
-    return stdout.trim();
+    return stdout.trimEnd();
   } catch (error) {
     const message = error instanceof Error ? error.message : "git command failed";
     throw new Error(`git ${args.join(" ")} failed: ${message}`);
