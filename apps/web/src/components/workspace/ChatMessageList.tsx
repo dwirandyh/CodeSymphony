@@ -100,6 +100,7 @@ export type ChatTimelineItem =
 type ChatMessageListProps = {
   items: ChatTimelineItem[];
   showThinkingPlaceholder?: boolean;
+  sendingMessage?: boolean;
   onOpenReadFile?: (path: string) => void | Promise<void>;
 };
 
@@ -1183,7 +1184,14 @@ function PlanInlineMessage({
   );
 }
 
-export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpenReadFile }: ChatMessageListProps) {
+export function ChatMessageList({
+  items,
+  showThinkingPlaceholder = false,
+  sendingMessage = false,
+  onOpenReadFile,
+}: ChatMessageListProps) {
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
@@ -1193,6 +1201,78 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
   const [exploreActivityExpandedById, setExploreActivityExpandedById] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
+
+  useEffect(() => {
+    const root = scrollAreaRef.current;
+    if (!root) {
+      return;
+    }
+
+    const viewport = root.querySelector<HTMLElement>("[data-radix-scroll-area-viewport]");
+    if (!viewport) {
+      return;
+    }
+
+    const updateStickiness = () => {
+      const distanceToBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+      stickToBottomRef.current = distanceToBottom <= 48;
+    };
+
+    updateStickiness();
+    viewport.addEventListener("scroll", updateStickiness);
+    return () => {
+      viewport.removeEventListener("scroll", updateStickiness);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!stickToBottomRef.current || typeof window === "undefined") {
+      return;
+    }
+
+    const root = scrollAreaRef.current;
+    if (!root) {
+      return;
+    }
+
+    const viewport = root.querySelector<HTMLElement>("[data-radix-scroll-area-viewport]");
+    if (!viewport) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [items, showThinkingPlaceholder]);
+
+  useEffect(() => {
+    if (!sendingMessage || typeof window === "undefined") {
+      return;
+    }
+
+    stickToBottomRef.current = true;
+    const root = scrollAreaRef.current;
+    if (!root) {
+      return;
+    }
+
+    const viewport = root.querySelector<HTMLElement>("[data-radix-scroll-area-viewport]");
+    if (!viewport) {
+      return;
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      viewport.scrollTop = viewport.scrollHeight;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [sendingMessage]);
 
   function toggleRawOutput(messageId: string) {
     setRawOutputMessageIds((current) => {
@@ -1258,7 +1338,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
   }
 
   return (
-    <ScrollArea className="h-full" data-testid="chat-scroll">
+    <ScrollArea ref={scrollAreaRef} className="h-full" data-testid="chat-scroll">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-3 pb-6 pt-3">
         {items.length === 0 && !showThinkingPlaceholder ? (
           <div className="py-10 text-center text-xs text-muted-foreground">No messages yet. Send a prompt to start.</div>

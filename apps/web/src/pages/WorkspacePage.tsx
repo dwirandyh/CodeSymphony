@@ -164,6 +164,7 @@ export function WorkspacePage() {
                     <ChatMessageList
                       items={chat.timelineItems}
                       showThinkingPlaceholder={showThinkingPlaceholder}
+                      sendingMessage={chat.sendingMessage}
                       onOpenReadFile={openReadFile}
                     />
                   </div>

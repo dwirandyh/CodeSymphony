@@ -80,9 +80,22 @@ export function useChatSession(
 
     const seenEventIds = new Set<string>();
     let lastIdx: number | null = null;
+    let latestThreadTitle: string | null = null;
     for (const event of threadEvents) {
       seenEventIds.add(event.id);
       if (lastIdx == null || event.idx > lastIdx) lastIdx = event.idx;
+      if (event.type === "chat.completed") {
+        const title = payloadStringOrNull(event.payload.threadTitle);
+        if (title) latestThreadTitle = title;
+      }
+    }
+
+    if (latestThreadTitle) {
+      setThreads((current) =>
+        current.map((t) =>
+          t.id === threadId ? { ...t, title: latestThreadTitle } : t,
+        ),
+      );
     }
 
     seenEventIdsByThreadRef.current.set(threadId, seenEventIds);
