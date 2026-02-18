@@ -177,6 +177,7 @@ export function WorkspacePage() {
                           requestId={request.requestId}
                           toolName={request.toolName}
                           command={request.command}
+                          editTarget={request.editTarget}
                           blockedPath={request.blockedPath}
                           decisionReason={request.decisionReason}
                           busy={gates.resolvingPermissionIds.has(request.requestId)}
@@ -204,6 +205,7 @@ export function WorkspacePage() {
                     </div>
                   </section>
                 ) : null}
+                {!gates.showPlanDecisionComposer && gates.isWaitingForUserGate ? <div className="pb-2 pt-1" /> : null}
 
                 {gates.showPlanDecisionComposer ? (
                   <PlanDecisionComposer
@@ -211,10 +213,10 @@ export function WorkspacePage() {
                     onApprove={() => void gates.handleApprovePlan()}
                     onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
                   />
-                ) : (
+                ) : !gates.isWaitingForUserGate ? (
                   <Composer
                     value={chat.chatInput}
-                    disabled={!chat.selectedThreadId || chat.sendingMessage || gates.hasPendingPermissionRequests || gates.hasPendingQuestionRequests || gates.planActionBusy}
+                    disabled={!chat.selectedThreadId || chat.sendingMessage || gates.planActionBusy}
                     sending={chat.sendingMessage}
                     showStop={chat.showStopAction}
                     stopping={chat.stoppingRun}
@@ -225,7 +227,7 @@ export function WorkspacePage() {
                     onSubmitMessage={(content) => void chat.submitMessage(content)}
                     onStop={() => void chat.stopAssistantRun()}
                   />
-                )}
+                ) : null}
               </>
             )}
           </div>

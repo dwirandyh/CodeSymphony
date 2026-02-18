@@ -4478,7 +4478,7 @@ describe("WorkspacePage", () => {
     expect(container.querySelector('[data-testid="thinking-placeholder"]')).toBeNull();
   });
 
-  it("shows permission prompt card from event history and disables composer", async () => {
+  it("shows permission prompt card from event history and hides composer", async () => {
     (api.listEvents as Mock).mockResolvedValueOnce([
       {
         id: "evt-perm-requested",
@@ -4504,9 +4504,65 @@ describe("WorkspacePage", () => {
 
     expect(container.textContent).toContain("Permission Required");
     expect(container.textContent).toContain("cat /etc/hosts");
+    expect(container.querySelector('button[aria-label="Send message"]')).toBeNull();
+  });
 
-    const sendButton = findButtonByAriaLabel(container, "Send message");
-    expect(sendButton.disabled).toBe(true);
+  it("shows question card from event history and hides composer", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-question-requested-history",
+        threadId: "thread-1",
+        idx: 3,
+        type: "question.requested",
+        payload: {
+          requestId: "question-history",
+          questions: [{ question: "Target environment?" }],
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.querySelector('[data-testid="question-card-question-history"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Send message"]')).toBeNull();
+  });
+
+  it("uses edit-specific confirmation wording for edit permissions", async () => {
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-edit-perm-requested-history",
+        threadId: "thread-1",
+        idx: 3,
+        type: "permission.requested",
+        payload: {
+          requestId: "edit-perm-history",
+          toolName: "Edit",
+          toolInput: {
+            file_path: "/Users/dwirandyh/.codesymphony/worktrees/dws-bssn-cmlonlrm/south-sumatra/README.md",
+            old_string: "hello",
+            new_string: "hello world",
+          },
+          decisionReason: "File write requires approval.",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    expect(container.textContent).toContain("Do you want Claude to apply this edit to README.md?");
+    expect(container.textContent).toContain("Yes, apply edit");
+    expect(container.textContent).toContain("No, keep current file");
+    expect(container.querySelector('button[aria-label="Send message"]')).toBeNull();
   });
 
   it("resolves permission when approve is clicked", async () => {
@@ -5540,6 +5596,136 @@ describe("WorkspacePage", () => {
     expect(textIdx).toBeGreaterThanOrEqual(0);
     expect(exploreIdx).toBeGreaterThanOrEqual(0);
     expect(textIdx).toBeLessThan(exploreIdx);
+  });
+
+  it("splits explore-activity into separate groups when text delta appears between reads", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-split",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "analyze the storage module",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-split",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content:
+          "I'll start by exploring the storage directory to understand the current implementation before planning optimizations. Now let me read the actual implementation.",
+        createdAt: "2026-01-01T10:00:10.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      // First batch: 2 reads
+      {
+        id: "evt-split-read1-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-read-s1", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-split-read1-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: { summary: "Read storage/index.ts", precedingToolUseIds: ["tool-read-s1"] },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-split-read2-start",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-read-s2", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-split-read2-finish",
+        threadId: "thread-1",
+        idx: 4,
+        type: "tool.finished",
+        payload: { summary: "Read storage/config.ts", precedingToolUseIds: ["tool-read-s2"] },
+        createdAt: "2026-01-01T10:00:04.000Z",
+      },
+      // Text delta between reads
+      {
+        id: "evt-split-delta1",
+        threadId: "thread-1",
+        idx: 5,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-split",
+          role: "assistant",
+          delta:
+            "I'll start by exploring the storage directory to understand the current implementation before planning optimizations.",
+        },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      },
+      // Another text delta
+      {
+        id: "evt-split-delta2",
+        threadId: "thread-1",
+        idx: 6,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-split",
+          role: "assistant",
+          delta: " Now let me read the actual implementation.",
+        },
+        createdAt: "2026-01-01T10:00:06.000Z",
+      },
+      // Second batch: 1 read
+      {
+        id: "evt-split-read3-start",
+        threadId: "thread-1",
+        idx: 7,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-read-s3", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:07.000Z",
+      },
+      {
+        id: "evt-split-read3-finish",
+        threadId: "thread-1",
+        idx: 8,
+        type: "tool.finished",
+        payload: { summary: "Read storage/impl.ts", precedingToolUseIds: ["tool-read-s3"] },
+        createdAt: "2026-01-01T10:00:08.000Z",
+      },
+      {
+        id: "evt-split-complete",
+        threadId: "thread-1",
+        idx: 9,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-split" },
+        createdAt: "2026-01-01T10:00:10.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const exploreRows = container.querySelectorAll('[data-testid="timeline-explore-activity"]');
+    expect(exploreRows.length).toBe(2);
+
+    const fullText = container.textContent ?? "";
+    const firstExploreIdx = fullText.indexOf("Explored 2 files");
+    const secondExploreIdx = fullText.indexOf("Explored 1 files");
+    expect(firstExploreIdx).toBeGreaterThanOrEqual(0);
+    expect(secondExploreIdx).toBeGreaterThanOrEqual(0);
+    expect(firstExploreIdx).toBeLessThan(secondExploreIdx);
+
+    const textIdx = fullText.indexOf("Now let me read the actual implementation");
+    expect(textIdx).toBeGreaterThanOrEqual(0);
+    expect(textIdx).toBeGreaterThan(firstExploreIdx);
+    expect(textIdx).toBeLessThan(secondExploreIdx);
   });
 
   it("shows instrumentation panel when render debug mode is enabled", async () => {

@@ -753,19 +753,19 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       parentToolUseId,
       ...(metadata?.editTarget
         ? {
-            editTarget: metadata.editTarget,
-          }
+          editTarget: metadata.editTarget,
+        }
         : {}),
       ...(metadata?.isBash
         ? {
-            command: metadata.command,
-            shell: "bash" as const,
-            isBash: true as const,
-          }
+          command: metadata.command,
+          shell: "bash" as const,
+          isBash: true as const,
+        }
         : metadata?.searchParams
           ? {
-              searchParams: metadata.searchParams,
-            }
+            searchParams: metadata.searchParams,
+          }
           : {}),
     });
     await emitInstrumentation({
@@ -863,6 +863,16 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           }
 
           if (toolName === "AskUserQuestion") {
+            if (permissionMode !== "plan") {
+              await emitDecision(toolUseId, "deny", toolName, null, {
+                input: sanitizeForLog(input),
+                decisionReason: "Questions are not allowed in execute mode.",
+              });
+              return {
+                behavior: "deny",
+                message: "Questions are not allowed in execute mode. Proceed with your best judgment.",
+              };
+            }
             const questions = Array.isArray(input.questions) ? input.questions : [];
             const result = await onQuestionRequest({
               requestId: toolUseId,
@@ -1033,23 +1043,23 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                       precedingToolUseIds: [hookToolUseId],
                       ...(metadata.editTarget
                         ? {
-                            editTarget: metadata.editTarget,
-                          }
+                          editTarget: metadata.editTarget,
+                        }
                         : {}),
                       ...(metadata.isBash
                         ? {
-                            command: metadata.command,
-                            shell: "bash" as const,
-                            isBash: true as const,
-                            output: bashResult?.output,
-                            error: bashResult?.error,
-                            truncated: bashResult?.truncated ?? false,
-                            outputBytes: bashResult?.outputBytes ?? 0,
-                          }
+                          command: metadata.command,
+                          shell: "bash" as const,
+                          isBash: true as const,
+                          output: bashResult?.output,
+                          error: bashResult?.error,
+                          truncated: bashResult?.truncated ?? false,
+                          outputBytes: bashResult?.outputBytes ?? 0,
+                        }
                         : metadata.searchParams
                           ? {
-                              searchParams: metadata.searchParams,
-                            }
+                            searchParams: metadata.searchParams,
+                          }
                           : {}),
                     });
                     await emitInstrumentation({
@@ -1064,9 +1074,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                         maxElapsedTimeSeconds: progress?.maxElapsedTimeSeconds ?? 0,
                         ...(startedAtMs
                           ? {
-                              startedAt: toIso(startedAtMs),
-                              durationMs: finishedAtMs - startedAtMs,
-                            }
+                            startedAt: toIso(startedAtMs),
+                            durationMs: finishedAtMs - startedAtMs,
+                          }
                           : {}),
                         finishedAt: toIso(finishedAtMs),
                       },
@@ -1074,16 +1084,16 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                         ...(metadata.command ? { command: metadata.command } : {}),
                         ...(metadata.isBash
                           ? {
-                              output: sanitizeForLog(bashResult?.output) as string | undefined,
-                              error: sanitizeForLog(bashResult?.error) as string | undefined,
-                              truncated: bashResult?.truncated ?? false,
-                              outputBytes: bashResult?.outputBytes ?? 0,
-                            }
+                            output: sanitizeForLog(bashResult?.output) as string | undefined,
+                            error: sanitizeForLog(bashResult?.error) as string | undefined,
+                            truncated: bashResult?.truncated ?? false,
+                            outputBytes: bashResult?.outputBytes ?? 0,
+                          }
                           : {
-                              output: typeof hookInput.tool_response === "string"
-                                ? truncateForPreview(hookInput.tool_response)
-                                : undefined,
-                            }),
+                            output: typeof hookInput.tool_response === "string"
+                              ? truncateForPreview(hookInput.tool_response)
+                              : undefined,
+                          }),
                       },
                     });
                     finishedToolUseIds.add(hookToolUseId);
@@ -1139,19 +1149,19 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     precedingToolUseIds: [hookToolUseId],
                     ...(metadata.editTarget
                       ? {
-                          editTarget: metadata.editTarget,
-                        }
+                        editTarget: metadata.editTarget,
+                      }
                       : {}),
                     ...(metadata.isBash
                       ? {
-                          command,
-                          shell: "bash" as const,
-                          isBash: true as const,
-                        }
+                        command,
+                        shell: "bash" as const,
+                        isBash: true as const,
+                      }
                       : metadata.searchParams
                         ? {
-                            searchParams: metadata.searchParams,
-                          }
+                          searchParams: metadata.searchParams,
+                        }
                         : {}),
                     error: hookInput.error,
                     truncated: false,
@@ -1169,9 +1179,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                       maxElapsedTimeSeconds: progress?.maxElapsedTimeSeconds ?? 0,
                       ...(startedAtMs
                         ? {
-                            startedAt: toIso(startedAtMs),
-                            durationMs: finishedAtMs - startedAtMs,
-                          }
+                          startedAt: toIso(startedAtMs),
+                          durationMs: finishedAtMs - startedAtMs,
+                        }
                         : {}),
                       finishedAt: toIso(finishedAtMs),
                     },
@@ -1310,19 +1320,19 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           precedingToolUseIds: pendingToolUseIds,
           ...(editTarget
             ? {
-                editTarget,
-              }
+              editTarget,
+            }
             : {}),
           ...(bashToolMetadata?.isBash
             ? {
-                command: bashToolMetadata.command,
-                shell: "bash" as const,
-                isBash: true as const,
-                output: bashToolResult?.output,
-                error: bashToolResult?.error,
-                truncated: bashToolResult?.truncated ?? false,
-                outputBytes: bashToolResult?.outputBytes ?? 0,
-              }
+              command: bashToolMetadata.command,
+              shell: "bash" as const,
+              isBash: true as const,
+              output: bashToolResult?.output,
+              error: bashToolResult?.error,
+              truncated: bashToolResult?.truncated ?? false,
+              outputBytes: bashToolResult?.outputBytes ?? 0,
+            }
             : {}),
         });
         const finishedAtMs = Date.now();
@@ -1342,9 +1352,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
               maxElapsedTimeSeconds: progress?.maxElapsedTimeSeconds ?? 0,
               ...(startedAtMs
                 ? {
-                    startedAt: toIso(startedAtMs),
-                    durationMs: finishedAtMs - startedAtMs,
-                  }
+                  startedAt: toIso(startedAtMs),
+                  durationMs: finishedAtMs - startedAtMs,
+                }
                 : {}),
               finishedAt: toIso(finishedAtMs),
             },
@@ -1352,11 +1362,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
               ...(bashToolMetadata?.command ? { command: bashToolMetadata.command } : {}),
               ...(bashToolMetadata?.isBash
                 ? {
-                    output: sanitizeForLog(bashToolResult?.output) as string | undefined,
-                    error: sanitizeForLog(bashToolResult?.error) as string | undefined,
-                    truncated: bashToolResult?.truncated ?? false,
-                    outputBytes: bashToolResult?.outputBytes ?? 0,
-                  }
+                  output: sanitizeForLog(bashToolResult?.output) as string | undefined,
+                  error: sanitizeForLog(bashToolResult?.error) as string | undefined,
+                  truncated: bashToolResult?.truncated ?? false,
+                  outputBytes: bashToolResult?.outputBytes ?? 0,
+                }
                 : {}),
             },
           });
@@ -1439,23 +1449,23 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         precedingToolUseIds: [toolUseId],
         ...(metadata.editTarget
           ? {
-              editTarget: metadata.editTarget,
-            }
+            editTarget: metadata.editTarget,
+          }
           : {}),
         ...(metadata.isBash
           ? {
-              command: metadata.command,
-              shell: "bash" as const,
-              isBash: true as const,
-              output: bashToolResult?.output,
-              error: bashToolResult?.error,
-              truncated: bashToolResult?.truncated ?? false,
-              outputBytes: bashToolResult?.outputBytes ?? 0,
-            }
+            command: metadata.command,
+            shell: "bash" as const,
+            isBash: true as const,
+            output: bashToolResult?.output,
+            error: bashToolResult?.error,
+            truncated: bashToolResult?.truncated ?? false,
+            outputBytes: bashToolResult?.outputBytes ?? 0,
+          }
           : metadata.searchParams
             ? {
-                searchParams: metadata.searchParams,
-              }
+              searchParams: metadata.searchParams,
+            }
             : {}),
       });
       await emitInstrumentation({
@@ -1470,9 +1480,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           maxElapsedTimeSeconds: progress?.maxElapsedTimeSeconds ?? 0,
           ...(startedAtMs
             ? {
-                startedAt: toIso(startedAtMs),
-                durationMs: finishedAtMs - startedAtMs,
-              }
+              startedAt: toIso(startedAtMs),
+              durationMs: finishedAtMs - startedAtMs,
+            }
             : {}),
           finishedAt: toIso(finishedAtMs),
         },
@@ -1480,11 +1490,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           ...(metadata.command ? { command: metadata.command } : {}),
           ...(metadata.isBash
             ? {
-                output: sanitizeForLog(bashToolResult?.output) as string | undefined,
-                error: sanitizeForLog(bashToolResult?.error) as string | undefined,
-                truncated: bashToolResult?.truncated ?? false,
-                outputBytes: bashToolResult?.outputBytes ?? 0,
-              }
+              output: sanitizeForLog(bashToolResult?.output) as string | undefined,
+              error: sanitizeForLog(bashToolResult?.error) as string | undefined,
+              truncated: bashToolResult?.truncated ?? false,
+              outputBytes: bashToolResult?.outputBytes ?? 0,
+            }
             : {}),
         },
       });

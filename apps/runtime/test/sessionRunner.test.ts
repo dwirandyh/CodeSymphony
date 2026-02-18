@@ -118,13 +118,13 @@ describe("tool instrumentation", () => {
       prompt: "read readme",
       sessionId: null,
       cwd: process.cwd(),
-      onText: () => {},
-      onToolStarted: () => {},
-      onToolOutput: () => {},
-      onToolFinished: () => {},
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
       onQuestionRequest: async () => ({ answers: {} }),
       onPermissionRequest: async () => ({ decision: "allow" }),
-      onPlanFileDetected: () => {},
+      onPlanFileDetected: () => { },
       onToolInstrumentation: (event) => {
         instrumentationEvents.push(event as unknown as Record<string, unknown>);
       },
@@ -204,13 +204,13 @@ describe("tool instrumentation", () => {
       prompt: "read readme",
       sessionId: null,
       cwd: process.cwd(),
-      onText: () => {},
-      onToolStarted: () => {},
-      onToolOutput: () => {},
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
       onToolFinished,
       onQuestionRequest: async () => ({ answers: {} }),
       onPermissionRequest: async () => ({ decision: "allow" }),
-      onPlanFileDetected: () => {},
+      onPlanFileDetected: () => { },
       onToolInstrumentation: (event) => {
         instrumentationEvents.push(event as unknown as Record<string, unknown>);
       },
@@ -260,14 +260,14 @@ describe("tool instrumentation", () => {
       prompt: "find readme",
       sessionId: null,
       cwd: process.cwd(),
-      onText: () => {},
+      onText: () => { },
       onToolStarted,
-      onToolOutput: () => {},
-      onToolFinished: () => {},
+      onToolOutput: () => { },
+      onToolFinished: () => { },
       onQuestionRequest: async () => ({ answers: {} }),
       onPermissionRequest: async () => ({ decision: "allow" }),
-      onPlanFileDetected: () => {},
-      onToolInstrumentation: () => {},
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
     });
 
     expect(onToolStarted).toHaveBeenCalledWith(expect.objectContaining({
@@ -318,14 +318,14 @@ describe("tool instrumentation", () => {
       prompt: "update main",
       sessionId: null,
       cwd: process.cwd(),
-      onText: () => {},
+      onText: () => { },
       onToolStarted,
-      onToolOutput: () => {},
+      onToolOutput: () => { },
       onToolFinished,
       onQuestionRequest: async () => ({ answers: {} }),
       onPermissionRequest: async () => ({ decision: "allow" }),
-      onPlanFileDetected: () => {},
-      onToolInstrumentation: () => {},
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
     });
 
     expect(onToolStarted).toHaveBeenCalledWith(expect.objectContaining({
@@ -378,13 +378,13 @@ describe("tool instrumentation", () => {
       prompt: "read readme",
       sessionId: null,
       cwd: process.cwd(),
-      onText: () => {},
-      onToolStarted: () => {},
-      onToolOutput: () => {},
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
       onToolFinished,
       onQuestionRequest: async () => ({ answers: {} }),
       onPermissionRequest: async () => ({ decision: "allow" }),
-      onPlanFileDetected: () => {},
+      onPlanFileDetected: () => { },
       onToolInstrumentation: (event) => {
         instrumentationEvents.push(event as unknown as Record<string, unknown>);
       },
@@ -454,13 +454,13 @@ describe("tool instrumentation", () => {
       sessionId: null,
       cwd: process.cwd(),
       onText: (chunk) => { textChunks.push(chunk); },
-      onToolStarted: () => {},
-      onToolOutput: () => {},
-      onToolFinished: () => {},
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
       onQuestionRequest: async () => ({ answers: {} }),
       onPermissionRequest: async () => ({ decision: "allow" }),
-      onPlanFileDetected: () => {},
-      onToolInstrumentation: () => {},
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
     });
 
     const fullText = textChunks.join("");
@@ -498,13 +498,13 @@ describe("tool instrumentation", () => {
       prompt: "read readme",
       sessionId: null,
       cwd: process.cwd(),
-      onText: () => {},
-      onToolStarted: () => {},
-      onToolOutput: () => {},
-      onToolFinished: () => {},
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
       onQuestionRequest: async () => ({ answers: {} }),
       onPermissionRequest: async () => ({ decision: "allow" }),
-      onPlanFileDetected: () => {},
+      onPlanFileDetected: () => { },
       onToolInstrumentation: (event) => {
         instrumentationEvents.push(event as unknown as Record<string, unknown>);
       },
@@ -518,5 +518,103 @@ describe("tool instrumentation", () => {
         && (event.anomaly as Record<string, unknown>).code === "requested_not_started",
     );
     expect(anomalyEvent).toBeDefined();
+  });
+
+  it("denies AskUserQuestion in default (execute) mode", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; message?: string }>;
+        const result = await canUseTool("AskUserQuestion", {
+          questions: [{ question: "Which framework?" }],
+        }, {
+          toolUseID: "tool-question-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        expect(result.behavior).toBe("deny");
+        expect(result.message).toContain("execute mode");
+
+        yield { type: "system", subtype: "init", session_id: "session-q-deny" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "I will proceed." }],
+          },
+        };
+      })();
+    });
+
+    const onQuestionRequest = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "do something",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest,
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onQuestionRequest).not.toHaveBeenCalled();
+  });
+
+  it("allows AskUserQuestion in plan mode", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+        const result = await canUseTool("AskUserQuestion", {
+          questions: [{ question: "Which framework?" }],
+        }, {
+          toolUseID: "tool-question-plan",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        expect(result.behavior).toBe("allow");
+
+        yield { type: "system", subtype: "init", session_id: "session-q-allow" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Plan created." }],
+          },
+        };
+      })();
+    });
+
+    const onQuestionRequest = vi.fn().mockResolvedValue({ answers: { "0": "React" } });
+    await runClaudeWithStreaming({
+      prompt: "plan something",
+      sessionId: null,
+      cwd: process.cwd(),
+      permissionMode: "plan",
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest,
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onQuestionRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: "tool-question-plan",
+    }));
   });
 });

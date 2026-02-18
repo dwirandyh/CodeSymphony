@@ -754,4 +754,77 @@ describe("chatService permission flow", () => {
 
     await waitForTerminalEvent(chatService, threadId);
   });
+
+  it("does not emit question.requested events in default (execute) mode", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+      await onText("I will proceed with my best judgment.");
+      return {
+        output: "I will proceed with my best judgment.",
+        sessionId: "session-no-question",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "do something complex",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(events.some((event) => event.type === "question.requested")).toBe(false);
+
+    const calledArgs = (claudeRunner as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(calledArgs.permissionMode).toBe("default");
+  });
+
+  it("emits question.requested events in plan mode", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
+      if (permissionMode === "plan") {
+        const result = await onQuestionRequest({
+          requestId: "q-plan-1",
+          questions: [{ question: "Which approach do you prefer?" }],
+        });
+        await onText(`User chose: ${JSON.stringify(result.answers)}`);
+        return {
+          output: `User chose: ${JSON.stringify(result.answers)}`,
+          sessionId: "session-plan-question",
+        };
+      }
+
+      await onText("Done.");
+      return { output: "Done.", sessionId: "session-plan-q" };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "plan something",
+      mode: "plan",
+    });
+
+    const questionEvent = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "question.requested" && event.payload.requestId === "q-plan-1",
+    );
+    expect(questionEvent).toBeDefined();
+    expect(questionEvent.payload.questions).toHaveLength(1);
+
+    await chatService.answerQuestion(threadId, {
+      requestId: "q-plan-1",
+      answers: { "0": "Option A" },
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+  });
 });

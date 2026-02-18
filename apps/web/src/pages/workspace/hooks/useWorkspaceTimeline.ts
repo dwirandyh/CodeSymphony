@@ -329,7 +329,13 @@ export function useWorkspaceTimeline(
         })
         : context;
       const exploreContext = nonBashContext.filter((event) => !isWorktreeDiffEvent(event));
-      const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(exploreContext) : [];
+      const deltaEventsForExplore = message.role === "assistant"
+        ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
+        : [];
+      const exploreContextWithDeltas = deltaEventsForExplore.length > 0
+        ? [...exploreContext, ...deltaEventsForExplore].sort((a, b) => a.idx - b.idx)
+        : exploreContext;
+      const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(exploreContextWithDeltas) : [];
       const exploreEventIds = new Set<string>();
       for (const group of exploreActivityGroups) {
         group.eventIds.forEach((id) => exploreEventIds.add(id));
@@ -620,11 +626,12 @@ export function useWorkspaceTimeline(
           }
 
           const group = insert.group;
+          const exploreStatus = !isCompleted ? "running" : group.status;
           sortable.push({
             item: {
               kind: "explore-activity",
               id: `${message.id}:${group.id}:${insert.id}`,
-              status: group.status,
+              status: exploreStatus,
               fileCount: group.fileCount,
               searchCount: group.searchCount,
               entries: group.entries,

@@ -73,6 +73,7 @@ export type PendingPermissionRequest = {
   requestId: string;
   toolName: string;
   command: string | null;
+  editTarget: string | null;
   blockedPath: string | null;
   decisionReason: string | null;
   idx: number;

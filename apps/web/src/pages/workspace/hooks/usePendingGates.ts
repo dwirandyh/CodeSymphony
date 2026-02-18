@@ -2,6 +2,35 @@ import { useMemo, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
+import { shortenReadTargetForDisplay } from "../exploreUtils";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isEditTool(toolName: string): boolean {
+  return /^(edit|multiedit|write)$/i.test(toolName.trim());
+}
+
+function extractEditTarget(toolName: string, toolInput: unknown): string | null {
+  if (!isEditTool(toolName) || !isRecord(toolInput)) {
+    return null;
+  }
+
+  const keyCandidates = ["file_path", "path", "file", "filepath", "target", "filename"];
+  for (const key of keyCandidates) {
+    const raw = toolInput[key];
+    if (typeof raw !== "string") {
+      continue;
+    }
+    const normalized = raw.trim();
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
 
 export interface PendingGatesDeps {
   onError: (msg: string | null) => void;
@@ -31,11 +60,16 @@ export function usePendingGates(
       if (event.type === "permission.requested") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
         if (requestId.length === 0) continue;
+        const toolName = typeof event.payload.toolName === "string" ? event.payload.toolName : "Tool";
+        const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+        const editTargetRaw = extractEditTarget(toolName, toolInput);
+        const editTarget = editTargetRaw ? shortenReadTargetForDisplay(editTargetRaw) : null;
 
         pendingById.set(requestId, {
           requestId,
-          toolName: typeof event.payload.toolName === "string" ? event.payload.toolName : "Tool",
+          toolName,
           command: typeof event.payload.command === "string" ? event.payload.command : null,
+          editTarget,
           blockedPath: typeof event.payload.blockedPath === "string" ? event.payload.blockedPath : null,
           decisionReason: typeof event.payload.decisionReason === "string" ? event.payload.decisionReason : null,
           idx: event.idx,
