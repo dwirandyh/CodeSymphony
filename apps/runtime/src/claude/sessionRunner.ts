@@ -682,6 +682,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 }) => {
   let latestSessionId: string | null = sessionId;
   let finalOutput = "";
+  let sawToolUseSinceLastText = false;
   const recentStderr: string[] = [];
   const queryStartTimestamp = Date.now();
   let planFileDetected = false;
@@ -1207,6 +1208,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       if (message.type === "stream_event") {
         const event = message.event;
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          if (sawToolUseSinceLastText && finalOutput.length > 0 && !/\s$/.test(finalOutput)) {
+            finalOutput += "\n\n";
+            await onText("\n\n");
+          }
+          sawToolUseSinceLastText = false;
           finalOutput += event.delta.text;
           await onText(event.delta.text);
         }
@@ -1214,6 +1220,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       }
 
       if (message.type === "tool_progress") {
+        sawToolUseSinceLastText = true;
         const metadata = toolMetadataByUseId.get(message.tool_use_id);
         requestedToolByUseId.set(message.tool_use_id, {
           toolName: message.tool_name,
@@ -1256,6 +1263,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       }
 
       if (message.type === "tool_use_summary") {
+        sawToolUseSinceLastText = true;
         const unresolvedStartedToolUseIds = Array.from(startedToolUseIds).filter((toolUseId) => !finishedToolUseIds.has(toolUseId));
         const summaryToolUseIds = message.preceding_tool_use_ids.length > 0
           ? message.preceding_tool_use_ids

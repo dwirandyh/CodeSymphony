@@ -403,6 +403,71 @@ describe("tool instrumentation", () => {
     expect(startedNotFinished).toBeUndefined();
   });
 
+  it("inserts newline separator between text blocks separated by tool use", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+        await canUseTool("Read", { path: "config.yaml" }, {
+          toolUseID: "tool-read-sep",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        yield { type: "system", subtype: "init", session_id: "session-sep" };
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "Let me read the file." },
+          },
+        };
+        yield {
+          type: "tool_progress",
+          tool_use_id: "tool-read-sep",
+          tool_name: "Read",
+          parent_tool_use_id: null,
+          elapsed_time_seconds: 0.3,
+        };
+        yield {
+          type: "tool_use_summary",
+          summary: "Read config.yaml",
+          preceding_tool_use_ids: ["tool-read-sep"],
+        };
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "The file does not exist." },
+          },
+        };
+      })();
+    });
+
+    const textChunks: string[] = [];
+    const result = await runClaudeWithStreaming({
+      prompt: "check config",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: (chunk) => { textChunks.push(chunk); },
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onToolInstrumentation: () => {},
+    });
+
+    const fullText = textChunks.join("");
+    expect(fullText).toContain("Let me read the file.\n\nThe file does not exist.");
+    expect(result.output).toContain("Let me read the file.\n\nThe file does not exist.");
+  });
+
   it("emits requested_not_started anomaly when tool is allowed but never starts", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return (async function* () {

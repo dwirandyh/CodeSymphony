@@ -184,6 +184,26 @@ function isWorktreeDiffEvent(event: ChatEvent): boolean {
   return event.type === "tool.finished" && event.payload.source === "worktree.diff";
 }
 
+function filterDiffByFiles(diff: string, targetFiles: string[]): string {
+  if (targetFiles.length === 0 || diff.length === 0) return diff;
+  const sections: string[] = [];
+  let currentLines: string[] = [];
+  let include = false;
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      if (include && currentLines.length > 0) sections.push(currentLines.join("\n"));
+      currentLines = [line];
+      const m = line.match(/diff --git a\/(.+?) b\/(.+)/);
+      const fp = m ? m[2] : null;
+      include = fp != null && targetFiles.some((t) => fp === t || fp.endsWith("/" + t) || t.endsWith("/" + fp));
+    } else {
+      currentLines.push(line);
+    }
+  }
+  if (include && currentLines.length > 0) sections.push(currentLines.join("\n"));
+  return sections.join("\n");
+}
+
 function countDiffStats(diff: string): { additions: number; deletions: number } {
   let additions = 0;
   let deletions = 0;
@@ -873,7 +893,8 @@ function extractBashRuns(context: ChatEvent[]): BashRun[] {
     }
   }
 
-  return Array.from(byToolUseId.values()).sort((a, b) => a.startIdx - b.startIdx);
+  const result = Array.from(byToolUseId.values()).sort((a, b) => a.startIdx - b.startIdx);
+  return result;
 }
 
 function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): EditedRun[] {
@@ -1068,18 +1089,26 @@ function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): Edi
     run.eventId = event.id;
     run.status = "success";
     run.diffKind = "actual";
-    run.diff = diff;
     run.diffTruncated = event.payload.diffTruncated === true;
-    run.additions = additions;
-    run.deletions = deletions;
     run.rejectedByUser = false;
     run.eventIds.add(event.id);
-    if (changedFiles.length > 0) {
-      run.changedFiles = changedFiles;
+    if (targetRun && targetRun.changedFiles.length > 0) {
+      run.diff = filterDiffByFiles(diff, targetRun.changedFiles);
+      const filtered = countDiffStats(run.diff);
+      run.additions = filtered.additions;
+      run.deletions = filtered.deletions;
+    } else {
+      run.diff = diff;
+      run.additions = additions;
+      run.deletions = deletions;
+      if (changedFiles.length > 0) {
+        run.changedFiles = changedFiles;
+      }
     }
   }
 
-  return Array.from(byRunKey.values()).sort((a, b) => a.startIdx - b.startIdx);
+  const result = Array.from(byRunKey.values()).sort((a, b) => a.startIdx - b.startIdx);
+  return result;
 }
 
 type ExploreRunKind = "read" | "search";
@@ -2549,7 +2578,8 @@ export function WorkspacePage() {
           return true;
         })
         : context;
-      const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(nonBashContext) : [];
+      const exploreContext = nonBashContext.filter((event) => !isWorktreeDiffEvent(event));
+      const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(exploreContext) : [];
       const exploreEventIds = new Set<string>();
       for (const group of exploreActivityGroups) {
         group.eventIds.forEach((id) => exploreEventIds.add(id));
@@ -2641,14 +2671,16 @@ export function WorkspacePage() {
             createdAt: run.createdAt,
             run,
           })),
-          ...editedRuns.map((run, index) => ({
-            kind: "edited" as const,
-            id: `edited:${run.eventId}:${index}`,
-            startIdx: run.startIdx,
-            anchorIdx: run.anchorIdx,
-            createdAt: run.createdAt,
-            run,
-          })),
+          ...editedRuns
+            .filter((run) => !(run.id.startsWith("edited:worktree:") && bashRuns.length > 0 && run.additions === 0))
+            .map((run, index) => ({
+              kind: "edited" as const,
+              id: `edited:${run.eventId}:${index}`,
+              startIdx: run.startIdx,
+              anchorIdx: run.anchorIdx,
+              createdAt: run.createdAt,
+              run,
+            })),
           ...(hasInlineExploreRuns ? exploreActivityGroups.map((group, index) => ({
             kind: "explore-activity" as const,
             id: `explore:${group.id}:${index}`,
@@ -2695,16 +2727,72 @@ export function WorkspacePage() {
           }
         }
 
-        const hasSegmentContent = segmentBuckets.some((bucket) => bucket.content.length > 0);
-        if (!hasSegmentContent && message.content.length > 0) {
+        const totalSegmentLength = segmentBuckets.reduce((sum, b) => sum + b.content.length, 0);
+        const hasSegmentContent = totalSegmentLength > 0;
+        const deltasCoverageRatio = message.content.length > 0 ? totalSegmentLength / message.content.length : 1;
+        const deltasSignificantlyIncomplete = hasSegmentContent && deltasCoverageRatio < 0.9;
+        if ((!hasSegmentContent || deltasSignificantlyIncomplete) && message.content.length > 0) {
+          for (const bucket of segmentBuckets) {
+            bucket.content = "";
+            bucket.anchorIdx = null;
+            bucket.timestamp = null;
+          }
+          const hasDeltaAnchor = anchorIdx !== MAX_ORDER_INDEX;
           const shouldPlaceFallbackAfterInserts =
-            inlineInserts.length > 0 && inlineInserts.every((insert) => insert.startIdx <= anchorIdx);
+            hasDeltaAnchor && inlineInserts.length > 0 && inlineInserts.every((insert) => insert.startIdx <= anchorIdx);
           const fallbackBucketIndex = shouldPlaceFallbackAfterInserts ? inlineInserts.length : 0;
+          const fallbackAnchorIdx = hasDeltaAnchor
+            ? anchorIdx
+            : (fallbackBucketIndex === 0 && inlineInserts.length > 0
+              ? inlineInserts[0].startIdx - 1
+              : anchorIdx);
           segmentBuckets[fallbackBucketIndex] = {
             content: message.content,
-            anchorIdx,
+            anchorIdx: fallbackAnchorIdx,
             timestamp,
           };
+        }
+
+        const MIN_STANDALONE_SEGMENT_LENGTH = 20;
+        for (let mergeIdx = 1; mergeIdx < segmentBuckets.length; mergeIdx++) {
+          const mBucket = segmentBuckets[mergeIdx];
+          if (mBucket.content.length === 0 || mBucket.content.trim().length >= MIN_STANDALONE_SEGMENT_LENGTH) {
+            continue;
+          }
+          for (let nextIdx = mergeIdx + 1; nextIdx < segmentBuckets.length; nextIdx++) {
+            if (segmentBuckets[nextIdx].content.length > 0) {
+              segmentBuckets[nextIdx].content = mBucket.content + segmentBuckets[nextIdx].content;
+              const nextAnchor = segmentBuckets[nextIdx].anchorIdx;
+              if (mBucket.anchorIdx != null && (nextAnchor == null || mBucket.anchorIdx < nextAnchor)) {
+                segmentBuckets[nextIdx].anchorIdx = mBucket.anchorIdx;
+              }
+              if (segmentBuckets[nextIdx].timestamp == null) {
+                segmentBuckets[nextIdx].timestamp = mBucket.timestamp;
+              }
+              mBucket.content = "";
+              mBucket.anchorIdx = null;
+              mBucket.timestamp = null;
+              break;
+            }
+          }
+        }
+
+        for (let fixIdx = 1; fixIdx < segmentBuckets.length; fixIdx++) {
+          const curContent = segmentBuckets[fixIdx].content;
+          if (curContent.length === 0) continue;
+          const firstNonWs = curContent.trimStart().charAt(0);
+          if (![",", ".", ";", "?", "!", ")", "]", "}"].includes(firstNonWs)) continue;
+          for (let prevIdx = fixIdx - 1; prevIdx >= 0; prevIdx--) {
+            const prevContent = segmentBuckets[prevIdx].content;
+            if (prevContent.length === 0) continue;
+            const trailingMatch = prevContent.match(/(\w+)\s*$/);
+            if (!trailingMatch) break;
+            const word = trailingMatch[1];
+            const cutPos = prevContent.length - trailingMatch[0].length;
+            segmentBuckets[prevIdx].content = prevContent.slice(0, cutPos);
+            segmentBuckets[fixIdx].content = word + curContent;
+            break;
+          }
         }
 
         const hasLeadingText = segmentBuckets[0].content.length > 0;
@@ -2851,23 +2939,32 @@ export function WorkspacePage() {
               }
 
               if (splitSegment) {
+                const tailIsAnnouncement = (bucket.anchorIdx ?? 0) < inlineInserts[0].startIdx;
                 pushMessageSegment(
                   splitSegment.head,
                   `${bucketIndex}:delayed-head`,
                   delayedFirstSegmentAnchorIdx,
                   delayedFirstSegmentTimestamp,
                 );
-                pushInlineInsert(inlineInserts[0], bucket.timestamp, bucket.anchorIdx ?? delayedFirstSegmentAnchorIdx);
-                nextInsertIndex = 1;
-                shouldDelayFirstInsert = false;
-                if (splitSegment.tail.length > 0) {
+                if (tailIsAnnouncement && splitSegment.tail.length > 0) {
                   pushMessageSegment(
                     splitSegment.tail,
                     `${bucketIndex}:delayed-tail`,
-                    bucket.anchorIdx ?? delayedFirstSegmentAnchorIdx,
+                    inlineInserts[0].startIdx,
                     bucket.timestamp ?? delayedFirstSegmentTimestamp,
                   );
                 }
+                pushInlineInsert(inlineInserts[0], bucket.timestamp);
+                if (!tailIsAnnouncement && splitSegment.tail.length > 0) {
+                  pushMessageSegment(
+                    splitSegment.tail,
+                    `${bucketIndex}:delayed-tail`,
+                    inlineInserts[0].startIdx,
+                    bucket.timestamp ?? delayedFirstSegmentTimestamp,
+                  );
+                }
+                nextInsertIndex = 1;
+                shouldDelayFirstInsert = false;
               } else {
                 pushMessageSegment(
                   delayedFirstSegmentContent,
@@ -2875,7 +2972,7 @@ export function WorkspacePage() {
                   delayedFirstSegmentAnchorIdx,
                   delayedFirstSegmentTimestamp,
                 );
-                pushInlineInsert(inlineInserts[0], bucket.timestamp, bucket.anchorIdx ?? delayedFirstSegmentAnchorIdx);
+                pushInlineInsert(inlineInserts[0], bucket.timestamp);
                 nextInsertIndex = 1;
                 shouldDelayFirstInsert = false;
               }
@@ -2883,6 +2980,11 @@ export function WorkspacePage() {
               delayedFirstSegmentContent = "";
               delayedFirstSegmentAnchorIdx = null;
               delayedFirstSegmentTimestamp = null;
+
+              while (nextInsertIndex <= bucketIndex && nextInsertIndex < inlineInserts.length) {
+                pushInlineInsert(inlineInserts[nextInsertIndex], segmentBuckets[nextInsertIndex]?.timestamp);
+                nextInsertIndex += 1;
+              }
               continue;
             }
 
@@ -2895,11 +2997,17 @@ export function WorkspacePage() {
             ) {
               const splitSegment = hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null;
               if (splitSegment) {
+                const tailIsAnnouncement = (bucket.anchorIdx ?? 0) < inlineInserts[0].startIdx;
                 pushMessageSegment(splitSegment.head, `${bucketIndex}:head`, bucket.anchorIdx, bucket.timestamp);
-                pushInlineInsert(inlineInserts[0], bucket.timestamp, bucket.anchorIdx);
+                if (tailIsAnnouncement && splitSegment.tail.length > 0) {
+                  pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, inlineInserts[0].startIdx, bucket.timestamp);
+                }
+                pushInlineInsert(inlineInserts[0], bucket.timestamp);
+                if (!tailIsAnnouncement && splitSegment.tail.length > 0) {
+                  pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, inlineInserts[0].startIdx, bucket.timestamp);
+                }
                 nextInsertIndex = 1;
                 shouldDelayFirstInsert = false;
-                pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, bucket.anchorIdx, bucket.timestamp);
                 segmentRendered = true;
               }
             }

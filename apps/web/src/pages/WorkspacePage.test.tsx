@@ -5338,6 +5338,204 @@ describe("WorkspacePage", () => {
     expect(container.textContent).toContain("boom");
   });
 
+  it("falls back to message.content when delta events are incomplete", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-incomplete-delta",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "update the CLAUDE.md file",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-incomplete-delta",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "I'll update the CLAUDE.md file to remove all beads-related sections. Let me apply the changes now.",
+        createdAt: "2026-01-01T10:00:05.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-incomplete-delta-partial",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-incomplete-delta", role: "assistant", delta: "I'll update the CLAUDE.md file to remove all beads-related sections." },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-incomplete-delta-bash-start",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "tool-incomplete-1", parentToolUseId: null, command: "rm -rf .beads", isBash: true, shell: "bash" },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-incomplete-delta-bash-finish",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.finished",
+        payload: { summary: "Ran rm -rf .beads", precedingToolUseIds: ["tool-incomplete-1"], command: "rm -rf .beads", output: "", isBash: true, shell: "bash" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-incomplete-delta-complete",
+        threadId: "thread-1",
+        idx: 5,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-incomplete-delta" },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const fullText = container.textContent ?? "";
+    expect(fullText).toContain("Let me apply the changes now.");
+    expect(fullText).toContain("I'll update the CLAUDE.md file to remove all beads-related sections.");
+  });
+
+  it("shows Deleted label for deletion-only edited diff card", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-delete-only",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "remove the beads system",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-delete-only",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Done, I removed the files.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-delete-only-msg",
+        threadId: "thread-1",
+        idx: 1,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-delete-only", role: "assistant", delta: "Done, I removed the files." },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-delete-only-worktree",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          source: "worktree.diff",
+          summary: "Edited 2 files",
+          changedFiles: [".beads/.gitignore", ".beads/config.json"],
+          diff: "diff --git a/.beads/.gitignore b/.beads/.gitignore\ndeleted file mode 100644\n--- a/.beads/.gitignore\n+++ /dev/null\n@@ -1,5 +0,0 @@\n-node_modules\n-dist\n-.env\n-*.log\n-coverage\ndiff --git a/.beads/config.json b/.beads/config.json\ndeleted file mode 100644\n--- a/.beads/config.json\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-{\n-  \"version\": 1\n-}",
+          diffTruncated: false,
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-delete-only-complete",
+        threadId: "thread-1",
+        idx: 3,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-delete-only" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const editedCard = container.querySelector('[data-testid="timeline-edited-diff"]');
+    if (!editedCard) {
+      throw new Error("Expected edited diff card for deletion");
+    }
+    const summaryEl = editedCard.querySelector("summary");
+    if (!summaryEl) {
+      throw new Error("Expected summary element in edited diff card");
+    }
+    expect(summaryEl.textContent).toContain("Deleted .beads/.gitignore");
+    expect(summaryEl.textContent).not.toContain("Edited");
+    expect(summaryEl.textContent).toContain("-8");
+    expect(summaryEl.textContent).toContain("+0");
+    expect(summaryEl.textContent).toContain("(2 files)");
+  });
+
+  it("places text before explore-activity when no delta events exist", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-no-deltas",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "delete config.yaml",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-no-deltas",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Let me first read this file to understand what it contains.",
+        createdAt: "2026-01-01T10:00:05.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-no-deltas-read-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-read-1", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-no-deltas-read-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: { summary: "Read .beads/config.yaml", precedingToolUseIds: ["tool-read-1"] },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-no-deltas-complete",
+        threadId: "thread-1",
+        idx: 3,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-no-deltas" },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+
+    await flushEffects();
+
+    const fullText = container.textContent ?? "";
+    const textIdx = fullText.indexOf("Let me first read this file");
+    const exploreIdx = fullText.indexOf("Explored");
+    expect(textIdx).toBeGreaterThanOrEqual(0);
+    expect(exploreIdx).toBeGreaterThanOrEqual(0);
+    expect(textIdx).toBeLessThan(exploreIdx);
+  });
+
   it("shows instrumentation panel when render debug mode is enabled", async () => {
     window.localStorage.setItem("cs.debug.render", "1");
 

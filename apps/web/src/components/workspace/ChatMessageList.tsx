@@ -799,13 +799,16 @@ function editedSummaryLabel({
     return `Failed editing ${firstFile}${fileCount}`;
   }
 
+  const isDeleteOnly = additions === 0 && deletions > 0;
+  const verb = isDeleteOnly ? "Deleted" : "Edited";
+
   if (diffKind !== "actual") {
-    return `Edited ${firstFile}${fileCount}`;
+    return `${verb} ${firstFile}${fileCount}`;
   }
 
   return (
     <>
-      Edited {firstFile}{" "}
+      {verb} {firstFile}{" "}
       <span className="text-emerald-400">+{additions}</span>{" "}
       <span className="text-red-400">-{deletions}</span>
       {fileCount}
