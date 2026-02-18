@@ -2453,7 +2453,7 @@ describe("WorkspacePage", () => {
 
     const timelineText = container.textContent ?? "";
     const firstSentenceIdx = timelineText.indexOf("Saya akan mencari file terkait networking dalam project Flutter ini.");
-    const exploredIdx = timelineText.indexOf("Explored 0 files, 1 searches");
+    const exploredIdx = timelineText.indexOf("Explored 1 searches");
     const secondSentenceIdx = timelineText.indexOf("Berikut adalah file-file terkait networking dalam project.");
 
     expect(firstSentenceIdx).toBeGreaterThanOrEqual(0);
@@ -2533,7 +2533,7 @@ describe("WorkspacePage", () => {
 
     const timelineText = container.textContent ?? "";
     const preambleIdx = timelineText.indexOf("Urutan idx dulu.");
-    const exploredIdx = timelineText.indexOf("Explored 1 files, 0 searches");
+    const exploredIdx = timelineText.indexOf("Explored 1 files");
     const summaryIdx = timelineText.indexOf("Lalu ringkasan.");
 
     expect(preambleIdx).toBeGreaterThanOrEqual(0);

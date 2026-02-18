@@ -1532,6 +1532,14 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
             );
             const expanded = isExploreActivityExpanded(item.id);
             const summaryPrefix = item.status === "running" ? "Exploring" : "Explored";
+            const summaryParts: string[] = [];
+            if (item.fileCount > 0) {
+              summaryParts.push(`${item.fileCount} files`);
+            }
+            if (item.searchCount > 0) {
+              summaryParts.push(`${item.searchCount} searches`);
+            }
+            const summaryText = summaryParts.length > 0 ? `${summaryPrefix} ${summaryParts.join(", ")}` : `${summaryPrefix}`;
             return (
               <article
                 key={`explore-activity-${item.id}`}
@@ -1550,7 +1558,7 @@ export function ChatMessageList({ items, showThinkingPlaceholder = false, onOpen
                   }}
                 >
                   <summary className="group/read-summary cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
-                    <span>{summaryPrefix} {item.fileCount} files, {item.searchCount} searches</span>
+                    <span>{summaryText}</span>
                     <span
                       data-testid="timeline-explore-activity-chevron"
                       className={cn("inline-flex transition-transform duration-150", expanded ? "rotate-90" : "")}
