@@ -54,19 +54,15 @@ export function PermissionPromptCard({
         </span>
       </div>
 
-      {isEditPermission && editTarget ? (
-        <div className="mt-3 rounded-xl border border-border/35 bg-background/35 px-3 py-2 text-xs text-foreground/90">
-          Target file: <code>{editTarget}</code>
-        </div>
-      ) : command ? (
+      {!isEditPermission && command ? (
         <pre className="mt-3 overflow-x-auto rounded-xl border border-border/35 bg-background/35 px-3 py-2 text-xs text-foreground/90">
           {command}
         </pre>
-      ) : (
+      ) : !isEditPermission ? (
         <div className="mt-3 rounded-xl border border-border/35 bg-background/35 px-3 py-2 text-xs text-muted-foreground">
           Tool: {toolName}
         </div>
-      )}
+      ) : null}
 
       {hasMetadata ? (
         <div className="mt-2 space-y-1.5 text-xs text-muted-foreground">

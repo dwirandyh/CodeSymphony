@@ -2408,6 +2408,70 @@ describe("WorkspacePage", () => {
     expect(container.textContent).not.toContain("Exploring 1 files, 1 searches");
   });
 
+  it("renders explored summary when explore tools finish before chat.completed", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-explore-before-complete",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "read readme first",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-explore-before-complete",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "I checked it and will continue.",
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-explore-before-complete-read-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "tool-explore-before-complete-read", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-explore-before-complete-read-finish",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          summary: "Read README.md",
+          precedingToolUseIds: ["tool-explore-before-complete-read"],
+        },
+        createdAt: "2026-01-01T10:00:01.200Z",
+      },
+      {
+        id: "evt-explore-before-complete-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: {
+          messageId: "msg-assistant-explore-before-complete",
+          role: "assistant",
+          delta: "I checked it and will continue.",
+        },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    expect(container.textContent).toContain("Explored 1 files");
+    expect(container.textContent).not.toContain("Exploring 1 files");
+    expect(container.textContent).toContain("Read README.md");
+    expect(container.textContent).toContain("I checked it and will continue.");
+  });
+
   it("uses search tool parameters for generic completed search summaries", async () => {
     (api.listMessages as Mock).mockResolvedValueOnce([
       {
@@ -4562,6 +4626,7 @@ describe("WorkspacePage", () => {
     expect(container.textContent).toContain("Do you want Claude to apply this edit to README.md?");
     expect(container.textContent).toContain("Yes, apply edit");
     expect(container.textContent).toContain("No, keep current file");
+    expect(container.textContent).not.toContain("Target file:");
     expect(container.querySelector('button[aria-label="Send message"]')).toBeNull();
   });
 

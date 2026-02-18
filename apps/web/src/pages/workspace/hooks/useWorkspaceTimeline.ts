@@ -626,12 +626,11 @@ export function useWorkspaceTimeline(
           }
 
           const group = insert.group;
-          const exploreStatus = !isCompleted ? "running" : group.status;
           sortable.push({
             item: {
               kind: "explore-activity",
               id: `${message.id}:${group.id}:${insert.id}`,
-              status: exploreStatus,
+              status: group.status,
               fileCount: group.fileCount,
               searchCount: group.searchCount,
               entries: group.entries,
