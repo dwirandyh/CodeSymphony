@@ -597,32 +597,49 @@ export function useWorkspaceTimeline(
             bucket.timestamp = null;
           }
         } else if (allSubagentsHaveResponse && cleanedContent.length > 0) {
-          // The subagent response is in the card; replace raw segments with the
-          // cleaned main-agent-only text so the main summary still renders.
-          for (const bucket of segmentBuckets) {
-            bucket.content = "";
-            bucket.anchorIdx = null;
-            bucket.timestamp = null;
+          if (hasSegmentContent && !deltasSignificantlyIncomplete) {
+            // Deltas have good coverage — strip subagent/main summary markers from
+            // each bucket individually to preserve text positioning around subagent cards.
+            // This keeps intro text BEFORE the card and follow-up text AFTER it.
+            for (const bucket of segmentBuckets) {
+              if (bucket.content.length > 0) {
+                bucket.content = bucket.content
+                  .replace(subagentSummaryRegex, "")
+                  .replace(mainSummaryStartMarker, "")
+                  .replace(mainSummaryEndMarker, "")
+                  .trim();
+              }
+            }
+          } else {
+            // Deltas are insufficient — fall back to putting cleanedContent after last insert.
+            for (const bucket of segmentBuckets) {
+              bucket.content = "";
+              bucket.anchorIdx = null;
+              bucket.timestamp = null;
+            }
+            segmentBuckets[0] = {
+              content: cleanedContent,
+              anchorIdx: inlineInserts.length > 0
+                ? inlineInserts[inlineInserts.length - 1].startIdx + 1
+                : anchorIdx,
+              timestamp,
+            };
           }
-          segmentBuckets[0] = {
-            content: cleanedContent,
-            anchorIdx: inlineInserts.length > 0
-              ? inlineInserts[inlineInserts.length - 1].startIdx + 1
-              : anchorIdx,
-            timestamp,
-          };
         } else if ((!hasSegmentContent || deltasSignificantlyIncomplete) && cleanedContent.length > 0) {
           for (const bucket of segmentBuckets) {
             bucket.content = "";
             bucket.anchorIdx = null;
             bucket.timestamp = null;
           }
-          // When deltas are incomplete, place the full message content in bucket 0
-          // (before any inline inserts) so the text renders above subagent/explore/bash
-          // activities. Use an anchorIdx just before the first insert to maintain sort order.
+          // When deltas are incomplete, place the full message content in bucket 0.
+          // For subagent scenarios the text is the agent's response AFTER the subagent
+          // completed, so anchor it after the last insert. Otherwise keep it before the
+          // first insert (existing behaviour for bash/edit/explore).
           const fallbackBucketIndex = 0;
           const fallbackAnchorIdx = inlineInserts.length > 0
-            ? inlineInserts[0].startIdx - 1
+            ? hasInlineSubagentRuns
+              ? inlineInserts[inlineInserts.length - 1].startIdx + 1
+              : inlineInserts[0].startIdx - 1
             : anchorIdx;
           segmentBuckets[fallbackBucketIndex] = {
             content: cleanedContent,

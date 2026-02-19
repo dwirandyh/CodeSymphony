@@ -779,6 +779,28 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             summaryUnknownToolUseIds.add(toolUseId);
           }
         }
+        const summaryText = typeof message.summary === "string" ? message.summary.trim() : "";
+
+        // Capture Task tool summaries even when the tool is already finished (via PostToolUse hook).
+        // This acts as a safety net: PostToolUse's extractSubagentResponse may fail for some
+        // edge-case payloads, but the SDK's tool_use_summary always provides a reliable string.
+        if (summaryText) {
+          for (const toolUseId of summaryToolUseIds) {
+            const metadata = toolMetadataByUseId.get(toolUseId);
+            if (metadata?.toolName?.toLowerCase() === "task" && !subagentResponseByUseId.has(toolUseId)) {
+              subagentResponseByUseId.set(toolUseId, summaryText);
+              await onSubagentStopped({
+                agentId: "",
+                agentType: "",
+                toolUseId,
+                description: "",
+                lastMessage: summaryText,
+                isResponseUpdate: true,
+              });
+            }
+          }
+        }
+
         if (pendingToolUseIds.length === 0) {
           for (const toolUseId of summaryToolUseIds) {
             toolMetadataByUseId.delete(toolUseId);
@@ -796,7 +818,6 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           return typeof editTarget === "string" && editTarget.length > 0;
         });
         const editTarget = editToolUseId ? toolMetadataByUseId.get(editToolUseId)?.editTarget : undefined;
-        const summaryText = typeof message.summary === "string" ? message.summary.trim() : "";
         let subagentTaskToolUseId: string | null = null;
         if (summaryText) {
           for (const toolUseId of pendingToolUseIds) {

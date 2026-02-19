@@ -83,18 +83,24 @@ export function extractSubagentResponse(toolResponse: unknown): string {
                 if (typeof b === "string") return b;
                 if (typeof b === "object" && b !== null) {
                     const rec = b as Record<string, unknown>;
-                    return rec.text || rec.content || rec.result || "";
+                    if (typeof rec.text === "string") return rec.text;
+                    if (typeof rec.content === "string") return rec.content;
+                    if (typeof rec.result === "string") return rec.result;
+                    if (Array.isArray(rec.content)) return extractSubagentResponse(rec.content);
                 }
                 return "";
             })
-            .filter(Boolean) as string[];
+            .filter((s) => s.length > 0);
         return parts.join("\n").trim();
     }
 
     if (typeof toolResponse === "object") {
         const rec = toolResponse as Record<string, unknown>;
-        const text = (rec.text || rec.content || rec.result || "") as string;
-        return typeof text === "string" ? text.trim() : "";
+        for (const key of ["text", "content", "result"]) {
+            const val = rec[key];
+            if (typeof val === "string" && val.trim().length > 0) return val.trim();
+            if (Array.isArray(val)) return extractSubagentResponse(val);
+        }
     }
 
     return "";
