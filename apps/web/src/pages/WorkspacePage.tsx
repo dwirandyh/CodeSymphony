@@ -103,11 +103,11 @@ export function WorkspacePage() {
   );
 
   return (
-    <div className="flex h-full p-1 safe-top sm:p-2 lg:p-3">
+    <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-3 lg:pb-0">
       <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
         {/* ── Resizable sidebar ── */}
         <aside
-          className="hidden min-h-0 shrink-0 rounded-2xl bg-card/75 p-2 lg:block lg:p-3"
+          className="mb-1 hidden min-h-0 shrink-0 rounded-2xl bg-card/75 p-2 sm:mb-2 lg:mb-3 lg:block lg:p-3"
           style={{ width: `${sidebarWidth}px` }}
         >
           <div className="mb-3">
@@ -146,7 +146,7 @@ export function WorkspacePage() {
         </div>
 
         {/* ── Main content area (chat + bottom panel) ── */}
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col p-1.5 sm:p-2.5 lg:p-3">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
           {/* ── Mobile top bar ── */}
           <div className="flex items-center gap-2 pb-1.5 lg:hidden">
             <button
@@ -304,54 +304,57 @@ export function WorkspacePage() {
           </div>
         )}
 
-        {/* ── Right panel content ── */}
-        {rightPanelId && (
-          <aside
-            id="source-control-panel"
-            aria-label="Source Control panel"
-            className="hidden min-h-0 shrink-0 overflow-hidden rounded-2xl bg-card/75 lg:block"
-            style={{ width: `${rightPanelWidth}px` }}
-          >
-            {rightPanelId === "git" && (
-              <GitChangesPanel
-                entries={gitChanges.entries}
-                branch={gitChanges.branch}
-                loading={gitChanges.loading}
-                committing={gitChanges.committing}
-                error={gitChanges.error}
-                selectedFilePath={selectedDiffFilePath}
-                onCommit={(msg) => void gitChanges.commit(msg)}
-                onReview={handleOpenReview}
-                onRefresh={() => void gitChanges.refresh()}
-                onClose={() => setRightPanelId(null)}
-                onSelectFile={handleSelectDiffFile}
-              />
-            )}
-          </aside>
-        )}
+        {/* ── Right Sidebar ── */}
+        <div className="mb-1 hidden min-h-0 shrink-0 flex-row rounded-2xl bg-card/75 sm:mb-2 lg:mb-3 lg:flex">
+          {/* ── Right panel content ── */}
+          {rightPanelId && (
+            <aside
+              id="source-control-panel"
+              aria-label="Source Control panel"
+              className="flex min-h-0 shrink-0 flex-col overflow-hidden border-r border-border/30"
+              style={{ width: `${rightPanelWidth}px` }}
+            >
+              {rightPanelId === "git" && (
+                <GitChangesPanel
+                  entries={gitChanges.entries}
+                  branch={gitChanges.branch}
+                  loading={gitChanges.loading}
+                  committing={gitChanges.committing}
+                  error={gitChanges.error}
+                  selectedFilePath={selectedDiffFilePath}
+                  onCommit={(msg) => void gitChanges.commit(msg)}
+                  onReview={handleOpenReview}
+                  onRefresh={() => void gitChanges.refresh()}
+                  onClose={() => setRightPanelId(null)}
+                  onSelectFile={handleSelectDiffFile}
+                />
+              )}
+            </aside>
+          )}
 
-        {/* ── Right icon bar ── */}
-        <nav className="hidden w-11 shrink-0 flex-col items-center pt-2 lg:flex">
-          <button
-            type="button"
-            title="Source Control"
-            aria-label="Source Control"
-            aria-expanded={rightPanelId === "git"}
-            aria-controls="source-control-panel"
-            className={cn(
-              "relative flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
-              rightPanelId === "git" && "bg-secondary text-foreground",
-            )}
-            onClick={() => setRightPanelId((prev) => (prev === "git" ? null : "git"))}
-          >
-            <GitBranch className="h-[18px] w-[18px]" />
-            {gitChanges.entries.length > 0 && (
-              <span className="absolute right-0.5 top-0.5 flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-bold leading-none text-primary-foreground">
-                {gitChanges.entries.length > 99 ? "99+" : gitChanges.entries.length}
-              </span>
-            )}
-          </button>
-        </nav>
+          {/* ── Right icon bar ── */}
+          <nav className="flex w-[48px] shrink-0 flex-col items-center pt-[10px] lg:pt-[14px]">
+            <button
+              type="button"
+              title="Source Control"
+              aria-label="Source Control"
+              aria-expanded={rightPanelId === "git"}
+              aria-controls="source-control-panel"
+              className={cn(
+                "relative flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+                rightPanelId === "git" && "bg-secondary text-foreground",
+              )}
+              onClick={() => setRightPanelId((prev) => (prev === "git" ? null : "git"))}
+            >
+              <GitBranch className="h-[18px] w-[18px]" />
+              {gitChanges.entries.length > 0 && (
+                <span className="absolute right-0.5 top-0.5 flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-bold leading-none text-primary-foreground">
+                  {gitChanges.entries.length > 99 ? "99+" : gitChanges.entries.length}
+                </span>
+              )}
+            </button>
+          </nav>
+        </div>
       </div>
 
       {/* ── Mobile drawer backdrop ── */}
