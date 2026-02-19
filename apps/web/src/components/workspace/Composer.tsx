@@ -3,7 +3,7 @@ import fuzzysort from "fuzzysort";
 import { ArrowUp, FileText, Folder, Lightbulb, Square, Zap } from "lucide-react";
 import type { ChatMode, FileEntry } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
-import { serializeMentionPrefix } from "../../lib/mentions";
+import { serializeMention } from "../../lib/mentions";
 
 type ComposerProps = {
   value: string;
@@ -266,33 +266,22 @@ export function Composer({
     const editor = editorRef.current;
     if (!editor) return value;
 
-    const files = getMentionedFilesFromEditor(editor);
-    const textParts: string[] = [];
-
+    const parts: string[] = [];
     for (const node of editor.childNodes) {
       if (node.nodeType === Node.TEXT_NODE) {
-        textParts.push(node.textContent ?? "");
+        parts.push(node.textContent ?? "");
       } else if (node instanceof HTMLElement) {
         if (node.dataset.mentionPath) {
-          continue;
+          const type = node.dataset.mentionType === "directory" ? "directory" : "file";
+          parts.push(serializeMention(node.dataset.mentionPath, type));
         } else if (node.tagName === "BR") {
-          textParts.push("\n");
+          parts.push("\n");
         } else {
-          textParts.push(node.textContent ?? "");
+          parts.push(node.textContent ?? "");
         }
       }
     }
-
-    const userText = textParts.join("").replace(/\u00A0/g, " ").trim();
-    const mentionPrefix = serializeMentionPrefix(files);
-
-    if (mentionPrefix && userText) {
-      return `${mentionPrefix}\n${userText}`;
-    }
-    if (mentionPrefix) {
-      return mentionPrefix;
-    }
-    return userText;
+    return parts.join("").replace(/\u00A0/g, " ").trim();
   }, [value]);
 
   const handleSubmit = useCallback(() => {
@@ -308,6 +297,45 @@ export function Composer({
     onSubmitMessage(content);
     onChange("");
   }, [cannotSend, buildFinalContent, onSubmitMessage, onChange]);
+
+  const handlePaste = useCallback(
+    (event: React.ClipboardEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const text = event.clipboardData.getData("text/plain");
+      if (!text) return;
+
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+
+      const lines = text.split("\n");
+      const fragment = document.createDocumentFragment();
+      for (let i = 0; i < lines.length; i++) {
+        if (i > 0) {
+          fragment.appendChild(document.createElement("br"));
+        }
+        if (lines[i]) {
+          fragment.appendChild(document.createTextNode(lines[i]));
+        }
+      }
+
+      const lastNode = fragment.lastChild;
+      range.insertNode(fragment);
+
+      if (lastNode) {
+        const newRange = document.createRange();
+        newRange.setStartAfter(lastNode);
+        newRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(newRange);
+      }
+
+      syncValueFromEditor();
+    },
+    [syncValueFromEditor],
+  );
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -334,6 +362,60 @@ export function Composer({
         }
       }
 
+      // Backspace: delete mention chips when cursor is adjacent
+      if (event.key === "Backspace") {
+        const sel = window.getSelection();
+        const editor = editorRef.current;
+        if (sel && sel.rangeCount > 0 && editor) {
+          const anchorNode = sel.anchorNode;
+          const anchorOffset = sel.anchorOffset;
+
+          // Case A: Cursor at offset 0 of a text node, previous sibling is a chip
+          if (
+            anchorNode &&
+            anchorNode.nodeType === Node.TEXT_NODE &&
+            anchorOffset === 0 &&
+            anchorNode.previousSibling instanceof HTMLElement &&
+            anchorNode.previousSibling.dataset.mentionPath
+          ) {
+            event.preventDefault();
+            anchorNode.previousSibling.remove();
+            syncValueFromEditor();
+            return;
+          }
+
+          // Case B: Cursor in editor element itself, positioned after a chip child
+          if (
+            anchorNode === editor &&
+            anchorOffset > 0 &&
+            editor.childNodes[anchorOffset - 1] instanceof HTMLElement &&
+            (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.mentionPath
+          ) {
+            event.preventDefault();
+            editor.childNodes[anchorOffset - 1].remove();
+            syncValueFromEditor();
+            return;
+          }
+
+          // Case C: Cursor at offset 1 of a text node containing only NBSP, previous sibling is a chip
+          if (
+            anchorNode &&
+            anchorNode.nodeType === Node.TEXT_NODE &&
+            anchorOffset === 1 &&
+            anchorNode.textContent === "\u00A0" &&
+            anchorNode.previousSibling instanceof HTMLElement &&
+            anchorNode.previousSibling.dataset.mentionPath
+          ) {
+            event.preventDefault();
+            const chip = anchorNode.previousSibling;
+            anchorNode.textContent = "";
+            chip.remove();
+            syncValueFromEditor();
+            return;
+          }
+        }
+      }
+
       if (event.key === "Tab" && event.shiftKey) {
         event.preventDefault();
         onModeChange(isPlan ? "default" : "plan");
@@ -351,7 +433,7 @@ export function Composer({
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit, syncValueFromEditor],
   );
 
   useEffect(() => {
@@ -426,6 +508,7 @@ export function Composer({
             suppressContentEditableWarning
             onInput={handleInput}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             onCompositionStart={() => { isComposingRef.current = true; }}
             onCompositionEnd={() => {
               isComposingRef.current = false;

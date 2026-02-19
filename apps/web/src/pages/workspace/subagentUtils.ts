@@ -1,20 +1,47 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { payloadStringOrNull } from "./eventUtils";
+import { isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
+import { extractReadFileEntry, extractSearchEntryLabel, searchContextFromEvent, shortenReadTargetForDisplay } from "./exploreUtils";
 import type { SubagentGroup, SubagentStep } from "./types";
 
-function buildStepLabel(event: ChatEvent): string {
+function buildStepInfo(event: ChatEvent): { label: string; openPath: string | null } {
   const toolName = payloadStringOrNull(event.payload.toolName);
   const summary = payloadStringOrNull(event.payload.summary);
+
+  // Read tools: show short basename instead of full path
+  if (isReadToolEvent(event) && event.type === "tool.finished") {
+    const entry = extractReadFileEntry(event);
+    if (entry) {
+      return { label: entry.label, openPath: entry.openPath };
+    }
+  }
+
+  // Search tools (Glob/Grep/Search): normalize "Completed Glob" into "Searched Glob (pattern)"
+  if (isSearchToolEvent(event) && event.type === "tool.finished") {
+    const ctx = searchContextFromEvent(event);
+    return { label: extractSearchEntryLabel(event, { toolName: ctx.toolName, searchParams: ctx.searchParams }), openPath: null };
+  }
+
   if (summary) {
-    return summary;
+    // Shorten absolute paths in summaries (e.g. Bash "Ran ls -R /full/path" → "Ran ls -R dir")
+    const shortened = summary.replace(
+      /"(\/[^"]+)"|'(\/[^']+)'|(\/(?:[^\s,]+\/)+[^\s,]+)/g,
+      (match, quoted1: string | undefined, quoted2: string | undefined, unquoted: string | undefined) => {
+        const p = quoted1 ?? quoted2 ?? unquoted ?? match;
+        const short = shortenReadTargetForDisplay(p);
+        if (quoted1) return `"${short}"`;
+        if (quoted2) return `'${short}'`;
+        return short;
+      },
+    );
+    return { label: shortened, openPath: null };
   }
   if (toolName) {
     if (event.type === "tool.started") {
-      return `${toolName} (running)`;
+      return { label: `${toolName} (running)`, openPath: null };
     }
-    return toolName;
+    return { label: toolName, openPath: null };
   }
-  return "Step";
+  return { label: "Step", openPath: null };
 }
 
 /**
@@ -341,17 +368,23 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
       if (existingStep) {
         if (event.type === "tool.finished") {
           existingStep.status = "success";
-          existingStep.label = buildStepLabel(event);
+          const info = buildStepInfo(event);
+          existingStep.label = info.label;
+          existingStep.openPath = info.openPath;
           // Update toolUseId to the finished event's ID so future lookups work
           existingStep.toolUseId = toolUseId;
         } else if (event.type === "tool.output" && existingStep.status === "running") {
-          existingStep.label = buildStepLabel(event);
+          const info = buildStepInfo(event);
+          existingStep.label = info.label;
+          existingStep.openPath = info.openPath;
         }
       } else {
+        const info = buildStepInfo(event);
         subagent.steps.push({
           toolUseId,
           toolName: payloadStringOrNull(event.payload.toolName) ?? "Tool",
-          label: buildStepLabel(event),
+          label: info.label,
+          openPath: info.openPath,
           status: event.type === "tool.finished" ? "success" : "running",
         });
       }
