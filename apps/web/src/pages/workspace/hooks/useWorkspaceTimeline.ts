@@ -293,16 +293,38 @@ export function useWorkspaceTimeline(
       for (const group of subagentGroups) {
         group.eventIds.forEach((id) => subagentEventIds.add(id));
       }
-      // When a subagent group has a weak lastMessage (null or very short),
-      // fall back to using message.content as the lastMessage.
-      // This handles the case where the isResponseUpdate event's ID mapping failed.
-      if (subagentGroups.length === 1 && message.content.length > 0) {
-        const group = subagentGroups[0];
-        const lastMsgLen = group.lastMessage?.length ?? 0;
-        // If lastMessage is absent or much shorter than message.content, use message.content
-        if (lastMsgLen < 100 && message.content.length > lastMsgLen) {
-          group.lastMessage = message.content;
+      // Parse ###subagent summary start/end markers from message.content to extract
+      // the subagent's response when the event-based lastMessage population fails.
+      // Also strip markers from message.content for clean rendering.
+      const subagentSummaryRegex = /###subagent summary start\n?([\s\S]*?)###subagent summary end\n?/g;
+      const mainSummaryStartMarker = /###main summary start\n?/g;
+      const mainSummaryEndMarker = /###main summary end\n?/g;
+
+      let cleanedContent = message.content;
+
+      if (subagentGroups.length > 0 && message.content.length > 0) {
+        // Extract subagent summary from message.content for groups missing lastMessage
+        const subagentSummaryMatch = subagentSummaryRegex.exec(message.content);
+        if (subagentSummaryMatch) {
+          const extractedSummary = subagentSummaryMatch[1].trim();
+          if (extractedSummary) {
+            for (const group of subagentGroups) {
+              if (!group.lastMessage || group.lastMessage.length < 100) {
+                group.lastMessage = extractedSummary;
+              }
+            }
+          }
         }
+
+        // Strip the subagent summary block and main summary markers from message content
+        // so they aren't rendered as raw ### headers in the chat text.
+        // Reset regex lastIndex since we used .exec() above which moves it.
+        subagentSummaryRegex.lastIndex = 0;
+        cleanedContent = message.content
+          .replace(subagentSummaryRegex, "")
+          .replace(mainSummaryStartMarker, "")
+          .replace(mainSummaryEndMarker, "")
+          .trim();
       }
       const nonSubagentContext = message.role === "assistant"
         ? context.filter((event) => !subagentEventIds.has(event.id))
@@ -436,6 +458,13 @@ export function useWorkspaceTimeline(
         }
       }
 
+      // Always claim activityContext events even when inline inserts exist
+      // (bash/edit/explore/subagent). Without this, uncategorized tools like
+      // TodoWrite leak as orphan "tool" timeline items showing raw status badges.
+      if (message.role === "assistant" && activityContext.length > 0 && bashRuns.length > 0) {
+        activityContext.forEach((event) => assignedToolEventIds.add(event.id));
+      }
+
       if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0)) {
         const hasInlineExploreRuns = exploreActivityGroups.length > 0;
         const hasInlineSubagentRuns = subagentGroups.length > 0;
@@ -548,28 +577,41 @@ export function useWorkspaceTimeline(
 
         const totalSegmentLength = segmentBuckets.reduce((sum, b) => sum + b.content.length, 0);
         const hasSegmentContent = totalSegmentLength > 0;
-        const deltasCoverageRatio = message.content.length > 0 ? totalSegmentLength / message.content.length : 1;
+        const deltasCoverageRatio = cleanedContent.length > 0 ? totalSegmentLength / cleanedContent.length : 1;
         const deltasSignificantlyIncomplete = hasSegmentContent && deltasCoverageRatio < 0.9;
 
-        // Suppress text segments when subagent groups with valid lastMessage exist.
-        // The subagent box already renders the response — showing the same text
-        // as a separate message segment would duplicate it.
+        // Suppress text segments when subagent groups with valid lastMessage exist
+        // AND the cleaned content is empty (i.e., the entire message was just
+        // subagent summary + main summary markers, nothing else to show).
+        // When cleanedContent still has text (the main agent's own commentary),
+        // we need to replace the raw segments with the cleaned version.
         const allSubagentsHaveResponse = hasInlineSubagentRuns
           && subagentGroups.every((g) => (g.lastMessage?.length ?? 0) > 0);
-        const onlySubagentInserts = hasInlineSubagentRuns
-          && bashRuns.length === 0
-          && editedRuns.length === 0
-          && exploreActivityGroups.length === 0;
-        const suppressTextSegments = allSubagentsHaveResponse && onlySubagentInserts;
+        const suppressTextSegments = allSubagentsHaveResponse && cleanedContent.trim().length === 0;
 
         if (suppressTextSegments) {
-          // Clear all text segments — the subagent box handles display
+          // Clear all text segments — nothing to show after stripping subagent content
           for (const bucket of segmentBuckets) {
             bucket.content = "";
             bucket.anchorIdx = null;
             bucket.timestamp = null;
           }
-        } else if ((!hasSegmentContent || deltasSignificantlyIncomplete) && message.content.length > 0) {
+        } else if (allSubagentsHaveResponse && cleanedContent.length > 0) {
+          // The subagent response is in the card; replace raw segments with the
+          // cleaned main-agent-only text so the main summary still renders.
+          for (const bucket of segmentBuckets) {
+            bucket.content = "";
+            bucket.anchorIdx = null;
+            bucket.timestamp = null;
+          }
+          segmentBuckets[0] = {
+            content: cleanedContent,
+            anchorIdx: inlineInserts.length > 0
+              ? inlineInserts[inlineInserts.length - 1].startIdx + 1
+              : anchorIdx,
+            timestamp,
+          };
+        } else if ((!hasSegmentContent || deltasSignificantlyIncomplete) && cleanedContent.length > 0) {
           for (const bucket of segmentBuckets) {
             bucket.content = "";
             bucket.anchorIdx = null;
@@ -583,7 +625,7 @@ export function useWorkspaceTimeline(
             ? inlineInserts[0].startIdx - 1
             : anchorIdx;
           segmentBuckets[fallbackBucketIndex] = {
-            content: message.content,
+            content: cleanedContent,
             anchorIdx: fallbackAnchorIdx,
             timestamp,
           };
