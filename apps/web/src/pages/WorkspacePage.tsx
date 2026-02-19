@@ -17,6 +17,7 @@ import { useChatSession } from "./workspace/hooks/useChatSession";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useSidebarResize } from "./workspace/hooks/useSidebarResize";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
+import { useFileIndex } from "./workspace/hooks/useFileIndex";
 
 export function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +38,7 @@ export function WorkspacePage() {
     handleSidebarMouseDown: handleRightPanelMouseDown,
   } = useSidebarResize(320, true);
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
+  const fileIndex = useFileIndex(repos.selectedWorktreeId);
 
   const [reviewTabOpen, setReviewTabOpen] = useState(false);
 
@@ -269,6 +271,8 @@ export function WorkspacePage() {
                     stopping={chat.stoppingRun}
                     mode={chat.chatMode}
                     worktreeId={repos.selectedWorktreeId}
+                    fileIndex={fileIndex.entries}
+                    fileIndexLoading={fileIndex.loading}
                     onChange={chat.setChatInput}
                     onModeChange={chat.setChatMode}
                     onSubmitMessage={(content) => void chat.submitMessage(content)}

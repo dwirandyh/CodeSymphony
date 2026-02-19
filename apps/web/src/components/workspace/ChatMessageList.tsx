@@ -1187,6 +1187,8 @@ export function ChatMessageList({
   const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(new Map());
   const [exploreActivityExpandedById, setExploreActivityExpandedById] = useState<Map<string, boolean>>(new Map());
   const [subagentExpandedById, setSubagentExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [subagentPromptExpandedById, setSubagentPromptExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [subagentExploreExpandedById, setSubagentExploreExpandedById] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
@@ -1802,22 +1804,52 @@ export function ChatMessageList({
                   {/* Expanded chat-style content */}
                   <div className="mt-2 ml-1 rounded-xl border border-border/30 bg-secondary/5 overflow-hidden">
                     <div className="flex flex-col gap-3 p-3">
-                      {/* Prompt — user-message style */}
+                      {/* Prompt — collapsible */}
                       {item.description && (
-                        <div className="flex justify-end">
-                          <div className="max-w-[85%] rounded-2xl bg-secondary/55 px-4 py-2.5 text-sm text-foreground">
-                            <p className="whitespace-pre-wrap break-words leading-relaxed">{item.description}</p>
-                          </div>
+                        <div className="px-1 text-xs">
+                          <details
+                            open={subagentPromptExpandedById.get(item.id) === true}
+                            onToggle={(event) => {
+                              const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                              setSubagentPromptExpandedById((current) => {
+                                const next = new Map(current);
+                                next.set(item.id, nextOpen);
+                                return next;
+                              });
+                            }}
+                          >
+                            <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
+                              <span>Prompt</span>
+                              <span className={cn("inline-flex transition-transform duration-150", subagentPromptExpandedById.get(item.id) === true ? "rotate-90" : "")}>
+                                <ChevronRight className="h-3 w-3" />
+                              </span>
+                            </summary>
+                            <div className="mt-1 text-sm text-foreground">
+                              <p className="whitespace-pre-wrap break-words leading-relaxed">{item.description}</p>
+                            </div>
+                          </details>
                         </div>
                       )}
 
                       {/* Explore-activity style steps (reads/searches grouped) */}
                       {hasExploreSteps && (
                         <div className="px-1 text-xs">
-                          <details>
+                          <details
+                            open={subagentExploreExpandedById.get(item.id) === true}
+                            onToggle={(event) => {
+                              const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                              setSubagentExploreExpandedById((current) => {
+                                const next = new Map(current);
+                                next.set(item.id, nextOpen);
+                                return next;
+                              });
+                            }}
+                          >
                             <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
                               <span className={!allExploreComplete || isRunning ? "thinking-shimmer" : ""}>{exploreSummaryText}</span>
-                              <ChevronRight className="h-3 w-3 inline-flex" />
+                              <span className={cn("inline-flex transition-transform duration-150", subagentExploreExpandedById.get(item.id) === true ? "rotate-90" : "")}>
+                                <ChevronRight className="h-3 w-3" />
+                              </span>
                             </summary>
                             <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
                               {readSteps.map((step, idx) => (

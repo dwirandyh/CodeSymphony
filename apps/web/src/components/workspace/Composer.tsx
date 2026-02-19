@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import fuzzysort from "fuzzysort";
 import { ArrowUp, FileText, Folder, Lightbulb, Square, Zap } from "lucide-react";
 import type { ChatMode, FileEntry } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
-import { api } from "../../lib/api";
 import { serializeMentionPrefix } from "../../lib/mentions";
 
 type ComposerProps = {
@@ -13,6 +13,8 @@ type ComposerProps = {
   stopping: boolean;
   mode: ChatMode;
   worktreeId: string | null;
+  fileIndex: FileEntry[];
+  fileIndexLoading: boolean;
   onChange: (nextValue: string) => void;
   onModeChange: (mode: ChatMode) => void;
   onSubmitMessage: (content: string) => void;
@@ -32,17 +34,6 @@ let mentionIdCounter = 0;
 function nextMentionId(): string {
   mentionIdCounter += 1;
   return `mention-${mentionIdCounter}`;
-}
-
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delayMs);
-    return () => clearTimeout(timer);
-  }, [value, delayMs]);
-
-  return debounced;
 }
 
 function fileName(filePath: string): string {
@@ -158,6 +149,8 @@ export function Composer({
   stopping,
   mode,
   worktreeId,
+  fileIndex,
+  fileIndexLoading,
   onChange,
   onModeChange,
   onSubmitMessage,
@@ -168,54 +161,37 @@ export function Composer({
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [mention, setMention] = useState<MentionState>({ active: false, query: "", startOffset: -1, anchorNode: null });
-  const [suggestions, setSuggestions] = useState<FileEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [loading, setLoading] = useState(false);
   const mentionedFilesRef = useRef<MentionedFile[]>([]);
   const isComposingRef = useRef(false);
   const suppressInputRef = useRef(false);
 
   const cannotSend = disabled || (value.trim().length === 0 && mentionedFilesRef.current.length === 0);
 
-  const debouncedQuery = useDebouncedValue(mention.query, 150);
-  const requestIdRef = useRef(0);
+  type SuggestionEntry = FileEntry & { highlighted?: string };
 
-  useEffect(() => {
-    if (!mention.active || !worktreeId) {
-      setSuggestions([]);
-      return;
+  const suggestions: SuggestionEntry[] = useMemo(() => {
+    if (!mention.active) return [];
+    const alreadyMentioned = new Set(mentionedFilesRef.current.map((f) => f.path));
+    const available = fileIndex.filter((e) => !alreadyMentioned.has(e.path));
+
+    if (!mention.query) {
+      const dirs = available.filter((e) => e.type === "directory").slice(0, 5);
+      const files = available.filter((e) => e.type === "file").slice(0, 20 - dirs.length);
+      return [...dirs, ...files];
     }
 
-    const controller = new AbortController();
-    const requestId = ++requestIdRef.current;
-    setLoading(true);
+    const results = fuzzysort.go(mention.query, available, { key: "path", limit: 20 });
+    return results.map((r) => ({ ...r.obj, highlighted: r.highlight("<mark>", "</mark>") }));
+  }, [mention.active, mention.query, fileIndex]);
 
-    const alreadyMentioned = new Set(mentionedFilesRef.current.map((f) => f.path));
-
-    api
-      .searchFiles(worktreeId, debouncedQuery, controller.signal)
-      .then((results) => {
-        if (requestId !== requestIdRef.current) return;
-        setSuggestions(results.filter((r) => !alreadyMentioned.has(r.path)));
-        setSelectedIndex(0);
-      })
-      .catch(() => {
-        if (requestId !== requestIdRef.current) return;
-        setSuggestions([]);
-      })
-      .finally(() => {
-        if (requestId !== requestIdRef.current) return;
-        setLoading(false);
-      });
-
-    return () => {
-      controller.abort();
-    };
-  }, [mention.active, debouncedQuery, worktreeId]);
+  // Reset selected index when suggestions change
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [suggestions]);
 
   const closeMention = useCallback(() => {
     setMention({ active: false, query: "", startOffset: -1, anchorNode: null });
-    setSuggestions([]);
     setSelectedIndex(0);
   }, []);
 
@@ -401,13 +377,13 @@ export function Composer({
     <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
         <div className="relative rounded-2xl border border-input/50 bg-background/20 px-3 pb-11 pt-2.5 lg:rounded-3xl lg:px-4 lg:pb-12 lg:pt-3">
-          {mention.active && (suggestions.length > 0 || loading) && (
+          {mention.active && (suggestions.length > 0 || fileIndexLoading) && (
             <div
               ref={popoverRef}
               className="absolute bottom-full left-0 z-50 mb-2 w-full max-h-60 overflow-y-auto rounded-xl border border-border/60 bg-popover shadow-lg"
             >
-              {loading && suggestions.length === 0 ? (
-                <div className="px-3 py-2 text-xs text-muted-foreground">Searching files...</div>
+              {fileIndexLoading && suggestions.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">Loading files...</div>
               ) : (
                 suggestions.map((entry, index) => (
                   <button
@@ -430,7 +406,11 @@ export function Composer({
                     ) : (
                       <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     )}
-                    <span className="truncate">{entry.path}</span>
+                    {entry.highlighted ? (
+                      <span className="truncate" dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
+                    ) : (
+                      <span className="truncate">{entry.path}</span>
+                    )}
                   </button>
                 ))
               )}
