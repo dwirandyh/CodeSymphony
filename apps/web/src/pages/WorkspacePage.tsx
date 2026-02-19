@@ -1,5 +1,5 @@
-import { useCallback, useState } from "react";
-import { GitBranch } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { FolderGit2, GitBranch, Menu, X } from "lucide-react";
 import { Composer } from "../components/workspace/Composer";
 import { ChatMessageList } from "../components/workspace/ChatMessageList";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -30,6 +30,7 @@ export function WorkspacePage() {
   });
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown } = useSidebarResize(300);
   const [rightPanelId, setRightPanelId] = useState<string | null>(null);
+  const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
   const {
     sidebarWidth: rightPanelWidth,
     sidebarDragging: rightDragging,
@@ -38,6 +39,20 @@ export function WorkspacePage() {
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
 
   const [reviewTabOpen, setReviewTabOpen] = useState(false);
+
+  // Close mobile drawer on Escape key
+  useEffect(() => {
+    if (!mobilePanelOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobilePanelOpen(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobilePanelOpen]);
   const [activeView, setActiveView] = useState<"chat" | "review">("chat");
   const [selectedDiffFilePath, setSelectedDiffFilePath] = useState<string | null>(null);
 
@@ -86,7 +101,7 @@ export function WorkspacePage() {
   );
 
   return (
-    <div className="flex h-full p-2 sm:p-3">
+    <div className="flex h-full p-1 safe-top sm:p-2 lg:p-3">
       <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
         {/* ── Resizable sidebar ── */}
         <aside
@@ -129,8 +144,39 @@ export function WorkspacePage() {
         </div>
 
         {/* ── Main content area (chat + bottom panel) ── */}
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col p-2.5 lg:p-3">
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col p-1.5 sm:p-2.5 lg:p-3">
+          {/* ── Mobile top bar ── */}
+          <div className="flex items-center gap-2 pb-1.5 lg:hidden">
+            <button
+              type="button"
+              onClick={() => setMobilePanelOpen("repos")}
+              className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
+              aria-label="Open repositories"
+            >
+              <Menu className="h-4 w-4" />
+            </button>
+            <div className="min-w-0 flex-1">
+              <h1 className="truncate text-[13px] font-semibold tracking-wide">CodeSymphony</h1>
+              <p className="truncate text-[10px] text-muted-foreground">
+                {repos.selectedRepository?.name ?? "No repository"}{repos.selectedWorktree ? ` · ${repos.selectedWorktree.branch}` : ""}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMobilePanelOpen("git")}
+              className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
+              aria-label="Open source control"
+            >
+              <GitBranch className="h-4 w-4" />
+              {gitChanges.entries.length > 0 && (
+                <span className="absolute right-0.5 top-0.5 flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-bold leading-none text-primary-foreground">
+                  {gitChanges.entries.length > 99 ? "99+" : gitChanges.entries.length}
+                </span>
+              )}
+            </button>
+          </div>
+
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-1 lg:gap-2">
             <WorkspaceHeader
               selectedRepositoryName={repos.selectedRepository?.name ?? "No repository selected"}
               selectedWorktreeLabel={repos.selectedWorktree ? `Worktree: ${repos.selectedWorktree.branch}` : "Choose a worktree"}
@@ -303,6 +349,88 @@ export function WorkspacePage() {
           </button>
         </nav>
       </div>
+
+      {/* ── Mobile drawer backdrop ── */}
+      <div
+        className={cn(
+          "fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300 lg:hidden",
+          mobilePanelOpen ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+        onClick={() => setMobilePanelOpen(null)}
+        aria-hidden="true"
+      />
+
+      {/* ── Mobile repos drawer (slide from left) ── */}
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex w-[85vw] max-w-[320px] flex-col bg-card shadow-2xl drawer-slide safe-top lg:hidden",
+          mobilePanelOpen === "repos" ? "translate-x-0" : "-translate-x-full",
+        )}
+      >
+        <div className="flex items-center justify-between px-4 pb-2 pt-4">
+          <div>
+            <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
+            <p className="text-xs text-muted-foreground">Local code conductor</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMobilePanelOpen(null)}
+            className="flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-colors active:bg-secondary/60"
+            aria-label="Close"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden px-2 safe-bottom">
+          <RepositoryPanel
+            repositories={repos.repositories}
+            selectedRepositoryId={repos.selectedRepositoryId}
+            selectedWorktreeId={repos.selectedWorktreeId}
+            loadingRepos={repos.loadingRepos}
+            submittingRepo={repos.submittingRepo}
+            submittingWorktree={repos.submittingWorktree}
+            onAttachRepository={() => void repos.attachRepository()}
+            onSelectRepository={repos.setSelectedRepositoryId}
+            onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
+            onSelectWorktree={(repositoryId, worktreeId) => {
+              repos.setSelectedRepositoryId(repositoryId);
+              repos.setSelectedWorktreeId(worktreeId);
+              setMobilePanelOpen(null);
+            }}
+            onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
+          />
+        </div>
+      </aside>
+
+      {/* ── Mobile git drawer (slide from right) ── */}
+      <aside
+        className={cn(
+          "fixed inset-y-0 right-0 z-50 flex w-[85vw] max-w-[360px] flex-col bg-card shadow-2xl drawer-slide safe-top safe-bottom lg:hidden",
+          mobilePanelOpen === "git" ? "translate-x-0" : "translate-x-full",
+        )}
+      >
+        {mobilePanelOpen === "git" && (
+          <GitChangesPanel
+            entries={gitChanges.entries}
+            branch={gitChanges.branch}
+            loading={gitChanges.loading}
+            committing={gitChanges.committing}
+            error={gitChanges.error}
+            selectedFilePath={selectedDiffFilePath}
+            onCommit={(msg) => void gitChanges.commit(msg)}
+            onReview={() => {
+              handleOpenReview();
+              setMobilePanelOpen(null);
+            }}
+            onRefresh={() => void gitChanges.refresh()}
+            onClose={() => setMobilePanelOpen(null)}
+            onSelectFile={(path) => {
+              handleSelectDiffFile(path);
+              setMobilePanelOpen(null);
+            }}
+          />
+        )}
+      </aside>
     </div>
   );
 }

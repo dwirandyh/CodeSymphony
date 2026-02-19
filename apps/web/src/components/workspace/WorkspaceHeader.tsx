@@ -35,8 +35,8 @@ export function WorkspaceHeader({
   onCloseReviewTab,
 }: WorkspaceHeaderProps) {
   return (
-    <section className="space-y-1.5 pb-2">
-      <div className="min-w-0 truncate text-[11px]">
+    <section className="space-y-1 pb-1 lg:space-y-1.5 lg:pb-2">
+      <div className="hidden min-w-0 truncate text-[11px] lg:block">
         <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Session</span>
         <span className="px-1.5 text-muted-foreground/80">·</span>
         <span className="font-semibold text-foreground/90">{selectedRepositoryName}</span>

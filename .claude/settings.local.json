@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm --filter @codesymphony/web build)",
+      "Bash(pnpm --filter @codesymphony/web test)"
+    ]
+  }
+}

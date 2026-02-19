@@ -400,9 +400,9 @@ export function Composer({
   }, [value]);
 
   return (
-    <section className="pb-2 pt-1">
+    <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
-        <div className="relative rounded-3xl border border-input/50 bg-background/20 px-4 pb-12 pt-3">
+        <div className="relative rounded-2xl border border-input/50 bg-background/20 px-3 pb-11 pt-2.5 lg:rounded-3xl lg:px-4 lg:pb-12 lg:pt-3">
           {mention.active && (suggestions.length > 0 || loading) && (
             <div
               ref={popoverRef}
@@ -454,12 +454,12 @@ export function Composer({
               handleInput();
             }}
             data-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type @ to mention files)"}
-            className={`min-h-[74px] w-full resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground empty:before:pointer-events-none ${
+            className={`min-h-[60px] w-full resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground empty:before:pointer-events-none md:min-h-[74px] ${
               disabled ? "cursor-not-allowed opacity-50" : ""
             }`}
           />
 
-          <div className="absolute bottom-3 left-3 flex items-center">
+          <div className="absolute bottom-2 left-2.5 flex items-center lg:bottom-3 lg:left-3">
             <button
               type="button"
               onClick={() => onModeChange(isPlan ? "default" : "plan")}
@@ -482,7 +482,7 @@ export function Composer({
             disabled={showStop ? stopping : cannotSend}
             size="icon"
             aria-label={showStop ? "Stop run" : "Send message"}
-            className="absolute bottom-3 right-3 h-8 w-8 rounded-full bg-white text-black hover:bg-white/90 disabled:bg-white/80 disabled:text-black/70"
+            className="absolute bottom-2 right-2.5 h-8 w-8 rounded-full bg-white text-black hover:bg-white/90 disabled:bg-white/80 disabled:text-black/70 lg:bottom-3 lg:right-3"
           >
             {showStop ? <Square className="h-3.5 w-3.5" /> : <ArrowUp className="h-3.5 w-3.5" />}
             <span className="sr-only">

@@ -14,7 +14,9 @@ interface BottomPanelProps {
 
 export function BottomPanel({ worktreeId, worktreePath }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
-    const [collapsed, setCollapsed] = useState(false);
+    const [collapsed, setCollapsed] = useState(() => {
+        return typeof window !== "undefined" && window.innerWidth < 768;
+    });
     const [activeTab, setActiveTab] = useState("terminal");
     const [isDragging, setIsDragging] = useState(false);
     const panelRef = useRef<HTMLDivElement>(null);
@@ -31,13 +33,23 @@ export function BottomPanel({ worktreeId, worktreePath }: BottomPanelProps) {
         [height],
     );
 
+    const handleTouchStart = useCallback(
+        (e: React.TouchEvent) => {
+            setIsDragging(true);
+            startYRef.current = e.touches[0].clientY;
+            startHeightRef.current = height;
+        },
+        [height],
+    );
+
     useEffect(() => {
         if (!isDragging) {
             return;
         }
 
-        function handleMouseMove(e: MouseEvent) {
-            const delta = startYRef.current - e.clientY;
+        function handleMove(e: MouseEvent | TouchEvent) {
+            const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
+            const delta = startYRef.current - clientY;
             const maxHeight = window.innerHeight * MAX_HEIGHT_RATIO;
             const newHeight = Math.min(
                 maxHeight,
@@ -46,21 +58,25 @@ export function BottomPanel({ worktreeId, worktreePath }: BottomPanelProps) {
             setHeight(newHeight);
         }
 
-        function handleMouseUp() {
+        function handleEnd() {
             setIsDragging(false);
         }
 
-        document.addEventListener("mousemove", handleMouseMove);
-        document.addEventListener("mouseup", handleMouseUp);
+        document.addEventListener("mousemove", handleMove);
+        document.addEventListener("mouseup", handleEnd);
+        document.addEventListener("touchmove", handleMove, { passive: false });
+        document.addEventListener("touchend", handleEnd);
 
         return () => {
-            document.removeEventListener("mousemove", handleMouseMove);
-            document.removeEventListener("mouseup", handleMouseUp);
+            document.removeEventListener("mousemove", handleMove);
+            document.removeEventListener("mouseup", handleEnd);
+            document.removeEventListener("touchmove", handleMove);
+            document.removeEventListener("touchend", handleEnd);
         };
     }, [isDragging]);
 
     return (
-        <div className="-mx-2.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] lg:-mx-3">
+        <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-3">
             <Tabs.Root
                 value={activeTab}
                 onValueChange={setActiveTab}
@@ -71,14 +87,14 @@ export function BottomPanel({ worktreeId, worktreePath }: BottomPanelProps) {
                     <Tabs.List className="flex items-center">
                         <Tabs.Trigger
                             value="terminal"
-                            className="relative px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground"
+                            className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
                             Terminal
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
                         </Tabs.Trigger>
                         <Tabs.Trigger
                             value="debug"
-                            className="relative px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground"
+                            className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
                             Debug Console
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
@@ -90,7 +106,7 @@ export function BottomPanel({ worktreeId, worktreePath }: BottomPanelProps) {
                     {/* Toggle collapse/expand button */}
                     <button
                         type="button"
-                        className="mr-1 rounded p-1 text-muted-foreground/50 transition-colors hover:bg-secondary/40 hover:text-foreground"
+                        className="mr-1 rounded p-2 text-muted-foreground/50 transition-colors hover:bg-secondary/40 hover:text-foreground md:p-1"
                         onClick={() => setCollapsed((prev) => !prev)}
                         title={collapsed ? "Expand panel" : "Collapse panel"}
                     >
@@ -118,11 +134,12 @@ export function BottomPanel({ worktreeId, worktreePath }: BottomPanelProps) {
                     className={`flex flex-col ${collapsed ? "invisible h-0 overflow-hidden" : ""}`}
                     style={collapsed ? undefined : { height: `${height}px` }}
                 >
-                    {/* Resize handle */}
+                    {/* Resize handle — taller tap target on mobile */}
                     <div
-                        className={`group flex h-1 cursor-row-resize items-center justify-center transition-colors hover:bg-primary/20 ${isDragging ? "bg-primary/30" : ""
+                        className={`group flex h-2 cursor-row-resize touch-none items-center justify-center transition-colors hover:bg-primary/20 md:h-1 ${isDragging ? "bg-primary/30" : ""
                             }`}
                         onMouseDown={handleMouseDown}
+                        onTouchStart={handleTouchStart}
                     >
                         <div
                             className={`h-[2px] w-10 rounded-full transition-colors ${isDragging

@@ -85,3 +85,30 @@
     color: hsl(var(--muted-foreground));
   }
 }
+
+/* ─── Mobile-first: native app feel ─── */
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+
+  body {
+    touch-action: manipulation;
+  }
+}
+
+@layer utilities {
+  .safe-top {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .drawer-slide {
+    transition: transform 320ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+}
