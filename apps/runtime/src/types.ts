@@ -136,6 +136,7 @@ export type ClaudeRunner = (args: {
     toolUseId: string;
     description: string;
     lastMessage: string;
+    isResponseUpdate?: boolean;
   }) => Promise<void> | void;
   onToolInstrumentation?: (event: ClaudeToolInstrumentationEvent) => Promise<void> | void;
 }) => Promise<ClaudeRunnerResult>;

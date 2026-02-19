@@ -1,6 +1,7 @@
 import type { ChatEvent, Repository } from "@codesymphony/shared-types";
 import type { ActivityTraceStep } from "../../components/workspace/ChatMessageList";
 import {
+  EXPLORE_BASH_COMMAND_PATTERN,
   FILE_PATH_PATTERN,
   MCP_TOOL_PATTERN,
   READ_PROMPT_PATTERN,
@@ -63,6 +64,21 @@ export function isBashToolEvent(event: ChatEvent): boolean {
   }
 
   return isBashPayload(event.payload);
+}
+
+export function isExploreLikeBashCommand(command: string | null | undefined): boolean {
+  if (!command || command.trim().length === 0) {
+    return false;
+  }
+  return EXPLORE_BASH_COMMAND_PATTERN.test(command.trim());
+}
+
+export function isExploreLikeBashEvent(event: ChatEvent): boolean {
+  if (!isBashToolEvent(event)) {
+    return false;
+  }
+  const command = payloadStringOrNull(event.payload.command);
+  return isExploreLikeBashCommand(command);
 }
 
 export function isWorktreeDiffEvent(event: ChatEvent): boolean {

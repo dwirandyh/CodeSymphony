@@ -18,6 +18,7 @@ import {
   getEventMessageId,
   hasUnclosedCodeFence,
   isBashToolEvent,
+  isExploreLikeBashEvent,
   isClaudePlanFilePayload,
   isLikelyDiffContent,
   isReadToolEvent,
@@ -292,11 +293,38 @@ export function useWorkspaceTimeline(
       for (const group of subagentGroups) {
         group.eventIds.forEach((id) => subagentEventIds.add(id));
       }
+      // When a subagent group has a weak lastMessage (null or very short),
+      // fall back to using message.content as the lastMessage.
+      // This handles the case where the isResponseUpdate event's ID mapping failed.
+      if (subagentGroups.length === 1 && message.content.length > 0) {
+        const group = subagentGroups[0];
+        const lastMsgLen = group.lastMessage?.length ?? 0;
+        // If lastMessage is absent or much shorter than message.content, use message.content
+        if (lastMsgLen < 100 && message.content.length > lastMsgLen) {
+          group.lastMessage = message.content;
+        }
+      }
       const nonSubagentContext = message.role === "assistant"
         ? context.filter((event) => !subagentEventIds.has(event.id))
         : context;
 
-      const bashRuns = message.role === "assistant" ? extractBashRuns(nonSubagentContext) : [];
+      const allBashRuns = message.role === "assistant" ? extractBashRuns(nonSubagentContext) : [];
+      // Separate explore-like bash commands (ls, find, tree, etc.) from regular bash runs
+      const exploreLikeBashEventIds = new Set<string>();
+      if (message.role === "assistant") {
+        for (const run of allBashRuns) {
+          const command = nonSubagentContext.find((e) => run.eventIds.has(e.id) && e.type === "tool.started");
+          if (command && isExploreLikeBashEvent(command)) {
+            run.eventIds.forEach((id) => exploreLikeBashEventIds.add(id));
+          }
+        }
+      }
+      const bashRuns = allBashRuns.filter((run) => {
+        for (const id of run.eventIds) {
+          if (exploreLikeBashEventIds.has(id)) return false;
+        }
+        return true;
+      });
       const bashRunEventIds = new Set<string>();
       const permissionToolNameByRequestId = new Map<string, string>();
       if (message.role === "assistant") {
@@ -318,6 +346,10 @@ export function useWorkspaceTimeline(
 
       const nonBashContext = message.role === "assistant"
         ? nonSubagentContext.filter((event) => {
+          // Keep explore-like bash events in the non-bash context so they flow into explore grouping
+          if (exploreLikeBashEventIds.has(event.id)) {
+            return true;
+          }
           if (isBashToolEvent(event) || bashRunEventIds.has(event.id)) {
             return false;
           }
@@ -518,7 +550,26 @@ export function useWorkspaceTimeline(
         const hasSegmentContent = totalSegmentLength > 0;
         const deltasCoverageRatio = message.content.length > 0 ? totalSegmentLength / message.content.length : 1;
         const deltasSignificantlyIncomplete = hasSegmentContent && deltasCoverageRatio < 0.9;
-        if ((!hasSegmentContent || deltasSignificantlyIncomplete) && message.content.length > 0) {
+
+        // Suppress text segments when subagent groups with valid lastMessage exist.
+        // The subagent box already renders the response — showing the same text
+        // as a separate message segment would duplicate it.
+        const allSubagentsHaveResponse = hasInlineSubagentRuns
+          && subagentGroups.every((g) => (g.lastMessage?.length ?? 0) > 0);
+        const onlySubagentInserts = hasInlineSubagentRuns
+          && bashRuns.length === 0
+          && editedRuns.length === 0
+          && exploreActivityGroups.length === 0;
+        const suppressTextSegments = allSubagentsHaveResponse && onlySubagentInserts;
+
+        if (suppressTextSegments) {
+          // Clear all text segments — the subagent box handles display
+          for (const bucket of segmentBuckets) {
+            bucket.content = "";
+            bucket.anchorIdx = null;
+            bucket.timestamp = null;
+          }
+        } else if ((!hasSegmentContent || deltasSignificantlyIncomplete) && message.content.length > 0) {
           for (const bucket of segmentBuckets) {
             bucket.content = "";
             bucket.anchorIdx = null;
@@ -537,6 +588,8 @@ export function useWorkspaceTimeline(
             timestamp,
           };
         }
+
+
 
         const MIN_STANDALONE_SEGMENT_LENGTH = 20;
         for (let mergeIdx = 1; mergeIdx < segmentBuckets.length; mergeIdx++) {

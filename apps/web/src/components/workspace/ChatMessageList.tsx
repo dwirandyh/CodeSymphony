@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { Bot, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2 } from "lucide-react";
 import type { SubagentStep } from "../../pages/workspace/types";
+import { EXPLORE_BASH_COMMAND_PATTERN } from "../../pages/workspace/constants";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -1705,24 +1706,69 @@ export function ChatMessageList({
 
           if (item.kind === "subagent-activity") {
             const expanded = isSubagentExpanded(item.id);
+            const isRunning = item.status === "running";
             const agentLabel = item.agentType !== "unknown" ? item.agentType : "Task";
-            const descSnippet = item.description
-              ? item.description.length > 60 ? `${item.description.slice(0, 57)}...` : item.description
-              : "";
-            const headerText = descSnippet
-              ? `${agentLabel}(${descSnippet})`
+            const descSnippet = item.description || "";
+            // Truncate to a concise header — use first sentence or ~80 chars
+            const truncateDescription = (desc: string, maxLen = 80): string => {
+              if (desc.length <= maxLen) return desc;
+              // Try to cut at first sentence boundary
+              const sentenceEnd = desc.search(/[.!?]\s/);
+              if (sentenceEnd > 0 && sentenceEnd <= maxLen) {
+                return desc.slice(0, sentenceEnd + 1);
+              }
+              // Fall back to word boundary
+              const truncated = desc.slice(0, maxLen);
+              const lastSpace = truncated.lastIndexOf(" ");
+              return (lastSpace > maxLen * 0.5 ? truncated.slice(0, lastSpace) : truncated) + "…";
+            };
+            const headerSnippet = truncateDescription(descSnippet);
+            const headerText = headerSnippet
+              ? `${agentLabel}(${headerSnippet})`
               : agentLabel;
             const stepCount = item.steps.length;
             const durationText = item.durationSeconds != null ? `${item.durationSeconds}s` : "";
-            const footerParts = [
+            const statusParts = [
               stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? "s" : ""}` : "",
               durationText,
             ].filter(Boolean).join(" · ");
+            const statusText = isRunning
+              ? `Running${statusParts ? ` · ${statusParts}` : ""}`
+              : `Done${statusParts ? ` · ${statusParts}` : ""}`;
+
+            // Group steps into explore-like groups (reads/searches) and tool labels
+            const EXPLORE_TOOL_NAMES = new Set(["Read", "Grep", "Search", "Glob", "ListDir"]);
+            const isExploreStep = (s: SubagentStep) => {
+              if (EXPLORE_TOOL_NAMES.has(s.toolName)) return true;
+              // Bash commands like ls, find, tree — check the label for the command
+              if (s.toolName === "Bash" && s.label) {
+                const cmd = s.label.replace(/^Ran\s+/i, "").trim();
+                return EXPLORE_BASH_COMMAND_PATTERN.test(cmd);
+              }
+              return false;
+            };
+            const readSteps = item.steps.filter(isExploreStep);
+            const otherSteps = item.steps.filter((s) => !isExploreStep(s));
+            const readCount = readSteps.filter((s) => s.toolName === "Read").length;
+            const searchCount = readSteps.filter((s) => s.toolName !== "Read").length;
+            const hasExploreSteps = readSteps.length > 0;
+            const allExploreComplete = readSteps.every((s) => s.status === "success");
+            const exploreSummaryPrefix = allExploreComplete && !isRunning ? "Explored" : "Exploring";
+            const exploreSummaryParts: string[] = [];
+            if (readCount > 0) {
+              exploreSummaryParts.push(`${readCount} file${readCount !== 1 ? "s" : ""}`);
+            }
+            if (searchCount > 0) {
+              exploreSummaryParts.push(`${searchCount} search${searchCount !== 1 ? "es" : ""}`);
+            }
+            const exploreSummaryText = exploreSummaryParts.length > 0
+              ? `${exploreSummaryPrefix} ${exploreSummaryParts.join(", ")}`
+              : exploreSummaryPrefix;
 
             return (
               <article
                 key={`subagent-activity-${item.id}`}
-                className="px-1 text-xs"
+                className="px-1"
                 data-testid="timeline-subagent-activity"
               >
                 <details
@@ -1736,9 +1782,15 @@ export function ChatMessageList({
                     });
                   }}
                 >
-                  <summary className="group/subagent-summary cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
-                    <Bot className="h-3 w-3 shrink-0" />
-                    <span className={item.status === "running" ? "thinking-shimmer" : ""}>{headerText}</span>
+                  {/* Collapsed summary header */}
+                  <summary className="group/subagent-summary cursor-pointer list-none select-none flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/30 transition-colors">
+                    <Bot className="h-3.5 w-3.5 shrink-0" />
+                    <span className={cn("flex-1 truncate", isRunning ? "thinking-shimmer" : "")}>
+                      {headerText}
+                    </span>
+                    <span className={cn("text-[10px] shrink-0", isRunning ? "text-muted-foreground/70 thinking-shimmer" : "text-muted-foreground/50")}>
+                      {statusText}
+                    </span>
                     <span
                       data-testid="timeline-subagent-activity-chevron"
                       className={cn("inline-flex transition-transform duration-150", expanded ? "rotate-90" : "")}
@@ -1746,62 +1798,68 @@ export function ChatMessageList({
                       <ChevronRight className="h-3 w-3" />
                     </span>
                   </summary>
-                  <div className="mt-1 ml-4 flex flex-col gap-0.5 text-muted-foreground">
-                    {/* Prompt */}
-                    {item.description && (
-                      <div className="flex items-start gap-1">
-                        <span className="text-border select-none shrink-0">⎿</span>
-                        <div>
-                          <span className="font-medium text-muted-foreground/70">Prompt:</span>
-                          <p className="mt-0.5 text-muted-foreground/60 whitespace-pre-wrap break-words leading-snug">
-                            {item.description.length > 200
-                              ? `${item.description.slice(0, 197).trimEnd()}...`
-                              : item.description}
-                          </p>
+
+                  {/* Expanded chat-style content */}
+                  <div className="mt-2 ml-1 rounded-xl border border-border/30 bg-secondary/5 overflow-hidden">
+                    <div className="flex flex-col gap-3 p-3">
+                      {/* Prompt — user-message style */}
+                      {item.description && (
+                        <div className="flex justify-end">
+                          <div className="max-w-[85%] rounded-2xl bg-secondary/55 px-4 py-2.5 text-sm text-foreground">
+                            <p className="whitespace-pre-wrap break-words leading-relaxed">{item.description}</p>
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {/* Steps */}
-                    {item.steps.map((step, idx) => (
-                      <div key={`${item.id}:step:${idx}`} className="flex items-center gap-1">
-                        <span className="text-border select-none shrink-0">⎿</span>
-                        {step.status === "success"
-                          ? <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500/70" />
-                          : <Loader2 className="h-3 w-3 shrink-0 text-muted-foreground/50 animate-spin" />
-                        }
-                        <span className={step.status === "running" ? "thinking-shimmer" : ""}>
-                          {step.label}
-                        </span>
-                      </div>
-                    ))}
-
-                    {/* Response */}
-                    {item.lastMessage && (
-                      <div className="flex items-start gap-1">
-                        <span className="text-border select-none shrink-0">⎿</span>
-                        <div className="min-w-0">
-                          <span className="font-medium text-muted-foreground/70">Response:</span>
-                          <p className="mt-0.5 text-muted-foreground/60 whitespace-pre-wrap break-words leading-snug text-[11px]">
-                            {item.lastMessage.length > 500
-                              ? `${item.lastMessage.slice(0, 497).trimEnd()}...`
-                              : item.lastMessage}
-                          </p>
+                      {/* Explore-activity style steps (reads/searches grouped) */}
+                      {hasExploreSteps && (
+                        <div className="px-1 text-xs">
+                          <details>
+                            <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
+                              <span className={!allExploreComplete || isRunning ? "thinking-shimmer" : ""}>{exploreSummaryText}</span>
+                              <ChevronRight className="h-3 w-3 inline-flex" />
+                            </summary>
+                            <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
+                              {readSteps.map((step, idx) => (
+                                <span key={`${item.id}:explore:${idx}`}>{step.label}</span>
+                              ))}
+                            </div>
+                          </details>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {/* Footer */}
-                    <div className="flex items-center gap-1 mt-0.5">
-                      <span className="text-border select-none shrink-0">⎿</span>
-                      <span className={cn(
-                        "text-muted-foreground/50 text-[11px]",
-                        item.status === "running" ? "thinking-shimmer" : "",
-                      )}>
-                        {item.status === "running"
-                          ? `Running${footerParts ? ` (${footerParts})` : ""}`
-                          : `Done${footerParts ? ` (${footerParts})` : ""}`
-                        }
+                      {/* Other tool steps (bash, edit, etc.) — shown individually */}
+                      {otherSteps.map((step, idx) => (
+                        <div key={`${item.id}:tool:${idx}`} className="px-1 text-xs text-muted-foreground flex items-center gap-1.5">
+                          {step.status === "success"
+                            ? <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500/70" />
+                            : <Loader2 className="h-3 w-3 shrink-0 text-muted-foreground/50 animate-spin" />}
+                          <span className={step.status === "running" ? "thinking-shimmer" : ""}>
+                            {step.label}
+                          </span>
+                        </div>
+                      ))}
+
+                      {/* Response — assistant-message style with full markdown */}
+                      {item.lastMessage && (
+                        <div className="px-1 text-sm text-foreground">
+                          <MarkdownBody content={item.lastMessage} testId="subagent-response-markdown" />
+                        </div>
+                      )}
+
+                      {/* Thinking shimmer while subagent is running and no response yet */}
+                      {!item.lastMessage && isRunning && (
+                        <div className="px-1 text-sm text-muted-foreground">
+                          <span className="thinking-shimmer">Thinking…</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Footer bar */}
+                    <div className="border-t border-border/20 px-3 py-1.5 text-[10px] text-muted-foreground/50 flex items-center gap-1.5">
+                      <Bot className="h-3 w-3 shrink-0" />
+                      <span className={isRunning ? "thinking-shimmer" : ""}>
+                        {statusText}
                       </span>
                     </div>
                   </div>

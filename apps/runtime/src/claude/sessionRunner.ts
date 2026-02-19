@@ -701,6 +701,8 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
   // Subagent description tracking: store tool input keyed by toolUseId
   const subagentToolInputByUseId = new Map<string, Record<string, unknown>>();
+  // Store the subagent's tool_response from PostToolUse (more reliable than transcript)
+  const subagentResponseByUseId = new Map<string, string>();
   const instrumentContext = {
     cwd,
     sessionId,
@@ -1041,6 +1043,34 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     bashResultByToolUseId.set(hookToolUseId, bashResult);
                   }
 
+                  // Capture subagent's final response from tool_response
+                  // Claude SDK reports the tool as "Task" (capital T) — use case-insensitive comparison
+                  if (hookInput.tool_name.toLowerCase() === "task") {
+                    const toolResponse = hookInput.tool_response;
+                    let responseText = "";
+
+                    if (typeof toolResponse === "string") {
+                      responseText = toolResponse;
+                    } else if (Array.isArray(toolResponse)) {
+                      responseText = toolResponse
+                        .map((b: any) => {
+                          if (typeof b === "string") return b;
+                          if (typeof b === "object" && b !== null) {
+                            return b.text || b.content || b.result || "";
+                          }
+                          return "";
+                        })
+                        .filter(Boolean)
+                        .join("\n");
+                    } else if (typeof toolResponse === "object" && toolResponse !== null) {
+                      responseText = (toolResponse as any).text || (toolResponse as any).content || (toolResponse as any).result || "";
+                    }
+
+                    if (responseText.trim()) {
+                      subagentResponseByUseId.set(hookToolUseId, responseText.trim());
+                    }
+                  }
+
                   if (!finishedToolUseIds.has(hookToolUseId)) {
                     const progress = progressByToolUseId.get(hookToolUseId);
                     const finishedAtMs = Date.now();
@@ -1049,6 +1079,10 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                     await onToolFinished({
                       summary: completionSummary,
                       precedingToolUseIds: [hookToolUseId],
+                      // Pass subagent response to frontend via tool.finished event
+                      ...(subagentResponseByUseId.has(hookToolUseId)
+                        ? { subagentResponse: subagentResponseByUseId.get(hookToolUseId) }
+                        : {}),
                       ...(metadata.editTarget
                         ? {
                           editTarget: metadata.editTarget,
@@ -1105,6 +1139,23 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                       },
                     });
                     finishedToolUseIds.add(hookToolUseId);
+                  }
+
+                  // Emit subagent response update AFTER the tool is finished
+                  // This is needed because SubagentStop fires BEFORE PostToolUse,
+                  // and the transcript is incomplete at SubagentStop time.
+                  // PostToolUse has the real tool_response with the full subagent output.
+                  const capturedResponse = subagentResponseByUseId.get(hookToolUseId);
+                  if (capturedResponse) {
+                    await onSubagentStopped({
+                      agentId: "",
+                      agentType: "",
+                      toolUseId: hookToolUseId,
+                      description: "",
+                      lastMessage: capturedResponse,
+                      isResponseUpdate: true,
+                    });
+                    subagentResponseByUseId.delete(hookToolUseId);
                   }
 
                   return { continue: true };
@@ -1266,9 +1317,13 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                       const transcriptContent = readFileSync(transcriptPath, "utf-8");
                       const lines = transcriptContent.split("\n").filter((l) => l.trim().length > 0);
 
+                      // Debug: log transcript structure
+                      const entryTypes: string[] = [];
+
                       for (const line of lines) {
                         try {
                           const entry = JSON.parse(line);
+                          entryTypes.push(`${entry.type}${entry.subtype ? `:${entry.subtype}` : ""}${entry.message?.role ? `(${entry.message.role})` : ""}`);
 
                           // First user message content is the prompt/description
                           if (!description && entry.type === "user" && entry.message?.content) {
@@ -1300,12 +1355,27 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                                 .trim();
                             }
                           }
+
+                          // Also check 'result' type entries — the SDK may store
+                          // the final subagent response here
+                          if (entry.type === "result" && typeof entry.result === "string" && entry.result.trim()) {
+                            lastMessage = entry.result.trim();
+                          }
                         } catch {
                           // Skip malformed JSONL lines
                         }
                       }
-                    } catch {
-                      // Transcript file read failed
+
+                      console.log(`[SubagentStop] transcript for ${agentType}:${resolvedToolUseId}`, {
+                        transcriptPath,
+                        entryCount: lines.length,
+                        entryTypes: entryTypes.join(" → "),
+                        descriptionLen: description.length,
+                        lastMessageLen: lastMessage.length,
+                        lastMessagePreview: lastMessage.slice(0, 200),
+                      });
+                    } catch (err) {
+                      console.error(`[SubagentStop] transcript read failed:`, err);
                     }
                   }
 
@@ -1445,12 +1515,38 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           return typeof editTarget === "string" && editTarget.length > 0;
         });
         const editTarget = editToolUseId ? toolMetadataByUseId.get(editToolUseId)?.editTarget : undefined;
+        // Pre-populate subagent response from summary BEFORE emitting tool.finished,
+        // so the tool.finished event also carries subagentResponse in its payload.
+        // tool_use_summary fires AFTER SubagentStop (which has an incomplete transcript)
+        // and sometimes BEFORE or instead of PostToolUse, so this is the most reliable
+        // place to capture the subagent's final response from message.summary.
+        const summaryText = typeof message.summary === "string" ? message.summary.trim() : "";
+        let subagentTaskToolUseId: string | null = null;
+        if (summaryText) {
+          for (const toolUseId of pendingToolUseIds) {
+            const metadata = toolMetadataByUseId.get(toolUseId);
+            if (metadata?.toolName?.toLowerCase() === "task") {
+              subagentResponseByUseId.set(toolUseId, summaryText);
+              subagentTaskToolUseId = toolUseId;
+              break;
+            }
+          }
+        }
+
         for (const toolUseId of pendingToolUseIds) {
           finishedToolUseIds.add(toolUseId);
         }
         await onToolFinished({
           summary: message.summary,
           precedingToolUseIds: pendingToolUseIds,
+          // Include subagent response if any pending tool is a subagent
+          ...(() => {
+            for (const toolUseId of pendingToolUseIds) {
+              const resp = subagentResponseByUseId.get(toolUseId);
+              if (resp) return { subagentResponse: resp };
+            }
+            return {};
+          })(),
           ...(editTarget
             ? {
               editTarget,
@@ -1468,6 +1564,19 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             }
             : {}),
         });
+
+        // Emit subagent response update so frontend can update the subagent group's lastMessage
+        if (subagentTaskToolUseId && summaryText) {
+          await onSubagentStopped({
+            agentId: "",
+            agentType: "",
+            toolUseId: subagentTaskToolUseId,
+            description: "",
+            lastMessage: summaryText,
+            isResponseUpdate: true,
+          });
+        }
+
         const finishedAtMs = Date.now();
         for (const toolUseId of pendingToolUseIds) {
           const metadata = toolMetadataByUseId.get(toolUseId);

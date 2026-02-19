@@ -1,6 +1,6 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
 import type { ExploreActivityEntry, ReadFileTimelineEntry } from "../../components/workspace/ChatMessageList";
-import { finishedToolUseIds, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
+import { finishedToolUseIds, isExploreLikeBashEvent, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
 import type { ExploreActivityGroup, ExploreRunKind, ExploreRunState } from "./types";
 
 export function shortenReadTargetForDisplay(target: string): string {
@@ -121,6 +121,11 @@ export function extractExploreRunKind(event: ChatEvent): ExploreRunKind | null {
   }
 
   if (isSearchToolEvent(event)) {
+    return "search";
+  }
+
+  // Explore-like bash commands (ls, find, tree, etc.) are treated as search
+  if (isExploreLikeBashEvent(event)) {
     return "search";
   }
 
