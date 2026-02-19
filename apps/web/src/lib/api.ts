@@ -168,8 +168,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  searchFiles: (worktreeId: string, query: string) =>
-    request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`),
+  searchFiles: (worktreeId: string, query: string, signal?: AbortSignal) =>
+    request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`, { signal }),
   openWorktreeFile: async (worktreeId: string, input: OpenWorktreeFileInput) => {
     const response = await fetch(`${API_BASE}/worktrees/${worktreeId}/files/open`, {
       method: "POST",

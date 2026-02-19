@@ -23,24 +23,33 @@ export function createFileService() {
       return existing;
     }
 
-    const files = await new Promise<string[]>((resolve, reject) => {
-      execFile(
-        "git",
-        ["ls-files", "--cached", "--others", "--exclude-standard"],
-        { cwd: worktreePath, maxBuffer: 10 * 1024 * 1024 },
-        (error, stdout) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          const lines = stdout
-            .split("\n")
-            .map((line) => line.trim())
-            .filter((line) => line.length > 0);
-          resolve(lines);
-        },
-      );
-    });
+    const execGit = (args: string[]) =>
+      new Promise<string[]>((resolve, reject) => {
+        execFile(
+          "git",
+          args,
+          { cwd: worktreePath, maxBuffer: 10 * 1024 * 1024 },
+          (error, stdout) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            const lines = stdout
+              .split("\n")
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0);
+            resolve(lines);
+          },
+        );
+      });
+
+    const [allFiles, deletedFiles] = await Promise.all([
+      execGit(["ls-files", "--cached", "--others", "--exclude-standard"]),
+      execGit(["ls-files", "--deleted"]),
+    ]);
+
+    const deletedSet = new Set(deletedFiles);
+    const files = allFiles.filter((f) => !deletedSet.has(f));
 
     const dirSet = new Set<string>();
     for (const filePath of files) {

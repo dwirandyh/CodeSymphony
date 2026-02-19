@@ -3,6 +3,7 @@ import { ArrowUp, FileText, Folder, Lightbulb, Square, Zap } from "lucide-react"
 import type { ChatMode, FileEntry } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
+import { serializeMentionPrefix } from "../../lib/mentions";
 
 type ComposerProps = {
   value: string;
@@ -177,6 +178,7 @@ export function Composer({
   const cannotSend = disabled || (value.trim().length === 0 && mentionedFilesRef.current.length === 0);
 
   const debouncedQuery = useDebouncedValue(mention.query, 150);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
     if (!mention.active || !worktreeId) {
@@ -184,32 +186,30 @@ export function Composer({
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
     setLoading(true);
 
     const alreadyMentioned = new Set(mentionedFilesRef.current.map((f) => f.path));
 
     api
-      .searchFiles(worktreeId, debouncedQuery)
+      .searchFiles(worktreeId, debouncedQuery, controller.signal)
       .then((results) => {
-        if (!cancelled) {
-          setSuggestions(results.filter((r) => !alreadyMentioned.has(r.path)));
-          setSelectedIndex(0);
-        }
+        if (requestId !== requestIdRef.current) return;
+        setSuggestions(results.filter((r) => !alreadyMentioned.has(r.path)));
+        setSelectedIndex(0);
       })
       .catch(() => {
-        if (!cancelled) {
-          setSuggestions([]);
-        }
+        if (requestId !== requestIdRef.current) return;
+        setSuggestions([]);
       })
       .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (requestId !== requestIdRef.current) return;
+        setLoading(false);
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [mention.active, debouncedQuery, worktreeId]);
 
@@ -308,9 +308,7 @@ export function Composer({
     }
 
     const userText = textParts.join("").replace(/\u00A0/g, " ").trim();
-    const mentionPrefix = files
-      .map((f) => (f.type === "directory" ? `@dir:${f.path}` : `@file:${f.path}`))
-      .join(" ");
+    const mentionPrefix = serializeMentionPrefix(files);
 
     if (mentionPrefix && userText) {
       return `${mentionPrefix}\n${userText}`;

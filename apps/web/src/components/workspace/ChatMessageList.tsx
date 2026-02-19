@@ -9,6 +9,7 @@ import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader } from "../ui/card";
 import { cn } from "../../lib/utils";
 import { copyRenderDebugLog, isRenderDebugEnabled, pushRenderDebug } from "../../lib/renderDebug";
+import { parseUserMentions } from "../../lib/mentions";
 
 export type AssistantRenderHint = "markdown" | "raw-file" | "raw-fallback" | "diff";
 
@@ -991,34 +992,6 @@ function AssistantContent({
   }
 
   return <MarkdownBody content={content} testId="assistant-render-markdown" />;
-}
-
-type MentionSegment = { kind: "text"; value: string } | { kind: "mention"; path: string; name: string; isDirectory: boolean };
-
-function parseUserMentions(content: string): MentionSegment[] {
-  const segments: MentionSegment[] = [];
-  const mentionRegex = /@(file|dir):([\w./_-][\w./_-]*[\w._-])/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = mentionRegex.exec(content)) !== null) {
-    if (match.index > lastIndex) {
-      segments.push({ kind: "text", value: content.slice(lastIndex, match.index) });
-    }
-
-    const typeTag = match[1];
-    const fullPath = match[2];
-    const name = fullPath.split("/").pop() ?? fullPath;
-    segments.push({ kind: "mention", path: fullPath, name, isDirectory: typeTag === "dir" });
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < content.length) {
-    segments.push({ kind: "text", value: content.slice(lastIndex) });
-  }
-
-  return segments;
 }
 
 function UserMessageContent({ content }: { content: string }) {
