@@ -30,6 +30,8 @@ enum ChatEventType {
   plan_created
   plan_approved
   plan_revision_requested
+  subagent_started
+  subagent_finished
   chat_completed
   chat_failed
 }

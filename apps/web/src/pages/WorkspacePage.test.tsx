@@ -5874,6 +5874,298 @@ describe("WorkspacePage", () => {
     expect(options.length).toBe(2);
   });
 
+  it("renders subagent-activity timeline item with collapsed summary", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-subagent",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "refactor auth",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-subagent",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "I refactored the auth module.",
+        createdAt: "2026-01-01T10:00:10.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-task-tool-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Task", toolUseId: "task-tool-1", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:00.500Z",
+      },
+      {
+        id: "evt-subagent-start",
+        threadId: "thread-1",
+        idx: 2,
+        type: "subagent.started",
+        payload: {
+          agentId: "agent-1",
+          agentType: "explore",
+          toolUseId: "task-tool-1",
+          description: "Find authentication middleware",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-subagent-child-start",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "child-read-1", parentToolUseId: null },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-subagent-child-output",
+        threadId: "thread-1",
+        idx: 4,
+        type: "tool.output",
+        payload: { toolName: "Read", toolUseId: "child-read-1", parentToolUseId: "task-tool-1", elapsedTimeSeconds: 1 },
+        createdAt: "2026-01-01T10:00:02.500Z",
+      },
+      {
+        id: "evt-subagent-child-finish",
+        threadId: "thread-1",
+        idx: 5,
+        type: "tool.finished",
+        payload: {
+          summary: "Read src/middleware/auth.ts",
+          precedingToolUseIds: ["child-read-1"],
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-subagent-finish",
+        threadId: "thread-1",
+        idx: 6,
+        type: "subagent.finished",
+        payload: {
+          agentId: "agent-1",
+          agentType: "explore",
+          toolUseId: "task-tool-1",
+          lastMessage: "Found authentication middleware in src/middleware/auth.ts",
+        },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      },
+      {
+        id: "evt-subagent-msg",
+        threadId: "thread-1",
+        idx: 7,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-subagent", role: "assistant", delta: "I refactored the auth module." },
+        createdAt: "2026-01-01T10:00:10.000Z",
+      },
+      {
+        id: "evt-subagent-complete",
+        threadId: "thread-1",
+        idx: 8,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-subagent" },
+        createdAt: "2026-01-01T10:00:11.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const subagentRow = container.querySelector('[data-testid="timeline-subagent-activity"]');
+    expect(subagentRow).not.toBeNull();
+    expect(subagentRow!.textContent).toContain("sub-agent");
+    expect(subagentRow!.textContent).toContain("explore");
+    expect(subagentRow!.textContent).toContain("Find authentication middleware");
+
+    // Task tool's own events and child events with null parentToolUseId should NOT render as orphans
+    const orphanToolCards = container.querySelectorAll('[data-testid^="timeline-tool."]');
+    expect(orphanToolCards.length).toBe(0);
+  });
+
+  it("expands subagent-activity to show child steps and result", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-subagent-expand",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "refactor auth",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-subagent-expand",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "Done.",
+        createdAt: "2026-01-01T10:00:10.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-sa-expand-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "subagent.started",
+        payload: {
+          agentId: "agent-expand-1",
+          agentType: "explore",
+          toolUseId: "task-expand-1",
+          description: "Search codebase",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-sa-expand-child-start",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.started",
+        payload: { toolName: "Grep", toolUseId: "child-grep-1", parentToolUseId: "task-expand-1" },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-sa-expand-child-finish",
+        threadId: "thread-1",
+        idx: 3,
+        type: "tool.finished",
+        payload: {
+          summary: "Searched for auth patterns",
+          precedingToolUseIds: ["child-grep-1"],
+          parentToolUseId: "task-expand-1",
+        },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+      {
+        id: "evt-sa-expand-finish",
+        threadId: "thread-1",
+        idx: 4,
+        type: "subagent.finished",
+        payload: {
+          agentId: "agent-expand-1",
+          agentType: "explore",
+          toolUseId: "task-expand-1",
+          lastMessage: "Found 3 auth-related files.",
+        },
+        createdAt: "2026-01-01T10:00:05.000Z",
+      },
+      {
+        id: "evt-sa-expand-msg",
+        threadId: "thread-1",
+        idx: 5,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-subagent-expand", role: "assistant", delta: "Done." },
+        createdAt: "2026-01-01T10:00:10.000Z",
+      },
+      {
+        id: "evt-sa-expand-complete",
+        threadId: "thread-1",
+        idx: 6,
+        type: "chat.completed",
+        payload: { messageId: "msg-assistant-subagent-expand" },
+        createdAt: "2026-01-01T10:00:11.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const details = container.querySelector('[data-testid="timeline-subagent-activity"] details') as HTMLDetailsElement | null;
+    if (!details) {
+      throw new Error("Expected subagent details element");
+    }
+
+    expect(details.open).toBe(false);
+
+    act(() => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const chevron = container.querySelector('[data-testid="timeline-subagent-activity-chevron"]') as HTMLElement | null;
+    if (!chevron) {
+      throw new Error("Expected subagent chevron");
+    }
+    expect(chevron.className).toContain("rotate-90");
+
+    expect(details.textContent).toContain("Searched for auth patterns");
+    expect(details.textContent).toContain("Found 3 auth-related files.");
+  });
+
+  it("renders running subagent with shimmer animation", async () => {
+    (api.listMessages as Mock).mockResolvedValueOnce([
+      {
+        id: "msg-user-subagent-running",
+        threadId: "thread-1",
+        seq: 0,
+        role: "user",
+        content: "analyze code",
+        createdAt: "2026-01-01T10:00:00.000Z",
+      },
+      {
+        id: "msg-assistant-subagent-running",
+        threadId: "thread-1",
+        seq: 1,
+        role: "assistant",
+        content: "",
+        createdAt: "2026-01-01T10:00:10.000Z",
+      },
+    ]);
+    (api.listEvents as Mock).mockResolvedValueOnce([
+      {
+        id: "evt-sa-running-start",
+        threadId: "thread-1",
+        idx: 1,
+        type: "subagent.started",
+        payload: {
+          agentId: "agent-running-1",
+          agentType: "generalPurpose",
+          toolUseId: "task-running-1",
+          description: "Analyze code structure",
+        },
+        createdAt: "2026-01-01T10:00:01.000Z",
+      },
+      {
+        id: "evt-sa-running-child-start",
+        threadId: "thread-1",
+        idx: 2,
+        type: "tool.started",
+        payload: { toolName: "Read", toolUseId: "child-read-running-1", parentToolUseId: "task-running-1" },
+        createdAt: "2026-01-01T10:00:02.000Z",
+      },
+      {
+        id: "evt-sa-running-msg",
+        threadId: "thread-1",
+        idx: 3,
+        type: "message.delta",
+        payload: { messageId: "msg-assistant-subagent-running", role: "assistant", delta: "" },
+        createdAt: "2026-01-01T10:00:03.000Z",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(<WorkspacePage />);
+    });
+    await flushEffects();
+
+    const subagentRow = container.querySelector('[data-testid="timeline-subagent-activity"]');
+    expect(subagentRow).not.toBeNull();
+    expect(subagentRow!.textContent).toContain("Running sub-agent");
+    expect(subagentRow!.textContent).toContain("generalPurpose");
+
+    const shimmerSpan = subagentRow!.querySelector(".thinking-shimmer");
+    expect(shimmerSpan).not.toBeNull();
+  });
+
   it("closes Source Control panel on toggle and resets aria-expanded", async () => {
     await act(async () => {
       root.render(<WorkspacePage />);

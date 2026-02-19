@@ -678,6 +678,8 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   onQuestionRequest,
   onPermissionRequest,
   onPlanFileDetected,
+  onSubagentStarted,
+  onSubagentStopped,
   onToolInstrumentation,
 }) => {
   let latestSessionId: string | null = sessionId;
@@ -691,10 +693,14 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   const toolMetadataByUseId = new Map<string, ToolMetadata>();
   const bashResultByToolUseId = new Map<string, BashToolResult>();
   const requestedToolByUseId = new Map<string, { toolName: string; parentToolUseId: string | null; requestedAtMs: number }>();
+  const agentIdToToolUseId = new Map<string, string>();
   const decisionByToolUseId = new Map<string, ClaudeToolInstrumentationDecision>();
   const startedAtMsByToolUseId = new Map<string, number>();
   const progressByToolUseId = new Map<string, { count: number; maxElapsedTimeSeconds: number }>();
   const summaryUnknownToolUseIds = new Set<string>();
+
+  // Subagent description tracking: store tool input keyed by toolUseId
+  const subagentToolInputByUseId = new Map<string, Record<string, unknown>>();
   const instrumentContext = {
     cwd,
     sessionId,
@@ -818,6 +824,8 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             editTarget: editTargetFromUnknownToolInput(toolName, input),
             isBash,
           });
+          // Store raw tool input for subagent description extraction
+          subagentToolInputByUseId.set(toolUseId, input);
           requestedToolByUseId.set(toolUseId, {
             toolName,
             parentToolUseId: null,
@@ -1198,6 +1206,127 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
               ],
             },
           ],
+          SubagentStart: [
+            {
+              hooks: [
+                async (hookInput: Record<string, unknown>, toolUseID?: string) => {
+                  if (hookInput.hook_event_name !== "SubagentStart") {
+                    return { continue: true };
+                  }
+
+                  const agentId = String(hookInput.agent_id ?? "");
+                  const agentType = String(hookInput.agent_type ?? "unknown");
+                  const resolvedToolUseId = String(hookInput.tool_use_id || toolUseID || "");
+
+                  if (agentId && resolvedToolUseId) {
+                    agentIdToToolUseId.set(agentId, resolvedToolUseId);
+                  }
+
+                  // Extract description from the tool input that triggered this sub-agent
+                  const toolInput = subagentToolInputByUseId.get(resolvedToolUseId);
+                  const description = toolInput
+                    ? String((toolInput as Record<string, unknown>).description
+                      ?? (toolInput as Record<string, unknown>).prompt
+                      ?? (toolInput as Record<string, unknown>).task
+                      ?? (toolInput as Record<string, unknown>).Task
+                      ?? "")
+                    : "";
+
+                  await onSubagentStarted({
+                    agentId,
+                    agentType,
+                    toolUseId: resolvedToolUseId,
+                    description,
+                  });
+
+                  return {};
+                },
+              ],
+            },
+          ],
+          SubagentStop: [
+            {
+              hooks: [
+                async (hookInput: Record<string, unknown>, toolUseID?: string) => {
+                  if (hookInput.hook_event_name !== "SubagentStop") {
+                    return { continue: true };
+                  }
+
+                  const agentId = String(hookInput.agent_id ?? "");
+                  const agentType = String(hookInput.agent_type ?? "unknown");
+                  const resolvedToolUseId = agentIdToToolUseId.get(agentId)
+                    ?? String(hookInput.tool_use_id || toolUseID || "");
+
+                  // Read the agent transcript (JSONL) to extract description and response
+                  let description = "";
+                  let lastMessage = "";
+                  const transcriptPath = String(hookInput.agent_transcript_path ?? "");
+                  if (transcriptPath) {
+                    try {
+                      const transcriptContent = readFileSync(transcriptPath, "utf-8");
+                      const lines = transcriptContent.split("\n").filter((l) => l.trim().length > 0);
+
+                      for (const line of lines) {
+                        try {
+                          const entry = JSON.parse(line);
+
+                          // First user message content is the prompt/description
+                          if (!description && entry.type === "user" && entry.message?.content) {
+                            const content = entry.message.content;
+                            if (typeof content === "string") {
+                              description = content.trim();
+                            } else if (Array.isArray(content)) {
+                              const textParts = content
+                                .filter((b: { type: string }) => b.type === "text")
+                                .map((b: { text: string }) => b.text);
+                              if (textParts.length > 0) {
+                                description = textParts.join("\n").trim();
+                              }
+                            }
+                          }
+
+                          // Track last assistant text as response
+                          if (entry.message?.role === "assistant" && entry.message?.content) {
+                            const contentArr = Array.isArray(entry.message.content)
+                              ? entry.message.content
+                              : [];
+                            const textBlocks = contentArr.filter(
+                              (b: { type: string }) => b.type === "text",
+                            );
+                            if (textBlocks.length > 0) {
+                              lastMessage = textBlocks
+                                .map((b: { text: string }) => b.text)
+                                .join("\n")
+                                .trim();
+                            }
+                          }
+                        } catch {
+                          // Skip malformed JSONL lines
+                        }
+                      }
+                    } catch {
+                      // Transcript file read failed
+                    }
+                  }
+
+                  // Clean up stored tool input
+                  subagentToolInputByUseId.delete(resolvedToolUseId);
+
+                  await onSubagentStopped({
+                    agentId,
+                    agentType,
+                    toolUseId: resolvedToolUseId,
+                    description,
+                    lastMessage,
+                  });
+
+                  agentIdToToolUseId.delete(agentId);
+
+                  return {};
+                },
+              ],
+            },
+          ],
         },
         pathToClaudeCodeExecutable: claudeExecutable,
         settingSources: ["local", "project", "user"],
@@ -1218,6 +1347,10 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       if (message.type === "stream_event") {
         const event = message.event;
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          // Skip sub-agent text — it will be extracted from the transcript instead
+          if (message.parent_tool_use_id) {
+            continue;
+          }
           if (sawToolUseSinceLastText && finalOutput.length > 0 && !/\s$/.test(finalOutput)) {
             finalOutput += "\n\n";
             await onText("\n\n");

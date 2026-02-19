@@ -12,6 +12,8 @@ export const EVENT_TYPES = [
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
+  "subagent.started",
+  "subagent.finished",
   "chat.completed",
   "chat.failed",
 ] as const;
@@ -27,6 +29,8 @@ export const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
+  "subagent.started",
+  "subagent.finished",
   "chat.failed",
 ]);
 

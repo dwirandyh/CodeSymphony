@@ -8,6 +8,7 @@ import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "../constants";
 import { extractBashRuns } from "../bashUtils";
 import { extractEditedRuns } from "../editUtils";
 import { extractExploreActivityGroups } from "../exploreUtils";
+import { extractSubagentGroups } from "../subagentUtils";
 import {
   buildActivityIntroText,
   buildActivitySteps,
@@ -32,7 +33,7 @@ import {
   shouldDelayFirstInlineInsert,
   splitAtFirstSentenceBoundary,
 } from "../textUtils";
-import type { BashRun, EditedRun, ExploreActivityGroup } from "../types";
+import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types";
 import { pushRenderDebug } from "../../../lib/renderDebug";
 import { logService } from "../../../lib/logService";
 
@@ -285,11 +286,21 @@ export function useWorkspaceTimeline(
           })()
           : undefined;
 
-      const bashRuns = message.role === "assistant" ? extractBashRuns(context) : [];
+      // Extract sub-agent groups FIRST so their child events are excluded from bash/explore grouping
+      const subagentGroups = message.role === "assistant" ? extractSubagentGroups(context) : [];
+      const subagentEventIds = new Set<string>();
+      for (const group of subagentGroups) {
+        group.eventIds.forEach((id) => subagentEventIds.add(id));
+      }
+      const nonSubagentContext = message.role === "assistant"
+        ? context.filter((event) => !subagentEventIds.has(event.id))
+        : context;
+
+      const bashRuns = message.role === "assistant" ? extractBashRuns(nonSubagentContext) : [];
       const bashRunEventIds = new Set<string>();
       const permissionToolNameByRequestId = new Map<string, string>();
       if (message.role === "assistant") {
-        for (const event of context) {
+        for (const event of nonSubagentContext) {
           if (event.type !== "permission.requested") {
             continue;
           }
@@ -306,7 +317,7 @@ export function useWorkspaceTimeline(
       }
 
       const nonBashContext = message.role === "assistant"
-        ? context.filter((event) => {
+        ? nonSubagentContext.filter((event) => {
           if (isBashToolEvent(event) || bashRunEventIds.has(event.id)) {
             return false;
           }
@@ -327,7 +338,7 @@ export function useWorkspaceTimeline(
 
           return true;
         })
-        : context;
+        : nonSubagentContext;
       const exploreContext = nonBashContext.filter((event) => !isWorktreeDiffEvent(event));
       const deltaEventsForExplore = message.role === "assistant"
         ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
@@ -354,6 +365,9 @@ export function useWorkspaceTimeline(
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
         for (const group of exploreActivityGroups) {
+          group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+        }
+        for (const group of subagentGroups) {
           group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
       }
@@ -390,8 +404,9 @@ export function useWorkspaceTimeline(
         }
       }
 
-      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0)) {
+      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0)) {
         const hasInlineExploreRuns = exploreActivityGroups.length > 0;
+        const hasInlineSubagentRuns = subagentGroups.length > 0;
         type InlineInsert =
           | {
             kind: "bash";
@@ -416,6 +431,14 @@ export function useWorkspaceTimeline(
             anchorIdx: number;
             createdAt: string;
             group: ExploreActivityGroup;
+          }
+          | {
+            kind: "subagent-activity";
+            id: string;
+            startIdx: number;
+            anchorIdx: number;
+            createdAt: string;
+            group: SubagentGroup;
           };
 
         const inlineInserts: InlineInsert[] = [
@@ -440,6 +463,14 @@ export function useWorkspaceTimeline(
           ...(hasInlineExploreRuns ? exploreActivityGroups.map((group, index) => ({
             kind: "explore-activity" as const,
             id: `explore:${group.id}:${index}`,
+            startIdx: group.startIdx,
+            anchorIdx: group.anchorIdx,
+            createdAt: group.createdAt,
+            group,
+          })) : []),
+          ...(hasInlineSubagentRuns ? subagentGroups.map((group, index) => ({
+            kind: "subagent-activity" as const,
+            id: `subagent:${group.id}:${index}`,
             startIdx: group.startIdx,
             anchorIdx: group.anchorIdx,
             createdAt: group.createdAt,
@@ -493,15 +524,13 @@ export function useWorkspaceTimeline(
             bucket.anchorIdx = null;
             bucket.timestamp = null;
           }
-          const hasDeltaAnchor = anchorIdx !== MAX_ORDER_INDEX;
-          const shouldPlaceFallbackAfterInserts =
-            hasDeltaAnchor && inlineInserts.length > 0 && inlineInserts.every((insert) => insert.startIdx <= anchorIdx);
-          const fallbackBucketIndex = shouldPlaceFallbackAfterInserts ? inlineInserts.length : 0;
-          const fallbackAnchorIdx = hasDeltaAnchor
-            ? anchorIdx
-            : (fallbackBucketIndex === 0 && inlineInserts.length > 0
-              ? inlineInserts[0].startIdx - 1
-              : anchorIdx);
+          // When deltas are incomplete, place the full message content in bucket 0
+          // (before any inline inserts) so the text renders above subagent/explore/bash
+          // activities. Use an anchorIdx just before the first insert to maintain sort order.
+          const fallbackBucketIndex = 0;
+          const fallbackAnchorIdx = inlineInserts.length > 0
+            ? inlineInserts[0].startIdx - 1
+            : anchorIdx;
           segmentBuckets[fallbackBucketIndex] = {
             content: message.content,
             anchorIdx: fallbackAnchorIdx,
@@ -515,6 +544,8 @@ export function useWorkspaceTimeline(
           if (mBucket.content.length === 0 || mBucket.content.trim().length >= MIN_STANDALONE_SEGMENT_LENGTH) {
             continue;
           }
+          let merged = false;
+          // Try merging forward first
           for (let nextIdx = mergeIdx + 1; nextIdx < segmentBuckets.length; nextIdx++) {
             if (segmentBuckets[nextIdx].content.length > 0) {
               segmentBuckets[nextIdx].content = mBucket.content + segmentBuckets[nextIdx].content;
@@ -528,7 +559,20 @@ export function useWorkspaceTimeline(
               mBucket.content = "";
               mBucket.anchorIdx = null;
               mBucket.timestamp = null;
+              merged = true;
               break;
+            }
+          }
+          // If forward merge failed, merge backward
+          if (!merged) {
+            for (let prevIdx = mergeIdx - 1; prevIdx >= 0; prevIdx--) {
+              if (segmentBuckets[prevIdx].content.length > 0) {
+                segmentBuckets[prevIdx].content += mBucket.content;
+                mBucket.content = "";
+                mBucket.anchorIdx = null;
+                mBucket.timestamp = null;
+                break;
+              }
             }
           }
         }
@@ -617,6 +661,30 @@ export function useWorkspaceTimeline(
                 createdAt: run.createdAt,
               },
               anchorIdx: bucketAnchorIdx ?? run.anchorIdx,
+              timestamp: bucketTimestamp ?? timestamp,
+              rank: 3,
+              stableOrder: message.seq + stableOffset,
+            });
+            stableOffset += 0.001;
+            return;
+          }
+
+          if (insert.kind === "subagent-activity") {
+            const group = insert.group;
+            sortable.push({
+              item: {
+                kind: "subagent-activity",
+                id: `${message.id}:${group.id}:${insert.id}`,
+                agentId: group.agentId,
+                agentType: group.agentType,
+                toolUseId: group.toolUseId,
+                status: group.status,
+                description: group.description,
+                lastMessage: group.lastMessage,
+                steps: group.steps,
+                durationSeconds: group.durationSeconds,
+              },
+              anchorIdx: bucketAnchorIdx ?? group.anchorIdx,
               timestamp: bucketTimestamp ?? timestamp,
               rank: 3,
               stableOrder: message.seq + stableOffset,
@@ -839,7 +907,12 @@ export function useWorkspaceTimeline(
 
     const orphanToolEvents = inlineToolEvents
       .filter((event) => !assignedToolEventIds.has(event.id))
-      .filter((event) => event.type !== "permission.requested" && event.type !== "permission.resolved")
+      .filter((event) =>
+        event.type !== "permission.requested"
+        && event.type !== "permission.resolved"
+        && event.type !== "subagent.started"
+        && event.type !== "subagent.finished"
+      )
       .sort((a, b) => a.idx - b.idx);
     pushRenderDebug({
       source: "WorkspacePage",

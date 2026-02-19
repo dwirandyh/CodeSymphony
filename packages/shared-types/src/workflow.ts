@@ -18,6 +18,8 @@ export const ChatEventTypeSchema = z.enum([
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
+  "subagent.started",
+  "subagent.finished",
   "chat.completed",
   "chat.failed",
 ]);

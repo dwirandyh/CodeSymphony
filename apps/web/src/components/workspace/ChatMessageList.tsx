@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder } from "lucide-react";
+import { Bot, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2 } from "lucide-react";
+import type { SubagentStep } from "../../pages/workspace/types";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -96,6 +97,18 @@ export type ChatTimelineItem =
     fileCount: number;
     searchCount: number;
     entries: ExploreActivityEntry[];
+  }
+  | {
+    kind: "subagent-activity";
+    id: string;
+    agentId: string;
+    agentType: string;
+    toolUseId: string;
+    status: "running" | "success" | "failed";
+    description: string;
+    lastMessage: string | null;
+    steps: SubagentStep[];
+    durationSeconds: number | null;
   };
 
 type ChatMessageListProps = {
@@ -1172,6 +1185,7 @@ export function ChatMessageList({
   const [bashExpandedById, setBashExpandedById] = useState<Map<string, boolean>>(new Map());
   const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(new Map());
   const [exploreActivityExpandedById, setExploreActivityExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [subagentExpandedById, setSubagentExpandedById] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
@@ -1308,6 +1322,10 @@ export function ChatMessageList({
 
   function isExploreActivityExpanded(id: string): boolean {
     return exploreActivityExpandedById.get(id) === true;
+  }
+
+  function isSubagentExpanded(id: string): boolean {
+    return subagentExpandedById.get(id) === true;
   }
 
   return (
@@ -1679,6 +1697,113 @@ export function ChatMessageList({
                           ? renderReadLabel(entry, `${item.id}:${idx}`)
                           : <span key={`${item.id}:${idx}`}>{entry.label}</span>
                     ))}
+                  </div>
+                </details>
+              </article>
+            );
+          }
+
+          if (item.kind === "subagent-activity") {
+            const expanded = isSubagentExpanded(item.id);
+            const agentLabel = item.agentType !== "unknown" ? item.agentType : "Task";
+            const descSnippet = item.description
+              ? item.description.length > 60 ? `${item.description.slice(0, 57)}...` : item.description
+              : "";
+            const headerText = descSnippet
+              ? `${agentLabel}(${descSnippet})`
+              : agentLabel;
+            const stepCount = item.steps.length;
+            const durationText = item.durationSeconds != null ? `${item.durationSeconds}s` : "";
+            const footerParts = [
+              stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? "s" : ""}` : "",
+              durationText,
+            ].filter(Boolean).join(" · ");
+
+            return (
+              <article
+                key={`subagent-activity-${item.id}`}
+                className="px-1 text-xs"
+                data-testid="timeline-subagent-activity"
+              >
+                <details
+                  open={expanded}
+                  onToggle={(event) => {
+                    const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                    setSubagentExpandedById((current) => {
+                      const next = new Map(current);
+                      next.set(item.id, nextOpen);
+                      return next;
+                    });
+                  }}
+                >
+                  <summary className="group/subagent-summary cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
+                    <Bot className="h-3 w-3 shrink-0" />
+                    <span className={item.status === "running" ? "thinking-shimmer" : ""}>{headerText}</span>
+                    <span
+                      data-testid="timeline-subagent-activity-chevron"
+                      className={cn("inline-flex transition-transform duration-150", expanded ? "rotate-90" : "")}
+                    >
+                      <ChevronRight className="h-3 w-3" />
+                    </span>
+                  </summary>
+                  <div className="mt-1 ml-4 flex flex-col gap-0.5 text-muted-foreground">
+                    {/* Prompt */}
+                    {item.description && (
+                      <div className="flex items-start gap-1">
+                        <span className="text-border select-none shrink-0">⎿</span>
+                        <div>
+                          <span className="font-medium text-muted-foreground/70">Prompt:</span>
+                          <p className="mt-0.5 text-muted-foreground/60 whitespace-pre-wrap break-words leading-snug">
+                            {item.description.length > 200
+                              ? `${item.description.slice(0, 197).trimEnd()}...`
+                              : item.description}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Steps */}
+                    {item.steps.map((step, idx) => (
+                      <div key={`${item.id}:step:${idx}`} className="flex items-center gap-1">
+                        <span className="text-border select-none shrink-0">⎿</span>
+                        {step.status === "success"
+                          ? <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500/70" />
+                          : <Loader2 className="h-3 w-3 shrink-0 text-muted-foreground/50 animate-spin" />
+                        }
+                        <span className={step.status === "running" ? "thinking-shimmer" : ""}>
+                          {step.label}
+                        </span>
+                      </div>
+                    ))}
+
+                    {/* Response */}
+                    {item.lastMessage && (
+                      <div className="flex items-start gap-1">
+                        <span className="text-border select-none shrink-0">⎿</span>
+                        <div className="min-w-0">
+                          <span className="font-medium text-muted-foreground/70">Response:</span>
+                          <p className="mt-0.5 text-muted-foreground/60 whitespace-pre-wrap break-words leading-snug text-[11px]">
+                            {item.lastMessage.length > 500
+                              ? `${item.lastMessage.slice(0, 497).trimEnd()}...`
+                              : item.lastMessage}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Footer */}
+                    <div className="flex items-center gap-1 mt-0.5">
+                      <span className="text-border select-none shrink-0">⎿</span>
+                      <span className={cn(
+                        "text-muted-foreground/50 text-[11px]",
+                        item.status === "running" ? "thinking-shimmer" : "",
+                      )}>
+                        {item.status === "running"
+                          ? `Running${footerParts ? ` (${footerParts})` : ""}`
+                          : `Done${footerParts ? ` (${footerParts})` : ""}`
+                        }
+                      </span>
+                    </div>
                   </div>
                 </details>
               </article>

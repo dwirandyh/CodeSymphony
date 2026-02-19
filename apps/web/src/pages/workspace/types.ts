@@ -69,6 +69,29 @@ export type ExploreActivityGroup = {
   eventIds: Set<string>;
 };
 
+export type SubagentStep = {
+  toolUseId: string;
+  toolName: string;
+  label: string;
+  status: "running" | "success";
+};
+
+export type SubagentGroup = {
+  id: string;
+  agentId: string;
+  agentType: string;
+  toolUseId: string;
+  status: "running" | "success";
+  description: string;
+  lastMessage: string | null;
+  steps: SubagentStep[];
+  durationSeconds: number | null;
+  startIdx: number;
+  anchorIdx: number;
+  createdAt: string;
+  eventIds: Set<string>;
+};
+
 export type PendingPermissionRequest = {
   requestId: string;
   toolName: string;

@@ -124,6 +124,19 @@ export type ClaudeRunner = (args: {
     content: string;
     source?: PlanDetectionSource;
   }) => Promise<void> | void;
+  onSubagentStarted: (payload: {
+    agentId: string;
+    agentType: string;
+    toolUseId: string;
+    description: string;
+  }) => Promise<void> | void;
+  onSubagentStopped: (payload: {
+    agentId: string;
+    agentType: string;
+    toolUseId: string;
+    description: string;
+    lastMessage: string;
+  }) => Promise<void> | void;
   onToolInstrumentation?: (event: ClaudeToolInstrumentationEvent) => Promise<void> | void;
 }) => Promise<ClaudeRunnerResult>;
 

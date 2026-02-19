@@ -472,6 +472,8 @@ export function createChatService(deps: RuntimeDeps) {
         onQuestionRequest: async () => ({ answers: {} }),
         onPermissionRequest: () => ({ decision: "deny", message: "Tool use is disabled for title generation." }),
         onPlanFileDetected: async () => {},
+        onSubagentStarted: async () => {},
+        onSubagentStopped: async () => {},
       });
 
       const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
@@ -727,6 +729,12 @@ export function createChatService(deps: RuntimeDeps) {
         },
         onToolFinished: async (payload) => {
           await deps.eventHub.emit(threadId, "tool.finished", payload);
+        },
+        onSubagentStarted: async (payload) => {
+          await deps.eventHub.emit(threadId, "subagent.started", payload);
+        },
+        onSubagentStopped: async (payload) => {
+          await deps.eventHub.emit(threadId, "subagent.finished", payload);
         },
         onToolInstrumentation: async (event) => {
           if (!deps.logService) {
