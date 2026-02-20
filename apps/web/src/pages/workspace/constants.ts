@@ -47,4 +47,4 @@ export const FILE_PATH_PATTERN = /(?:[~./\w-]+\/)?[\w.-]+\.[a-z0-9]{1,10}\b|read
 export const TRIM_FILE_TOKEN_PATTERN = /^[`"'([{<\s]+|[`"',.;:)\]}>/\\\s]+$/g;
 export const SENTENCE_BOUNDARY_PATTERN = /[.!?](?:["')\]]+)?(?:\s+|$|(?=[A-Z]))/;
 export const SENTENCE_BOUNDARY_SCAN_LIMIT = 280;
-export const EXPLORE_BASH_COMMAND_PATTERN = /^\s*(ls|find|tree|du|wc|stat|file|head|tail)\b/i;
+export const EXPLORE_BASH_COMMAND_PATTERN = /^\s*(ls|find|tree|du|wc|stat|file|head|tail|grep|rg)\b/i;
