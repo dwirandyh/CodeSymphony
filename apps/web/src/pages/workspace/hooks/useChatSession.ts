@@ -32,6 +32,7 @@ export function useChatSession(
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
+  const activeThreadIdRef = useRef<string | null>(null);
 
   function ensureSeenEventIds(threadId: string): Set<string> {
     const existing = seenEventIdsByThreadRef.current.get(threadId);
@@ -71,6 +72,11 @@ export function useChatSession(
       api.listMessages(threadId),
       api.listEvents(threadId),
     ]);
+
+    // Guard: if the user switched threads while the API calls were in flight,
+    // discard this result to prevent cross-thread contamination.
+    if (activeThreadIdRef.current !== threadId) return;
+
     // Merge loaded data with existing state to prevent SSE-delivered events
     // from being temporarily lost when loadThreadData races with streaming.
     setMessages((current) => {
@@ -168,6 +174,7 @@ export function useChatSession(
 
   useEffect(() => {
     if (!selectedThreadId) {
+      activeThreadIdRef.current = null;
       setWaitingAssistant(null);
       setStoppingThreadId(null);
       setStopRequestedThreadId(null);
@@ -178,8 +185,15 @@ export function useChatSession(
       return;
     }
 
+    // Clear previous thread's data immediately so the merge in loadThreadData
+    // starts with a clean slate — prevents cross-thread event/message leaking.
+    activeThreadIdRef.current = selectedThreadId;
+    setMessages([]);
+    setEvents([]);
+
     streamingMessageIdsRef.current = new Set();
     stickyRawFallbackMessageIdsRef.current = new Set();
+    renderDecisionByMessageIdRef.current = new Map();
     setWaitingAssistant(null);
     setStoppingThreadId(null);
     setStopRequestedThreadId(null);
