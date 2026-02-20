@@ -21,11 +21,15 @@ import {
 } from "@codesymphony/shared-types";
 import type { ClaudeToolInstrumentationEvent, PlanDetectionSource, RuntimeDeps } from "../types";
 import { mapChatMessage, mapChatThread } from "./mappers";
+import { isDefaultBranchName } from "./worktreeService";
+import { renameBranch as renameBranchGit } from "./git";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_THREAD_TITLE_LENGTH = 48;
 const TITLE_GENERATION_TIMEOUT_MS = 6000;
+const MAX_BRANCH_NAME_LENGTH = 60;
+const BRANCH_GENERATION_TIMEOUT_MS = 6000;
 const CLAUDE_SETTINGS_DIR = ".claude";
 const CLAUDE_LOCAL_SETTINGS_FILE = "settings.local.json";
 const execFile = promisify(execFileRaw);
@@ -587,6 +591,198 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
+  function normalizeGeneratedBranchName(raw: string): string | null {
+    const firstLine = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    if (!firstLine) return null;
+
+    let candidate = firstLine
+      .replace(/^[-*]\s*/, "")
+      .replace(/^branch\s*[:\-]\s*/i, "")
+      .replace(/^["'`]+/, "")
+      .replace(/["'`]+$/, "")
+      .trim();
+
+    candidate = candidate
+      .toLowerCase()
+      .replace(/[^a-z0-9/\-]+/g, "-")
+      .replace(/(^-|-$)/g, "")
+      .replace(/\/{2,}/g, "/")
+      .replace(/(^\/|\/\s*$)/g, "");
+
+    if (candidate.length < 3) return null;
+    if (candidate.length > MAX_BRANCH_NAME_LENGTH) {
+      candidate = candidate.slice(0, MAX_BRANCH_NAME_LENGTH).replace(/-$/, "");
+    }
+
+    return candidate;
+  }
+
+  async function buildBranchNameWithAi(
+    worktreePath: string,
+    firstUserContent: string,
+    firstAssistantContent: string,
+  ): Promise<string | null> {
+    const prompt = [
+      "You generate concise git branch names.",
+      "Return exactly one branch name line only.",
+      "Rules:",
+      "- Capture the user's core intent for the code change.",
+      "- Use lowercase letters, hyphens only (no spaces, no underscores).",
+      "- Keep it concise (2-5 words, max 60 chars).",
+      "- Use a conventional prefix: feat/, fix/, refactor/, docs/, chore/",
+      "- No quotes, no trailing punctuation.",
+      "",
+      `User message: ${firstUserContent.trim()}`,
+      `Assistant reply: ${firstAssistantContent.trim()}`,
+    ].join("\n");
+
+    let streamedOutput = "";
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => {
+      abortController.abort();
+    }, BRANCH_GENERATION_TIMEOUT_MS);
+
+    try {
+      const result = await deps.claudeRunner({
+        prompt,
+        sessionId: null,
+        cwd: worktreePath,
+        abortController,
+        permissionMode: "plan",
+        onText: (chunk) => {
+          streamedOutput += chunk;
+        },
+        onToolStarted: async () => {},
+        onToolOutput: async () => {},
+        onToolFinished: async () => {},
+        onQuestionRequest: async () => ({ answers: {} }),
+        onPermissionRequest: () => ({
+          decision: "deny",
+          message: "Tool use is disabled for branch name generation.",
+        }),
+        onPlanFileDetected: async () => {},
+        onSubagentStarted: async () => {},
+        onSubagentStopped: async () => {},
+        onThinking: async () => {},
+      });
+
+      const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
+      return normalizeGeneratedBranchName(raw);
+    } catch (error) {
+      deps.logService?.log(
+        "warn",
+        "chat.branch.rename",
+        "AI branch name generation failed; keeping current branch.",
+        {
+          worktreePath,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function maybeAutoRenameBranchAfterFirstAssistantReply(threadId: string): Promise<string | null> {
+    try {
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+        select: {
+          worktree: {
+            select: {
+              id: true,
+              branch: true,
+              path: true,
+              branchRenamed: true,
+              repositoryId: true,
+            },
+          },
+        },
+      });
+      if (!thread) return null;
+
+      const worktree = thread.worktree;
+
+      if (worktree.branchRenamed) {
+        return null;
+      }
+
+      if (!isDefaultBranchName(worktree.branch)) {
+        return null;
+      }
+
+      const assistantMessageCount = await deps.prisma.chatMessage.count({
+        where: { threadId, role: "assistant" },
+      });
+      if (assistantMessageCount !== 1) {
+        return null;
+      }
+
+      const firstUserMessage = await deps.prisma.chatMessage.findFirst({
+        where: { threadId, role: "user" },
+        orderBy: { seq: "asc" },
+        select: { content: true },
+      });
+      if (!firstUserMessage) return null;
+
+      const firstAssistantMessage = await deps.prisma.chatMessage.findFirst({
+        where: { threadId, role: "assistant" },
+        orderBy: { seq: "asc" },
+        select: { content: true },
+      });
+      if (!firstAssistantMessage) return null;
+
+      const newBranch = await buildBranchNameWithAi(
+        worktree.path,
+        firstUserMessage.content,
+        firstAssistantMessage.content,
+      );
+
+      if (!newBranch || newBranch === worktree.branch) {
+        return null;
+      }
+
+      const existing = await deps.prisma.worktree.findFirst({
+        where: {
+          repositoryId: worktree.repositoryId,
+          branch: newBranch,
+          id: { not: worktree.id },
+        },
+      });
+      if (existing) {
+        return null;
+      }
+
+      await renameBranchGit({
+        cwd: worktree.path,
+        oldBranch: worktree.branch,
+        newBranch,
+      });
+
+      await deps.prisma.worktree.update({
+        where: { id: worktree.id },
+        data: { branch: newBranch, branchRenamed: true },
+      });
+
+      return newBranch;
+    } catch (error) {
+      deps.logService?.log(
+        "warn",
+        "chat.branch.rename",
+        "Auto branch rename failed; keeping current branch.",
+        {
+          threadId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return null;
+    }
+  }
+
   type PermissionDecisionResult = { decision: "allow" | "deny"; message?: string };
   type PendingPermissionEntry = {
     status: "pending" | "resolved";
@@ -861,6 +1057,7 @@ export function createChatService(deps: RuntimeDeps) {
         });
       });
       const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(threadId);
+      const renamedBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(threadId);
       let completionThreadTitle: string | null = renamedThreadTitle;
       if (!completionThreadTitle) {
         try {
@@ -903,6 +1100,7 @@ export function createChatService(deps: RuntimeDeps) {
       await deps.eventHub.emit(threadId, "chat.completed", {
         messageId: assistantMessage.id,
         ...(completionThreadTitle ? { threadTitle: completionThreadTitle } : {}),
+        ...(renamedBranch ? { worktreeBranch: renamedBranch } : {}),
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Unknown chat error";

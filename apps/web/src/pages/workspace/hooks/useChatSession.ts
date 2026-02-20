@@ -10,6 +10,7 @@ import { useWorkspaceTimeline, type TimelineRefs } from "./useWorkspaceTimeline"
 export function useChatSession(
   selectedWorktreeId: string | null,
   onError: (msg: string | null) => void,
+  onBranchRenamed?: (worktreeId: string, newBranch: string) => void,
 ) {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -81,12 +82,15 @@ export function useChatSession(
     const seenEventIds = new Set<string>();
     let lastIdx: number | null = null;
     let latestThreadTitle: string | null = null;
+    let latestWorktreeBranch: string | null = null;
     for (const event of threadEvents) {
       seenEventIds.add(event.id);
       if (lastIdx == null || event.idx > lastIdx) lastIdx = event.idx;
       if (event.type === "chat.completed") {
         const title = payloadStringOrNull(event.payload.threadTitle);
         if (title) latestThreadTitle = title;
+        const branch = payloadStringOrNull(event.payload.worktreeBranch);
+        if (branch) latestWorktreeBranch = branch;
       }
     }
 
@@ -96,6 +100,10 @@ export function useChatSession(
           t.id === threadId ? { ...t, title: latestThreadTitle } : t,
         ),
       );
+    }
+
+    if (latestWorktreeBranch && selectedWorktreeId) {
+      onBranchRenamed?.(selectedWorktreeId, latestWorktreeBranch);
     }
 
     seenEventIdsByThreadRef.current.set(threadId, seenEventIds);
@@ -258,6 +266,7 @@ export function useChatSession(
         if (payload.type === "chat.completed") {
           const completedMessageId = String(payload.payload.messageId ?? "");
           const completedThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
+          const completedBranch = payloadStringOrNull(payload.payload.worktreeBranch);
           if (completedMessageId.length > 0) streamingMessageIdsRef.current.delete(completedMessageId);
           if (completedThreadTitle) {
             setThreads((current) =>
@@ -265,6 +274,9 @@ export function useChatSession(
                 t.id === selectedThreadId ? { ...t, title: completedThreadTitle } : t,
               ),
             );
+          }
+          if (completedBranch && selectedWorktreeId) {
+            onBranchRenamed?.(selectedWorktreeId, completedBranch);
           }
           pushRenderDebug({
             source: "WorkspacePage",

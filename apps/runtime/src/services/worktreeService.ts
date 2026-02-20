@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { CreateWorktreeInputSchema, type CreateWorktreeInput, type Worktree } from "@codesymphony/shared-types";
-import { createGitWorktree, removeGitWorktree } from "./git";
+import { createGitWorktree, removeGitWorktree, renameBranch as renameBranchGit } from "./git";
 import { mapWorktree } from "./mappers";
 
 const INDONESIAN_PROVINCES = [
@@ -88,6 +88,14 @@ function buildProvinceBranchName(attempt: number): string {
 function isBranchAlreadyExistsError(error: unknown): boolean {
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   return message.includes("already exists");
+}
+
+const PROVINCE_SLUGS = new Set(INDONESIAN_PROVINCES.map((name) => slugify(name)));
+
+export function isDefaultBranchName(branch: string): boolean {
+  const match = /^(.+?)(?:-(\d+))?$/.exec(branch);
+  if (!match) return false;
+  return PROVINCE_SLUGS.has(match[1]);
 }
 
 export function createWorktreeService(prisma: PrismaClient) {
@@ -213,6 +221,51 @@ export function createWorktreeService(prisma: PrismaClient) {
 
       await prisma.worktree.delete({ where: { id } });
       await rm(worktree.path, { recursive: true, force: true }).catch(() => undefined);
+    },
+
+    async renameBranch(
+      worktreeId: string,
+      newBranch: string,
+      options?: { isManualRename?: boolean },
+    ): Promise<Worktree> {
+      const worktree = await prisma.worktree.findUnique({
+        where: { id: worktreeId },
+      });
+
+      if (!worktree) {
+        throw new Error("Worktree not found");
+      }
+
+      if (worktree.branch === newBranch) {
+        return mapWorktree(worktree);
+      }
+
+      const existing = await prisma.worktree.findFirst({
+        where: {
+          repositoryId: worktree.repositoryId,
+          branch: newBranch,
+          id: { not: worktreeId },
+        },
+      });
+      if (existing) {
+        throw new Error("A worktree with this branch name already exists in this repository");
+      }
+
+      await renameBranchGit({
+        cwd: worktree.path,
+        oldBranch: worktree.branch,
+        newBranch,
+      });
+
+      const updated = await prisma.worktree.update({
+        where: { id: worktreeId },
+        data: {
+          branch: newBranch,
+          branchRenamed: options?.isManualRename ?? true,
+        },
+      });
+
+      return mapWorktree(updated);
     },
 
     async listThreads(worktreeId: string) {

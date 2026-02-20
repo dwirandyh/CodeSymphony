@@ -10,10 +10,10 @@ const entries: GitChangeEntry[] = [
   { path: "README.md", status: "deleted" },
 ];
 
-function changeTextareaValue(textarea: HTMLTextAreaElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
-  setter?.call(textarea, value);
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+function changeInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 describe("GitChangesPanel", () => {
@@ -100,8 +100,8 @@ describe("GitChangesPanel", () => {
 
   it("disables commit button when no entries", () => {
     renderPanel({ entries: [] });
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
-    act(() => changeTextareaValue(textarea, "test commit"));
+    const input = container.querySelector("input") as HTMLInputElement;
+    act(() => changeInputValue(input, "test commit"));
     const allButtons = Array.from(container.querySelectorAll("button"));
     const commit = allButtons.find((b) => b.textContent?.includes("Commit"));
     expect(commit?.disabled).toBe(true);
@@ -109,8 +109,8 @@ describe("GitChangesPanel", () => {
 
   it("disables commit button while committing", () => {
     renderPanel({ committing: true });
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
-    act(() => changeTextareaValue(textarea, "test commit"));
+    const input = container.querySelector("input") as HTMLInputElement;
+    act(() => changeInputValue(input, "test commit"));
     const allButtons = Array.from(container.querySelectorAll("button"));
     const commit = allButtons.find((b) => b.textContent?.includes("Committing..."));
     expect(commit?.disabled).toBe(true);
@@ -118,8 +118,8 @@ describe("GitChangesPanel", () => {
 
   it("enables commit when message is provided and entries exist", () => {
     renderPanel();
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
-    act(() => changeTextareaValue(textarea, "fix: something"));
+    const input = container.querySelector("input") as HTMLInputElement;
+    act(() => changeInputValue(input, "fix: something"));
     const allButtons = Array.from(container.querySelectorAll("button"));
     const commit = allButtons.find((b) => b.textContent?.includes("Commit"));
     expect(commit?.disabled).toBe(false);
@@ -129,8 +129,8 @@ describe("GitChangesPanel", () => {
 
   it("calls onCommit with trimmed message on button click", () => {
     renderPanel();
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
-    act(() => changeTextareaValue(textarea, "  fix: broken test  "));
+    const input = container.querySelector("input") as HTMLInputElement;
+    act(() => changeInputValue(input, "  fix: broken test  "));
     const allButtons = Array.from(container.querySelectorAll("button"));
     const commit = allButtons.find((b) => b.textContent?.includes("Commit"))!;
     act(() => commit.click());
@@ -139,20 +139,20 @@ describe("GitChangesPanel", () => {
 
   it("clears message after successful commit", () => {
     renderPanel();
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
-    act(() => changeTextareaValue(textarea, "fix: broken test"));
+    const input = container.querySelector("input") as HTMLInputElement;
+    act(() => changeInputValue(input, "fix: broken test"));
     const allButtons = Array.from(container.querySelectorAll("button"));
     const commit = allButtons.find((b) => b.textContent?.includes("Commit"))!;
     act(() => commit.click());
-    expect(textarea.value).toBe("");
+    expect(input.value).toBe("");
   });
 
   it("calls onCommit on Cmd+Enter", () => {
     renderPanel();
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
-    act(() => changeTextareaValue(textarea, "chore: update deps"));
+    const input = container.querySelector("input") as HTMLInputElement;
+    act(() => changeInputValue(input, "chore: update deps"));
     act(() => {
-      textarea.dispatchEvent(
+      input.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
       );
     });
@@ -161,10 +161,10 @@ describe("GitChangesPanel", () => {
 
   it("calls onCommit on Ctrl+Enter", () => {
     renderPanel();
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
-    act(() => changeTextareaValue(textarea, "chore: update deps"));
+    const input = container.querySelector("input") as HTMLInputElement;
+    act(() => changeInputValue(input, "chore: update deps"));
     act(() => {
-      textarea.dispatchEvent(
+      input.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }),
       );
     });
@@ -173,9 +173,9 @@ describe("GitChangesPanel", () => {
 
   it("does not call onCommit on Cmd+Enter with empty message", () => {
     renderPanel();
-    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    const input = container.querySelector("input") as HTMLInputElement;
     act(() => {
-      textarea.dispatchEvent(
+      input.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
       );
     });

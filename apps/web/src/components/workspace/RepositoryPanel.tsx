@@ -18,6 +18,7 @@ type RepositoryPanelProps = {
   onCreateWorktree: (repositoryId: string) => void;
   onSelectWorktree: (repositoryId: string, worktreeId: string) => void;
   onDeleteWorktree: (worktreeId: string) => void;
+  onRenameWorktreeBranch: (worktreeId: string, newBranch: string) => void;
 };
 
 export function RepositoryPanel({
@@ -32,8 +33,11 @@ export function RepositoryPanel({
   onCreateWorktree,
   onSelectWorktree,
   onDeleteWorktree,
+  onRenameWorktreeBranch,
 }: RepositoryPanelProps) {
   const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>({});
+  const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(null);
+  const [editingBranchValue, setEditingBranchValue] = useState("");
 
   useEffect(() => {
     if (!selectedRepositoryId) {
@@ -162,7 +166,46 @@ export function RepositoryPanel({
                           >
                             <span className="flex min-w-0 items-center gap-1.5">
                               <GitBranch className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-                              <span className="truncate text-xs">{worktree.branch}</span>
+                              {editingWorktreeId === worktree.id ? (
+                                <input
+                                  type="text"
+                                  className="min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
+                                  value={editingBranchValue}
+                                  autoFocus
+                                  onChange={(e) => setEditingBranchValue(e.target.value)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      const trimmed = editingBranchValue.trim();
+                                      if (trimmed && trimmed !== worktree.branch) {
+                                        onRenameWorktreeBranch(worktree.id, trimmed);
+                                      }
+                                      setEditingWorktreeId(null);
+                                    }
+                                    if (e.key === "Escape") {
+                                      setEditingWorktreeId(null);
+                                    }
+                                  }}
+                                  onBlur={() => {
+                                    const trimmed = editingBranchValue.trim();
+                                    if (trimmed && trimmed !== worktree.branch) {
+                                      onRenameWorktreeBranch(worktree.id, trimmed);
+                                    }
+                                    setEditingWorktreeId(null);
+                                  }}
+                                />
+                              ) : (
+                                <span
+                                  className="truncate text-xs"
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingWorktreeId(worktree.id);
+                                    setEditingBranchValue(worktree.branch);
+                                  }}
+                                >
+                                  {worktree.branch}
+                                </span>
+                              )}
                             </span>
                             <Badge variant="outline" className="border-none bg-transparent text-[10px] text-muted-foreground">
                               {worktree.baseBranch}
