@@ -715,13 +715,6 @@ export function createChatService(deps: RuntimeDeps) {
         return null;
       }
 
-      const assistantMessageCount = await deps.prisma.chatMessage.count({
-        where: { threadId, role: "assistant" },
-      });
-      if (assistantMessageCount !== 1) {
-        return null;
-      }
-
       const firstUserMessage = await deps.prisma.chatMessage.findFirst({
         where: { threadId, role: "user" },
         orderBy: { seq: "asc" },
@@ -1057,7 +1050,6 @@ export function createChatService(deps: RuntimeDeps) {
         });
       });
       const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(threadId);
-      const renamedBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(threadId);
       let completionThreadTitle: string | null = renamedThreadTitle;
       if (!completionThreadTitle) {
         try {
@@ -1096,6 +1088,12 @@ export function createChatService(deps: RuntimeDeps) {
           diffTruncated: diffSnapshot.diffTruncated,
         });
       }
+
+      // Only auto-rename branch when there are actual file changes (not just exploration/Q&A)
+      const hasFileChanges = diffSnapshot != null && diffSnapshot.changedFiles.length > 0;
+      const renamedBranch = hasFileChanges
+        ? await maybeAutoRenameBranchAfterFirstAssistantReply(threadId)
+        : null;
 
       await deps.eventHub.emit(threadId, "chat.completed", {
         messageId: assistantMessage.id,
