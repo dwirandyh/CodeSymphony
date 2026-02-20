@@ -64,10 +64,25 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     [worktreeId, fetchStatus],
   );
 
+  const discardChange = useCallback(
+    async (filePath: string) => {
+      if (!worktreeId) return;
+      setError(null);
+      try {
+        await api.discardGitChange(worktreeId, filePath);
+        await fetchStatus();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Discard failed";
+        setError(msg);
+      }
+    },
+    [worktreeId, fetchStatus],
+  );
+
   const getDiff = useCallback(async () => {
     if (!worktreeId) return { diff: "", summary: "" };
     return api.getGitDiff(worktreeId);
   }, [worktreeId]);
 
-  return { entries, branch, loading, committing, error, commit, getDiff, refresh: fetchStatus };
+  return { entries, branch, loading, committing, error, commit, discardChange, getDiff, refresh: fetchStatus };
 }

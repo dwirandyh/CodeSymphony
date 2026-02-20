@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Eye, RefreshCw, X } from "lucide-react";
+import { Dot, ExternalLink, Eye, Plus, Minus, RefreshCw, Undo2, X } from "lucide-react";
 import type { GitChangeEntry } from "@codesymphony/shared-types";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -21,14 +21,16 @@ interface GitChangesPanelProps {
   onRefresh: () => void;
   onClose: () => void;
   onSelectFile?: (path: string) => void;
+  onDiscardChange?: (path: string) => void;
+  onOpenFile?: (path: string) => void;
 }
 
-const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  modified: { label: "M", className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-400" },
-  added: { label: "A", className: "border-green-500/40 bg-green-500/10 text-green-400" },
-  deleted: { label: "D", className: "border-red-500/40 bg-red-500/10 text-red-400" },
-  renamed: { label: "R", className: "border-blue-500/40 bg-blue-500/10 text-blue-400" },
-  untracked: { label: "U", className: "border-green-600/40 bg-green-600/10 text-green-500" },
+const STATUS_CONFIG: Record<string, { icon: any; className: string }> = {
+  modified: { icon: Dot, className: "border-yellow-500/40 text-yellow-500 bg-yellow-500/5" },
+  added: { icon: Plus, className: "border-green-500/40 text-green-500 bg-green-500/5" },
+  deleted: { icon: Minus, className: "border-red-500/40 text-red-500 bg-red-500/5" },
+  renamed: { icon: Dot, className: "border-blue-500/40 text-blue-500 bg-blue-500/5" },
+  untracked: { icon: Plus, className: "border-green-500/40 text-green-500 bg-green-500/5" },
 };
 
 function splitFilePath(filePath: string) {
@@ -49,6 +51,8 @@ export function GitChangesPanel({
   onRefresh,
   onClose,
   onSelectFile,
+  onDiscardChange,
+  onOpenFile,
 }: GitChangesPanelProps) {
   const [commitMessage, setCommitMessage] = useState("");
 
@@ -152,42 +156,94 @@ export function GitChangesPanel({
               {loading ? "Loading changes..." : "No uncommitted changes"}
             </div>
           ) : (
-            <div className="space-y-px px-1 pb-2" role="listbox" aria-label="Changed files">
+            <div className="space-y-[1px] px-1 pb-2" role="listbox" aria-label="Changed files">
               {entries.map((entry) => {
                 const { name, dir } = splitFilePath(entry.path);
                 const config = STATUS_CONFIG[entry.status] ?? STATUS_CONFIG.modified;
                 const isSelected = selectedFilePath === entry.path;
+                const isDeleted = entry.status === "deleted";
+
                 return (
-                  <button
-                    key={entry.path}
-                    type="button"
-                    role="option"
-                    aria-selected={isSelected}
-                    onClick={() => onSelectFile?.(entry.path)}
-                    className={cn(
-                      "group flex w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-secondary/30",
-                      isSelected && "bg-primary/10 ring-1 ring-primary/30",
-                    )}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className={cn("truncate text-xs", isSelected ? "text-foreground" : "text-foreground/90")}>
-                        {name}
-                      </div>
-                      {dir && (
-                        <div className="truncate text-[10px] leading-tight text-muted-foreground/40">{dir}</div>
-                      )}
-                    </div>
-                    <Badge
-                      variant="outline"
+                  <div key={entry.path} className="group relative">
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={isSelected}
+                      onClick={() => onSelectFile?.(entry.path)}
                       className={cn(
-                        "h-[18px] min-w-[18px] shrink-0 justify-center rounded px-1 py-0 text-[10px] font-bold leading-none",
-                        config.className,
+                        "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/40",
+                        isSelected && "bg-secondary/60 ring-[0.5px] ring-foreground/10",
+                        isDeleted && "hover:bg-red-500/5"
                       )}
-                      title={entry.status}
                     >
-                      {config.label}
-                    </Badge>
-                  </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline gap-1.5 min-w-0">
+                          <span className={cn(
+                            "truncate text-xs font-semibold text-foreground shrink-0",
+                            isDeleted && "line-through text-red-500/70"
+                          )}>
+                            {name}
+                          </span>
+                          {dir && (
+                            <span className="truncate text-[10px] text-muted-foreground/40 min-w-0">
+                              {dir}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex shrink-0 items-center gap-2 group-hover:invisible">
+                        {(entry.insertions > 0 || entry.deletions > 0) && (
+                          <div className="flex items-center gap-1.5 text-[10px] font-medium">
+                            {entry.insertions > 0 && (
+                              <span className="text-green-500/80">+{entry.insertions}</span>
+                            )}
+                            {entry.deletions > 0 && (
+                              <span className="text-red-500/80">-{entry.deletions}</span>
+                            )}
+                          </div>
+                        )}
+
+                        <div
+                          className={cn(
+                            "flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] border-[0.5px]",
+                            config.className
+                          )}
+                          title={entry.status}
+                        >
+                          <config.icon className="h-2.5 w-2.5" />
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* Hover actions */}
+                    <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:bg-red-500/10 hover:text-red-500"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDiscardChange?.(entry.path);
+                        }}
+                        title="Discard changes"
+                      >
+                        <Undo2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenFile?.(entry.path);
+                        }}
+                        title="Open file"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
                 );
               })}
             </div>

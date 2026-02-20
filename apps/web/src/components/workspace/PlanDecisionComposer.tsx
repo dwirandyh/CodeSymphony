@@ -103,6 +103,7 @@ export function PlanDecisionComposer({ busy, onApprove, onRevise }: PlanDecision
               tabIndex={busy ? -1 : 0}
               onClick={() => setMode("revise")}
               onKeyDown={(event) => {
+                if (event.target instanceof HTMLInputElement) return;
                 if ((event.key === "Enter" || event.key === " ") && !busy) {
                   event.preventDefault();
                   setMode("revise");

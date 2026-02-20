@@ -159,6 +159,8 @@ export type GitChangeStatus = z.infer<typeof GitChangeStatusSchema>;
 export const GitChangeEntrySchema = z.object({
   path: z.string(),
   status: GitChangeStatusSchema,
+  insertions: z.number().int().nonnegative().default(0),
+  deletions: z.number().int().nonnegative().default(0),
 });
 export type GitChangeEntry = z.infer<typeof GitChangeEntrySchema>;
 

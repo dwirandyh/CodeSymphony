@@ -174,6 +174,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  discardGitChange: async (worktreeId: string, filePath: string) => {
+    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}/git/discard`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filePath }),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to discard change");
+    }
+  },
   searchFiles: (worktreeId: string, query: string, signal?: AbortSignal) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`, { signal }),
   getFileIndex: (worktreeId: string, signal?: AbortSignal) =>

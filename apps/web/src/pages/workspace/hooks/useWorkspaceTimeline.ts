@@ -20,6 +20,7 @@ import {
   isBashToolEvent,
   isExploreLikeBashEvent,
   isClaudePlanFilePayload,
+  isPlanFilePath,
   isLikelyDiffContent,
   isReadToolEvent,
   isWorktreeDiffEvent,
@@ -76,17 +77,53 @@ export function useWorkspaceTimeline(
       }
     }
 
-    // Build thinking content from events so it persists across page reloads
-    const thinkingContentByMessageId = new Map<string, string>();
+    // Build thinking rounds from events – each round is a contiguous sequence
+    // of thinking.delta events for a given messageId, separated by intervening
+    // message.delta events (interleaved thinking).
+    type ThinkingRound = {
+      content: string;
+      firstIdx: number;
+      lastIdx: number;
+    };
+    const thinkingRoundsByMessageId = new Map<string, ThinkingRound[]>();
+
+    // Build message.delta indices per messageId for efficient intervening-delta detection
+    const messageDeltaIdxByMessageId = new Map<string, number[]>();
+    for (const event of orderedEventsByIdx) {
+      if (event.type !== "message.delta" || event.payload.role !== "assistant") continue;
+      const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
+      if (messageId.length === 0) continue;
+      const existing = messageDeltaIdxByMessageId.get(messageId) ?? [];
+      existing.push(event.idx);
+      messageDeltaIdxByMessageId.set(messageId, existing);
+    }
+
     for (const event of orderedEventsByIdx) {
       if (event.type !== "thinking.delta") continue;
       const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
       const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
       if (messageId.length === 0 || delta.length === 0) continue;
-      thinkingContentByMessageId.set(
-        messageId,
-        (thinkingContentByMessageId.get(messageId) ?? "") + delta,
-      );
+
+      const rounds = thinkingRoundsByMessageId.get(messageId) ?? [];
+      const currentRound = rounds.length > 0 ? rounds[rounds.length - 1] : null;
+
+      let startNewRound = currentRound === null;
+      if (currentRound && !startNewRound) {
+        // Check if any message.delta idx falls between the last thinking idx and this one
+        const deltaIdxes = messageDeltaIdxByMessageId.get(messageId) ?? [];
+        startNewRound = deltaIdxes.some(
+          (idx) => idx > currentRound.lastIdx && idx < event.idx,
+        );
+      }
+
+      if (startNewRound) {
+        rounds.push({ content: delta, firstIdx: event.idx, lastIdx: event.idx });
+      } else {
+        currentRound!.content += delta;
+        currentRound!.lastIdx = event.idx;
+      }
+
+      thinkingRoundsByMessageId.set(messageId, rounds);
     }
 
     const planFileOutputByMessageId = new Map<string, {
@@ -448,7 +485,10 @@ export function useWorkspaceTimeline(
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
       }
-      const editedRuns = message.role === "assistant" ? extractEditedRuns(nonBashContext, context) : [];
+      const editedRuns = message.role === "assistant"
+        ? extractEditedRuns(nonBashContext, context)
+            .filter((run) => !run.changedFiles.every((f) => isPlanFilePath(f)))
+        : [];
       if (message.role === "assistant") {
         for (const run of editedRuns) {
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
@@ -500,22 +540,27 @@ export function useWorkspaceTimeline(
         activityContext.forEach((event) => assignedToolEventIds.add(event.id));
       }
 
-      // Insert thinking block for all assistant messages (including those with inline inserts)
+      // Insert thinking blocks for all assistant messages (including those with inline inserts).
+      // Each "round" is a contiguous run of thinking.delta events separated by message.delta events.
       if (message.role === "assistant") {
-        const thinkingText = thinkingContentByMessageId.get(message.id);
-        if (thinkingText && thinkingText.length > 0) {
+        const rounds = thinkingRoundsByMessageId.get(message.id) ?? [];
+        for (let i = 0; i < rounds.length; i++) {
+          const round = rounds[i];
+          if (round.content.length === 0) continue;
           sortable.push({
             item: {
               kind: "thinking",
-              id: `thinking:${message.id}`,
+              id: `thinking:${message.id}:${i}`,
               messageId: message.id,
-              content: thinkingText,
-              isStreaming: !isCompleted && refs.streamingMessageIds.has(message.id) && (assistantDeltaEventsByMessageId.get(message.id)?.length ?? 0) === 0,
+              content: round.content,
+              isStreaming: i === rounds.length - 1 && !isCompleted
+                && refs.streamingMessageIds.has(message.id)
+                && (assistantDeltaEventsByMessageId.get(message.id)?.length ?? 0) === 0,
             },
-            anchorIdx: anchorIdx > 0 ? anchorIdx - 0.5 : 0,
+            anchorIdx: round.firstIdx > 0 ? round.firstIdx - 0.5 : 0,
             timestamp,
             rank: 2,
-            stableOrder: message.seq - 0.001,
+            stableOrder: message.seq - 0.001 + (i * 0.0001),
           });
         }
       }
@@ -1074,7 +1119,7 @@ export function useWorkspaceTimeline(
           filePath: planFileOutput.filePath,
           createdAt: planFileOutput.createdAt,
         },
-        anchorIdx: planFileOutput.idx,
+        anchorIdx: MAX_ORDER_INDEX,
         timestamp: parseTimestamp(planFileOutput.createdAt),
         rank: 3,
         stableOrder: planFileOutput.idx + 0.0005,

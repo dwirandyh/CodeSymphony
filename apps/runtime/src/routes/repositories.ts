@@ -3,7 +3,7 @@ import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema } from "@codesymphony/shared-types";
 import { z } from "zod";
-import { getGitStatus, getGitDiff, gitCommitAll } from "../services/git";
+import { getGitStatus, getGitDiff, gitCommitAll, discardGitChange } from "../services/git";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
@@ -159,6 +159,24 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return { data: { result } };
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Commit failed";
+      return reply.code(400).send({ error: msg });
+    }
+  });
+
+  const discardParams = z.object({ id: z.string().min(1) });
+  const discardBody = z.object({ filePath: z.string().min(1) });
+
+  app.post("/worktrees/:id/git/discard", async (request, reply) => {
+    const params = discardParams.parse(request.params);
+    const { filePath } = discardBody.parse(request.body);
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      await discardGitChange(worktree.path, filePath);
+      return reply.code(204).send();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Discard failed";
       return reply.code(400).send({ error: msg });
     }
   });
