@@ -20,6 +20,7 @@ enum ChatRole {
 
 enum ChatEventType {
   message_delta
+  thinking_delta
   tool_started
   tool_output
   tool_finished

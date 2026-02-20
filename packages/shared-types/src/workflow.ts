@@ -8,6 +8,7 @@ export type ChatRole = z.infer<typeof ChatRoleSchema>;
 
 export const ChatEventTypeSchema = z.enum([
   "message.delta",
+  "thinking.delta",
   "tool.started",
   "tool.output",
   "tool.finished",

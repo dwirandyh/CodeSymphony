@@ -466,14 +466,15 @@ export function createChatService(deps: RuntimeDeps) {
         onText: (chunk) => {
           streamedOutput += chunk;
         },
-        onToolStarted: async () => {},
-        onToolOutput: async () => {},
-        onToolFinished: async () => {},
+        onToolStarted: async () => { },
+        onToolOutput: async () => { },
+        onToolFinished: async () => { },
         onQuestionRequest: async () => ({ answers: {} }),
         onPermissionRequest: () => ({ decision: "deny", message: "Tool use is disabled for title generation." }),
-        onPlanFileDetected: async () => {},
-        onSubagentStarted: async () => {},
-        onSubagentStopped: async () => {},
+        onPlanFileDetected: async () => { },
+        onSubagentStarted: async () => { },
+        onSubagentStopped: async () => { },
+        onThinking: async () => { },
       });
 
       const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
@@ -719,6 +720,12 @@ export function createChatService(deps: RuntimeDeps) {
             role: "assistant",
             delta: chunk,
             ...(mode === "plan" ? { mode: "plan" } : {}),
+          });
+        },
+        onThinking: async (chunk) => {
+          await deps.eventHub.emit(threadId, "thinking.delta", {
+            messageId: assistantMessage.id,
+            delta: chunk,
           });
         },
         onToolStarted: async (payload) => {
@@ -1090,9 +1097,9 @@ export function createChatService(deps: RuntimeDeps) {
         const result: PermissionDecisionResult = isAllow
           ? { decision: "allow" }
           : {
-              decision: "deny",
-              message: denialMessage,
-            };
+            decision: "deny",
+            message: denialMessage,
+          };
         const resolve = entry.resolve;
         entry.status = "resolved";
         entry.result = result;

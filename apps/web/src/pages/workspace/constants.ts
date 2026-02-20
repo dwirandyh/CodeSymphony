@@ -2,6 +2,7 @@ import type { ChatEvent } from "@codesymphony/shared-types";
 
 export const EVENT_TYPES = [
   "message.delta",
+  "thinking.delta",
   "tool.started",
   "tool.output",
   "tool.finished",

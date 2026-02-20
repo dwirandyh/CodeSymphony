@@ -5,6 +5,7 @@ import type { PrismaClient } from "@prisma/client";
 
 const typeToDb: Record<ChatEventType, DbChatEventType> = {
   "message.delta": "message_delta",
+  "thinking.delta": "thinking_delta",
   "tool.started": "tool_started",
   "tool.output": "tool_output",
   "tool.finished": "tool_finished",
@@ -23,6 +24,7 @@ const typeToDb: Record<ChatEventType, DbChatEventType> = {
 
 const typeFromDb: Record<DbChatEventType, ChatEventType> = {
   message_delta: "message.delta",
+  thinking_delta: "thinking.delta",
   tool_started: "tool.started",
   tool_output: "tool.output",
   tool_finished: "tool.finished",

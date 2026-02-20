@@ -161,6 +161,10 @@ export function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
     return event.payload.role === "assistant";
   }
 
+  if (event.type === "thinking.delta") {
+    return true;
+  }
+
   return event.type === "permission.requested" || event.type === "question.requested" || event.type === "plan.created";
 }
 
