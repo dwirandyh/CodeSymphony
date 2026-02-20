@@ -4,7 +4,8 @@
       "Bash(pnpm --filter @codesymphony/web build)",
       "Bash(pnpm --filter @codesymphony/web test)",
       "Bash(pnpm --filter @codesymphony/runtime build)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(sqlite3:*)"
     ]
   }
 }
