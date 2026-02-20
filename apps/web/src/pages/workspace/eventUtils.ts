@@ -53,6 +53,15 @@ export function isPlanFilePath(filePath: string): boolean {
   return filePath.includes(".claude/plans/") && filePath.endsWith(".md");
 }
 
+export function isPlanModeToolEvent(event: ChatEvent): boolean {
+  const toolName = payloadStringOrNull(event.payload.toolName)?.toLowerCase() ?? "";
+  if (toolName === "exitplanmode" || toolName === "enterplanmode") return true;
+  const filePath = payloadStringOrNull(event.payload.file_path)
+    ?? payloadStringOrNull(event.payload.filePath) ?? "";
+  if ((toolName === "edit" || toolName === "write") && isPlanFilePath(filePath)) return true;
+  return false;
+}
+
 export function isBashPayload(payload: Record<string, unknown>): boolean {
   if (payload.isBash === true || payload.shell === "bash") {
     return true;

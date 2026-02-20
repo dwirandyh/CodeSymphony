@@ -21,6 +21,7 @@ import {
   isExploreLikeBashEvent,
   isClaudePlanFilePayload,
   isPlanFilePath,
+  isPlanModeToolEvent,
   isLikelyDiffContent,
   isReadToolEvent,
   isWorktreeDiffEvent,
@@ -542,12 +543,13 @@ export function useWorkspaceTimeline(
 
       // Insert thinking blocks for all assistant messages (including those with inline inserts).
       // Each "round" is a contiguous run of thinking.delta events separated by message.delta events.
-      // Skip thinking blocks for messages that produced a plan file output — the plan card replaces them.
-      if (message.role === "assistant" && !planFileOutput) {
+      if (message.role === "assistant") {
         const rounds = thinkingRoundsByMessageId.get(message.id) ?? [];
         for (let i = 0; i < rounds.length; i++) {
           const round = rounds[i];
           if (round.content.length === 0) continue;
+          // Hide thinking rounds that appear after a plan file output (post-plan noise)
+          if (planFileOutput && round.firstIdx > planFileOutput.idx) continue;
           sortable.push({
             item: {
               kind: "thinking",
@@ -1241,6 +1243,10 @@ export function useWorkspaceTimeline(
         && event.type !== "permission.resolved"
         && event.type !== "subagent.started"
         && event.type !== "subagent.finished"
+        && event.type !== "plan.created"
+        && event.type !== "plan.approved"
+        && event.type !== "plan.revision_requested"
+        && !isPlanModeToolEvent(event)
       )
       .sort((a, b) => a.idx - b.idx);
     pushRenderDebug({
