@@ -1420,6 +1420,16 @@ export function createChatService(deps: RuntimeDeps) {
       pendingPlanByThread.delete(threadId);
       activeThreads.add(threadId);
 
+      const seq = await nextMessageSeq(deps.prisma, threadId);
+      const message = await deps.prisma.chatMessage.create({
+        data: { threadId, seq, role: "user", content: input.feedback },
+      });
+      await deps.eventHub.emit(threadId, "message.delta", {
+        messageId: message.id,
+        role: "user",
+        delta: input.feedback,
+      });
+
       await deps.eventHub.emit(threadId, "plan.revision_requested", {
         feedback: input.feedback,
         filePath: plan.filePath,
