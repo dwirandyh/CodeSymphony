@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { Bot, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2 } from "lucide-react";
+import { Bot, Brain, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2 } from "lucide-react";
 import type { SubagentStep } from "../../pages/workspace/types";
 import { EXPLORE_BASH_COMMAND_PATTERN } from "../../pages/workspace/constants";
 import ReactMarkdown from "react-markdown";
@@ -110,6 +110,13 @@ export type ChatTimelineItem =
     lastMessage: string | null;
     steps: SubagentStep[];
     durationSeconds: number | null;
+  }
+  | {
+    kind: "thinking";
+    id: string;
+    messageId: string;
+    content: string;
+    isStreaming: boolean;
   };
 
 type ChatMessageListProps = {
@@ -1788,17 +1795,17 @@ export function ChatMessageList({
                   }}
                 >
                   {/* Collapsed summary header */}
-                  <summary className="group/subagent-summary cursor-pointer list-none select-none flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary/30 transition-colors">
+                  <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
                     <Bot className="h-3.5 w-3.5 shrink-0" />
-                    <span className={cn("flex-1 truncate", isRunning ? "thinking-shimmer" : "")}>
+                    <span className={cn("truncate", isRunning ? "thinking-shimmer" : "")}>
                       {headerText}
                     </span>
-                    <span className={cn("text-[10px] shrink-0", isRunning ? "text-muted-foreground/70 thinking-shimmer" : "text-muted-foreground/50")}>
+                    <span className={cn("text-[10px] shrink-0", isRunning ? "thinking-shimmer" : "text-muted-foreground/50")}>
                       {statusText}
                     </span>
                     <span
                       data-testid="timeline-subagent-activity-chevron"
-                      className={cn("inline-flex transition-transform duration-150", expanded ? "rotate-90" : "")}
+                      className={cn("inline-flex shrink-0 transition-transform duration-150", expanded ? "rotate-90" : "")}
                     >
                       <ChevronRight className="h-3 w-3" />
                     </span>
@@ -1925,6 +1932,32 @@ export function ChatMessageList({
               </article>
             );
           }
+
+          if (item.kind === "thinking") {
+            return (
+              <article
+                key={`thinking-${item.id}`}
+                className="px-1"
+                data-testid="timeline-thinking"
+              >
+                <details className="group">
+                  <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
+                    <Brain className="h-3.5 w-3.5 shrink-0" />
+                    <span className={item.isStreaming ? "thinking-shimmer" : ""}>
+                      {item.isStreaming ? "Thinking…" : "Thought process"}
+                    </span>
+                    <ChevronRight className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
+                  </summary>
+                  <div className="mt-1.5 rounded-lg border border-border/20 bg-secondary/10 px-3 py-2">
+                    <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-muted-foreground/80">
+                      {item.content}
+                    </pre>
+                  </div>
+                </details>
+              </article>
+            );
+          }
+
           const message = item.message;
           const isRawOutputMode = message.role === "assistant" && rawOutputMessageIds.has(message.id);
           if (message.role === "assistant") {

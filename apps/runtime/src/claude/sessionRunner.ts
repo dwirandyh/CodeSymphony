@@ -48,6 +48,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   onPlanFileDetected,
   onSubagentStarted,
   onSubagentStopped,
+  onThinking,
   onToolInstrumentation,
 }) => {
   let latestSessionId: string | null = sessionId;
@@ -709,6 +710,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           sawToolUseSinceLastText = false;
           finalOutput += event.delta.text;
           await onText(event.delta.text);
+        }
+        if (event.type === "content_block_delta" && event.delta.type === "thinking_delta") {
+          if (!message.parent_tool_use_id) {
+            await onThinking(event.delta.thinking);
+          }
         }
         continue;
       }

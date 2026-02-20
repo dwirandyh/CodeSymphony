@@ -119,6 +119,7 @@ describe("tool instrumentation", () => {
       sessionId: null,
       cwd: process.cwd(),
       onText: () => { },
+      onThinking: () => { },
       onToolStarted: () => { },
       onToolOutput: () => { },
       onToolFinished: () => { },
@@ -261,6 +262,7 @@ describe("tool instrumentation", () => {
       sessionId: null,
       cwd: process.cwd(),
       onText: () => { },
+      onThinking: () => { },
       onToolStarted,
       onToolOutput: () => { },
       onToolFinished: () => { },
@@ -319,6 +321,7 @@ describe("tool instrumentation", () => {
       sessionId: null,
       cwd: process.cwd(),
       onText: () => { },
+      onThinking: () => { },
       onToolStarted,
       onToolOutput: () => { },
       onToolFinished,
@@ -379,6 +382,7 @@ describe("tool instrumentation", () => {
       sessionId: null,
       cwd: process.cwd(),
       onText: () => { },
+      onThinking: () => { },
       onToolStarted: () => { },
       onToolOutput: () => { },
       onToolFinished,
@@ -454,6 +458,7 @@ describe("tool instrumentation", () => {
       sessionId: null,
       cwd: process.cwd(),
       onText: (chunk) => { textChunks.push(chunk); },
+      onThinking: () => { },
       onToolStarted: () => { },
       onToolOutput: () => { },
       onToolFinished: () => { },
@@ -499,6 +504,7 @@ describe("tool instrumentation", () => {
       sessionId: null,
       cwd: process.cwd(),
       onText: () => { },
+      onThinking: () => { },
       onToolStarted: () => { },
       onToolOutput: () => { },
       onToolFinished: () => { },
@@ -604,6 +610,7 @@ describe("tool instrumentation", () => {
       cwd: process.cwd(),
       permissionMode: "plan",
       onText: () => { },
+      onThinking: () => { },
       onToolStarted: () => { },
       onToolOutput: () => { },
       onToolFinished: () => { },
@@ -616,5 +623,115 @@ describe("tool instrumentation", () => {
     expect(onQuestionRequest).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "tool-question-plan",
     }));
+  });
+});
+
+describe("thinking_delta", () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    process.env.CLAUDE_CODE_EXECUTABLE = "node";
+  });
+
+  it("forwards thinking_delta events to onThinking callback", async () => {
+    mockQuery.mockImplementation(() => {
+      return (async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-think" };
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "thinking_delta", thinking: "Let me think about this..." },
+          },
+          parent_tool_use_id: null,
+          uuid: "uuid-think-1",
+          session_id: "session-think",
+        };
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "thinking_delta", thinking: " I should check the file first." },
+          },
+          parent_tool_use_id: null,
+          uuid: "uuid-think-2",
+          session_id: "session-think",
+        };
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "Here is the answer." },
+          },
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Here is the answer." }],
+          },
+        };
+      })();
+    });
+
+    const thinkingChunks: string[] = [];
+    const textChunks: string[] = [];
+    await runClaudeWithStreaming({
+      prompt: "complex question",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: (chunk) => { textChunks.push(chunk); },
+      onThinking: (chunk) => { thinkingChunks.push(chunk); },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(thinkingChunks).toEqual(["Let me think about this...", " I should check the file first."]);
+    expect(textChunks.join("")).toBe("Here is the answer.");
+  });
+
+  it("skips thinking_delta from subagent (parent_tool_use_id set)", async () => {
+    mockQuery.mockImplementation(() => {
+      return (async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-think-sub" };
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "thinking_delta", thinking: "subagent thinking" },
+          },
+          parent_tool_use_id: "parent-tool-1",
+          uuid: "uuid-sub-think",
+          session_id: "session-think-sub",
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    const thinkingChunks: string[] = [];
+    await runClaudeWithStreaming({
+      prompt: "test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: (chunk) => { thinkingChunks.push(chunk); },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(thinkingChunks).toEqual([]);
   });
 });

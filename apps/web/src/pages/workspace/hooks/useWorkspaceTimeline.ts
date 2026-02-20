@@ -76,6 +76,19 @@ export function useWorkspaceTimeline(
       }
     }
 
+    // Build thinking content from events so it persists across page reloads
+    const thinkingContentByMessageId = new Map<string, string>();
+    for (const event of orderedEventsByIdx) {
+      if (event.type !== "thinking.delta") continue;
+      const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
+      const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
+      if (messageId.length === 0 || delta.length === 0) continue;
+      thinkingContentByMessageId.set(
+        messageId,
+        (thinkingContentByMessageId.get(messageId) ?? "") + delta,
+      );
+    }
+
     const planFileOutputByMessageId = new Map<string, {
       id: string;
       messageId: string;
@@ -226,8 +239,12 @@ export function useWorkspaceTimeline(
         message.content.trim().length > 0 &&
         message.content.trim() === planFileOutput.content.trim();
 
+      const hasToolEventsInContext = message.role === "assistant"
+        && (assistantContextById.get(message.id)?.length ?? 0) > 0;
+
       if (
         message.role === "assistant" &&
+        !hasToolEventsInContext &&
         (shouldSkipMessageBecausePlanCard || (message.content.trim().length === 0 && !isCompleted && !hasMessageDelta))
       ) {
         continue;
@@ -481,6 +498,26 @@ export function useWorkspaceTimeline(
       // TodoWrite leak as orphan "tool" timeline items showing raw status badges.
       if (message.role === "assistant" && activityContext.length > 0 && bashRuns.length > 0) {
         activityContext.forEach((event) => assignedToolEventIds.add(event.id));
+      }
+
+      // Insert thinking block for all assistant messages (including those with inline inserts)
+      if (message.role === "assistant") {
+        const thinkingText = thinkingContentByMessageId.get(message.id);
+        if (thinkingText && thinkingText.length > 0) {
+          sortable.push({
+            item: {
+              kind: "thinking",
+              id: `thinking:${message.id}`,
+              messageId: message.id,
+              content: thinkingText,
+              isStreaming: !isCompleted && refs.streamingMessageIds.has(message.id) && (assistantDeltaEventsByMessageId.get(message.id)?.length ?? 0) === 0,
+            },
+            anchorIdx: anchorIdx > 0 ? anchorIdx - 0.5 : 0,
+            timestamp,
+            rank: 2,
+            stableOrder: message.seq - 0.001,
+          });
+        }
       }
 
       if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0)) {
@@ -801,6 +838,10 @@ export function useWorkspaceTimeline(
 
           if (insert.kind === "subagent-activity") {
             const group = insert.group;
+            const resolvedStatus = group.status === "running" && isCompleted ? "success" : group.status;
+            const resolvedSteps = isCompleted
+              ? group.steps.map((s) => s.status === "running" ? { ...s, status: "success" as const } : s)
+              : group.steps;
             sortable.push({
               item: {
                 kind: "subagent-activity",
@@ -808,10 +849,10 @@ export function useWorkspaceTimeline(
                 agentId: group.agentId,
                 agentType: group.agentType,
                 toolUseId: group.toolUseId,
-                status: group.status,
+                status: resolvedStatus,
                 description: group.description,
                 lastMessage: group.lastMessage,
-                steps: group.steps,
+                steps: resolvedSteps,
                 durationSeconds: group.durationSeconds,
               },
               anchorIdx: bucketAnchorIdx ?? group.anchorIdx,
@@ -824,14 +865,18 @@ export function useWorkspaceTimeline(
           }
 
           const group = insert.group;
+          const resolvedExploreStatus = group.status === "running" && isCompleted ? "success" : group.status;
+          const resolvedEntries = isCompleted
+            ? group.entries.map((e) => e.pending ? { ...e, pending: false } : e)
+            : group.entries;
           sortable.push({
             item: {
               kind: "explore-activity",
               id: `${message.id}:${group.id}:${insert.id}`,
-              status: group.status,
+              status: resolvedExploreStatus,
               fileCount: group.fileCount,
               searchCount: group.searchCount,
-              entries: group.entries,
+              entries: resolvedEntries,
             },
             anchorIdx: bucketAnchorIdx ?? group.anchorIdx,
             timestamp: bucketTimestamp ?? timestamp,
@@ -1016,6 +1061,7 @@ export function useWorkspaceTimeline(
         rank: message.role === "assistant" ? 3 : message.role === "user" ? 1 : 4,
         stableOrder: message.seq,
       });
+
     }
 
     for (const planFileOutput of planFileOutputByMessageId.values()) {
@@ -1038,12 +1084,19 @@ export function useWorkspaceTimeline(
     // --- Orphan subagent grouping ---
     // Before rendering orphans, check if any unassigned events form subagent groups.
     // This handles the case where subagent events arrive before any assistant message.delta.
+    const chatTerminated = orderedEventsByIdx.some(
+      (event) => event.type === "chat.completed" || event.type === "chat.failed",
+    );
     const unassignedInlineForSubagent = inlineToolEvents.filter(
       (event) => !assignedToolEventIds.has(event.id),
     );
     const orphanSubagentGroups = extractSubagentGroups(unassignedInlineForSubagent);
     for (const group of orphanSubagentGroups) {
       group.eventIds.forEach((id) => assignedToolEventIds.add(id));
+      const resolvedStatus = group.status === "running" && chatTerminated ? "success" : group.status;
+      const resolvedSteps = chatTerminated
+        ? group.steps.map((s) => s.status === "running" ? { ...s, status: "success" as const } : s)
+        : group.steps;
       sortable.push({
         item: {
           kind: "subagent-activity",
@@ -1051,11 +1104,42 @@ export function useWorkspaceTimeline(
           agentId: group.agentId,
           agentType: group.agentType,
           toolUseId: group.toolUseId,
-          status: group.status,
+          status: resolvedStatus,
           description: group.description,
           lastMessage: group.lastMessage,
-          steps: group.steps,
+          steps: resolvedSteps,
           durationSeconds: group.durationSeconds,
+        },
+        anchorIdx: group.anchorIdx,
+        timestamp: parseTimestamp(group.createdAt),
+        rank: 3,
+        stableOrder: group.startIdx,
+      });
+    }
+
+    // --- Orphan explore-activity grouping ---
+    // Before rendering orphans as flat tool badges, check if any unassigned events
+    // form explore-activity groups (Read, Glob, Grep, explore-like Bash).
+    // This handles the case where explore events become orphans because the
+    // assistant message was skipped or boundary edge cases.
+    const unassignedForExplore = inlineToolEvents.filter(
+      (event) => !assignedToolEventIds.has(event.id),
+    );
+    const orphanExploreGroups = extractExploreActivityGroups(unassignedForExplore);
+    for (const group of orphanExploreGroups) {
+      group.eventIds.forEach((id) => assignedToolEventIds.add(id));
+      const resolvedStatus = group.status === "running" && chatTerminated ? "success" : group.status;
+      const resolvedEntries = chatTerminated
+        ? group.entries.map((e) => e.pending ? { ...e, pending: false } : e)
+        : group.entries;
+      sortable.push({
+        item: {
+          kind: "explore-activity",
+          id: `orphan:${group.id}`,
+          status: resolvedStatus,
+          fileCount: group.fileCount,
+          searchCount: group.searchCount,
+          entries: resolvedEntries,
         },
         anchorIdx: group.anchorIdx,
         timestamp: parseTimestamp(group.createdAt),

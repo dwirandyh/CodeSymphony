@@ -20,7 +20,7 @@
   },
   "devDependencies": {
     "playwright": "^1.58.2",
-    "turbo": "^2.4.4",
+    "turbo": "^2.8.8",
     "typescript": "^5.8.2"
   }
 }
