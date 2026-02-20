@@ -485,24 +485,22 @@ describe("chatService permission flow", () => {
       (event) => event.type === "permission.requested" && event.payload.requestId === "perm-3",
     );
 
-    await expect(
-      chatService.resolvePermission(threadId, {
-        requestId: "missing",
-        decision: "deny",
-      }),
-    ).rejects.toThrow("Permission request not found");
+    // Missing requestId should resolve gracefully (emit dismissal event, not throw)
+    await chatService.resolvePermission(threadId, {
+      requestId: "missing",
+      decision: "deny",
+    });
 
     await chatService.resolvePermission(threadId, {
       requestId: "perm-3",
       decision: "allow",
     });
 
-    await expect(
-      chatService.resolvePermission(threadId, {
-        requestId: "perm-3",
-        decision: "deny",
-      }),
-    ).rejects.toThrow("Permission request not found");
+    // Already-resolved requestId should resolve gracefully (emit dismissal event, not throw)
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-3",
+      decision: "deny",
+    });
 
     await waitForTerminalEvent(chatService, threadId);
   });

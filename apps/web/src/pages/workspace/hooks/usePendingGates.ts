@@ -81,6 +81,10 @@ export function usePendingGates(
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
         if (requestId.length > 0) pendingById.delete(requestId);
       }
+
+      if (event.type === "chat.completed" || event.type === "chat.failed") {
+        pendingById.clear();
+      }
     }
 
     return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
@@ -142,6 +146,10 @@ export function usePendingGates(
       if (event.type === "question.answered") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
         if (requestId.length > 0) pendingById.delete(requestId);
+      }
+
+      if (event.type === "chat.completed" || event.type === "chat.failed") {
+        pendingById.clear();
       }
     }
 

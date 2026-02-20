@@ -150,7 +150,7 @@ export function GitChangesPanel({
           </div>
         </div>
 
-        <ScrollArea className="min-h-0 flex-1">
+        <ScrollArea className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block">
           {entries.length === 0 ? (
             <div className="px-3 py-6 text-center text-[11px] text-muted-foreground/50">
               {loading ? "Loading changes..." : "No uncommitted changes"}
@@ -171,78 +171,79 @@ export function GitChangesPanel({
                       aria-selected={isSelected}
                       onClick={() => onSelectFile?.(entry.path)}
                       className={cn(
-                        "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/40",
+                        "flex w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/40",
                         isSelected && "bg-secondary/60 ring-[0.5px] ring-foreground/10",
                         isDeleted && "hover:bg-red-500/5"
                       )}
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-baseline gap-1.5 min-w-0">
-                          <span className={cn(
-                            "truncate text-xs font-semibold text-foreground shrink-0",
-                            isDeleted && "line-through text-red-500/70"
-                          )}>
-                            {name}
+                      <div className="min-w-0 flex-1 flex items-baseline gap-1 overflow-hidden">
+                        <span className={cn(
+                          "truncate text-xs font-semibold text-foreground min-w-0 shrink",
+                          isDeleted && "line-through text-red-500/70"
+                        )}>
+                          {name}
+                        </span>
+                        {dir && (
+                          <span className="truncate text-[10px] text-muted-foreground/40 min-w-0 shrink-[2]">
+                            {dir}
                           </span>
-                          {dir && (
-                            <span className="truncate text-[10px] text-muted-foreground/40 min-w-0">
-                              {dir}
-                            </span>
-                          )}
-                        </div>
+                        )}
                       </div>
 
-                      <div className="flex shrink-0 items-center gap-2 group-hover:invisible">
-                        {(entry.insertions > 0 || entry.deletions > 0) && (
-                          <div className="flex items-center gap-1.5 text-[10px] font-medium">
-                            {entry.insertions > 0 && (
-                              <span className="text-green-500/80">+{entry.insertions}</span>
-                            )}
-                            {entry.deletions > 0 && (
-                              <span className="text-red-500/80">-{entry.deletions}</span>
-                            )}
-                          </div>
-                        )}
-
-                        <div
-                          className={cn(
-                            "flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] border-[0.5px]",
-                            config.className
+                      <div className="relative ml-auto flex shrink-0 items-center justify-end">
+                        {/* Indicators — always visible */}
+                        <div className="flex items-center gap-2 transition-opacity group-hover:opacity-0 group-hover:pointer-events-none">
+                          {(entry.insertions > 0 || entry.deletions > 0) && (
+                            <div className="flex items-center gap-1.5 text-[10px] font-medium whitespace-nowrap">
+                              {entry.insertions > 0 && (
+                                <span className="text-green-500/80">+{entry.insertions}</span>
+                              )}
+                              {entry.deletions > 0 && (
+                                <span className="text-red-500/80">-{entry.deletions}</span>
+                              )}
+                            </div>
                           )}
-                          title={entry.status}
-                        >
-                          <config.icon className="h-2.5 w-2.5" />
+
+                          <div
+                            className={cn(
+                              "flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] border-[0.5px]",
+                              config.className
+                            )}
+                            title={entry.status}
+                          >
+                            <config.icon className="h-2.5 w-2.5" />
+                          </div>
+                        </div>
+
+                        {/* Hover actions (visible on hover) */}
+                        <div className="absolute inset-0 flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:bg-red-500/10 hover:text-red-500"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDiscardChange?.(entry.path);
+                            }}
+                            title="Discard changes"
+                          >
+                            <Undo2 className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenFile?.(entry.path);
+                            }}
+                            title="Open file"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
                       </div>
                     </button>
-
-                    {/* Hover actions */}
-                    <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:bg-red-500/10 hover:text-red-500"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDiscardChange?.(entry.path);
-                        }}
-                        title="Discard changes"
-                      >
-                        <Undo2 className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:bg-primary/10 hover:text-primary"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onOpenFile?.(entry.path);
-                        }}
-                        title="Open file"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
                   </div>
                 );
               })}

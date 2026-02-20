@@ -855,6 +855,25 @@ export function createChatService(deps: RuntimeDeps) {
   };
   const pendingPlanByThread = new Map<string, PendingPlanEntry>();
 
+  async function recoverPendingPlan(threadId: string): Promise<PendingPlanEntry | null> {
+    const events = await deps.eventHub.list(threadId);
+    let lastPlan: PendingPlanEntry | null = null;
+
+    for (const event of events) {
+      if (event.type === "plan.created") {
+        const content = typeof event.payload.content === "string" ? event.payload.content : "";
+        const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
+        if (content.length > 0) {
+          lastPlan = { content, filePath };
+        }
+      } else if (event.type === "plan.approved" || event.type === "plan.revision_requested") {
+        lastPlan = null;
+      }
+    }
+
+    return lastPlan;
+  }
+
   async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
     let assistantMessageId: string | null = null;
     let fullOutput = "";
@@ -1253,7 +1272,16 @@ export function createChatService(deps: RuntimeDeps) {
       const pendingMap = pendingPermissionsByThread.get(threadId);
       const entry = pendingMap?.get(input.requestId);
       if (!entry || entry.status !== "pending" || !entry.resolve) {
-        throw new Error("Permission request not found");
+        await deps.eventHub.emit(threadId, "permission.resolved", {
+          requestId: input.requestId,
+          decision: "deny",
+          resolver: "system",
+          message: "Session expired — the assistant is no longer running.",
+          persisted: false,
+          settingsPath: null,
+          permissionRule: null,
+        });
+        return;
       }
 
       const denialMessage = "Tool execution denied by user.";
@@ -1319,7 +1347,11 @@ export function createChatService(deps: RuntimeDeps) {
       const pendingMap = pendingQuestionsByThread.get(threadId);
       const entry = pendingMap?.get(input.requestId);
       if (!entry || entry.status !== "pending" || !entry.resolve) {
-        throw new Error("Question request not found");
+        await deps.eventHub.emit(threadId, "question.answered", {
+          requestId: input.requestId,
+          answers: input.answers,
+        });
+        return;
       }
 
       try {
@@ -1342,9 +1374,12 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
-      const plan = pendingPlanByThread.get(threadId);
+      let plan = pendingPlanByThread.get(threadId);
       if (!plan) {
-        throw new Error("No pending plan to approve for this thread");
+        plan = await recoverPendingPlan(threadId) ?? undefined;
+        if (!plan) {
+          throw new Error("No pending plan to approve for this thread");
+        }
       }
 
       if (activeThreads.has(threadId)) {
@@ -1370,9 +1405,12 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
-      const plan = pendingPlanByThread.get(threadId);
+      let plan = pendingPlanByThread.get(threadId);
       if (!plan) {
-        throw new Error("No pending plan to revise for this thread");
+        plan = await recoverPendingPlan(threadId) ?? undefined;
+        if (!plan) {
+          throw new Error("No pending plan to revise for this thread");
+        }
       }
 
       if (activeThreads.has(threadId)) {
