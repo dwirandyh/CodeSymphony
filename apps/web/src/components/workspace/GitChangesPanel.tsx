@@ -6,7 +6,7 @@ import { Button } from "../ui/button";
 import { Card } from "../ui/card";
 import { ScrollArea } from "../ui/scroll-area";
 import { Separator } from "../ui/separator";
-import { Textarea } from "../ui/textarea";
+import { Input } from "../ui/input";
 import { cn } from "../../lib/utils";
 
 interface GitChangesPanelProps {
@@ -80,24 +80,18 @@ export function GitChangesPanel({
 
       {/* Commit section */}
       <div className="space-y-3 px-3 py-3">
-        <div className="relative">
-          <Textarea
-            value={commitMessage}
-            onChange={(e) => setCommitMessage(e.target.value)}
-            placeholder="Message (Cmd+Enter to commit)"
-            className="min-h-[68px] resize-none border-border/30 bg-secondary/10 px-2.5 py-1.5 pb-6 text-xs placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-offset-0"
-            rows={3}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && commitMessage.trim()) {
-                e.preventDefault();
-                handleCommit();
-              }
-            }}
-          />
-          <div className="absolute right-2 bottom-1.5 text-[10px] text-muted-foreground/40">
-            {commitMessage.length} chars
-          </div>
-        </div>
+        <Input
+          value={commitMessage}
+          onChange={(e) => setCommitMessage(e.target.value)}
+          placeholder="Message (Cmd+Enter to commit)"
+          className="border-border/30 bg-secondary/10 px-2.5 py-1.5 text-xs placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-offset-0"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && commitMessage.trim()) {
+              e.preventDefault();
+              handleCommit();
+            }
+          }}
+        />
         <Button
           size="sm"
           onClick={handleCommit}

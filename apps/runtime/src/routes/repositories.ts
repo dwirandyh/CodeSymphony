@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { GitCommitInputSchema, OpenWorktreeFileInputSchema } from "@codesymphony/shared-types";
+import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema } from "@codesymphony/shared-types";
 import { z } from "zod";
 import { getGitStatus, getGitDiff, gitCommitAll } from "../services/git";
 
@@ -71,6 +71,19 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return reply.code(204).send();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to delete worktree";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.patch("/worktrees/:id/branch", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = RenameWorktreeBranchInputSchema.parse(request.body);
+
+    try {
+      const worktree = await app.worktreeService.renameBranch(params.id, input.branch, { isManualRename: true });
+      return { data: worktree };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to rename branch";
       return reply.code(400).send({ error: message });
     }
   });

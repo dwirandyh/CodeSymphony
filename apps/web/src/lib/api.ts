@@ -12,6 +12,7 @@ import type {
   GitStatus,
   OpenWorktreeFileInput,
   PlanRevisionInput,
+  RenameWorktreeBranchInput,
   ResolvePermissionInput,
   Repository,
   SendChatMessageInput,
@@ -71,6 +72,11 @@ export const api = {
     }
   },
   getWorktree: (id: string) => request<Worktree>(`/worktrees/${id}`),
+  renameWorktreeBranch: (worktreeId: string, input: RenameWorktreeBranchInput) =>
+    request<Worktree>(`/worktrees/${worktreeId}/branch`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
   listThreads: (worktreeId: string) => request<ChatThread[]>(`/worktrees/${worktreeId}/threads`),
   createThread: (worktreeId: string, input: CreateChatThreadInput = {}) =>
     request<ChatThread>(`/worktrees/${worktreeId}/threads`, {

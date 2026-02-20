@@ -33,6 +33,7 @@ export const WorktreeSchema = z.object({
   path: z.string().min(1),
   baseBranch: z.string().min(1),
   status: WorktreeStatusSchema,
+  branchRenamed: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -120,6 +121,19 @@ export const OpenWorktreeFileInputSchema = z.object({
   path: z.string().trim().min(1),
 });
 export type OpenWorktreeFileInput = z.infer<typeof OpenWorktreeFileInputSchema>;
+
+export const RenameWorktreeBranchInputSchema = z.object({
+  branch: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .refine((val) => /^[a-zA-Z0-9._\-/]+$/.test(val), {
+      message:
+        "Branch name must contain only alphanumeric characters, dots, hyphens, underscores, and slashes",
+    }),
+});
+export type RenameWorktreeBranchInput = z.infer<typeof RenameWorktreeBranchInputSchema>;
 
 export type Repository = z.infer<typeof RepositorySchema>;
 export type Worktree = z.infer<typeof WorktreeSchema>;

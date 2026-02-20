@@ -66,6 +66,10 @@ export async function removeGitWorktree(args: { repositoryPath: string; worktree
   await runGit(["-C", args.repositoryPath, "worktree", "remove", "--force", args.worktreePath]);
 }
 
+export async function renameBranch(args: { cwd: string; oldBranch: string; newBranch: string }): Promise<void> {
+  await runGit(["branch", "-m", args.oldBranch, args.newBranch], args.cwd);
+}
+
 export async function getGitStatus(cwd: string): Promise<{ branch: string; entries: Array<{ path: string; status: string }> }> {
   const branch = await runGit(["branch", "--show-current"], cwd).catch(() => "HEAD");
   let porcelain = "";

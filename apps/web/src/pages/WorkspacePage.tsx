@@ -23,7 +23,7 @@ export function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
 
   const repos = useRepositoryManager(setError);
-  const chat = useChatSession(repos.selectedWorktreeId, setError);
+  const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch);
   const gates = usePendingGates(chat.events, chat.selectedThreadId, {
     onError: setError,
     startWaitingAssistant: chat.startWaitingAssistant,
@@ -130,6 +130,7 @@ export function WorkspacePage() {
               repos.setSelectedWorktreeId(worktreeId);
             }}
             onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
+            onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
           />
         </aside>
 
@@ -405,6 +406,7 @@ export function WorkspacePage() {
               setMobilePanelOpen(null);
             }}
             onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
+            onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
           />
         </div>
       </aside>

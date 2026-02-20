@@ -48,14 +48,15 @@ model Repository {
 }
 
 model Worktree {
-  id           String         @id @default(cuid())
-  repositoryId String
-  branch       String
-  path         String         @unique
-  baseBranch   String
-  status       WorktreeStatus @default(active)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  id             String         @id @default(cuid())
+  repositoryId   String
+  branch         String
+  path           String         @unique
+  baseBranch     String
+  status         WorktreeStatus @default(active)
+  branchRenamed  Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   repository Repository   @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   threads    ChatThread[]

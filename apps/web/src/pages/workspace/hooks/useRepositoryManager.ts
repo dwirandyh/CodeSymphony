@@ -107,6 +107,34 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
     }
   }
 
+  async function renameWorktreeBranch(worktreeId: string, newBranch: string) {
+    onError(null);
+    try {
+      const updated = await api.renameWorktreeBranch(worktreeId, { branch: newBranch });
+      setRepositories((current) =>
+        current.map((repo) => ({
+          ...repo,
+          worktrees: repo.worktrees.map((wt) =>
+            wt.id === worktreeId ? { ...wt, branch: updated.branch, branchRenamed: updated.branchRenamed } : wt,
+          ),
+        })),
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to rename branch");
+    }
+  }
+
+  function updateWorktreeBranch(worktreeId: string, newBranch: string) {
+    setRepositories((current) =>
+      current.map((repo) => ({
+        ...repo,
+        worktrees: repo.worktrees.map((wt) =>
+          wt.id === worktreeId ? { ...wt, branch: newBranch } : wt,
+        ),
+      })),
+    );
+  }
+
   useEffect(() => {
     void loadRepositories();
   }, []);
@@ -125,5 +153,7 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
     attachRepository,
     submitWorktree,
     removeWorktree,
+    renameWorktreeBranch,
+    updateWorktreeBranch,
   };
 }
