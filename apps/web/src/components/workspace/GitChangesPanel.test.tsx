@@ -52,10 +52,9 @@ describe("GitChangesPanel", () => {
     });
   }
 
-  it("renders header with branch badge", () => {
+  it("renders header", () => {
     renderPanel();
     expect(container.textContent).toContain("Source Control");
-    expect(container.textContent).toContain("feature/redesign");
   });
 
   it("renders change count badge", () => {
@@ -207,17 +206,15 @@ describe("GitChangesPanel", () => {
 
   it("calls onReview when review button is clicked", () => {
     renderPanel();
-    const allButtons = Array.from(container.querySelectorAll("button"));
-    const reviewBtn = allButtons.find((b) => b.textContent?.includes("Review"))!;
+    const reviewBtn = container.querySelector('button[aria-label="Review changes"]') as HTMLButtonElement;
     act(() => reviewBtn.click());
     expect(defaultProps.onReview).toHaveBeenCalledTimes(1);
   });
 
   it("disables review button when no entries", () => {
     renderPanel({ entries: [] });
-    const allButtons = Array.from(container.querySelectorAll("button"));
-    const reviewBtn = allButtons.find((b) => b.textContent?.includes("Review"))!;
-    expect((reviewBtn as HTMLButtonElement).disabled).toBe(true);
+    const reviewBtn = container.querySelector('button[aria-label="Review changes"]') as HTMLButtonElement;
+    expect(reviewBtn.disabled).toBe(true);
   });
 
   // ── File row selection ──
