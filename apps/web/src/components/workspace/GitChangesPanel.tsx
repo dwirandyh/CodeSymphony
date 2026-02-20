@@ -62,16 +62,9 @@ export function GitChangesPanel({
     <Card className="flex h-full flex-col overflow-hidden border-0 bg-transparent shadow-none">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2">
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-            Source Control
-          </span>
-          {branch && (
-            <Badge variant="secondary" className="h-5 rounded-md px-1.5 py-0 text-[10px] font-medium">
-              {branch}
-            </Badge>
-          )}
-        </div>
+        <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
+          Source Control
+        </span>
         <Button
           variant="ghost"
           size="icon"
@@ -86,41 +79,33 @@ export function GitChangesPanel({
       <Separator className="opacity-20" />
 
       {/* Commit section */}
-      <div className="space-y-2 px-3 py-3">
-        <Textarea
-          value={commitMessage}
-          onChange={(e) => setCommitMessage(e.target.value)}
-          placeholder="Commit message"
-          className="min-h-[68px] resize-none border-border/30 bg-secondary/20 px-2.5 py-1.5 text-xs placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-offset-0"
-          rows={3}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && commitMessage.trim()) {
-              e.preventDefault();
-              handleCommit();
-            }
-          }}
-        />
-        <div className="flex gap-1.5">
-          <Button
-            size="sm"
-            onClick={handleCommit}
-            disabled={!commitMessage.trim() || committing || entries.length === 0}
-            className="h-7 flex-1 text-[11px]"
-          >
-            <Check className="mr-1 h-3 w-3" />
-            {committing ? "Committing..." : "Commit"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onReview}
-            disabled={entries.length === 0}
-            className="h-7 text-[11px]"
-          >
-            <Eye className="mr-1 h-3 w-3" />
-            Review
-          </Button>
+      <div className="space-y-3 px-3 py-3">
+        <div className="relative">
+          <Textarea
+            value={commitMessage}
+            onChange={(e) => setCommitMessage(e.target.value)}
+            placeholder="Message (Cmd+Enter to commit)"
+            className="min-h-[68px] resize-none border-border/30 bg-secondary/10 px-2.5 py-1.5 pb-6 text-xs placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-offset-0"
+            rows={3}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && commitMessage.trim()) {
+                e.preventDefault();
+                handleCommit();
+              }
+            }}
+          />
+          <div className="absolute right-2 bottom-1.5 text-[10px] text-muted-foreground/40">
+            {commitMessage.length} chars
+          </div>
         </div>
+        <Button
+          size="sm"
+          onClick={handleCommit}
+          disabled={!commitMessage.trim() || committing || entries.length === 0}
+          className="w-full h-8 text-xs font-medium"
+        >
+          {committing ? "Committing..." : "Commit"}
+        </Button>
         {error && (
           <p className="text-[11px] text-destructive" role="alert">{error}</p>
         )}
@@ -141,16 +126,30 @@ export function GitChangesPanel({
               </Badge>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-muted-foreground/50 hover:text-foreground disabled:opacity-40"
-            onClick={onRefresh}
-            disabled={loading}
-            aria-label="Refresh changes"
-          >
-            <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
-          </Button>
+          <div className="flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground/50 hover:text-foreground disabled:opacity-40"
+              onClick={onReview}
+              disabled={entries.length === 0}
+              aria-label="Review changes"
+              title="Review changes"
+            >
+              <Eye className="h-3 w-3" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 text-muted-foreground/50 hover:text-foreground disabled:opacity-40"
+              onClick={onRefresh}
+              disabled={loading}
+              aria-label="Refresh changes"
+              title="Refresh changes"
+            >
+              <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
+            </Button>
+          </div>
         </div>
 
         <ScrollArea className="min-h-0 flex-1">
