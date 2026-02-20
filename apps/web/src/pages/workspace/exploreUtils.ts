@@ -81,10 +81,18 @@ export function searchContextFromEvent(event: ChatEvent): { toolName: string | n
   };
 }
 
+/** Shorten absolute path values in searchParams (e.g. path=/a/b/c becomes path=c). */
+function shortenSearchParams(params: string): string {
+  return params.replace(
+    /(\b(?:path|file|file_path|directory|dir)=)(\/[^\s,]+)/g,
+    (_match, prefix: string, pathValue: string) => `${prefix}${shortenReadTargetForDisplay(pathValue)}`,
+  );
+}
+
 export function buildSearchRunningLabel(toolName: string | null, searchParams: string | null): string {
   const base = `Searching ${toolName && toolName.length > 0 ? toolName : "Search"}`;
   if (searchParams && searchParams.length > 0) {
-    return `${base} (${searchParams})`;
+    return `${base} (${shortenSearchParams(searchParams)})`;
   }
   return base;
 }
@@ -92,7 +100,7 @@ export function buildSearchRunningLabel(toolName: string | null, searchParams: s
 export function buildSearchCompletedFallbackLabel(toolName: string | null, searchParams: string | null): string {
   const base = `Searched${toolName && toolName.length > 0 ? ` ${toolName}` : ""}`;
   if (searchParams && searchParams.length > 0) {
-    return `${base} (${searchParams})`;
+    return `${base} (${shortenSearchParams(searchParams)})`;
   }
   return base;
 }

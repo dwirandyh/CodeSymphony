@@ -95,6 +95,23 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get("/worktrees/:id/files/index", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) {
+      return reply.code(404).send({ error: "Worktree not found" });
+    }
+
+    try {
+      const results = await app.fileService.listFileIndex(worktree.path);
+      return { data: results };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list files";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
   app.get("/worktrees/:id/git/status", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
     const worktree = await app.worktreeService.getById(params.id);

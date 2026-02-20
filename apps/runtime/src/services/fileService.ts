@@ -127,6 +127,16 @@ export function createFileService() {
       return scored.slice(0, limit).map((s) => ({ path: s.path, type: s.type }));
     },
 
+    async listFileIndex(
+      worktreePath: string,
+    ): Promise<FileEntry[]> {
+      const { files, directories } = await listTracked(worktreePath);
+      return [
+        ...directories.map((d) => ({ path: d, type: "directory" as const })),
+        ...files.map((f) => ({ path: f, type: "file" as const })),
+      ];
+    },
+
     invalidateCache(worktreePath: string): void {
       cache.delete(worktreePath);
     },

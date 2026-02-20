@@ -73,6 +73,7 @@ export type SubagentStep = {
   toolUseId: string;
   toolName: string;
   label: string;
+  openPath: string | null;
   status: "running" | "success";
 };
 

@@ -170,6 +170,8 @@ export const api = {
     }),
   searchFiles: (worktreeId: string, query: string, signal?: AbortSignal) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`, { signal }),
+  getFileIndex: (worktreeId: string, signal?: AbortSignal) =>
+    request<FileEntry[]>(`/worktrees/${worktreeId}/files/index`, { signal }),
   openWorktreeFile: async (worktreeId: string, input: OpenWorktreeFileInput) => {
     const response = await fetch(`${API_BASE}/worktrees/${worktreeId}/files/open`, {
       method: "POST",

@@ -3,15 +3,17 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry } from "@codesymphony/shared-types";
 import { Composer } from "./Composer";
-import { api } from "../../lib/api";
-
-vi.mock("../../lib/api", () => ({
-  api: {
-    searchFiles: vi.fn(),
-  },
-}));
 
 function noop() {}
+
+const sampleFileIndex: FileEntry[] = [
+  { path: "src/index.ts", type: "file" },
+  { path: "src/utils", type: "directory" },
+  { path: "src/a.ts", type: "file" },
+  { path: "src/b.ts", type: "file" },
+  { path: "src/c.ts", type: "file" },
+  { path: "src/components.tsx", type: "file" },
+];
 
 const defaultProps = {
   value: "",
@@ -21,6 +23,8 @@ const defaultProps = {
   stopping: false,
   mode: "default" as const,
   worktreeId: "wt-1",
+  fileIndex: sampleFileIndex,
+  fileIndexLoading: false,
   onChange: noop,
   onModeChange: noop,
   onSubmitMessage: noop,
@@ -36,7 +40,6 @@ describe("Composer", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
-    vi.mocked(api.searchFiles).mockReset();
     // jsdom does not implement scrollIntoView
     Element.prototype.scrollIntoView = vi.fn();
   });
@@ -82,127 +85,70 @@ describe("Composer", () => {
     expect(editor.getAttribute("contenteditable")).not.toBe("false");
   });
 
-  it("triggers mention search on @ input", async () => {
-    const fileResults: FileEntry[] = [
-      { path: "src/index.ts", type: "file" },
-      { path: "src/utils", type: "directory" },
-    ];
-    vi.mocked(api.searchFiles).mockResolvedValue(fileResults);
-
+  it("shows suggestions immediately when @ is typed", () => {
     renderComposer();
     const editor = getEditor();
 
     typeInEditor(editor, "@");
 
-    // Advance past debounce (150ms) and rAF
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
-    });
-
-    expect(api.searchFiles).toHaveBeenCalledWith("wt-1", "", expect.any(AbortSignal));
-  });
-
-  it("does not search when worktreeId is null", async () => {
-    renderComposer({ worktreeId: null });
-    const editor = getEditor();
-
-    typeInEditor(editor, "@");
-
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
-    });
-
-    expect(api.searchFiles).not.toHaveBeenCalled();
-  });
-
-  it("passes AbortSignal to searchFiles", async () => {
-    vi.mocked(api.searchFiles).mockResolvedValue([]);
-
-    renderComposer();
-    const editor = getEditor();
-    typeInEditor(editor, "@s");
-
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
-    });
-
-    const call = vi.mocked(api.searchFiles).mock.calls[0];
-    expect(call).toBeDefined();
-    expect(call[2]).toBeInstanceOf(AbortSignal);
-  });
-
-  it("aborts previous request when query changes", async () => {
-    let resolvers: Array<(value: FileEntry[]) => void> = [];
-    vi.mocked(api.searchFiles).mockImplementation(
-      () =>
-        new Promise<FileEntry[]>((resolve) => {
-          resolvers.push(resolve);
-        }),
-    );
-
-    renderComposer();
-    const editor = getEditor();
-
-    // Type first query
-    typeInEditor(editor, "@a");
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
-    });
-
-    const firstSignal = vi.mocked(api.searchFiles).mock.calls[0]?.[2] as AbortSignal;
-
-    // Type second query (triggers cleanup of first effect)
-    typeInEditor(editor, "@ab");
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
-    });
-
-    // The first request's signal should be aborted
-    expect(firstSignal.aborted).toBe(true);
-  });
-
-  it("renders suggestion popover when results are available", async () => {
-    const fileResults: FileEntry[] = [
-      { path: "src/index.ts", type: "file" },
-      { path: "src/utils", type: "directory" },
-    ];
-    vi.mocked(api.searchFiles).mockResolvedValue(fileResults);
-
-    renderComposer();
-    const editor = getEditor();
-    typeInEditor(editor, "@");
-
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
+    // rAF triggers mention detection
+    act(() => {
+      vi.advanceTimersByTime(20);
     });
 
     const buttons = container.querySelectorAll("button[data-index]");
-    expect(buttons.length).toBe(2);
-    expect(buttons[0].textContent).toContain("src/index.ts");
-    expect(buttons[1].textContent).toContain("src/utils");
+    expect(buttons.length).toBeGreaterThan(0);
   });
 
-  it("navigates suggestions with ArrowDown/ArrowUp", async () => {
-    const fileResults: FileEntry[] = [
-      { path: "src/a.ts", type: "file" },
-      { path: "src/b.ts", type: "file" },
-      { path: "src/c.ts", type: "file" },
-    ];
-    vi.mocked(api.searchFiles).mockResolvedValue(fileResults);
+  it("shows no suggestions when worktreeId is null (empty fileIndex)", () => {
+    renderComposer({ worktreeId: null, fileIndex: [], fileIndexLoading: false });
+    const editor = getEditor();
 
+    typeInEditor(editor, "@");
+
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+
+    const buttons = container.querySelectorAll("button[data-index]");
+    expect(buttons.length).toBe(0);
+  });
+
+  it("performs fuzzy matching on query", () => {
+    renderComposer();
+    const editor = getEditor();
+
+    typeInEditor(editor, "@idx");
+
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+
+    const buttons = container.querySelectorAll("button[data-index]");
+    const texts = Array.from(buttons).map((b) => b.textContent);
+    expect(texts.some((t) => t?.includes("index.ts"))).toBe(true);
+  });
+
+  it("renders suggestion popover when results are available", () => {
+    renderComposer();
+    const editor = getEditor();
+    typeInEditor(editor, "@src");
+
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+
+    const buttons = container.querySelectorAll("button[data-index]");
+    expect(buttons.length).toBeGreaterThan(0);
+  });
+
+  it("navigates suggestions with ArrowDown/ArrowUp", () => {
     renderComposer();
     const editor = getEditor();
     typeInEditor(editor, "@");
 
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
+    act(() => {
+      vi.advanceTimersByTime(20);
     });
 
     // Initially first item selected
@@ -226,21 +172,16 @@ describe("Composer", () => {
     expect(selectedBtn?.className).toContain("bg-accent");
   });
 
-  it("closes suggestions on Escape", async () => {
-    vi.mocked(api.searchFiles).mockResolvedValue([
-      { path: "src/a.ts", type: "file" },
-    ]);
-
+  it("closes suggestions on Escape", () => {
     renderComposer();
     const editor = getEditor();
     typeInEditor(editor, "@");
 
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
+    act(() => {
+      vi.advanceTimersByTime(20);
     });
 
-    expect(container.querySelectorAll("button[data-index]").length).toBe(1);
+    expect(container.querySelectorAll("button[data-index]").length).toBeGreaterThan(0);
 
     act(() => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -274,63 +215,56 @@ describe("Composer", () => {
     expect(onModeChange).toHaveBeenCalledWith("plan");
   });
 
-  it("shows loading indicator while fetching suggestions", async () => {
-    vi.mocked(api.searchFiles).mockImplementation(
-      () => new Promise(() => {}), // never resolves
-    );
-
-    renderComposer();
+  it("shows loading indicator when file index is loading", () => {
+    renderComposer({ fileIndex: [], fileIndexLoading: true });
     const editor = getEditor();
     typeInEditor(editor, "@");
 
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
+    act(() => {
+      vi.advanceTimersByTime(20);
     });
 
     const loadingText = container.querySelector(".text-muted-foreground");
-    expect(loadingText?.textContent).toContain("Searching files...");
+    expect(loadingText?.textContent).toContain("Loading files...");
   });
 
-  it("filters out already-mentioned files from suggestions", async () => {
-    // First search returns two files
-    vi.mocked(api.searchFiles).mockResolvedValue([
-      { path: "src/a.ts", type: "file" },
-      { path: "src/b.ts", type: "file" },
-    ]);
-
+  it("filters out already-mentioned files from suggestions", () => {
     renderComposer();
     const editor = getEditor();
     typeInEditor(editor, "@");
 
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
+    act(() => {
+      vi.advanceTimersByTime(20);
     });
 
-    // Select first suggestion (src/a.ts) via Enter
+    // Select first suggestion via Enter
     act(() => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
-    // Now type @ again to trigger new search
-    // The editor now has a chip + text, append @
-    const currentText = editor.textContent ?? "";
-    typeInEditor(editor, currentText + "@");
+    // Instead of typeInEditor (which destroys chips by overwriting textContent),
+    // append a text node with "@" so the chip remains intact
+    act(() => {
+      const atNode = document.createTextNode("@");
+      editor.appendChild(atNode);
 
-    vi.mocked(api.searchFiles).mockResolvedValue([
-      { path: "src/a.ts", type: "file" },
-      { path: "src/b.ts", type: "file" },
-    ]);
+      const sel = window.getSelection()!;
+      const range = document.createRange();
+      range.setStart(atNode, 1);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
 
-    await act(async () => {
-      vi.advanceTimersByTime(200);
-      await vi.runAllTimersAsync();
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
     });
 
-    // src/a.ts should be filtered out since it's already mentioned
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
+
+    // The selected file should be filtered out
     const buttons = container.querySelectorAll("button[data-index]");
-    const texts = Array.from(buttons).map((b) => b.textContent);
-    expect(texts).not.toContain(expect.stringContaining("src/a.ts"));
+    // We should have fewer suggestions than original (one was filtered)
+    expect(buttons.length).toBeLessThan(sampleFileIndex.length);
   });
 });

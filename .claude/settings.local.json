@@ -3,7 +3,8 @@
     "allow": [
       "Bash(pnpm --filter @codesymphony/web build)",
       "Bash(pnpm --filter @codesymphony/web test)",
-      "Bash(pnpm --filter @codesymphony/runtime build)"
+      "Bash(pnpm --filter @codesymphony/runtime build)",
+      "Bash(python3:*)"
     ]
   }
 }
