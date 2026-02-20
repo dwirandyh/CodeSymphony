@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import fuzzysort from "fuzzysort";
 import { ArrowUp, FileText, Folder, Lightbulb, Square, Zap } from "lucide-react";
 import type { ChatMode, FileEntry } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
-import { api } from "../../lib/api";
-import { serializeMentionPrefix } from "../../lib/mentions";
+import { serializeMention } from "../../lib/mentions";
 
 type ComposerProps = {
   value: string;
@@ -13,6 +13,8 @@ type ComposerProps = {
   stopping: boolean;
   mode: ChatMode;
   worktreeId: string | null;
+  fileIndex: FileEntry[];
+  fileIndexLoading: boolean;
   onChange: (nextValue: string) => void;
   onModeChange: (mode: ChatMode) => void;
   onSubmitMessage: (content: string) => void;
@@ -32,17 +34,6 @@ let mentionIdCounter = 0;
 function nextMentionId(): string {
   mentionIdCounter += 1;
   return `mention-${mentionIdCounter}`;
-}
-
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delayMs);
-    return () => clearTimeout(timer);
-  }, [value, delayMs]);
-
-  return debounced;
 }
 
 function fileName(filePath: string): string {
@@ -158,6 +149,8 @@ export function Composer({
   stopping,
   mode,
   worktreeId,
+  fileIndex,
+  fileIndexLoading,
   onChange,
   onModeChange,
   onSubmitMessage,
@@ -168,54 +161,37 @@ export function Composer({
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [mention, setMention] = useState<MentionState>({ active: false, query: "", startOffset: -1, anchorNode: null });
-  const [suggestions, setSuggestions] = useState<FileEntry[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [loading, setLoading] = useState(false);
   const mentionedFilesRef = useRef<MentionedFile[]>([]);
   const isComposingRef = useRef(false);
   const suppressInputRef = useRef(false);
 
   const cannotSend = disabled || (value.trim().length === 0 && mentionedFilesRef.current.length === 0);
 
-  const debouncedQuery = useDebouncedValue(mention.query, 150);
-  const requestIdRef = useRef(0);
+  type SuggestionEntry = FileEntry & { highlighted?: string };
 
-  useEffect(() => {
-    if (!mention.active || !worktreeId) {
-      setSuggestions([]);
-      return;
+  const suggestions: SuggestionEntry[] = useMemo(() => {
+    if (!mention.active) return [];
+    const alreadyMentioned = new Set(mentionedFilesRef.current.map((f) => f.path));
+    const available = fileIndex.filter((e) => !alreadyMentioned.has(e.path));
+
+    if (!mention.query) {
+      const dirs = available.filter((e) => e.type === "directory").slice(0, 5);
+      const files = available.filter((e) => e.type === "file").slice(0, 20 - dirs.length);
+      return [...dirs, ...files];
     }
 
-    const controller = new AbortController();
-    const requestId = ++requestIdRef.current;
-    setLoading(true);
+    const results = fuzzysort.go(mention.query, available, { key: "path", limit: 20 });
+    return results.map((r) => ({ ...r.obj, highlighted: r.highlight("<mark>", "</mark>") }));
+  }, [mention.active, mention.query, fileIndex]);
 
-    const alreadyMentioned = new Set(mentionedFilesRef.current.map((f) => f.path));
-
-    api
-      .searchFiles(worktreeId, debouncedQuery, controller.signal)
-      .then((results) => {
-        if (requestId !== requestIdRef.current) return;
-        setSuggestions(results.filter((r) => !alreadyMentioned.has(r.path)));
-        setSelectedIndex(0);
-      })
-      .catch(() => {
-        if (requestId !== requestIdRef.current) return;
-        setSuggestions([]);
-      })
-      .finally(() => {
-        if (requestId !== requestIdRef.current) return;
-        setLoading(false);
-      });
-
-    return () => {
-      controller.abort();
-    };
-  }, [mention.active, debouncedQuery, worktreeId]);
+  // Reset selected index when suggestions change
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [suggestions]);
 
   const closeMention = useCallback(() => {
     setMention({ active: false, query: "", startOffset: -1, anchorNode: null });
-    setSuggestions([]);
     setSelectedIndex(0);
   }, []);
 
@@ -290,33 +266,22 @@ export function Composer({
     const editor = editorRef.current;
     if (!editor) return value;
 
-    const files = getMentionedFilesFromEditor(editor);
-    const textParts: string[] = [];
-
+    const parts: string[] = [];
     for (const node of editor.childNodes) {
       if (node.nodeType === Node.TEXT_NODE) {
-        textParts.push(node.textContent ?? "");
+        parts.push(node.textContent ?? "");
       } else if (node instanceof HTMLElement) {
         if (node.dataset.mentionPath) {
-          continue;
+          const type = node.dataset.mentionType === "directory" ? "directory" : "file";
+          parts.push(serializeMention(node.dataset.mentionPath, type));
         } else if (node.tagName === "BR") {
-          textParts.push("\n");
+          parts.push("\n");
         } else {
-          textParts.push(node.textContent ?? "");
+          parts.push(node.textContent ?? "");
         }
       }
     }
-
-    const userText = textParts.join("").replace(/\u00A0/g, " ").trim();
-    const mentionPrefix = serializeMentionPrefix(files);
-
-    if (mentionPrefix && userText) {
-      return `${mentionPrefix}\n${userText}`;
-    }
-    if (mentionPrefix) {
-      return mentionPrefix;
-    }
-    return userText;
+    return parts.join("").replace(/\u00A0/g, " ").trim();
   }, [value]);
 
   const handleSubmit = useCallback(() => {
@@ -332,6 +297,45 @@ export function Composer({
     onSubmitMessage(content);
     onChange("");
   }, [cannotSend, buildFinalContent, onSubmitMessage, onChange]);
+
+  const handlePaste = useCallback(
+    (event: React.ClipboardEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const text = event.clipboardData.getData("text/plain");
+      if (!text) return;
+
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+
+      const lines = text.split("\n");
+      const fragment = document.createDocumentFragment();
+      for (let i = 0; i < lines.length; i++) {
+        if (i > 0) {
+          fragment.appendChild(document.createElement("br"));
+        }
+        if (lines[i]) {
+          fragment.appendChild(document.createTextNode(lines[i]));
+        }
+      }
+
+      const lastNode = fragment.lastChild;
+      range.insertNode(fragment);
+
+      if (lastNode) {
+        const newRange = document.createRange();
+        newRange.setStartAfter(lastNode);
+        newRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(newRange);
+      }
+
+      syncValueFromEditor();
+    },
+    [syncValueFromEditor],
+  );
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -358,6 +362,60 @@ export function Composer({
         }
       }
 
+      // Backspace: delete mention chips when cursor is adjacent
+      if (event.key === "Backspace") {
+        const sel = window.getSelection();
+        const editor = editorRef.current;
+        if (sel && sel.rangeCount > 0 && editor) {
+          const anchorNode = sel.anchorNode;
+          const anchorOffset = sel.anchorOffset;
+
+          // Case A: Cursor at offset 0 of a text node, previous sibling is a chip
+          if (
+            anchorNode &&
+            anchorNode.nodeType === Node.TEXT_NODE &&
+            anchorOffset === 0 &&
+            anchorNode.previousSibling instanceof HTMLElement &&
+            anchorNode.previousSibling.dataset.mentionPath
+          ) {
+            event.preventDefault();
+            anchorNode.previousSibling.remove();
+            syncValueFromEditor();
+            return;
+          }
+
+          // Case B: Cursor in editor element itself, positioned after a chip child
+          if (
+            anchorNode === editor &&
+            anchorOffset > 0 &&
+            editor.childNodes[anchorOffset - 1] instanceof HTMLElement &&
+            (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.mentionPath
+          ) {
+            event.preventDefault();
+            editor.childNodes[anchorOffset - 1].remove();
+            syncValueFromEditor();
+            return;
+          }
+
+          // Case C: Cursor at offset 1 of a text node containing only NBSP, previous sibling is a chip
+          if (
+            anchorNode &&
+            anchorNode.nodeType === Node.TEXT_NODE &&
+            anchorOffset === 1 &&
+            anchorNode.textContent === "\u00A0" &&
+            anchorNode.previousSibling instanceof HTMLElement &&
+            anchorNode.previousSibling.dataset.mentionPath
+          ) {
+            event.preventDefault();
+            const chip = anchorNode.previousSibling;
+            anchorNode.textContent = "";
+            chip.remove();
+            syncValueFromEditor();
+            return;
+          }
+        }
+      }
+
       if (event.key === "Tab" && event.shiftKey) {
         event.preventDefault();
         onModeChange(isPlan ? "default" : "plan");
@@ -375,7 +433,7 @@ export function Composer({
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit, syncValueFromEditor],
   );
 
   useEffect(() => {
@@ -401,13 +459,13 @@ export function Composer({
     <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
         <div className="relative rounded-2xl border border-input/50 bg-background/20 px-3 pb-11 pt-2.5 lg:rounded-3xl lg:px-4 lg:pb-12 lg:pt-3">
-          {mention.active && (suggestions.length > 0 || loading) && (
+          {mention.active && (suggestions.length > 0 || fileIndexLoading) && (
             <div
               ref={popoverRef}
               className="absolute bottom-full left-0 z-50 mb-2 w-full max-h-60 overflow-y-auto rounded-xl border border-border/60 bg-popover shadow-lg"
             >
-              {loading && suggestions.length === 0 ? (
-                <div className="px-3 py-2 text-xs text-muted-foreground">Searching files...</div>
+              {fileIndexLoading && suggestions.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">Loading files...</div>
               ) : (
                 suggestions.map((entry, index) => (
                   <button
@@ -430,7 +488,11 @@ export function Composer({
                     ) : (
                       <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     )}
-                    <span className="truncate">{entry.path}</span>
+                    {entry.highlighted ? (
+                      <span className="truncate" dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
+                    ) : (
+                      <span className="truncate">{entry.path}</span>
+                    )}
                   </button>
                 ))
               )}
@@ -446,6 +508,7 @@ export function Composer({
             suppressContentEditableWarning
             onInput={handleInput}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             onCompositionStart={() => { isComposingRef.current = true; }}
             onCompositionEnd={() => {
               isComposingRef.current = false;

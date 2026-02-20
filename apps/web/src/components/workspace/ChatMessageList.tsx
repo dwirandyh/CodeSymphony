@@ -888,42 +888,45 @@ export function MarkdownBody({
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
         components={{
-          p: ({ children }) => <p className="mb-2 whitespace-pre-wrap leading-relaxed last:mb-0">{children}</p>,
-          ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
-          ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
+          p: ({ children }) => <p className="leading-6 [&:not(:first-child)]:mt-4 whitespace-pre-wrap">{children}</p>,
+          ul: ({ children }) => <ul className="my-4 ml-6 list-disc [&>li]:mt-1.5">{children}</ul>,
+          ol: ({ children }) => <ol className="my-4 ml-6 list-decimal [&>li]:mt-1.5">{children}</ol>,
           li: ({ children }) => <li>{children}</li>,
-          h1: ({ children }) => <h1 className="mb-2 text-lg font-semibold last:mb-0">{children}</h1>,
-          h2: ({ children }) => <h2 className="mb-2 text-base font-semibold last:mb-0">{children}</h2>,
-          h3: ({ children }) => <h3 className="mb-2 text-sm font-semibold last:mb-0">{children}</h3>,
+          h1: ({ children }) => <h1 className="scroll-m-16 text-xl font-bold tracking-tight mb-3">{children}</h1>,
+          h2: ({ children }) => <h2 className="scroll-m-16 border-b pb-1.5 text-lg font-semibold tracking-tight mt-5 mb-3 first:mt-0">{children}</h2>,
+          h3: ({ children }) => <h3 className="scroll-m-16 text-base font-semibold tracking-tight mt-4 mb-2">{children}</h3>,
+          h4: ({ children }) => <h4 className="scroll-m-16 text-sm font-semibold tracking-tight mt-3 mb-1.5">{children}</h4>,
           blockquote: ({ children }) => (
-            <blockquote className="mb-2 border-l border-border/60 pl-3 text-muted-foreground">{children}</blockquote>
+            <blockquote className="mt-4 border-l-2 border-primary pl-4 italic text-muted-foreground">{children}</blockquote>
           ),
           table: ({ children }) => (
-            <div className="mb-2 overflow-x-auto last:mb-0">
-              <table className="min-w-full border-collapse text-sm">{children}</table>
+            <div className="my-4 w-full overflow-y-auto text-sm">
+              <table className="w-full border-collapse">{children}</table>
             </div>
           ),
-          thead: ({ children }) => <thead className="border-b border-border/50">{children}</thead>,
+          thead: ({ children }) => <thead className="border-b">{children}</thead>,
           tbody: ({ children }) => <tbody>{children}</tbody>,
-          tr: ({ children }) => <tr className="border-b border-border/30 last:border-b-0">{children}</tr>,
-          th: ({ children }) => <th className="px-2 py-1 text-left font-semibold">{children}</th>,
-          td: ({ children }) => <td className="px-2 py-1 align-top">{children}</td>,
+          tr: ({ children }) => <tr className="m-0 border-t p-0 even:bg-muted/50">{children}</tr>,
+          th: ({ children }) => <th className="border px-3 py-1.5 text-left font-bold [&[align=center]]:text-center [&[align=right]]:text-right">{children}</th>,
+          td: ({ children }) => <td className="border px-3 py-1.5 text-left [&[align=center]]:text-center [&[align=right]]:text-right">{children}</td>,
+          a: ({ children, href }) => <a href={href} className="font-medium text-primary underline underline-offset-4 hover:text-primary/80" target="_blank" rel="noreferrer">{children}</a>,
+          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
           code: ({ className, children }) => {
             const language = className?.replace("language-", "").trim();
             const text = String(children).replace(/\n$/, "");
             const inline = !className && !text.includes("\n");
 
             if (inline) {
-              return <code className="rounded bg-secondary/45 px-1 font-mono text-xs text-foreground">{text}</code>;
+              return <code className="relative rounded bg-muted px-[0.25rem] py-[0.15rem] font-mono text-xs font-semibold">{text}</code>;
             }
 
             if (isLikelyDiff(text, language)) {
               return (
-                <div className="my-2 rounded-lg border border-border/40 bg-secondary/20 p-3 last:mb-0">
-                  <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+                <div className="my-3 rounded-md border border-border/40 bg-secondary/20 p-2.5 last:mb-0">
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                     Diff
                   </div>
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">
                     {text}
                   </pre>
                 </div>
@@ -931,7 +934,7 @@ export function MarkdownBody({
             }
 
             return (
-              <pre className="my-2 overflow-x-auto rounded-lg border border-border/40 bg-secondary/20 p-3 font-mono text-xs leading-relaxed text-foreground last:mb-0">
+              <pre className="my-4 overflow-x-auto rounded-md border bg-muted/50 p-3 font-mono text-xs leading-relaxed text-foreground select-text">
                 <code>{text}</code>
               </pre>
             );
@@ -1187,6 +1190,8 @@ export function ChatMessageList({
   const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(new Map());
   const [exploreActivityExpandedById, setExploreActivityExpandedById] = useState<Map<string, boolean>>(new Map());
   const [subagentExpandedById, setSubagentExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [subagentPromptExpandedById, setSubagentPromptExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [subagentExploreExpandedById, setSubagentExploreExpandedById] = useState<Map<string, boolean>>(new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
@@ -1802,26 +1807,79 @@ export function ChatMessageList({
                   {/* Expanded chat-style content */}
                   <div className="mt-2 ml-1 rounded-xl border border-border/30 bg-secondary/5 overflow-hidden">
                     <div className="flex flex-col gap-3 p-3">
-                      {/* Prompt — user-message style */}
+                      {/* Prompt — collapsible */}
                       {item.description && (
-                        <div className="flex justify-end">
-                          <div className="max-w-[85%] rounded-2xl bg-secondary/55 px-4 py-2.5 text-sm text-foreground">
-                            <p className="whitespace-pre-wrap break-words leading-relaxed">{item.description}</p>
-                          </div>
+                        <div className="px-1 text-xs">
+                          <details
+                            open={subagentPromptExpandedById.get(item.id) === true}
+                            onToggle={(event) => {
+                              const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                              setSubagentPromptExpandedById((current) => {
+                                const next = new Map(current);
+                                next.set(item.id, nextOpen);
+                                return next;
+                              });
+                            }}
+                          >
+                            <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
+                              <span>Prompt</span>
+                              <span className={cn("inline-flex transition-transform duration-150", subagentPromptExpandedById.get(item.id) === true ? "rotate-90" : "")}>
+                                <ChevronRight className="h-3 w-3" />
+                              </span>
+                            </summary>
+                            <div className="mt-1 text-sm text-foreground">
+                              <p className="whitespace-pre-wrap break-words leading-relaxed">{item.description}</p>
+                            </div>
+                          </details>
                         </div>
                       )}
 
                       {/* Explore-activity style steps (reads/searches grouped) */}
                       {hasExploreSteps && (
                         <div className="px-1 text-xs">
-                          <details>
+                          <details
+                            open={subagentExploreExpandedById.get(item.id) === true}
+                            onToggle={(event) => {
+                              const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+                              setSubagentExploreExpandedById((current) => {
+                                const next = new Map(current);
+                                next.set(item.id, nextOpen);
+                                return next;
+                              });
+                            }}
+                          >
                             <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
                               <span className={!allExploreComplete || isRunning ? "thinking-shimmer" : ""}>{exploreSummaryText}</span>
-                              <ChevronRight className="h-3 w-3 inline-flex" />
+                              <span className={cn("inline-flex transition-transform duration-150", subagentExploreExpandedById.get(item.id) === true ? "rotate-90" : "")}>
+                                <ChevronRight className="h-3 w-3" />
+                              </span>
                             </summary>
                             <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
                               {readSteps.map((step, idx) => (
-                                <span key={`${item.id}:explore:${idx}`}>{step.label}</span>
+                                <span key={`${item.id}:explore:${idx}`}>
+                                  {step.toolName === "Read" ? (
+                                    <>
+                                      Read{" "}
+                                      {step.openPath && onOpenReadFile ? (
+                                        <button
+                                          type="button"
+                                          className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
+                                          onClick={() => {
+                                            if (step.openPath) {
+                                              void onOpenReadFile(step.openPath);
+                                            }
+                                          }}
+                                        >
+                                          {step.label}
+                                        </button>
+                                      ) : (
+                                        <span>{step.label}</span>
+                                      )}
+                                    </>
+                                  ) : (
+                                    step.label
+                                  )}
+                                </span>
                               ))}
                             </div>
                           </details>
