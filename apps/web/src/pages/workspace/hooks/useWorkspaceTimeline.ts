@@ -565,7 +565,7 @@ export function useWorkspaceTimeline(
         }
       }
 
-      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0)) {
+      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
         const hasInlineExploreRuns = exploreActivityGroups.length > 0;
         const hasInlineSubagentRuns = subagentGroups.length > 0;
         type InlineInsert =
@@ -600,6 +600,14 @@ export function useWorkspaceTimeline(
             anchorIdx: number;
             createdAt: string;
             group: SubagentGroup;
+          }
+          | {
+            kind: "plan-file-output";
+            id: string;
+            startIdx: number;
+            anchorIdx: number;
+            createdAt: string;
+            planFileOutput: { id: string; messageId: string; content: string; filePath: string; idx: number; createdAt: string };
           };
 
         const inlineInserts: InlineInsert[] = [
@@ -637,6 +645,14 @@ export function useWorkspaceTimeline(
             createdAt: group.createdAt,
             group,
           })) : []),
+          ...(planFileOutput ? [{
+            kind: "plan-file-output" as const,
+            id: `plan:${planFileOutput.id}`,
+            startIdx: planFileOutput.idx,
+            anchorIdx: planFileOutput.idx,
+            createdAt: planFileOutput.createdAt,
+            planFileOutput,
+          }] : []),
         ].sort((a, b) => {
           if (a.startIdx !== b.startIdx) {
             return a.startIdx - b.startIdx;
@@ -656,7 +672,25 @@ export function useWorkspaceTimeline(
           timestamp: null as number | null,
         }));
 
-        for (const deltaEvent of messageDeltaEvents) {
+        // Filter out post-plan delta events — post-plan text (e.g. "Ready whenever
+        // you approve!") is redundant since the plan card implies approval is needed.
+        const planInlineInsertIdx = inlineInserts.findIndex(i => i.kind === "plan-file-output");
+        let effectiveDeltaEvents = messageDeltaEvents;
+        if (planInlineInsertIdx >= 0) {
+          const planStartIdx = inlineInserts[planInlineInsertIdx].startIdx;
+          effectiveDeltaEvents = messageDeltaEvents.filter(e => e.idx < planStartIdx);
+          // Also strip post-plan text from cleanedContent so fallback paths
+          // don't re-introduce it.
+          const postPlanText = messageDeltaEvents
+            .filter(e => e.idx >= planStartIdx)
+            .map(e => typeof e.payload.delta === "string" ? e.payload.delta : "")
+            .join("");
+          if (postPlanText.length > 0 && cleanedContent.endsWith(postPlanText)) {
+            cleanedContent = cleanedContent.slice(0, -postPlanText.length).trimEnd();
+          }
+        }
+
+        for (const deltaEvent of effectiveDeltaEvents) {
           const deltaText = typeof deltaEvent.payload.delta === "string" ? deltaEvent.payload.delta : "";
           if (deltaText.length === 0) {
             continue;
@@ -828,6 +862,12 @@ export function useWorkspaceTimeline(
         let delayedFirstSegmentTimestamp: number | null = null;
 
         function pushInlineInsert(insert: InlineInsert, bucketTimestamp?: number | null, bucketAnchorIdx?: number | null) {
+          if (insert.kind === "plan-file-output") {
+            // Plan card is pushed separately — this inline insert only acts as a text split point
+            stableOffset += 0.001;
+            return;
+          }
+
           if (insert.kind === "bash") {
             const run = insert.run;
             const status = run.status === "running" && isCompleted ? "success" : run.status;
@@ -987,7 +1027,7 @@ export function useWorkspaceTimeline(
                 pushMessageSegment(
                   splitSegment.head,
                   `${bucketIndex}:delayed-head`,
-                  delayedFirstSegmentAnchorIdx,
+                  inlineInserts[0].startIdx - 0.5,
                   delayedFirstSegmentTimestamp,
                 );
                 if (tailIsAnnouncement && splitSegment.tail.length > 0) {
