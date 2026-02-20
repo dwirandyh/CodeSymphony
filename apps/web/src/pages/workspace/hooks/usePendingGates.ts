@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
@@ -49,6 +49,15 @@ export function usePendingGates(
   const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(new Set());
   const [planActionBusy, setPlanActionBusy] = useState(false);
   const [closedPlanDecision, setClosedPlanDecision] = useState<{ threadId: string; createdIdx: number } | null>(null);
+
+  // Reset all gate-local state when switching threads so Thread A's
+  // in-flight actions don't leak into Thread B.
+  useEffect(() => {
+    setPlanActionBusy(false);
+    setResolvingPermissionIds(new Set());
+    setAnsweringQuestionIds(new Set());
+    setClosedPlanDecision(null);
+  }, [selectedThreadId]);
 
   // ── Pending permission requests ──
 
