@@ -1797,10 +1797,10 @@ export function ChatMessageList({
                   {/* Collapsed summary header */}
                   <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
                     <Bot className="h-3.5 w-3.5 shrink-0" />
-                    <span className={cn("truncate", isRunning ? "thinking-shimmer" : "")}>
+                    <span className="truncate">
                       {headerText}
                     </span>
-                    <span className={cn("text-[10px] shrink-0", isRunning ? "thinking-shimmer" : "text-muted-foreground/50")}>
+                    <span className={cn("text-[10px] shrink-0", isRunning ? "text-muted-foreground" : "text-muted-foreground/50")}>
                       {statusText}
                     </span>
                     <span
@@ -1856,7 +1856,7 @@ export function ChatMessageList({
                             }}
                           >
                             <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
-                              <span className={!allExploreComplete || isRunning ? "thinking-shimmer" : ""}>{exploreSummaryText}</span>
+                              <span>{exploreSummaryText}</span>
                               <span className={cn("inline-flex transition-transform duration-150", subagentExploreExpandedById.get(item.id) === true ? "rotate-90" : "")}>
                                 <ChevronRight className="h-3 w-3" />
                               </span>
@@ -1899,7 +1899,7 @@ export function ChatMessageList({
                           {step.status === "success"
                             ? <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500/70" />
                             : <Loader2 className="h-3 w-3 shrink-0 text-muted-foreground/50 animate-spin" />}
-                          <span className={step.status === "running" ? "thinking-shimmer" : ""}>
+                          <span>
                             {step.label}
                           </span>
                         </div>
@@ -1915,7 +1915,7 @@ export function ChatMessageList({
                       {/* Thinking shimmer while subagent is running and no response yet */}
                       {!item.lastMessage && isRunning && (
                         <div className="px-1 text-sm text-muted-foreground">
-                          <span className="thinking-shimmer">Thinking…</span>
+                          <span>Thinking…</span>
                         </div>
                       )}
                     </div>
@@ -1923,7 +1923,7 @@ export function ChatMessageList({
                     {/* Footer bar */}
                     <div className="border-t border-border/20 px-3 py-1.5 text-[10px] text-muted-foreground/50 flex items-center gap-1.5">
                       <Bot className="h-3 w-3 shrink-0" />
-                      <span className={isRunning ? "thinking-shimmer" : ""}>
+                      <span>
                         {statusText}
                       </span>
                     </div>
