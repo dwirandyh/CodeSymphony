@@ -296,9 +296,12 @@ export function useWorkspaceTimeline(
       // Parse ###subagent summary start/end markers from message.content to extract
       // the subagent's response when the event-based lastMessage population fails.
       // Also strip markers from message.content for clean rendering.
-      const subagentSummaryRegex = /###subagent summary start\n?([\s\S]*?)###subagent summary end\n?/g;
-      const mainSummaryStartMarker = /###main summary start\n?/g;
-      const mainSummaryEndMarker = /###main summary end\n?/g;
+      // Match both "###subagent summary start" and "###subagent summary" (without "start")
+      // since the AI may emit either variant.
+      const subagentSummaryRegex = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
+      // Match both "###main summary start/end" and "###main agent summary/end"
+      const mainSummaryStartMarker = /###main(?:\s+agent)? summary(?:\s+start)?\n?/g;
+      const mainSummaryEndMarker = /###main(?:\s+agent)? summary end\n?/g;
 
       let cleanedContent = message.content;
 
@@ -324,6 +327,21 @@ export function useWorkspaceTimeline(
           .replace(subagentSummaryRegex, "")
           .replace(mainSummaryStartMarker, "")
           .replace(mainSummaryEndMarker, "")
+          .trim();
+      }
+
+      // Always strip the subagent summary block and main summary markers from
+      // message content so they aren't rendered as raw ### headers in the chat
+      // text.  This needs to run even when subagentGroups is empty (e.g. during
+      // streaming before subagent events arrive).
+      if (message.role === "assistant" && message.content.length > 0) {
+        subagentSummaryRegex.lastIndex = 0;
+        mainSummaryStartMarker.lastIndex = 0;
+        mainSummaryEndMarker.lastIndex = 0;
+        cleanedContent = message.content
+          .replace(subagentSummaryRegex, "")
+          .replace(mainSummaryEndMarker, "")
+          .replace(mainSummaryStartMarker, "")
           .trim();
       }
       const nonSubagentContext = message.role === "assistant"
