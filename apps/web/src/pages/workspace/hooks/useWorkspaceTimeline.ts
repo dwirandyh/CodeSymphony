@@ -1017,6 +1017,35 @@ export function useWorkspaceTimeline(
       });
     }
 
+    // --- Orphan subagent grouping ---
+    // Before rendering orphans, check if any unassigned events form subagent groups.
+    // This handles the case where subagent events arrive before any assistant message.delta.
+    const unassignedInlineForSubagent = inlineToolEvents.filter(
+      (event) => !assignedToolEventIds.has(event.id),
+    );
+    const orphanSubagentGroups = extractSubagentGroups(unassignedInlineForSubagent);
+    for (const group of orphanSubagentGroups) {
+      group.eventIds.forEach((id) => assignedToolEventIds.add(id));
+      sortable.push({
+        item: {
+          kind: "subagent-activity",
+          id: `orphan:${group.id}`,
+          agentId: group.agentId,
+          agentType: group.agentType,
+          toolUseId: group.toolUseId,
+          status: group.status,
+          description: group.description,
+          lastMessage: group.lastMessage,
+          steps: group.steps,
+          durationSeconds: group.durationSeconds,
+        },
+        anchorIdx: group.anchorIdx,
+        timestamp: parseTimestamp(group.createdAt),
+        rank: 3,
+        stableOrder: group.startIdx,
+      });
+    }
+
     const orphanToolEvents = inlineToolEvents
       .filter((event) => !assignedToolEventIds.has(event.id))
       .filter((event) =>

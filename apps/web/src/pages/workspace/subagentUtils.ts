@@ -81,6 +81,8 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
   const taskToolToSubagent = new Map<string, string>();
   // Track the most recent "Task" tool.started toolUseId so we can link it when subagent.started arrives
   let lastTaskToolUseId: string | null = null;
+  // Also track the event reference so we can retroactively claim it when subagent.started creates the link
+  let lastTaskToolStartEvent: ChatEvent | null = null;
 
   const activeSubagents = new Map<
     string,
@@ -109,6 +111,7 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         const tid = payloadStringOrNull(event.payload.toolUseId) ?? "";
         if (tid) {
           lastTaskToolUseId = tid;
+          lastTaskToolStartEvent = event;
         }
       }
     }
@@ -141,6 +144,11 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
       if (lastTaskToolUseId) {
         taskToolToSubagent.set(lastTaskToolUseId, toolUseId);
         debugLog.push({ phase: "taskToolLink", taskToolId: lastTaskToolUseId, subagentId: toolUseId });
+        // Retroactively claim the Task tool.started event that arrived before subagent.started
+        if (lastTaskToolStartEvent) {
+          activeSubagents.get(toolUseId)?.eventIds.add(lastTaskToolStartEvent.id);
+          lastTaskToolStartEvent = null;
+        }
         lastTaskToolUseId = null;
       }
       continue;
