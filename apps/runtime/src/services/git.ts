@@ -70,7 +70,7 @@ export async function renameBranch(args: { cwd: string; oldBranch: string; newBr
   await runGit(["branch", "-m", args.oldBranch, args.newBranch], args.cwd);
 }
 
-export async function getGitStatus(cwd: string): Promise<{ branch: string; entries: Array<{ path: string; status: string }> }> {
+export async function getGitStatus(cwd: string): Promise<{ branch: string; entries: Array<{ path: string; status: string; insertions: number; deletions: number }> }> {
   const branch = await runGit(["branch", "--show-current"], cwd).catch(() => "HEAD");
   let porcelain = "";
   try {
@@ -79,7 +79,34 @@ export async function getGitStatus(cwd: string): Promise<{ branch: string; entri
     return { branch, entries: [] };
   }
 
-  const entries: Array<{ path: string; status: string }> = [];
+  const entries: Array<{ path: string; status: string; insertions: number; deletions: number }> = [];
+
+  // Fetch numstat for staged and unstaged changes
+  const [stagedNumstat, unstagedNumstat] = await Promise.all([
+    runGit(["diff", "--cached", "--numstat"], cwd).catch(() => ""),
+    runGit(["diff", "--numstat"], cwd).catch(() => ""),
+  ]);
+
+  const statsMap = new Map<string, { insertions: number; deletions: number }>();
+
+  const parseNumstat = (output: string) => {
+    for (const line of output.split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 3) continue;
+      const insertions = parseInt(parts[0], 10) || 0;
+      const deletions = parseInt(parts[1], 10) || 0;
+      const path = parts[2];
+      const existing = statsMap.get(path) || { insertions: 0, deletions: 0 };
+      statsMap.set(path, {
+        insertions: existing.insertions + insertions,
+        deletions: existing.deletions + deletions,
+      });
+    }
+  };
+
+  parseNumstat(stagedNumstat);
+  parseNumstat(unstagedNumstat);
+
   for (const line of porcelain.split("\n")) {
     if (line.length < 3) continue;
     const x = line[0];
@@ -98,10 +125,22 @@ export async function getGitStatus(cwd: string): Promise<{ branch: string; entri
     else if (x === "R" || y === "R") status = "renamed";
     else status = "modified";
 
-    entries.push({ path: filePath, status });
+    const stats = statsMap.get(filePath) || { insertions: 0, deletions: 0 };
+    entries.push({ path: filePath, status, ...stats });
   }
 
   return { branch, entries };
+}
+
+export async function discardGitChange(cwd: string, filePath: string): Promise<void> {
+  // Check if it's untracked
+  const status = await runGit(["status", "--porcelain", filePath], cwd);
+  if (status.startsWith("??")) {
+    await runGit(["clean", "-f", filePath], cwd);
+  } else {
+    // Restore from HEAD for tracked files
+    await runGit(["restore", "--source=HEAD", "--staged", "--worktree", filePath], cwd);
+  }
 }
 
 export async function getGitDiff(cwd: string, filePath?: string): Promise<string> {

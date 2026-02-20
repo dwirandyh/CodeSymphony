@@ -46,6 +46,10 @@ export function isClaudePlanFilePayload(payload: Record<string, unknown>): boole
   }
 
   const filePath = typeof payload.filePath === "string" ? payload.filePath : "";
+  return isPlanFilePath(filePath);
+}
+
+export function isPlanFilePath(filePath: string): boolean {
   return filePath.includes(".claude/plans/") && filePath.endsWith(".md");
 }
 

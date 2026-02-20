@@ -328,6 +328,8 @@ export function WorkspacePage() {
                   onRefresh={() => void gitChanges.refresh()}
                   onClose={() => setRightPanelId(null)}
                   onSelectFile={handleSelectDiffFile}
+                  onDiscardChange={(path) => void gitChanges.discardChange(path)}
+                  onOpenFile={(path) => void openReadFile(path)}
                 />
               )}
             </aside>
@@ -435,6 +437,11 @@ export function WorkspacePage() {
             onClose={() => setMobilePanelOpen(null)}
             onSelectFile={(path) => {
               handleSelectDiffFile(path);
+              setMobilePanelOpen(null);
+            }}
+            onDiscardChange={(path) => void gitChanges.discardChange(path)}
+            onOpenFile={(path) => {
+              void openReadFile(path);
               setMobilePanelOpen(null);
             }}
           />

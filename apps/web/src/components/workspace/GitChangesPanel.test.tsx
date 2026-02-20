@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitChangesPanel } from "./GitChangesPanel";
 
 const entries: GitChangeEntry[] = [
-  { path: "src/components/App.tsx", status: "modified" },
-  { path: "src/utils/helpers.ts", status: "added" },
-  { path: "README.md", status: "deleted" },
+  { path: "src/components/App.tsx", status: "modified", insertions: 10, deletions: 5 },
+  { path: "src/utils/helpers.ts", status: "added", insertions: 20, deletions: 0 },
+  { path: "README.md", status: "deleted", insertions: 0, deletions: 15 },
 ];
 
 function changeInputValue(input: HTMLInputElement, value: string) {
@@ -79,13 +79,18 @@ describe("GitChangesPanel", () => {
     expect(container.textContent).toContain("src/utils/");
   });
 
-  it("shows status labels M, A, D", () => {
+  it("renders diff counts", () => {
+    renderPanel();
+    expect(container.textContent).toContain("+10");
+    expect(container.textContent).toContain("-5");
+    expect(container.textContent).toContain("+20");
+    expect(container.textContent).toContain("-15");
+  });
+
+  it("shows status icons with correct titles", () => {
     renderPanel();
     const badges = container.querySelectorAll('[title="modified"], [title="added"], [title="deleted"]');
     expect(badges).toHaveLength(3);
-    expect(badges[0].textContent).toBe("M");
-    expect(badges[1].textContent).toBe("A");
-    expect(badges[2].textContent).toBe("D");
   });
 
   // ── Commit enabled/disabled states ──
