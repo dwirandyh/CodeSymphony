@@ -542,7 +542,8 @@ export function useWorkspaceTimeline(
 
       // Insert thinking blocks for all assistant messages (including those with inline inserts).
       // Each "round" is a contiguous run of thinking.delta events separated by message.delta events.
-      if (message.role === "assistant") {
+      // Skip thinking blocks for messages that produced a plan file output — the plan card replaces them.
+      if (message.role === "assistant" && !planFileOutput) {
         const rounds = thinkingRoundsByMessageId.get(message.id) ?? [];
         for (let i = 0; i < rounds.length; i++) {
           const round = rounds[i];
@@ -1159,7 +1160,7 @@ export function useWorkspaceTimeline(
           filePath: planFileOutput.filePath,
           createdAt: planFileOutput.createdAt,
         },
-        anchorIdx: MAX_ORDER_INDEX,
+        anchorIdx: planFileOutput.idx,
         timestamp: parseTimestamp(planFileOutput.createdAt),
         rank: 3,
         stableOrder: planFileOutput.idx + 0.0005,
