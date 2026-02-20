@@ -71,8 +71,32 @@ export function useChatSession(
       api.listMessages(threadId),
       api.listEvents(threadId),
     ]);
-    setMessages(threadMessages);
-    setEvents(threadEvents);
+    // Merge loaded data with existing state to prevent SSE-delivered events
+    // from being temporarily lost when loadThreadData races with streaming.
+    setMessages((current) => {
+      const merged = new Map<string, ChatMessage>();
+      for (const m of threadMessages) merged.set(m.id, m);
+      for (const m of current) {
+        const existing = merged.get(m.id);
+        // Prefer current state if it has more content (streaming delta appended)
+        if (existing && m.content.length > existing.content.length) {
+          merged.set(m.id, m);
+        } else if (!existing) {
+          // Keep messages from SSE that aren't in DB yet (edge case)
+          merged.set(m.id, m);
+        }
+      }
+      return [...merged.values()].sort((a, b) => a.seq - b.seq);
+    });
+
+    // Events: merge by id, deduplicate
+    setEvents((current) => {
+      const seen = new Set<string>();
+      const merged: ChatEvent[] = [];
+      for (const e of threadEvents) { seen.add(e.id); merged.push(e); }
+      for (const e of current) { if (!seen.has(e.id)) merged.push(e); }
+      return merged.sort((a, b) => a.idx - b.idx);
+    });
     pushRenderDebug({
       source: "WorkspacePage",
       event: "loadThreadData",
@@ -223,6 +247,30 @@ export function useChatSession(
         });
 
         setEvents((current) => [...current, payload].sort((a, b) => a.idx - b.idx));
+
+        // Create a placeholder assistant message as soon as thinking starts
+        // so that tool events arriving before the first message.delta are
+        // claimed by the timeline instead of becoming orphans.
+        if (payload.type === "thinking.delta") {
+          const messageId = String(payload.payload.messageId ?? "");
+          if (messageId.length > 0) {
+            streamingMessageIdsRef.current.add(messageId);
+            setMessages((current) => {
+              if (current.some((m) => m.id === messageId)) return current;
+              return [
+                ...current,
+                {
+                  id: messageId,
+                  threadId: selectedThreadId,
+                  seq: current.length,
+                  role: "assistant" as const,
+                  content: "",
+                  createdAt: new Date().toISOString(),
+                },
+              ];
+            });
+          }
+        }
 
         if (payload.type === "message.delta") {
           const messageId = String(payload.payload.messageId ?? "");
