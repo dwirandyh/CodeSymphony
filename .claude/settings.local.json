@@ -6,7 +6,8 @@
       "Bash(pnpm --filter @codesymphony/runtime build)",
       "Bash(python3:*)",
       "Bash(sqlite3:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(pnpm test:*)"
     ]
   }
 }

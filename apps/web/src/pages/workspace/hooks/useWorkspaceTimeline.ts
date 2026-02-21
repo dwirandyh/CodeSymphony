@@ -851,7 +851,8 @@ export function useWorkspaceTimeline(
           !hasLeadingText
           && hasAnyTrailingText
           && inlineInserts.length > 0
-          && !isSentenceAwareInlineInsertKind(firstInsertKind);
+          && !isSentenceAwareInlineInsertKind(firstInsertKind)
+          && firstInsertKind !== "subagent-activity";
         const delayFirstInlineInsert = shouldDelayFirstInlineInsert(
           firstInsertKind,
           segmentBuckets[0]?.content ?? "",
