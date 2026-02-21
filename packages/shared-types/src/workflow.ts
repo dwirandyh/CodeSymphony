@@ -180,3 +180,24 @@ export const GitDiffSchema = z.object({
   summary: z.string(),
 });
 export type GitDiff = z.infer<typeof GitDiffSchema>;
+
+// ── Filesystem Browse Types ──
+
+export const FilesystemEntrySchema = z.object({
+  name: z.string(),
+  type: z.enum(["directory", "symlink"]),
+  isGitRepo: z.boolean(),
+});
+export type FilesystemEntry = z.infer<typeof FilesystemEntrySchema>;
+
+export const FilesystemBrowseQuerySchema = z.object({
+  path: z.string().optional(),
+});
+export type FilesystemBrowseQuery = z.infer<typeof FilesystemBrowseQuerySchema>;
+
+export const FilesystemBrowseResponseSchema = z.object({
+  currentPath: z.string(),
+  parentPath: z.string().nullable(),
+  entries: z.array(FilesystemEntrySchema),
+});
+export type FilesystemBrowseResponse = z.infer<typeof FilesystemBrowseResponseSchema>;

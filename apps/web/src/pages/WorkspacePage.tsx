@@ -10,6 +10,7 @@ import { PermissionPromptCard } from "../components/workspace/PermissionPromptCa
 import { PlanDecisionComposer } from "../components/workspace/PlanDecisionComposer";
 import { QuestionCard } from "../components/workspace/QuestionCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
+import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
@@ -107,7 +108,7 @@ export function WorkspacePage() {
       <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
         {/* ── Resizable sidebar ── */}
         <aside
-          className="mb-1 hidden min-h-0 shrink-0 rounded-2xl bg-card/75 p-2 sm:mb-2 lg:mb-3 lg:block lg:p-3"
+          className="mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden rounded-2xl bg-card/75 p-2 sm:mb-2 lg:mb-3 lg:flex lg:p-3"
           style={{ width: `${sidebarWidth}px` }}
         >
           <div className="mb-3">
@@ -122,7 +123,7 @@ export function WorkspacePage() {
             loadingRepos={repos.loadingRepos}
             submittingRepo={repos.submittingRepo}
             submittingWorktree={repos.submittingWorktree}
-            onAttachRepository={() => void repos.attachRepository()}
+            onAttachRepository={repos.openFileBrowser}
             onSelectRepository={repos.setSelectedRepositoryId}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
             onSelectWorktree={(repositoryId, worktreeId) => {
@@ -399,7 +400,7 @@ export function WorkspacePage() {
             loadingRepos={repos.loadingRepos}
             submittingRepo={repos.submittingRepo}
             submittingWorktree={repos.submittingWorktree}
-            onAttachRepository={() => void repos.attachRepository()}
+            onAttachRepository={repos.openFileBrowser}
             onSelectRepository={repos.setSelectedRepositoryId}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
             onSelectWorktree={(repositoryId, worktreeId) => {
@@ -447,6 +448,12 @@ export function WorkspacePage() {
           />
         )}
       </aside>
+
+      <FileBrowserModal
+        open={repos.fileBrowserOpen}
+        onClose={() => repos.setFileBrowserOpen(false)}
+        onSelect={(path) => void repos.attachRepositoryFromPath(path)}
+      />
     </div>
   );
 }
