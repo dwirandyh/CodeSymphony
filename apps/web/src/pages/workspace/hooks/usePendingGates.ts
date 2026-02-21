@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { api } from "../../../lib/api";
+import { useResolvePermission } from "../../../hooks/mutations/useResolvePermission";
+import { useAnswerQuestion } from "../../../hooks/mutations/useAnswerQuestion";
+import { useApprovePlan } from "../../../hooks/mutations/useApprovePlan";
+import { useRevisePlan } from "../../../hooks/mutations/useRevisePlan";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
 
@@ -44,6 +47,11 @@ export function usePendingGates(
   deps: PendingGatesDeps,
 ) {
   const { onError, startWaitingAssistant, clearWaitingAssistantForThread } = deps;
+
+  const resolvePermissionMutation = useResolvePermission();
+  const answerQuestionMutation = useAnswerQuestion();
+  const approvePlanMutation = useApprovePlan();
+  const revisePlanMutation = useRevisePlan();
 
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(new Set());
   const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(new Set());
@@ -111,7 +119,10 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.resolvePermission(selectedThreadId, { requestId, decision });
+      await resolvePermissionMutation.mutateAsync({
+        threadId: selectedThreadId,
+        input: { requestId, decision },
+      });
     } catch (e) {
       if (decision !== "deny") clearWaitingAssistantForThread(selectedThreadId);
       onError(e instanceof Error ? e.message : "Failed to resolve permission");
@@ -177,7 +188,10 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.answerQuestion(selectedThreadId, { requestId, answers });
+      await answerQuestionMutation.mutateAsync({
+        threadId: selectedThreadId,
+        input: { requestId, answers },
+      });
     } catch (e) {
       clearWaitingAssistantForThread(selectedThreadId);
       onError(e instanceof Error ? e.message : "Failed to answer question");
@@ -235,7 +249,7 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.approvePlan(selectedThreadId);
+      await approvePlanMutation.mutateAsync(selectedThreadId);
       if (pendingPlan) {
         setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
       }
@@ -255,7 +269,10 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.revisePlan(selectedThreadId, { feedback });
+      await revisePlanMutation.mutateAsync({
+        threadId: selectedThreadId,
+        input: { feedback },
+      });
       if (pendingPlan) {
         setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
       }

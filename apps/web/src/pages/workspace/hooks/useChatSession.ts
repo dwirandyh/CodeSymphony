@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ChatEvent, ChatMessage, ChatMode, ChatThread } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
+import { queryKeys } from "../../../lib/queryKeys";
 import { logService } from "../../../lib/logService";
 import { pushRenderDebug } from "../../../lib/renderDebug";
+import { useThreads } from "../../../hooks/queries/useThreads";
+import { useThreadMessages } from "../../../hooks/queries/useThreadMessages";
+import { useThreadEvents } from "../../../hooks/queries/useThreadEvents";
 import { EVENT_TYPES } from "../constants";
 import { payloadStringOrNull, shouldClearWaitingAssistantOnEvent } from "../eventUtils";
 import { useWorkspaceTimeline, type TimelineRefs } from "./useWorkspaceTimeline";
@@ -12,6 +17,8 @@ export function useChatSession(
   onError: (msg: string | null) => void,
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void,
 ) {
+  const queryClient = useQueryClient();
+
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -33,6 +40,85 @@ export function useChatSession(
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
+
+  // ── TanStack Query: thread listing ──
+  const { data: queriedThreads } = useThreads(selectedWorktreeId);
+
+  // Seed local threads state from query data
+  useEffect(() => {
+    if (queriedThreads) {
+      setThreads(queriedThreads);
+    }
+  }, [queriedThreads]);
+
+  // ── TanStack Query: thread messages & events (initial seed) ──
+  const { data: queriedMessages } = useThreadMessages(selectedThreadId);
+  const { data: queriedEvents } = useThreadEvents(selectedThreadId);
+
+  // Seed local messages from query, merging with any SSE-delivered data
+  useEffect(() => {
+    if (!queriedMessages || activeThreadIdRef.current !== selectedThreadId) return;
+    setMessages((current) => {
+      const merged = new Map<string, ChatMessage>();
+      for (const m of queriedMessages) merged.set(m.id, m);
+      for (const m of current) {
+        const existing = merged.get(m.id);
+        if (existing && m.content.length > existing.content.length) {
+          merged.set(m.id, m);
+        } else if (!existing) {
+          merged.set(m.id, m);
+        }
+      }
+      return [...merged.values()].sort((a, b) => a.seq - b.seq);
+    });
+  }, [queriedMessages, selectedThreadId]);
+
+  // Seed local events from query, merging with SSE-delivered data
+  useEffect(() => {
+    if (!queriedEvents || activeThreadIdRef.current !== selectedThreadId) return;
+    setEvents((current) => {
+      const seen = new Set<string>();
+      const merged: ChatEvent[] = [];
+      for (const e of queriedEvents) { seen.add(e.id); merged.push(e); }
+      for (const e of current) { if (!seen.has(e.id)) merged.push(e); }
+      return merged.sort((a, b) => a.idx - b.idx);
+    });
+
+    // Update tracking refs
+    const seenEventIds = new Set<string>();
+    let lastIdx: number | null = null;
+    let latestThreadTitle: string | null = null;
+    let latestWorktreeBranch: string | null = null;
+    for (const event of queriedEvents) {
+      seenEventIds.add(event.id);
+      if (lastIdx == null || event.idx > lastIdx) lastIdx = event.idx;
+      if (event.type === "chat.completed") {
+        const title = payloadStringOrNull(event.payload.threadTitle);
+        if (title) latestThreadTitle = title;
+        const branch = payloadStringOrNull(event.payload.worktreeBranch);
+        if (branch) latestWorktreeBranch = branch;
+      }
+    }
+
+    if (latestThreadTitle) {
+      setThreads((current) =>
+        current.map((t) =>
+          t.id === selectedThreadId ? { ...t, title: latestThreadTitle } : t,
+        ),
+      );
+    }
+
+    if (latestWorktreeBranch && selectedWorktreeId) {
+      onBranchRenamed?.(selectedWorktreeId, latestWorktreeBranch);
+    }
+
+    seenEventIdsByThreadRef.current.set(selectedThreadId!, seenEventIds);
+    if (lastIdx == null) {
+      lastEventIdxByThreadRef.current.delete(selectedThreadId!);
+    } else {
+      lastEventIdxByThreadRef.current.set(selectedThreadId!, lastIdx);
+    }
+  }, [queriedEvents, selectedThreadId]);
 
   function ensureSeenEventIds(threadId: string): Set<string> {
     const existing = seenEventIdsByThreadRef.current.get(threadId);
@@ -58,93 +144,7 @@ export function useChatSession(
     setWaitingAssistant((current) => (current?.threadId === threadId ? null : current));
   }
 
-  async function ensureThread(worktreeId: string): Promise<string | null> {
-    const existing = await api.listThreads(worktreeId);
-    setThreads(existing);
-    if (existing.length > 0) return existing[0].id;
-    const created = await api.createThread(worktreeId, { title: "Main Thread" });
-    setThreads([created]);
-    return created.id;
-  }
-
-  async function loadThreadData(threadId: string) {
-    const [threadMessages, threadEvents] = await Promise.all([
-      api.listMessages(threadId),
-      api.listEvents(threadId),
-    ]);
-
-    // Guard: if the user switched threads while the API calls were in flight,
-    // discard this result to prevent cross-thread contamination.
-    if (activeThreadIdRef.current !== threadId) return;
-
-    // Merge loaded data with existing state to prevent SSE-delivered events
-    // from being temporarily lost when loadThreadData races with streaming.
-    setMessages((current) => {
-      const merged = new Map<string, ChatMessage>();
-      for (const m of threadMessages) merged.set(m.id, m);
-      for (const m of current) {
-        const existing = merged.get(m.id);
-        // Prefer current state if it has more content (streaming delta appended)
-        if (existing && m.content.length > existing.content.length) {
-          merged.set(m.id, m);
-        } else if (!existing) {
-          // Keep messages from SSE that aren't in DB yet (edge case)
-          merged.set(m.id, m);
-        }
-      }
-      return [...merged.values()].sort((a, b) => a.seq - b.seq);
-    });
-
-    // Events: merge by id, deduplicate
-    setEvents((current) => {
-      const seen = new Set<string>();
-      const merged: ChatEvent[] = [];
-      for (const e of threadEvents) { seen.add(e.id); merged.push(e); }
-      for (const e of current) { if (!seen.has(e.id)) merged.push(e); }
-      return merged.sort((a, b) => a.idx - b.idx);
-    });
-    pushRenderDebug({
-      source: "WorkspacePage",
-      event: "loadThreadData",
-      details: { threadId, messages: threadMessages.length, events: threadEvents.length },
-    });
-
-    const seenEventIds = new Set<string>();
-    let lastIdx: number | null = null;
-    let latestThreadTitle: string | null = null;
-    let latestWorktreeBranch: string | null = null;
-    for (const event of threadEvents) {
-      seenEventIds.add(event.id);
-      if (lastIdx == null || event.idx > lastIdx) lastIdx = event.idx;
-      if (event.type === "chat.completed") {
-        const title = payloadStringOrNull(event.payload.threadTitle);
-        if (title) latestThreadTitle = title;
-        const branch = payloadStringOrNull(event.payload.worktreeBranch);
-        if (branch) latestWorktreeBranch = branch;
-      }
-    }
-
-    if (latestThreadTitle) {
-      setThreads((current) =>
-        current.map((t) =>
-          t.id === threadId ? { ...t, title: latestThreadTitle } : t,
-        ),
-      );
-    }
-
-    if (latestWorktreeBranch && selectedWorktreeId) {
-      onBranchRenamed?.(selectedWorktreeId, latestWorktreeBranch);
-    }
-
-    seenEventIdsByThreadRef.current.set(threadId, seenEventIds);
-    if (lastIdx == null) {
-      lastEventIdxByThreadRef.current.delete(threadId);
-    } else {
-      lastEventIdxByThreadRef.current.set(threadId, lastIdx);
-    }
-  }
-
-  // ── Worktree change → load threads ──
+  // ── Worktree change → auto-create thread if needed ──
 
   useEffect(() => {
     if (!selectedWorktreeId) {
@@ -159,9 +159,18 @@ export function useChatSession(
     let cancelled = false;
     void (async () => {
       try {
-        const threadId = await ensureThread(selectedWorktreeId);
-        if (!threadId || cancelled) return;
-        setSelectedThreadId(threadId);
+        const existing = await api.listThreads(selectedWorktreeId);
+        if (cancelled) return;
+        setThreads(existing);
+        if (existing.length > 0) {
+          setSelectedThreadId(existing[0].id);
+        } else {
+          const created = await api.createThread(selectedWorktreeId, { title: "Main Thread" });
+          if (cancelled) return;
+          setThreads([created]);
+          setSelectedThreadId(created.id);
+          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+        }
       } catch (e) {
         if (!cancelled) onError(e instanceof Error ? e.message : "Failed to load threads");
       }
@@ -170,7 +179,7 @@ export function useChatSession(
     return () => { cancelled = true; };
   }, [selectedWorktreeId]);
 
-  // ── Thread change → load data + start SSE stream ──
+  // ── Thread change → start SSE stream ──
 
   useEffect(() => {
     if (!selectedThreadId) {
@@ -185,8 +194,6 @@ export function useChatSession(
       return;
     }
 
-    // Clear previous thread's data immediately so the merge in loadThreadData
-    // starts with a clean slate — prevents cross-thread event/message leaking.
     activeThreadIdRef.current = selectedThreadId;
     setMessages([]);
     setEvents([]);
@@ -201,14 +208,8 @@ export function useChatSession(
     let disposed = false;
     let stream: EventSource | null = null;
 
-    void (async () => {
-      try {
-        await loadThreadData(selectedThreadId);
-      } catch (e) {
-        if (!disposed) onError(e instanceof Error ? e.message : "Failed to load thread");
-        return;
-      }
-
+    // Wait a tick for query data to seed, then start SSE
+    const startStream = () => {
       if (disposed) return;
 
       const streamUrl = new URL(`${api.runtimeBaseUrl}/api/threads/${selectedThreadId}/events/stream`);
@@ -262,9 +263,6 @@ export function useChatSession(
 
         setEvents((current) => [...current, payload].sort((a, b) => a.idx - b.idx));
 
-        // Create a placeholder assistant message as soon as thinking starts
-        // so that tool events arriving before the first message.delta are
-        // claimed by the timeline instead of becoming orphans.
         if (payload.type === "thinking.delta") {
           const messageId = String(payload.payload.messageId ?? "");
           if (messageId.length > 0) {
@@ -346,7 +344,9 @@ export function useChatSession(
             messageId: completedMessageId,
             details: { idx: payload.idx },
           });
-          void loadThreadData(selectedThreadId);
+          // Invalidate queries to re-seed fresh data
+          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.messages(selectedThreadId) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.events(selectedThreadId) });
         }
       };
 
@@ -359,7 +359,10 @@ export function useChatSession(
           onError("Lost connection to chat stream");
         }
       };
-    })();
+    };
+
+    // Start SSE after a microtask to let query data seed first
+    Promise.resolve().then(startStream);
 
     return () => {
       disposed = true;
@@ -396,6 +399,7 @@ export function useChatSession(
         return [...current, created];
       });
       setSelectedThreadId(created.id);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create thread");
     }
@@ -412,6 +416,7 @@ export function useChatSession(
         return [...current, created];
       });
       setSelectedThreadId(created.id);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
       startWaitingAssistant(created.id);
       setSendingMessage(true);
       try {
@@ -447,6 +452,9 @@ export function useChatSession(
         }
         return updated;
       });
+      if (selectedWorktreeId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      }
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to close session");
     } finally {
@@ -467,7 +475,7 @@ export function useChatSession(
     try {
       await api.sendMessage(selectedThreadId, { content: messageContent, mode: chatMode });
       setChatInput("");
-      await loadThreadData(selectedThreadId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.messages(selectedThreadId) });
     } catch (e) {
       setWaitingAssistant(null);
       onError(e instanceof Error ? e.message : "Failed to send message");
