@@ -10,6 +10,7 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [submittingRepo, setSubmittingRepo] = useState(false);
   const [submittingWorktree, setSubmittingWorktree] = useState(false);
+  const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
 
   const selectedRepository = useMemo(() => {
     if (selectedRepositoryId) {
@@ -68,6 +69,24 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
 
       if (!path) return;
 
+      await api.createRepository({ path });
+      await loadRepositories();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to add repository");
+    } finally {
+      setSubmittingRepo(false);
+    }
+  }
+
+  function openFileBrowser() {
+    setFileBrowserOpen(true);
+  }
+
+  async function attachRepositoryFromPath(path: string) {
+    setSubmittingRepo(true);
+    onError(null);
+
+    try {
       await api.createRepository({ path });
       await loadRepositories();
     } catch (e) {
@@ -151,6 +170,10 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
     setSelectedRepositoryId,
     setSelectedWorktreeId,
     attachRepository,
+    openFileBrowser,
+    attachRepositoryFromPath,
+    fileBrowserOpen,
+    setFileBrowserOpen,
     submitWorktree,
     removeWorktree,
     renameWorktreeBranch,
