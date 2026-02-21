@@ -808,7 +808,7 @@ function editedSummaryLabel({
   rejectedByUser?: boolean;
   expanded?: boolean;
 }): React.ReactNode {
-  const firstFile = changedFiles[0] ?? "file";
+  const firstFile = basenameFromTokenPath(changedFiles[0] ?? "file");
   const fileCount = changedFiles.length > 1 ? ` (${changedFiles.length} files)` : "";
 
   if (status === "running") {

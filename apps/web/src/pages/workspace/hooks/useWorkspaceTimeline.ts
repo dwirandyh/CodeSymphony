@@ -995,6 +995,35 @@ export function useWorkspaceTimeline(
         for (let bucketIndex = 0; bucketIndex < segmentBuckets.length; bucketIndex += 1) {
           const bucket = segmentBuckets[bucketIndex];
           if (bucket.content.length > 0) {
+            // Flush any delayed bucket-0 text before processing bucket 1+
+            if (
+              bucketIndex > 0
+              && delayedFirstSegmentContent.length > 0
+              && nextInsertIndex === 0
+              && shouldDelayFirstInsert
+            ) {
+              // Render bucket 0 text as-is (no sentence boundary found)
+              pushMessageSegment(
+                delayedFirstSegmentContent,
+                "0:delayed-flush",
+                delayedFirstSegmentAnchorIdx,
+                delayedFirstSegmentTimestamp,
+              );
+              // Push the first inline insert
+              pushInlineInsert(inlineInserts[0], delayedFirstSegmentTimestamp);
+              nextInsertIndex = 1;
+              shouldDelayFirstInsert = false;
+              delayedFirstSegmentContent = "";
+              delayedFirstSegmentAnchorIdx = null;
+              delayedFirstSegmentTimestamp = null;
+
+              // Catch up on inline inserts between bucket 0 and current bucket
+              while (nextInsertIndex < bucketIndex && nextInsertIndex < inlineInserts.length) {
+                pushInlineInsert(inlineInserts[nextInsertIndex], segmentBuckets[nextInsertIndex]?.timestamp);
+                nextInsertIndex += 1;
+              }
+            }
+
             if (
               shouldDelayFirstInsert
               && nextInsertIndex === 0
@@ -1012,7 +1041,7 @@ export function useWorkspaceTimeline(
 
               const splitSegment = splitAtFirstSentenceBoundary(delayedFirstSegmentContent);
               const isLastBucket = bucketIndex === segmentBuckets.length - 1;
-              if (!splitSegment && !isLastBucket) {
+              if (!splitSegment && !isLastBucket && bucketIndex === 0) {
                 continue;
               }
 
