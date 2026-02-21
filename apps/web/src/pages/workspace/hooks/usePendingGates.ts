@@ -279,7 +279,7 @@ export function usePendingGates(
     closedPlanDecision?.threadId === selectedThreadId &&
     closedPlanDecision.createdIdx === pendingPlan!.createdIdx;
 
-  const showPlanDecisionComposer = hasPendingPlan && !hidePlanDecisionByOptimisticClose;
+  const showPlanDecisionComposer = hasPendingPlan && !hidePlanDecisionByOptimisticClose && !hasPendingQuestionRequests && !hasPendingPermissionRequests;
 
   const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
 

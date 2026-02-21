@@ -287,6 +287,21 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
       const summary = payloadStringOrNull(event.payload.summary);
       const summaryTarget = summary ? extractEditTargetFromSummary(summary) : null;
       const explicitTarget = payloadStringOrNull(event.payload.editTarget) ?? summaryTarget;
+      const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+
+      function applyProposedDiffIfNeeded(run: EditedRun): void {
+        if (toolInput && explicitTarget && run.diffKind === "none" && run.status !== "failed") {
+          const proposedDiff = buildProposedEditDiffFromToolInput(toolInput, explicitTarget);
+          if (proposedDiff) {
+            run.diff = proposedDiff;
+            run.diffKind = "proposed";
+            run.diffTruncated = false;
+            const { additions, deletions } = countDiffStats(proposedDiff);
+            run.additions = additions;
+            run.deletions = deletions;
+          }
+        }
+      }
 
       let matchedRun = false;
       for (const runId of runIds) {
@@ -298,6 +313,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
         const run = ensureRun(runId, event);
         setRunTargetIfPresent(run, explicitTarget);
         markRunFinishedFromEvent(run, event);
+        applyProposedDiffIfNeeded(run);
         matchedRun = true;
       }
 
@@ -306,6 +322,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
         const run = ensureRun(fallbackKey, event);
         setRunTargetIfPresent(run, explicitTarget);
         markRunFinishedFromEvent(run, event);
+        applyProposedDiffIfNeeded(run);
       }
       continue;
     }
@@ -318,8 +335,15 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
     const changedFiles = payloadStringArray(event.payload.changedFiles);
     const { additions, deletions } = countDiffStats(diff);
     const targetRun = Array.from(byRunKey.values())
-      .filter((run) => run.startIdx <= event.idx && run.diffKind !== "actual" && run.status !== "failed")
+      .filter((run) => run.startIdx <= event.idx && run.diffKind === "none" && run.status !== "failed")
       .sort((a, b) => b.startIdx - a.startIdx)[0];
+
+    if (!targetRun) {
+      const hasRunsWithDiffs = Array.from(byRunKey.values()).some(r => r.diffKind !== "none");
+      if (hasRunsWithDiffs) {
+        continue;
+      }
+    }
 
     const run = targetRun
       ?? ensureRun(`worktree:${event.id}`, event, {
