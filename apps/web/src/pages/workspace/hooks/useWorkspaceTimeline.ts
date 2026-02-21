@@ -1111,7 +1111,7 @@ export function useWorkspaceTimeline(
                 }
                 pushInlineInsert(inlineInserts[0], bucket.timestamp);
                 if (!tailIsAnnouncement && splitSegment.tail.length > 0) {
-                  pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, inlineInserts[0].startIdx, bucket.timestamp);
+                  pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, bucket.anchorIdx, bucket.timestamp);
                 }
                 nextInsertIndex = 1;
                 shouldDelayFirstInsert = false;
