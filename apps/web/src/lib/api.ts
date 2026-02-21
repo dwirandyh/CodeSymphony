@@ -170,6 +170,12 @@ export const api = {
     const params = opts?.filePath ? `?filePath=${encodeURIComponent(opts.filePath)}` : "";
     return request<GitDiff>(`/worktrees/${worktreeId}/git/diff${params}`);
   },
+  getFileContents: (worktreeId: string, filePath: string) => {
+    const params = `?path=${encodeURIComponent(filePath)}`;
+    return request<{ oldContent: string | null; newContent: string | null }>(
+      `/worktrees/${worktreeId}/git/file-contents${params}`
+    );
+  },
   gitCommit: (worktreeId: string, input: GitCommitInput) =>
     request<{ result: string }>(`/worktrees/${worktreeId}/git/commit`, {
       method: "POST",

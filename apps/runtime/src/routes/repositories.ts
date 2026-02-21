@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema } from "@codesymphony/shared-types";
 import { z } from "zod";
-import { getGitStatus, getGitDiff, gitCommitAll, discardGitChange } from "../services/git";
+import { getGitStatus, getGitDiff, getFileAtHead, gitCommitAll, discardGitChange } from "../services/git";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
@@ -146,6 +146,25 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const status = await getGitStatus(worktree.path);
     const summary = status.entries.map((e) => `${e.status}: ${e.path}`).join("\n");
     return { data: { diff, summary } };
+  });
+
+  const fileContentsQuery = z.object({ path: z.string().min(1) });
+
+  app.get("/worktrees/:id/git/file-contents", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const query = fileContentsQuery.parse(request.query);
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    const oldContent = await getFileAtHead(worktree.path, query.path);
+    let newContent: string | null = null;
+    try {
+      newContent = await readFile(path.join(worktree.path, query.path), "utf8");
+    } catch {
+      // File deleted in working tree
+    }
+
+    return { data: { oldContent, newContent } };
   });
 
   app.post("/worktrees/:id/git/commit", async (request, reply) => {

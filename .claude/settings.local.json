@@ -10,7 +10,10 @@
       "Bash(pnpm test:*)",
       "Bash(pnpm --filter @codesymphony/web add:*)",
       "Bash(pnpm:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "WebSearch",
+      "Bash(gh search repos:*)",
+      "Bash(gh api:*)"
     ]
   }
 }

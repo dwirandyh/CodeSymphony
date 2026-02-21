@@ -12,6 +12,8 @@ import { Card, CardContent, CardHeader } from "../ui/card";
 import { cn } from "../../lib/utils";
 import { copyRenderDebugLog, isRenderDebugEnabled, pushRenderDebug } from "../../lib/renderDebug";
 import { parseUserMentions } from "../../lib/mentions";
+import { parsePatchFiles } from "@pierre/diffs";
+import { FileDiff, PatchDiff } from "@pierre/diffs/react";
 
 export type AssistantRenderHint = "markdown" | "raw-file" | "raw-fallback" | "diff";
 
@@ -701,95 +703,6 @@ function getDiffPreview(event: ChatEvent): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-type DiffLineKind = "addition" | "deletion" | "hunk" | "meta" | "context";
-
-function classifyDiffLine(line: string): DiffLineKind {
-  if (line.startsWith("@@")) {
-    return "hunk";
-  }
-
-  if (
-    line.startsWith("diff --git") ||
-    line.startsWith("index ") ||
-    line.startsWith("new file mode ") ||
-    line.startsWith("deleted file mode ") ||
-    line.startsWith("similarity index ") ||
-    line.startsWith("rename from ") ||
-    line.startsWith("rename to ") ||
-    line.startsWith("--- ") ||
-    line.startsWith("+++ ")
-  ) {
-    return "meta";
-  }
-
-  if (line.startsWith("+")) {
-    return "addition";
-  }
-
-  if (line.startsWith("-")) {
-    return "deletion";
-  }
-
-  return "context";
-}
-
-function diffLineClassName(kind: DiffLineKind): string {
-  if (kind === "addition") {
-    return "bg-emerald-500/10 text-emerald-300";
-  }
-
-  if (kind === "deletion") {
-    return "bg-red-500/10 text-red-300";
-  }
-
-  if (kind === "hunk") {
-    return "bg-sky-500/10 text-sky-300";
-  }
-
-  if (kind === "meta") {
-    return "text-muted-foreground";
-  }
-
-  return "text-foreground";
-}
-
-type DiffLineNumber = {
-  oldLine: number | null;
-  newLine: number | null;
-};
-
-function computeDiffLineNumbers(lines: string[]): DiffLineNumber[] {
-  const result: DiffLineNumber[] = [];
-  let oldLine = 0;
-  let newLine = 0;
-
-  for (const line of lines) {
-    const kind = classifyDiffLine(line);
-
-    if (kind === "hunk") {
-      const match = /^@@ -(?<oldStart>\d+)(?:,\d+)? \+(?<newStart>\d+)(?:,\d+)? @@/.exec(line);
-      if (match?.groups) {
-        oldLine = Number(match.groups.oldStart);
-        newLine = Number(match.groups.newStart);
-      }
-      result.push({ oldLine: null, newLine: null });
-    } else if (kind === "meta") {
-      result.push({ oldLine: null, newLine: null });
-    } else if (kind === "addition") {
-      result.push({ oldLine: null, newLine });
-      newLine += 1;
-    } else if (kind === "deletion") {
-      result.push({ oldLine, newLine: null });
-      oldLine += 1;
-    } else {
-      result.push({ oldLine, newLine });
-      oldLine += 1;
-      newLine += 1;
-    }
-  }
-
-  return result;
-}
 
 function editedSummaryLabel({
   status,
@@ -839,48 +752,6 @@ function editedSummaryLabel({
   );
 }
 
-type FileDiffSection = {
-  fileName: string;
-  additions: number;
-  deletions: number;
-  lines: string[];
-};
-
-function splitDiffByFile(diff: string): FileDiffSection[] {
-  const sections: FileDiffSection[] = [];
-  const rawLines = diff.split(/\r?\n/);
-  let current: FileDiffSection | null = null;
-
-  for (const line of rawLines) {
-    if (line.startsWith("diff --git ")) {
-      if (current) {
-        sections.push(current);
-      }
-      const match = /diff --git a\/.+ b\/(.+)/.exec(line);
-      const fileName = match ? match[1] : "unknown";
-      current = { fileName, additions: 0, deletions: 0, lines: [line] };
-      continue;
-    }
-
-    if (!current) {
-      current = { fileName: "changes", additions: 0, deletions: 0, lines: [line] };
-      continue;
-    }
-
-    current.lines.push(line);
-    if (line.startsWith("+") && !line.startsWith("+++ ")) {
-      current.additions += 1;
-    } else if (line.startsWith("-") && !line.startsWith("--- ")) {
-      current.deletions += 1;
-    }
-  }
-
-  if (current) {
-    sections.push(current);
-  }
-
-  return sections;
-}
 
 export function MarkdownBody({
   content,
@@ -933,9 +804,17 @@ export function MarkdownBody({
                   <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
                     Diff
                   </div>
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground">
-                    {text}
-                  </pre>
+                  <PatchDiff
+                    patch={text}
+                    options={{
+                      diffStyle: "unified",
+                      overflow: "wrap",
+                      theme: "pierre-dark",
+                      themeType: "dark",
+                      expandUnchanged: false,
+                      expansionLineCount: 20,
+                    }}
+                  />
                 </div>
               );
             }
@@ -989,9 +868,17 @@ function AssistantContent({
     return (
       <div className="rounded-lg border border-border/40 bg-secondary/20 p-3" data-testid="assistant-render-diff">
         <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Diff</div>
-        <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
-          {content}
-        </pre>
+        <PatchDiff
+          patch={content}
+          options={{
+            diffStyle: "unified",
+            overflow: "wrap",
+            theme: "pierre-dark",
+            themeType: "dark",
+            expandUnchanged: false,
+            expansionLineCount: 20,
+          }}
+        />
       </div>
     );
   }
@@ -1404,9 +1291,19 @@ export function ChatMessageList({
                     <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                       Diff Preview
                     </summary>
-                    <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
-                      {diffPreview}
-                    </pre>
+                    <div className="mt-1.5">
+                      <PatchDiff
+                        patch={diffPreview}
+                        options={{
+                          diffStyle: "unified",
+                          overflow: "wrap",
+                          theme: "pierre-dark",
+                          themeType: "dark",
+                          expandUnchanged: false,
+                          expansionLineCount: 20,
+                        }}
+                      />
+                    </div>
                   </details>
                 ) : null}
               </article>
@@ -1521,12 +1418,8 @@ export function ChatMessageList({
           if (item.kind === "edited-diff") {
             const hasDiffContent = item.diff.trim().length > 0;
             const expanded = hasDiffContent ? isEditedExpanded(item.id, true) : false;
-            const fileSections = hasDiffContent ? splitDiffByFile(item.diff) : [];
-            // Prefer backend-changedFiles (delta per run). Fall back to diff
-            // parsing for compatibility with older payloads.
-            const diffFileNames = fileSections
-              .map((s) => s.fileName)
-              .filter((n) => n !== "changes" && n !== "unknown");
+            const parsedFiles = hasDiffContent ? parsePatchFiles(item.diff).flatMap((p) => p.files) : [];
+            const diffFileNames = parsedFiles.map((f) => f.name);
             const resolvedFiles = item.changedFiles.length > 0 ? item.changedFiles : diffFileNames;
             const summaryLabel = editedSummaryLabel({
               status: item.status,
@@ -1594,43 +1487,19 @@ export function ChatMessageList({
                         Proposed diff
                       </div>
                     ) : null}
-                    {fileSections.map((section, sectionIndex) => (
-                      <div key={`${item.id}:section:${sectionIndex}`}>
-                        <div className="flex items-center gap-2 border-b border-border/25 px-3 py-1.5 text-xs min-w-0">
-                          <span className="min-w-0 truncate font-semibold text-foreground">{section.fileName}</span>
-                          <span className="text-muted-foreground">
-                            <span className="text-emerald-400">+{section.additions}</span>
-                            {" "}
-                            <span className="text-red-400">-{section.deletions}</span>
-                          </span>
-                        </div>
-                        <div className="max-h-72 overflow-auto font-mono text-xs leading-relaxed">
-                          {(() => {
-                            const lineNumbers = computeDiffLineNumbers(section.lines);
-                            return section.lines.map((line, lineIndex) => {
-                              const kind = classifyDiffLine(line);
-                              if (kind === "meta") {
-                                return null;
-                              }
-                              const ln = lineNumbers[lineIndex];
-                              return (
-                                <div
-                                  key={`${item.id}:${sectionIndex}:line:${lineIndex}`}
-                                  data-line-kind={kind}
-                                  className={cn("flex whitespace-pre-wrap break-words", diffLineClassName(kind))}
-                                >
-                                  <span className="inline-block w-8 shrink-0 select-none text-right text-muted-foreground/40 pr-1">
-                                    {ln?.oldLine ?? ""}
-                                  </span>
-                                  <span className="inline-block w-8 shrink-0 select-none text-right text-muted-foreground/40 pr-2">
-                                    {ln?.newLine ?? ""}
-                                  </span>
-                                  <span className="min-w-0 flex-1 px-1">{line.length > 0 ? line : " "}</span>
-                                </div>
-                              );
-                            });
-                          })()}
-                        </div>
+                    {parsedFiles.map((file, sectionIndex) => (
+                      <div key={`${item.id}:section:${sectionIndex}`} className="max-h-72 overflow-auto">
+                        <FileDiff
+                          fileDiff={file}
+                          options={{
+                            diffStyle: "unified",
+                            overflow: "wrap",
+                            theme: "pierre-dark",
+                            themeType: "dark",
+                            expandUnchanged: false,
+                            expansionLineCount: 20,
+                          }}
+                        />
                       </div>
                     ))}
 
