@@ -40,7 +40,7 @@ export function shouldDelayFirstInlineInsert(
   }
 
   if (leadingContent.length === 0) {
-    return true;
+    return false;
   }
 
   return !hasSentenceBoundary(leadingContent);

@@ -156,6 +156,14 @@ export async function getGitDiff(cwd: string, filePath?: string): Promise<string
   }
 }
 
+export async function getFileAtHead(cwd: string, filePath: string): Promise<string | null> {
+  try {
+    return await runGit(["show", `HEAD:${filePath}`], cwd);
+  } catch {
+    return null; // New file — no HEAD version
+  }
+}
+
 export async function gitCommitAll(cwd: string, message: string): Promise<string> {
   await runGit(["add", "-A"], cwd);
   return await runGit(["commit", "-m", message], cwd);

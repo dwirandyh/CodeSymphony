@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@codesymphony/shared-types": "workspace:*",
+    "@pierre/diffs": "^1.0.11",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-separator": "^1.1.8",
