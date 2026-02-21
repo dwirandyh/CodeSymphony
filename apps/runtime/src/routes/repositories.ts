@@ -155,7 +155,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const result = await gitCommitAll(worktree.path, message);
+      let finalMessage = message;
+      if (!finalMessage.trim()) {
+        const diff = await getGitDiff(worktree.path);
+        finalMessage = await app.chatService.generateCommitMessage(worktree.path, diff);
+      }
+
+      const result = await gitCommitAll(worktree.path, finalMessage);
       return { data: { result } };
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Commit failed";

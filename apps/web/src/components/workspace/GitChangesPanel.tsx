@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Dot, ExternalLink, Eye, Plus, Minus, RefreshCw, Undo2, X } from "lucide-react";
+import { Dot, ExternalLink, Eye, Plus, Minus, RefreshCw, Undo2, X, Loader2 } from "lucide-react";
 import type { GitChangeEntry } from "@codesymphony/shared-types";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -57,7 +57,6 @@ export function GitChangesPanel({
   const [commitMessage, setCommitMessage] = useState("");
 
   const handleCommit = () => {
-    if (!commitMessage.trim()) return;
     onCommit(commitMessage.trim());
     setCommitMessage("");
   };
@@ -87,10 +86,10 @@ export function GitChangesPanel({
         <Input
           value={commitMessage}
           onChange={(e) => setCommitMessage(e.target.value)}
-          placeholder="Message (Cmd+Enter to commit)"
+          placeholder="Auto-generate if blank (Cmd+Enter)"
           className="border-border/30 bg-secondary/10 px-2.5 py-1.5 text-xs placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-offset-0"
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && commitMessage.trim()) {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               handleCommit();
             }
@@ -99,10 +98,17 @@ export function GitChangesPanel({
         <Button
           size="sm"
           onClick={handleCommit}
-          disabled={!commitMessage.trim() || committing || entries.length === 0}
+          disabled={committing || entries.length === 0}
           className="w-full h-8 text-xs font-medium"
         >
-          {committing ? "Committing..." : "Commit"}
+          {committing ? (
+            <div className="flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <span>Committing...</span>
+            </div>
+          ) : (
+            "Commit"
+          )}
         </Button>
         {error && (
           <p className="text-[11px] text-destructive" role="alert">{error}</p>

@@ -120,7 +120,7 @@ describe("DebugConsoleTab", () => {
 
   it("hydrates logs, backfills on reconnect, dedupes ids, and logs debug.console lifecycle events", async () => {
     await act(async () => {
-      root.render(<DebugConsoleTab />);
+      root.render(<DebugConsoleTab selectedThreadId={null} />);
     });
     await flushEffects();
 
@@ -164,5 +164,24 @@ describe("DebugConsoleTab", () => {
     const debugConsoleEntries = logService.getEntries().filter((entry) => entry.source === "debug.console");
     expect(debugConsoleEntries.some((entry) => entry.message.includes("Backfilled runtime logs"))).toBe(true);
     expect(debugConsoleEntries.some((entry) => entry.message.includes("Connected to runtime log stream"))).toBe(true);
+  });
+
+  it("filters log entries by selectedThreadId", async () => {
+    // Seed entries: one matching thread, one different thread, one global (no threadId)
+    logService.log("info", "runtime", "thread-A log", { threadId: "thread-A" });
+    logService.log("info", "runtime", "thread-B log", { threadId: "thread-B" });
+    logService.log("info", "runtime", "global log");
+
+    await act(async () => {
+      root.render(<DebugConsoleTab selectedThreadId="thread-A" />);
+    });
+    await flushEffects();
+
+    const rows = container.querySelectorAll(".group");
+    const texts = Array.from(rows).map((r) => r.textContent ?? "");
+
+    expect(texts.some((t) => t.includes("thread-A log"))).toBe(true);
+    expect(texts.some((t) => t.includes("global log"))).toBe(true);
+    expect(texts.some((t) => t.includes("thread-B log"))).toBe(false);
   });
 });
