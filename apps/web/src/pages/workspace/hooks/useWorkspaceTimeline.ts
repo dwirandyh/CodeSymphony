@@ -79,25 +79,14 @@ export function useWorkspaceTimeline(
     }
 
     // Build thinking rounds from events – each round is a contiguous sequence
-    // of thinking.delta events for a given messageId, separated by intervening
-    // message.delta events (interleaved thinking).
+    // of thinking.delta events for a given messageId. A new round starts whenever
+    // there is a gap in idx (i.e. non-thinking events were emitted in between).
     type ThinkingRound = {
       content: string;
       firstIdx: number;
       lastIdx: number;
     };
     const thinkingRoundsByMessageId = new Map<string, ThinkingRound[]>();
-
-    // Build message.delta indices per messageId for efficient intervening-delta detection
-    const messageDeltaIdxByMessageId = new Map<string, number[]>();
-    for (const event of orderedEventsByIdx) {
-      if (event.type !== "message.delta" || event.payload.role !== "assistant") continue;
-      const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
-      if (messageId.length === 0) continue;
-      const existing = messageDeltaIdxByMessageId.get(messageId) ?? [];
-      existing.push(event.idx);
-      messageDeltaIdxByMessageId.set(messageId, existing);
-    }
 
     for (const event of orderedEventsByIdx) {
       if (event.type !== "thinking.delta") continue;
@@ -110,11 +99,9 @@ export function useWorkspaceTimeline(
 
       let startNewRound = currentRound === null;
       if (currentRound && !startNewRound) {
-        // Check if any message.delta idx falls between the last thinking idx and this one
-        const deltaIdxes = messageDeltaIdxByMessageId.get(messageId) ?? [];
-        startNewRound = deltaIdxes.some(
-          (idx) => idx > currentRound.lastIdx && idx < event.idx,
-        );
+        // Any gap in idx means a non-thinking event (tool use, message text, etc.)
+        // was emitted in between — start a new thinking round.
+        startNewRound = event.idx > currentRound.lastIdx + 1;
       }
 
       if (startNewRound) {
@@ -280,9 +267,12 @@ export function useWorkspaceTimeline(
       const hasToolEventsInContext = message.role === "assistant"
         && (assistantContextById.get(message.id)?.length ?? 0) > 0;
 
+      const hasThinkingRounds = (thinkingRoundsByMessageId.get(message.id)?.length ?? 0) > 0;
+
       if (
         message.role === "assistant" &&
         !hasToolEventsInContext &&
+        !hasThinkingRounds &&
         (shouldSkipMessageBecausePlanCard || (message.content.trim().length === 0 && !isCompleted && !hasMessageDelta))
       ) {
         continue;
