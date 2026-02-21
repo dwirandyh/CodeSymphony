@@ -12,11 +12,13 @@ import { createSystemService } from "./services/systemService";
 import { createFileService } from "./services/fileService";
 import { createTerminalService } from "./services/terminalService";
 import { createLogService } from "./services/logService";
+import { createFilesystemService } from "./services/filesystemService";
 import { registerRepositoryRoutes } from "./routes/repositories";
 import { registerChatRoutes } from "./routes/chats";
 import { registerSystemRoutes } from "./routes/system";
 import { registerTerminalRoutes } from "./routes/terminal";
 import { registerLogRoutes } from "./routes/logs";
+import { registerFilesystemRoutes } from "./routes/filesystem";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -29,6 +31,7 @@ declare module "fastify" {
     fileService: ReturnType<typeof createFileService>;
     terminalService: ReturnType<typeof createTerminalService>;
     logService: ReturnType<typeof createLogService>;
+    filesystemService: ReturnType<typeof createFilesystemService>;
   }
 }
 
@@ -41,6 +44,7 @@ function createApp() {
   const fileService = createFileService();
   const terminalService = createTerminalService();
   const logService = createLogService();
+  const filesystemService = createFilesystemService();
   const chatService = createChatService({
     prisma,
     eventHub,
@@ -57,6 +61,7 @@ function createApp() {
   app.decorate("fileService", fileService);
   app.decorate("terminalService", terminalService);
   app.decorate("logService", logService);
+  app.decorate("filesystemService", filesystemService);
 
   app.register(cors, {
     origin: true,
@@ -94,6 +99,7 @@ function createApp() {
   app.register(registerSystemRoutes, { prefix: "/api" });
   app.register(registerTerminalRoutes, { prefix: "/api" });
   app.register(registerLogRoutes, { prefix: "/api" });
+  app.register(registerFilesystemRoutes, { prefix: "/api" });
 
   logService.log("info", "runtime", "CodeSymphony runtime started");
 

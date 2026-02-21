@@ -7,6 +7,7 @@ import type {
   CreateRepositoryInput,
   CreateWorktreeInput,
   FileEntry,
+  FilesystemBrowseResponse,
   GitCommitInput,
   GitDiff,
   GitStatus,
@@ -203,4 +204,8 @@ export const api = {
     }
   },
   runtimeBaseUrl: API_BASE.replace(/\/api$/, ""),
+  browseFilesystem: (path?: string) => {
+    const params = path ? `?path=${encodeURIComponent(path)}` : "";
+    return request<FilesystemBrowseResponse>(`/filesystem/browse${params}`);
+  },
 };
