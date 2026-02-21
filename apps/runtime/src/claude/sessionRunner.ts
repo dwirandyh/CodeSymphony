@@ -310,14 +310,16 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           });
 
           if (permissionMode === "plan" && toolName !== "AskUserQuestion") {
-            if (!planFileDetected && finalOutput.trim().length > 0) {
-              planFileDetected = true;
+            if (!planFileDetected) {
               const planFile = findLatestPlanFile(queryStartTimestamp);
-              await onPlanFileDetected({
-                filePath: planFile?.filePath ?? "streaming-plan",
-                content: planFile?.content ?? finalOutput.trim(),
-                source: planFile ? "claude_plan_file" : "streaming_fallback",
-              });
+              if (planFile) {
+                planFileDetected = true;
+                await onPlanFileDetected({
+                  filePath: planFile.filePath,
+                  content: planFile.content,
+                  source: "claude_plan_file",
+                });
+              }
             }
             await emitDecision(toolUseId, "plan_deny", toolName, null, {
               ...(command ? { command } : {}),
