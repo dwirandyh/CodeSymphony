@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Repository } from "@codesymphony/shared-types";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../../lib/api";
@@ -10,7 +10,16 @@ import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { findRepositoryByWorktree } from "../eventUtils";
 
-export function useRepositoryManager(onError: (msg: string | null) => void) {
+interface UseRepositoryManagerOptions {
+  initialRepoId?: string;
+  initialWorktreeId?: string;
+  onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
+}
+
+export function useRepositoryManager(
+  onError: (msg: string | null) => void,
+  options?: UseRepositoryManagerOptions,
+) {
   const queryClient = useQueryClient();
   const { data: repositories = [], isLoading: loadingRepos } = useRepositories();
 
@@ -22,6 +31,12 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+
+  const initialAppliedRef = useRef(false);
+  const prevSelectionRef = useRef<{ repoId: string | null; worktreeId: string | null }>({
+    repoId: null,
+    worktreeId: null,
+  });
 
   const selectedRepository = useMemo(() => {
     if (selectedRepositoryId) {
@@ -39,9 +54,46 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
     return null;
   }, [repositories, selectedWorktreeId]);
 
-  // Auto-select first repo/worktree when data arrives
+  // Auto-select first repo/worktree when data arrives, respecting initial URL IDs
   useEffect(() => {
     if (repositories.length === 0) return;
+
+    if (!initialAppliedRef.current && (options?.initialWorktreeId || options?.initialRepoId)) {
+      initialAppliedRef.current = true;
+
+      // Validate initialWorktreeId against fetched data
+      if (options.initialWorktreeId) {
+        let foundRepo: Repository | undefined;
+        for (const repo of repositories) {
+          if (repo.worktrees.some((w) => w.id === options.initialWorktreeId)) {
+            foundRepo = repo;
+            break;
+          }
+        }
+        if (foundRepo) {
+          setSelectedRepositoryId(foundRepo.id);
+          setSelectedWorktreeId(options.initialWorktreeId);
+          return;
+        }
+      }
+
+      // Validate initialRepoId against fetched data
+      if (options.initialRepoId) {
+        const repo = repositories.find((r) => r.id === options.initialRepoId);
+        if (repo) {
+          setSelectedRepositoryId(repo.id);
+          const firstWorktree = repo.worktrees[0];
+          if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+          return;
+        }
+      }
+      // Fall through to auto-select if URL IDs were invalid
+    }
+
+    if (!initialAppliedRef.current) {
+      initialAppliedRef.current = true;
+    }
+
     if (!selectedRepositoryId && repositories[0]) {
       setSelectedRepositoryId(repositories[0].id);
     }
@@ -50,6 +102,15 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
       if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
     }
   }, [repositories, selectedRepositoryId, selectedWorktreeId]);
+
+  // Notify parent when selection changes
+  useEffect(() => {
+    const prev = prevSelectionRef.current;
+    if (prev.repoId !== selectedRepositoryId || prev.worktreeId !== selectedWorktreeId) {
+      prevSelectionRef.current = { repoId: selectedRepositoryId, worktreeId: selectedWorktreeId };
+      options?.onSelectionChange?.({ repoId: selectedRepositoryId, worktreeId: selectedWorktreeId });
+    }
+  }, [selectedRepositoryId, selectedWorktreeId]);
 
   async function attachRepository() {
     onError(null);

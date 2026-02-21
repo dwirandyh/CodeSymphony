@@ -19,19 +19,42 @@ import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useSidebarResize } from "./workspace/hooks/useSidebarResize";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
+import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 
 export function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
+  const { search, updateSearch } = useWorkspaceSearchParams();
 
-  const repos = useRepositoryManager(setError);
-  const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch);
+  const repos = useRepositoryManager(setError, {
+    initialRepoId: search.repoId,
+    initialWorktreeId: search.worktreeId,
+    onSelectionChange: useCallback(
+      (selection: { repoId: string | null; worktreeId: string | null }) => {
+        updateSearch({
+          repoId: selection.repoId ?? undefined,
+          worktreeId: selection.worktreeId ?? undefined,
+          threadId: undefined,
+        });
+      },
+      [updateSearch],
+    ),
+  });
+  const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
+    initialThreadId: search.threadId,
+    onThreadChange: useCallback(
+      (threadId: string | null) => {
+        updateSearch({ threadId: threadId ?? undefined });
+      },
+      [updateSearch],
+    ),
+  });
   const gates = usePendingGates(chat.events, chat.selectedThreadId, {
     onError: setError,
     startWaitingAssistant: chat.startWaitingAssistant,
     clearWaitingAssistantForThread: chat.clearWaitingAssistantForThread,
   });
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown } = useSidebarResize(300);
-  const [rightPanelId, setRightPanelId] = useState<string | null>(null);
+  const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
   const {
     sidebarWidth: rightPanelWidth,
@@ -41,7 +64,9 @@ export function WorkspacePage() {
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
 
-  const [reviewTabOpen, setReviewTabOpen] = useState(false);
+  const activeView = search.view ?? "chat";
+  const selectedDiffFilePath = search.file ?? null;
+  const reviewTabOpen = activeView === "review";
 
   // Close mobile drawer on Escape key
   useEffect(() => {
@@ -56,8 +81,6 @@ export function WorkspacePage() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [mobilePanelOpen]);
-  const [activeView, setActiveView] = useState<"chat" | "review">("chat");
-  const [selectedDiffFilePath, setSelectedDiffFilePath] = useState<string | null>(null);
 
   const showThinkingPlaceholder =
     chat.waitingAssistant?.threadId === chat.selectedThreadId && !gates.isWaitingForUserGate;
@@ -78,29 +101,23 @@ export function WorkspacePage() {
   );
 
   const handleOpenReview = useCallback(() => {
-    setSelectedDiffFilePath(null);
-    setReviewTabOpen(true);
-    setActiveView("review");
-  }, []);
+    updateSearch({ file: undefined, view: "review" });
+  }, [updateSearch]);
 
   const handleSelectDiffFile = useCallback((filePath: string) => {
-    setSelectedDiffFilePath(filePath);
-    setReviewTabOpen(true);
-    setActiveView("review");
-  }, []);
+    updateSearch({ file: filePath, view: "review" });
+  }, [updateSearch]);
 
   const handleCloseReview = useCallback(() => {
-    setReviewTabOpen(false);
-    setActiveView("chat");
-    setSelectedDiffFilePath(null);
-  }, []);
+    updateSearch({ view: undefined, file: undefined });
+  }, [updateSearch]);
 
   const handleSelectThread = useCallback(
     (threadId: string | null) => {
       chat.setSelectedThreadId(threadId);
-      setActiveView("chat");
+      updateSearch({ view: undefined, threadId: threadId ?? undefined });
     },
-    [chat.setSelectedThreadId],
+    [chat.setSelectedThreadId, updateSearch],
   );
 
   return (
@@ -193,7 +210,7 @@ export function WorkspacePage() {
               onSelectThread={handleSelectThread}
               onCreateThread={() => void chat.createAdditionalThread()}
               onCloseThread={(threadId) => void chat.closeThread(threadId)}
-              onSelectReviewTab={() => setActiveView("review")}
+              onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
             />
 
@@ -327,7 +344,7 @@ export function WorkspacePage() {
                   onCommit={(msg) => void gitChanges.commit(msg)}
                   onReview={handleOpenReview}
                   onRefresh={() => void gitChanges.refresh()}
-                  onClose={() => setRightPanelId(null)}
+                  onClose={() => updateSearch({ panel: undefined })}
                   onSelectFile={handleSelectDiffFile}
                   onDiscardChange={(path) => void gitChanges.discardChange(path)}
                   onOpenFile={(path) => void openReadFile(path)}
@@ -348,7 +365,7 @@ export function WorkspacePage() {
                 "relative flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
                 rightPanelId === "git" && "bg-secondary text-foreground",
               )}
-              onClick={() => setRightPanelId((prev) => (prev === "git" ? null : "git"))}
+              onClick={() => updateSearch({ panel: rightPanelId === "git" ? undefined : "git" })}
             >
               <GitBranch className="h-[18px] w-[18px]" />
               {gitChanges.entries.length > 0 && (

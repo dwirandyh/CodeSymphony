@@ -12,10 +12,16 @@ import { EVENT_TYPES } from "../constants";
 import { payloadStringOrNull, shouldClearWaitingAssistantOnEvent } from "../eventUtils";
 import { useWorkspaceTimeline, type TimelineRefs } from "./useWorkspaceTimeline";
 
+interface UseChatSessionOptions {
+  initialThreadId?: string;
+  onThreadChange?: (threadId: string | null) => void;
+}
+
 export function useChatSession(
   selectedWorktreeId: string | null,
   onError: (msg: string | null) => void,
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void,
+  options?: UseChatSessionOptions,
 ) {
   const queryClient = useQueryClient();
 
@@ -40,6 +46,8 @@ export function useChatSession(
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
+  const initialThreadAppliedRef = useRef(false);
+  const prevThreadIdRef = useRef<string | null>(null);
 
   // ── TanStack Query: thread listing ──
   const { data: queriedThreads } = useThreads(selectedWorktreeId);
@@ -163,8 +171,22 @@ export function useChatSession(
         if (cancelled) return;
         setThreads(existing);
         if (existing.length > 0) {
-          setSelectedThreadId(existing[0].id);
+          // Check if we should apply initialThreadId
+          if (!initialThreadAppliedRef.current && options?.initialThreadId) {
+            initialThreadAppliedRef.current = true;
+            const match = existing.find((t) => t.id === options.initialThreadId);
+            if (match) {
+              setSelectedThreadId(match.id);
+            } else {
+              setSelectedThreadId(existing[0].id);
+            }
+          } else {
+            setSelectedThreadId(existing[0].id);
+          }
         } else {
+          if (!initialThreadAppliedRef.current) {
+            initialThreadAppliedRef.current = true;
+          }
           const created = await api.createThread(selectedWorktreeId, { title: "Main Thread" });
           if (cancelled) return;
           setThreads([created]);
@@ -178,6 +200,14 @@ export function useChatSession(
 
     return () => { cancelled = true; };
   }, [selectedWorktreeId]);
+
+  // Notify parent when selected thread changes
+  useEffect(() => {
+    if (prevThreadIdRef.current !== selectedThreadId) {
+      prevThreadIdRef.current = selectedThreadId;
+      options?.onThreadChange?.(selectedThreadId);
+    }
+  }, [selectedThreadId]);
 
   // ── Thread change → start SSE stream ──
 
