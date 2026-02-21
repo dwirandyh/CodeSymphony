@@ -497,13 +497,16 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
                   if (!finishedToolUseIds.has(hookToolUseId)) {
                     const finishedAtMs = Date.now();
                     const completionSummary = completionSummaryFromMetadata(metadata, hookInput.tool_input);
-                    await onToolFinished(buildToolFinishedPayload(
-                      metadata,
-                      completionSummary,
-                      [hookToolUseId],
-                      bashResult ?? undefined,
-                      subagentResponseByUseId.get(hookToolUseId),
-                    ));
+                    await onToolFinished({
+                      ...buildToolFinishedPayload(
+                        metadata,
+                        completionSummary,
+                        [hookToolUseId],
+                        bashResult ?? undefined,
+                        subagentResponseByUseId.get(hookToolUseId),
+                      ),
+                      ...(metadata.editTarget ? { toolInput: hookInput.tool_input as Record<string, unknown> } : {}),
+                    });
                     const { timing, preview } = buildFinishedTimingPreview(
                       hookToolUseId, metadata, finishedAtMs, bashResult ?? undefined, hookInput.tool_response,
                     );
