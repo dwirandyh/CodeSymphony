@@ -10,9 +10,10 @@ const DEFAULT_HEIGHT = 250;
 interface BottomPanelProps {
     worktreeId: string | null;
     worktreePath: string | null;
+    selectedThreadId: string | null;
 }
 
-export function BottomPanel({ worktreeId, worktreePath }: BottomPanelProps) {
+export function BottomPanel({ worktreeId, worktreePath, selectedThreadId }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
     const [collapsed, setCollapsed] = useState(() => {
         return typeof window !== "undefined" && window.innerWidth < 768;
@@ -150,11 +151,11 @@ export function BottomPanel({ worktreeId, worktreePath }: BottomPanelProps) {
                     </div>
 
                     <Tabs.Content value="terminal" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                        <TerminalTab sessionId={worktreeId ?? "default"} cwd={worktreePath} />
+                        <TerminalTab sessionId={worktreeId && selectedThreadId ? `${worktreeId}:${selectedThreadId}` : worktreeId ?? "default"} cwd={worktreePath} />
                     </Tabs.Content>
 
                     <Tabs.Content value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                        <DebugConsoleTab />
+                        <DebugConsoleTab selectedThreadId={selectedThreadId} />
                     </Tabs.Content>
                 </div>
             </Tabs.Root>

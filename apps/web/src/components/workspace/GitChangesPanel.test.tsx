@@ -95,12 +95,11 @@ describe("GitChangesPanel", () => {
 
   // ── Commit enabled/disabled states ──
 
-  it("disables commit button when message is empty", () => {
+  it("enables commit button when message is empty (for autogeneration)", () => {
     renderPanel();
-    const commitBtn = container.querySelector("button") as HTMLButtonElement;
     const allButtons = Array.from(container.querySelectorAll("button"));
     const commit = allButtons.find((b) => b.textContent?.includes("Commit"));
-    expect(commit?.disabled).toBe(true);
+    expect(commit?.disabled).toBe(false);
   });
 
   it("disables commit button when no entries", () => {
@@ -176,7 +175,7 @@ describe("GitChangesPanel", () => {
     expect(defaultProps.onCommit).toHaveBeenCalledWith("chore: update deps");
   });
 
-  it("does not call onCommit on Cmd+Enter with empty message", () => {
+  it("calls onCommit on Cmd+Enter with empty message for autogeneration", () => {
     renderPanel();
     const input = container.querySelector("input") as HTMLInputElement;
     act(() => {
@@ -184,7 +183,7 @@ describe("GitChangesPanel", () => {
         new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
       );
     });
-    expect(defaultProps.onCommit).not.toHaveBeenCalled();
+    expect(defaultProps.onCommit).toHaveBeenCalledWith("");
   });
 
   // ── Callback tests ──

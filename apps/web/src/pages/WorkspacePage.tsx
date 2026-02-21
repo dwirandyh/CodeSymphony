@@ -284,7 +284,7 @@ export function WorkspacePage() {
             )}
           </div>
 
-          <BottomPanel worktreeId={repos.selectedWorktreeId} worktreePath={repos.selectedWorktree?.path ?? null} />
+          <BottomPanel worktreeId={repos.selectedWorktreeId} worktreePath={repos.selectedWorktree?.path ?? null} selectedThreadId={chat.selectedThreadId} />
         </main>
 
         {/* ── Right panel resize handle ── */}

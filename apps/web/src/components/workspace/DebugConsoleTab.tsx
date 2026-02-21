@@ -34,7 +34,24 @@ function formatTime(timestamp: string): string {
     } as Intl.DateTimeFormatOptions);
 }
 
-export function DebugConsoleTab() {
+interface DebugConsoleTabProps {
+    selectedThreadId: string | null;
+}
+
+function extractThreadId(data: unknown): string | null {
+    if (
+        data != null &&
+        typeof data === "object" &&
+        "threadId" in data &&
+        typeof (data as Record<string, unknown>).threadId === "string" &&
+        ((data as Record<string, unknown>).threadId as string).length > 0
+    ) {
+        return (data as Record<string, unknown>).threadId as string;
+    }
+    return null;
+}
+
+export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
     const [entries, setEntries] = useState<LogEntry[]>(() => logService.getEntries());
     const [activeFilters, setActiveFilters] = useState<Set<LogLevel>>(
         () => new Set(["debug", "info", "warn", "error"]),
@@ -170,8 +187,14 @@ export function DebugConsoleTab() {
     }, [entries, autoScroll]);
 
     const filteredEntries = useMemo(() => {
-        return entries.filter((entry) => activeFilters.has(entry.level));
-    }, [entries, activeFilters]);
+        return entries.filter((entry) => {
+            if (!activeFilters.has(entry.level)) return false;
+            if (selectedThreadId == null) return true;
+            const entryThreadId = extractThreadId(entry.data);
+            if (entryThreadId == null) return true;
+            return entryThreadId === selectedThreadId;
+        });
+    }, [entries, activeFilters, selectedThreadId]);
 
     function toggleFilter(level: LogLevel) {
         setActiveFilters((prev) => {

@@ -171,7 +171,7 @@ export const GitStatusSchema = z.object({
 export type GitStatus = z.infer<typeof GitStatusSchema>;
 
 export const GitCommitInputSchema = z.object({
-  message: z.string().trim().min(1),
+  message: z.string().trim().optional().default(""),
 });
 export type GitCommitInput = z.infer<typeof GitCommitInputSchema>;
 

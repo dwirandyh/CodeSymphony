@@ -437,6 +437,7 @@ export function createChatService(deps: RuntimeDeps) {
   }
 
   async function buildThreadTitleWithAi(
+    threadId: string,
     worktreePath: string,
     firstUserContent: string,
     firstAssistantContent: string,
@@ -489,6 +490,7 @@ export function createChatService(deps: RuntimeDeps) {
         "chat.thread.title",
         "AI title generation failed; keeping current title.",
         {
+          threadId,
           worktreePath,
           error: error instanceof Error ? error.message : String(error),
         },
@@ -563,6 +565,7 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       const nextTitle = await buildThreadTitleWithAi(
+        threadId,
         thread.worktree.path,
         firstUserMessage.content,
         firstAssistantMessage.content,
@@ -621,6 +624,7 @@ export function createChatService(deps: RuntimeDeps) {
   }
 
   async function buildBranchNameWithAi(
+    threadId: string,
     worktreePath: string,
     firstUserContent: string,
     firstAssistantContent: string,
@@ -655,18 +659,18 @@ export function createChatService(deps: RuntimeDeps) {
         onText: (chunk) => {
           streamedOutput += chunk;
         },
-        onToolStarted: async () => {},
-        onToolOutput: async () => {},
-        onToolFinished: async () => {},
+        onToolStarted: async () => { },
+        onToolOutput: async () => { },
+        onToolFinished: async () => { },
         onQuestionRequest: async () => ({ answers: {} }),
         onPermissionRequest: () => ({
           decision: "deny",
           message: "Tool use is disabled for branch name generation.",
         }),
-        onPlanFileDetected: async () => {},
-        onSubagentStarted: async () => {},
-        onSubagentStopped: async () => {},
-        onThinking: async () => {},
+        onPlanFileDetected: async () => { },
+        onSubagentStarted: async () => { },
+        onSubagentStopped: async () => { },
+        onThinking: async () => { },
       });
 
       const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
@@ -677,6 +681,7 @@ export function createChatService(deps: RuntimeDeps) {
         "chat.branch.rename",
         "AI branch name generation failed; keeping current branch.",
         {
+          threadId,
           worktreePath,
           error: error instanceof Error ? error.message : String(error),
         },
@@ -730,6 +735,7 @@ export function createChatService(deps: RuntimeDeps) {
       if (!firstAssistantMessage) return null;
 
       const newBranch = await buildBranchNameWithAi(
+        threadId,
         worktree.path,
         firstUserMessage.content,
         firstAssistantMessage.content,
@@ -1478,6 +1484,55 @@ export function createChatService(deps: RuntimeDeps) {
       } catch (error) {
         activeThreads.delete(threadId);
         throw error;
+      }
+    },
+
+    async generateCommitMessage(worktreePath: string, diff: string): Promise<string> {
+      const prompt = `You are an expert developer generating a commit message based on the following git diff.
+Follow the conventional commits format (e.g., feat: add feature X, fix: resolve issue Y).
+Return EXACTLY ONE LINE for the commit message. Do not include any quotes around the message.
+If the diff is empty or too small to understand, output something generic like "chore: update files".
+
+Diff:
+${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
+`;
+
+      const abortController = new AbortController();
+      let streamedOutput = "";
+
+      try {
+        const result = await deps.claudeRunner({
+          prompt,
+          sessionId: null,
+          cwd: worktreePath,
+          abortController,
+          permissionMode: "plan",
+          onText: (chunk) => {
+            streamedOutput += chunk;
+          },
+          onToolStarted: async () => { },
+          onToolOutput: async () => { },
+          onToolFinished: async () => { },
+          onQuestionRequest: async () => ({ answers: {} }),
+          onPermissionRequest: () => ({ decision: "deny", message: "Tool use disabled for commit message generation" }),
+          onPlanFileDetected: async () => { },
+          onSubagentStarted: async () => { },
+          onSubagentStopped: async () => { },
+          onThinking: async () => { },
+        });
+
+        const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
+
+        const candidate = raw.split(/\r?\n/).find(line => line.trim().length > 0)?.trim() || "";
+        const cleaned = candidate.replace(/^["'`]+/, "").replace(/["'`]+$/, "").trim();
+
+        return cleaned || "chore: update files";
+      } catch (error) {
+        deps.logService?.log("warn", "chat.commit", "AI commit message generation failed", {
+          worktreePath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return "chore: update files";
       }
     },
   };
