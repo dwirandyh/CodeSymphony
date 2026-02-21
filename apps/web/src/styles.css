@@ -121,3 +121,9 @@ mark {
   text-underline-offset: 2px;
 }
 
+/* Override Radix ScrollArea internal "display: table" wrapper that prevents
+   content from shrinking below its intrinsic width on narrow viewports. */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+}
+
