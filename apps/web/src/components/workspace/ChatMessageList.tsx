@@ -895,7 +895,7 @@ export function MarkdownBody({
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
         components={{
-          p: ({ children }) => <p className="leading-6 [&:not(:first-child)]:mt-4 whitespace-pre-wrap">{children}</p>,
+          p: ({ children }) => <p className="leading-6 [&:not(:first-child)]:mt-4 whitespace-pre-wrap break-words">{children}</p>,
           ul: ({ children }) => <ul className="my-4 ml-6 list-disc [&>li]:mt-1.5">{children}</ul>,
           ol: ({ children }) => <ol className="my-4 ml-6 list-decimal [&>li]:mt-1.5">{children}</ol>,
           li: ({ children }) => <li>{children}</li>,
@@ -907,7 +907,7 @@ export function MarkdownBody({
             <blockquote className="mt-4 border-l-2 border-primary pl-4 italic text-muted-foreground">{children}</blockquote>
           ),
           table: ({ children }) => (
-            <div className="my-4 w-full overflow-y-auto text-sm">
+            <div className="my-4 w-full overflow-x-auto text-sm">
               <table className="w-full border-collapse">{children}</table>
             </div>
           ),
@@ -924,7 +924,7 @@ export function MarkdownBody({
             const inline = !className && !text.includes("\n");
 
             if (inline) {
-              return <code className="relative rounded bg-muted px-[0.25rem] py-[0.15rem] font-mono text-xs font-semibold">{text}</code>;
+              return <code className="relative rounded bg-muted px-[0.25rem] py-[0.15rem] font-mono text-xs font-semibold break-all">{text}</code>;
             }
 
             if (isLikelyDiff(text, language)) {
@@ -941,7 +941,7 @@ export function MarkdownBody({
             }
 
             return (
-              <pre className="my-4 overflow-x-auto rounded-md border bg-muted/50 p-3 font-mono text-xs leading-relaxed text-foreground select-text">
+              <pre className="my-4 max-w-full overflow-x-auto rounded-md border bg-muted/50 p-3 font-mono text-xs leading-relaxed text-foreground select-text">
                 <code>{text}</code>
               </pre>
             );
@@ -1379,10 +1379,10 @@ export function ChatMessageList({
                 className="rounded-md border border-border/30 bg-background/20 px-3 py-2 text-xs"
                 data-testid={`timeline-${item.event.type}`}
               >
-                <div className="flex items-center gap-1.5 text-muted-foreground">
-                  <span className="font-semibold text-foreground">{toolTitle(item.event)}</span>
-                  <span>·</span>
-                  <span>{toolSubtitle(item.event)}</span>
+                <div className="flex items-center gap-1.5 text-muted-foreground min-w-0">
+                  <span className="shrink-0 font-semibold text-foreground">{toolTitle(item.event)}</span>
+                  <span className="shrink-0">·</span>
+                  <span className="min-w-0 truncate">{toolSubtitle(item.event)}</span>
                 </div>
 
                 {changedFiles.length > 0 ? (
@@ -1390,7 +1390,7 @@ export function ChatMessageList({
                     <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Files</div>
                     <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-foreground/90">
                       {changedFiles.map((file) => (
-                        <li key={file}>{file}</li>
+                        <li key={file} className="break-all">{file}</li>
                       ))}
                     </ul>
                   </div>
@@ -1470,7 +1470,7 @@ export function ChatMessageList({
                       {item.shell}
                     </div>
 
-                    <pre className="px-4 py-2.5 font-mono text-sm leading-relaxed text-foreground">
+                    <pre className="px-4 py-2.5 font-mono text-sm leading-relaxed text-foreground overflow-x-auto whitespace-pre-wrap break-words">
                       <span style={{ color: "#98c379" }}>$</span>
                       <span> </span>
                       <span style={{ color: "#61afef" }}>{commandText}</span>
@@ -1596,8 +1596,8 @@ export function ChatMessageList({
                     ) : null}
                     {fileSections.map((section, sectionIndex) => (
                       <div key={`${item.id}:section:${sectionIndex}`}>
-                        <div className="flex items-center gap-2 border-b border-border/25 px-3 py-1.5 text-xs">
-                          <span className="font-semibold text-foreground">{section.fileName}</span>
+                        <div className="flex items-center gap-2 border-b border-border/25 px-3 py-1.5 text-xs min-w-0">
+                          <span className="min-w-0 truncate font-semibold text-foreground">{section.fileName}</span>
                           <span className="text-muted-foreground">
                             <span className="text-emerald-400">+{section.additions}</span>
                             {" "}
@@ -1625,7 +1625,7 @@ export function ChatMessageList({
                                   <span className="inline-block w-8 shrink-0 select-none text-right text-muted-foreground/40 pr-2">
                                     {ln?.newLine ?? ""}
                                   </span>
-                                  <span className="flex-1 px-1">{line.length > 0 ? line : " "}</span>
+                                  <span className="min-w-0 flex-1 px-1">{line.length > 0 ? line : " "}</span>
                                 </div>
                               );
                             });
@@ -1994,9 +1994,9 @@ export function ChatMessageList({
             >
               <div
                 className={cn(
-                  "max-w-[85%] text-sm",
-                  message.role === "assistant" && "px-1 text-foreground",
-                  message.role === "user" && "rounded-2xl bg-secondary/55 px-4 py-2.5 text-foreground",
+                  "min-w-0 text-sm",
+                  message.role === "assistant" && "w-full px-1 text-foreground",
+                  message.role === "user" && "max-w-[85%] rounded-2xl bg-secondary/55 px-4 py-2.5 text-foreground",
                   message.role === "system" && "rounded-xl border border-border/40 px-3 py-2 text-muted-foreground",
                 )}
               >
