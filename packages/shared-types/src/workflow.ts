@@ -43,6 +43,9 @@ export const RepositorySchema = z.object({
   name: z.string().min(1),
   rootPath: z.string().min(1),
   defaultBranch: z.string().min(1),
+  setupScript: z.array(z.string()).nullable().optional(),
+  teardownScript: z.array(z.string()).nullable().optional(),
+  runScript: z.array(z.string()).nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   worktrees: z.array(WorktreeSchema),
@@ -135,6 +138,13 @@ export const RenameWorktreeBranchInputSchema = z.object({
 });
 export type RenameWorktreeBranchInput = z.infer<typeof RenameWorktreeBranchInputSchema>;
 
+export const UpdateRepositoryScriptsInputSchema = z.object({
+  setupScript: z.array(z.string()).nullable().optional(),
+  teardownScript: z.array(z.string()).nullable().optional(),
+  runScript: z.array(z.string()).nullable().optional(),
+});
+export type UpdateRepositoryScriptsInput = z.infer<typeof UpdateRepositoryScriptsInputSchema>;
+
 export type Repository = z.infer<typeof RepositorySchema>;
 export type Worktree = z.infer<typeof WorktreeSchema>;
 export type ChatThread = z.infer<typeof ChatThreadSchema>;
@@ -201,3 +211,11 @@ export const FilesystemBrowseResponseSchema = z.object({
   entries: z.array(FilesystemEntrySchema),
 });
 export type FilesystemBrowseResponse = z.infer<typeof FilesystemBrowseResponseSchema>;
+
+// ── Script Execution Types ──
+
+export const ScriptResultSchema = z.object({
+  success: z.boolean(),
+  output: z.string(),
+});
+export type ScriptResult = z.infer<typeof ScriptResultSchema>;

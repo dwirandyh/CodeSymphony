@@ -42,6 +42,9 @@ model Repository {
   name          String
   rootPath      String     @unique
   defaultBranch String
+  setupScript    String?
+  teardownScript String?
+  runScript      String?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   worktrees     Worktree[]

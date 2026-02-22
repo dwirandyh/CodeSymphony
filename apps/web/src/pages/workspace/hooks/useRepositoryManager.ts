@@ -1,20 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Repository } from "@codesymphony/shared-types";
+import type { Repository, ScriptResult } from "@codesymphony/shared-types";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../../../lib/api";
+import { api, TeardownFailedError } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositories } from "../../../hooks/queries/useRepositories";
 import { debugLog } from "../../../lib/debugLog";
 import { useCreateRepository } from "../../../hooks/mutations/useCreateRepository";
 import { useCreateWorktree } from "../../../hooks/mutations/useCreateWorktree";
 import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
+import { useDeleteRepository } from "../../../hooks/mutations/useDeleteRepository";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { findRepositoryByWorktree } from "../eventUtils";
+
+export interface TeardownErrorState {
+  worktreeId: string;
+  worktreeName: string;
+  output: string;
+}
+
+export interface ScriptUpdateEvent {
+  worktreeId: string;
+  worktreeName: string;
+  type: "setup" | "teardown" | "run";
+  status: "running" | "completed";
+  result?: ScriptResult;
+}
 
 interface UseRepositoryManagerOptions {
   initialRepoId?: string;
   initialWorktreeId?: string;
   onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
+  onScriptUpdate?: (event: ScriptUpdateEvent) => void;
+  onScriptOutputChunk?: (event: { worktreeId: string; chunk: string }) => void;
+  onTeardownError?: (state: TeardownErrorState) => void;
 }
 
 export function useRepositoryManager(
@@ -27,7 +45,119 @@ export function useRepositoryManager(
   const createRepoMutation = useCreateRepository();
   const createWorktreeMutation = useCreateWorktree();
   const deleteWorktreeMutation = useDeleteWorktree();
+  const deleteRepoMutation = useDeleteRepository();
   const renameBranchMutation = useRenameWorktreeBranch();
+
+  const activeStreamRef = useRef<{ worktreeId: string; eventSource: EventSource } | null>(null);
+  const [setupRunning, setSetupRunning] = useState(false);
+
+  // Separate state for run scripts (Run button / ad-hoc commands)
+  const runScriptRef = useRef<{ worktreeId: string; eventSource: EventSource } | null>(null);
+  const [runScriptRunning, setRunScriptRunning] = useState(false);
+
+  function runSetupStreaming(worktreeId: string, worktreeName: string) {
+    options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "running" });
+
+    const es = api.runSetupStream(worktreeId);
+    activeStreamRef.current = { worktreeId, eventSource: es };
+    setSetupRunning(true);
+
+    es.addEventListener("output", (e) => {
+      const { chunk } = JSON.parse(e.data);
+      options?.onScriptOutputChunk?.({ worktreeId, chunk });
+    });
+
+    es.addEventListener("done", (e) => {
+      const { success } = JSON.parse(e.data);
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result: { success, output: "" } });
+      es.close();
+      activeStreamRef.current = null;
+      setSetupRunning(false);
+    });
+
+    es.onerror = () => {
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result: { success: false, output: "Connection lost" } });
+      es.close();
+      activeStreamRef.current = null;
+      setSetupRunning(false);
+    };
+  }
+
+  async function stopSetup() {
+    const stream = activeStreamRef.current;
+    if (stream) {
+      await api.stopSetupScript(stream.worktreeId);
+      stream.eventSource.close();
+      activeStreamRef.current = null;
+      setSetupRunning(false);
+    }
+  }
+
+  function startRunScriptStream(worktreeId: string, cmd?: string) {
+    // Stop any existing run script stream first
+    if (runScriptRef.current) {
+      runScriptRef.current.eventSource.close();
+      runScriptRef.current = null;
+    }
+
+    // Look up worktree name
+    let worktreeName = worktreeId;
+    for (const repo of repositories) {
+      const wt = repo.worktrees.find((w) => w.id === worktreeId);
+      if (wt) { worktreeName = wt.branch; break; }
+    }
+
+    options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "running" });
+
+    const es = api.runScriptStream(worktreeId, cmd);
+    runScriptRef.current = { worktreeId, eventSource: es };
+    setRunScriptRunning(true);
+
+    es.addEventListener("output", (e) => {
+      const { chunk } = JSON.parse(e.data);
+      options?.onScriptOutputChunk?.({ worktreeId, chunk });
+    });
+
+    es.addEventListener("done", (e) => {
+      const { success } = JSON.parse(e.data);
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "completed", result: { success, output: "" } });
+      es.close();
+      runScriptRef.current = null;
+      setRunScriptRunning(false);
+    });
+
+    es.onerror = () => {
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "Connection lost" } });
+      es.close();
+      runScriptRef.current = null;
+      setRunScriptRunning(false);
+    };
+  }
+
+  function runSavedScript(worktreeId: string) {
+    startRunScriptStream(worktreeId);
+  }
+
+  function runAdHocCommand(worktreeId: string, cmd: string) {
+    startRunScriptStream(worktreeId, cmd);
+  }
+
+  async function stopRunScript() {
+    const stream = runScriptRef.current;
+    if (stream) {
+      await api.stopRunScript(stream.worktreeId);
+      // Look up worktree name for the update
+      let worktreeName = stream.worktreeId;
+      for (const repo of repositories) {
+        const wt = repo.worktrees.find((w) => w.id === stream.worktreeId);
+        if (wt) { worktreeName = wt.branch; break; }
+      }
+      options?.onScriptUpdate?.({ worktreeId: stream.worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "" } });
+      stream.eventSource.close();
+      runScriptRef.current = null;
+      setRunScriptRunning(false);
+    }
+  }
 
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
@@ -164,9 +294,11 @@ export function useRepositoryManager(
   async function submitWorktree(repositoryId: string) {
     onError(null);
     try {
-      const created = await createWorktreeMutation.mutateAsync({ repositoryId });
-      setSelectedWorktreeId(created.id);
+      const { worktree } = await createWorktreeMutation.mutateAsync({ repositoryId });
+      setSelectedWorktreeId(worktree.id);
       setSelectedRepositoryId(repositoryId);
+      // Fire setup scripts in background — does not block worktree creation
+      runSetupStreaming(worktree.id, worktree.branch);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create worktree");
     }
@@ -174,13 +306,37 @@ export function useRepositoryManager(
 
   async function removeWorktree(worktreeId: string) {
     onError(null);
+    // Find the worktree name before deletion for error UI
+    let worktreeName = worktreeId;
+    for (const repo of repositories) {
+      const wt = repo.worktrees.find((w) => w.id === worktreeId);
+      if (wt) { worktreeName = wt.branch; break; }
+    }
     try {
       await deleteWorktreeMutation.mutateAsync(worktreeId);
       if (selectedWorktreeId === worktreeId) {
         setSelectedWorktreeId(null);
       }
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to delete worktree");
+      if (e instanceof TeardownFailedError) {
+        options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "teardown", status: "completed", result: { success: false, output: e.output } });
+        options?.onTeardownError?.({ worktreeId, worktreeName, output: e.output });
+      } else {
+        onError(e instanceof Error ? e.message : "Failed to delete worktree");
+      }
+    }
+  }
+
+  async function removeRepository(repositoryId: string) {
+    onError(null);
+    try {
+      await deleteRepoMutation.mutateAsync(repositoryId);
+      if (selectedRepositoryId === repositoryId) {
+        setSelectedRepositoryId(null);
+        setSelectedWorktreeId(null);
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to delete repository");
     }
   }
 
@@ -191,6 +347,16 @@ export function useRepositoryManager(
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to rename branch");
     }
+  }
+
+  async function rerunSetup(worktreeId: string) {
+    onError(null);
+    let worktreeName = worktreeId;
+    for (const repo of repositories) {
+      const wt = repo.worktrees.find((w) => w.id === worktreeId);
+      if (wt) { worktreeName = wt.branch; break; }
+    }
+    runSetupStreaming(worktreeId, worktreeName);
   }
 
   const updateWorktreeBranch = useCallback((worktreeId: string, newBranch: string) => {
@@ -222,6 +388,14 @@ export function useRepositoryManager(
     setFileBrowserOpen,
     submitWorktree,
     removeWorktree,
+    removeRepository,
+    rerunSetup,
+    runSavedScript,
+    runAdHocCommand,
+    stopSetup,
+    stopRunScript,
+    setupRunning,
+    runScriptRunning,
     renameWorktreeBranch,
     updateWorktreeBranch,
   };
