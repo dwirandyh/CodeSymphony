@@ -17,11 +17,14 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   const [runScriptText, setRunScriptText] = useState("");
   const [setupText, setSetupText] = useState("");
   const [teardownText, setTeardownText] = useState("");
+  const [defaultBranchValue, setDefaultBranchValue] = useState("");
+  const [branches, setBranches] = useState<string[]>([]);
+  const [loadingBranches, setLoadingBranches] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
-  // Local cache of saved scripts so switching repos doesn't lose unsaved prop data
-  const savedScriptsRef = useRef<Record<string, { runScript: string; setup: string; teardown: string }>>({});
+  // Local cache of saved settings so switching repos doesn't lose unsaved prop data
+  const savedScriptsRef = useRef<Record<string, { runScript: string; setup: string; teardown: string; defaultBranch: string }>>({});
 
   // Select first repo when opening or when repos change
   useEffect(() => {
@@ -38,16 +41,36 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
       setRunScriptText(cached.runScript);
       setSetupText(cached.setup);
       setTeardownText(cached.teardown);
+      setDefaultBranchValue(cached.defaultBranch);
     } else {
       const repo = repositories.find((r) => r.id === selectedRepoId);
       if (!repo) return;
       setRunScriptText(repo.runScript?.join("\n") ?? "");
       setSetupText(repo.setupScript?.join("\n") ?? "");
       setTeardownText(repo.teardownScript?.join("\n") ?? "");
+      setDefaultBranchValue(repo.defaultBranch);
     }
     setDirty(false);
     setShowRemoveDialog(false);
   }, [selectedRepoId, repositories]);
+
+  // Fetch branches when selected repo changes
+  useEffect(() => {
+    if (!selectedRepoId) return;
+    let cancelled = false;
+    setLoadingBranches(true);
+    api.listBranches(selectedRepoId)
+      .then((data) => {
+        if (!cancelled) setBranches(data);
+      })
+      .catch(() => {
+        if (!cancelled) setBranches([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingBranches(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedRepoId]);
 
   const handleSave = useCallback(async () => {
     if (!selectedRepoId) return;
@@ -56,19 +79,22 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
       const runScriptLines = runScriptText.trim() ? runScriptText.trim().split("\n").filter(Boolean) : null;
       const setupLines = setupText.trim() ? setupText.trim().split("\n").filter(Boolean) : null;
       const teardownLines = teardownText.trim() ? teardownText.trim().split("\n").filter(Boolean) : null;
+      const repo = repositories.find((r) => r.id === selectedRepoId);
+      const branchChanged = repo && defaultBranchValue !== repo.defaultBranch;
       await api.updateRepositoryScripts(selectedRepoId, {
         runScript: runScriptLines,
         setupScript: setupLines,
         teardownScript: teardownLines,
+        ...(branchChanged ? { defaultBranch: defaultBranchValue } : {}),
       });
-      savedScriptsRef.current[selectedRepoId] = { runScript: runScriptText, setup: setupText, teardown: teardownText };
+      savedScriptsRef.current[selectedRepoId] = { runScript: runScriptText, setup: setupText, teardown: teardownText, defaultBranch: defaultBranchValue };
       setDirty(false);
     } catch {
       // Error is non-critical; user can retry
     } finally {
       setSaving(false);
     }
-  }, [selectedRepoId, runScriptText, setupText, teardownText]);
+  }, [selectedRepoId, runScriptText, setupText, teardownText, defaultBranchValue, repositories]);
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId) ?? null;
 
@@ -119,6 +145,37 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div className="mb-4">
+                  <label className="mb-1.5 block text-xs font-medium">Default Branch</label>
+                  {loadingBranches ? (
+                    <div className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      Loading branches...
+                    </div>
+                  ) : (
+                    <select
+                      className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                      value={defaultBranchValue}
+                      onChange={(e) => {
+                        setDefaultBranchValue(e.target.value);
+                        setDirty(true);
+                      }}
+                    >
+                      {!branches.includes(defaultBranchValue) && defaultBranchValue && (
+                        <option value={defaultBranchValue}>{defaultBranchValue}</option>
+                      )}
+                      {branches.map((branch) => (
+                        <option key={branch} value={branch}>
+                          {branch}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    New worktrees will be created from this branch.
+                  </p>
                 </div>
 
                 <div className="mb-4">
