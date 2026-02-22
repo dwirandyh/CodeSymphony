@@ -166,7 +166,7 @@ export function RepositoryPanel({
                     variant="ghost"
                     size="icon"
                     aria-label={`Add worktree for ${repository.name}`}
-                    title="Create worktree from main"
+                    title={`Create worktree from ${repository.defaultBranch}`}
                     disabled={submittingWorktree}
                     className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
                     onClick={() => {

@@ -73,6 +73,8 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
+  listBranches: (repositoryId: string) =>
+    request<string[]>(`/repositories/${repositoryId}/branches`),
   deleteRepository: async (repositoryId: string) => {
     const response = await fetch(`${API_BASE}/repositories/${repositoryId}`, {
       method: "DELETE",
