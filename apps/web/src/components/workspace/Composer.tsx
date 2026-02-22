@@ -247,14 +247,13 @@ export function Composer({
 
   const handleInput = useCallback(() => {
     if (suppressInputRef.current) return;
-    if (isComposingRef.current) return;
 
     const editor = editorRef.current;
     if (!editor) return;
 
     syncValueFromEditor();
 
-    requestAnimationFrame(() => {
+    queueMicrotask(() => {
       if (editor) {
         const detected = detectMentionInEditor(editor);
         setMention(detected);
@@ -489,9 +488,9 @@ export function Composer({
                       <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     )}
                     {entry.highlighted ? (
-                      <span className="truncate" dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
+                      <span className="truncate" dir="rtl" style={{ textAlign: "left" }} dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
                     ) : (
-                      <span className="truncate">{entry.path}</span>
+                      <span className="truncate" dir="rtl" style={{ textAlign: "left" }}>{entry.path}</span>
                     )}
                   </button>
                 ))
@@ -545,7 +544,7 @@ export function Composer({
             aria-label={showStop ? "Stop run" : "Send message"}
             className="absolute bottom-2 right-2.5 h-8 w-8 rounded-full bg-white text-black hover:bg-white/90 disabled:bg-white/80 disabled:text-black/70 lg:bottom-3 lg:right-3"
           >
-            {showStop ? <Square className="h-3.5 w-3.5" /> : <ArrowUp className="h-3.5 w-3.5" />}
+            {showStop ? <Square className="h-3.5 w-3.5" fill="currentColor" /> : <ArrowUp className="h-3.5 w-3.5" />}
             <span className="sr-only">
               {showStop ? (stopping ? "Stopping..." : "Stop run") : sending ? "Running..." : "Send message"}
             </span>

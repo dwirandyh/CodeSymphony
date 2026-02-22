@@ -1,5 +1,7 @@
 import { Button } from "../ui/button";
 
+const EDIT_TOOL_REGEX = /^(edit|multiedit|write)$/i;
+
 type PermissionPromptCardProps = {
   requestId: string;
   toolName: string;
@@ -27,7 +29,7 @@ export function PermissionPromptCard({
   onAllowAlways,
   onDeny,
 }: PermissionPromptCardProps) {
-  const isEditPermission = /^(edit|multiedit|write)$/i.test(toolName.trim());
+  const isEditPermission = EDIT_TOOL_REGEX.test(toolName.trim());
   const hasMetadata = Boolean(decisionReason || blockedPath);
   const promptMessage = isEditPermission
     ? editTarget

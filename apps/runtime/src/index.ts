@@ -19,6 +19,7 @@ import { registerSystemRoutes } from "./routes/system";
 import { registerTerminalRoutes } from "./routes/terminal";
 import { registerLogRoutes } from "./routes/logs";
 import { registerFilesystemRoutes } from "./routes/filesystem";
+import { registerDebugRoutes } from "./routes/debug";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -100,6 +101,7 @@ function createApp() {
   app.register(registerTerminalRoutes, { prefix: "/api" });
   app.register(registerLogRoutes, { prefix: "/api" });
   app.register(registerFilesystemRoutes, { prefix: "/api" });
+  app.register(registerDebugRoutes, { prefix: "/api" });
 
   logService.log("info", "runtime", "CodeSymphony runtime started");
 

@@ -40,6 +40,11 @@ import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "..
 import { pushRenderDebug } from "../../../lib/renderDebug";
 import { logService } from "../../../lib/logService";
 
+// ── Hoisted RegExp constants for subagent/plan summary markers ──
+const SUBAGENT_SUMMARY_REGEX = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
+const MAIN_SUMMARY_START_MARKER = /###main(?:\s+agent)? summary(?:\s+start)?\n?/g;
+const MAIN_SUMMARY_END_MARKER = /###main(?:\s+agent)? summary end\n?/g;
+
 export type TimelineRefs = {
   streamingMessageIds: Set<string>;
   stickyRawFallbackMessageIds: Set<string>;
@@ -55,6 +60,10 @@ export function useWorkspaceTimeline(
 ): ChatTimelineItem[] {
   return useMemo<ChatTimelineItem[]>(() => {
     const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
+
+    // Clone the sticky set to avoid mutating the ref during render.
+    // We'll sync it back at the end.
+    const localStickyIds = new Set(refs.stickyRawFallbackMessageIds);
 
     const firstMessageEventIdxById = new Map<string, number>();
     const completedMessageIds = new Set<string>();
@@ -281,16 +290,16 @@ export function useWorkspaceTimeline(
 
       const hasUnclosedFence = message.role === "assistant" ? hasUnclosedCodeFence(message.content) : false;
       if (message.role === "assistant" && !isCompleted && hasUnclosedFence && !isReadResponseContext) {
-        refs.stickyRawFallbackMessageIds.add(message.id);
+        localStickyIds.add(message.id);
       }
       if (message.role === "assistant" && isCompleted) {
-        refs.stickyRawFallbackMessageIds.delete(message.id);
+        localStickyIds.delete(message.id);
       }
       const shouldRenderRawFallback =
         message.role === "assistant"
         && !isCompleted
         && !isReadResponseContext
-        && refs.stickyRawFallbackMessageIds.has(message.id);
+        && localStickyIds.has(message.id);
       const isStreamingMessage = message.role === "assistant" && refs.streamingMessageIds.has(message.id) && !isCompleted;
       if (message.role === "assistant") {
         const decisionSignature = [
@@ -344,10 +353,10 @@ export function useWorkspaceTimeline(
       // Also strip markers from message.content for clean rendering.
       // Match both "###subagent summary start" and "###subagent summary" (without "start")
       // since the AI may emit either variant.
-      const subagentSummaryRegex = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
+      const subagentSummaryRegex = SUBAGENT_SUMMARY_REGEX;
       // Match both "###main summary start/end" and "###main agent summary/end"
-      const mainSummaryStartMarker = /###main(?:\s+agent)? summary(?:\s+start)?\n?/g;
-      const mainSummaryEndMarker = /###main(?:\s+agent)? summary end\n?/g;
+      const mainSummaryStartMarker = MAIN_SUMMARY_START_MARKER;
+      const mainSummaryEndMarker = MAIN_SUMMARY_END_MARKER;
 
       let cleanedContent = message.content;
 
@@ -1115,7 +1124,7 @@ export function useWorkspaceTimeline(
                 }
                 pushInlineInsert(inlineInserts[0], bucket.timestamp);
                 if (!tailIsAnnouncement && splitSegment.tail.length > 0) {
-                  pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, inlineInserts[0].startIdx, bucket.timestamp);
+                  pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, bucket.anchorIdx, bucket.timestamp);
                 }
                 nextInsertIndex = 1;
                 shouldDelayFirstInsert = false;
@@ -1369,6 +1378,12 @@ export function useWorkspaceTimeline(
       const bTime = b.timestamp ?? MAX_ORDER_INDEX;
       return aTime - bTime;
     });
+
+    // Sync the local sticky set back to the ref
+    refs.stickyRawFallbackMessageIds.clear();
+    for (const id of localStickyIds) {
+      refs.stickyRawFallbackMessageIds.add(id);
+    }
 
     return sortable.map((entry) => entry.item);
   }, [messages, events, selectedThreadId]);

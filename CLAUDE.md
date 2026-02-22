@@ -92,3 +92,18 @@ Local-first monorepo (pnpm workspaces + Turbo) for a conductor.build-style AI co
 - Runtime scripts use `tsx --env-file .env` so `DATABASE_URL` is always loaded
 - Runtime tests use a separate `test.db` (set via `DATABASE_URL="file:./test.db"` in the test script)
 - Sanitize env before `query()`: unset `CLAUDECODE` and remove empty `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` to avoid CLI errors
+
+## React Best Practices
+
+Follow `.agents/skills/vercel-react-best-practices/SKILL.md` when writing or refactoring React code. Key priorities: eliminate waterfalls, optimize bundle size, minimize re-renders.
+
+## Debug Instrumentation
+
+The web app has a client-to-server debug logging system for diagnosing render loops, state issues, and other browser-side problems that are hard to inspect directly.
+
+- **Client utility**: `apps/web/src/lib/debugLog.ts` — `debugLog(source, message, data)` fires entries via `navigator.sendBeacon` to runtime + stores in `window.__CS_DEBUG_LOG__`
+- **Server endpoint**: `POST /api/debug/log` (`apps/runtime/src/routes/debug.ts`)
+- **Log file**: `apps/runtime/debug.log` — append-only, one JSON entry per line, readable by Claude Code
+- **Browser extract**: `copy(JSON.stringify(window.__CS_DEBUG_LOG__.slice(0, 200), null, 2))`
+
+To debug a new issue: add `debugLog("source", "message", data)` calls at relevant state-transition points, reproduce, then read `debug.log`.
