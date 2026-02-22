@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
+import { debugLog } from "../../../lib/debugLog";
 import { useResolvePermission } from "../../../hooks/mutations/useResolvePermission";
 import { useAnswerQuestion } from "../../../hooks/mutations/useAnswerQuestion";
 import { useApprovePlan } from "../../../hooks/mutations/useApprovePlan";
@@ -53,27 +54,30 @@ export function usePendingGates(
   const approvePlanMutation = useApprovePlan();
   const revisePlanMutation = useRevisePlan();
 
-  const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(new Set());
-  const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(new Set());
+  const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set());
+  const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(() => new Set());
   const [planActionBusy, setPlanActionBusy] = useState(false);
   const [closedPlanDecision, setClosedPlanDecision] = useState<{ threadId: string; createdIdx: number } | null>(null);
 
   // Reset all gate-local state when switching threads so Thread A's
   // in-flight actions don't leak into Thread B.
   useEffect(() => {
+    debugLog("usePendingGates", "thread reset effect", { selectedThreadId });
     setPlanActionBusy(false);
     setResolvingPermissionIds(new Set());
     setAnsweringQuestionIds(new Set());
     setClosedPlanDecision(null);
   }, [selectedThreadId]);
 
-  // ── Pending permission requests ──
+  // ── Pending permission + question requests (single pass) ──
 
-  const pendingPermissionRequests = useMemo<PendingPermissionRequest[]>(() => {
-    const pendingById = new Map<string, PendingPermissionRequest>();
+  const { pendingPermissionRequests, pendingQuestionRequests } = useMemo(() => {
+    const pendingPermById = new Map<string, PendingPermissionRequest>();
+    const pendingQById = new Map<string, PendingQuestionRequest>();
     const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
 
     for (const event of orderedEvents) {
+      // Permission events
       if (event.type === "permission.requested") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
         if (requestId.length === 0) continue;
@@ -82,7 +86,7 @@ export function usePendingGates(
         const editTargetRaw = extractEditTarget(toolName, toolInput);
         const editTarget = editTargetRaw ? shortenReadTargetForDisplay(editTargetRaw) : null;
 
-        pendingById.set(requestId, {
+        pendingPermById.set(requestId, {
           requestId,
           toolName,
           command: typeof event.payload.command === "string" ? event.payload.command : null,
@@ -96,15 +100,47 @@ export function usePendingGates(
 
       if (event.type === "permission.resolved") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
-        if (requestId.length > 0) pendingById.delete(requestId);
+        if (requestId.length > 0) pendingPermById.delete(requestId);
       }
 
+      // Question events
+      if (event.type === "question.requested") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length === 0) continue;
+
+        const rawQuestions = Array.isArray(event.payload.questions) ? event.payload.questions : [];
+        const questions: QuestionItem[] = rawQuestions.map((q: Record<string, unknown>) => ({
+          question: typeof q.question === "string" ? q.question : "",
+          header: typeof q.header === "string" ? q.header : undefined,
+          options: Array.isArray(q.options)
+            ? q.options.map((o: Record<string, unknown>) => ({
+              label: typeof o.label === "string" ? o.label : "",
+              description: typeof o.description === "string" ? o.description : undefined,
+            }))
+            : undefined,
+          multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : undefined,
+        }));
+
+        pendingQById.set(requestId, { requestId, questions, idx: event.idx });
+        continue;
+      }
+
+      if (event.type === "question.answered") {
+        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
+        if (requestId.length > 0) pendingQById.delete(requestId);
+      }
+
+      // Terminal events clear both
       if (event.type === "chat.completed" || event.type === "chat.failed") {
-        pendingById.clear();
+        pendingPermById.clear();
+        pendingQById.clear();
       }
     }
 
-    return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
+    return {
+      pendingPermissionRequests: Array.from(pendingPermById.values()).sort((a, b) => a.idx - b.idx),
+      pendingQuestionRequests: Array.from(pendingQById.values()).sort((a, b) => a.idx - b.idx),
+    };
   }, [events]);
 
   async function resolvePermission(requestId: string, decision: "allow" | "allow_always" | "deny") {
@@ -134,47 +170,6 @@ export function usePendingGates(
       });
     }
   }
-
-  // ── Pending question requests ──
-
-  const pendingQuestionRequests = useMemo<PendingQuestionRequest[]>(() => {
-    const pendingById = new Map<string, PendingQuestionRequest>();
-    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
-
-    for (const event of orderedEvents) {
-      if (event.type === "question.requested") {
-        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
-        if (requestId.length === 0) continue;
-
-        const rawQuestions = Array.isArray(event.payload.questions) ? event.payload.questions : [];
-        const questions: QuestionItem[] = rawQuestions.map((q: Record<string, unknown>) => ({
-          question: typeof q.question === "string" ? q.question : "",
-          header: typeof q.header === "string" ? q.header : undefined,
-          options: Array.isArray(q.options)
-            ? q.options.map((o: Record<string, unknown>) => ({
-              label: typeof o.label === "string" ? o.label : "",
-              description: typeof o.description === "string" ? o.description : undefined,
-            }))
-            : undefined,
-          multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : undefined,
-        }));
-
-        pendingById.set(requestId, { requestId, questions, idx: event.idx });
-        continue;
-      }
-
-      if (event.type === "question.answered") {
-        const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
-        if (requestId.length > 0) pendingById.delete(requestId);
-      }
-
-      if (event.type === "chat.completed" || event.type === "chat.failed") {
-        pendingById.clear();
-      }
-    }
-
-    return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
-  }, [events]);
 
   async function answerQuestion(requestId: string, answers: Record<string, string>) {
     if (!selectedThreadId) return;

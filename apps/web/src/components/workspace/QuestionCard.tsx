@@ -23,8 +23,8 @@ type QuestionCardProps = {
 
 export function QuestionCard({ requestId, questions, busy, onAnswer }: QuestionCardProps) {
   const [currentStep, setCurrentStep] = useState(0);
-  const [selectedByQuestion, setSelectedByQuestion] = useState<Map<string, Set<string>>>(new Map());
-  const [freeTextByQuestion, setFreeTextByQuestion] = useState<Map<string, string>>(new Map());
+  const [selectedByQuestion, setSelectedByQuestion] = useState<Map<string, Set<string>>>(() => new Map());
+  const [freeTextByQuestion, setFreeTextByQuestion] = useState<Map<string, string>>(() => new Map());
 
   const total = questions.length;
   const question = questions[currentStep];
