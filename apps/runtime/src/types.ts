@@ -96,6 +96,7 @@ export type ClaudeRunner = (args: {
     command?: string;
     searchParams?: string;
     editTarget?: string;
+    toolInput?: Record<string, unknown>;
     output?: string;
     error?: string;
     shell?: "bash";

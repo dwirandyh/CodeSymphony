@@ -252,6 +252,7 @@ export function useWorkspaceTimeline(
     };
     const sortable: SortableEntry[] = [];
     const assignedToolEventIds = new Set<string>();
+    let hasEditedRunsWithDiffs = false;
 
     for (const message of sortedMessages) {
       const anchorIdx = firstMessageEventIdxById.get(message.id) ?? MAX_ORDER_INDEX;
@@ -492,6 +493,9 @@ export function useWorkspaceTimeline(
       if (message.role === "assistant") {
         for (const run of editedRuns) {
           run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+        }
+        if (editedRuns.some((r) => r.diffKind !== "none")) {
+          hasEditedRunsWithDiffs = true;
         }
         for (const group of exploreActivityGroups) {
           group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
@@ -1316,6 +1320,10 @@ export function useWorkspaceTimeline(
     }
     for (const event of orphanToolEvents) {
       if (isWorktreeDiffEvent(event)) {
+        const hasRunsWithDiffs = hasEditedRunsWithDiffs;
+        if (hasRunsWithDiffs) {
+          continue;
+        }
         const diff = payloadStringOrNull(event.payload.diff) ?? "";
         const { additions, deletions } = countDiffStats(diff);
         sortable.push({

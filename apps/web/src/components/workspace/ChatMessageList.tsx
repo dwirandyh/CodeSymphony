@@ -746,7 +746,7 @@ function editedSummaryLabel({
   const isDeleteOnly = additions === 0 && deletions > 0;
   const verb = isDeleteOnly ? "Deleted" : "Edited";
 
-  if (diffKind !== "actual") {
+  if (diffKind === "none") {
     return `${verb} ${firstFile}${fileCount}`;
   }
 
