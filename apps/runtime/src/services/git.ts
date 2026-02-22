@@ -44,6 +44,23 @@ export async function detectDefaultBranch(rootPath: string): Promise<string> {
   return "master";
 }
 
+export async function listBranches(rootPath: string): Promise<string[]> {
+  const output = await runGit([
+    "-C", rootPath, "branch", "--all", "--format=%(refname:short)",
+  ]);
+
+  if (!output) return [];
+
+  const branches = output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((branch) => branch.replace(/^origin\//, ""))
+    .filter((branch) => !branch.includes("HEAD"));
+
+  return [...new Set(branches)].sort();
+}
+
 export async function createGitWorktree(args: {
   repositoryPath: string;
   worktreePath: string;

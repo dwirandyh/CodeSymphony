@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { CreateRepositoryInputSchema, UpdateRepositoryScriptsInputSchema, type CreateRepositoryInput, type Repository, type UpdateRepositoryScriptsInput } from "@codesymphony/shared-types";
-import { ensureGitRepository, detectDefaultBranch } from "./git";
+import { ensureGitRepository, detectDefaultBranch, listBranches } from "./git";
 import { mapRepository } from "./mappers";
 
 function normalizeFsPath(inputPath: string): string {
@@ -85,8 +85,17 @@ export function createRepositoryService(prisma: PrismaClient) {
       if (input.setupScript !== undefined) data.setupScript = input.setupScript ? JSON.stringify(input.setupScript) : null;
       if (input.teardownScript !== undefined) data.teardownScript = input.teardownScript ? JSON.stringify(input.teardownScript) : null;
       if (input.runScript !== undefined) data.runScript = input.runScript ? JSON.stringify(input.runScript) : null;
+      if (input.defaultBranch) data.defaultBranch = input.defaultBranch;
       const updated = await prisma.repository.update({ where: { id }, data, include: { worktrees: true } });
       return mapRepository(updated);
+    },
+
+    async listBranches(id: string): Promise<string[]> {
+      const repository = await prisma.repository.findUnique({ where: { id } });
+      if (!repository) {
+        throw new Error("Repository not found");
+      }
+      return listBranches(repository.rootPath);
     },
   };
 }

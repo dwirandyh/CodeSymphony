@@ -142,6 +142,7 @@ export const UpdateRepositoryScriptsInputSchema = z.object({
   setupScript: z.array(z.string()).nullable().optional(),
   teardownScript: z.array(z.string()).nullable().optional(),
   runScript: z.array(z.string()).nullable().optional(),
+  defaultBranch: z.string().trim().min(1).optional(),
 });
 export type UpdateRepositoryScriptsInput = z.infer<typeof UpdateRepositoryScriptsInputSchema>;
 
