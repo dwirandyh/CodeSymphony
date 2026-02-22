@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Menu, X } from "lucide-react";
+import { GitBranch, Menu, Play, Settings, Square, X } from "lucide-react";
 import { Composer } from "../components/workspace/Composer";
 import { ChatMessageList } from "../components/workspace/ChatMessageList";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -10,6 +10,9 @@ import { PlanDecisionComposer } from "../components/workspace/PlanDecisionCompos
 import { QuestionCard } from "../components/workspace/QuestionCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
+import { SettingsDialog } from "../components/workspace/SettingsDialog";
+import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
+import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 
 const DiffReviewPanel = lazy(() =>
   import("../components/workspace/DiffReviewPanel").then(m => ({ default: m.DiffReviewPanel }))
@@ -18,17 +21,20 @@ import { api } from "../lib/api";
 import { cn } from "../lib/utils";
 import { debugLog } from "../lib/debugLog";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
+import type { TeardownErrorState, ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
 import { useChatSession } from "./workspace/hooks/useChatSession";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useSidebarResize } from "./workspace/hooks/useSidebarResize";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "../lib/queryKeys";
 
 type RepoManager = ReturnType<typeof useRepositoryManager>;
 type GitChangesData = ReturnType<typeof useGitChanges>;
 
-const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos }: { repos: RepoManager }) {
+const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos, onOpenSettings }: { repos: RepoManager; onOpenSettings: () => void }) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
 
   return (
@@ -40,26 +46,39 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos }: { repos: Repo
       >
         <div className="mb-3">
           <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
-          <p className="text-xs text-muted-foreground">Local code conductor</p>
+          <p className="text-xs text-muted-foreground">Multi-agent orchestrator</p>
         </div>
 
-        <RepositoryPanel
-          repositories={repos.repositories}
-          selectedRepositoryId={repos.selectedRepositoryId}
-          selectedWorktreeId={repos.selectedWorktreeId}
-          loadingRepos={repos.loadingRepos}
-          submittingRepo={repos.submittingRepo}
-          submittingWorktree={repos.submittingWorktree}
-          onAttachRepository={repos.openFileBrowser}
-          onSelectRepository={repos.setSelectedRepositoryId}
-          onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
-          onSelectWorktree={(repositoryId, worktreeId) => {
-            repos.setSelectedRepositoryId(repositoryId);
-            repos.setSelectedWorktreeId(worktreeId);
-          }}
-          onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
-          onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
-        />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <RepositoryPanel
+            repositories={repos.repositories}
+            selectedRepositoryId={repos.selectedRepositoryId}
+            selectedWorktreeId={repos.selectedWorktreeId}
+            loadingRepos={repos.loadingRepos}
+            submittingRepo={repos.submittingRepo}
+            submittingWorktree={repos.submittingWorktree}
+            onAttachRepository={repos.openFileBrowser}
+            onSelectRepository={repos.setSelectedRepositoryId}
+            onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
+            onSelectWorktree={(repositoryId, worktreeId) => {
+              repos.setSelectedRepositoryId(repositoryId);
+              repos.setSelectedWorktreeId(worktreeId);
+            }}
+            onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
+            onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
+          />
+        </div>
+
+        <div className="shrink-0 border-t border-border/30 pt-2 pb-1 px-0">
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
+            onClick={onOpenSettings}
+          >
+            <Settings className="h-3.5 w-3.5" />
+            Settings
+          </button>
+        </div>
       </aside>
 
       {/* ── Sidebar resize handle ── */}
@@ -188,9 +207,59 @@ export function WorkspacePage() {
 
   const prevWorktreeIdRef = useRef<string | undefined>(search.worktreeId);
 
+  const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
+  const [activeBottomTab, setActiveBottomTab] = useState("terminal");
+  const [activeOutputSection, setActiveOutputSection] = useState<"runner" | "logs">("logs");
+  const [runScriptActive, setRunScriptActive] = useState(false);
+  const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
+
+  const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
+    setScriptOutputs((prev) => {
+      const entryId = `${event.worktreeId}-${event.type}`;
+      const entry: ScriptOutputEntry = {
+        id: entryId,
+        worktreeId: event.worktreeId,
+        worktreeName: event.worktreeName,
+        type: event.type,
+        timestamp: Date.now(),
+        output: event.result?.output ?? "",
+        success: event.result?.success ?? false,
+        status: event.status,
+      };
+      const idx = prev.findIndex((e) => e.id === entryId);
+      if (idx >= 0) {
+        const existing = prev[idx];
+        const copy = [...prev];
+        // Preserve accumulated output when transitioning to completed
+        copy[idx] = { ...entry, output: entry.output || existing.output, timestamp: existing.timestamp };
+        return copy;
+      }
+      return [...prev, entry];
+    });
+    setActiveBottomTab("output");
+    if (event.type === "setup" || event.type === "teardown") {
+      setActiveOutputSection("logs");
+    }
+  }, []);
+
+  const handleTeardownError = useCallback((state: TeardownErrorState) => {
+    setTeardownError(state);
+  }, []);
+
+  const handleScriptOutputChunk = useCallback(({ worktreeId, chunk }: { worktreeId: string; chunk: string }) => {
+    setScriptOutputs((prev) => prev.map((entry) =>
+      entry.worktreeId === worktreeId && entry.status === "running"
+        ? { ...entry, output: entry.output + chunk }
+        : entry
+    ));
+  }, []);
+
   const repos = useRepositoryManager(setError, {
     initialRepoId: search.repoId,
     initialWorktreeId: search.worktreeId,
+    onScriptUpdate: handleScriptUpdate,
+    onScriptOutputChunk: handleScriptOutputChunk,
+    onTeardownError: handleTeardownError,
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
         const worktreeChanged = (selection.worktreeId ?? undefined) !== prevWorktreeIdRef.current;
@@ -227,6 +296,7 @@ export function WorkspacePage() {
   });
   const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
 
   // ── What-changed detector ──
@@ -312,6 +382,90 @@ export function WorkspacePage() {
     updateSearch({ file: undefined, view: "review" });
   }, [updateSearch]);
 
+  const forceDeleteQueryClient = useQueryClient();
+
+  const handleForceDelete = useCallback(async (worktreeId: string) => {
+    try {
+      await api.deleteWorktree(worktreeId, { force: true });
+      setTeardownError(null);
+      if (repos.selectedWorktreeId === worktreeId) {
+        repos.setSelectedWorktreeId(null);
+      }
+      void forceDeleteQueryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Force delete failed");
+      setTeardownError(null);
+    }
+  }, [repos.selectedWorktreeId, repos.setSelectedWorktreeId, forceDeleteQueryClient]);
+
+  const handleRerunSetup = useCallback(() => {
+    if (!repos.selectedWorktreeId) return;
+    setActiveBottomTab("output");
+    setActiveOutputSection("logs");
+    void repos.rerunSetup(repos.selectedWorktreeId);
+  }, [repos.rerunSetup, repos.selectedWorktreeId]);
+
+  const resolveRunScriptSessionId = useCallback(() => {
+    if (!repos.selectedWorktreeId) return null;
+    return `${repos.selectedWorktreeId}:script-runner`;
+  }, [repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    setRunScriptActive(false);
+    setActiveOutputSection("logs");
+  }, [repos.selectedWorktreeId]);
+
+  const handleRunScript = useCallback(async () => {
+    if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
+    const hasRunScript = repos.selectedRepository?.runScript && repos.selectedRepository.runScript.length > 0;
+    if (!hasRunScript) {
+      setSettingsOpen(true);
+      return;
+    }
+    const runCommands = repos.selectedRepository?.runScript ?? [];
+    const command = runCommands.join("\n").trim();
+    if (!command) {
+      setSettingsOpen(true);
+      return;
+    }
+    const sessionId = resolveRunScriptSessionId();
+    if (!sessionId) return;
+
+    try {
+      setActiveBottomTab("output");
+      setActiveOutputSection("runner");
+      await api.runTerminalCommand({
+        sessionId,
+        command,
+        cwd: repos.selectedWorktree.path,
+      });
+      setRunScriptActive(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to run script");
+    }
+  }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, resolveRunScriptSessionId]);
+
+  const handleStopRunScript = useCallback(async () => {
+    const sessionId = resolveRunScriptSessionId();
+    if (!sessionId) return;
+    try {
+      setActiveBottomTab("output");
+      setActiveOutputSection("runner");
+      await api.interruptTerminalSession(sessionId);
+      setRunScriptActive(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to stop script");
+    }
+  }, [resolveRunScriptSessionId]);
+
+  const handleToggleRunScript = useCallback(() => {
+    if (runScriptActive) {
+      void handleStopRunScript();
+      return;
+    }
+    void handleRunScript();
+  }, [handleRunScript, handleStopRunScript, runScriptActive]);
+
   const handleSelectDiffFile = useCallback((filePath: string) => {
     updateSearch({ file: filePath, view: "review" });
   }, [updateSearch]);
@@ -331,7 +485,7 @@ export function WorkspacePage() {
   return (
     <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-3 lg:pb-0">
       <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
-        <WorkspaceSidebar repos={repos} />
+        <WorkspaceSidebar repos={repos} onOpenSettings={() => setSettingsOpen(true)} />
 
         {/* ── Main content area (chat + bottom panel) ── */}
         <main className="flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
@@ -351,6 +505,18 @@ export function WorkspacePage() {
                 {repos.selectedRepository?.name ?? "No repository"}{repos.selectedWorktree ? ` · ${repos.selectedWorktree.branch}` : ""}
               </p>
             </div>
+            <button
+              type="button"
+              onClick={handleToggleRunScript}
+              className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
+              aria-label={runScriptActive ? "Stop script" : "Run script"}
+            >
+              {runScriptActive ? (
+                <Square className="h-4 w-4" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+            </button>
             <button
               type="button"
               onClick={() => setMobilePanelOpen("git")}
@@ -381,6 +547,8 @@ export function WorkspacePage() {
               onCloseThread={(threadId) => void chat.closeThread(threadId)}
               onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
+              runScriptRunning={runScriptActive}
+              onToggleRunScript={handleToggleRunScript}
             />
 
             {error ? (
@@ -473,7 +641,17 @@ export function WorkspacePage() {
             )}
           </div>
 
-          <BottomPanel worktreeId={repos.selectedWorktreeId} worktreePath={repos.selectedWorktree?.path ?? null} selectedThreadId={chat.selectedThreadId} />
+          <BottomPanel
+            worktreeId={repos.selectedWorktreeId}
+            worktreePath={repos.selectedWorktree?.path ?? null}
+            selectedThreadId={chat.selectedThreadId}
+            scriptOutputs={scriptOutputs}
+            activeTab={activeBottomTab}
+            onTabChange={setActiveBottomTab}
+            outputSection={activeOutputSection}
+            onOutputSectionChange={setActiveOutputSection}
+            onRerunSetup={handleRerunSetup}
+          />
         </main>
 
         <WorkspaceRightPanel
@@ -507,7 +685,7 @@ export function WorkspacePage() {
         <div className="flex items-center justify-between px-4 pb-2 pt-4">
           <div>
             <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
-            <p className="text-xs text-muted-foreground">Local code conductor</p>
+            <p className="text-xs text-muted-foreground">Multi-agent orchestrator</p>
           </div>
           <button
             type="button"
@@ -518,7 +696,7 @@ export function WorkspacePage() {
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden px-2 safe-bottom">
+        <div className="min-h-0 flex-1 overflow-hidden px-2">
           <RepositoryPanel
             repositories={repos.repositories}
             selectedRepositoryId={repos.selectedRepositoryId}
@@ -537,6 +715,19 @@ export function WorkspacePage() {
             onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
             onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
           />
+        </div>
+        <div className="shrink-0 border-t border-border/30 px-4 pt-2 pb-3 safe-bottom">
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground transition-colors active:bg-secondary/60"
+            onClick={() => {
+              setMobilePanelOpen(null);
+              setSettingsOpen(true);
+            }}
+          >
+            <Settings className="h-3.5 w-3.5" />
+            Settings
+          </button>
         </div>
       </aside>
 
@@ -579,6 +770,25 @@ export function WorkspacePage() {
         open={repos.fileBrowserOpen}
         onClose={() => repos.setFileBrowserOpen(false)}
         onSelect={(path) => void repos.attachRepositoryFromPath(path)}
+      />
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        repositories={repos.repositories}
+        onRemoveRepository={(id) => {
+          setSettingsOpen(false);
+          void repos.removeRepository(id);
+        }}
+      />
+
+      <TeardownErrorDialog
+        open={teardownError !== null}
+        worktreeId={teardownError?.worktreeId ?? null}
+        worktreeName={teardownError?.worktreeName ?? ""}
+        output={teardownError?.output ?? ""}
+        onForceDelete={(id) => void handleForceDelete(id)}
+        onClose={() => setTeardownError(null)}
       />
     </div>
   );

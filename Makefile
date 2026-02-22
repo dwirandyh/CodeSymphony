@@ -10,6 +10,9 @@ help:
 	@echo "  make dev-runtime   - Run runtime only"
 	@echo "  make dev-web       - Run web only"
 	@echo "  make dev-desktop   - Run desktop shell"
+	@echo "  make run           - Run production runtime + web (builds first)"
+	@echo "  make run-runtime   - Run production runtime only"
+	@echo "  make run-web       - Run production web only"
 	@echo "  make db-generate   - Generate Prisma client"
 	@echo "  make db-migrate    - Run Prisma migrations"
 	@echo "  make db-seed       - Seed the database"
@@ -40,6 +43,15 @@ dev-web:
 
 dev-desktop:
 	$(PNPM) dev:desktop
+
+run: stop-dev
+	$(PNPM) run run
+
+run-runtime:
+	$(PNPM) run:runtime
+
+run-web:
+	$(PNPM) run:web
 
 db-generate:
 	$(PNPM) db:generate

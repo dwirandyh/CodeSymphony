@@ -16,7 +16,9 @@ import type {
   RenameWorktreeBranchInput,
   ResolvePermissionInput,
   Repository,
+  ScriptResult,
   SendChatMessageInput,
+  UpdateRepositoryScriptsInput,
   Worktree,
 } from "@codesymphony/shared-types";
 
@@ -26,6 +28,15 @@ const DEFAULT_RUNTIME_URL =
     : `${window.location.protocol}//${window.location.hostname}:4321/api`;
 
 const API_BASE = import.meta.env.VITE_RUNTIME_URL ?? DEFAULT_RUNTIME_URL;
+
+export class TeardownFailedError extends Error {
+  public readonly output: string;
+  constructor(output: string) {
+    super("Teardown scripts failed");
+    this.name = "TeardownFailedError";
+    this.output = output;
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -57,18 +68,47 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  createWorktree: (repositoryId: string, input: CreateWorktreeInput = {}) =>
-    request<Worktree>(`/repositories/${repositoryId}/worktrees`, {
-      method: "POST",
+  updateRepositoryScripts: (id: string, input: UpdateRepositoryScriptsInput) =>
+    request<Repository>(`/repositories/${id}/scripts`, {
+      method: "PATCH",
       body: JSON.stringify(input),
     }),
-  deleteWorktree: async (worktreeId: string) => {
-    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}`, {
+  deleteRepository: async (repositoryId: string) => {
+    const response = await fetch(`${API_BASE}/repositories/${repositoryId}`, {
       method: "DELETE",
     });
 
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to delete repository");
+    }
+  },
+  createWorktree: async (repositoryId: string, input: CreateWorktreeInput = {}): Promise<{ worktree: Worktree; scriptResult?: ScriptResult }> => {
+    const response = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(payload?.error ?? "Failed to create worktree");
+    }
+
+    return { worktree: payload.data as Worktree, scriptResult: payload.scriptResult as ScriptResult | undefined };
+  },
+  deleteWorktree: async (worktreeId: string, options?: { force?: boolean }) => {
+    const query = options?.force ? "?force=true" : "";
+    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}${query}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      if (response.status === 409 && payload?.output) {
+        throw new TeardownFailedError(payload.output);
+      }
       throw new Error(payload?.error ?? "Failed to delete worktree");
     }
   },
@@ -78,6 +118,50 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
+  rerunSetupScripts: (worktreeId: string) =>
+    request<ScriptResult>(`/worktrees/${worktreeId}/run-setup`, {
+      method: "POST",
+    }),
+  runSetupStream: (worktreeId: string): EventSource =>
+    new EventSource(`${API_BASE}/worktrees/${worktreeId}/run-setup/stream`),
+  stopSetupScript: async (worktreeId: string): Promise<void> => {
+    await fetch(`${API_BASE}/worktrees/${worktreeId}/run-setup/stop`, {
+      method: "POST",
+    });
+  },
+  runScriptStream: (worktreeId: string, cmd?: string): EventSource => {
+    const params = cmd ? `?cmd=${encodeURIComponent(cmd)}` : "";
+    return new EventSource(`${API_BASE}/worktrees/${worktreeId}/run-script/stream${params}`);
+  },
+  stopRunScript: async (worktreeId: string): Promise<void> => {
+    await fetch(`${API_BASE}/worktrees/${worktreeId}/run-script/stop`, {
+      method: "POST",
+    });
+  },
+  runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string }): Promise<void> => {
+    const response = await fetch(`${API_BASE}/terminal/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to run terminal command");
+    }
+  },
+  interruptTerminalSession: async (sessionId: string): Promise<void> => {
+    const response = await fetch(`${API_BASE}/terminal/interrupt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to stop terminal command");
+    }
+  },
   listThreads: (worktreeId: string) => request<ChatThread[]>(`/worktrees/${worktreeId}/threads`),
   createThread: (worktreeId: string, input: CreateChatThreadInput = {}) =>
     request<ChatThread>(`/worktrees/${worktreeId}/threads`, {

@@ -261,7 +261,7 @@ export function RepositoryPanel({
                                 <span className="whitespace-nowrap text-[10px] text-muted-foreground">{worktree.baseBranch}</span>
                               </div>
 
-                              {/* Hover: delete button */}
+                              {/* Hover: action buttons */}
                               <div className="absolute inset-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:opacity-100">
                                 <Button
                                   type="button"

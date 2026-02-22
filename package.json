@@ -8,15 +8,15 @@
     "dev:web": "pnpm --filter @codesymphony/web dev",
     "dev:runtime": "pnpm --filter @codesymphony/runtime dev",
     "dev:desktop": "pnpm --filter @codesymphony/desktop dev",
-    "docker:up": "docker compose -f infra/docker/docker-compose.yml up --build",
-    "docker:down": "docker compose -f infra/docker/docker-compose.yml down",
-    "docker:logs": "docker compose -f infra/docker/docker-compose.yml logs -f",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
     "db:generate": "pnpm --filter @codesymphony/runtime prisma:generate",
     "db:migrate": "pnpm --filter @codesymphony/runtime prisma:migrate",
-    "db:seed": "DATABASE_URL=\"file:./dev.db\" pnpm --filter @codesymphony/runtime prisma:seed"
+    "db:seed": "DATABASE_URL=\"file:./dev.db\" pnpm --filter @codesymphony/runtime prisma:seed",
+    "run": "turbo run build --filter=@codesymphony/runtime --filter=@codesymphony/web && (pnpm --filter @codesymphony/web preview & pnpm --filter @codesymphony/runtime start & wait)",
+    "run:web": "pnpm --filter @codesymphony/web preview",
+    "run:runtime": "pnpm --filter @codesymphony/runtime start"
   },
   "devDependencies": {
     "playwright": "^1.58.2",

@@ -1,6 +1,42 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+
+const runTerminalInputSchema = z.object({
+    sessionId: z.string().min(1),
+    command: z.string().min(1),
+    cwd: z.string().min(1).optional(),
+});
+const interruptTerminalInputSchema = z.object({
+    sessionId: z.string().min(1),
+});
 
 export async function registerTerminalRoutes(app: FastifyInstance) {
+    app.post("/terminal/run", async (request, reply) => {
+        try {
+            const input = runTerminalInputSchema.parse(request.body ?? {});
+            app.terminalService.spawn(input.sessionId, input.cwd);
+            app.terminalService.write(input.sessionId, `${input.command}\r`);
+            return reply.code(204).send();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to run terminal command";
+            return reply.code(400).send({ error: message });
+        }
+    });
+
+    app.post("/terminal/interrupt", async (request, reply) => {
+        try {
+            const input = interruptTerminalInputSchema.parse(request.body ?? {});
+            if (!app.terminalService.has(input.sessionId)) {
+                return reply.code(404).send({ error: "Terminal session not found" });
+            }
+            app.terminalService.write(input.sessionId, "\u0003");
+            return reply.code(204).send();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to interrupt terminal command";
+            return reply.code(400).send({ error: message });
+        }
+    });
+
     app.get(
         "/terminal/ws",
         { websocket: true },
