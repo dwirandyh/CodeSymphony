@@ -184,8 +184,13 @@ export function useChatSession(
     // Mark worktree change as processed only after threads are available
     prevWorktreeIdRef2.current = selectedWorktreeId;
 
-    // Sync threads list
-    setThreads(queriedThreads);
+    // Sync threads list — only update if threads actually differ
+    setThreads((current) => {
+      if (current.length === queriedThreads.length && current.every((t, i) => t.id === queriedThreads[i].id && t.title === queriedThreads[i].title)) {
+        return current;
+      }
+      return queriedThreads;
+    });
 
     if (queriedThreads.length > 0) {
       if (worktreeChanged || selectedThreadId == null) {
@@ -277,7 +282,11 @@ export function useChatSession(
           merged.set(m.id, m);
         }
       }
-      return [...merged.values()].sort((a, b) => a.seq - b.seq);
+      const sorted = [...merged.values()].sort((a, b) => a.seq - b.seq);
+      if (sorted.length === current.length && sorted.every((m, i) => m.id === current[i].id && m.content.length === current[i].content.length)) {
+        return current;
+      }
+      return sorted;
     });
   }, [queriedMessages, selectedThreadId]);
 
@@ -303,11 +312,27 @@ export function useChatSession(
       // Same thread → merge with SSE-delivered data
       if (!queriedEvents) return;
       setEvents((current) => {
+        // Fast-path: if local state already covers all queried events, skip the
+        // merge entirely. This prevents producing a new array reference when
+        // the only difference is object identity (SSE-delivered vs API-returned),
+        // which would otherwise cause an infinite render loop on large threads.
+        if (current.length > 0 && queriedEvents.length > 0) {
+          const currentLastIdx = current[current.length - 1].idx;
+          const queriedLastIdx = queriedEvents[queriedEvents.length - 1].idx;
+          if (current.length >= queriedEvents.length && currentLastIdx >= queriedLastIdx) {
+            return current; // no-op — local state is ahead or equal
+          }
+        }
+
         const seen = new Set<string>();
         const merged: ChatEvent[] = [];
         for (const e of queriedEvents) { seen.add(e.id); merged.push(e); }
         for (const e of current) { if (!seen.has(e.id)) merged.push(e); }
-        return merged.sort((a, b) => a.idx - b.idx);
+        const sorted = merged.sort((a, b) => a.idx - b.idx);
+        if (sorted.length === current.length && sorted.every((e, i) => e.id === current[i].id && e.idx === current[i].idx)) {
+          return current;
+        }
+        return sorted;
       });
     }
 
@@ -329,11 +354,13 @@ export function useChatSession(
     }
 
     if (latestThreadTitle) {
-      setThreads((current) =>
-        current.map((t) =>
+      setThreads((current) => {
+        const target = current.find((t) => t.id === selectedThreadId);
+        if (target && target.title === latestThreadTitle) return current;
+        return current.map((t) =>
           t.id === selectedThreadId ? { ...t, title: latestThreadTitle } : t,
-        ),
-      );
+        );
+      });
     }
 
     if (latestWorktreeBranch && selectedWorktreeId) {
@@ -524,11 +551,13 @@ export function useChatSession(
         const completedBranch = payloadStringOrNull(payload.payload.worktreeBranch);
         if (completedMessageId.length > 0) streamingMessageIdsRef.current.delete(completedMessageId);
         if (completedThreadTitle) {
-          setThreads((current) =>
-            current.map((t) =>
+          setThreads((current) => {
+            const target = current.find((t) => t.id === selectedThreadId);
+            if (target && target.title === completedThreadTitle) return current;
+            return current.map((t) =>
               t.id === selectedThreadId ? { ...t, title: completedThreadTitle } : t,
-            ),
-          );
+            );
+          });
         }
         if (completedBranch && selectedWorktreeId) {
           onBranchRenamed?.(selectedWorktreeId, completedBranch);
@@ -539,9 +568,12 @@ export function useChatSession(
           messageId: completedMessageId,
           details: { idx: payload.idx },
         });
-        // Invalidate queries to re-seed fresh data
+        // Invalidate messages query to re-seed fresh data.
+        // NOTE: Do NOT invalidate events here — local state is already fully
+        // up-to-date from SSE. Re-fetching events triggers a merge that
+        // produces a new array reference on every cycle, causing an infinite
+        // render loop ("Maximum update depth exceeded") on large threads.
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.messages(selectedThreadId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.events(selectedThreadId) });
       }
     };
 

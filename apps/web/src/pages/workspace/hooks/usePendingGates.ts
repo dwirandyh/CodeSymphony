@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { debugLog } from "../../../lib/debugLog";
 import { useResolvePermission } from "../../../hooks/mutations/useResolvePermission";
@@ -58,6 +58,11 @@ export function usePendingGates(
   const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(() => new Set());
   const [planActionBusy, setPlanActionBusy] = useState(false);
   const [closedPlanDecision, setClosedPlanDecision] = useState<{ threadId: string; createdIdx: number } | null>(null);
+
+  const prevPendingRef = useRef<{
+    permIds: string; qIds: string;
+    perms: PendingPermissionRequest[]; qs: PendingQuestionRequest[];
+  }>({ permIds: "", qIds: "", perms: [], qs: [] });
 
   // Reset all gate-local state when switching threads so Thread A's
   // in-flight actions don't leak into Thread B.
@@ -137,9 +142,19 @@ export function usePendingGates(
       }
     }
 
+    const newPermRequests = Array.from(pendingPermById.values()).sort((a, b) => a.idx - b.idx);
+    const newQRequests = Array.from(pendingQById.values()).sort((a, b) => a.idx - b.idx);
+
+    const newPermIds = newPermRequests.map(r => r.requestId).join(",");
+    const newQIds = newQRequests.map(r => r.requestId).join(",");
+    if (newPermIds === prevPendingRef.current.permIds && newQIds === prevPendingRef.current.qIds) {
+      return { pendingPermissionRequests: prevPendingRef.current.perms, pendingQuestionRequests: prevPendingRef.current.qs };
+    }
+    prevPendingRef.current = { permIds: newPermIds, qIds: newQIds, perms: newPermRequests, qs: newQRequests };
+
     return {
-      pendingPermissionRequests: Array.from(pendingPermById.values()).sort((a, b) => a.idx - b.idx),
-      pendingQuestionRequests: Array.from(pendingQById.values()).sort((a, b) => a.idx - b.idx),
+      pendingPermissionRequests: newPermRequests,
+      pendingQuestionRequests: newQRequests,
     };
   }, [events]);
 
