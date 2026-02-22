@@ -9,6 +9,30 @@ const WS_BASE =
         ? "ws://127.0.0.1:4321/api"
         : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:4321/api`;
 
+const XTERM_THEME: Record<string, string> = {
+    background: "#0f1218",
+    foreground: "#d4d8e0",
+    cursor: "#3b9eff",
+    cursorAccent: "#0f1218",
+    selectionBackground: "rgba(59, 158, 255, 0.25)",
+    black: "#1a1e26",
+    red: "#e5534b",
+    green: "#57ab5a",
+    yellow: "#c69026",
+    blue: "#539bf5",
+    magenta: "#b083f0",
+    cyan: "#39c5cf",
+    white: "#d4d8e0",
+    brightBlack: "#636e7b",
+    brightRed: "#ff7b72",
+    brightGreen: "#7ee787",
+    brightYellow: "#e3b341",
+    brightBlue: "#79c0ff",
+    brightMagenta: "#d2a8ff",
+    brightCyan: "#56d4dd",
+    brightWhite: "#f0f3f6",
+};
+
 interface TerminalTabProps {
     sessionId: string;
     cwd: string | null;
@@ -39,29 +63,7 @@ export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
             fontSize: 13,
             fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
             lineHeight: 1.3,
-            theme: {
-                background: "#0f1218",
-                foreground: "#d4d8e0",
-                cursor: "#3b9eff",
-                cursorAccent: "#0f1218",
-                selectionBackground: "rgba(59, 158, 255, 0.25)",
-                black: "#1a1e26",
-                red: "#e5534b",
-                green: "#57ab5a",
-                yellow: "#c69026",
-                blue: "#539bf5",
-                magenta: "#b083f0",
-                cyan: "#39c5cf",
-                white: "#d4d8e0",
-                brightBlack: "#636e7b",
-                brightRed: "#ff7b72",
-                brightGreen: "#7ee787",
-                brightYellow: "#e3b341",
-                brightBlue: "#79c0ff",
-                brightMagenta: "#d2a8ff",
-                brightCyan: "#56d4dd",
-                brightWhite: "#f0f3f6",
-            },
+            theme: XTERM_THEME,
             allowProposedApi: true,
             scrollback: 5000,
         });

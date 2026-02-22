@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { api } from "../../../lib/api";
+import { debugLog } from "../../../lib/debugLog";
+import { useResolvePermission } from "../../../hooks/mutations/useResolvePermission";
+import { useAnswerQuestion } from "../../../hooks/mutations/useAnswerQuestion";
+import { useApprovePlan } from "../../../hooks/mutations/useApprovePlan";
+import { useRevisePlan } from "../../../hooks/mutations/useRevisePlan";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
 
@@ -45,27 +49,35 @@ export function usePendingGates(
 ) {
   const { onError, startWaitingAssistant, clearWaitingAssistantForThread } = deps;
 
-  const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(new Set());
-  const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(new Set());
+  const resolvePermissionMutation = useResolvePermission();
+  const answerQuestionMutation = useAnswerQuestion();
+  const approvePlanMutation = useApprovePlan();
+  const revisePlanMutation = useRevisePlan();
+
+  const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set());
+  const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(() => new Set());
   const [planActionBusy, setPlanActionBusy] = useState(false);
   const [closedPlanDecision, setClosedPlanDecision] = useState<{ threadId: string; createdIdx: number } | null>(null);
 
   // Reset all gate-local state when switching threads so Thread A's
   // in-flight actions don't leak into Thread B.
   useEffect(() => {
+    debugLog("usePendingGates", "thread reset effect", { selectedThreadId });
     setPlanActionBusy(false);
     setResolvingPermissionIds(new Set());
     setAnsweringQuestionIds(new Set());
     setClosedPlanDecision(null);
   }, [selectedThreadId]);
 
-  // ── Pending permission requests ──
+  // ── Pending permission + question requests (single pass) ──
 
-  const pendingPermissionRequests = useMemo<PendingPermissionRequest[]>(() => {
-    const pendingById = new Map<string, PendingPermissionRequest>();
+  const { pendingPermissionRequests, pendingQuestionRequests } = useMemo(() => {
+    const pendingPermById = new Map<string, PendingPermissionRequest>();
+    const pendingQById = new Map<string, PendingQuestionRequest>();
     const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
 
     for (const event of orderedEvents) {
+      // Permission events
       if (event.type === "permission.requested") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
         if (requestId.length === 0) continue;
@@ -74,7 +86,7 @@ export function usePendingGates(
         const editTargetRaw = extractEditTarget(toolName, toolInput);
         const editTarget = editTargetRaw ? shortenReadTargetForDisplay(editTargetRaw) : null;
 
-        pendingById.set(requestId, {
+        pendingPermById.set(requestId, {
           requestId,
           toolName,
           command: typeof event.payload.command === "string" ? event.payload.command : null,
@@ -88,49 +100,10 @@ export function usePendingGates(
 
       if (event.type === "permission.resolved") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
-        if (requestId.length > 0) pendingById.delete(requestId);
+        if (requestId.length > 0) pendingPermById.delete(requestId);
       }
 
-      if (event.type === "chat.completed" || event.type === "chat.failed") {
-        pendingById.clear();
-      }
-    }
-
-    return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
-  }, [events]);
-
-  async function resolvePermission(requestId: string, decision: "allow" | "allow_always" | "deny") {
-    if (!selectedThreadId) return;
-
-    if (decision !== "deny") startWaitingAssistant(selectedThreadId);
-    setResolvingPermissionIds((current) => {
-      const next = new Set(current);
-      next.add(requestId);
-      return next;
-    });
-    onError(null);
-
-    try {
-      await api.resolvePermission(selectedThreadId, { requestId, decision });
-    } catch (e) {
-      if (decision !== "deny") clearWaitingAssistantForThread(selectedThreadId);
-      onError(e instanceof Error ? e.message : "Failed to resolve permission");
-    } finally {
-      setResolvingPermissionIds((current) => {
-        const next = new Set(current);
-        next.delete(requestId);
-        return next;
-      });
-    }
-  }
-
-  // ── Pending question requests ──
-
-  const pendingQuestionRequests = useMemo<PendingQuestionRequest[]>(() => {
-    const pendingById = new Map<string, PendingQuestionRequest>();
-    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
-
-    for (const event of orderedEvents) {
+      // Question events
       if (event.type === "question.requested") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
         if (requestId.length === 0) continue;
@@ -148,22 +121,55 @@ export function usePendingGates(
           multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : undefined,
         }));
 
-        pendingById.set(requestId, { requestId, questions, idx: event.idx });
+        pendingQById.set(requestId, { requestId, questions, idx: event.idx });
         continue;
       }
 
       if (event.type === "question.answered") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
-        if (requestId.length > 0) pendingById.delete(requestId);
+        if (requestId.length > 0) pendingQById.delete(requestId);
       }
 
+      // Terminal events clear both
       if (event.type === "chat.completed" || event.type === "chat.failed") {
-        pendingById.clear();
+        pendingPermById.clear();
+        pendingQById.clear();
       }
     }
 
-    return Array.from(pendingById.values()).sort((a, b) => a.idx - b.idx);
+    return {
+      pendingPermissionRequests: Array.from(pendingPermById.values()).sort((a, b) => a.idx - b.idx),
+      pendingQuestionRequests: Array.from(pendingQById.values()).sort((a, b) => a.idx - b.idx),
+    };
   }, [events]);
+
+  async function resolvePermission(requestId: string, decision: "allow" | "allow_always" | "deny") {
+    if (!selectedThreadId) return;
+
+    if (decision !== "deny") startWaitingAssistant(selectedThreadId);
+    setResolvingPermissionIds((current) => {
+      const next = new Set(current);
+      next.add(requestId);
+      return next;
+    });
+    onError(null);
+
+    try {
+      await resolvePermissionMutation.mutateAsync({
+        threadId: selectedThreadId,
+        input: { requestId, decision },
+      });
+    } catch (e) {
+      if (decision !== "deny") clearWaitingAssistantForThread(selectedThreadId);
+      onError(e instanceof Error ? e.message : "Failed to resolve permission");
+    } finally {
+      setResolvingPermissionIds((current) => {
+        const next = new Set(current);
+        next.delete(requestId);
+        return next;
+      });
+    }
+  }
 
   async function answerQuestion(requestId: string, answers: Record<string, string>) {
     if (!selectedThreadId) return;
@@ -177,7 +183,10 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.answerQuestion(selectedThreadId, { requestId, answers });
+      await answerQuestionMutation.mutateAsync({
+        threadId: selectedThreadId,
+        input: { requestId, answers },
+      });
     } catch (e) {
       clearWaitingAssistantForThread(selectedThreadId);
       onError(e instanceof Error ? e.message : "Failed to answer question");
@@ -235,7 +244,7 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.approvePlan(selectedThreadId);
+      await approvePlanMutation.mutateAsync(selectedThreadId);
       if (pendingPlan) {
         setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
       }
@@ -255,7 +264,10 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.revisePlan(selectedThreadId, { feedback });
+      await revisePlanMutation.mutateAsync({
+        threadId: selectedThreadId,
+        input: { feedback },
+      });
       if (pendingPlan) {
         setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
       }

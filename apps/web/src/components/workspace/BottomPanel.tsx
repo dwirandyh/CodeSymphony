@@ -1,11 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { TerminalTab } from "./TerminalTab";
 import { DebugConsoleTab } from "./DebugConsoleTab";
+
+const TerminalTab = lazy(() =>
+    import("./TerminalTab").then(m => ({ default: m.TerminalTab }))
+);
 
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT_RATIO = 0.6;
 const DEFAULT_HEIGHT = 250;
+
+const collapseIcon = (
+    <svg
+        width="12"
+        height="12"
+        viewBox="0 0 12 12"
+        fill="none"
+    >
+        <path
+            d="M3 4.5L6 7.5L9 4.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+        />
+    </svg>
+);
 
 interface BottomPanelProps {
     worktreeId: string | null;
@@ -111,21 +131,9 @@ export function BottomPanel({ worktreeId, worktreePath, selectedThreadId }: Bott
                         onClick={() => setCollapsed((prev) => !prev)}
                         title={collapsed ? "Expand panel" : "Collapse panel"}
                     >
-                        <svg
-                            width="12"
-                            height="12"
-                            viewBox="0 0 12 12"
-                            fill="none"
-                            className={`transition-transform ${collapsed ? "rotate-180" : ""}`}
-                        >
-                            <path
-                                d="M3 4.5L6 7.5L9 4.5"
-                                stroke="currentColor"
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                            />
-                        </svg>
+                        <span className={`inline-block transition-transform ${collapsed ? "rotate-180" : ""}`}>
+                            {collapseIcon}
+                        </span>
                     </button>
                 </div>
 
@@ -151,7 +159,9 @@ export function BottomPanel({ worktreeId, worktreePath, selectedThreadId }: Bott
                     </div>
 
                     <Tabs.Content value="terminal" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                        <TerminalTab sessionId={worktreeId && selectedThreadId ? `${worktreeId}:${selectedThreadId}` : worktreeId ?? "default"} cwd={worktreePath} />
+                        <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                            <TerminalTab sessionId={worktreeId && selectedThreadId ? `${worktreeId}:${selectedThreadId}` : worktreeId ?? "default"} cwd={worktreePath} />
+                        </Suspense>
                     </Tabs.Content>
 
                     <Tabs.Content value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">

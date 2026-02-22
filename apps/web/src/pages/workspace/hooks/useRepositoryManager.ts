@@ -1,16 +1,43 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Repository } from "@codesymphony/shared-types";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../../lib/api";
+import { queryKeys } from "../../../lib/queryKeys";
+import { useRepositories } from "../../../hooks/queries/useRepositories";
+import { debugLog } from "../../../lib/debugLog";
+import { useCreateRepository } from "../../../hooks/mutations/useCreateRepository";
+import { useCreateWorktree } from "../../../hooks/mutations/useCreateWorktree";
+import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
+import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { findRepositoryByWorktree } from "../eventUtils";
 
-export function useRepositoryManager(onError: (msg: string | null) => void) {
-  const [repositories, setRepositories] = useState<Repository[]>([]);
+interface UseRepositoryManagerOptions {
+  initialRepoId?: string;
+  initialWorktreeId?: string;
+  onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
+}
+
+export function useRepositoryManager(
+  onError: (msg: string | null) => void,
+  options?: UseRepositoryManagerOptions,
+) {
+  const queryClient = useQueryClient();
+  const { data: repositories = [], isLoading: loadingRepos } = useRepositories();
+
+  const createRepoMutation = useCreateRepository();
+  const createWorktreeMutation = useCreateWorktree();
+  const deleteWorktreeMutation = useDeleteWorktree();
+  const renameBranchMutation = useRenameWorktreeBranch();
+
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
-  const [loadingRepos, setLoadingRepos] = useState(false);
-  const [submittingRepo, setSubmittingRepo] = useState(false);
-  const [submittingWorktree, setSubmittingWorktree] = useState(false);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+
+  const initialAppliedRef = useRef(false);
+  const prevSelectionRef = useRef<{ repoId: string | null; worktreeId: string | null }>({
+    repoId: null,
+    worktreeId: null,
+  });
 
   const selectedRepository = useMemo(() => {
     if (selectedRepositoryId) {
@@ -28,32 +55,80 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
     return null;
   }, [repositories, selectedWorktreeId]);
 
-  async function loadRepositories() {
-    setLoadingRepos(true);
-    onError(null);
+  // Auto-select first repo/worktree when data arrives, respecting initial URL IDs
+  useEffect(() => {
+    debugLog("useRepositoryManager", "auto-select effect", {
+      reposLength: repositories.length,
+      selectedRepositoryId,
+      selectedWorktreeId,
+      initialApplied: initialAppliedRef.current,
+    });
+    if (repositories.length === 0) return;
 
-    try {
-      const data = await api.listRepositories();
-      setRepositories(data);
+    if (!initialAppliedRef.current && (options?.initialWorktreeId || options?.initialRepoId)) {
+      initialAppliedRef.current = true;
 
-      if (!selectedRepositoryId && data[0]) {
-        setSelectedRepositoryId(data[0].id);
+      // Validate initialWorktreeId against fetched data
+      if (options.initialWorktreeId) {
+        let foundRepo: Repository | undefined;
+        for (const repo of repositories) {
+          if (repo.worktrees.some((w) => w.id === options.initialWorktreeId)) {
+            foundRepo = repo;
+            break;
+          }
+        }
+        if (foundRepo) {
+          setSelectedRepositoryId(foundRepo.id);
+          setSelectedWorktreeId(options.initialWorktreeId);
+          return;
+        }
       }
-      if (!selectedWorktreeId) {
-        const firstWorktree = data[0]?.worktrees[0];
-        if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+
+      // Validate initialRepoId against fetched data
+      if (options.initialRepoId) {
+        const repo = repositories.find((r) => r.id === options.initialRepoId);
+        if (repo) {
+          setSelectedRepositoryId(repo.id);
+          const firstWorktree = repo.worktrees[0];
+          if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+          return;
+        }
       }
-    } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to load repositories");
-    } finally {
-      setLoadingRepos(false);
+      // Fall through to auto-select if URL IDs were invalid
     }
-  }
+
+    if (!initialAppliedRef.current) {
+      initialAppliedRef.current = true;
+    }
+
+    if (!selectedRepositoryId && repositories[0]) {
+      setSelectedRepositoryId(repositories[0].id);
+    }
+    if (!selectedWorktreeId) {
+      const firstWorktree = repositories[0]?.worktrees[0];
+      if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+    }
+  }, [repositories, selectedRepositoryId, selectedWorktreeId]);
+
+  // Notify parent when selection changes
+  useEffect(() => {
+    const prev = prevSelectionRef.current;
+    const willFire = prev.repoId !== selectedRepositoryId || prev.worktreeId !== selectedWorktreeId;
+    debugLog("useRepositoryManager", "notification effect", {
+      prevRepoId: prev.repoId,
+      prevWorktreeId: prev.worktreeId,
+      selectedRepositoryId,
+      selectedWorktreeId,
+      willFire,
+    });
+    if (willFire) {
+      prevSelectionRef.current = { repoId: selectedRepositoryId, worktreeId: selectedWorktreeId };
+      options?.onSelectionChange?.({ repoId: selectedRepositoryId, worktreeId: selectedWorktreeId });
+    }
+  }, [selectedRepositoryId, selectedWorktreeId]);
 
   async function attachRepository() {
-    setSubmittingRepo(true);
     onError(null);
-
     try {
       let path = "";
       try {
@@ -66,15 +141,10 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
             : window.prompt("Enter the repository path on the runtime machine", "");
         path = manualPath?.trim() ?? "";
       }
-
       if (!path) return;
-
-      await api.createRepository({ path });
-      await loadRepositories();
+      await createRepoMutation.mutateAsync({ path });
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to add repository");
-    } finally {
-      setSubmittingRepo(false);
     }
   }
 
@@ -83,44 +153,32 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
   }
 
   async function attachRepositoryFromPath(path: string) {
-    setSubmittingRepo(true);
     onError(null);
-
     try {
-      await api.createRepository({ path });
-      await loadRepositories();
+      await createRepoMutation.mutateAsync({ path });
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to add repository");
-    } finally {
-      setSubmittingRepo(false);
     }
   }
 
   async function submitWorktree(repositoryId: string) {
-    setSubmittingWorktree(true);
     onError(null);
-
     try {
-      const created = await api.createWorktree(repositoryId);
-      await loadRepositories();
+      const created = await createWorktreeMutation.mutateAsync({ repositoryId });
       setSelectedWorktreeId(created.id);
       setSelectedRepositoryId(repositoryId);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create worktree");
-    } finally {
-      setSubmittingWorktree(false);
     }
   }
 
   async function removeWorktree(worktreeId: string) {
     onError(null);
-
     try {
-      await api.deleteWorktree(worktreeId);
+      await deleteWorktreeMutation.mutateAsync(worktreeId);
       if (selectedWorktreeId === worktreeId) {
         setSelectedWorktreeId(null);
       }
-      await loadRepositories();
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to delete worktree");
     }
@@ -129,34 +187,22 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
   async function renameWorktreeBranch(worktreeId: string, newBranch: string) {
     onError(null);
     try {
-      const updated = await api.renameWorktreeBranch(worktreeId, { branch: newBranch });
-      setRepositories((current) =>
-        current.map((repo) => ({
-          ...repo,
-          worktrees: repo.worktrees.map((wt) =>
-            wt.id === worktreeId ? { ...wt, branch: updated.branch, branchRenamed: updated.branchRenamed } : wt,
-          ),
-        })),
-      );
+      await renameBranchMutation.mutateAsync({ worktreeId, input: { branch: newBranch } });
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to rename branch");
     }
   }
 
-  function updateWorktreeBranch(worktreeId: string, newBranch: string) {
-    setRepositories((current) =>
-      current.map((repo) => ({
+  const updateWorktreeBranch = useCallback((worktreeId: string, newBranch: string) => {
+    queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (old) =>
+      old?.map((repo) => ({
         ...repo,
         worktrees: repo.worktrees.map((wt) =>
           wt.id === worktreeId ? { ...wt, branch: newBranch } : wt,
         ),
       })),
     );
-  }
-
-  useEffect(() => {
-    void loadRepositories();
-  }, []);
+  }, [queryClient]);
 
   return {
     repositories,
@@ -165,8 +211,8 @@ export function useRepositoryManager(onError: (msg: string | null) => void) {
     selectedRepository,
     selectedWorktree,
     loadingRepos,
-    submittingRepo,
-    submittingWorktree,
+    submittingRepo: createRepoMutation.isPending,
+    submittingWorktree: createWorktreeMutation.isPending,
     setSelectedRepositoryId,
     setSelectedWorktreeId,
     attachRepository,

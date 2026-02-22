@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { Bot, Brain, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2 } from "lucide-react";
 import type { SubagentStep } from "../../pages/workspace/types";
@@ -35,6 +35,13 @@ export type ActivityTraceStep = {
   label: string;
   detail: string;
 };
+
+// ── Hoisted RegExp constants ──
+const ANSI_ESCAPE_REGEX = /\u001b\[([0-9;]*)m/g;
+const DIFF_HEADER_REGEX = /^(diff --git .+|--- [^\r\n]+|\+\+\+ [^\r\n]+|@@ .+ @@)/m;
+const CODE_FENCE_REGEX = /(^|\n)```/g;
+const CLOSE_FENCE_REGEX = /^`{3,}$/;
+const WHITESPACE_REGEX = /\s/;
 
 export type ChatTimelineItem =
   | {
@@ -256,7 +263,7 @@ function applyAnsiCodes(state: AnsiStyleState, rawCodes: number[]): AnsiStyleSta
 
 function toAnsiSegments(input: string): AnsiSegment[] {
   const segments: AnsiSegment[] = [];
-  const pattern = /\u001b\[([0-9;]*)m/g;
+  ANSI_ESCAPE_REGEX.lastIndex = 0;
   let state: AnsiStyleState = {
     fgColor: null,
     bold: false,
@@ -265,7 +272,7 @@ function toAnsiSegments(input: string): AnsiSegment[] {
   let cursor = 0;
 
   while (true) {
-    const match = pattern.exec(input);
+    const match = ANSI_ESCAPE_REGEX.exec(input);
     if (!match) {
       break;
     }
@@ -285,7 +292,7 @@ function toAnsiSegments(input: string): AnsiSegment[] {
       .filter((entry) => entry.length > 0)
       .map((entry) => Number(entry));
     state = applyAnsiCodes(state, rawCodes);
-    cursor = pattern.lastIndex;
+    cursor = ANSI_ESCAPE_REGEX.lastIndex;
   }
 
   if (cursor < input.length) {
@@ -309,7 +316,7 @@ function toAnsiSegments(input: string): AnsiSegment[] {
     ];
 }
 
-function TerminalOutputPre({ text, className }: { text: string; className: string }) {
+const TerminalOutputPre = memo(function TerminalOutputPre({ text, className }: { text: string; className: string }) {
   const segments = toAnsiSegments(text);
 
   return (
@@ -329,18 +336,19 @@ function TerminalOutputPre({ text, className }: { text: string; className: strin
       ))}
     </pre>
   );
-}
+});
 
 function isLikelyDiff(code: string, language?: string): boolean {
   if (language === "diff") {
     return true;
   }
 
-  return /^(diff --git .+|--- [^\r\n]+|\+\+\+ [^\r\n]+|@@ .+ @@)/m.test(code);
+  return DIFF_HEADER_REGEX.test(code);
 }
 
 function hasUnclosedCodeFence(content: string): boolean {
-  const fenceCount = (content.match(/(^|\n)```/g) ?? []).length;
+  CODE_FENCE_REGEX.lastIndex = 0;
+  const fenceCount = (content.match(CODE_FENCE_REGEX) ?? []).length;
   return fenceCount % 2 !== 0;
 }
 
@@ -386,7 +394,7 @@ function splitRawFileContentWithMode(
   const closeFenceLineEndRaw = content.indexOf("\n", closeFenceLineStart + 1);
   const closeFenceLineEnd = closeFenceLineEndRaw < 0 ? content.length : closeFenceLineEndRaw;
   const closeFenceLine = content.slice(closeFenceLineStart + 1, closeFenceLineEnd).trim();
-  if (!/^`{3,}$/.test(closeFenceLine)) {
+  if (!CLOSE_FENCE_REGEX.test(closeFenceLine)) {
     return {
       lead: content.slice(0, fenceStart).trim(),
       code: content.slice(openFenceLineEnd + 1),
@@ -595,7 +603,7 @@ function tokenizeCommand(command: string): string[] {
       continue;
     }
 
-    if (/\s/.test(char)) {
+    if (WHITESPACE_REGEX.test(char)) {
       if (current.length > 0) {
         tokens.push(current);
         current = "";
@@ -753,7 +761,69 @@ function editedSummaryLabel({
 }
 
 
-export function MarkdownBody({
+const MARKDOWN_COMPONENTS: React.ComponentProps<typeof ReactMarkdown>["components"] = {
+  p: ({ children }) => <p className="leading-6 [&:not(:first-child)]:mt-4 whitespace-pre-wrap break-words">{children}</p>,
+  ul: ({ children }) => <ul className="my-4 ml-6 list-disc [&>li]:mt-1.5">{children}</ul>,
+  ol: ({ children }) => <ol className="my-4 ml-6 list-decimal [&>li]:mt-1.5">{children}</ol>,
+  li: ({ children }) => <li>{children}</li>,
+  h1: ({ children }) => <h1 className="scroll-m-16 text-xl font-bold tracking-tight mb-3">{children}</h1>,
+  h2: ({ children }) => <h2 className="scroll-m-16 border-b pb-1.5 text-lg font-semibold tracking-tight mt-5 mb-3 first:mt-0">{children}</h2>,
+  h3: ({ children }) => <h3 className="scroll-m-16 text-base font-semibold tracking-tight mt-4 mb-2">{children}</h3>,
+  h4: ({ children }) => <h4 className="scroll-m-16 text-sm font-semibold tracking-tight mt-3 mb-1.5">{children}</h4>,
+  blockquote: ({ children }) => (
+    <blockquote className="mt-4 border-l-2 border-primary pl-4 italic text-muted-foreground">{children}</blockquote>
+  ),
+  table: ({ children }) => (
+    <div className="my-4 w-full overflow-x-auto text-sm">
+      <table className="w-full border-collapse">{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead className="border-b">{children}</thead>,
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => <tr className="m-0 border-t p-0 even:bg-muted/50">{children}</tr>,
+  th: ({ children }) => <th className="border px-3 py-1.5 text-left font-bold [&[align=center]]:text-center [&[align=right]]:text-right">{children}</th>,
+  td: ({ children }) => <td className="border px-3 py-1.5 text-left [&[align=center]]:text-center [&[align=right]]:text-right">{children}</td>,
+  a: ({ children, href }) => <a href={href} className="font-medium text-primary underline underline-offset-4 hover:text-primary/80" target="_blank" rel="noreferrer">{children}</a>,
+  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+  code: ({ className, children }) => {
+    const language = className?.replace("language-", "").trim();
+    const text = String(children).replace(/\n$/, "");
+    const inline = !className && !text.includes("\n");
+
+    if (inline) {
+      return <code className="relative rounded bg-muted px-[0.25rem] py-[0.15rem] font-mono text-xs font-semibold break-all">{text}</code>;
+    }
+
+    if (isLikelyDiff(text, language)) {
+      return (
+        <div className="my-3 rounded-md border border-border/40 bg-secondary/20 p-2.5 last:mb-0">
+          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
+            Diff
+          </div>
+          <PatchDiff
+            patch={text}
+            options={{
+              diffStyle: "unified",
+              overflow: "wrap",
+              theme: "pierre-dark",
+              themeType: "dark",
+              expandUnchanged: false,
+              expansionLineCount: 20,
+            }}
+          />
+        </div>
+      );
+    }
+
+    return (
+      <pre className="my-4 max-w-full overflow-x-auto rounded-md border bg-muted/50 p-3 font-mono text-xs leading-relaxed text-foreground select-text">
+        <code>{text}</code>
+      </pre>
+    );
+  },
+};
+
+export const MarkdownBody = memo(function MarkdownBody({
   content,
   testId,
 }: {
@@ -765,75 +835,15 @@ export function MarkdownBody({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
-        components={{
-          p: ({ children }) => <p className="leading-6 [&:not(:first-child)]:mt-4 whitespace-pre-wrap break-words">{children}</p>,
-          ul: ({ children }) => <ul className="my-4 ml-6 list-disc [&>li]:mt-1.5">{children}</ul>,
-          ol: ({ children }) => <ol className="my-4 ml-6 list-decimal [&>li]:mt-1.5">{children}</ol>,
-          li: ({ children }) => <li>{children}</li>,
-          h1: ({ children }) => <h1 className="scroll-m-16 text-xl font-bold tracking-tight mb-3">{children}</h1>,
-          h2: ({ children }) => <h2 className="scroll-m-16 border-b pb-1.5 text-lg font-semibold tracking-tight mt-5 mb-3 first:mt-0">{children}</h2>,
-          h3: ({ children }) => <h3 className="scroll-m-16 text-base font-semibold tracking-tight mt-4 mb-2">{children}</h3>,
-          h4: ({ children }) => <h4 className="scroll-m-16 text-sm font-semibold tracking-tight mt-3 mb-1.5">{children}</h4>,
-          blockquote: ({ children }) => (
-            <blockquote className="mt-4 border-l-2 border-primary pl-4 italic text-muted-foreground">{children}</blockquote>
-          ),
-          table: ({ children }) => (
-            <div className="my-4 w-full overflow-x-auto text-sm">
-              <table className="w-full border-collapse">{children}</table>
-            </div>
-          ),
-          thead: ({ children }) => <thead className="border-b">{children}</thead>,
-          tbody: ({ children }) => <tbody>{children}</tbody>,
-          tr: ({ children }) => <tr className="m-0 border-t p-0 even:bg-muted/50">{children}</tr>,
-          th: ({ children }) => <th className="border px-3 py-1.5 text-left font-bold [&[align=center]]:text-center [&[align=right]]:text-right">{children}</th>,
-          td: ({ children }) => <td className="border px-3 py-1.5 text-left [&[align=center]]:text-center [&[align=right]]:text-right">{children}</td>,
-          a: ({ children, href }) => <a href={href} className="font-medium text-primary underline underline-offset-4 hover:text-primary/80" target="_blank" rel="noreferrer">{children}</a>,
-          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-          code: ({ className, children }) => {
-            const language = className?.replace("language-", "").trim();
-            const text = String(children).replace(/\n$/, "");
-            const inline = !className && !text.includes("\n");
-
-            if (inline) {
-              return <code className="relative rounded bg-muted px-[0.25rem] py-[0.15rem] font-mono text-xs font-semibold break-all">{text}</code>;
-            }
-
-            if (isLikelyDiff(text, language)) {
-              return (
-                <div className="my-3 rounded-md border border-border/40 bg-secondary/20 p-2.5 last:mb-0">
-                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
-                    Diff
-                  </div>
-                  <PatchDiff
-                    patch={text}
-                    options={{
-                      diffStyle: "unified",
-                      overflow: "wrap",
-                      theme: "pierre-dark",
-                      themeType: "dark",
-                      expandUnchanged: false,
-                      expansionLineCount: 20,
-                    }}
-                  />
-                </div>
-              );
-            }
-
-            return (
-              <pre className="my-4 max-w-full overflow-x-auto rounded-md border bg-muted/50 p-3 font-mono text-xs leading-relaxed text-foreground select-text">
-                <code>{text}</code>
-              </pre>
-            );
-          },
-        }}
+        components={MARKDOWN_COMPONENTS}
       >
         {content}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
-function AssistantContent({
+const AssistantContent = memo(function AssistantContent({
   content,
   renderHint,
   rawFileLanguage,
@@ -903,9 +913,9 @@ function AssistantContent({
   }
 
   return <MarkdownBody content={content} testId="assistant-render-markdown" />;
-}
+});
 
-function UserMessageContent({ content }: { content: string }) {
+const UserMessageContent = memo(function UserMessageContent({ content }: { content: string }) {
   const segments = parseUserMentions(content);
 
   if (segments.length === 1 && segments[0].kind === "text") {
@@ -941,7 +951,7 @@ function UserMessageContent({ content }: { content: string }) {
       })}
     </p>
   );
-}
+});
 
 function downloadTextFile(fileName: string, content: string) {
   const blob = new Blob([content], { type: "text/markdown" });
@@ -953,7 +963,7 @@ function downloadTextFile(fileName: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
-function PlanInlineMessage({
+const PlanInlineMessage = memo(function PlanInlineMessage({
   id,
   content,
   filePath,
@@ -1066,7 +1076,12 @@ function PlanInlineMessage({
       </CardContent>
     </Card>
   );
-}
+});
+
+const TIMELINE_ITEM_STYLE: React.CSSProperties = {
+  contentVisibility: "auto",
+  containIntrinsicSize: "auto 80px",
+};
 
 export function ChatMessageList({
   items,
@@ -1076,18 +1091,28 @@ export function ChatMessageList({
 }: ChatMessageListProps) {
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
-  const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(new Set());
+  const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(() => new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
-  const [activityExpandedByMessageId, setActivityExpandedByMessageId] = useState<Map<string, boolean>>(new Map());
-  const [bashExpandedById, setBashExpandedById] = useState<Map<string, boolean>>(new Map());
-  const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(new Map());
-  const [exploreActivityExpandedById, setExploreActivityExpandedById] = useState<Map<string, boolean>>(new Map());
-  const [subagentExpandedById, setSubagentExpandedById] = useState<Map<string, boolean>>(new Map());
-  const [subagentPromptExpandedById, setSubagentPromptExpandedById] = useState<Map<string, boolean>>(new Map());
-  const [subagentExploreExpandedById, setSubagentExploreExpandedById] = useState<Map<string, boolean>>(new Map());
+  const [activityExpandedByMessageId, setActivityExpandedByMessageId] = useState<Map<string, boolean>>(() => new Map());
+  const [bashExpandedById, setBashExpandedById] = useState<Map<string, boolean>>(() => new Map());
+  const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(() => new Map());
+  const [exploreActivityExpandedById, setExploreActivityExpandedById] = useState<Map<string, boolean>>(() => new Map());
+  const [subagentExpandedById, setSubagentExpandedById] = useState<Map<string, boolean>>(() => new Map());
+  const [subagentPromptExpandedById, setSubagentPromptExpandedById] = useState<Map<string, boolean>>(() => new Map());
+  const [subagentExploreExpandedById, setSubagentExploreExpandedById] = useState<Map<string, boolean>>(() => new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
+  const prevFirstItemIdRef = useRef<string | null>(null);
   const renderDebugEnabled = isRenderDebugEnabled();
+
+  // Clear render signature cache when switching threads (detected by first item changing)
+  useEffect(() => {
+    const firstKey = items.length > 0 && items[0].kind === "message" ? items[0].message.id : null;
+    if (firstKey !== prevFirstItemIdRef.current) {
+      prevFirstItemIdRef.current = firstKey;
+      lastRenderSignatureByMessageIdRef.current.clear();
+    }
+  }, [items]);
 
   useEffect(() => {
     const root = scrollAreaRef.current;
@@ -1238,7 +1263,7 @@ export function ChatMessageList({
         {items.map((item) => {
           if (item.kind === "plan-file-output") {
             return (
-              <article key={`plan-file-${item.id}`} className="flex w-full justify-start" data-testid="timeline-plan-file-output">
+              <article key={`plan-file-${item.id}`} className="flex w-full justify-start" data-testid="timeline-plan-file-output" style={TIMELINE_ITEM_STYLE}>
                 <div className="w-full px-1 text-sm text-foreground">
                   <PlanInlineMessage
                     id={item.id}
@@ -1265,6 +1290,7 @@ export function ChatMessageList({
                 key={`tool-${item.event.id}`}
                 className="rounded-md border border-border/30 bg-background/20 px-3 py-2 text-xs"
                 data-testid={`timeline-${item.event.type}`}
+                style={TIMELINE_ITEM_STYLE}
               >
                 <div className="flex items-center gap-1.5 text-muted-foreground min-w-0">
                   <span className="shrink-0 font-semibold text-foreground">{toolTitle(item.event)}</span>
@@ -1331,6 +1357,7 @@ export function ChatMessageList({
                 key={`bash-${item.id}`}
                 className="px-1 text-xs"
                 data-testid="timeline-bash-command"
+                style={TIMELINE_ITEM_STYLE}
               >
                 <details
                   open={expanded}
@@ -1437,6 +1464,7 @@ export function ChatMessageList({
                   key={`edited-diff-${item.id}`}
                   className="px-1 text-xs"
                   data-testid="timeline-edited-diff"
+                  style={TIMELINE_ITEM_STYLE}
                 >
                   <div className="inline-flex items-center text-[12px] text-muted-foreground">
                     <span className="font-medium">{summaryLabel}</span>
@@ -1450,6 +1478,7 @@ export function ChatMessageList({
                 key={`edited-diff-${item.id}`}
                 className="px-1 text-xs"
                 data-testid="timeline-edited-diff"
+                style={TIMELINE_ITEM_STYLE}
               >
                 <details
                   open={expanded}
@@ -1550,6 +1579,7 @@ export function ChatMessageList({
                 key={`explore-activity-${item.id}`}
                 className="px-1 text-xs"
                 data-testid="timeline-explore-activity"
+                style={TIMELINE_ITEM_STYLE}
               >
                 <details
                   open={expanded}
@@ -1651,6 +1681,7 @@ export function ChatMessageList({
                 key={`subagent-activity-${item.id}`}
                 className="px-1"
                 data-testid="timeline-subagent-activity"
+                style={TIMELINE_ITEM_STYLE}
               >
                 <details
                   open={expanded}
@@ -1808,6 +1839,7 @@ export function ChatMessageList({
                 key={`thinking-${item.id}`}
                 className="px-1"
                 data-testid="timeline-thinking"
+                style={TIMELINE_ITEM_STYLE}
               >
                 <details className="group">
                   <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
@@ -1860,6 +1892,7 @@ export function ChatMessageList({
               key={`message-${message.id}`}
               className={cn("flex w-full", message.role === "user" ? "justify-end" : "justify-start")}
               data-testid={`message-${message.role}`}
+              style={TIMELINE_ITEM_STYLE}
             >
               <div
                 className={cn(

@@ -5,13 +5,15 @@ export function useSidebarResize(initialWidth = 300, reverse = false) {
   const [sidebarDragging, setSidebarDragging] = useState(false);
   const sidebarStartXRef = useRef(0);
   const sidebarStartWidthRef = useRef(0);
+  const widthRef = useRef(initialWidth);
+  const panelRef = useRef<HTMLElement | null>(null);
 
   const handleSidebarMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     setSidebarDragging(true);
     sidebarStartXRef.current = e.clientX;
-    sidebarStartWidthRef.current = sidebarWidth;
-  }, [sidebarWidth]);
+    sidebarStartWidthRef.current = widthRef.current;
+  }, []);
 
   useEffect(() => {
     if (!sidebarDragging) return;
@@ -20,10 +22,15 @@ export function useSidebarResize(initialWidth = 300, reverse = false) {
       const delta = reverse
         ? sidebarStartXRef.current - e.clientX
         : e.clientX - sidebarStartXRef.current;
-      setSidebarWidth(Math.max(200, Math.min(500, sidebarStartWidthRef.current + delta)));
+      const newWidth = Math.max(200, Math.min(500, sidebarStartWidthRef.current + delta));
+      widthRef.current = newWidth;
+      if (panelRef.current) {
+        panelRef.current.style.width = `${newWidth}px`;
+      }
     }
     function onUp() {
       setSidebarDragging(false);
+      setSidebarWidth(widthRef.current);
     }
 
     document.addEventListener("mousemove", onMove);
@@ -34,5 +41,5 @@ export function useSidebarResize(initialWidth = 300, reverse = false) {
     };
   }, [sidebarDragging, reverse]);
 
-  return { sidebarWidth, sidebarDragging, handleSidebarMouseDown };
+  return { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef };
 }
