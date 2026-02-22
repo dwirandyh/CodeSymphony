@@ -136,7 +136,7 @@ export function createWorktreeService(prisma: PrismaClient) {
 
       const requestedBranch = input.branch?.trim() || null;
       const isAutomaticBranch = requestedBranch === null;
-      const baseBranch = input.baseBranch ?? (isAutomaticBranch ? "main" : repository.defaultBranch);
+      const baseBranch = input.baseBranch ?? repository.defaultBranch;
 
       if (requestedBranch && existingBranches.has(requestedBranch)) {
         throw new Error("Branch already has a worktree in this repository");
