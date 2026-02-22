@@ -11,6 +11,8 @@ import { QuestionCard } from "../components/workspace/QuestionCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
+import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
+import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 
 const DiffReviewPanel = lazy(() =>
   import("../components/workspace/DiffReviewPanel").then(m => ({ default: m.DiffReviewPanel }))
@@ -19,12 +21,15 @@ import { api } from "../lib/api";
 import { cn } from "../lib/utils";
 import { debugLog } from "../lib/debugLog";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
+import type { TeardownErrorState, ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
 import { useChatSession } from "./workspace/hooks/useChatSession";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useSidebarResize } from "./workspace/hooks/useSidebarResize";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "../lib/queryKeys";
 
 type RepoManager = ReturnType<typeof useRepositoryManager>;
 type GitChangesData = ReturnType<typeof useGitChanges>;
@@ -202,9 +207,42 @@ export function WorkspacePage() {
 
   const prevWorktreeIdRef = useRef<string | undefined>(search.worktreeId);
 
+  const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
+  const [activeBottomTab, setActiveBottomTab] = useState("terminal");
+  const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
+
+  const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
+    setScriptOutputs((prev) => {
+      const entry: ScriptOutputEntry = {
+        id: event.worktreeId,
+        worktreeId: event.worktreeId,
+        worktreeName: event.worktreeName,
+        type: event.type,
+        timestamp: Date.now(),
+        output: event.result?.output ?? "",
+        success: event.result?.success ?? false,
+        status: event.status,
+      };
+      const idx = prev.findIndex((e) => e.worktreeId === event.worktreeId);
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = entry;
+        return copy;
+      }
+      return [...prev, entry];
+    });
+    setActiveBottomTab("output");
+  }, []);
+
+  const handleTeardownError = useCallback((state: TeardownErrorState) => {
+    setTeardownError(state);
+  }, []);
+
   const repos = useRepositoryManager(setError, {
     initialRepoId: search.repoId,
     initialWorktreeId: search.worktreeId,
+    onScriptUpdate: handleScriptUpdate,
+    onTeardownError: handleTeardownError,
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
         const worktreeChanged = (selection.worktreeId ?? undefined) !== prevWorktreeIdRef.current;
@@ -326,6 +364,27 @@ export function WorkspacePage() {
   const handleOpenReview = useCallback(() => {
     updateSearch({ file: undefined, view: "review" });
   }, [updateSearch]);
+
+  const forceDeleteQueryClient = useQueryClient();
+
+  const handleForceDelete = useCallback(async (worktreeId: string) => {
+    try {
+      await api.deleteWorktree(worktreeId, { force: true });
+      setTeardownError(null);
+      if (repos.selectedWorktreeId === worktreeId) {
+        repos.setSelectedWorktreeId(null);
+      }
+      void forceDeleteQueryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Force delete failed");
+      setTeardownError(null);
+    }
+  }, [repos.selectedWorktreeId, repos.setSelectedWorktreeId, forceDeleteQueryClient]);
+
+  const handleRerunSetup = useCallback(() => {
+    if (!repos.selectedWorktreeId) return;
+    void repos.rerunSetup(repos.selectedWorktreeId);
+  }, [repos.rerunSetup, repos.selectedWorktreeId]);
 
   const handleSelectDiffFile = useCallback((filePath: string) => {
     updateSearch({ file: filePath, view: "review" });
@@ -488,7 +547,7 @@ export function WorkspacePage() {
             )}
           </div>
 
-          <BottomPanel worktreeId={repos.selectedWorktreeId} worktreePath={repos.selectedWorktree?.path ?? null} selectedThreadId={chat.selectedThreadId} />
+          <BottomPanel worktreeId={repos.selectedWorktreeId} worktreePath={repos.selectedWorktree?.path ?? null} selectedThreadId={chat.selectedThreadId} scriptOutputs={scriptOutputs} activeTab={activeBottomTab} onTabChange={setActiveBottomTab} onRerunSetup={handleRerunSetup} />
         </main>
 
         <WorkspaceRightPanel
@@ -613,6 +672,15 @@ export function WorkspacePage() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         repositories={repos.repositories}
+      />
+
+      <TeardownErrorDialog
+        open={teardownError !== null}
+        worktreeId={teardownError?.worktreeId ?? null}
+        worktreeName={teardownError?.worktreeName ?? ""}
+        output={teardownError?.output ?? ""}
+        onForceDelete={(id) => void handleForceDelete(id)}
+        onClose={() => setTeardownError(null)}
       />
     </div>
   );

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Repository } from "@codesymphony/shared-types";
+import type { Repository, ScriptResult } from "@codesymphony/shared-types";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../../../lib/api";
+import { api, TeardownFailedError } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositories } from "../../../hooks/queries/useRepositories";
 import { debugLog } from "../../../lib/debugLog";
@@ -11,10 +11,26 @@ import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { findRepositoryByWorktree } from "../eventUtils";
 
+export interface TeardownErrorState {
+  worktreeId: string;
+  worktreeName: string;
+  output: string;
+}
+
+export interface ScriptUpdateEvent {
+  worktreeId: string;
+  worktreeName: string;
+  type: "setup" | "teardown";
+  status: "running" | "completed";
+  result?: ScriptResult;
+}
+
 interface UseRepositoryManagerOptions {
   initialRepoId?: string;
   initialWorktreeId?: string;
   onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
+  onScriptUpdate?: (event: ScriptUpdateEvent) => void;
+  onTeardownError?: (state: TeardownErrorState) => void;
 }
 
 export function useRepositoryManager(
@@ -28,6 +44,16 @@ export function useRepositoryManager(
   const createWorktreeMutation = useCreateWorktree();
   const deleteWorktreeMutation = useDeleteWorktree();
   const renameBranchMutation = useRenameWorktreeBranch();
+
+  async function runSetupInBackground(worktreeId: string, worktreeName: string) {
+    options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "running" });
+    try {
+      const result = await api.rerunSetupScripts(worktreeId);
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result });
+    } catch (e) {
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result: { success: false, output: e instanceof Error ? e.message : String(e) } });
+    }
+  }
 
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
@@ -164,9 +190,11 @@ export function useRepositoryManager(
   async function submitWorktree(repositoryId: string) {
     onError(null);
     try {
-      const created = await createWorktreeMutation.mutateAsync({ repositoryId });
-      setSelectedWorktreeId(created.id);
+      const { worktree } = await createWorktreeMutation.mutateAsync({ repositoryId });
+      setSelectedWorktreeId(worktree.id);
       setSelectedRepositoryId(repositoryId);
+      // Fire setup scripts in background — does not block worktree creation
+      void runSetupInBackground(worktree.id, worktree.branch);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create worktree");
     }
@@ -174,13 +202,24 @@ export function useRepositoryManager(
 
   async function removeWorktree(worktreeId: string) {
     onError(null);
+    // Find the worktree name before deletion for error UI
+    let worktreeName = worktreeId;
+    for (const repo of repositories) {
+      const wt = repo.worktrees.find((w) => w.id === worktreeId);
+      if (wt) { worktreeName = wt.branch; break; }
+    }
     try {
       await deleteWorktreeMutation.mutateAsync(worktreeId);
       if (selectedWorktreeId === worktreeId) {
         setSelectedWorktreeId(null);
       }
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to delete worktree");
+      if (e instanceof TeardownFailedError) {
+        options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "teardown", status: "completed", result: { success: false, output: e.output } });
+        options?.onTeardownError?.({ worktreeId, worktreeName, output: e.output });
+      } else {
+        onError(e instanceof Error ? e.message : "Failed to delete worktree");
+      }
     }
   }
 
@@ -191,6 +230,16 @@ export function useRepositoryManager(
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to rename branch");
     }
+  }
+
+  async function rerunSetup(worktreeId: string) {
+    onError(null);
+    let worktreeName = worktreeId;
+    for (const repo of repositories) {
+      const wt = repo.worktrees.find((w) => w.id === worktreeId);
+      if (wt) { worktreeName = wt.branch; break; }
+    }
+    await runSetupInBackground(worktreeId, worktreeName);
   }
 
   const updateWorktreeBranch = useCallback((worktreeId: string, newBranch: string) => {
@@ -222,6 +271,7 @@ export function useRepositoryManager(
     setFileBrowserOpen,
     submitWorktree,
     removeWorktree,
+    rerunSetup,
     renameWorktreeBranch,
     updateWorktreeBranch,
   };

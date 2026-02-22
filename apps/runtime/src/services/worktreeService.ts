@@ -2,10 +2,24 @@ import { mkdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { CreateWorktreeInputSchema, type CreateWorktreeInput, type Worktree } from "@codesymphony/shared-types";
+import { CreateWorktreeInputSchema, type CreateWorktreeInput, type ScriptResult, type Worktree } from "@codesymphony/shared-types";
 import { createGitWorktree, removeGitWorktree, renameBranch as renameBranchGit } from "./git";
 import { mapWorktree } from "./mappers";
 import { runScripts } from "./scriptRunner";
+
+export interface CreateWorktreeResult {
+  worktree: Worktree;
+  scriptResult?: ScriptResult;
+}
+
+export class TeardownError extends Error {
+  public readonly output: string;
+  constructor(output: string) {
+    super("Teardown scripts failed");
+    this.name = "TeardownError";
+    this.output = output;
+  }
+}
 
 const INDONESIAN_PROVINCES = [
   "Aceh",
@@ -106,7 +120,7 @@ export function createWorktreeService(prisma: PrismaClient) {
       return worktree ? mapWorktree(worktree) : null;
     },
 
-    async create(repositoryId: string, rawInput: unknown): Promise<Worktree> {
+    async create(repositoryId: string, rawInput: unknown): Promise<CreateWorktreeResult> {
       const input: CreateWorktreeInput = CreateWorktreeInputSchema.parse(rawInput ?? {});
 
       const repository = await prisma.repository.findUnique({ where: { id: repositoryId } });
@@ -177,26 +191,7 @@ export function createWorktreeService(prisma: PrismaClient) {
             },
           });
 
-          // Run setup scripts if configured
-          if (repository.setupScript) {
-            try {
-              const commands: string[] = JSON.parse(repository.setupScript);
-              if (commands.length > 0) {
-                const env = {
-                  CODESYMPHONY_ROOT_PATH: repository.rootPath,
-                  CODESYMPHONY_WORKTREE_NAME: branch,
-                };
-                const result = await runScripts(commands, worktreePath, env);
-                if (!result.success) {
-                  console.warn(`Setup scripts failed for worktree ${branch}: ${result.output}`);
-                }
-              }
-            } catch (e) {
-              console.warn(`Failed to parse/run setup scripts: ${e}`);
-            }
-          }
-
-          return mapWorktree(created);
+          return { worktree: mapWorktree(created) };
         } catch (error) {
           await rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
 
@@ -245,11 +240,11 @@ export function createWorktreeService(prisma: PrismaClient) {
             };
             const result = await runScripts(commands, worktree.path, env);
             if (!result.success) {
-              throw new Error(`Teardown scripts failed:\n${result.output}`);
+              throw new TeardownError(result.output);
             }
           }
         } catch (e) {
-          if (e instanceof Error && e.message.startsWith("Teardown scripts failed")) {
+          if (e instanceof TeardownError) {
             throw e;
           }
           console.warn(`Failed to parse/run teardown scripts: ${e}`);
@@ -308,6 +303,36 @@ export function createWorktreeService(prisma: PrismaClient) {
       });
 
       return mapWorktree(updated);
+    },
+
+    async rerunSetup(worktreeId: string): Promise<ScriptResult> {
+      const worktree = await prisma.worktree.findUnique({
+        where: { id: worktreeId },
+        include: { repository: true },
+      });
+
+      if (!worktree) {
+        throw new Error("Worktree not found");
+      }
+
+      if (!worktree.repository.setupScript) {
+        return { success: true, output: "No setup scripts configured." };
+      }
+
+      try {
+        const commands: string[] = JSON.parse(worktree.repository.setupScript);
+        if (commands.length === 0) {
+          return { success: true, output: "No setup scripts configured." };
+        }
+
+        const env = {
+          CODESYMPHONY_ROOT_PATH: worktree.repository.rootPath,
+          CODESYMPHONY_WORKTREE_NAME: worktree.branch,
+        };
+        return await runScripts(commands, worktree.path, env);
+      } catch (e) {
+        return { success: false, output: e instanceof Error ? e.message : String(e) };
+      }
     },
 
     async listThreads(worktreeId: string) {

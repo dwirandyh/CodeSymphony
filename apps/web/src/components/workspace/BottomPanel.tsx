@@ -1,6 +1,7 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { DebugConsoleTab } from "./DebugConsoleTab";
+import { ScriptOutputTab, type ScriptOutputEntry } from "./ScriptOutputTab";
 
 const TerminalTab = lazy(() =>
     import("./TerminalTab").then(m => ({ default: m.TerminalTab }))
@@ -31,18 +32,26 @@ interface BottomPanelProps {
     worktreeId: string | null;
     worktreePath: string | null;
     selectedThreadId: string | null;
+    scriptOutputs: ScriptOutputEntry[];
+    activeTab: string;
+    onTabChange: (tab: string) => void;
+    onRerunSetup?: () => void;
 }
 
-export function BottomPanel({ worktreeId, worktreePath, selectedThreadId }: BottomPanelProps) {
+export function BottomPanel({ worktreeId, worktreePath, selectedThreadId, scriptOutputs, activeTab, onTabChange, onRerunSetup }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
     const [collapsed, setCollapsed] = useState(() => {
         return typeof window !== "undefined" && window.innerWidth < 768;
     });
-    const [activeTab, setActiveTab] = useState("terminal");
     const [isDragging, setIsDragging] = useState(false);
     const panelRef = useRef<HTMLDivElement>(null);
     const startYRef = useRef(0);
     const startHeightRef = useRef(0);
+
+    const filteredOutputs = useMemo(
+        () => worktreeId ? scriptOutputs.filter((e) => e.worktreeId === worktreeId) : [],
+        [scriptOutputs, worktreeId],
+    );
 
     const handleMouseDown = useCallback(
         (e: React.MouseEvent) => {
@@ -100,7 +109,10 @@ export function BottomPanel({ worktreeId, worktreePath, selectedThreadId }: Bott
         <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-3">
             <Tabs.Root
                 value={activeTab}
-                onValueChange={setActiveTab}
+                onValueChange={(val) => {
+                    onTabChange(val);
+                    if (collapsed) setCollapsed(false);
+                }}
                 className="flex min-h-0 flex-1 flex-col"
             >
                 {/* Tab header — always visible in both collapsed and expanded states */}
@@ -118,6 +130,18 @@ export function BottomPanel({ worktreeId, worktreePath, selectedThreadId }: Bott
                             className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
                             Debug Console
+                            <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
+                        </Tabs.Trigger>
+                        <Tabs.Trigger
+                            value="output"
+                            className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
+                        >
+                            Output
+                            {filteredOutputs.length > 0 && (
+                                <span className="ml-1 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary/20 px-1 text-[9px] font-bold leading-none text-primary">
+                                    {filteredOutputs.length}
+                                </span>
+                            )}
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
                         </Tabs.Trigger>
                     </Tabs.List>
@@ -166,6 +190,10 @@ export function BottomPanel({ worktreeId, worktreePath, selectedThreadId }: Bott
 
                     <Tabs.Content value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
                         <DebugConsoleTab selectedThreadId={selectedThreadId} />
+                    </Tabs.Content>
+
+                    <Tabs.Content value="output" className="min-h-0 flex-1 data-[state=inactive]:hidden">
+                        <ScriptOutputTab entries={filteredOutputs} onRerunSetup={onRerunSetup} rerunning={filteredOutputs.some((e) => e.status === "running")} />
                     </Tabs.Content>
                 </div>
             </Tabs.Root>

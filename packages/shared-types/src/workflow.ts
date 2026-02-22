@@ -209,3 +209,11 @@ export const FilesystemBrowseResponseSchema = z.object({
   entries: z.array(FilesystemEntrySchema),
 });
 export type FilesystemBrowseResponse = z.infer<typeof FilesystemBrowseResponseSchema>;
+
+// ── Script Execution Types ──
+
+export const ScriptResultSchema = z.object({
+  success: z.boolean(),
+  output: z.string(),
+});
+export type ScriptResult = z.infer<typeof ScriptResultSchema>;

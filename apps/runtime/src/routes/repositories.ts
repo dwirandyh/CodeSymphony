@@ -4,6 +4,7 @@ import path from "node:path";
 import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema, UpdateRepositoryScriptsInputSchema } from "@codesymphony/shared-types";
 import { z } from "zod";
 import { getGitStatus, getGitDiff, getFileAtHead, gitCommitAll, discardGitChange } from "../services/git";
+import { TeardownError } from "../services/worktreeService";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
@@ -56,8 +57,8 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const params = repositoryParams.parse(request.params);
 
     try {
-      const worktree = await app.worktreeService.create(params.id, request.body);
-      return reply.code(201).send({ data: worktree });
+      const { worktree, scriptResult } = await app.worktreeService.create(params.id, request.body);
+      return reply.code(201).send({ data: worktree, scriptResult });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to create worktree";
       return reply.code(400).send({ error: message });
@@ -84,6 +85,9 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       await app.worktreeService.remove(params.id, { force });
       return reply.code(204).send();
     } catch (error) {
+      if (error instanceof TeardownError) {
+        return reply.code(409).send({ error: "Teardown scripts failed", output: error.output });
+      }
       const message = error instanceof Error ? error.message : "Unable to delete worktree";
       return reply.code(400).send({ error: message });
     }
@@ -98,6 +102,18 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return { data: worktree };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to rename branch";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/worktrees/:id/run-setup", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+
+    try {
+      const result = await app.worktreeService.rerunSetup(params.id);
+      return { data: result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to run setup scripts";
       return reply.code(400).send({ error: message });
     }
   });

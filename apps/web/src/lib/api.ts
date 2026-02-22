@@ -16,6 +16,7 @@ import type {
   RenameWorktreeBranchInput,
   ResolvePermissionInput,
   Repository,
+  ScriptResult,
   SendChatMessageInput,
   UpdateRepositoryScriptsInput,
   Worktree,
@@ -27,6 +28,15 @@ const DEFAULT_RUNTIME_URL =
     : `${window.location.protocol}//${window.location.hostname}:4321/api`;
 
 const API_BASE = import.meta.env.VITE_RUNTIME_URL ?? DEFAULT_RUNTIME_URL;
+
+export class TeardownFailedError extends Error {
+  public readonly output: string;
+  constructor(output: string) {
+    super("Teardown scripts failed");
+    this.name = "TeardownFailedError";
+    this.output = output;
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -63,11 +73,21 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  createWorktree: (repositoryId: string, input: CreateWorktreeInput = {}) =>
-    request<Worktree>(`/repositories/${repositoryId}/worktrees`, {
+  createWorktree: async (repositoryId: string, input: CreateWorktreeInput = {}): Promise<{ worktree: Worktree; scriptResult?: ScriptResult }> => {
+    const response = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
-    }),
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(payload?.error ?? "Failed to create worktree");
+    }
+
+    return { worktree: payload.data as Worktree, scriptResult: payload.scriptResult as ScriptResult | undefined };
+  },
   deleteWorktree: async (worktreeId: string, options?: { force?: boolean }) => {
     const query = options?.force ? "?force=true" : "";
     const response = await fetch(`${API_BASE}/worktrees/${worktreeId}${query}`, {
@@ -76,6 +96,9 @@ export const api = {
 
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
+      if (response.status === 409 && payload?.output) {
+        throw new TeardownFailedError(payload.output);
+      }
       throw new Error(payload?.error ?? "Failed to delete worktree");
     }
   },
@@ -84,6 +107,10 @@ export const api = {
     request<Worktree>(`/worktrees/${worktreeId}/branch`, {
       method: "PATCH",
       body: JSON.stringify(input),
+    }),
+  rerunSetupScripts: (worktreeId: string) =>
+    request<ScriptResult>(`/worktrees/${worktreeId}/run-setup`, {
+      method: "POST",
     }),
   listThreads: (worktreeId: string) => request<ChatThread[]>(`/worktrees/${worktreeId}/threads`),
   createThread: (worktreeId: string, input: CreateChatThreadInput = {}) =>
