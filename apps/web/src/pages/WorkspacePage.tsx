@@ -46,7 +46,7 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos, onOpenSettings 
       >
         <div className="mb-3">
           <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
-          <p className="text-xs text-muted-foreground">Local code conductor</p>
+          <p className="text-xs text-muted-foreground">Multi-agent orchestrator</p>
         </div>
 
         <div className="min-h-0 flex-1 overflow-hidden">
@@ -685,7 +685,7 @@ export function WorkspacePage() {
         <div className="flex items-center justify-between px-4 pb-2 pt-4">
           <div>
             <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
-            <p className="text-xs text-muted-foreground">Local code conductor</p>
+            <p className="text-xs text-muted-foreground">Multi-agent orchestrator</p>
           </div>
           <button
             type="button"
@@ -776,6 +776,10 @@ export function WorkspacePage() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         repositories={repos.repositories}
+        onRemoveRepository={(id) => {
+          setSettingsOpen(false);
+          void repos.removeRepository(id);
+        }}
       />
 
       <TeardownErrorDialog

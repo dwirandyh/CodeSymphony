@@ -41,7 +41,7 @@ export async function detectDefaultBranch(rootPath: string): Promise<string> {
     return localBranch;
   }
 
-  return "main";
+  return "master";
 }
 
 export async function createGitWorktree(args: {

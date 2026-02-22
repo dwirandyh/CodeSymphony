@@ -73,6 +73,12 @@ export function createRepositoryService(prisma: PrismaClient) {
       }
     },
 
+    async remove(id: string): Promise<void> {
+      const existing = await prisma.repository.findUnique({ where: { id } });
+      if (!existing) throw new Error("Repository not found");
+      await prisma.repository.delete({ where: { id } });
+    },
+
     async updateScripts(id: string, rawInput: unknown): Promise<Repository> {
       const input: UpdateRepositoryScriptsInput = UpdateRepositoryScriptsInputSchema.parse(rawInput);
       const data: Record<string, string | null> = {};

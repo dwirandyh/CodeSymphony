@@ -71,6 +71,27 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     }
   });
 
+  app.delete("/repositories/:id", async (request, reply) => {
+    const params = repositoryParams.parse(request.params);
+    const repository = await app.repositoryService.getById(params.id);
+
+    if (!repository) {
+      return reply.code(404).send({ error: "Repository not found" });
+    }
+
+    // Force-remove all worktrees (skip teardown, log errors but don't abort)
+    for (const wt of repository.worktrees) {
+      try {
+        await app.worktreeService.remove(wt.id, { force: true });
+      } catch (error) {
+        app.log.warn({ worktreeId: wt.id, error }, "Failed to remove worktree during repository deletion");
+      }
+    }
+
+    await app.repositoryService.remove(params.id);
+    return reply.code(204).send();
+  });
+
   app.post("/repositories/:id/worktrees", async (request, reply) => {
     const params = repositoryParams.parse(request.params);
 

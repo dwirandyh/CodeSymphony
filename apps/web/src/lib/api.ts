@@ -73,6 +73,16 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
+  deleteRepository: async (repositoryId: string) => {
+    const response = await fetch(`${API_BASE}/repositories/${repositoryId}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to delete repository");
+    }
+  },
   createWorktree: async (repositoryId: string, input: CreateWorktreeInput = {}): Promise<{ worktree: Worktree; scriptResult?: ScriptResult }> => {
     const response = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`, {
       method: "POST",

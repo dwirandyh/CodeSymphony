@@ -8,6 +8,7 @@ import { debugLog } from "../../../lib/debugLog";
 import { useCreateRepository } from "../../../hooks/mutations/useCreateRepository";
 import { useCreateWorktree } from "../../../hooks/mutations/useCreateWorktree";
 import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
+import { useDeleteRepository } from "../../../hooks/mutations/useDeleteRepository";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { findRepositoryByWorktree } from "../eventUtils";
 
@@ -44,6 +45,7 @@ export function useRepositoryManager(
   const createRepoMutation = useCreateRepository();
   const createWorktreeMutation = useCreateWorktree();
   const deleteWorktreeMutation = useDeleteWorktree();
+  const deleteRepoMutation = useDeleteRepository();
   const renameBranchMutation = useRenameWorktreeBranch();
 
   const activeStreamRef = useRef<{ worktreeId: string; eventSource: EventSource } | null>(null);
@@ -325,6 +327,19 @@ export function useRepositoryManager(
     }
   }
 
+  async function removeRepository(repositoryId: string) {
+    onError(null);
+    try {
+      await deleteRepoMutation.mutateAsync(repositoryId);
+      if (selectedRepositoryId === repositoryId) {
+        setSelectedRepositoryId(null);
+        setSelectedWorktreeId(null);
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to delete repository");
+    }
+  }
+
   async function renameWorktreeBranch(worktreeId: string, newBranch: string) {
     onError(null);
     try {
@@ -373,6 +388,7 @@ export function useRepositoryManager(
     setFileBrowserOpen,
     submitWorktree,
     removeWorktree,
+    removeRepository,
     rerunSetup,
     runSavedScript,
     runAdHocCommand,
