@@ -57,6 +57,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   const recentStderr: string[] = [];
   const queryStartTimestamp = Date.now();
   let planFileDetected = false;
+  const sessionPersistedPlanFiles = new Set<string>();
   const startedToolUseIds = new Set<string>();
   const finishedToolUseIds = new Set<string>();
   const toolMetadataByUseId = new Map<string, ToolMetadata>();
@@ -312,11 +313,27 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           if (permissionMode === "plan" && toolName !== "AskUserQuestion") {
             if (!planFileDetected && finalOutput.trim().length > 0) {
               planFileDetected = true;
-              const planFile = findLatestPlanFile(queryStartTimestamp);
-              await onPlanFileDetected({
-                filePath: planFile?.filePath ?? "streaming-plan",
-                content: planFile?.content ?? finalOutput.trim(),
-                source: planFile ? "claude_plan_file" : "streaming_fallback",
+              // Try session-scoped plan files first (from files_persisted events)
+              let detectedPlan: { filePath: string; content: string; source: "claude_plan_file" | "streaming_fallback" } | null = null;
+              for (const fp of sessionPersistedPlanFiles) {
+                try {
+                  const content = readFileSync(fp, "utf-8");
+                  if (content.trim().length > 0) {
+                    detectedPlan = { filePath: fp, content, source: "claude_plan_file" };
+                  }
+                } catch { /* skip unreadable */ }
+              }
+              // Fallback: scan filesystem (files_persisted may not have arrived yet)
+              if (!detectedPlan) {
+                const planFile = findLatestPlanFile(queryStartTimestamp);
+                if (planFile) {
+                  detectedPlan = { ...planFile, source: "claude_plan_file" };
+                }
+              }
+              await onPlanFileDetected(detectedPlan ?? {
+                filePath: "streaming-plan",
+                content: finalOutput.trim(),
+                source: "streaming_fallback",
               });
             }
             await emitDecision(toolUseId, "plan_deny", toolName, null, {
@@ -910,6 +927,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         const files = filesPersistedMessage.files ?? [];
         for (const file of files) {
           if (file.filename.includes(".claude/plans/") && file.filename.endsWith(".md")) {
+            sessionPersistedPlanFiles.add(file.filename);
             try {
               const content = readFileSync(file.filename, "utf-8");
               if (content.trim().length > 0) {
@@ -940,12 +958,25 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     }
 
     if (permissionMode === "plan" && !planFileDetected) {
-      const planFile = findLatestPlanFile(queryStartTimestamp);
-      if (planFile) {
-        await onPlanFileDetected({
-          ...planFile,
-          source: "claude_plan_file",
-        });
+      // Try session-scoped plan files first (from files_persisted events)
+      let detectedPlan: { filePath: string; content: string; source: "claude_plan_file" | "streaming_fallback" } | null = null;
+      for (const fp of sessionPersistedPlanFiles) {
+        try {
+          const content = readFileSync(fp, "utf-8");
+          if (content.trim().length > 0) {
+            detectedPlan = { filePath: fp, content, source: "claude_plan_file" };
+          }
+        } catch { /* skip unreadable */ }
+      }
+      // Fallback: scan filesystem
+      if (!detectedPlan) {
+        const planFile = findLatestPlanFile(queryStartTimestamp);
+        if (planFile) {
+          detectedPlan = { ...planFile, source: "claude_plan_file" };
+        }
+      }
+      if (detectedPlan) {
+        await onPlanFileDetected(detectedPlan);
       } else if (finalOutput.trim().length > 0) {
         await onPlanFileDetected({
           filePath: "streaming-plan",
