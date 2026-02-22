@@ -78,6 +78,7 @@ export function createRepositoryService(prisma: PrismaClient) {
       const data: Record<string, string | null> = {};
       if (input.setupScript !== undefined) data.setupScript = input.setupScript ? JSON.stringify(input.setupScript) : null;
       if (input.teardownScript !== undefined) data.teardownScript = input.teardownScript ? JSON.stringify(input.teardownScript) : null;
+      if (input.runScript !== undefined) data.runScript = input.runScript ? JSON.stringify(input.runScript) : null;
       const updated = await prisma.repository.update({ where: { id }, data, include: { worktrees: true } });
       return mapRepository(updated);
     },

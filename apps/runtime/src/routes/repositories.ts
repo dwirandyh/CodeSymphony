@@ -118,6 +118,129 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get("/worktrees/:id/run-setup/stream", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const context = await app.worktreeService.getSetupContext(params.id);
+
+    if (!context) {
+      return reply.code(400).send({ error: "No setup scripts configured" });
+    }
+
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    });
+
+    const emitter = app.scriptStreamService.startSetupStream(
+      params.id,
+      context.commands,
+      context.cwd,
+      context.env,
+    );
+
+    function onData(chunk: string) {
+      reply.raw.write(`event: output\ndata: ${JSON.stringify({ chunk })}\n\n`);
+    }
+
+    function onEnd({ success }: { success: boolean }) {
+      reply.raw.write(`event: done\ndata: ${JSON.stringify({ success })}\n\n`);
+      cleanup();
+      reply.raw.end();
+    }
+
+    function cleanup() {
+      emitter.removeListener("data", onData);
+      emitter.removeListener("end", onEnd);
+    }
+
+    emitter.on("data", onData);
+    emitter.on("end", onEnd);
+
+    request.raw.on("close", () => {
+      cleanup();
+      app.scriptStreamService.stopScript(params.id);
+    });
+  });
+
+  app.post("/worktrees/:id/run-setup/stop", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    app.scriptStreamService.stopScript(params.id);
+    return reply.code(204).send();
+  });
+
+  const runScriptQuery = z.object({ cmd: z.string().min(1).optional() });
+
+  app.get("/worktrees/:id/run-script/stream", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const { cmd } = runScriptQuery.parse(request.query);
+
+    let commands: string[];
+    let cwd: string;
+    let env: Record<string, string>;
+
+    if (cmd) {
+      const worktree = await app.worktreeService.getById(params.id);
+      if (!worktree) {
+        return reply.code(404).send({ error: "Worktree not found" });
+      }
+      commands = [cmd];
+      cwd = worktree.path;
+      env = {};
+    } else {
+      const context = await app.worktreeService.getRunScriptContext(params.id);
+      if (!context) {
+        return reply.code(400).send({ error: "No run script configured" });
+      }
+      commands = context.commands;
+      cwd = context.cwd;
+      env = context.env;
+    }
+
+    reply.raw.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    });
+
+    const scriptKey = `run:${params.id}`;
+    const emitter = app.scriptStreamService.startSetupStream(
+      scriptKey,
+      commands,
+      cwd,
+      env,
+    );
+
+    function onData(chunk: string) {
+      reply.raw.write(`event: output\ndata: ${JSON.stringify({ chunk })}\n\n`);
+    }
+
+    function onEnd({ success }: { success: boolean }) {
+      reply.raw.write(`event: done\ndata: ${JSON.stringify({ success })}\n\n`);
+      cleanup();
+      reply.raw.end();
+    }
+
+    function cleanup() {
+      emitter.removeListener("data", onData);
+      emitter.removeListener("end", onEnd);
+    }
+
+    emitter.on("data", onData);
+    emitter.on("end", onEnd);
+
+    request.raw.on("close", () => {
+      cleanup();
+      app.scriptStreamService.stopScript(scriptKey);
+    });
+  });
+
+  app.post("/worktrees/:id/run-script/stop", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    app.scriptStreamService.stopScript(`run:${params.id}`);
+    return reply.code(204).send();
+  });
+
   const filesQuery = z.object({ q: z.string().optional().default("") });
 
   app.get("/worktrees/:id/files", async (request, reply) => {

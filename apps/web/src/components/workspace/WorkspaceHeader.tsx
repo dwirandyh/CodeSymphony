@@ -1,5 +1,5 @@
 import type { ChatThread } from "@codesymphony/shared-types";
-import { GitPullRequestArrow, Plus, X } from "lucide-react";
+import { GitPullRequestArrow, Play, Plus, Square, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 
@@ -17,6 +17,9 @@ type WorkspaceHeaderProps = {
   onCloseThread: (threadId: string) => void;
   onSelectReviewTab?: () => void;
   onCloseReviewTab?: () => void;
+  setupRunning?: boolean;
+  onRunSetup?: () => void;
+  onStopSetup?: () => void;
 };
 
 export function WorkspaceHeader({
@@ -33,6 +36,9 @@ export function WorkspaceHeader({
   onCloseThread,
   onSelectReviewTab,
   onCloseReviewTab,
+  setupRunning,
+  onRunSetup,
+  onStopSetup,
 }: WorkspaceHeaderProps) {
   return (
     <section className="space-y-1 pb-1 lg:space-y-1.5 lg:pb-2">
@@ -128,6 +134,24 @@ export function WorkspaceHeader({
             )}
           </div>
         </div>
+
+        {(onRunSetup || onStopSetup) && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={setupRunning ? "Stop setup" : "Run setup"}
+            title={setupRunning ? "Stop setup scripts" : "Run setup scripts"}
+            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={setupRunning ? onStopSetup : onRunSetup}
+          >
+            {setupRunning ? (
+              <Square className="h-3.5 w-3.5" />
+            ) : (
+              <Play className="h-3 w-3" />
+            )}
+          </Button>
+        )}
 
         <Button
           type="button"

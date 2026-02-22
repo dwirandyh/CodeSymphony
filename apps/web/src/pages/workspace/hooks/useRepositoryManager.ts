@@ -20,7 +20,7 @@ export interface TeardownErrorState {
 export interface ScriptUpdateEvent {
   worktreeId: string;
   worktreeName: string;
-  type: "setup" | "teardown";
+  type: "setup" | "teardown" | "run";
   status: "running" | "completed";
   result?: ScriptResult;
 }
@@ -30,6 +30,7 @@ interface UseRepositoryManagerOptions {
   initialWorktreeId?: string;
   onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
   onScriptUpdate?: (event: ScriptUpdateEvent) => void;
+  onScriptOutputChunk?: (event: { worktreeId: string; chunk: string }) => void;
   onTeardownError?: (state: TeardownErrorState) => void;
 }
 
@@ -45,13 +46,114 @@ export function useRepositoryManager(
   const deleteWorktreeMutation = useDeleteWorktree();
   const renameBranchMutation = useRenameWorktreeBranch();
 
-  async function runSetupInBackground(worktreeId: string, worktreeName: string) {
+  const activeStreamRef = useRef<{ worktreeId: string; eventSource: EventSource } | null>(null);
+  const [setupRunning, setSetupRunning] = useState(false);
+
+  // Separate state for run scripts (Run button / ad-hoc commands)
+  const runScriptRef = useRef<{ worktreeId: string; eventSource: EventSource } | null>(null);
+  const [runScriptRunning, setRunScriptRunning] = useState(false);
+
+  function runSetupStreaming(worktreeId: string, worktreeName: string) {
     options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "running" });
-    try {
-      const result = await api.rerunSetupScripts(worktreeId);
-      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result });
-    } catch (e) {
-      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result: { success: false, output: e instanceof Error ? e.message : String(e) } });
+
+    const es = api.runSetupStream(worktreeId);
+    activeStreamRef.current = { worktreeId, eventSource: es };
+    setSetupRunning(true);
+
+    es.addEventListener("output", (e) => {
+      const { chunk } = JSON.parse(e.data);
+      options?.onScriptOutputChunk?.({ worktreeId, chunk });
+    });
+
+    es.addEventListener("done", (e) => {
+      const { success } = JSON.parse(e.data);
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result: { success, output: "" } });
+      es.close();
+      activeStreamRef.current = null;
+      setSetupRunning(false);
+    });
+
+    es.onerror = () => {
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result: { success: false, output: "Connection lost" } });
+      es.close();
+      activeStreamRef.current = null;
+      setSetupRunning(false);
+    };
+  }
+
+  async function stopSetup() {
+    const stream = activeStreamRef.current;
+    if (stream) {
+      await api.stopSetupScript(stream.worktreeId);
+      stream.eventSource.close();
+      activeStreamRef.current = null;
+      setSetupRunning(false);
+    }
+  }
+
+  function startRunScriptStream(worktreeId: string, cmd?: string) {
+    // Stop any existing run script stream first
+    if (runScriptRef.current) {
+      runScriptRef.current.eventSource.close();
+      runScriptRef.current = null;
+    }
+
+    // Look up worktree name
+    let worktreeName = worktreeId;
+    for (const repo of repositories) {
+      const wt = repo.worktrees.find((w) => w.id === worktreeId);
+      if (wt) { worktreeName = wt.branch; break; }
+    }
+
+    options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "running" });
+
+    const es = api.runScriptStream(worktreeId, cmd);
+    runScriptRef.current = { worktreeId, eventSource: es };
+    setRunScriptRunning(true);
+
+    es.addEventListener("output", (e) => {
+      const { chunk } = JSON.parse(e.data);
+      options?.onScriptOutputChunk?.({ worktreeId, chunk });
+    });
+
+    es.addEventListener("done", (e) => {
+      const { success } = JSON.parse(e.data);
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "completed", result: { success, output: "" } });
+      es.close();
+      runScriptRef.current = null;
+      setRunScriptRunning(false);
+    });
+
+    es.onerror = () => {
+      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "Connection lost" } });
+      es.close();
+      runScriptRef.current = null;
+      setRunScriptRunning(false);
+    };
+  }
+
+  function runSavedScript(worktreeId: string) {
+    startRunScriptStream(worktreeId);
+  }
+
+  function runAdHocCommand(worktreeId: string, cmd: string) {
+    startRunScriptStream(worktreeId, cmd);
+  }
+
+  async function stopRunScript() {
+    const stream = runScriptRef.current;
+    if (stream) {
+      await api.stopRunScript(stream.worktreeId);
+      // Look up worktree name for the update
+      let worktreeName = stream.worktreeId;
+      for (const repo of repositories) {
+        const wt = repo.worktrees.find((w) => w.id === stream.worktreeId);
+        if (wt) { worktreeName = wt.branch; break; }
+      }
+      options?.onScriptUpdate?.({ worktreeId: stream.worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "" } });
+      stream.eventSource.close();
+      runScriptRef.current = null;
+      setRunScriptRunning(false);
     }
   }
 
@@ -194,7 +296,7 @@ export function useRepositoryManager(
       setSelectedWorktreeId(worktree.id);
       setSelectedRepositoryId(repositoryId);
       // Fire setup scripts in background — does not block worktree creation
-      void runSetupInBackground(worktree.id, worktree.branch);
+      runSetupStreaming(worktree.id, worktree.branch);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create worktree");
     }
@@ -239,7 +341,7 @@ export function useRepositoryManager(
       const wt = repo.worktrees.find((w) => w.id === worktreeId);
       if (wt) { worktreeName = wt.branch; break; }
     }
-    await runSetupInBackground(worktreeId, worktreeName);
+    runSetupStreaming(worktreeId, worktreeName);
   }
 
   const updateWorktreeBranch = useCallback((worktreeId: string, newBranch: string) => {
@@ -272,6 +374,12 @@ export function useRepositoryManager(
     submitWorktree,
     removeWorktree,
     rerunSetup,
+    runSavedScript,
+    runAdHocCommand,
+    stopSetup,
+    stopRunScript,
+    setupRunning,
+    runScriptRunning,
     renameWorktreeBranch,
     updateWorktreeBranch,
   };

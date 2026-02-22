@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Menu, Settings, X } from "lucide-react";
+import { GitBranch, Menu, Play, Settings, Square, X } from "lucide-react";
 import { Composer } from "../components/workspace/Composer";
 import { ChatMessageList } from "../components/workspace/ChatMessageList";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -213,8 +213,9 @@ export function WorkspacePage() {
 
   const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
     setScriptOutputs((prev) => {
+      const entryId = `${event.worktreeId}-${event.type}`;
       const entry: ScriptOutputEntry = {
-        id: event.worktreeId,
+        id: entryId,
         worktreeId: event.worktreeId,
         worktreeName: event.worktreeName,
         type: event.type,
@@ -223,10 +224,12 @@ export function WorkspacePage() {
         success: event.result?.success ?? false,
         status: event.status,
       };
-      const idx = prev.findIndex((e) => e.worktreeId === event.worktreeId);
+      const idx = prev.findIndex((e) => e.id === entryId);
       if (idx >= 0) {
+        const existing = prev[idx];
         const copy = [...prev];
-        copy[idx] = entry;
+        // Preserve accumulated output when transitioning to completed
+        copy[idx] = { ...entry, output: entry.output || existing.output, timestamp: existing.timestamp };
         return copy;
       }
       return [...prev, entry];
@@ -238,10 +241,19 @@ export function WorkspacePage() {
     setTeardownError(state);
   }, []);
 
+  const handleScriptOutputChunk = useCallback(({ worktreeId, chunk }: { worktreeId: string; chunk: string }) => {
+    setScriptOutputs((prev) => prev.map((entry) =>
+      entry.worktreeId === worktreeId && entry.status === "running"
+        ? { ...entry, output: entry.output + chunk }
+        : entry
+    ));
+  }, []);
+
   const repos = useRepositoryManager(setError, {
     initialRepoId: search.repoId,
     initialWorktreeId: search.worktreeId,
     onScriptUpdate: handleScriptUpdate,
+    onScriptOutputChunk: handleScriptOutputChunk,
     onTeardownError: handleTeardownError,
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
@@ -386,6 +398,25 @@ export function WorkspacePage() {
     void repos.rerunSetup(repos.selectedWorktreeId);
   }, [repos.rerunSetup, repos.selectedWorktreeId]);
 
+  const handleRunScript = useCallback(() => {
+    if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
+    const hasRunScript = repos.selectedRepository?.runScript && repos.selectedRepository.runScript.length > 0;
+    if (!hasRunScript) {
+      setSettingsOpen(true);
+      return;
+    }
+    setActiveBottomTab("output");
+    repos.runSavedScript(repos.selectedWorktreeId);
+  }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, repos.runSavedScript]);
+
+  const handleStopSetup = useCallback(() => {
+    void repos.stopSetup();
+  }, [repos.stopSetup]);
+
+  const handleStopRunScript = useCallback(() => {
+    void repos.stopRunScript();
+  }, [repos.stopRunScript]);
+
   const handleSelectDiffFile = useCallback((filePath: string) => {
     updateSearch({ file: filePath, view: "review" });
   }, [updateSearch]);
@@ -427,6 +458,18 @@ export function WorkspacePage() {
             </div>
             <button
               type="button"
+              onClick={repos.runScriptRunning ? handleStopRunScript : handleRunScript}
+              className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
+              aria-label={repos.runScriptRunning ? "Stop script" : "Run script"}
+            >
+              {repos.runScriptRunning ? (
+                <Square className="h-4 w-4" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+            </button>
+            <button
+              type="button"
               onClick={() => setMobilePanelOpen("git")}
               className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
               aria-label="Open source control"
@@ -455,6 +498,9 @@ export function WorkspacePage() {
               onCloseThread={(threadId) => void chat.closeThread(threadId)}
               onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
+              setupRunning={repos.runScriptRunning}
+              onRunSetup={handleRunScript}
+              onStopSetup={handleStopRunScript}
             />
 
             {error ? (

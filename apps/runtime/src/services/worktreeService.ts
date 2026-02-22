@@ -335,6 +335,66 @@ export function createWorktreeService(prisma: PrismaClient) {
       }
     },
 
+    async getSetupContext(worktreeId: string): Promise<{
+      commands: string[];
+      cwd: string;
+      env: Record<string, string>;
+    } | null> {
+      const worktree = await prisma.worktree.findUnique({
+        where: { id: worktreeId },
+        include: { repository: true },
+      });
+
+      if (!worktree) return null;
+      if (!worktree.repository.setupScript) return null;
+
+      try {
+        const commands: string[] = JSON.parse(worktree.repository.setupScript);
+        if (commands.length === 0) return null;
+
+        return {
+          commands,
+          cwd: worktree.path,
+          env: {
+            CODESYMPHONY_ROOT_PATH: worktree.repository.rootPath,
+            CODESYMPHONY_WORKTREE_NAME: worktree.branch,
+          },
+        };
+      } catch {
+        return null;
+      }
+    },
+
+    async getRunScriptContext(worktreeId: string): Promise<{
+      commands: string[];
+      cwd: string;
+      env: Record<string, string>;
+    } | null> {
+      const worktree = await prisma.worktree.findUnique({
+        where: { id: worktreeId },
+        include: { repository: true },
+      });
+
+      if (!worktree) return null;
+      if (!worktree.repository.runScript) return null;
+
+      try {
+        const commands: string[] = JSON.parse(worktree.repository.runScript);
+        if (commands.length === 0) return null;
+
+        return {
+          commands,
+          cwd: worktree.path,
+          env: {
+            CODESYMPHONY_ROOT_PATH: worktree.repository.rootPath,
+            CODESYMPHONY_WORKTREE_NAME: worktree.branch,
+          },
+        };
+      } catch {
+        return null;
+      }
+    },
+
     async listThreads(worktreeId: string) {
       return prisma.chatThread.findMany({
         where: { worktreeId },

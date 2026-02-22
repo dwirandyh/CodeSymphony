@@ -7,7 +7,7 @@ export interface ScriptOutputEntry {
   id: string;
   worktreeId: string;
   worktreeName: string;
-  type: "setup" | "teardown";
+  type: "setup" | "teardown" | "run";
   timestamp: number;
   output: string;
   success: boolean;
@@ -24,9 +24,11 @@ export function ScriptOutputTab({ entries, onRerunSetup, rerunning }: ScriptOutp
   const bottomRef = useRef<HTMLDivElement>(null);
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
+  const latestOutputLength = entries[entries.length - 1]?.output.length ?? 0;
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [entries.length]);
+  }, [entries.length, latestOutputLength]);
 
   function toggleCollapse(id: string) {
     setCollapsedIds((prev) => {

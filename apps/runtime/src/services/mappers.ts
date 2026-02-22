@@ -23,6 +23,7 @@ export function mapRepository(repository: DbRepository & { worktrees: DbWorktree
     defaultBranch: repository.defaultBranch,
     setupScript: repository.setupScript ? JSON.parse(repository.setupScript) : null,
     teardownScript: repository.teardownScript ? JSON.parse(repository.teardownScript) : null,
+    runScript: repository.runScript ? JSON.parse(repository.runScript) : null,
     createdAt: repository.createdAt.toISOString(),
     updatedAt: repository.updatedAt.toISOString(),
     worktrees: repository.worktrees.map(mapWorktree),

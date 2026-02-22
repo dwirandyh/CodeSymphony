@@ -13,12 +13,13 @@ interface SettingsDialogProps {
 
 export function SettingsDialog({ open, onClose, repositories }: SettingsDialogProps) {
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
+  const [runScriptText, setRunScriptText] = useState("");
   const [setupText, setSetupText] = useState("");
   const [teardownText, setTeardownText] = useState("");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   // Local cache of saved scripts so switching repos doesn't lose unsaved prop data
-  const savedScriptsRef = useRef<Record<string, { setup: string; teardown: string }>>({});
+  const savedScriptsRef = useRef<Record<string, { runScript: string; setup: string; teardown: string }>>({});
 
   // Select first repo when opening or when repos change
   useEffect(() => {
@@ -32,11 +33,13 @@ export function SettingsDialog({ open, onClose, repositories }: SettingsDialogPr
     if (!selectedRepoId) return;
     const cached = savedScriptsRef.current[selectedRepoId];
     if (cached) {
+      setRunScriptText(cached.runScript);
       setSetupText(cached.setup);
       setTeardownText(cached.teardown);
     } else {
       const repo = repositories.find((r) => r.id === selectedRepoId);
       if (!repo) return;
+      setRunScriptText(repo.runScript?.join("\n") ?? "");
       setSetupText(repo.setupScript?.join("\n") ?? "");
       setTeardownText(repo.teardownScript?.join("\n") ?? "");
     }
@@ -47,20 +50,22 @@ export function SettingsDialog({ open, onClose, repositories }: SettingsDialogPr
     if (!selectedRepoId) return;
     setSaving(true);
     try {
+      const runScriptLines = runScriptText.trim() ? runScriptText.trim().split("\n").filter(Boolean) : null;
       const setupLines = setupText.trim() ? setupText.trim().split("\n").filter(Boolean) : null;
       const teardownLines = teardownText.trim() ? teardownText.trim().split("\n").filter(Boolean) : null;
       await api.updateRepositoryScripts(selectedRepoId, {
+        runScript: runScriptLines,
         setupScript: setupLines,
         teardownScript: teardownLines,
       });
-      savedScriptsRef.current[selectedRepoId] = { setup: setupText, teardown: teardownText };
+      savedScriptsRef.current[selectedRepoId] = { runScript: runScriptText, setup: setupText, teardown: teardownText };
       setDirty(false);
     } catch {
       // Error is non-critical; user can retry
     } finally {
       setSaving(false);
     }
-  }, [selectedRepoId, setupText, teardownText]);
+  }, [selectedRepoId, runScriptText, setupText, teardownText]);
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -100,6 +105,24 @@ export function SettingsDialog({ open, onClose, repositories }: SettingsDialogPr
                     ))}
                   </select>
                 </div>
+
+                <div className="mb-4">
+                  <label className="mb-1.5 block text-xs font-medium">Run Script</label>
+                  <textarea
+                    className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                    rows={3}
+                    placeholder={"npm run dev\ndocker-compose up"}
+                    value={runScriptText}
+                    onChange={(e) => {
+                      setRunScriptText(e.target.value);
+                      setDirty(true);
+                    }}
+                  />
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    One command per line. Executed when you tap the Run button in the chat panel.
+                  </p>
+                </div>
+
                 <div className="mb-4">
                   <label className="mb-1.5 block text-xs font-medium">Setup Scripts</label>
                   <textarea

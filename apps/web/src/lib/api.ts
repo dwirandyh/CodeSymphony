@@ -112,6 +112,22 @@ export const api = {
     request<ScriptResult>(`/worktrees/${worktreeId}/run-setup`, {
       method: "POST",
     }),
+  runSetupStream: (worktreeId: string): EventSource =>
+    new EventSource(`${API_BASE}/worktrees/${worktreeId}/run-setup/stream`),
+  stopSetupScript: async (worktreeId: string): Promise<void> => {
+    await fetch(`${API_BASE}/worktrees/${worktreeId}/run-setup/stop`, {
+      method: "POST",
+    });
+  },
+  runScriptStream: (worktreeId: string, cmd?: string): EventSource => {
+    const params = cmd ? `?cmd=${encodeURIComponent(cmd)}` : "";
+    return new EventSource(`${API_BASE}/worktrees/${worktreeId}/run-script/stream${params}`);
+  },
+  stopRunScript: async (worktreeId: string): Promise<void> => {
+    await fetch(`${API_BASE}/worktrees/${worktreeId}/run-script/stop`, {
+      method: "POST",
+    });
+  },
   listThreads: (worktreeId: string) => request<ChatThread[]>(`/worktrees/${worktreeId}/threads`),
   createThread: (worktreeId: string, input: CreateChatThreadInput = {}) =>
     request<ChatThread>(`/worktrees/${worktreeId}/threads`, {
