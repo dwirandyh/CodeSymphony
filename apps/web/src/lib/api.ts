@@ -17,6 +17,7 @@ import type {
   ResolvePermissionInput,
   Repository,
   SendChatMessageInput,
+  UpdateRepositoryScriptsInput,
   Worktree,
 } from "@codesymphony/shared-types";
 
@@ -57,13 +58,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  updateRepositoryScripts: (id: string, input: UpdateRepositoryScriptsInput) =>
+    request<Repository>(`/repositories/${id}/scripts`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
   createWorktree: (repositoryId: string, input: CreateWorktreeInput = {}) =>
     request<Worktree>(`/repositories/${repositoryId}/worktrees`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  deleteWorktree: async (worktreeId: string) => {
-    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}`, {
+  deleteWorktree: async (worktreeId: string, options?: { force?: boolean }) => {
+    const query = options?.force ? "?force=true" : "";
+    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}${query}`, {
       method: "DELETE",
     });
 

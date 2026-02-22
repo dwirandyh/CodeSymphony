@@ -5,6 +5,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { CreateWorktreeInputSchema, type CreateWorktreeInput, type Worktree } from "@codesymphony/shared-types";
 import { createGitWorktree, removeGitWorktree, renameBranch as renameBranchGit } from "./git";
 import { mapWorktree } from "./mappers";
+import { runScripts } from "./scriptRunner";
 
 const INDONESIAN_PROVINCES = [
   "Aceh",
@@ -176,6 +177,25 @@ export function createWorktreeService(prisma: PrismaClient) {
             },
           });
 
+          // Run setup scripts if configured
+          if (repository.setupScript) {
+            try {
+              const commands: string[] = JSON.parse(repository.setupScript);
+              if (commands.length > 0) {
+                const env = {
+                  CODESYMPHONY_ROOT_PATH: repository.rootPath,
+                  CODESYMPHONY_WORKTREE_NAME: branch,
+                };
+                const result = await runScripts(commands, worktreePath, env);
+                if (!result.success) {
+                  console.warn(`Setup scripts failed for worktree ${branch}: ${result.output}`);
+                }
+              }
+            } catch (e) {
+              console.warn(`Failed to parse/run setup scripts: ${e}`);
+            }
+          }
+
           return mapWorktree(created);
         } catch (error) {
           await rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
@@ -204,7 +224,7 @@ export function createWorktreeService(prisma: PrismaClient) {
       throw new Error("Unable to allocate an automatic worktree name. Try deleting unused worktrees first.");
     },
 
-    async remove(id: string): Promise<void> {
+    async remove(id: string, options?: { force?: boolean }): Promise<void> {
       const worktree = await prisma.worktree.findUnique({
         where: { id },
         include: { repository: true },
@@ -212,6 +232,28 @@ export function createWorktreeService(prisma: PrismaClient) {
 
       if (!worktree) {
         throw new Error("Worktree not found");
+      }
+
+      // Run teardown scripts if configured (skip if force-deleting)
+      if (!options?.force && worktree.repository.teardownScript) {
+        try {
+          const commands: string[] = JSON.parse(worktree.repository.teardownScript);
+          if (commands.length > 0) {
+            const env = {
+              CODESYMPHONY_ROOT_PATH: worktree.repository.rootPath,
+              CODESYMPHONY_WORKTREE_NAME: worktree.branch,
+            };
+            const result = await runScripts(commands, worktree.path, env);
+            if (!result.success) {
+              throw new Error(`Teardown scripts failed:\n${result.output}`);
+            }
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.startsWith("Teardown scripts failed")) {
+            throw e;
+          }
+          console.warn(`Failed to parse/run teardown scripts: ${e}`);
+        }
       }
 
       await removeGitWorktree({

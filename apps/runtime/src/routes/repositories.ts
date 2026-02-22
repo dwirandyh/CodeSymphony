@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema } from "@codesymphony/shared-types";
+import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema, UpdateRepositoryScriptsInputSchema } from "@codesymphony/shared-types";
 import { z } from "zod";
 import { getGitStatus, getGitDiff, getFileAtHead, gitCommitAll, discardGitChange } from "../services/git";
 
@@ -40,6 +40,18 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     }
   });
 
+  app.patch("/repositories/:id/scripts", async (request, reply) => {
+    const params = repositoryParams.parse(request.params);
+
+    try {
+      const repository = await app.repositoryService.updateScripts(params.id, request.body);
+      return { data: repository };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to update scripts";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.post("/repositories/:id/worktrees", async (request, reply) => {
     const params = repositoryParams.parse(request.params);
 
@@ -65,9 +77,11 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.delete("/worktrees/:id", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
+    const query = z.object({ force: z.string().optional() }).parse(request.query);
+    const force = query.force === "true";
 
     try {
-      await app.worktreeService.remove(params.id);
+      await app.worktreeService.remove(params.id, { force });
       return reply.code(204).send();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to delete worktree";

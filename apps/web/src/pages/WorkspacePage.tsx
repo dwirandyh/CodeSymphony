@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Menu, X } from "lucide-react";
+import { GitBranch, Menu, Settings, X } from "lucide-react";
 import { Composer } from "../components/workspace/Composer";
 import { ChatMessageList } from "../components/workspace/ChatMessageList";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -10,6 +10,7 @@ import { PlanDecisionComposer } from "../components/workspace/PlanDecisionCompos
 import { QuestionCard } from "../components/workspace/QuestionCard";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
+import { SettingsDialog } from "../components/workspace/SettingsDialog";
 
 const DiffReviewPanel = lazy(() =>
   import("../components/workspace/DiffReviewPanel").then(m => ({ default: m.DiffReviewPanel }))
@@ -28,7 +29,7 @@ import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchPa
 type RepoManager = ReturnType<typeof useRepositoryManager>;
 type GitChangesData = ReturnType<typeof useGitChanges>;
 
-const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos }: { repos: RepoManager }) {
+const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos, onOpenSettings }: { repos: RepoManager; onOpenSettings: () => void }) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
 
   return (
@@ -43,23 +44,36 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos }: { repos: Repo
           <p className="text-xs text-muted-foreground">Local code conductor</p>
         </div>
 
-        <RepositoryPanel
-          repositories={repos.repositories}
-          selectedRepositoryId={repos.selectedRepositoryId}
-          selectedWorktreeId={repos.selectedWorktreeId}
-          loadingRepos={repos.loadingRepos}
-          submittingRepo={repos.submittingRepo}
-          submittingWorktree={repos.submittingWorktree}
-          onAttachRepository={repos.openFileBrowser}
-          onSelectRepository={repos.setSelectedRepositoryId}
-          onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
-          onSelectWorktree={(repositoryId, worktreeId) => {
-            repos.setSelectedRepositoryId(repositoryId);
-            repos.setSelectedWorktreeId(worktreeId);
-          }}
-          onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
-          onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
-        />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <RepositoryPanel
+            repositories={repos.repositories}
+            selectedRepositoryId={repos.selectedRepositoryId}
+            selectedWorktreeId={repos.selectedWorktreeId}
+            loadingRepos={repos.loadingRepos}
+            submittingRepo={repos.submittingRepo}
+            submittingWorktree={repos.submittingWorktree}
+            onAttachRepository={repos.openFileBrowser}
+            onSelectRepository={repos.setSelectedRepositoryId}
+            onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
+            onSelectWorktree={(repositoryId, worktreeId) => {
+              repos.setSelectedRepositoryId(repositoryId);
+              repos.setSelectedWorktreeId(worktreeId);
+            }}
+            onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
+            onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
+          />
+        </div>
+
+        <div className="shrink-0 border-t border-border/30 pt-2 pb-1 px-0">
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
+            onClick={onOpenSettings}
+          >
+            <Settings className="h-3.5 w-3.5" />
+            Settings
+          </button>
+        </div>
       </aside>
 
       {/* ── Sidebar resize handle ── */}
@@ -227,6 +241,7 @@ export function WorkspacePage() {
   });
   const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
 
   // ── What-changed detector ──
@@ -331,7 +346,7 @@ export function WorkspacePage() {
   return (
     <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-3 lg:pb-0">
       <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
-        <WorkspaceSidebar repos={repos} />
+        <WorkspaceSidebar repos={repos} onOpenSettings={() => setSettingsOpen(true)} />
 
         {/* ── Main content area (chat + bottom panel) ── */}
         <main className="flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
@@ -518,7 +533,7 @@ export function WorkspacePage() {
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden px-2 safe-bottom">
+        <div className="min-h-0 flex-1 overflow-hidden px-2">
           <RepositoryPanel
             repositories={repos.repositories}
             selectedRepositoryId={repos.selectedRepositoryId}
@@ -537,6 +552,19 @@ export function WorkspacePage() {
             onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
             onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
           />
+        </div>
+        <div className="shrink-0 border-t border-border/30 px-4 pt-2 pb-3 safe-bottom">
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground transition-colors active:bg-secondary/60"
+            onClick={() => {
+              setMobilePanelOpen(null);
+              setSettingsOpen(true);
+            }}
+          >
+            <Settings className="h-3.5 w-3.5" />
+            Settings
+          </button>
         </div>
       </aside>
 
@@ -579,6 +607,12 @@ export function WorkspacePage() {
         open={repos.fileBrowserOpen}
         onClose={() => repos.setFileBrowserOpen(false)}
         onSelect={(path) => void repos.attachRepositoryFromPath(path)}
+      />
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        repositories={repos.repositories}
       />
     </div>
   );

@@ -43,6 +43,8 @@ export const RepositorySchema = z.object({
   name: z.string().min(1),
   rootPath: z.string().min(1),
   defaultBranch: z.string().min(1),
+  setupScript: z.array(z.string()).nullable().optional(),
+  teardownScript: z.array(z.string()).nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   worktrees: z.array(WorktreeSchema),
@@ -134,6 +136,12 @@ export const RenameWorktreeBranchInputSchema = z.object({
     }),
 });
 export type RenameWorktreeBranchInput = z.infer<typeof RenameWorktreeBranchInputSchema>;
+
+export const UpdateRepositoryScriptsInputSchema = z.object({
+  setupScript: z.array(z.string()).nullable().optional(),
+  teardownScript: z.array(z.string()).nullable().optional(),
+});
+export type UpdateRepositoryScriptsInput = z.infer<typeof UpdateRepositoryScriptsInputSchema>;
 
 export type Repository = z.infer<typeof RepositorySchema>;
 export type Worktree = z.infer<typeof WorktreeSchema>;
