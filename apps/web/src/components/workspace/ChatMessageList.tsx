@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { Bot, Brain, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2 } from "lucide-react";
 import type { SubagentStep } from "../../pages/workspace/types";
@@ -13,7 +13,7 @@ import { cn } from "../../lib/utils";
 import { copyRenderDebugLog, isRenderDebugEnabled, pushRenderDebug } from "../../lib/renderDebug";
 import { parseUserMentions } from "../../lib/mentions";
 import { parsePatchFiles } from "@pierre/diffs";
-import { FileDiff, PatchDiff } from "@pierre/diffs/react";
+import { FileDiff } from "@pierre/diffs/react";
 
 export type AssistantRenderHint = "markdown" | "raw-file" | "raw-fallback" | "diff";
 
@@ -345,6 +345,38 @@ function isLikelyDiff(code: string, language?: string): boolean {
 
   return DIFF_HEADER_REGEX.test(code);
 }
+
+const SafePatchDiff = memo(function SafePatchDiff({
+  patch,
+  options,
+}: {
+  patch: string;
+  options: React.ComponentProps<typeof FileDiff>["options"];
+}) {
+  const files = useMemo(() => {
+    try {
+      return parsePatchFiles(patch).flatMap((p) => p.files);
+    } catch {
+      return null;
+    }
+  }, [patch]);
+
+  if (!files || files.length === 0) {
+    return (
+      <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+        {patch}
+      </pre>
+    );
+  }
+
+  return (
+    <>
+      {files.map((file, index) => (
+        <FileDiff key={`${file.name}:${index}`} fileDiff={file} options={options} />
+      ))}
+    </>
+  );
+});
 
 function hasUnclosedCodeFence(content: string): boolean {
   CODE_FENCE_REGEX.lastIndex = 0;
@@ -800,7 +832,7 @@ const MARKDOWN_COMPONENTS: React.ComponentProps<typeof ReactMarkdown>["component
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">
             Diff
           </div>
-          <PatchDiff
+          <SafePatchDiff
             patch={text}
             options={{
               diffStyle: "unified",
@@ -878,7 +910,7 @@ const AssistantContent = memo(function AssistantContent({
     return (
       <div className="rounded-lg border border-border/40 bg-secondary/20 p-3" data-testid="assistant-render-diff">
         <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-muted-foreground">Diff</div>
-        <PatchDiff
+        <SafePatchDiff
           patch={content}
           options={{
             diffStyle: "unified",
@@ -1318,7 +1350,7 @@ export function ChatMessageList({
                       Diff Preview
                     </summary>
                     <div className="mt-1.5">
-                      <PatchDiff
+                      <SafePatchDiff
                         patch={diffPreview}
                         options={{
                           diffStyle: "unified",
