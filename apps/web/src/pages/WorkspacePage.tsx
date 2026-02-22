@@ -209,6 +209,8 @@ export function WorkspacePage() {
 
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [activeBottomTab, setActiveBottomTab] = useState("terminal");
+  const [activeOutputSection, setActiveOutputSection] = useState<"runner" | "logs">("logs");
+  const [runScriptActive, setRunScriptActive] = useState(false);
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
 
   const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
@@ -235,6 +237,9 @@ export function WorkspacePage() {
       return [...prev, entry];
     });
     setActiveBottomTab("output");
+    if (event.type === "setup" || event.type === "teardown") {
+      setActiveOutputSection("logs");
+    }
   }, []);
 
   const handleTeardownError = useCallback((state: TeardownErrorState) => {
@@ -395,27 +400,71 @@ export function WorkspacePage() {
 
   const handleRerunSetup = useCallback(() => {
     if (!repos.selectedWorktreeId) return;
+    setActiveBottomTab("output");
+    setActiveOutputSection("logs");
     void repos.rerunSetup(repos.selectedWorktreeId);
   }, [repos.rerunSetup, repos.selectedWorktreeId]);
 
-  const handleRunScript = useCallback(() => {
+  const resolveRunScriptSessionId = useCallback(() => {
+    if (!repos.selectedWorktreeId) return null;
+    return `${repos.selectedWorktreeId}:script-runner`;
+  }, [repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    setRunScriptActive(false);
+    setActiveOutputSection("logs");
+  }, [repos.selectedWorktreeId]);
+
+  const handleRunScript = useCallback(async () => {
     if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
     const hasRunScript = repos.selectedRepository?.runScript && repos.selectedRepository.runScript.length > 0;
     if (!hasRunScript) {
       setSettingsOpen(true);
       return;
     }
-    setActiveBottomTab("output");
-    repos.runSavedScript(repos.selectedWorktreeId);
-  }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, repos.runSavedScript]);
+    const runCommands = repos.selectedRepository?.runScript ?? [];
+    const command = runCommands.join("\n").trim();
+    if (!command) {
+      setSettingsOpen(true);
+      return;
+    }
+    const sessionId = resolveRunScriptSessionId();
+    if (!sessionId) return;
 
-  const handleStopSetup = useCallback(() => {
-    void repos.stopSetup();
-  }, [repos.stopSetup]);
+    try {
+      setActiveBottomTab("output");
+      setActiveOutputSection("runner");
+      await api.runTerminalCommand({
+        sessionId,
+        command,
+        cwd: repos.selectedWorktree.path,
+      });
+      setRunScriptActive(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to run script");
+    }
+  }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, resolveRunScriptSessionId]);
 
-  const handleStopRunScript = useCallback(() => {
-    void repos.stopRunScript();
-  }, [repos.stopRunScript]);
+  const handleStopRunScript = useCallback(async () => {
+    const sessionId = resolveRunScriptSessionId();
+    if (!sessionId) return;
+    try {
+      setActiveBottomTab("output");
+      setActiveOutputSection("runner");
+      await api.interruptTerminalSession(sessionId);
+      setRunScriptActive(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to stop script");
+    }
+  }, [resolveRunScriptSessionId]);
+
+  const handleToggleRunScript = useCallback(() => {
+    if (runScriptActive) {
+      void handleStopRunScript();
+      return;
+    }
+    void handleRunScript();
+  }, [handleRunScript, handleStopRunScript, runScriptActive]);
 
   const handleSelectDiffFile = useCallback((filePath: string) => {
     updateSearch({ file: filePath, view: "review" });
@@ -458,11 +507,11 @@ export function WorkspacePage() {
             </div>
             <button
               type="button"
-              onClick={repos.runScriptRunning ? handleStopRunScript : handleRunScript}
+              onClick={handleToggleRunScript}
               className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
-              aria-label={repos.runScriptRunning ? "Stop script" : "Run script"}
+              aria-label={runScriptActive ? "Stop script" : "Run script"}
             >
-              {repos.runScriptRunning ? (
+              {runScriptActive ? (
                 <Square className="h-4 w-4" />
               ) : (
                 <Play className="h-4 w-4" />
@@ -498,9 +547,8 @@ export function WorkspacePage() {
               onCloseThread={(threadId) => void chat.closeThread(threadId)}
               onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
-              setupRunning={repos.runScriptRunning}
-              onRunSetup={handleRunScript}
-              onStopSetup={handleStopRunScript}
+              runScriptRunning={runScriptActive}
+              onToggleRunScript={handleToggleRunScript}
             />
 
             {error ? (
@@ -593,7 +641,17 @@ export function WorkspacePage() {
             )}
           </div>
 
-          <BottomPanel worktreeId={repos.selectedWorktreeId} worktreePath={repos.selectedWorktree?.path ?? null} selectedThreadId={chat.selectedThreadId} scriptOutputs={scriptOutputs} activeTab={activeBottomTab} onTabChange={setActiveBottomTab} onRerunSetup={handleRerunSetup} />
+          <BottomPanel
+            worktreeId={repos.selectedWorktreeId}
+            worktreePath={repos.selectedWorktree?.path ?? null}
+            selectedThreadId={chat.selectedThreadId}
+            scriptOutputs={scriptOutputs}
+            activeTab={activeBottomTab}
+            onTabChange={setActiveBottomTab}
+            outputSection={activeOutputSection}
+            onOutputSectionChange={setActiveOutputSection}
+            onRerunSetup={handleRerunSetup}
+          />
         </main>
 
         <WorkspaceRightPanel

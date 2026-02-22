@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema, UpdateRepositoryScriptsInputSchema } from "@codesymphony/shared-types";
@@ -12,6 +12,24 @@ const worktreeParams = z.object({ id: z.string().min(1) });
 function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
   const relative = path.relative(rootPath, targetPath);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function writeSseHeaders(request: FastifyRequest, reply: FastifyReply) {
+  const requestOrigin = Array.isArray(request.headers.origin)
+    ? request.headers.origin[0]
+    : request.headers.origin;
+  const headers: Record<string, string> = {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+  };
+
+  if (requestOrigin) {
+    headers["Access-Control-Allow-Origin"] = requestOrigin;
+    headers.Vary = "Origin";
+  }
+
+  reply.raw.writeHead(200, headers);
 }
 
 export async function registerRepositoryRoutes(app: FastifyInstance) {
@@ -126,11 +144,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "No setup scripts configured" });
     }
 
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    });
+    writeSseHeaders(request, reply);
 
     const emitter = app.scriptStreamService.startSetupStream(
       params.id,
@@ -197,11 +211,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       env = context.env;
     }
 
-    reply.raw.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    });
+    writeSseHeaders(request, reply);
 
     const scriptKey = `run:${params.id}`;
     const emitter = app.scriptStreamService.startSetupStream(

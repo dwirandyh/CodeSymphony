@@ -17,9 +17,8 @@ type WorkspaceHeaderProps = {
   onCloseThread: (threadId: string) => void;
   onSelectReviewTab?: () => void;
   onCloseReviewTab?: () => void;
-  setupRunning?: boolean;
-  onRunSetup?: () => void;
-  onStopSetup?: () => void;
+  runScriptRunning?: boolean;
+  onToggleRunScript?: () => void;
 };
 
 export function WorkspaceHeader({
@@ -36,18 +35,39 @@ export function WorkspaceHeader({
   onCloseThread,
   onSelectReviewTab,
   onCloseReviewTab,
-  setupRunning,
-  onRunSetup,
-  onStopSetup,
+  runScriptRunning,
+  onToggleRunScript,
 }: WorkspaceHeaderProps) {
   return (
     <section className="space-y-1 pb-1 lg:space-y-1.5 lg:pb-2">
-      <div className="hidden min-w-0 truncate text-[11px] lg:block">
-        <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Session</span>
-        <span className="px-1.5 text-muted-foreground/80">·</span>
-        <span className="font-semibold text-foreground/90">{selectedRepositoryName}</span>
-        <span className="px-1.5 text-muted-foreground/80">·</span>
-        <span className="text-muted-foreground">{selectedWorktreeLabel}</span>
+      <div className="hidden items-center justify-between gap-3 lg:flex">
+        <div className="min-w-0 truncate text-[11px]">
+          <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Session</span>
+          <span className="px-1.5 text-muted-foreground/80">·</span>
+          <span className="font-semibold text-foreground/90">{selectedRepositoryName}</span>
+          <span className="px-1.5 text-muted-foreground/80">·</span>
+          <span className="text-muted-foreground">{selectedWorktreeLabel}</span>
+        </div>
+
+        {onToggleRunScript && (
+          <Button
+            type="button"
+            variant={runScriptRunning ? "ghost" : "secondary"}
+            size="sm"
+            disabled={disabled}
+            aria-label={runScriptRunning ? "Stop script" : "Run script"}
+            title={runScriptRunning ? "Stop script" : "Run script"}
+            className="h-9 shrink-0 gap-2 px-3 text-xs font-semibold"
+            onClick={onToggleRunScript}
+          >
+            {runScriptRunning ? (
+              <Square className="h-3.5 w-3.5" />
+            ) : (
+              <Play className="h-3.5 w-3.5" />
+            )}
+            {runScriptRunning ? "Stop" : "Run"}
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-1">
@@ -134,24 +154,6 @@ export function WorkspaceHeader({
             )}
           </div>
         </div>
-
-        {(onRunSetup || onStopSetup) && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label={setupRunning ? "Stop setup" : "Run setup"}
-            title={setupRunning ? "Stop setup scripts" : "Run setup scripts"}
-            className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-            onClick={setupRunning ? onStopSetup : onRunSetup}
-          >
-            {setupRunning ? (
-              <Square className="h-3.5 w-3.5" />
-            ) : (
-              <Play className="h-3 w-3" />
-            )}
-          </Button>
-        )}
 
         <Button
           type="button"

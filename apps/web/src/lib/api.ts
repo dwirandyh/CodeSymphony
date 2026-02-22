@@ -128,6 +128,30 @@ export const api = {
       method: "POST",
     });
   },
+  runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string }): Promise<void> => {
+    const response = await fetch(`${API_BASE}/terminal/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to run terminal command");
+    }
+  },
+  interruptTerminalSession: async (sessionId: string): Promise<void> => {
+    const response = await fetch(`${API_BASE}/terminal/interrupt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to stop terminal command");
+    }
+  },
   listThreads: (worktreeId: string) => request<ChatThread[]>(`/worktrees/${worktreeId}/threads`),
   createThread: (worktreeId: string, input: CreateChatThreadInput = {}) =>
     request<ChatThread>(`/worktrees/${worktreeId}/threads`, {

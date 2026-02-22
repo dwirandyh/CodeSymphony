@@ -35,10 +35,22 @@ interface BottomPanelProps {
     scriptOutputs: ScriptOutputEntry[];
     activeTab: string;
     onTabChange: (tab: string) => void;
+    outputSection: "runner" | "logs";
+    onOutputSectionChange: (section: "runner" | "logs") => void;
     onRerunSetup?: () => void;
 }
 
-export function BottomPanel({ worktreeId, worktreePath, selectedThreadId, scriptOutputs, activeTab, onTabChange, onRerunSetup }: BottomPanelProps) {
+export function BottomPanel({
+    worktreeId,
+    worktreePath,
+    selectedThreadId,
+    scriptOutputs,
+    activeTab,
+    onTabChange,
+    outputSection,
+    onOutputSectionChange,
+    onRerunSetup,
+}: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
     const [collapsed, setCollapsed] = useState(() => {
         return typeof window !== "undefined" && window.innerWidth < 768;
@@ -51,6 +63,10 @@ export function BottomPanel({ worktreeId, worktreePath, selectedThreadId, script
     const filteredOutputs = useMemo(
         () => worktreeId ? scriptOutputs.filter((e) => e.worktreeId === worktreeId) : [],
         [scriptOutputs, worktreeId],
+    );
+    const scriptRunnerSessionId = useMemo(
+        () => (worktreeId ? `${worktreeId}:script-runner` : null),
+        [worktreeId],
     );
 
     const handleMouseDown = useCallback(
@@ -193,7 +209,42 @@ export function BottomPanel({ worktreeId, worktreePath, selectedThreadId, script
                     </Tabs.Content>
 
                     <Tabs.Content value="output" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                        <ScriptOutputTab entries={filteredOutputs} onRerunSetup={onRerunSetup} rerunning={filteredOutputs.some((e) => e.status === "running")} />
+                        <div className="flex h-full min-h-0 flex-col">
+                            {scriptRunnerSessionId && (
+                                <div className="min-h-0 shrink-0 border-b border-border/20">
+                                    <button
+                                        type="button"
+                                        className="flex w-full items-center justify-between px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:text-foreground"
+                                        onClick={() => onOutputSectionChange("runner")}
+                                    >
+                                        <span>Script Runner</span>
+                                        <span className="text-[9px]">{outputSection === "runner" ? "Expanded" : "Collapsed"}</span>
+                                    </button>
+                                    {outputSection === "runner" && (
+                                        <div className="h-[180px]">
+                                            <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading script runner...</div>}>
+                                                <TerminalTab sessionId={scriptRunnerSessionId} cwd={worktreePath} />
+                                            </Suspense>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                            <div className="min-h-0 flex-1">
+                                <button
+                                    type="button"
+                                    className="flex w-full items-center justify-between border-b border-border/20 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:text-foreground"
+                                    onClick={() => onOutputSectionChange("logs")}
+                                >
+                                    <span>Script Output</span>
+                                    <span className="text-[9px]">{outputSection === "logs" ? "Expanded" : "Collapsed"}</span>
+                                </button>
+                                {outputSection === "logs" && (
+                                    <div className="min-h-0 h-full">
+                                        <ScriptOutputTab entries={filteredOutputs} onRerunSetup={onRerunSetup} rerunning={filteredOutputs.some((e) => e.status === "running")} />
+                                    </div>
+                                )}
+                            </div>
+                        </div>
                     </Tabs.Content>
                 </div>
             </Tabs.Root>
