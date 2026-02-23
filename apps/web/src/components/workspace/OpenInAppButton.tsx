@@ -7,19 +7,22 @@ import { getAppIcon } from "../../lib/appIcons";
 import { api } from "../../lib/api";
 import { useInstalledApps } from "../../hooks/queries/useInstalledApps";
 
-const PREFERRED_APP_KEY = "codesymphony:preferred-editor";
+const PREFERRED_APP_KEY_PREFIX = "codesymphony:preferred-editor";
 
-function getPreferredAppId(): string | null {
+function getPreferredAppId(targetPath: string): string | null {
   try {
-    return localStorage.getItem(PREFERRED_APP_KEY);
+    const specific = localStorage.getItem(`${PREFERRED_APP_KEY_PREFIX}:${targetPath}`);
+    if (specific) return specific;
+    return localStorage.getItem(PREFERRED_APP_KEY_PREFIX);
   } catch {
     return null;
   }
 }
 
-function setPreferredAppId(appId: string) {
+function setPreferredAppId(targetPath: string, appId: string) {
   try {
-    localStorage.setItem(PREFERRED_APP_KEY, appId);
+    localStorage.setItem(`${PREFERRED_APP_KEY_PREFIX}:${targetPath}`, appId);
+    localStorage.setItem(PREFERRED_APP_KEY_PREFIX, appId);
   } catch {
     // localStorage not available
   }
@@ -34,15 +37,25 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
   const { data: apps = [], isLoading } = useInstalledApps();
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [opening, setOpening] = useState(false);
-  const [preferredId, setPreferredId] = useState<string | null>(getPreferredAppId);
+  const [preferredId, setPreferredId] = useState<string | null>(() => getPreferredAppId(targetPath));
 
   // Determine selected app: preferred if it exists in the list, else first available
   const selectedApp = apps.find((a) => a.id === preferredId) ?? apps[0] ?? null;
 
-  function handleSelectApp(app: ExternalApp) {
+  async function handleSelectApp(app: ExternalApp) {
     setPreferredId(app.id);
-    setPreferredAppId(app.id);
+    setPreferredAppId(targetPath, app.id);
     setPopoverOpen(false);
+
+    if (opening) return;
+    setOpening(true);
+    try {
+      await api.openInApp({ appId: app.id, targetPath });
+    } catch {
+      // Could show a toast; for now silently fail
+    } finally {
+      setOpening(false);
+    }
   }
 
   async function handleOpen(e: React.MouseEvent) {
@@ -60,7 +73,7 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
 
   if (isLoading) {
     return (
-      <div className={cn("flex h-7 items-center gap-1 text-xs text-muted-foreground", className)}>
+      <div className={cn("flex h-9 items-center gap-1 text-xs text-muted-foreground", className)}>
         <Loader2 className="h-3 w-3 animate-spin" />
       </div>
     );
@@ -75,7 +88,7 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
   return (
     <div
       className={cn(
-        "inline-flex items-center rounded-md border border-border text-xs",
+        "inline-flex h-9 items-center rounded-md border border-border text-xs",
         className,
       )}
       onClick={(e) => e.stopPropagation()}
@@ -85,7 +98,7 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="flex items-center gap-1.5 rounded-l-md px-2 py-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className="flex h-full items-center gap-1.5 rounded-l-md px-2.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
             title="Select editor"
             onClick={(e) => e.stopPropagation()}
           >
@@ -124,7 +137,7 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
       {/* Right zone: Open button */}
       <button
         type="button"
-        className="flex items-center rounded-r-md px-2 py-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
+        className="flex h-full items-center rounded-r-md px-2.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
         title={`Open in ${selectedApp?.name ?? "editor"}`}
         disabled={opening || !selectedApp}
         onClick={handleOpen}

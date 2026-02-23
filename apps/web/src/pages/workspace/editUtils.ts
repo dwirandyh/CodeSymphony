@@ -335,7 +335,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
     const changedFiles = payloadStringArray(event.payload.changedFiles);
     const { additions, deletions } = countDiffStats(diff);
     const targetRun = Array.from(byRunKey.values())
-      .filter((run) => run.startIdx <= event.idx && run.diffKind === "none" && run.status !== "failed")
+      .filter((run) => run.startIdx <= event.idx && (run.diffKind === "none" || run.diffKind === "proposed") && run.status !== "failed")
       .sort((a, b) => b.startIdx - a.startIdx)[0];
 
     if (!targetRun) {
