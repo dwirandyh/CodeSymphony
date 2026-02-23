@@ -57,6 +57,20 @@ type ListenerMap = Map<string, Set<(event: ChatEvent) => void>>;
 export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
   const listeners: ListenerMap = new Map();
 
+  // Per-thread serial queue to prevent concurrent nextIdx collisions (P2002)
+  const threadQueues = new Map<string, Promise<unknown>>();
+
+  function enqueueForThread<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = threadQueues.get(threadId) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    threadQueues.set(threadId, next);
+    next.then(
+      () => { if (threadQueues.get(threadId) === next) threadQueues.delete(threadId); },
+      () => { if (threadQueues.get(threadId) === next) threadQueues.delete(threadId); },
+    );
+    return next;
+  }
+
   async function nextIdx(tx: Prisma.TransactionClient, threadId: string): Promise<number> {
     const result = await tx.chatEvent.aggregate({
       where: { threadId },
@@ -67,23 +81,25 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
   }
 
   async function emit(threadId: string, type: ChatEventType, payload: Record<string, unknown>): Promise<ChatEvent> {
-    const dbEvent = await prisma.$transaction(async (tx) => {
-      const idx = await nextIdx(tx, threadId);
-      return tx.chatEvent.create({
-        data: {
-          threadId,
-          idx,
-          type: typeToDb[type],
-          payload: payload as Prisma.InputJsonValue,
-        },
+    return enqueueForThread(threadId, async () => {
+      const dbEvent = await prisma.$transaction(async (tx) => {
+        const idx = await nextIdx(tx, threadId);
+        return tx.chatEvent.create({
+          data: {
+            threadId,
+            idx,
+            type: typeToDb[type],
+            payload: payload as Prisma.InputJsonValue,
+          },
+        });
       });
+
+      const event = mapDbEvent(dbEvent);
+      const threadListeners = listeners.get(threadId);
+      threadListeners?.forEach((listener) => listener(event));
+
+      return event;
     });
-
-    const event = mapDbEvent(dbEvent);
-    const threadListeners = listeners.get(threadId);
-    threadListeners?.forEach((listener) => listener(event));
-
-    return event;
   }
 
   async function list(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {

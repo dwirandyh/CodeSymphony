@@ -30,12 +30,13 @@ export function mapRepository(repository: DbRepository & { worktrees: DbWorktree
   };
 }
 
-export function mapChatThread(thread: DbChatThread): ChatThread {
+export function mapChatThread(thread: DbChatThread, isActive = false): ChatThread {
   return {
     id: thread.id,
     worktreeId: thread.worktreeId,
     title: thread.title,
     claudeSessionId: thread.claudeSessionId,
+    active: isActive,
     createdAt: thread.createdAt.toISOString(),
     updatedAt: thread.updatedAt.toISOString(),
   };

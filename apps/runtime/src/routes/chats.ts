@@ -198,14 +198,28 @@ export async function registerChatRoutes(app: FastifyInstance) {
     reply.raw.setHeader("Connection", "keep-alive");
     reply.raw.setHeader("X-Accel-Buffering", "no");
 
+    // Subscribe FIRST to avoid gaps between history fetch and live subscription
+    const buffer: ChatEvent[] = [];
+    let flushed = false;
+    const unsubscribe = app.eventHub.subscribe(params.id, (event) => {
+      if (!flushed) { buffer.push(event); return; }
+      reply.raw.write(formatSseEvent(event));
+    });
+
     const history = await app.chatService.listEvents(params.id, startCursor);
+    const seenIdx = new Set<number>();
     for (const event of history) {
+      seenIdx.add(event.idx);
       reply.raw.write(formatSseEvent(event));
     }
 
-    const unsubscribe = app.eventHub.subscribe(params.id, (event) => {
-      reply.raw.write(formatSseEvent(event));
-    });
+    // Flush buffered events, skipping duplicates
+    for (const event of buffer) {
+      if (!seenIdx.has(event.idx)) {
+        reply.raw.write(formatSseEvent(event));
+      }
+    }
+    flushed = true;
 
     const heartbeat = setInterval(() => {
       reply.raw.write(": ping\n\n");

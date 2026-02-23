@@ -27,9 +27,9 @@ import { renameBranch as renameBranchGit } from "./git";
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_THREAD_TITLE_LENGTH = 48;
-const TITLE_GENERATION_TIMEOUT_MS = 6000;
+const TITLE_GENERATION_TIMEOUT_MS = 15000;
 const MAX_BRANCH_NAME_LENGTH = 60;
-const BRANCH_GENERATION_TIMEOUT_MS = 6000;
+const BRANCH_GENERATION_TIMEOUT_MS = 15000;
 const CLAUDE_SETTINGS_DIR = ".claude";
 const CLAUDE_LOCAL_SETTINGS_FILE = "settings.local.json";
 const execFile = promisify(execFileRaw);
@@ -887,6 +887,11 @@ export function createChatService(deps: RuntimeDeps) {
     const abortController = new AbortController();
     runningAbortControllersByThread.set(threadId, abortController);
 
+    // Incremental flush: periodically persist fullOutput to avoid losing content on crash
+    const FLUSH_INTERVAL_MS = 2000;
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastFlushedLength = 0;
+
     try {
       const thread = await deps.prisma.chatThread.findUnique({
         where: { id: threadId },
@@ -923,6 +928,24 @@ export function createChatService(deps: RuntimeDeps) {
 
       activeProvider = await deps.modelProviderService.getActiveProvider();
 
+      function scheduleFlush() {
+        if (flushTimer !== null) return;
+        flushTimer = setTimeout(async () => {
+          flushTimer = null;
+          if (fullOutput.length > lastFlushedLength) {
+            try {
+              await deps.prisma.chatMessage.update({
+                where: { id: assistantMessage.id },
+                data: { content: fullOutput.trim() },
+              });
+              lastFlushedLength = fullOutput.length;
+            } catch {
+              // Non-critical — final TX will retry
+            }
+          }
+        }, FLUSH_INTERVAL_MS);
+      }
+
       const result = await deps.claudeRunner({
         prompt,
         sessionId: thread.claudeSessionId,
@@ -935,6 +958,7 @@ export function createChatService(deps: RuntimeDeps) {
         providerBaseUrl: activeProvider?.baseUrl,
         onText: async (chunk) => {
           fullOutput += chunk;
+          scheduleFlush();
           await deps.eventHub.emit(threadId, "message.delta", {
             messageId: assistantMessage.id,
             role: "assistant",
@@ -1065,21 +1089,47 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
 
-      await deps.prisma.$transaction(async (tx) => {
-        await tx.chatMessage.update({
-          where: { id: assistantMessage.id },
-          data: {
-            content: fullOutput.trim(),
-          },
-        });
+      // Clear the incremental flush timer
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
 
-        await tx.chatThread.update({
-          where: { id: threadId },
-          data: {
-            claudeSessionId: result.sessionId,
-          },
+      // Final persistence — try transaction first, fall back to individual updates
+      try {
+        await deps.prisma.$transaction(async (tx) => {
+          await tx.chatMessage.update({
+            where: { id: assistantMessage.id },
+            data: {
+              content: fullOutput.trim(),
+            },
+          });
+
+          await tx.chatThread.update({
+            where: { id: threadId },
+            data: {
+              claudeSessionId: result.sessionId,
+            },
+          });
         });
-      });
+      } catch (txError) {
+        deps.logService?.log("warn", "chat.persist", "Final TX failed, falling back to individual updates", {
+          threadId,
+          error: txError instanceof Error ? txError.message : String(txError),
+        });
+        try {
+          await deps.prisma.chatMessage.update({
+            where: { id: assistantMessage.id },
+            data: { content: fullOutput.trim() },
+          });
+        } catch { /* incremental flush already persisted partial content */ }
+        try {
+          await deps.prisma.chatThread.update({
+            where: { id: threadId },
+            data: { claudeSessionId: result.sessionId },
+          });
+        } catch { /* session id is non-critical */ }
+      }
       const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(threadId);
       let completionThreadTitle: string | null = renamedThreadTitle;
       if (!completionThreadTitle) {
@@ -1159,6 +1209,10 @@ export function createChatService(deps: RuntimeDeps) {
         });
       }
     } finally {
+      if (flushTimer !== null) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
       runningAbortControllersByThread.delete(threadId);
       scheduledAssistantRunsByThread.delete(threadId);
       rejectPendingPermissions(threadId, "Permission request cancelled because the chat run ended.");
@@ -1183,7 +1237,7 @@ export function createChatService(deps: RuntimeDeps) {
         orderBy: { updatedAt: "desc" },
       });
 
-      return threads.map(mapChatThread);
+      return threads.map((t) => mapChatThread(t, activeThreads.has(t.id)));
     },
 
     async createThread(worktreeId: string, rawInput: unknown): Promise<ChatThread> {
@@ -1206,7 +1260,7 @@ export function createChatService(deps: RuntimeDeps) {
 
     async getThreadById(threadId: string): Promise<ChatThread | null> {
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
-      return thread ? mapChatThread(thread) : null;
+      return thread ? mapChatThread(thread, activeThreads.has(thread.id)) : null;
     },
 
     async deleteThread(threadId: string): Promise<void> {
@@ -1544,6 +1598,33 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
         });
         return "chore: update files";
       }
+    },
+
+    async recoverStuckThreads(): Promise<number> {
+      // Find all threads and check if their last event is a terminal event
+      const threads = await deps.prisma.chatThread.findMany({
+        select: { id: true },
+      });
+
+      let recoveredCount = 0;
+      for (const thread of threads) {
+        // Skip threads that are currently active
+        if (activeThreads.has(thread.id)) continue;
+
+        const events = await deps.eventHub.list(thread.id);
+        if (events.length === 0) continue;
+
+        const lastEvent = events[events.length - 1];
+        if (lastEvent.type === "chat.completed" || lastEvent.type === "chat.failed") continue;
+
+        // This thread has events but no terminal event — it was stuck
+        await deps.eventHub.emit(thread.id, "chat.failed", {
+          message: "Chat run interrupted by a runtime restart. You can send a new message to continue.",
+        });
+        recoveredCount++;
+      }
+
+      return recoveredCount;
     },
   };
 }

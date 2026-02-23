@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type {
   AssistantRenderHint,
@@ -58,7 +58,24 @@ export function useWorkspaceTimeline(
   selectedThreadId: string | null,
   refs: TimelineRefs,
 ): ChatTimelineItem[] {
+  // Fast-path: skip full recomputation if the input fingerprint hasn't changed
+  const prevFingerprintRef = useRef<{ messageCount: number; eventCount: number; lastEventIdx: number; threadId: string | null } | null>(null);
+  const prevResultRef = useRef<ChatTimelineItem[]>([]);
+
   return useMemo<ChatTimelineItem[]>(() => {
+    const lastEventIdx = events.length > 0 ? events[events.length - 1].idx : -1;
+    const fingerprint = { messageCount: messages.length, eventCount: events.length, lastEventIdx, threadId: selectedThreadId };
+    const prev = prevFingerprintRef.current;
+    if (
+      prev !== null &&
+      prev.messageCount === fingerprint.messageCount &&
+      prev.eventCount === fingerprint.eventCount &&
+      prev.lastEventIdx === fingerprint.lastEventIdx &&
+      prev.threadId === fingerprint.threadId &&
+      prevResultRef.current.length > 0
+    ) {
+      return prevResultRef.current;
+    }
     const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
 
     // Clone the sticky set to avoid mutating the ref during render.
@@ -1410,6 +1427,9 @@ export function useWorkspaceTimeline(
       refs.stickyRawFallbackMessageIds.add(id);
     }
 
-    return sortable.map((entry) => entry.item);
+    const result = sortable.map((entry) => entry.item);
+    prevFingerprintRef.current = fingerprint;
+    prevResultRef.current = result;
+    return result;
   }, [messages, events, selectedThreadId]);
 }

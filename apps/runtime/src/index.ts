@@ -128,6 +128,9 @@ app
   .listen({ host, port })
   .then(() => {
     app.log.info(`Runtime listening on http://${host}:${port}`);
+    void app.chatService.recoverStuckThreads().then((count) => {
+      if (count > 0) app.logService.log("info", "runtime", `Recovered ${count} stuck thread(s)`);
+    });
   })
   .catch((error) => {
     app.log.error(error);
