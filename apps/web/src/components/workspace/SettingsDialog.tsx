@@ -96,6 +96,15 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     }
   }, [selectedRepoId, runScriptText, setupText, teardownText, defaultBranchValue, repositories]);
 
+  // Auto-save effect
+  useEffect(() => {
+    if (!dirty) return;
+    const timeoutId = setTimeout(() => {
+      void handleSave();
+    }, 1000);
+    return () => clearTimeout(timeoutId);
+  }, [dirty, handleSave]);
+
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId) ?? null;
 
   if (!open) return null;
@@ -229,40 +238,36 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                   </p>
                 </div>
 
-                <div className="mt-auto flex justify-end">
-                  <Button
-                    size="sm"
-                    disabled={!dirty || saving}
-                    onClick={() => void handleSave()}
-                  >
-                    {saving && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
-                    Save Changes
-                  </Button>
-                </div>
-
-                {/* ── Remove Repository ── */}
-                {selectedRepo && (
-                  <>
-                    <div className="my-4 border-t border-border/30" />
+                <div className="mt-auto flex items-center justify-between border-t border-border/30 pt-4">
+                  {selectedRepo ? (
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      className="text-destructive hover:bg-destructive/10 hover:text-destructive -ml-2"
                       onClick={() => setShowRemoveDialog(true)}
                     >
                       Remove Repository
                     </Button>
-                  </>
-                )}
+                  ) : <div />}
+
+                  <div className="flex h-5 items-center text-xs text-muted-foreground">
+                    {saving && (
+                      <span className="flex items-center gap-1.5">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Saving
+                      </span>
+                    )}
+                  </div>
+                </div>
               </>
             ) : (
               <div className="flex flex-1 items-center justify-center">
                 <p className="text-xs text-muted-foreground">No repositories available</p>
               </div>
             )}
-            </div>
           </div>
         </div>
+      </div>
 
       {/* Remove confirmation dialog */}
       {selectedRepo && (
