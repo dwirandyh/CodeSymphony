@@ -123,9 +123,11 @@ export function useChatSession(
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
   const initialThreadAppliedRef = useRef(false);
+  const creatingThreadRef = useRef(false);
   const prevThreadIdRef = useRef<string | null>(null);
   const prevSeedThreadRef = useRef<string | null>(null);
   const prevSeedEventsThreadRef = useRef<string | null>(null);
+  const restoredActiveThreadIdsRef = useRef<Set<string>>(new Set());
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
   const rafIdRef = useRef<number | null>(null);
@@ -186,7 +188,7 @@ export function useChatSession(
 
     // Sync threads list — only update if threads actually differ
     setThreads((current) => {
-      if (current.length === queriedThreads.length && current.every((t, i) => t.id === queriedThreads[i].id && t.title === queriedThreads[i].title)) {
+      if (current.length === queriedThreads.length && current.every((t, i) => t.id === queriedThreads[i].id && t.title === queriedThreads[i].title && t.claudeSessionId === queriedThreads[i].claudeSessionId && t.active === queriedThreads[i].active && t.updatedAt === queriedThreads[i].updatedAt)) {
         return current;
       }
       return queriedThreads;
@@ -212,7 +214,9 @@ export function useChatSession(
       if (!initialThreadAppliedRef.current) {
         initialThreadAppliedRef.current = true;
       }
+      if (creatingThreadRef.current) return;
       let cancelled = false;
+      creatingThreadRef.current = true;
       void (async () => {
         try {
           const created = await api.createThread(selectedWorktreeId, { title: "Main Thread" });
@@ -222,11 +226,27 @@ export function useChatSession(
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
         } catch (e) {
           if (!cancelled) onError(e instanceof Error ? e.message : "Failed to load threads");
+        } finally {
+          creatingThreadRef.current = false;
         }
       })();
       return () => { cancelled = true; };
     }
   }, [selectedWorktreeId, queriedThreads]);
+
+  // ── Restore running state for threads that are still active on the server ──
+  // This handles page refresh while the assistant is processing: the runtime
+  // reports `active: true` on the thread, so we restore the waiting UI.
+  useEffect(() => {
+    if (!selectedThreadId) return;
+    if (restoredActiveThreadIdsRef.current.has(selectedThreadId)) return;
+
+    const thread = threads.find((t) => t.id === selectedThreadId);
+    if (thread?.active) {
+      restoredActiveThreadIdsRef.current.add(selectedThreadId);
+      startWaitingAssistant(selectedThreadId);
+    }
+  }, [selectedThreadId, threads]);
 
   // ── TanStack Query: thread messages & events (initial seed) ──
   const { data: queriedMessages } = useThreadMessages(selectedThreadId);
@@ -578,6 +598,11 @@ export function useChatSession(
     };
 
     // Wait a tick for query data to seed, then start SSE
+    const MAX_RECONNECT_ATTEMPTS = 5;
+    const BASE_RECONNECT_DELAY_MS = 1000;
+    let reconnectAttempts = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
     const startStream = () => {
       if (disposed) return;
 
@@ -606,9 +631,31 @@ export function useChatSession(
         stream.addEventListener(eventType, onEvent as EventListener);
       }
 
+      stream.onopen = () => {
+        reconnectAttempts = 0;
+        onError(null);
+      };
+
       stream.onerror = () => {
-        if (!disposed && stream && stream.readyState === EventSource.CLOSED) {
-          onError("Lost connection to chat stream");
+        if (disposed) return;
+        if (stream && stream.readyState === EventSource.CLOSED) {
+          // Close the dead stream
+          for (const eventType of EVENT_TYPES) {
+            stream.removeEventListener(eventType, onEvent as EventListener);
+          }
+          stream.close();
+          stream = null;
+
+          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            const delay = BASE_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttempts);
+            reconnectAttempts++;
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = null;
+              startStream();
+            }, delay);
+          } else {
+            onError("Lost connection to chat stream");
+          }
         }
       };
     };
@@ -636,6 +683,10 @@ export function useChatSession(
 
     return () => {
       disposed = true;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
         rafIdRef.current = null;

@@ -56,6 +56,7 @@ export const ChatThreadSchema = z.object({
   worktreeId: z.string(),
   title: z.string().min(1),
   claudeSessionId: z.string().nullable(),
+  active: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
