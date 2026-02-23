@@ -17,3 +17,4 @@ apps/runtime/prisma/test.db-journal
 apps/runtime/.tmp
 apps/runtime/debug.log
 apps/web/src/routeTree.gen.ts
+*.tsbuildinfo
