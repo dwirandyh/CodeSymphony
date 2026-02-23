@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ChatThread,
   CreateChatThreadInput,
+  CreateModelProviderInput,
   CreateRepositoryInput,
   CreateWorktreeInput,
   ExternalApp,
@@ -12,6 +13,7 @@ import type {
   GitCommitInput,
   GitDiff,
   GitStatus,
+  ModelProvider,
   OpenInAppInput,
   OpenWorktreeFileInput,
   PlanRevisionInput,
@@ -20,6 +22,7 @@ import type {
   Repository,
   ScriptResult,
   SendChatMessageInput,
+  UpdateModelProviderInput,
   UpdateRepositoryScriptsInput,
   Worktree,
 } from "@codesymphony/shared-types";
@@ -316,4 +319,45 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to open in app");
     }
   },
+
+  // ── Model Providers ──
+
+  listModelProviders: () => request<ModelProvider[]>("/model-providers"),
+  createModelProvider: (input: CreateModelProviderInput) =>
+    request<ModelProvider>("/model-providers", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateModelProvider: (id: string, input: UpdateModelProviderInput) =>
+    request<ModelProvider>(`/model-providers/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteModelProvider: async (id: string) => {
+    const response = await fetch(`${API_BASE}/model-providers/${id}`, {
+      method: "DELETE",
+    });
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to delete provider");
+    }
+  },
+  activateModelProvider: (id: string) =>
+    request<ModelProvider>(`/model-providers/${id}/activate`, {
+      method: "POST",
+    }),
+  deactivateAllProviders: async () => {
+    const response = await fetch(`${API_BASE}/model-providers/deactivate`, {
+      method: "POST",
+    });
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to deactivate providers");
+    }
+  },
+  testModelProvider: (input: { baseUrl: string; apiKey: string; modelId: string }) =>
+    request<{ success: boolean; error?: string }>("/model-providers/test", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 };

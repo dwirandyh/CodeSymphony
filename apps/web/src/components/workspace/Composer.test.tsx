@@ -25,10 +25,12 @@ const defaultProps = {
   worktreeId: "wt-1",
   fileIndex: sampleFileIndex,
   fileIndexLoading: false,
+  providers: [],
   onChange: noop,
   onModeChange: noop,
   onSubmitMessage: noop,
   onStop: noop,
+  onSelectProvider: noop,
 };
 
 describe("Composer", () => {

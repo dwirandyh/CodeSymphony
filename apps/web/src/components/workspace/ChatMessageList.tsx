@@ -127,6 +127,12 @@ export type ChatTimelineItem =
     messageId: string;
     content: string;
     isStreaming: boolean;
+  }
+  | {
+    kind: "error";
+    id: string;
+    message: string;
+    createdAt: string;
   };
 
 type ChatMessageListProps = {
@@ -1732,6 +1738,21 @@ const TimelineItem = memo(function TimelineItem({
             </pre>
           </div>
         </details>
+      </article>
+    );
+  }
+
+  if (item.kind === "error") {
+    return (
+      <article
+        className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm"
+        data-testid="timeline-error"
+      >
+        <div className="mb-1 flex items-center gap-1.5 text-destructive">
+          <XCircle className="h-4 w-4 shrink-0" />
+          <span className="font-semibold">Chat failed</span>
+        </div>
+        <p className="whitespace-pre-wrap break-words text-foreground/90">{item.message}</p>
       </article>
     );
   }

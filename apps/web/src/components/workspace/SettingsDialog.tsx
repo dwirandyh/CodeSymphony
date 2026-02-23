@@ -1,21 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Check, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
-import type { Repository } from "@codesymphony/shared-types";
+import type { ModelProvider, Repository } from "@codesymphony/shared-types";
+
+type SettingsTab = "workspace" | "models";
 
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
   repositories: Repository[];
   onRemoveRepository: (id: string) => void;
+  onProvidersChanged?: () => void;
 }
 
-export function SettingsDialog({ open, onClose, repositories, onRemoveRepository }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, repositories, onRemoveRepository, onProvidersChanged }: SettingsDialogProps) {
   const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<SettingsTab>("workspace");
+
+  // ── Workspace tab state ──
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [runScriptText, setRunScriptText] = useState("");
   const [setupText, setSetupText] = useState("");
@@ -26,18 +32,32 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
-  // Local cache of saved settings so switching repos doesn't lose unsaved prop data
   const savedScriptsRef = useRef<Record<string, { runScript: string; setup: string; teardown: string; defaultBranch: string }>>({});
   const savePromiseRef = useRef<Promise<void> | null>(null);
 
-  // Select first repo when opening or when repos change
+  // ── Models tab state ──
+  const [providers, setProviders] = useState<ModelProvider[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+
+  // Provider form state
+  const [showProviderForm, setShowProviderForm] = useState(false);
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
+  const [providerName, setProviderName] = useState("");
+  const [providerModelId, setProviderModelId] = useState("");
+  const [providerBaseUrl, setProviderBaseUrl] = useState("");
+  const [providerApiKey, setProviderApiKey] = useState("");
+  const [savingProvider, setSavingProvider] = useState(false);
+  const [testingProvider, setTestingProvider] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
+
+  // ── Workspace: Select first repo ──
   useEffect(() => {
     if (open && repositories.length > 0 && !selectedRepoId) {
       setSelectedRepoId(repositories[0].id);
     }
   }, [open, repositories, selectedRepoId]);
 
-  // Load scripts when selected repo changes
+  // ── Workspace: Load scripts ──
   useEffect(() => {
     if (!selectedRepoId) return;
     const cached = savedScriptsRef.current[selectedRepoId];
@@ -58,29 +78,32 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     setShowRemoveDialog(false);
   }, [selectedRepoId, repositories]);
 
-  // Fetch branches when selected repo changes
+  // ── Workspace: Fetch branches ──
   useEffect(() => {
     if (!selectedRepoId) return;
     let cancelled = false;
     setLoadingBranches(true);
     api.listBranches(selectedRepoId)
-      .then((data) => {
-        if (!cancelled) setBranches(data);
-      })
-      .catch(() => {
-        if (!cancelled) setBranches([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingBranches(false);
-      });
+      .then((data) => { if (!cancelled) setBranches(data); })
+      .catch(() => { if (!cancelled) setBranches([]); })
+      .finally(() => { if (!cancelled) setLoadingBranches(false); });
     return () => { cancelled = true; };
   }, [selectedRepoId]);
 
+  // ── Models: Fetch providers when tab opens ──
+  useEffect(() => {
+    if (!open || activeTab !== "models") return;
+    let cancelled = false;
+    setLoadingModels(true);
+    api.listModelProviders()
+      .then((data) => { if (!cancelled) setProviders(data); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoadingModels(false); });
+    return () => { cancelled = true; };
+  }, [open, activeTab]);
+
   const parseScriptLines = useCallback((scriptText: string): string[] | null => {
-    const lines = scriptText
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    const lines = scriptText.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
     return lines.length > 0 ? lines : null;
   }, []);
 
@@ -131,16 +154,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
 
     savePromiseRef.current = savePromise;
     await savePromise;
-  }, [
-    defaultBranchValue,
-    parseScriptLines,
-    queryClient,
-    repositories,
-    runScriptText,
-    selectedRepoId,
-    setupText,
-    teardownText,
-  ]);
+  }, [defaultBranchValue, parseScriptLines, queryClient, repositories, runScriptText, selectedRepoId, setupText, teardownText]);
 
   const handleCloseSettings = useCallback(async () => {
     if (dirty || savePromiseRef.current) {
@@ -152,11 +166,97 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   // Auto-save effect
   useEffect(() => {
     if (!dirty) return;
-    const timeoutId = setTimeout(() => {
-      void handleSave();
-    }, 1000);
+    const timeoutId = setTimeout(() => { void handleSave(); }, 1000);
     return () => clearTimeout(timeoutId);
   }, [dirty, handleSave]);
+
+  // ── Models: provider CRUD ──
+  const refreshProviders = useCallback(async () => {
+    try {
+      const data = await api.listModelProviders();
+      setProviders(data);
+      onProvidersChanged?.();
+    } catch {}
+  }, [onProvidersChanged]);
+
+  const handleSaveProvider = useCallback(async () => {
+    if (!providerName.trim() || !providerModelId.trim() || !providerBaseUrl.trim() || (!editingProviderId && !providerApiKey.trim())) return;
+    setSavingProvider(true);
+    try {
+      if (editingProviderId) {
+        await api.updateModelProvider(editingProviderId, {
+          name: providerName,
+          modelId: providerModelId,
+          baseUrl: providerBaseUrl,
+          ...(providerApiKey.trim() ? { apiKey: providerApiKey } : {}),
+        });
+      } else {
+        await api.createModelProvider({
+          name: providerName,
+          modelId: providerModelId,
+          baseUrl: providerBaseUrl,
+          apiKey: providerApiKey,
+        });
+      }
+      setShowProviderForm(false);
+      setEditingProviderId(null);
+      setProviderName("");
+      setProviderModelId("");
+      setProviderBaseUrl("");
+      setProviderApiKey("");
+      await refreshProviders();
+    } catch {
+      // non-critical
+    } finally {
+      setSavingProvider(false);
+    }
+  }, [editingProviderId, providerName, providerModelId, providerBaseUrl, providerApiKey, refreshProviders]);
+
+  const handleDeleteProvider = useCallback(async (id: string) => {
+    try {
+      await api.deleteModelProvider(id);
+      await refreshProviders();
+    } catch {}
+  }, [refreshProviders]);
+
+  const handleToggleProvider = useCallback(async (provider: ModelProvider) => {
+    try {
+      if (provider.isActive) {
+        await api.deactivateAllProviders();
+      } else {
+        await api.activateModelProvider(provider.id);
+      }
+      await refreshProviders();
+    } catch {}
+  }, [refreshProviders]);
+
+  const handleEditProvider = useCallback((provider: ModelProvider) => {
+    setEditingProviderId(provider.id);
+    setProviderName(provider.name);
+    setProviderModelId(provider.modelId);
+    setProviderBaseUrl(provider.baseUrl);
+    setProviderApiKey("");
+    setShowProviderForm(true);
+    setTestResult(null);
+  }, []);
+
+  const handleTestProvider = useCallback(async () => {
+    if (!providerBaseUrl.trim() || !providerApiKey.trim() || !providerModelId.trim()) return;
+    setTestingProvider(true);
+    setTestResult(null);
+    try {
+      const result = await api.testModelProvider({
+        baseUrl: providerBaseUrl,
+        apiKey: providerApiKey,
+        modelId: providerModelId,
+      });
+      setTestResult(result);
+    } catch {
+      setTestResult({ success: false, error: "Network error — could not reach the runtime" });
+    } finally {
+      setTestingProvider(false);
+    }
+  }, [providerBaseUrl, providerApiKey, providerModelId]);
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId) ?? null;
 
@@ -168,157 +268,354 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
       <div className="fixed inset-0 z-50 flex bg-background p-1 sm:p-2 lg:p-3">
         {/* Left panel — sidebar style */}
         <aside className="flex w-[220px] shrink-0 flex-col rounded-2xl bg-card/75 p-3">
-          {/* Back button + title */}
           <button
             type="button"
             className="mb-4 flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
-            onClick={() => {
-              void handleCloseSettings();
-            }}
+            onClick={() => { void handleCloseSettings(); }}
           >
             <ArrowLeft className="h-4 w-4" />
             <span className="text-sm font-semibold text-foreground">Settings</span>
           </button>
 
-          {/* Menu items */}
           <div className="space-y-0.5">
             <button
               type="button"
-              className="w-full rounded-md bg-secondary px-2 py-1.5 text-left text-xs text-foreground"
+              className={`w-full rounded-md px-2 py-1.5 text-left text-xs ${
+                activeTab === "workspace"
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+              }`}
+              onClick={() => setActiveTab("workspace")}
             >
               Workspace
+            </button>
+            <button
+              type="button"
+              className={`w-full rounded-md px-2 py-1.5 text-left text-xs ${
+                activeTab === "models"
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+              }`}
+              onClick={() => setActiveTab("models")}
+            >
+              Models
             </button>
           </div>
         </aside>
 
-        {/* Right panel — chat panel style */}
+        {/* Right panel */}
         <div className="flex flex-1 flex-col overflow-y-auto p-4">
           <div className="mx-auto w-full max-w-xl">
-            {repositories.length > 0 ? (
+            {activeTab === "workspace" ? (
               <>
-                <div className="mb-4">
-                  <label className="mb-1.5 block text-xs font-medium">Repository</label>
-                  <select
-                    className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                    value={selectedRepoId ?? ""}
-                    onChange={(e) => setSelectedRepoId(e.target.value)}
-                  >
-                    {repositories.map((repo) => (
-                      <option key={repo.id} value={repo.id}>
-                        {repo.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="mb-4">
-                  <label className="mb-1.5 block text-xs font-medium">Default Branch</label>
-                  {loadingBranches ? (
-                    <div className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      Loading branches...
+                {repositories.length > 0 ? (
+                  <>
+                    <div className="mb-4">
+                      <label className="mb-1.5 block text-xs font-medium">Repository</label>
+                      <select
+                        className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                        value={selectedRepoId ?? ""}
+                        onChange={(e) => setSelectedRepoId(e.target.value)}
+                      >
+                        {repositories.map((repo) => (
+                          <option key={repo.id} value={repo.id}>{repo.name}</option>
+                        ))}
+                      </select>
                     </div>
-                  ) : (
-                    <select
-                      className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                      value={defaultBranchValue}
-                      onChange={(e) => {
-                        setDefaultBranchValue(e.target.value);
-                        setDirty(true);
-                      }}
-                    >
-                      {!branches.includes(defaultBranchValue) && defaultBranchValue && (
-                        <option value={defaultBranchValue}>{defaultBranchValue}</option>
+
+                    <div className="mb-4">
+                      <label className="mb-1.5 block text-xs font-medium">Default Branch</label>
+                      {loadingBranches ? (
+                        <div className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Loading branches...
+                        </div>
+                      ) : (
+                        <select
+                          className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                          value={defaultBranchValue}
+                          onChange={(e) => { setDefaultBranchValue(e.target.value); setDirty(true); }}
+                        >
+                          {!branches.includes(defaultBranchValue) && defaultBranchValue && (
+                            <option value={defaultBranchValue}>{defaultBranchValue}</option>
+                          )}
+                          {branches.map((branch) => (
+                            <option key={branch} value={branch}>{branch}</option>
+                          ))}
+                        </select>
                       )}
-                      {branches.map((branch) => (
-                        <option key={branch} value={branch}>
-                          {branch}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    New worktrees will be created from this branch.
-                  </p>
-                </div>
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        New worktrees will be created from this branch.
+                      </p>
+                    </div>
 
-                <div className="mb-4">
-                  <label className="mb-1.5 block text-xs font-medium">Run Script</label>
-                  <textarea
-                    className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                    rows={3}
-                    placeholder={"npm run dev\ndocker-compose up"}
-                    value={runScriptText}
-                    onChange={(e) => {
-                      setRunScriptText(e.target.value);
-                      setDirty(true);
-                    }}
-                  />
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    One command per line. Executed when you tap the Run button in the chat panel.
-                  </p>
-                </div>
+                    <div className="mb-4">
+                      <label className="mb-1.5 block text-xs font-medium">Run Script</label>
+                      <textarea
+                        className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                        rows={3}
+                        placeholder={"npm run dev\ndocker-compose up"}
+                        value={runScriptText}
+                        onChange={(e) => { setRunScriptText(e.target.value); setDirty(true); }}
+                      />
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        One command per line. Executed when you tap the Run button in the chat panel.
+                      </p>
+                    </div>
 
-                <div className="mb-4">
-                  <label className="mb-1.5 block text-xs font-medium">Setup Scripts</label>
-                  <textarea
-                    className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                    rows={5}
-                    placeholder={"bun install\ncp .env.example .env"}
-                    value={setupText}
-                    onChange={(e) => {
-                      setSetupText(e.target.value);
-                      setDirty(true);
-                    }}
-                  />
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    One command per line. Runs sequentially after worktree creation.
-                  </p>
-                </div>
+                    <div className="mb-4">
+                      <label className="mb-1.5 block text-xs font-medium">Setup Scripts</label>
+                      <textarea
+                        className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                        rows={5}
+                        placeholder={"bun install\ncp .env.example .env"}
+                        value={setupText}
+                        onChange={(e) => { setSetupText(e.target.value); setDirty(true); }}
+                      />
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        One command per line. Runs sequentially after worktree creation.
+                      </p>
+                    </div>
 
-                <div className="mb-4">
-                  <label className="mb-1.5 block text-xs font-medium">Teardown Scripts</label>
-                  <textarea
-                    className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                    rows={5}
-                    placeholder="docker-compose down"
-                    value={teardownText}
-                    onChange={(e) => {
-                      setTeardownText(e.target.value);
-                      setDirty(true);
-                    }}
-                  />
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    One command per line. Runs sequentially before worktree deletion.
-                  </p>
-                </div>
+                    <div className="mb-4">
+                      <label className="mb-1.5 block text-xs font-medium">Teardown Scripts</label>
+                      <textarea
+                        className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                        rows={5}
+                        placeholder="docker-compose down"
+                        value={teardownText}
+                        onChange={(e) => { setTeardownText(e.target.value); setDirty(true); }}
+                      />
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        One command per line. Runs sequentially before worktree deletion.
+                      </p>
+                    </div>
 
-                <div className="mt-auto flex items-center justify-between border-t border-border/30 pt-4">
-                  {selectedRepo ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive hover:bg-destructive/10 hover:text-destructive -ml-2"
-                      onClick={() => setShowRemoveDialog(true)}
-                    >
-                      Remove Repository
-                    </Button>
-                  ) : <div />}
+                    <div className="mt-auto flex items-center justify-between border-t border-border/30 pt-4">
+                      {selectedRepo ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:bg-destructive/10 hover:text-destructive -ml-2"
+                          onClick={() => setShowRemoveDialog(true)}
+                        >
+                          Remove Repository
+                        </Button>
+                      ) : <div />}
 
-                  <div className="flex h-5 items-center text-xs text-muted-foreground">
-                    {saving && (
-                      <span className="flex items-center gap-1.5">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Saving
-                      </span>
-                    )}
+                      <div className="flex h-5 items-center text-xs text-muted-foreground">
+                        {saving && (
+                          <span className="flex items-center gap-1.5">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Saving
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-1 items-center justify-center">
+                    <p className="text-xs text-muted-foreground">No repositories available</p>
                   </div>
-                </div>
+                )}
               </>
             ) : (
-              <div className="flex flex-1 items-center justify-center">
-                <p className="text-xs text-muted-foreground">No repositories available</p>
-              </div>
+              /* ── Models Tab ── */
+              <>
+                {loadingModels ? (
+                  <div className="flex items-center gap-2 py-8 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading...
+                  </div>
+                ) : (
+                  <div className="mb-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <label className="text-xs font-medium">Model Providers</label>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 gap-1 px-2 text-xs"
+                        onClick={() => {
+                          setEditingProviderId(null);
+                          setProviderName("");
+                          setProviderModelId("");
+                          setProviderBaseUrl("");
+                          setProviderApiKey("");
+                          setTestResult(null);
+                          setShowProviderForm(true);
+                        }}
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add
+                      </Button>
+                    </div>
+
+                    {providers.length === 0 && !showProviderForm && (
+                      <p className="text-[10px] text-muted-foreground">
+                        No model providers configured. Using Claude CLI authentication (default).
+                        Add a provider to use a custom Anthropic-compatible API with a specific model.
+                      </p>
+                    )}
+
+                    {providers.length > 0 && (
+                      <div className="space-y-2">
+                        {providers.map((provider) => (
+                          <div
+                            key={provider.id}
+                            className={`rounded-lg border p-2.5 text-xs ${
+                              provider.isActive
+                                ? "border-primary/40 bg-primary/5"
+                                : "border-border/50 bg-secondary/20"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{provider.modelId}</span>
+                                <span className="text-muted-foreground">·</span>
+                                <span className="text-muted-foreground">{provider.name}</span>
+                                {provider.isActive && (
+                                  <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] font-medium text-primary">
+                                    Active
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  className="rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                                  title={provider.isActive ? "Deactivate" : "Activate"}
+                                  onClick={() => void handleToggleProvider(provider)}
+                                >
+                                  <Check className={`h-3 w-3 ${provider.isActive ? "text-primary" : ""}`} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                                  title="Edit"
+                                  onClick={() => handleEditProvider(provider)}
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                  title="Delete"
+                                  onClick={() => void handleDeleteProvider(provider.id)}
+                                >
+                                  <Trash2 className="h-3 w-3" />
+                                </button>
+                              </div>
+                            </div>
+                            <div className="mt-1 text-muted-foreground">
+                              <span className="break-all">{provider.baseUrl}</span>
+                              <span className="mx-1.5">·</span>
+                              <span className="font-mono">{provider.apiKeyMasked}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Provider form */}
+                    {showProviderForm && (
+                      <div className="mt-3 rounded-lg border border-border/50 bg-secondary/10 p-3">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-xs font-medium">
+                            {editingProviderId ? "Edit Provider" : "Add Provider"}
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded-md p-0.5 text-muted-foreground hover:text-foreground"
+                            onClick={() => setShowProviderForm(false)}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                        <div className="space-y-2">
+                          <div>
+                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Provider Name</label>
+                            <input
+                              type="text"
+                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              placeholder='e.g. "z.ai", "OpenRouter"'
+                              value={providerName}
+                              onChange={(e) => setProviderName(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Model ID</label>
+                            <input
+                              type="text"
+                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              placeholder='e.g. "claude-sonnet-4-6", "glm-4.7"'
+                              value={providerModelId}
+                              onChange={(e) => setProviderModelId(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Base URL</label>
+                            <input
+                              type="text"
+                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              placeholder="e.g. https://api.z.ai/v1"
+                              value={providerBaseUrl}
+                              onChange={(e) => setProviderBaseUrl(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <label className="mb-0.5 block text-[10px] text-muted-foreground">API Key</label>
+                            <input
+                              type="password"
+                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              placeholder={editingProviderId ? "Leave empty to keep current" : "API Key"}
+                              value={providerApiKey}
+                              onChange={(e) => setProviderApiKey(e.target.value)}
+                            />
+                          </div>
+                          {testResult && (
+                            <div className={`rounded-md px-2.5 py-1.5 text-xs ${testResult.success ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
+                              {testResult.success ? "Connection successful — provider is Anthropic-compatible." : testResult.error}
+                            </div>
+                          )}
+                          <div className="flex justify-end gap-2 pt-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs"
+                              onClick={() => { setShowProviderForm(false); setTestResult(null); }}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              disabled={testingProvider || !providerModelId.trim() || !providerBaseUrl.trim() || !providerApiKey.trim()}
+                              onClick={() => void handleTestProvider()}
+                            >
+                              {testingProvider ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="h-7 text-xs"
+                              disabled={savingProvider || !providerName.trim() || !providerModelId.trim() || !providerBaseUrl.trim() || (!editingProviderId && !providerApiKey.trim())}
+                              onClick={() => void handleSaveProvider()}
+                            >
+                              {savingProvider ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <p className="mt-3 text-[10px] text-muted-foreground">
+                      Providers must use the Anthropic Messages API format (/v1/messages).
+                      OpenAI-compatible providers (x.ai, OpenAI, etc.) are not supported.
+                      Only one entry can be active at a time. When none is active, Claude CLI authentication is used.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

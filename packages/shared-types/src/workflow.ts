@@ -236,3 +236,40 @@ export const OpenInAppInputSchema = z.object({
   targetPath: z.string().trim().min(1),
 });
 export type OpenInAppInput = z.infer<typeof OpenInAppInputSchema>;
+
+// ── Model Provider Types ──
+
+export const ModelProviderSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  modelId: z.string(),
+  baseUrl: z.string(),
+  apiKeyMasked: z.string(),
+  isActive: z.boolean(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type ModelProvider = z.infer<typeof ModelProviderSchema>;
+
+export const CreateModelProviderInputSchema = z.object({
+  name: z.string().trim().min(1),
+  modelId: z.string().trim().min(1),
+  baseUrl: z.string().trim().min(1),
+  apiKey: z.string().trim().min(1),
+});
+export type CreateModelProviderInput = z.infer<typeof CreateModelProviderInputSchema>;
+
+export const UpdateModelProviderInputSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  modelId: z.string().trim().min(1).optional(),
+  baseUrl: z.string().trim().min(1).optional(),
+  apiKey: z.string().trim().min(1).optional(),
+});
+export type UpdateModelProviderInput = z.infer<typeof UpdateModelProviderInputSchema>;
+
+export const TestModelProviderInputSchema = z.object({
+  baseUrl: z.string().trim().min(1),
+  apiKey: z.string().trim().min(1),
+  modelId: z.string().trim().min(1),
+});
+export type TestModelProviderInput = z.infer<typeof TestModelProviderInputSchema>;
