@@ -251,6 +251,23 @@ export function usePendingGates(
     return latestPlan;
   }, [events]);
 
+  // Only show the plan decision composer after the run has completed.
+  // `plan.created` fires mid-run (inside `canUseTool`), but Claude SDK
+  // continues trying more tools (all denied) before `chat.completed`.
+  const isRunCompletedAfterPlan = useMemo(() => {
+    if (!pendingPlan || pendingPlan.status !== "pending") return true;
+    const orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    for (const event of orderedEvents) {
+      if (
+        event.idx > pendingPlan.createdIdx &&
+        (event.type === "chat.completed" || event.type === "chat.failed")
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }, [events, pendingPlan]);
+
   async function handleApprovePlan() {
     if (!selectedThreadId) return;
 
@@ -306,7 +323,7 @@ export function usePendingGates(
     closedPlanDecision?.threadId === selectedThreadId &&
     closedPlanDecision.createdIdx === pendingPlan!.createdIdx;
 
-  const showPlanDecisionComposer = hasPendingPlan && !hidePlanDecisionByOptimisticClose && !hasPendingQuestionRequests && !hasPendingPermissionRequests;
+  const showPlanDecisionComposer = hasPendingPlan && !hidePlanDecisionByOptimisticClose && !hasPendingQuestionRequests && !hasPendingPermissionRequests && isRunCompletedAfterPlan;
 
   const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
 
