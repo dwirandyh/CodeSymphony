@@ -7,7 +7,6 @@ import { EXPLORE_BASH_COMMAND_PATTERN } from "../../pages/workspace/constants";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
-import { ScrollArea } from "../ui/scroll-area";
 import { Button } from "../ui/button";
 import { Card, CardContent, CardHeader } from "../ui/card";
 import { cn } from "../../lib/utils";
@@ -1845,13 +1844,25 @@ const TimelineItem = memo(function TimelineItem({
   );
 });
 
+const ScrollSeekPlaceholder = memo(function ScrollSeekPlaceholder({
+  height,
+}: { height: number; index: number }) {
+  return (
+    <div className="mx-auto max-w-3xl px-3 pb-4">
+      <div
+        style={{ height: Math.max(height - 16, 24) }}
+        className="rounded-lg bg-muted/20 animate-pulse"
+      />
+    </div>
+  );
+});
+
 export function ChatMessageList({
   items,
   showThinkingPlaceholder = false,
   sendingMessage = false,
   onOpenReadFile,
 }: ChatMessageListProps) {
-  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(() => new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
@@ -1862,10 +1873,8 @@ export function ChatMessageList({
   const [subagentPromptExpandedById, setSubagentPromptExpandedById] = useState<Map<string, boolean>>(() => new Map());
   const [subagentExploreExpandedById, setSubagentExploreExpandedById] = useState<Map<string, boolean>>(() => new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
-  const prevFirstItemIdRef = useRef<string | null>(null);
   const renderDebugEnabled = isRenderDebugEnabled();
 
-  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
   const [atBottom, setAtBottom] = useState(true);
 
   const renderableItems = useMemo(
@@ -1874,24 +1883,6 @@ export function ChatMessageList({
   );
 
   const itemCount = renderableItems.length + (showThinkingPlaceholder ? 1 : 0);
-
-  // Get Radix viewport element for Virtuoso's customScrollParent
-  useEffect(() => {
-    const root = scrollAreaRef.current;
-    if (!root) return;
-    const viewport = root.querySelector<HTMLElement>("[data-radix-scroll-area-viewport]");
-    if (viewport) setScrollParent(viewport);
-  }, []);
-
-  // Clear render signature cache when switching threads (detected by first item changing)
-  useEffect(() => {
-    const firstKey = items.length > 0 && items[0].kind === "message" ? items[0].message.id : null;
-    if (firstKey !== prevFirstItemIdRef.current) {
-      prevFirstItemIdRef.current = firstKey;
-      lastRenderSignatureByMessageIdRef.current.clear();
-      setAtBottom(true);
-    }
-  }, [items]);
 
   // When sending a new message, tell Virtuoso to follow
   useEffect(() => {
@@ -1973,19 +1964,35 @@ export function ChatMessageList({
     ],
   );
 
+  const scrollSeekConfig = useMemo(
+    () => ({
+      enter: (velocity: number) => Math.abs(velocity) > 800,
+      exit: (velocity: number) => Math.abs(velocity) < 200,
+      change: () => {},
+    }),
+    [],
+  );
+
+  const virtuosoComponents = useMemo(
+    () => ({ ScrollSeekPlaceholder }),
+    [],
+  );
+
   return (
-    <ScrollArea ref={scrollAreaRef} className="h-full" data-testid="chat-scroll">
+    <div className="h-full" data-testid="chat-scroll">
       {items.length === 0 && !showThinkingPlaceholder ? (
         <div className="py-10 text-center text-xs text-muted-foreground">No messages yet. Send a prompt to start.</div>
-      ) : scrollParent ? (
+      ) : (
         <Virtuoso
-          customScrollParent={scrollParent}
+          style={{ height: "100%" }}
           totalCount={itemCount}
           initialTopMostItemIndex={itemCount - 1}
           followOutput={atBottom ? "smooth" : false}
           atBottomStateChange={setAtBottom}
           atBottomThreshold={48}
           overscan={600}
+          scrollSeekConfiguration={scrollSeekConfig}
+          components={virtuosoComponents}
           itemContent={(index) => {
             if (index >= renderableItems.length) {
               return (
@@ -2001,7 +2008,7 @@ export function ChatMessageList({
             );
           }}
         />
-      ) : null}
-    </ScrollArea>
+      )}
+    </div>
   );
 }

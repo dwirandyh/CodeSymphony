@@ -569,6 +569,7 @@ export function WorkspacePage() {
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
                   <div className="min-h-0 min-w-0 flex-1">
                     <ChatMessageList
+                      key={chat.selectedThreadId ?? "empty"}
                       items={chat.timelineItems}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       sendingMessage={chat.sendingMessage}
