@@ -2,10 +2,12 @@ import type { ChatThread } from "@codesymphony/shared-types";
 import { GitPullRequestArrow, Play, Plus, Square, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
+import { OpenInAppButton } from "./OpenInAppButton";
 
 type WorkspaceHeaderProps = {
   selectedRepositoryName: string;
   selectedWorktreeLabel: string;
+  worktreePath: string | null;
   threads: ChatThread[];
   selectedThreadId: string | null;
   disabled: boolean;
@@ -24,6 +26,7 @@ type WorkspaceHeaderProps = {
 export function WorkspaceHeader({
   selectedRepositoryName,
   selectedWorktreeLabel,
+  worktreePath,
   threads,
   selectedThreadId,
   disabled,
@@ -49,25 +52,31 @@ export function WorkspaceHeader({
           <span className="text-muted-foreground">{selectedWorktreeLabel}</span>
         </div>
 
-        {onToggleRunScript && (
-          <Button
-            type="button"
-            variant={runScriptRunning ? "ghost" : "secondary"}
-            size="sm"
-            disabled={disabled}
-            aria-label={runScriptRunning ? "Stop script" : "Run script"}
-            title={runScriptRunning ? "Stop script" : "Run script"}
-            className="h-9 shrink-0 gap-2 px-3 text-xs font-semibold"
-            onClick={onToggleRunScript}
-          >
-            {runScriptRunning ? (
-              <Square className="h-3.5 w-3.5" />
-            ) : (
-              <Play className="h-3.5 w-3.5" />
-            )}
-            {runScriptRunning ? "Stop" : "Run"}
-          </Button>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {worktreePath && (
+            <OpenInAppButton targetPath={worktreePath} />
+          )}
+
+          {onToggleRunScript && (
+            <Button
+              type="button"
+              variant={runScriptRunning ? "ghost" : "secondary"}
+              size="sm"
+              disabled={disabled}
+              aria-label={runScriptRunning ? "Stop script" : "Run script"}
+              title={runScriptRunning ? "Stop script" : "Run script"}
+              className="h-9 shrink-0 gap-2 px-3 text-xs font-semibold"
+              onClick={onToggleRunScript}
+            >
+              {runScriptRunning ? (
+                <Square className="h-3.5 w-3.5" />
+              ) : (
+                <Play className="h-3.5 w-3.5" />
+              )}
+              {runScriptRunning ? "Stop" : "Run"}
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-1">

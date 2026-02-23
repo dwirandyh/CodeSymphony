@@ -18,4 +18,7 @@ export const queryKeys = {
   filesystem: {
     browse: (path?: string) => ["filesystem", "browse", path ?? "__root__"] as const,
   },
+  system: {
+    installedApps: ["system", "installedApps"] as const,
+  },
 };

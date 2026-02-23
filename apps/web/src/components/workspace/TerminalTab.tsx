@@ -4,10 +4,17 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
-const WS_BASE =
-    typeof window === "undefined"
-        ? "ws://127.0.0.1:4321/api"
-        : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:4321/api`;
+function getWsBase(): string {
+  const runtimeUrl = import.meta.env.VITE_RUNTIME_URL;
+  if (runtimeUrl) {
+    return runtimeUrl.replace(/^http/, "ws");
+  }
+  return typeof window === "undefined"
+    ? "ws://127.0.0.1:4321/api"
+    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:4321/api`;
+}
+
+const WS_BASE = getWsBase();
 
 const XTERM_THEME: Record<string, string> = {
     background: "#0f1218",

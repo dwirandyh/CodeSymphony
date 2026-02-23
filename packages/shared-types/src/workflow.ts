@@ -220,3 +220,19 @@ export const ScriptResultSchema = z.object({
   output: z.string(),
 });
 export type ScriptResult = z.infer<typeof ScriptResultSchema>;
+
+// ── External App Types ──
+
+export const ExternalAppSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  bundleId: z.string(),
+  path: z.string(),
+});
+export type ExternalApp = z.infer<typeof ExternalAppSchema>;
+
+export const OpenInAppInputSchema = z.object({
+  appId: z.string().trim().min(1),
+  targetPath: z.string().trim().min(1),
+});
+export type OpenInAppInput = z.infer<typeof OpenInAppInputSchema>;

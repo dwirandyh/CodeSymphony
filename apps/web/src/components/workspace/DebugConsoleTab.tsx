@@ -2,10 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { logService, type LogEntry } from "../../lib/logService";
 import { ScrollArea } from "../ui/scroll-area";
 
-const RUNTIME_BASE =
+const DEFAULT_RUNTIME_BASE =
     typeof window === "undefined"
         ? "http://127.0.0.1:4321/api"
         : `${window.location.protocol}//${window.location.hostname}:4321/api`;
+
+const RUNTIME_BASE =
+    typeof import.meta !== "undefined" && import.meta.env?.VITE_RUNTIME_URL
+        ? import.meta.env.VITE_RUNTIME_URL
+        : DEFAULT_RUNTIME_BASE;
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 

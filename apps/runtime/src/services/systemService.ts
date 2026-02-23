@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import type { ExternalApp } from "@codesymphony/shared-types";
 
 const execFile = promisify(execFileCallback);
 
@@ -7,7 +8,29 @@ function normalizeSelectedPath(output: string): string {
   return output.trim().replace(/\/$/, "");
 }
 
+const KNOWN_APPS = [
+  // Editors / IDEs
+  { id: "vscode", name: "Visual Studio Code", bundleId: "com.microsoft.VSCode" },
+  { id: "cursor", name: "Cursor", bundleId: "com.todesktop.230313mzl4w4u92" },
+  { id: "zed", name: "Zed", bundleId: "dev.zed.Zed" },
+  { id: "intellij", name: "IntelliJ IDEA", bundleId: "com.jetbrains.intellij" },
+  { id: "webstorm", name: "WebStorm", bundleId: "com.jetbrains.WebStorm" },
+  { id: "sublime", name: "Sublime Text", bundleId: "com.sublimetext.4" },
+  { id: "xcode", name: "Xcode", bundleId: "com.apple.dt.Xcode" },
+  { id: "fleet", name: "Fleet", bundleId: "fleet.backend" },
+  { id: "nova", name: "Nova", bundleId: "com.panic.Nova" },
+  // Terminals
+  { id: "terminal", name: "Terminal", bundleId: "com.apple.Terminal" },
+  { id: "iterm", name: "iTerm2", bundleId: "com.googlecode.iterm2" },
+  { id: "warp", name: "Warp", bundleId: "dev.warp.Warp-Stable" },
+  { id: "ghostty", name: "Ghostty", bundleId: "com.mitchellh.ghostty" },
+];
+
 export function createSystemService() {
+  let cachedApps: ExternalApp[] | null = null;
+  let cacheTimestamp = 0;
+  const CACHE_TTL = 60_000; // 60 seconds
+
   async function openFileDefaultApp(targetPath: string): Promise<void> {
     const trimmedPath = targetPath.trim();
     if (trimmedPath.length === 0) {
@@ -41,6 +64,69 @@ export function createSystemService() {
     throw new Error(`Opening files is not supported on platform: ${process.platform}`);
   }
 
+  async function getInstalledApps(): Promise<ExternalApp[]> {
+    if (process.platform !== "darwin") {
+      return [];
+    }
+
+    const now = Date.now();
+    if (cachedApps && now - cacheTimestamp < CACHE_TTL) {
+      return cachedApps;
+    }
+
+    const results: ExternalApp[] = [];
+
+    await Promise.allSettled(
+      KNOWN_APPS.map(async (app) => {
+        try {
+          const { stdout } = await execFile("mdfind", [
+            `kMDItemCFBundleIdentifier == '${app.bundleId}'`,
+          ], { encoding: "utf8", timeout: 5_000 });
+
+          const appPath = stdout.trim().split("\n")[0];
+          if (appPath) {
+            results.push({
+              id: app.id,
+              name: app.name,
+              bundleId: app.bundleId,
+              path: appPath,
+            });
+          }
+        } catch {
+          // mdfind failed or timed out — skip this app
+        }
+      }),
+    );
+
+    results.sort((a, b) => a.name.localeCompare(b.name));
+
+    cachedApps = results;
+    cacheTimestamp = Date.now();
+
+    return results;
+  }
+
+  async function openInApp(appName: string, targetPath: string): Promise<void> {
+    const trimmedPath = targetPath.trim();
+    if (trimmedPath.length === 0) {
+      throw new Error("Target path is required");
+    }
+
+    if (process.platform !== "darwin") {
+      throw new Error("Opening in app is currently supported on macOS only");
+    }
+
+    try {
+      await execFile("open", ["-a", appName, trimmedPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to open in app";
+      throw new Error(`Failed to open in ${appName}: ${message}`);
+    }
+  }
+
   return {
     async pickDirectory(): Promise<{ path: string }> {
       if (process.platform !== "darwin") {
@@ -60,5 +146,7 @@ export function createSystemService() {
       return { path: selectedPath };
     },
     openFileDefaultApp,
+    getInstalledApps,
+    openInApp,
   };
 }

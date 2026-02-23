@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { OpenInAppInputSchema } from "@codesymphony/shared-types";
 
 export async function registerSystemRoutes(app: FastifyInstance) {
   app.post("/system/pick-directory", async (_request, reply) => {
@@ -7,6 +8,34 @@ export async function registerSystemRoutes(app: FastifyInstance) {
       return { data: result };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to pick directory";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.get("/system/installed-apps", async (_request, reply) => {
+    try {
+      const apps = await app.systemService.getInstalledApps();
+      return { data: { apps } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to detect installed apps";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/system/open-in-app", async (request, reply) => {
+    try {
+      const input = OpenInAppInputSchema.parse(request.body);
+
+      const apps = await app.systemService.getInstalledApps();
+      const appEntry = apps.find((a) => a.id === input.appId);
+      if (!appEntry) {
+        return reply.code(404).send({ error: `App not found: ${input.appId}` });
+      }
+
+      await app.systemService.openInApp(appEntry.name, input.targetPath);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to open in app";
       return reply.code(400).send({ error: message });
     }
   });

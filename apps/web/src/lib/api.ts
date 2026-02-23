@@ -6,11 +6,13 @@ import type {
   CreateChatThreadInput,
   CreateRepositoryInput,
   CreateWorktreeInput,
+  ExternalApp,
   FileEntry,
   FilesystemBrowseResponse,
   GitCommitInput,
   GitDiff,
   GitStatus,
+  OpenInAppInput,
   OpenWorktreeFileInput,
   PlanRevisionInput,
   RenameWorktreeBranchInput,
@@ -299,5 +301,19 @@ export const api = {
   browseFilesystem: (path?: string) => {
     const params = path ? `?path=${encodeURIComponent(path)}` : "";
     return request<FilesystemBrowseResponse>(`/filesystem/browse${params}`);
+  },
+  getInstalledApps: () =>
+    request<{ apps: ExternalApp[] }>("/system/installed-apps").then((r) => r.apps),
+  openInApp: async (input: OpenInAppInput) => {
+    const response = await fetch(`${API_BASE}/system/open-in-app`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to open in app");
+    }
   },
 };
