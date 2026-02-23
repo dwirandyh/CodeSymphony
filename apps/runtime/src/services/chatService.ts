@@ -921,28 +921,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       assistantMessageId = assistantMessage.id;
 
-      // Lock provider to thread: use the thread's stored provider if set,
-      // otherwise snapshot the current active provider onto the thread.
-      if (thread.providerApiKey && thread.providerBaseUrl) {
-        activeProvider = {
-          apiKey: thread.providerApiKey,
-          baseUrl: thread.providerBaseUrl,
-          modelId: thread.providerModelId ?? "",
-          name: "thread-locked",
-        };
-      } else {
-        activeProvider = await deps.modelProviderService.getActiveProvider();
-        if (activeProvider) {
-          await deps.prisma.chatThread.update({
-            where: { id: threadId },
-            data: {
-              providerModelId: activeProvider.modelId,
-              providerApiKey: activeProvider.apiKey,
-              providerBaseUrl: activeProvider.baseUrl,
-            },
-          });
-        }
-      }
+      activeProvider = await deps.modelProviderService.getActiveProvider();
 
       const result = await deps.claudeRunner({
         prompt,

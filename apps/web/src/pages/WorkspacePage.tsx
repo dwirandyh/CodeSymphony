@@ -1,5 +1,6 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Menu, Play, Settings, Square, X } from "lucide-react";
+import type { ModelProvider } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/Composer";
 import { ChatMessageList } from "../components/workspace/ChatMessageList";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -212,6 +213,31 @@ export function WorkspacePage() {
   const [activeOutputSection, setActiveOutputSection] = useState<"runner" | "logs">("logs");
   const [runScriptActive, setRunScriptActive] = useState(false);
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
+
+  // ── Model/Provider state ──
+  const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
+
+  const refreshModelProviders = useCallback(() => {
+    api.listModelProviders()
+      .then(setModelProviders)
+      .catch(() => {});
+  }, []);
+
+  // Fetch model providers on mount
+  useEffect(() => {
+    refreshModelProviders();
+  }, [refreshModelProviders]);
+
+  const handleSelectProvider = useCallback(async (id: string | null) => {
+    try {
+      if (id === null) {
+        await api.deactivateAllProviders();
+      } else {
+        await api.activateModelProvider(id);
+      }
+      refreshModelProviders();
+    } catch {}
+  }, [refreshModelProviders]);
 
   const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
     setScriptOutputs((prev) => {
@@ -630,10 +656,13 @@ export function WorkspacePage() {
                     worktreeId={repos.selectedWorktreeId}
                     fileIndex={fileIndex.entries}
                     fileIndexLoading={fileIndex.loading}
+                    providers={modelProviders}
+                    hasMessages={chat.messages.length > 0}
                     onChange={chat.setChatInput}
                     onModeChange={chat.setChatMode}
                     onSubmitMessage={(content) => void chat.submitMessage(content)}
                     onStop={() => void chat.stopAssistantRun()}
+                    onSelectProvider={(id) => void handleSelectProvider(id)}
                   />
                 ) : null}
               </>
@@ -779,6 +808,7 @@ export function WorkspacePage() {
           setSettingsOpen(false);
           void repos.removeRepository(id);
         }}
+        onProvidersChanged={refreshModelProviders}
       />
 
       <TeardownErrorDialog

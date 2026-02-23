@@ -73,9 +73,6 @@ model ChatThread {
   worktreeId      String
   title           String
   claudeSessionId String?
-  providerModelId  String?
-  providerApiKey   String?
-  providerBaseUrl  String?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
