@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Loader2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
+import { queryKeys } from "../../lib/queryKeys";
 import type { Repository } from "@codesymphony/shared-types";
 
 interface SettingsDialogProps {
@@ -13,6 +15,7 @@ interface SettingsDialogProps {
 }
 
 export function SettingsDialog({ open, onClose, repositories, onRemoveRepository }: SettingsDialogProps) {
+  const queryClient = useQueryClient();
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [runScriptText, setRunScriptText] = useState("");
   const [setupText, setSetupText] = useState("");
@@ -25,6 +28,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
   // Local cache of saved settings so switching repos doesn't lose unsaved prop data
   const savedScriptsRef = useRef<Record<string, { runScript: string; setup: string; teardown: string; defaultBranch: string }>>({});
+  const savePromiseRef = useRef<Promise<void> | null>(null);
 
   // Select first repo when opening or when repos change
   useEffect(() => {
@@ -72,29 +76,78 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     return () => { cancelled = true; };
   }, [selectedRepoId]);
 
+  const parseScriptLines = useCallback((scriptText: string): string[] | null => {
+    const lines = scriptText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    return lines.length > 0 ? lines : null;
+  }, []);
+
   const handleSave = useCallback(async () => {
     if (!selectedRepoId) return;
-    setSaving(true);
-    try {
-      const runScriptLines = runScriptText.trim() ? runScriptText.trim().split("\n").filter(Boolean) : null;
-      const setupLines = setupText.trim() ? setupText.trim().split("\n").filter(Boolean) : null;
-      const teardownLines = teardownText.trim() ? teardownText.trim().split("\n").filter(Boolean) : null;
-      const repo = repositories.find((r) => r.id === selectedRepoId);
-      const branchChanged = repo && defaultBranchValue !== repo.defaultBranch;
-      await api.updateRepositoryScripts(selectedRepoId, {
-        runScript: runScriptLines,
-        setupScript: setupLines,
-        teardownScript: teardownLines,
-        ...(branchChanged ? { defaultBranch: defaultBranchValue } : {}),
-      });
-      savedScriptsRef.current[selectedRepoId] = { runScript: runScriptText, setup: setupText, teardown: teardownText, defaultBranch: defaultBranchValue };
-      setDirty(false);
-    } catch {
-      // Error is non-critical; user can retry
-    } finally {
-      setSaving(false);
+    if (savePromiseRef.current) {
+      await savePromiseRef.current;
+      return;
     }
-  }, [selectedRepoId, runScriptText, setupText, teardownText, defaultBranchValue, repositories]);
+
+    const savePromise = (async () => {
+      setSaving(true);
+      try {
+        const runScriptLines = parseScriptLines(runScriptText);
+        const setupLines = parseScriptLines(setupText);
+        const teardownLines = parseScriptLines(teardownText);
+        const repo = repositories.find((r) => r.id === selectedRepoId);
+        const branchChanged = repo && defaultBranchValue !== repo.defaultBranch;
+        const updatedRepository = await api.updateRepositoryScripts(selectedRepoId, {
+          runScript: runScriptLines,
+          setupScript: setupLines,
+          teardownScript: teardownLines,
+          ...(branchChanged ? { defaultBranch: defaultBranchValue } : {}),
+        });
+
+        queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (current) => {
+          if (!current) return current;
+          return current.map((repository) =>
+            repository.id === selectedRepoId ? updatedRepository : repository,
+          );
+        });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
+
+        savedScriptsRef.current[selectedRepoId] = {
+          runScript: updatedRepository.runScript?.join("\n") ?? "",
+          setup: updatedRepository.setupScript?.join("\n") ?? "",
+          teardown: updatedRepository.teardownScript?.join("\n") ?? "",
+          defaultBranch: updatedRepository.defaultBranch,
+        };
+        setDirty(false);
+      } catch {
+        // Error is non-critical; user can retry
+      } finally {
+        savePromiseRef.current = null;
+        setSaving(false);
+      }
+    })();
+
+    savePromiseRef.current = savePromise;
+    await savePromise;
+  }, [
+    defaultBranchValue,
+    parseScriptLines,
+    queryClient,
+    repositories,
+    runScriptText,
+    selectedRepoId,
+    setupText,
+    teardownText,
+  ]);
+
+  const handleCloseSettings = useCallback(async () => {
+    if (dirty || savePromiseRef.current) {
+      await handleSave();
+    }
+    onClose();
+  }, [dirty, handleSave, onClose]);
 
   // Auto-save effect
   useEffect(() => {
@@ -119,7 +172,9 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
           <button
             type="button"
             className="mb-4 flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
-            onClick={onClose}
+            onClick={() => {
+              void handleCloseSettings();
+            }}
           >
             <ArrowLeft className="h-4 w-4" />
             <span className="text-sm font-semibold text-foreground">Settings</span>
