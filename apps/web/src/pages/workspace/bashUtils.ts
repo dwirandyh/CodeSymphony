@@ -80,12 +80,7 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
       run.output = payloadStringOrNull(event.payload.output);
       run.error = payloadStringOrNull(event.payload.error);
       run.truncated = event.payload.truncated === true;
-      const summaryLower = (run.summary ?? "").toLowerCase();
-      run.status = run.error
-        ? "failed"
-        : summaryLower.includes("failed") || summaryLower.includes("error")
-          ? "failed"
-          : "success";
+      run.status = run.error ? "failed" : "success";
       if (run.durationSeconds == null) {
         const startedAt = Date.parse(run.createdAt);
         const finishedAt = Date.parse(event.createdAt);
