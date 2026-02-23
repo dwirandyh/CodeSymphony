@@ -348,16 +348,6 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           }
 
           if (toolName === "AskUserQuestion") {
-            if (permissionMode !== "plan") {
-              await emitDecision(toolUseId, "deny", toolName, null, {
-                input: sanitizeForLog(input),
-                decisionReason: "Questions are not allowed in execute mode.",
-              });
-              return {
-                behavior: "deny",
-                message: "Questions are not allowed in execute mode. Proceed with your best judgment.",
-              };
-            }
             const questions = Array.isArray(input.questions) ? input.questions : [];
             const result = await onQuestionRequest({
               requestId: toolUseId,

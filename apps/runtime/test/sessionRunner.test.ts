@@ -526,14 +526,14 @@ describe("tool instrumentation", () => {
     expect(anomalyEvent).toBeDefined();
   });
 
-  it("denies AskUserQuestion in default (execute) mode", async () => {
+  it("allows AskUserQuestion in default (execute) mode", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return (async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
           runtimeOptions: Record<string, unknown>,
-        ) => Promise<{ behavior: string; message?: string }>;
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
         const result = await canUseTool("AskUserQuestion", {
           questions: [{ question: "Which framework?" }],
         }, {
@@ -543,10 +543,9 @@ describe("tool instrumentation", () => {
           suggestions: [],
         });
 
-        expect(result.behavior).toBe("deny");
-        expect(result.message).toContain("execute mode");
+        expect(result.behavior).toBe("allow");
 
-        yield { type: "system", subtype: "init", session_id: "session-q-deny" };
+        yield { type: "system", subtype: "init", session_id: "session-q-exec" };
         yield {
           type: "assistant",
           message: {
@@ -556,7 +555,7 @@ describe("tool instrumentation", () => {
       })();
     });
 
-    const onQuestionRequest = vi.fn();
+    const onQuestionRequest = vi.fn().mockResolvedValue({ answers: { "0": "React" } });
     await runClaudeWithStreaming({
       prompt: "do something",
       sessionId: null,
@@ -571,7 +570,9 @@ describe("tool instrumentation", () => {
       onToolInstrumentation: () => { },
     });
 
-    expect(onQuestionRequest).not.toHaveBeenCalled();
+    expect(onQuestionRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: "tool-question-1",
+    }));
   });
 
   it("allows AskUserQuestion in plan mode", async () => {
