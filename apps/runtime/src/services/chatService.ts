@@ -883,6 +883,7 @@ export function createChatService(deps: RuntimeDeps) {
   async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
     let assistantMessageId: string | null = null;
     let fullOutput = "";
+    let activeProvider: { apiKey: string; baseUrl: string; name: string; modelId: string } | null = null;
     const abortController = new AbortController();
     runningAbortControllersByThread.set(threadId, abortController);
 
@@ -920,6 +921,29 @@ export function createChatService(deps: RuntimeDeps) {
 
       assistantMessageId = assistantMessage.id;
 
+      // Lock provider to thread: use the thread's stored provider if set,
+      // otherwise snapshot the current active provider onto the thread.
+      if (thread.providerApiKey && thread.providerBaseUrl) {
+        activeProvider = {
+          apiKey: thread.providerApiKey,
+          baseUrl: thread.providerBaseUrl,
+          modelId: thread.providerModelId ?? "",
+          name: "thread-locked",
+        };
+      } else {
+        activeProvider = await deps.modelProviderService.getActiveProvider();
+        if (activeProvider) {
+          await deps.prisma.chatThread.update({
+            where: { id: threadId },
+            data: {
+              providerModelId: activeProvider.modelId,
+              providerApiKey: activeProvider.apiKey,
+              providerBaseUrl: activeProvider.baseUrl,
+            },
+          });
+        }
+      }
+
       const result = await deps.claudeRunner({
         prompt,
         sessionId: thread.claudeSessionId,
@@ -927,6 +951,9 @@ export function createChatService(deps: RuntimeDeps) {
         abortController,
         permissionMode: mode,
         autoAcceptTools: options?.autoAcceptTools,
+        model: activeProvider?.modelId || undefined,
+        providerApiKey: activeProvider?.apiKey,
+        providerBaseUrl: activeProvider?.baseUrl,
         onText: async (chunk) => {
           fullOutput += chunk;
           await deps.eventHub.emit(threadId, "message.delta", {
@@ -1126,8 +1153,12 @@ export function createChatService(deps: RuntimeDeps) {
         ...(renamedBranch ? { worktreeBranch: renamedBranch } : {}),
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown chat error";
+      let errorMessage = error instanceof Error ? error.message : "Unknown chat error";
       const wasCancelled = abortController.signal.aborted || isAbortError(error);
+
+      if (!wasCancelled && activeProvider) {
+        errorMessage += `\n\nActive model provider: "${activeProvider.name}" (${activeProvider.modelId}) at ${activeProvider.baseUrl}.\nTry deactivating the provider in Settings → Models to verify if the issue is provider-related.`;
+      }
 
       if (assistantMessageId) {
         await deps.prisma.chatMessage.update({
