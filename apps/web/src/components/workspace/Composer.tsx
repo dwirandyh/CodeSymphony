@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import fuzzysort from "fuzzysort";
-import { ArrowUp, FileText, Folder, Lightbulb, Square, Zap } from "lucide-react";
-import type { ChatMode, FileEntry } from "@codesymphony/shared-types";
+import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Square, Zap } from "lucide-react";
+import type { ChatMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { serializeMention } from "../../lib/mentions";
 
@@ -15,10 +15,13 @@ type ComposerProps = {
   worktreeId: string | null;
   fileIndex: FileEntry[];
   fileIndexLoading: boolean;
+  providers: ModelProvider[];
+  hasMessages: boolean;
   onChange: (nextValue: string) => void;
   onModeChange: (mode: ChatMode) => void;
   onSubmitMessage: (content: string) => void;
   onStop: () => void;
+  onSelectProvider: (id: string | null) => void;
 };
 
 type MentionState = {
@@ -151,12 +154,32 @@ export function Composer({
   worktreeId,
   fileIndex,
   fileIndexLoading,
+  providers,
+  hasMessages,
   onChange,
   onModeChange,
   onSubmitMessage,
   onStop,
+  onSelectProvider,
 }: ComposerProps) {
   const isPlan = mode === "plan";
+  const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
+  const modelPopoverRef = useRef<HTMLDivElement>(null);
+
+  // Close model popover on outside click
+  useEffect(() => {
+    if (!modelPopoverOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (modelPopoverRef.current && !modelPopoverRef.current.contains(e.target as Node)) {
+        setModelPopoverOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [modelPopoverOpen]);
+
+  const activeProvider = useMemo(() => providers.find((p) => p.isActive) ?? null, [providers]);
+  const modelLabel = activeProvider ? `${activeProvider.modelId} · ${activeProvider.name}` : "Default";
 
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -519,7 +542,7 @@ export function Composer({
             }`}
           />
 
-          <div className="absolute bottom-2 left-2.5 flex items-center lg:bottom-3 lg:left-3">
+          <div className="absolute bottom-2 left-2.5 flex items-center gap-2 lg:bottom-3 lg:left-3">
             <button
               type="button"
               onClick={() => onModeChange(isPlan ? "default" : "plan")}
@@ -533,7 +556,66 @@ export function Composer({
               {isPlan ? <Lightbulb className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
               {isPlan ? "Plan" : "Execute"}
             </button>
-            <kbd className="ml-1.5 hidden text-[10px] text-muted-foreground/50 sm:inline">Shift+Tab</kbd>
+            <kbd className="hidden text-[10px] text-muted-foreground/50 sm:inline">Shift+Tab</kbd>
+
+            {/* Model selector */}
+            <div className="relative" ref={modelPopoverRef}>
+              <button
+                type="button"
+                onClick={() => !hasMessages && setModelPopoverOpen(!modelPopoverOpen)}
+                disabled={hasMessages}
+                className={`flex items-center gap-1 rounded-full bg-secondary/40 px-2 py-1 text-[10px] text-muted-foreground transition-colors ${
+                  hasMessages
+                    ? "cursor-not-allowed opacity-50"
+                    : "hover:bg-secondary/70 hover:text-foreground"
+                }`}
+              >
+                <span className="max-w-[180px] truncate">{modelLabel}</span>
+                <ChevronDown className="h-2.5 w-2.5 shrink-0" />
+              </button>
+
+              {modelPopoverOpen && (
+                <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[240px] rounded-lg border border-border/60 bg-popover p-1 shadow-lg">
+                  <div className="max-h-48 overflow-y-auto">
+                    <button
+                      type="button"
+                      className={`flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
+                        !activeProvider
+                          ? "bg-accent text-accent-foreground"
+                          : "text-foreground hover:bg-accent/50"
+                      }`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        onSelectProvider(null);
+                        setModelPopoverOpen(false);
+                      }}
+                    >
+                      Default (CLI)
+                    </button>
+                    {providers.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className={`flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
+                          p.isActive
+                            ? "bg-accent text-accent-foreground"
+                            : "text-foreground hover:bg-accent/50"
+                        }`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          onSelectProvider(p.id);
+                          setModelPopoverOpen(false);
+                        }}
+                      >
+                        <span className="truncate">{p.modelId}</span>
+                        <span className="text-muted-foreground">·</span>
+                        <span className="truncate text-muted-foreground">{p.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           <Button
