@@ -564,6 +564,7 @@ export function Composer({
                 type="button"
                 onClick={() => !hasMessages && setModelPopoverOpen(!modelPopoverOpen)}
                 disabled={hasMessages}
+                title={hasMessages ? "Model is locked for this thread. Start a new thread to change models." : undefined}
                 className={`flex items-center gap-1 rounded-full bg-secondary/40 px-2 py-1 text-[10px] text-muted-foreground transition-colors ${
                   hasMessages
                     ? "cursor-not-allowed opacity-50"
