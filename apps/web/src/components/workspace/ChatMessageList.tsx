@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { Bot, Brain, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2 } from "lucide-react";
+import { Bot, Brain, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2, XCircle } from "lucide-react";
 import type { SubagentStep } from "../../pages/workspace/types";
 import { EXPLORE_BASH_COMMAND_PATTERN } from "../../pages/workspace/constants";
 import ReactMarkdown from "react-markdown";
@@ -1231,8 +1231,8 @@ const TimelineItem = memo(function TimelineItem({
         : item.status === "running"
           ? "Running"
           : "Success";
-    const defaultExpanded = item.status === "failed";
-    const expanded = ctx.bashExpandedById.get(item.id) ?? defaultExpanded;
+    const expanded = ctx.bashExpandedById.get(item.id) ?? false;
+    const isFailed = item.status === "failed" || item.rejectedByUser === true;
     const durationLabel = formatCompactDurationSeconds(item.durationSeconds);
     const shortCommandLabel = shortenCommandForSummary(item.command);
     const summaryPrefix = expanded ? "Ran commands" : shortCommandLabel ? `Ran ${shortCommandLabel}` : "Ran command";
@@ -1257,9 +1257,12 @@ const TimelineItem = memo(function TimelineItem({
           <summary
             className={cn(
               "group/bash-summary inline-flex list-none cursor-pointer items-center gap-1 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
-              expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
+              isFailed && !expanded
+                ? "text-destructive"
+                : expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {isFailed && !expanded ? <XCircle className="h-3.5 w-3.5 shrink-0" /> : null}
             <span className="font-medium">{summaryLabel}</span>
             <span
               className={cn(
@@ -1328,7 +1331,7 @@ const TimelineItem = memo(function TimelineItem({
 
   if (item.kind === "edited-diff") {
     const hasDiffContent = item.diff.trim().length > 0;
-    const expanded = hasDiffContent ? (ctx.editedExpandedById.get(item.id) ?? true) : false;
+    const expanded = hasDiffContent ? (ctx.editedExpandedById.get(item.id) ?? false) : false;
     const parsedFiles = hasDiffContent ? parsePatchFiles(item.diff).flatMap((p) => p.files) : [];
     const diffFileNames = parsedFiles.map((f) => f.name);
     const resolvedFiles = item.changedFiles.length > 0 ? item.changedFiles : diffFileNames;
@@ -1342,13 +1345,16 @@ const TimelineItem = memo(function TimelineItem({
       expanded,
     });
 
+    const isDiffFailed = item.status === "failed" || item.rejectedByUser === true;
+
     if (!hasDiffContent && !item.diffTruncated) {
       return (
         <article
           className="px-1 text-xs"
           data-testid="timeline-edited-diff"
         >
-          <div className="inline-flex items-center text-[12px] text-muted-foreground">
+          <div className={cn("inline-flex items-center gap-1 text-[12px]", isDiffFailed ? "text-destructive" : "text-muted-foreground")}>
+            {isDiffFailed ? <XCircle className="h-3.5 w-3.5 shrink-0" /> : null}
             <span className="font-medium">{summaryLabel}</span>
           </div>
         </article>
@@ -1374,9 +1380,12 @@ const TimelineItem = memo(function TimelineItem({
           <summary
             className={cn(
               "group/edited-summary inline-flex list-none cursor-pointer items-center gap-1 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
-              expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
+              isDiffFailed && !expanded
+                ? "text-destructive"
+                : expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {isDiffFailed && !expanded ? <XCircle className="h-3.5 w-3.5 shrink-0" /> : null}
             <span className="font-medium">{summaryLabel}</span>
             <span
               className={cn(
