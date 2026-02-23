@@ -536,6 +536,7 @@ export function WorkspacePage() {
             <WorkspaceHeader
               selectedRepositoryName={repos.selectedRepository?.name ?? "No repository selected"}
               selectedWorktreeLabel={repos.selectedWorktree ? `Worktree: ${repos.selectedWorktree.branch}` : "Choose a worktree"}
+              worktreePath={repos.selectedWorktree?.path ?? null}
               threads={chat.threads}
               selectedThreadId={chat.selectedThreadId}
               disabled={!repos.selectedWorktreeId}
