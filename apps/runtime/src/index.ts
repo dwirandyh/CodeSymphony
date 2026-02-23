@@ -14,6 +14,7 @@ import { createTerminalService } from "./services/terminalService";
 import { createLogService } from "./services/logService";
 import { createFilesystemService } from "./services/filesystemService";
 import { createScriptStreamService } from "./services/scriptStreamService";
+import { createModelProviderService } from "./services/modelProviderService";
 import { registerRepositoryRoutes } from "./routes/repositories";
 import { registerChatRoutes } from "./routes/chats";
 import { registerSystemRoutes } from "./routes/system";
@@ -21,6 +22,7 @@ import { registerTerminalRoutes } from "./routes/terminal";
 import { registerLogRoutes } from "./routes/logs";
 import { registerFilesystemRoutes } from "./routes/filesystem";
 import { registerDebugRoutes } from "./routes/debug";
+import { registerModelRoutes } from "./routes/models";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -35,6 +37,7 @@ declare module "fastify" {
     logService: ReturnType<typeof createLogService>;
     filesystemService: ReturnType<typeof createFilesystemService>;
     scriptStreamService: ReturnType<typeof createScriptStreamService>;
+    modelProviderService: ReturnType<typeof createModelProviderService>;
   }
 }
 
@@ -49,11 +52,13 @@ function createApp() {
   const logService = createLogService();
   const filesystemService = createFilesystemService();
   const scriptStreamService = createScriptStreamService();
+  const modelProviderService = createModelProviderService(prisma);
   const chatService = createChatService({
     prisma,
     eventHub,
     claudeRunner: runClaudeWithStreaming,
     logService,
+    modelProviderService,
   });
 
   app.decorate("prisma", prisma);
@@ -67,6 +72,7 @@ function createApp() {
   app.decorate("logService", logService);
   app.decorate("filesystemService", filesystemService);
   app.decorate("scriptStreamService", scriptStreamService);
+  app.decorate("modelProviderService", modelProviderService);
 
   app.register(cors, {
     origin: true,
@@ -106,6 +112,7 @@ function createApp() {
   app.register(registerLogRoutes, { prefix: "/api" });
   app.register(registerFilesystemRoutes, { prefix: "/api" });
   app.register(registerDebugRoutes, { prefix: "/api" });
+  app.register(registerModelRoutes, { prefix: "/api" });
 
   logService.log("info", "runtime", "CodeSymphony runtime started");
 

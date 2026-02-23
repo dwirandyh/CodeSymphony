@@ -72,6 +72,9 @@ export type ClaudeRunner = (args: {
   abortController?: AbortController;
   permissionMode?: ChatMode;
   autoAcceptTools?: boolean;
+  model?: string;
+  providerApiKey?: string;
+  providerBaseUrl?: string;
   onText: (chunk: string) => Promise<void> | void;
   onThinking: (chunk: string) => Promise<void> | void;
   onToolStarted: (payload: {
@@ -149,5 +152,8 @@ export type RuntimeDeps = {
   claudeRunner: ClaudeRunner;
   logService?: {
     log: (level: "debug" | "info" | "warn" | "error", source: string, message: string, data?: unknown) => void;
+  };
+  modelProviderService: {
+    getActiveProvider: () => Promise<{ apiKey: string; baseUrl: string; name: string; modelId: string } | null>;
   };
 };

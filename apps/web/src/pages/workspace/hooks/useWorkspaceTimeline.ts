@@ -1279,9 +1279,34 @@ export function useWorkspaceTimeline(
         && event.type !== "plan.created"
         && event.type !== "plan.approved"
         && event.type !== "plan.revision_requested"
+        && event.type !== "chat.failed"
         && !isPlanModeToolEvent(event)
       )
       .sort((a, b) => a.idx - b.idx);
+
+    // --- chat.failed → error banner ---
+    const failedEvents = inlineToolEvents.filter(
+      (event) => event.type === "chat.failed" && !assignedToolEventIds.has(event.id),
+    );
+    for (const event of failedEvents) {
+      const errorMessage = typeof event.payload.message === "string"
+        ? event.payload.message
+        : typeof event.payload.error === "string"
+          ? event.payload.error
+          : "Chat failed";
+      sortable.push({
+        item: {
+          kind: "error",
+          id: `error:${event.id}`,
+          message: errorMessage,
+          createdAt: event.createdAt,
+        },
+        anchorIdx: event.idx,
+        timestamp: parseTimestamp(event.createdAt),
+        rank: 3,
+        stableOrder: event.idx,
+      });
+    }
     pushRenderDebug({
       source: "WorkspacePage",
       event: "activityOrphanToolEvents",

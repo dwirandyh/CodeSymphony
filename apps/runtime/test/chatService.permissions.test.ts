@@ -8,6 +8,10 @@ import { createChatService } from "../src/services/chatService";
 import { createLogService } from "../src/services/logService";
 import type { ClaudeRunner } from "../src/types";
 
+const stubModelProviderService = {
+  getActiveProvider: async () => null,
+};
+
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
     ? process.env.DATABASE_URL
@@ -134,6 +138,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -179,6 +184,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -209,6 +215,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread("Session Integrasi API");
 
@@ -259,6 +266,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -323,6 +331,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -379,6 +388,7 @@ describe("chatService permission flow", () => {
       eventHub: createEventHub(prisma),
       claudeRunner,
       logService: runtimeLogService,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -423,6 +433,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -472,6 +483,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -536,6 +548,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -590,6 +603,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -631,6 +645,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -659,6 +674,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId, worktreePath } = await seedThread();
 
@@ -721,6 +737,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId, worktreePath } = await seedThread();
 
@@ -766,6 +783,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 
@@ -802,6 +820,7 @@ describe("chatService permission flow", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
 

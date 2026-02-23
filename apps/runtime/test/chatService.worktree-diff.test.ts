@@ -9,6 +9,10 @@ import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chatService";
 import type { ClaudeRunner } from "../src/types";
 
+const stubModelProviderService = {
+  getActiveProvider: async () => null,
+};
+
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
     ? process.env.DATABASE_URL
@@ -141,6 +145,7 @@ describe("chatService worktree diff delta", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const threadId = await seedThreadForWorktree(worktreePath, "Worktree Diff Delta");
 
@@ -173,6 +178,7 @@ describe("chatService worktree diff delta", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const threadId = await seedThreadForWorktree(worktreePath, "Worktree No Changes");
 
@@ -204,6 +210,7 @@ describe("chatService worktree diff delta", () => {
       prisma,
       eventHub: createEventHub(prisma),
       claudeRunner,
+      modelProviderService: stubModelProviderService,
     });
     const threadId = await seedThreadForWorktree(worktreePath, "Worktree Clean Transition");
 
