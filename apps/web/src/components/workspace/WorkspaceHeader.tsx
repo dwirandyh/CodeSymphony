@@ -61,11 +61,11 @@ export function WorkspaceHeader({
             <Button
               type="button"
               variant={runScriptRunning ? "ghost" : "secondary"}
-              size="sm"
+              size="icon"
               disabled={disabled}
               aria-label={runScriptRunning ? "Stop script" : "Run script"}
               title={runScriptRunning ? "Stop script" : "Run script"}
-              className="h-9 shrink-0 gap-2 px-3 text-xs font-semibold"
+              className="h-9 w-9 shrink-0"
               onClick={onToggleRunScript}
             >
               {runScriptRunning ? (
@@ -73,7 +73,6 @@ export function WorkspaceHeader({
               ) : (
                 <Play className="h-3.5 w-3.5" />
               )}
-              {runScriptRunning ? "Stop" : "Run"}
             </Button>
           )}
         </div>
