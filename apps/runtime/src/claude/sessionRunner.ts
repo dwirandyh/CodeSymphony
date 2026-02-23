@@ -1,5 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type { ClaudeRunner, ClaudeToolInstrumentationDecision, ClaudeToolInstrumentationEvent } from "../types";
 
 import { sanitizeForLog, truncateForPreview, toIso } from "./sanitize";
@@ -39,6 +41,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   abortController,
   permissionMode,
   autoAcceptTools,
+  model,
+  providerApiKey,
+  providerBaseUrl,
   onText,
   onToolStarted,
   onToolOutput,
@@ -254,20 +259,53 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
   const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;
 
-  const runtimeEnv = {
+  // Build a clean env for executable selection (`claude --version`).
+  // Provider env vars are only applied later for the actual `query()` call,
+  // because custom ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY can cause
+  // `claude --version` to exit with code 1.
+  const baseEnv = {
     ...process.env,
   } as NodeJS.ProcessEnv;
+  delete baseEnv.CLAUDECODE;
+  delete baseEnv.ANTHROPIC_API_KEY;
+  delete baseEnv.ANTHROPIC_BASE_URL;
+  delete baseEnv.ANTHROPIC_AUTH_TOKEN;
+  delete baseEnv.ANTHROPIC_DEFAULT_SONNET_MODEL;
+  delete baseEnv.ANTHROPIC_DEFAULT_OPUS_MODEL;
+  delete baseEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL;
 
-  delete runtimeEnv.CLAUDECODE;
-  delete runtimeEnv.ANTHROPIC_API_KEY;
-  delete runtimeEnv.ANTHROPIC_BASE_URL;
   const candidateExecutables = buildExecutableCandidates(configuredExecutable);
-  const claudeExecutable = selectExecutableForCurrentProcess(candidateExecutables, runtimeEnv);
+  const claudeExecutable = selectExecutableForCurrentProcess(candidateExecutables, baseEnv);
+
+  const runtimeEnv = { ...baseEnv };
+  let effectiveModel = model || undefined;
+  if (providerApiKey && providerBaseUrl) {
+    // Use a clean config dir so the CLI doesn't read ~/.claude/settings.json,
+    // which would override our env vars with the user's global provider config.
+    const providerConfigDir = join(tmpdir(), "codesymphony-claude-provider");
+    if (!existsSync(providerConfigDir)) {
+      mkdirSync(providerConfigDir, { recursive: true });
+      writeFileSync(join(providerConfigDir, "settings.json"), "{}", "utf-8");
+    }
+    runtimeEnv.CLAUDE_CONFIG_DIR = providerConfigDir;
+
+    runtimeEnv.ANTHROPIC_API_KEY = providerApiKey;
+    runtimeEnv.ANTHROPIC_AUTH_TOKEN = providerApiKey;
+    runtimeEnv.ANTHROPIC_BASE_URL = providerBaseUrl;
+    if (model) {
+      // Set all model aliases so the CLI uses the custom model regardless of its default
+      runtimeEnv.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+      runtimeEnv.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+      runtimeEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+      effectiveModel = "opus";
+    }
+  }
 
   try {
     const stream = query({
       prompt,
       options: {
+        model: effectiveModel,
         abortController,
         includePartialMessages: true,
         resume: sessionId ?? undefined,
