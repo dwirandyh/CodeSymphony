@@ -417,17 +417,14 @@ export function WorkspacePage() {
 
   const handleRunScript = useCallback(async () => {
     if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
-    const hasRunScript = repos.selectedRepository?.runScript && repos.selectedRepository.runScript.length > 0;
-    if (!hasRunScript) {
+    const runCommands = (repos.selectedRepository?.runScript ?? [])
+      .map((command) => command.trim())
+      .filter((command) => command.length > 0);
+    if (runCommands.length === 0) {
       setSettingsOpen(true);
       return;
     }
-    const runCommands = repos.selectedRepository?.runScript ?? [];
-    const command = runCommands.join("\n").trim();
-    if (!command) {
-      setSettingsOpen(true);
-      return;
-    }
+    const command = runCommands.join("\n");
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
 
