@@ -674,6 +674,7 @@ export function WorkspacePage() {
             activeTab={activeBottomTab}
             onTabChange={setActiveBottomTab}
             onRerunSetup={handleRerunSetup}
+            runScriptActive={runScriptActive}
           />
         </main>
 

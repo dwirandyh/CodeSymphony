@@ -36,6 +36,7 @@ interface BottomPanelProps {
     activeTab: string;
     onTabChange: (tab: string) => void;
     onRerunSetup?: () => void;
+    runScriptActive: boolean;
 }
 
 export function BottomPanel({
@@ -46,6 +47,7 @@ export function BottomPanel({
     activeTab,
     onTabChange,
     onRerunSetup,
+    runScriptActive,
 }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
     const [collapsed, setCollapsed] = useState(() => {
@@ -59,6 +61,10 @@ export function BottomPanel({
     const filteredOutputs = useMemo(
         () => worktreeId ? scriptOutputs.filter((e) => e.worktreeId === worktreeId) : [],
         [scriptOutputs, worktreeId],
+    );
+    const scriptRunnerSessionId = useMemo(
+        () => (worktreeId && runScriptActive ? `${worktreeId}:script-runner` : null),
+        [worktreeId, runScriptActive],
     );
 
     const handleMouseDown = useCallback(
@@ -201,7 +207,13 @@ export function BottomPanel({
                     </Tabs.Content>
 
                     <Tabs.Content value="output" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
-                        <ScriptOutputTab entries={filteredOutputs} onRerunSetup={onRerunSetup} rerunning={filteredOutputs.some((e) => e.status === "running")} />
+                        <ScriptOutputTab
+                            entries={filteredOutputs}
+                            onRerunSetup={onRerunSetup}
+                            rerunning={filteredOutputs.some((e) => e.type !== "run" && e.status === "running")}
+                            scriptRunnerSessionId={scriptRunnerSessionId}
+                            worktreePath={worktreePath}
+                        />
                     </Tabs.Content>
                 </div>
             </Tabs.Root>
