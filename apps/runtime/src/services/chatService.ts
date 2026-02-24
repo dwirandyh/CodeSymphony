@@ -20,10 +20,10 @@ import {
   type ResolvePermissionInput,
   type SendChatMessageInput,
 } from "@codesymphony/shared-types";
-import type { ClaudeToolInstrumentationEvent, PlanDetectionSource, RuntimeDeps } from "../types";
-import { mapChatMessage, mapChatThread } from "./mappers";
-import { isDefaultBranchName } from "./worktreeService";
-import { renameBranch as renameBranchGit } from "./git";
+import type { ClaudeToolInstrumentationEvent, PlanDetectionSource, RuntimeDeps } from "../types.js";
+import { mapChatMessage, mapChatThread } from "./mappers.js";
+import { isDefaultBranchName } from "./worktreeService.js";
+import { renameBranch as renameBranchGit } from "./git.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;

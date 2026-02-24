@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { LogEntry } from "../services/logService";
+import type { LogEntry } from "../services/logService.js";
 
 const MAX_CLIENT_LOG_BATCH = 100;
 const MAX_CLIENT_MESSAGE_CHARS = 1000;

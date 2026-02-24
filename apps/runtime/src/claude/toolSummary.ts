@@ -1,5 +1,5 @@
-import type { ToolMetadata } from "./toolClassification";
-import { readTargetFromUnknownToolInput, editTargetFromUnknownToolInput } from "./toolClassification";
+import type { ToolMetadata } from "./toolClassification.js";
+import { readTargetFromUnknownToolInput, editTargetFromUnknownToolInput } from "./toolClassification.js";
 
 export function completionSummaryFromMetadata(metadata: ToolMetadata, toolInput?: unknown): string {
     if (metadata.command) {

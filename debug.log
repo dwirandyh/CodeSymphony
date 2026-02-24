@@ -1,0 +1,38 @@
+#1 [140.0ms] useChatSession | render | {"renderCount":1,"selectedWorktreeId":null}
+#2 [143.0ms] WorkspacePage | render | {"renderCount":1,"changed":["error","search","updateSearch","repos.selectedRepositoryId","repos.selectedWorktreeId","repos.repositories","repos.loadingRepos","repos.submittingRepo","repos.updateWorktreeBranch","chat.threads","chat.selectedThreadId","chat.messages","chat.events","chat.timelineItems","chat.sendingMessage","chat.waitingAssistant","chat.showStopAction","chat.stoppingRun","chat.chatInput","chat.chatMode","gates.pendingPermissionRequests","gates.pendingQuestionRequests","gates.isWaitingForUserGate","gates.showPlanDecisionComposer","gates.planActionBusy","gates.resolvingPermissionIds","gates.answeringQuestionIds","gitChanges.entries","gitChanges.branch","gitChanges.loading","mobilePanelOpen"]}
+#3 [159.0ms] useRepositoryManager | auto-select effect | {"reposLength":0,"selectedRepositoryId":null,"selectedWorktreeId":null,"initialApplied":false}
+#4 [160.0ms] useRepositoryManager | notification effect | {"prevRepoId":null,"prevWorktreeId":null,"selectedRepositoryId":null,"selectedWorktreeId":null,"willFire":false}
+#7 [161.0ms] useChatSession | seed events effect | {"queriedEventsLength":null,"selectedThreadId":null,"threadChanged":false}
+#5 [160.0ms] useChatSession | consolidated thread-sync | {"selectedWorktreeId":null,"worktreeChanged":false,"queriedThreadsLength":null,"selectedThreadId":null,"initialThreadApplied":false}
+#11 [164.0ms] WorkspacePage | render | {"renderCount":2,"changed":["repos.repositories","chat.threads","chat.messages","chat.events","chat.timelineItems","gates.resolvingPermissionIds","gates.answeringQuestionIds","gitChanges.entries"]}
+#8 [162.0ms] useChatSession | thread-change notification | {"prevThreadId":null,"selectedThreadId":null,"willNotify":false}
+#9 [163.0ms] usePendingGates | thread reset effect | {"selectedThreadId":null}
+#10 [163.0ms] useChatSession | render | {"renderCount":2,"selectedWorktreeId":null}
+#6 [161.0ms] useChatSession | seed messages effect | {"queriedMessagesLength":null,"selectedThreadId":null,"threadChanged":false}
+#12 [168.0ms] useRepositoryManager | auto-select effect | {"reposLength":0,"selectedRepositoryId":null,"selectedWorktreeId":null,"initialApplied":false}
+#13 [197.0ms] useChatSession | render | {"renderCount":3,"selectedWorktreeId":null}
+#14 [198.0ms] WorkspacePage | render | {"renderCount":3,"changed":["repos.repositories","repos.loadingRepos","gitChanges.entries"]}
+#15 [222.0ms] useRepositoryManager | auto-select effect | {"reposLength":0,"selectedRepositoryId":null,"selectedWorktreeId":null,"initialApplied":false}
+#16 [1576.0ms] useChatSession | render | {"renderCount":4,"selectedWorktreeId":null}
+#17 [1577.0ms] WorkspacePage | render | {"renderCount":4,"changed":["gitChanges.entries"]}
+#18 [2385.0ms] useChatSession | render | {"renderCount":5,"selectedWorktreeId":null}
+#19 [2386.0ms] WorkspacePage | render | {"renderCount":5,"changed":["gitChanges.entries"]}
+#20 [27402.0ms] useChatSession | render | {"renderCount":6,"selectedWorktreeId":null}
+#21 [27403.0ms] WorkspacePage | render | {"renderCount":6,"changed":["gitChanges.entries"]}
+#22 [28922.0ms] useChatSession | render | {"renderCount":7,"selectedWorktreeId":null}
+#23 [28924.0ms] WorkspacePage | render | {"renderCount":7,"changed":["gitChanges.entries"]}
+#1 [141.0ms] useChatSession | render | {"renderCount":1,"selectedWorktreeId":null}
+#2 [143.0ms] WorkspacePage | render | {"renderCount":1,"changed":["error","search","updateSearch","repos.selectedRepositoryId","repos.selectedWorktreeId","repos.repositories","repos.loadingRepos","repos.submittingRepo","repos.updateWorktreeBranch","chat.threads","chat.selectedThreadId","chat.messages","chat.events","chat.timelineItems","chat.sendingMessage","chat.waitingAssistant","chat.showStopAction","chat.stoppingRun","chat.chatInput","chat.chatMode","gates.pendingPermissionRequests","gates.pendingQuestionRequests","gates.isWaitingForUserGate","gates.showPlanDecisionComposer","gates.planActionBusy","gates.resolvingPermissionIds","gates.answeringQuestionIds","gitChanges.entries","gitChanges.branch","gitChanges.loading","mobilePanelOpen"]}
+#3 [158.0ms] useRepositoryManager | auto-select effect | {"reposLength":0,"selectedRepositoryId":null,"selectedWorktreeId":null,"initialApplied":false}
+#4 [159.0ms] useRepositoryManager | notification effect | {"prevRepoId":null,"prevWorktreeId":null,"selectedRepositoryId":null,"selectedWorktreeId":null,"willFire":false}
+#7 [160.0ms] useChatSession | seed events effect | {"queriedEventsLength":null,"selectedThreadId":null,"threadChanged":false}
+#8 [161.0ms] useChatSession | thread-change notification | {"prevThreadId":null,"selectedThreadId":null,"willNotify":false}
+#5 [159.0ms] useChatSession | consolidated thread-sync | {"selectedWorktreeId":null,"worktreeChanged":false,"queriedThreadsLength":null,"selectedThreadId":null,"initialThreadApplied":false}
+#9 [161.0ms] usePendingGates | thread reset effect | {"selectedThreadId":null}
+#10 [163.0ms] useChatSession | render | {"renderCount":2,"selectedWorktreeId":null}
+#6 [160.0ms] useChatSession | seed messages effect | {"queriedMessagesLength":null,"selectedThreadId":null,"threadChanged":false}
+#11 [163.0ms] WorkspacePage | render | {"renderCount":2,"changed":["repos.repositories","chat.threads","chat.messages","chat.events","chat.timelineItems","gates.resolvingPermissionIds","gates.answeringQuestionIds","gitChanges.entries"]}
+#12 [168.0ms] useRepositoryManager | auto-select effect | {"reposLength":0,"selectedRepositoryId":null,"selectedWorktreeId":null,"initialApplied":false}
+#13 [195.0ms] useChatSession | render | {"renderCount":3,"selectedWorktreeId":null}
+#14 [196.0ms] WorkspacePage | render | {"renderCount":3,"changed":["repos.repositories","repos.loadingRepos","gitChanges.entries"]}
+#15 [220.0ms] useRepositoryManager | auto-select effect | {"reposLength":0,"selectedRepositoryId":null,"selectedWorktreeId":null,"initialApplied":false}

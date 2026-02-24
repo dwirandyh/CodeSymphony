@@ -1,4 +1,5 @@
 import * as pty from "node-pty";
+import { existsSync } from "node:fs";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
 
@@ -13,6 +14,50 @@ export interface TerminalSession {
 export function createTerminalService() {
     const sessions = new Map<string, TerminalSession>();
 
+    function resolveShellCandidates(): string[] {
+        const candidates = [process.env.SHELL, "/bin/zsh", "/bin/bash", "/bin/sh"]
+            .filter((value): value is string => Boolean(value));
+        return Array.from(new Set(candidates));
+    }
+
+    function resolveCwdCandidates(cwd?: string): string[] {
+        const candidates = [cwd, process.env.HOME, "/"]
+            .filter((value): value is string => Boolean(value));
+        return Array.from(new Set(candidates));
+    }
+
+    function spawnProcess(cwd?: string): pty.IPty {
+        const shellCandidates = resolveShellCandidates();
+        const cwdCandidates = resolveCwdCandidates(cwd);
+        let lastError: unknown = new Error("Unable to spawn terminal process");
+
+        for (const shell of shellCandidates) {
+            if (!existsSync(shell)) {
+                continue;
+            }
+
+            for (const candidateCwd of cwdCandidates) {
+                try {
+                    return pty.spawn(shell, [], {
+                        name: "xterm-256color",
+                        cols: 80,
+                        rows: 24,
+                        cwd: candidateCwd,
+                        env: {
+                            ...process.env,
+                            TERM: "xterm-256color",
+                            COLORTERM: "truecolor",
+                        } as Record<string, string>,
+                    });
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+        }
+
+        throw lastError;
+    }
+
     function spawn(
         sessionId: string,
         cwd?: string,
@@ -22,18 +67,7 @@ export function createTerminalService() {
             return existing;
         }
 
-        const shell = process.env.SHELL || "/bin/zsh";
-        const ptyProcess = pty.spawn(shell, [], {
-            name: "xterm-256color",
-            cols: 80,
-            rows: 24,
-            cwd: cwd || process.env.HOME || "/",
-            env: {
-                ...process.env,
-                TERM: "xterm-256color",
-                COLORTERM: "truecolor",
-            } as Record<string, string>,
-        });
+        const ptyProcess = spawnProcess(cwd);
 
         const session: TerminalSession = {
             id: sessionId,

@@ -2,16 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { resolveRuntimeApiBase } from "../../lib/runtimeUrl";
 import "@xterm/xterm/css/xterm.css";
 
 function getWsBase(): string {
-  const runtimeUrl = import.meta.env.VITE_RUNTIME_URL;
-  if (runtimeUrl) {
-    return runtimeUrl.replace(/^http/, "ws");
-  }
-  return typeof window === "undefined"
-    ? "ws://127.0.0.1:4321/api"
-    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:4321/api`;
+  const apiBase = resolveRuntimeApiBase();
+  return apiBase.replace(/^http/, "ws");
 }
 
 const WS_BASE = getWsBase();
@@ -126,10 +122,12 @@ export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
                 }
             };
 
-            ws.onclose = () => {
+            ws.onclose = (event) => {
                 setConnected(false);
                 if (!disposedRef.current) {
-                    terminal.write("\r\n\x1b[33m[Disconnected — reconnecting...]\x1b[0m\r\n");
+                    const reason = event.reason?.trim();
+                    const detail = reason ? ` code=${event.code} reason=${reason}` : ` code=${event.code}`;
+                    terminal.write(`\r\n\x1b[33m[Disconnected — reconnecting...${detail}]\x1b[0m\r\n`);
                     reconnectTimerRef.current = setTimeout(connectWebSocket, 2000);
                 }
             };

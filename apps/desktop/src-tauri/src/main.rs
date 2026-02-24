@@ -1,4 +1,5 @@
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::thread;
@@ -9,6 +10,53 @@ use tauri::Manager;
 use std::os::unix::process::CommandExt;
 
 struct RuntimeProcess(Mutex<Option<Child>>);
+
+fn find_node_candidate(dir: &Path) -> Option<PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+
+    let exact = dir.join("node");
+    if exact.is_file() {
+        return Some(exact);
+    }
+
+    let mut candidates = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok().map(|item| item.path()))
+        .filter(|path| {
+            if !path.is_file() {
+                return false;
+            }
+            match path.file_name().and_then(|name| name.to_str()) {
+                Some(name) => name.starts_with("node-"),
+                None => false,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn resolve_node_binary(resource_dir: &Path) -> Option<PathBuf> {
+    let mut search_dirs = vec![resource_dir.join("binaries"), resource_dir.to_path_buf()];
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(exe_dir) = current_exe.parent() {
+            search_dirs.push(exe_dir.to_path_buf());
+            search_dirs.push(exe_dir.join("binaries"));
+        }
+    }
+
+    for dir in search_dirs {
+        if let Some(node_bin) = find_node_candidate(&dir) {
+            return Some(node_bin);
+        }
+    }
+
+    None
+}
 
 fn spawn_runtime_dev() -> Option<Child> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -28,19 +76,51 @@ fn spawn_runtime_dev() -> Option<Child> {
 }
 
 fn spawn_runtime_prod(app_handle: &tauri::AppHandle) -> Option<Child> {
-    let resource_dir = app_handle.path().resource_dir().ok()?;
-    let app_data_dir = app_handle.path().app_data_dir().ok()?;
+    let resource_dir = match app_handle.path().resource_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Failed to resolve resource directory: {error}");
+            return None;
+        }
+    };
+    let app_data_dir = match app_handle.path().app_data_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Failed to resolve app data directory: {error}");
+            return None;
+        }
+    };
 
     // Ensure app data directory exists for the database
-    std::fs::create_dir_all(&app_data_dir).ok()?;
+    if let Err(error) = std::fs::create_dir_all(&app_data_dir) {
+        eprintln!(
+            "Failed to create app data directory ({}): {error}",
+            app_data_dir.display()
+        );
+        return None;
+    }
 
-    let node_bin = app_handle
-        .path()
-        .resolve("binaries/node", tauri::path::BaseDirectory::Resource)
-        .ok()?;
+    let node_bin = match resolve_node_binary(&resource_dir) {
+        Some(path) => path,
+        None => {
+            eprintln!(
+                "Failed to locate bundled node binary. Checked resource dir: {}",
+                resource_dir.display()
+            );
+            return None;
+        }
+    };
     let runtime_entry = resource_dir.join("runtime-bundle").join("dist").join("index.js");
     let prisma_dir = resource_dir.join("runtime-bundle").join("prisma");
     let db_path = app_data_dir.join("codesymphony.db");
+
+    if !runtime_entry.is_file() {
+        eprintln!(
+            "Runtime entry not found at expected path: {}",
+            runtime_entry.display()
+        );
+        return None;
+    }
 
     let mut cmd = Command::new(&node_bin);
     cmd.arg(&runtime_entry)
@@ -54,7 +134,16 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle) -> Option<Child> {
     #[cfg(unix)]
     cmd.process_group(0);
 
-    cmd.spawn().ok()
+    match cmd.spawn() {
+        Ok(child) => Some(child),
+        Err(error) => {
+            eprintln!(
+                "Failed to spawn runtime process using node {}: {error}",
+                node_bin.display()
+            );
+            None
+        }
+    }
 }
 
 fn wait_for_runtime(timeout: Duration) -> bool {

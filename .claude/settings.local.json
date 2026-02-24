@@ -13,7 +13,8 @@
       "Bash(git add:*)",
       "WebSearch",
       "Bash(gh search repos:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(head:*)"
     ]
   }
 }
