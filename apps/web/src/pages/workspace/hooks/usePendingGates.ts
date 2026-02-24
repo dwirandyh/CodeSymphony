@@ -311,6 +311,11 @@ export function usePendingGates(
     }
   }
 
+  function handleDismissPlan() {
+    if (!selectedThreadId || !pendingPlan) return;
+    setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
+  }
+
   // ── Derived ──
 
   const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
@@ -342,5 +347,6 @@ export function usePendingGates(
     answerQuestion,
     handleApprovePlan,
     handleRevisePlan,
+    handleDismissPlan,
   };
 }

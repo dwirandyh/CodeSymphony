@@ -644,6 +644,7 @@ export function WorkspacePage() {
                     busy={gates.planActionBusy}
                     onApprove={() => void gates.handleApprovePlan()}
                     onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
+                    onDismiss={() => gates.handleDismissPlan()}
                   />
                 ) : !gates.isWaitingForUserGate ? (
                   <Composer

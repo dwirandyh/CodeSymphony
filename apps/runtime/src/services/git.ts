@@ -80,7 +80,16 @@ export async function createGitWorktree(args: {
 }
 
 export async function removeGitWorktree(args: { repositoryPath: string; worktreePath: string }): Promise<void> {
-  await runGit(["-C", args.repositoryPath, "worktree", "remove", "--force", args.worktreePath]);
+  try {
+    await runGit(["-C", args.repositoryPath, "worktree", "remove", "--force", args.worktreePath]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("is not a working tree")) {
+      await runGit(["-C", args.repositoryPath, "worktree", "prune"]);
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function renameBranch(args: { cwd: string; oldBranch: string; newBranch: string }): Promise<void> {
