@@ -26,7 +26,7 @@ type ComposerProps = {
   providers: ModelProvider[];
   hasMessages: boolean;
   attachments: PendingAttachment[];
-  onAttachmentsChange: (attachments: PendingAttachment[]) => void;
+  onAttachmentsChange: (attachments: PendingAttachment[] | ((prev: PendingAttachment[]) => PendingAttachment[])) => void;
   onChange: (nextValue: string) => void;
   onModeChange: (mode: ChatMode) => void;
   onSubmitMessage: (content: string, attachments: PendingAttachment[]) => void;
@@ -238,6 +238,9 @@ export function Composer({
   // If preventDefault() failed on mobile, handleInput will restore this HTML
   // to remove the raw text the browser forcefully inserted.
   const afterChipHTMLRef = useRef<string | null>(null);
+  // Stores the last stable editor innerHTML (after chip insertions and normal edits).
+  // Used by handleInput CASE 2 to preserve existing chips when rebuilding the editor.
+  const lastStableHTMLRef = useRef<string>("");
 
   const cannotSend = disabled || (value.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
 
@@ -351,6 +354,7 @@ export function Composer({
 
       syncValueFromEditor();
       prevContentLenRef.current = (editor.textContent ?? "").length;
+      lastStableHTMLRef.current = editor.innerHTML;
       return;
     }
 
@@ -373,14 +377,11 @@ export function Composer({
           isInline: true,
         };
 
-        const beforeText = currentText.slice(0, prevLen);
-
+        // Restore from last stable HTML to preserve existing chips,
+        // instead of using textContent which flattens chips to plain text.
         // Disable contentEditable to prevent input events during DOM manipulation
         editor.removeAttribute("contenteditable");
-        editor.innerHTML = "";
-        if (beforeText) {
-          editor.appendChild(document.createTextNode(beforeText));
-        }
+        editor.innerHTML = lastStableHTMLRef.current;
         const chip = createAttachmentChipElement(att);
         const space = document.createTextNode("\u00A0");
         editor.appendChild(chip);
@@ -397,15 +398,17 @@ export function Composer({
           sel.addRange(range);
         }
 
-        onAttachmentsChange([...attachments, att]);
+        onAttachmentsChange(prev => [...prev, att]);
         syncValueFromEditor();
         prevContentLenRef.current = (editor.textContent ?? "").length;
+        lastStableHTMLRef.current = editor.innerHTML;
         return;
       }
     }
 
     // Normal input
     prevContentLenRef.current = (editor.textContent ?? "").length;
+    lastStableHTMLRef.current = editor.innerHTML;
     syncValueFromEditor();
 
     queueMicrotask(() => {
@@ -414,7 +417,7 @@ export function Composer({
         setMention(detected);
       }
     });
-  }, [syncValueFromEditor, attachments, onAttachmentsChange]);
+  }, [syncValueFromEditor, onAttachmentsChange]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
@@ -499,7 +502,7 @@ export function Composer({
             newAttachments.push(att);
           }
           if (newAttachments.length > 0) {
-            onAttachmentsChange([...attachments, ...newAttachments]);
+            onAttachmentsChange(prev => [...prev, ...newAttachments]);
           }
         })();
         return;
@@ -532,7 +535,7 @@ export function Composer({
           isInline: true,
         };
 
-        onAttachmentsChange([...attachments, att]);
+        onAttachmentsChange(prev => [...prev, att]);
 
         // Insert chip synchronously. Disable contentEditable during DOM manipulation
         // to prevent the browser from firing input events that cause infinite loops on mobile.
@@ -556,6 +559,7 @@ export function Composer({
 
           syncValueFromEditor();
           prevContentLenRef.current = (editor.textContent ?? "").length;
+          lastStableHTMLRef.current = editor.innerHTML;
 
           // Save the HTML so handleInput can restore it if preventDefault() failed
           // and the browser forcefully inserts raw text after this.
@@ -597,8 +601,9 @@ export function Composer({
 
       syncValueFromEditor();
       prevContentLenRef.current = (editorRef.current?.textContent ?? "").length;
+      lastStableHTMLRef.current = editorRef.current?.innerHTML ?? "";
     },
-    [syncValueFromEditor, attachments, onAttachmentsChange],
+    [syncValueFromEditor, onAttachmentsChange],
   );
 
   const handleKeyDown = useCallback(
@@ -731,6 +736,8 @@ export function Composer({
     if (value === "" && editor.innerHTML !== "") {
       editor.innerHTML = "";
       mentionedFilesRef.current = [];
+      lastStableHTMLRef.current = "";
+      prevContentLenRef.current = 0;
     }
   }, [value]);
 
@@ -752,14 +759,14 @@ export function Composer({
           newAttachments.push(att);
         }
         if (newAttachments.length > 0) {
-          onAttachmentsChange([...attachments, ...newAttachments]);
+          onAttachmentsChange(prev => [...prev, ...newAttachments]);
         }
       })();
 
       // Reset file input so the same file can be re-selected
       event.target.value = "";
     },
-    [attachments, onAttachmentsChange],
+    [onAttachmentsChange],
   );
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
@@ -792,11 +799,11 @@ export function Composer({
           newAttachments.push(att);
         }
         if (newAttachments.length > 0) {
-          onAttachmentsChange([...attachments, ...newAttachments]);
+          onAttachmentsChange(prev => [...prev, ...newAttachments]);
         }
       })();
     },
-    [attachments, onAttachmentsChange],
+    [onAttachmentsChange],
   );
 
   const removeAttachment = useCallback(
