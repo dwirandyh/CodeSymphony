@@ -1,5 +1,5 @@
-import type { ChatMessage as DbChatMessage, ChatThread as DbChatThread, Repository as DbRepository, Worktree as DbWorktree } from "@prisma/client";
-import type { ChatMessage, ChatThread, Repository, Worktree } from "@codesymphony/shared-types";
+import type { ChatMessage as DbChatMessage, ChatThread as DbChatThread, Repository as DbRepository, Worktree as DbWorktree, ChatAttachment as DbChatAttachment } from "@prisma/client";
+import type { ChatAttachment, ChatMessage, ChatThread, Repository, Worktree } from "@codesymphony/shared-types";
 
 export function mapWorktree(worktree: DbWorktree): Worktree {
   return {
@@ -42,13 +42,28 @@ export function mapChatThread(thread: DbChatThread, isActive = false): ChatThrea
   };
 }
 
-export function mapChatMessage(message: DbChatMessage): ChatMessage {
+export function mapChatAttachment(attachment: DbChatAttachment): ChatAttachment {
+  return {
+    id: attachment.id,
+    messageId: attachment.messageId,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    content: attachment.content,
+    storagePath: attachment.storagePath,
+    source: attachment.source as ChatAttachment["source"],
+    createdAt: attachment.createdAt.toISOString(),
+  };
+}
+
+export function mapChatMessage(message: DbChatMessage & { attachments?: DbChatAttachment[] }): ChatMessage {
   return {
     id: message.id,
     threadId: message.threadId,
     seq: message.seq,
     role: message.role,
     content: message.content,
+    attachments: (message.attachments ?? []).map(mapChatAttachment),
     createdAt: message.createdAt.toISOString(),
   };
 }

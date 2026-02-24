@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import fuzzysort from "fuzzysort";
-import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Square, Zap } from "lucide-react";
+import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Paperclip, Square, X, Zap } from "lucide-react";
 import type { ChatMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { serializeMention } from "../../lib/mentions";
+import type { PendingAttachment } from "../../lib/attachments";
+import {
+  fileToAttachment,
+  generateAttachmentId,
+  generateClipboardFilename,
+  isImageMimeType,
+  validateAttachmentSize,
+} from "../../lib/attachments";
 
 type ComposerProps = {
   value: string;
@@ -17,9 +25,11 @@ type ComposerProps = {
   fileIndexLoading: boolean;
   providers: ModelProvider[];
   hasMessages: boolean;
+  attachments: PendingAttachment[];
+  onAttachmentsChange: (attachments: PendingAttachment[]) => void;
   onChange: (nextValue: string) => void;
   onModeChange: (mode: ChatMode) => void;
-  onSubmitMessage: (content: string) => void;
+  onSubmitMessage: (content: string, attachments: PendingAttachment[]) => void;
   onStop: () => void;
   onSelectProvider: (id: string | null) => void;
 };
@@ -49,7 +59,9 @@ function getPlainTextFromEditor(el: HTMLElement): string {
     if (node.nodeType === Node.TEXT_NODE) {
       text += node.textContent ?? "";
     } else if (node instanceof HTMLElement) {
-      if (node.dataset.mentionPath) {
+      if (node.dataset.attachmentId) {
+        text += `{{attachment:${node.dataset.attachmentId}}}`;
+      } else if (node.dataset.mentionPath) {
         text += `@${node.dataset.mentionPath}`;
       } else if (node.tagName === "BR") {
         text += "\n";
@@ -144,6 +156,37 @@ function createChipElement(file: MentionedFile): HTMLSpanElement {
   return chip;
 }
 
+const PAPERCLIP_ICON_SVG =
+  '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>';
+
+function createAttachmentChipElement(attachment: PendingAttachment): HTMLSpanElement {
+  const chip = document.createElement("span");
+  chip.contentEditable = "false";
+  chip.dataset.attachmentId = attachment.id;
+  chip.className =
+    "inline-flex items-center gap-1 rounded-md border border-purple-500/30 bg-purple-500/15 px-1.5 py-0 text-xs text-purple-400 mx-0.5 align-baseline cursor-default select-none";
+  chip.setAttribute("title", attachment.filename);
+
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("class", "h-3 w-3 shrink-0 inline-block");
+  icon.innerHTML = PAPERCLIP_ICON_SVG;
+
+  const label = document.createElement("span");
+  label.className = "max-w-[140px] truncate";
+  label.textContent = attachment.filename;
+
+  chip.appendChild(icon);
+  chip.appendChild(label);
+
+  return chip;
+}
+
 export function Composer({
   value,
   disabled,
@@ -156,6 +199,8 @@ export function Composer({
   fileIndexLoading,
   providers,
   hasMessages,
+  attachments,
+  onAttachmentsChange,
   onChange,
   onModeChange,
   onSubmitMessage,
@@ -188,8 +233,13 @@ export function Composer({
   const mentionedFilesRef = useRef<MentionedFile[]>([]);
   const isComposingRef = useRef(false);
   const suppressInputRef = useRef(false);
+  const prevContentLenRef = useRef(0);
+  // Stores editor innerHTML right after chip insertion by handlePaste.
+  // If preventDefault() failed on mobile, handleInput will restore this HTML
+  // to remove the raw text the browser forcefully inserted.
+  const afterChipHTMLRef = useRef<string | null>(null);
 
-  const cannotSend = disabled || (value.trim().length === 0 && mentionedFilesRef.current.length === 0);
+  const cannotSend = disabled || (value.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
 
   type SuggestionEntry = FileEntry & { highlighted?: string };
 
@@ -274,6 +324,88 @@ export function Composer({
     const editor = editorRef.current;
     if (!editor) return;
 
+    const currentText = editor.textContent ?? "";
+    const prevLen = prevContentLenRef.current;
+    const inserted = currentText.length - prevLen;
+
+    // Case 1: handlePaste already inserted a chip, but preventDefault() failed
+    // on mobile — browser forcefully added raw text. Restore the saved HTML.
+    const savedHTML = afterChipHTMLRef.current;
+    if (savedHTML !== null && inserted > 10) {
+      afterChipHTMLRef.current = null;
+
+      // Disable contentEditable to prevent input events during DOM manipulation
+      editor.removeAttribute("contenteditable");
+      editor.innerHTML = savedHTML;
+      editor.setAttribute("contenteditable", "true");
+
+      // Place cursor at end
+      const sel = window.getSelection();
+      if (sel) {
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+
+      syncValueFromEditor();
+      prevContentLenRef.current = (editor.textContent ?? "").length;
+      return;
+    }
+
+    // Clear the ref on normal input (no large insertion after paste)
+    afterChipHTMLRef.current = null;
+
+    // Case 2: onPaste never fired at all (some mobile keyboards/clipboard managers)
+    // Detect large insertion and create attachment from scratch
+    if (inserted > 300) {
+      const pastedText = currentText.slice(prevLen).trim() || currentText.trim();
+      if (pastedText.length > 300) {
+        const filename = generateClipboardFilename(pastedText);
+        const att: PendingAttachment = {
+          id: generateAttachmentId(),
+          filename,
+          mimeType: "text/plain",
+          content: pastedText,
+          sizeBytes: new Blob([pastedText]).size,
+          source: "clipboard_text",
+          isInline: true,
+        };
+
+        const beforeText = currentText.slice(0, prevLen);
+
+        // Disable contentEditable to prevent input events during DOM manipulation
+        editor.removeAttribute("contenteditable");
+        editor.innerHTML = "";
+        if (beforeText) {
+          editor.appendChild(document.createTextNode(beforeText));
+        }
+        const chip = createAttachmentChipElement(att);
+        const space = document.createTextNode("\u00A0");
+        editor.appendChild(chip);
+        editor.appendChild(space);
+        editor.setAttribute("contenteditable", "true");
+
+        // Place cursor at end
+        const sel = window.getSelection();
+        if (sel) {
+          const range = document.createRange();
+          range.setStartAfter(space);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+
+        onAttachmentsChange([...attachments, att]);
+        syncValueFromEditor();
+        prevContentLenRef.current = (editor.textContent ?? "").length;
+        return;
+      }
+    }
+
+    // Normal input
+    prevContentLenRef.current = (editor.textContent ?? "").length;
     syncValueFromEditor();
 
     queueMicrotask(() => {
@@ -282,7 +414,7 @@ export function Composer({
         setMention(detected);
       }
     });
-  }, [syncValueFromEditor]);
+  }, [syncValueFromEditor, attachments, onAttachmentsChange]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
@@ -293,7 +425,9 @@ export function Composer({
       if (node.nodeType === Node.TEXT_NODE) {
         parts.push(node.textContent ?? "");
       } else if (node instanceof HTMLElement) {
-        if (node.dataset.mentionPath) {
+        if (node.dataset.attachmentId) {
+          parts.push(`{{attachment:${node.dataset.attachmentId}}}`);
+        } else if (node.dataset.mentionPath) {
           const type = node.dataset.mentionType === "directory" ? "directory" : "file";
           parts.push(serializeMention(node.dataset.mentionPath, type));
         } else if (node.tagName === "BR") {
@@ -309,23 +443,130 @@ export function Composer({
   const handleSubmit = useCallback(() => {
     if (cannotSend) return;
     const content = buildFinalContent();
-    if (!content.trim()) return;
+    if (!content.trim() && attachments.length === 0) return;
 
+    // Collect inline attachments from the editor
     const editor = editorRef.current;
+    const inlineAttachmentIds = new Set<string>();
+    if (editor) {
+      const chips = editor.querySelectorAll<HTMLElement>("[data-attachment-id]");
+      for (const chip of chips) {
+        if (chip.dataset.attachmentId) inlineAttachmentIds.add(chip.dataset.attachmentId);
+      }
+    }
+
+    // Combine all attachments (bar attachments + inline)
+    const allAttachments = [
+      ...attachments,
+      ...inlineAttachmentIds.size > 0
+        ? attachments.filter((a) => inlineAttachmentIds.has(a.id))
+        : [],
+    ];
+
+    // Deduplicate
+    const seen = new Set<string>();
+    const dedupedAttachments = allAttachments.filter((a) => {
+      if (seen.has(a.id)) return false;
+      seen.add(a.id);
+      return true;
+    });
+
     if (editor) {
       editor.innerHTML = "";
     }
     mentionedFilesRef.current = [];
-    onSubmitMessage(content);
+    onSubmitMessage(content, dedupedAttachments);
+    onAttachmentsChange([]);
     onChange("");
-  }, [cannotSend, buildFinalContent, onSubmitMessage, onChange]);
+  }, [cannotSend, buildFinalContent, attachments, onSubmitMessage, onAttachmentsChange, onChange]);
 
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      const text = event.clipboardData.getData("text/plain");
-      if (!text) return;
+      const clipboardData = event.clipboardData;
 
+      // Check for image files
+      const imageFiles = Array.from(clipboardData.files).filter((f) =>
+        isImageMimeType(f.type),
+      );
+      if (imageFiles.length > 0) {
+        event.preventDefault();
+        void (async () => {
+          const newAttachments: PendingAttachment[] = [];
+          for (const file of imageFiles) {
+            const sizeError = validateAttachmentSize(file);
+            if (sizeError) continue;
+            const att = await fileToAttachment(file, "clipboard_image");
+            newAttachments.push(att);
+          }
+          if (newAttachments.length > 0) {
+            onAttachmentsChange([...attachments, ...newAttachments]);
+          }
+        })();
+        return;
+      }
+
+      // Check for text — if clipboard API is restricted (common on mobile),
+      // let the browser paste natively; handleInput will catch large pastes
+      const text = clipboardData.getData("text/plain");
+
+      if (!text) {
+        return;
+      }
+
+      // Auto-convert long text to attachment
+      if (text.length > 300) {
+        const editor = editorRef.current;
+        const preHTML = editor?.innerHTML ?? "";
+
+        // Try to prevent default — may fail silently on some mobile browsers
+        event.preventDefault();
+
+        const filename = generateClipboardFilename(text);
+        const att: PendingAttachment = {
+          id: generateAttachmentId(),
+          filename,
+          mimeType: "text/plain",
+          content: text,
+          sizeBytes: new Blob([text]).size,
+          source: "clipboard_text",
+          isInline: true,
+        };
+
+        onAttachmentsChange([...attachments, att]);
+
+        // Insert chip synchronously. Disable contentEditable during DOM manipulation
+        // to prevent the browser from firing input events that cause infinite loops on mobile.
+        if (editor) {
+          editor.removeAttribute("contenteditable");
+          editor.innerHTML = preHTML;
+          const chip = createAttachmentChipElement(att);
+          const space = document.createTextNode("\u00A0");
+          editor.appendChild(chip);
+          editor.appendChild(space);
+          editor.setAttribute("contenteditable", "true");
+
+          const sel = window.getSelection();
+          if (sel) {
+            const range = document.createRange();
+            range.setStartAfter(space);
+            range.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+
+          syncValueFromEditor();
+          prevContentLenRef.current = (editor.textContent ?? "").length;
+
+          // Save the HTML so handleInput can restore it if preventDefault() failed
+          // and the browser forcefully inserts raw text after this.
+          afterChipHTMLRef.current = editor.innerHTML;
+        }
+
+        return;
+      }
+
+      // Normal short text paste
+      event.preventDefault();
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0) return;
 
@@ -355,8 +596,9 @@ export function Composer({
       }
 
       syncValueFromEditor();
+      prevContentLenRef.current = (editorRef.current?.textContent ?? "").length;
     },
-    [syncValueFromEditor],
+    [syncValueFromEditor, attachments, onAttachmentsChange],
   );
 
   const handleKeyDown = useCallback(
@@ -384,7 +626,7 @@ export function Composer({
         }
       }
 
-      // Backspace: delete mention chips when cursor is adjacent
+      // Backspace: delete mention/attachment chips when cursor is adjacent
       if (event.key === "Backspace") {
         const sel = window.getSelection();
         const editor = editorRef.current;
@@ -398,10 +640,15 @@ export function Composer({
             anchorNode.nodeType === Node.TEXT_NODE &&
             anchorOffset === 0 &&
             anchorNode.previousSibling instanceof HTMLElement &&
-            anchorNode.previousSibling.dataset.mentionPath
+            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId)
           ) {
             event.preventDefault();
-            anchorNode.previousSibling.remove();
+            const chip = anchorNode.previousSibling;
+            const attachmentId = chip.dataset.attachmentId;
+            chip.remove();
+            if (attachmentId) {
+              onAttachmentsChange(attachments.filter((a) => a.id !== attachmentId));
+            }
             syncValueFromEditor();
             return;
           }
@@ -411,10 +658,16 @@ export function Composer({
             anchorNode === editor &&
             anchorOffset > 0 &&
             editor.childNodes[anchorOffset - 1] instanceof HTMLElement &&
-            (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.mentionPath
+            ((editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.mentionPath ||
+             (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.attachmentId)
           ) {
             event.preventDefault();
-            editor.childNodes[anchorOffset - 1].remove();
+            const chip = editor.childNodes[anchorOffset - 1] as HTMLElement;
+            const attachmentId = chip.dataset.attachmentId;
+            chip.remove();
+            if (attachmentId) {
+              onAttachmentsChange(attachments.filter((a) => a.id !== attachmentId));
+            }
             syncValueFromEditor();
             return;
           }
@@ -426,12 +679,16 @@ export function Composer({
             anchorOffset === 1 &&
             anchorNode.textContent === "\u00A0" &&
             anchorNode.previousSibling instanceof HTMLElement &&
-            anchorNode.previousSibling.dataset.mentionPath
+            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId)
           ) {
             event.preventDefault();
             const chip = anchorNode.previousSibling;
+            const attachmentId = chip.dataset.attachmentId;
             anchorNode.textContent = "";
             chip.remove();
+            if (attachmentId) {
+              onAttachmentsChange(attachments.filter((a) => a.id !== attachmentId));
+            }
             syncValueFromEditor();
             return;
           }
@@ -455,7 +712,7 @@ export function Composer({
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit, syncValueFromEditor],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit, syncValueFromEditor, attachments, onAttachmentsChange],
   );
 
   useEffect(() => {
@@ -477,10 +734,116 @@ export function Composer({
     }
   }, [value]);
 
+  // ── File input + drag-and-drop ──
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const handleFileInputChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (!files || files.length === 0) return;
+
+      void (async () => {
+        const newAttachments: PendingAttachment[] = [];
+        for (const file of Array.from(files)) {
+          const sizeError = validateAttachmentSize(file);
+          if (sizeError) continue;
+          const att = await fileToAttachment(file, "file_picker");
+          newAttachments.push(att);
+        }
+        if (newAttachments.length > 0) {
+          onAttachmentsChange([...attachments, ...newAttachments]);
+        }
+      })();
+
+      // Reset file input so the same file can be re-selected
+      event.target.value = "";
+    },
+    [attachments, onAttachmentsChange],
+  );
+
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setIsDragOver(false);
+
+      const files = event.dataTransfer.files;
+      if (!files || files.length === 0) return;
+
+      void (async () => {
+        const newAttachments: PendingAttachment[] = [];
+        for (const file of Array.from(files)) {
+          const sizeError = validateAttachmentSize(file);
+          if (sizeError) continue;
+          const att = await fileToAttachment(file, "drag_drop");
+          newAttachments.push(att);
+        }
+        if (newAttachments.length > 0) {
+          onAttachmentsChange([...attachments, ...newAttachments]);
+        }
+      })();
+    },
+    [attachments, onAttachmentsChange],
+  );
+
+  const removeAttachment = useCallback(
+    (id: string) => {
+      // Also remove inline chip from editor if present
+      const editor = editorRef.current;
+      if (editor) {
+        const chip = editor.querySelector(`[data-attachment-id="${id}"]`);
+        if (chip) chip.remove();
+      }
+      onAttachmentsChange(attachments.filter((a) => a.id !== id));
+    },
+    [attachments, onAttachmentsChange],
+  );
+
+  // Non-inline attachments shown as chips above the editor
+  const barAttachments = attachments.filter((a) => !a.isInline);
+
   return (
     <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
-        <div className="relative rounded-2xl border border-input/50 bg-background/20 px-3 pb-11 pt-2.5 lg:rounded-3xl lg:px-4 lg:pb-12 lg:pt-3">
+        <div
+          className={`relative rounded-2xl border bg-background/20 px-3 pb-11 pt-2.5 lg:rounded-3xl lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
+            isDragOver ? "border-primary/60 bg-primary/5" : "border-input/50"
+          }`}
+          onDragOver={handleDragOver}
+          onDragEnter={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {/* ── Drag overlay ── */}
+          {isDragOver && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-primary/10 lg:rounded-3xl">
+              <span className="text-sm font-medium text-primary">Drop files here</span>
+            </div>
+          )}
+
+          {/* ── Hidden file input ── */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="text/*,image/*,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.cpp,.h,.hpp,.md,.json,.yaml,.yml,.toml,.sql,.sh,.css,.scss,.html,.xml,.svg"
+            className="hidden"
+            onChange={handleFileInputChange}
+          />
+
           {mention.active && (suggestions.length > 0 || fileIndexLoading) && (
             <div
               ref={popoverRef}
@@ -521,6 +884,37 @@ export function Composer({
             </div>
           )}
 
+          {/* ── Attachment bar ── */}
+          {barAttachments.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {barAttachments.map((att) => (
+                <div
+                  key={att.id}
+                  className="flex items-center gap-1.5 rounded-lg border border-border/40 bg-secondary/40 px-2 py-1 text-xs text-foreground"
+                >
+                  {att.previewUrl ? (
+                    <img
+                      src={att.previewUrl}
+                      alt={att.filename}
+                      className="h-6 w-6 rounded object-cover"
+                    />
+                  ) : (
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="max-w-[120px] truncate">{att.filename}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(att.id)}
+                    className="ml-0.5 rounded p-0.5 text-muted-foreground transition-colors hover:bg-destructive/20 hover:text-destructive"
+                    aria-label={`Remove ${att.filename}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <div
             ref={editorRef}
             role="textbox"
@@ -543,6 +937,15 @@ export function Composer({
           />
 
           <div className="absolute bottom-2 left-2.5 flex items-center gap-2 lg:bottom-3 lg:left-3">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={disabled}
+              className="flex items-center justify-center rounded-full bg-secondary/60 p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-secondary-foreground disabled:opacity-50"
+              aria-label="Attach files"
+            >
+              <Paperclip className="h-3 w-3" />
+            </button>
             <button
               type="button"
               onClick={() => onModeChange(isPlan ? "default" : "plan")}
