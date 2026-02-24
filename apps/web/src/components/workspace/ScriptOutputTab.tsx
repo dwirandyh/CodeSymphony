@@ -24,6 +24,7 @@ interface ScriptOutputTabProps {
   rerunning?: boolean;
   scriptRunnerSessionId: string | null;
   worktreePath: string | null;
+  onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
 }
 
 export function ScriptOutputTab({
@@ -32,6 +33,7 @@ export function ScriptOutputTab({
   rerunning,
   scriptRunnerSessionId,
   worktreePath,
+  onRunScriptExit,
 }: ScriptOutputTabProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [setupCollapsed, setSetupCollapsed] = useState(false);
@@ -134,7 +136,11 @@ export function ScriptOutputTab({
               <Suspense
                 fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}
               >
-                <TerminalTab sessionId={scriptRunnerSessionId} cwd={worktreePath} />
+                <TerminalTab
+                  sessionId={scriptRunnerSessionId}
+                  cwd={worktreePath}
+                  onSessionExit={onRunScriptExit}
+                />
               </Suspense>
             </div>
           )}

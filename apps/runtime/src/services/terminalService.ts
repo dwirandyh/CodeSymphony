@@ -30,8 +30,15 @@ export interface TerminalSession {
     id: string;
     ptyProcess: pty.IPty;
     listeners: Set<(data: string) => void>;
+    exitListeners: Set<(event: { exitCode: number; signal: number }) => void>;
     scrollback: string[];
     scrollbackSize: number;
+}
+
+interface SpawnOptions {
+    mode?: "shell" | "exec";
+    command?: string;
+    replace?: boolean;
 }
 
 export function createTerminalService() {
@@ -49,10 +56,12 @@ export function createTerminalService() {
         return Array.from(new Set(candidates));
     }
 
-    function spawnProcess(cwd?: string): pty.IPty {
+    function spawnProcess(cwd?: string, options?: SpawnOptions): pty.IPty {
         const shellCandidates = resolveShellCandidates();
         const cwdCandidates = resolveCwdCandidates(cwd);
         let lastError: unknown = new Error("Unable to spawn terminal process");
+        const mode = options?.mode ?? "shell";
+        const command = options?.command;
 
         for (const shell of shellCandidates) {
             if (!existsSync(shell)) {
@@ -61,7 +70,8 @@ export function createTerminalService() {
 
             for (const candidateCwd of cwdCandidates) {
                 try {
-                    return pty.spawn(shell, [], {
+                    const args = mode === "exec" ? ["-lc", command ?? ""] : [];
+                    return pty.spawn(shell, args, {
                         name: "xterm-256color",
                         cols: 80,
                         rows: 24,
@@ -84,18 +94,27 @@ export function createTerminalService() {
     function spawn(
         sessionId: string,
         cwd?: string,
+        options?: SpawnOptions,
     ): TerminalSession {
         const existing = sessions.get(sessionId);
-        if (existing) {
+        if (existing && !options?.replace) {
             return existing;
         }
 
-        const ptyProcess = spawnProcess(cwd);
+        const inheritedListeners = existing?.listeners ?? new Set<(data: string) => void>();
+        const inheritedExitListeners = existing?.exitListeners ?? new Set<(event: { exitCode: number; signal: number }) => void>();
+
+        if (existing) {
+            existing.ptyProcess.kill();
+        }
+
+        const ptyProcess = spawnProcess(cwd, options);
 
         const session: TerminalSession = {
             id: sessionId,
             ptyProcess,
-            listeners: new Set(),
+            listeners: inheritedListeners,
+            exitListeners: inheritedExitListeners,
             scrollback: [],
             scrollbackSize: 0,
         };
@@ -114,8 +133,19 @@ export function createTerminalService() {
             }
         });
 
-        ptyProcess.onExit(() => {
-            sessions.delete(sessionId);
+        ptyProcess.onExit((event) => {
+            const isCurrentSession = sessions.get(sessionId) === session;
+            if (isCurrentSession) {
+                sessions.delete(sessionId);
+            } else {
+                return;
+            }
+            for (const listener of session.exitListeners) {
+                listener({
+                    exitCode: event.exitCode,
+                    signal: event.signal ?? 0,
+                });
+            }
         });
 
         sessions.set(sessionId, session);
@@ -157,6 +187,21 @@ export function createTerminalService() {
         };
     }
 
+    function addExitListener(
+        sessionId: string,
+        callback: (event: { exitCode: number; signal: number }) => void,
+    ): () => void {
+        const session = sessions.get(sessionId);
+        if (!session) {
+            return () => { };
+        }
+
+        session.exitListeners.add(callback);
+        return () => {
+            session.exitListeners.delete(callback);
+        };
+    }
+
     function kill(sessionId: string): void {
         const session = sessions.get(sessionId);
         if (session) {
@@ -176,5 +221,5 @@ export function createTerminalService() {
         sessions.clear();
     }
 
-    return { spawn, write, resize, addListener, kill, has, killAll };
+    return { spawn, write, resize, addListener, addExitListener, kill, has, killAll };
 }

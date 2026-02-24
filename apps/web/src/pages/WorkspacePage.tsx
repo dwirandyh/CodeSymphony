@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Menu, Play, Settings, Square, X } from "lucide-react";
+import { GitBranch, Menu, Settings, X } from "lucide-react";
 import type { ModelProvider } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/Composer";
 import { ChatMessageList } from "../components/workspace/ChatMessageList";
@@ -34,6 +34,27 @@ import { queryKeys } from "../lib/queryKeys";
 
 type RepoManager = ReturnType<typeof useRepositoryManager>;
 type GitChangesData = ReturnType<typeof useGitChanges>;
+
+function createRunScriptToken(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function FilledPlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <path fill="currentColor" d="M4 2.5v11l9-5.5-9-5.5z" />
+    </svg>
+  );
+}
+
+function FilledPauseIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <rect x="3.5" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
+      <rect x="9" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
+    </svg>
+  );
+}
 
 const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos, onOpenSettings }: { repos: RepoManager; onOpenSettings: () => void }) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
@@ -210,8 +231,11 @@ export function WorkspacePage() {
 
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [activeBottomTab, setActiveBottomTab] = useState("terminal");
+  const [bottomPanelOpenSignal, setBottomPanelOpenSignal] = useState(0);
   const [runScriptActive, setRunScriptActive] = useState(false);
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
+  const runScriptWorktreeIdRef = useRef<string | null>(null);
+  const runScriptTokenRef = useRef<string | null>(null);
 
   // ── Model/Provider state ──
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
@@ -276,6 +300,36 @@ export function WorkspacePage() {
         ? { ...entry, output: entry.output + chunk }
         : entry
     ));
+  }, []);
+
+  const handleRunScriptTerminalExit = useCallback(({ exitCode, signal }: { exitCode: number; signal: number }) => {
+    const targetWorktreeId = runScriptWorktreeIdRef.current;
+    const token = runScriptTokenRef.current;
+    debugLog("WorkspacePage", "run:session-exit", {
+      exitCode,
+      signal,
+      targetWorktreeId,
+      token,
+    });
+    debugLog("WorkspacePage", "run:state", {
+      nextActive: false,
+      reason: "session-exit",
+      exitCode,
+      signal,
+      token,
+    });
+    setRunScriptActive(false);
+
+    if (targetWorktreeId) {
+      setScriptOutputs((prev) => prev.map((entry) =>
+        entry.worktreeId === targetWorktreeId && entry.type === "run" && entry.status === "running"
+          ? { ...entry, status: "completed", success: exitCode === 0 }
+          : entry,
+      ));
+    }
+
+    runScriptWorktreeIdRef.current = null;
+    runScriptTokenRef.current = null;
   }, []);
 
   const repos = useRepositoryManager(setError, {
@@ -434,8 +488,23 @@ export function WorkspacePage() {
   }, [repos.selectedWorktreeId]);
 
   useEffect(() => {
+    debugLog("WorkspacePage", "run:state", {
+      nextActive: false,
+      reason: "selected-worktree-changed",
+      selectedWorktreeId: repos.selectedWorktreeId,
+    });
     setRunScriptActive(false);
+    runScriptWorktreeIdRef.current = null;
+    runScriptTokenRef.current = null;
   }, [repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    debugLog("WorkspacePage", "run:active-changed", {
+      runScriptActive,
+      selectedWorktreeId: repos.selectedWorktreeId,
+      token: runScriptTokenRef.current,
+    });
+  }, [runScriptActive, repos.selectedWorktreeId]);
 
   const handleRunScript = useCallback(async () => {
     if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
@@ -446,19 +515,54 @@ export function WorkspacePage() {
       setSettingsOpen(true);
       return;
     }
-    const command = runCommands.join("\n");
+    const shellScript = runCommands.join(" ; ");
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
 
     try {
       setActiveBottomTab("output");
-      await api.runTerminalCommand({
+      setBottomPanelOpenSignal((prev) => prev + 1);
+      const runToken = createRunScriptToken();
+      debugLog("WorkspacePage", "run:start", {
+        selectedWorktreeId: repos.selectedWorktreeId,
         sessionId,
-        command,
-        cwd: repos.selectedWorktree.path,
+        runToken,
+        runCommandsCount: runCommands.length,
+      });
+      debugLog("WorkspacePage", "run:state", {
+        nextActive: true,
+        reason: "run-start",
+        token: runToken,
+        sessionId,
       });
       setRunScriptActive(true);
+      runScriptWorktreeIdRef.current = repos.selectedWorktreeId;
+      runScriptTokenRef.current = runToken;
+      await api.runTerminalCommand({
+        sessionId,
+        command: shellScript,
+        cwd: repos.selectedWorktree.path,
+        mode: "exec",
+      });
+      debugLog("WorkspacePage", "run:command-dispatched", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        runToken,
+      });
     } catch (e) {
+      debugLog("WorkspacePage", "run:command-error", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        token: runScriptTokenRef.current,
+        error: e instanceof Error ? e.message : "unknown error",
+      });
+      runScriptWorktreeIdRef.current = null;
+      runScriptTokenRef.current = null;
+      debugLog("WorkspacePage", "run:state", {
+        nextActive: false,
+        reason: "run-command-error",
+      });
+      setRunScriptActive(false);
       setError(e instanceof Error ? e.message : "Failed to run script");
     }
   }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, resolveRunScriptSessionId]);
@@ -467,15 +571,44 @@ export function WorkspacePage() {
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
     try {
+      debugLog("WorkspacePage", "run:stop-request", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        token: runScriptTokenRef.current,
+      });
       setActiveBottomTab("output");
+      setBottomPanelOpenSignal((prev) => prev + 1);
       await api.interruptTerminalSession(sessionId);
+      debugLog("WorkspacePage", "run:state", {
+        nextActive: false,
+        reason: "stop-requested",
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        token: runScriptTokenRef.current,
+      });
       setRunScriptActive(false);
+      runScriptWorktreeIdRef.current = null;
+      runScriptTokenRef.current = null;
+      debugLog("WorkspacePage", "run:stop-complete", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+      });
     } catch (e) {
+      debugLog("WorkspacePage", "run:stop-error", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        error: e instanceof Error ? e.message : "unknown error",
+      });
       setError(e instanceof Error ? e.message : "Failed to stop script");
     }
-  }, [resolveRunScriptSessionId]);
+  }, [repos.selectedWorktreeId, resolveRunScriptSessionId]);
 
   const handleToggleRunScript = useCallback(() => {
+    debugLog("WorkspacePage", "run:toggle", {
+      runScriptActive,
+      selectedWorktreeId: repos.selectedWorktreeId,
+      token: runScriptTokenRef.current,
+    });
     if (runScriptActive) {
       void handleStopRunScript();
       return;
@@ -529,9 +662,9 @@ export function WorkspacePage() {
               aria-label={runScriptActive ? "Stop script" : "Run script"}
             >
               {runScriptActive ? (
-                <Square className="h-4 w-4" />
+                <FilledPauseIcon className="h-4 w-4" />
               ) : (
-                <Play className="h-4 w-4" />
+                <FilledPlayIcon className="h-4 w-4" />
               )}
             </button>
             <button
@@ -675,6 +808,8 @@ export function WorkspacePage() {
             onTabChange={setActiveBottomTab}
             onRerunSetup={handleRerunSetup}
             runScriptActive={runScriptActive}
+            onRunScriptExit={handleRunScriptTerminalExit}
+            openSignal={bottomPanelOpenSignal}
           />
         </main>
 

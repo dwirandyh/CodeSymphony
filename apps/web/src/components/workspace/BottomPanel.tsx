@@ -37,6 +37,8 @@ interface BottomPanelProps {
     onTabChange: (tab: string) => void;
     onRerunSetup?: () => void;
     runScriptActive: boolean;
+    onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
+    openSignal?: number;
 }
 
 export function BottomPanel({
@@ -48,6 +50,8 @@ export function BottomPanel({
     onTabChange,
     onRerunSetup,
     runScriptActive,
+    onRunScriptExit,
+    openSignal,
 }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
     const [collapsed, setCollapsed] = useState(() => {
@@ -57,6 +61,7 @@ export function BottomPanel({
     const panelRef = useRef<HTMLDivElement>(null);
     const startYRef = useRef(0);
     const startHeightRef = useRef(0);
+    const prevOpenSignalRef = useRef<number | undefined>(openSignal);
 
     const filteredOutputs = useMemo(
         () => worktreeId ? scriptOutputs.filter((e) => e.worktreeId === worktreeId) : [],
@@ -118,6 +123,16 @@ export function BottomPanel({
             document.removeEventListener("touchend", handleEnd);
         };
     }, [isDragging]);
+
+    useEffect(() => {
+        if (openSignal === undefined) {
+            return;
+        }
+        if (prevOpenSignalRef.current !== openSignal) {
+            setCollapsed(false);
+            prevOpenSignalRef.current = openSignal;
+        }
+    }, [openSignal]);
 
     return (
         <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-3">
@@ -213,6 +228,7 @@ export function BottomPanel({
                             rerunning={filteredOutputs.some((e) => e.type !== "run" && e.status === "running")}
                             scriptRunnerSessionId={scriptRunnerSessionId}
                             worktreePath={worktreePath}
+                            onRunScriptExit={onRunScriptExit}
                         />
                     </Tabs.Content>
                 </div>

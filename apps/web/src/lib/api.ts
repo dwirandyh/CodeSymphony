@@ -141,7 +141,7 @@ export const api = {
       method: "POST",
     });
   },
-  runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string }): Promise<void> => {
+  runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string; mode?: "stdin" | "exec" }): Promise<void> => {
     const response = await fetch(`${API_BASE}/terminal/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

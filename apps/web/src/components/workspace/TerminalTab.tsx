@@ -39,9 +39,10 @@ const XTERM_THEME: Record<string, string> = {
 interface TerminalTabProps {
     sessionId: string;
     cwd: string | null;
+    onSessionExit?: (event: { exitCode: number; signal: number }) => void;
 }
 
-export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
+export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
@@ -118,7 +119,25 @@ export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
 
             ws.onmessage = (event) => {
                 if (!disposedRef.current) {
-                    terminal.write(event.data as string);
+                    const chunk = event.data as string;
+                    try {
+                        const parsed = JSON.parse(chunk) as Record<string, unknown>;
+                        if (
+                            parsed.kind === "cs-terminal-event"
+                            && parsed.type === "exit"
+                            && typeof parsed.exitCode === "number"
+                            && typeof parsed.signal === "number"
+                        ) {
+                            onSessionExit?.({
+                                exitCode: parsed.exitCode,
+                                signal: parsed.signal,
+                            });
+                            return;
+                        }
+                    } catch {
+                        // Not an internal event payload; treat as terminal output.
+                    }
+                    terminal.write(chunk);
                 }
             };
 
@@ -170,7 +189,7 @@ export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
             terminalRef.current = null;
             fitAddonRef.current = null;
         };
-    }, [sessionId, cwd]);
+    }, [sessionId, cwd, onSessionExit]);
 
     return (
         <div className="relative flex h-full flex-col">
