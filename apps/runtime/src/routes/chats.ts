@@ -95,7 +95,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
-  app.post("/threads/:id/messages", async (request, reply) => {
+  app.post("/threads/:id/messages", { bodyLimit: 15 * 1024 * 1024 }, async (request, reply) => {
     const params = threadParams.parse(request.params);
 
     try {

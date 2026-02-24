@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { execFile as execFileRaw } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { promisify } from "node:util";
 import {
   AnswerQuestionInputSchema,
@@ -10,6 +10,7 @@ import {
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   type AnswerQuestionInput,
+  type AttachmentInput,
   type ChatEvent,
   type ChatMessage,
   type ChatMode,
@@ -373,6 +374,29 @@ function instrumentationMessage(event: ClaudeToolInstrumentationEvent): string {
   }
 
   return event.summary?.trim().length ? event.summary : `${event.toolName} finished`;
+}
+
+const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
+
+function isImageMimeType(mimeType: string): boolean {
+  return mimeType.startsWith("image/");
+}
+
+function buildPromptWithAttachments(content: string, attachments: Array<{ filename: string; mimeType: string; content: string; storagePath: string | null }>): string {
+  // Strip {{attachment:ID}} markers used by the frontend for inline rendering
+  const cleanContent = content.replace(/\{\{attachment:[^}]+\}\}/g, "").trim();
+
+  if (attachments.length === 0) return cleanContent;
+
+  const attachmentBlocks = attachments.map((att) => {
+    if (isImageMimeType(att.mimeType) && att.storagePath) {
+      return `<attachment filename="${att.filename}" type="${att.mimeType}" path="${att.storagePath}">[Image saved at path. Use Read tool to view.]</attachment>`;
+    }
+    return `<attachment filename="${att.filename}" type="${att.mimeType}">${att.content}</attachment>`;
+  });
+
+  return `${cleanContent}\n\n${attachmentBlocks.join("\n\n")}`;
 }
 
 export function createChatService(deps: RuntimeDeps) {
@@ -1285,6 +1309,7 @@ export function createChatService(deps: RuntimeDeps) {
       const messages = await deps.prisma.chatMessage.findMany({
         where: { threadId },
         orderBy: { seq: "asc" },
+        include: { attachments: true },
       });
 
       return messages.map(mapChatMessage);
@@ -1514,6 +1539,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const thread = await deps.prisma.chatThread.findUnique({
         where: { id: threadId },
+        include: { worktree: true },
       });
 
       if (!thread) {
@@ -1536,15 +1562,69 @@ export function createChatService(deps: RuntimeDeps) {
           },
         });
 
+        // Process attachments
+        const attachmentRecords: Array<{ filename: string; mimeType: string; content: string; storagePath: string | null }> = [];
+        const inputAttachments: AttachmentInput[] = input.attachments ?? [];
+        for (const att of inputAttachments) {
+          const contentBytes = isImageMimeType(att.mimeType)
+            ? Buffer.from(att.content, "base64")
+            : Buffer.from(att.content, "utf8");
+          const sizeBytes = contentBytes.length;
+
+          if (sizeBytes > MAX_ATTACHMENT_SIZE_BYTES) {
+            throw new Error(`Attachment "${att.filename}" exceeds 10 MB limit (${Math.round(sizeBytes / 1024 / 1024)}MB)`);
+          }
+
+          let storagePath: string | null = null;
+          let dbContent = att.content;
+
+          if (isImageMimeType(att.mimeType)) {
+            // Write image to disk
+            const attachDir = join(thread.worktree.path, ATTACHMENT_DIR_NAME, message.id);
+            mkdirSync(attachDir, { recursive: true });
+            const safeFilename = basename(att.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+            storagePath = join(attachDir, safeFilename);
+            writeFileSync(storagePath, contentBytes);
+            dbContent = ""; // Don't store image binary in DB
+          }
+
+          await deps.prisma.chatAttachment.create({
+            data: {
+              ...(att.id ? { id: att.id } : {}),
+              messageId: message.id,
+              filename: att.filename,
+              mimeType: att.mimeType,
+              sizeBytes,
+              content: dbContent,
+              storagePath,
+              source: att.source,
+            },
+          });
+
+          attachmentRecords.push({
+            filename: att.filename,
+            mimeType: att.mimeType,
+            content: dbContent,
+            storagePath,
+          });
+        }
+
         await deps.eventHub.emit(threadId, "message.delta", {
           messageId: message.id,
           role: "user",
           delta: input.content,
         });
 
-        scheduleAssistant(threadId, input.content, input.mode);
+        const prompt = buildPromptWithAttachments(input.content, attachmentRecords);
+        scheduleAssistant(threadId, prompt, input.mode);
 
-        return mapChatMessage(message);
+        // Re-fetch with attachments for the response
+        const messageWithAttachments = await deps.prisma.chatMessage.findUnique({
+          where: { id: message.id },
+          include: { attachments: true },
+        });
+
+        return mapChatMessage(messageWithAttachments ?? message);
       } catch (error) {
         activeThreads.delete(threadId);
         throw error;

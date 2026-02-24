@@ -91,10 +91,26 @@ model ChatMessage {
   content   String
   createdAt DateTime @default(now())
 
-  thread ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  thread      ChatThread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  attachments ChatAttachment[]
 
   @@unique([threadId, seq])
   @@index([threadId])
+}
+
+model ChatAttachment {
+  id          String   @id @default(cuid())
+  messageId   String
+  filename    String
+  mimeType    String
+  sizeBytes   Int
+  content     String   // text content for text files, empty for images
+  storagePath String?  // filesystem path for images
+  source      String   // "file_picker" | "drag_drop" | "clipboard_text" | "clipboard_image"
+  createdAt   DateTime @default(now())
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  @@index([messageId])
 }
 
 model ChatEvent {

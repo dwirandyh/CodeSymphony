@@ -658,9 +658,11 @@ export function WorkspacePage() {
                     fileIndexLoading={fileIndex.loading}
                     providers={modelProviders}
                     hasMessages={chat.messages.length > 0}
+                    attachments={chat.pendingAttachments}
+                    onAttachmentsChange={chat.setPendingAttachments}
                     onChange={chat.setChatInput}
                     onModeChange={chat.setChatMode}
-                    onSubmitMessage={(content) => void chat.submitMessage(content)}
+                    onSubmitMessage={(content, attachments) => void chat.submitMessage(content, attachments)}
                     onStop={() => void chat.stopAssistantRun()}
                     onSelectProvider={(id) => void handleSelectProvider(id)}
                   />

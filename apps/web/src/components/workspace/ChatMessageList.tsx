@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { Bot, Brain, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2, XCircle } from "lucide-react";
+import type { ChatAttachment, ChatEvent, ChatMessage } from "@codesymphony/shared-types";
+import { Bot, Brain, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2, Paperclip, XCircle } from "lucide-react";
 import type { SubagentStep } from "../../pages/workspace/types";
 import { EXPLORE_BASH_COMMAND_PATTERN } from "../../pages/workspace/constants";
 import ReactMarkdown from "react-markdown";
@@ -954,43 +954,253 @@ const AssistantContent = memo(function AssistantContent({
   return <MarkdownBody content={content} testId="assistant-render-markdown" />;
 });
 
-const UserMessageContent = memo(function UserMessageContent({ content }: { content: string }) {
-  const segments = parseUserMentions(content);
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
-  if (segments.length === 1 && segments[0].kind === "text") {
-    return <p className="whitespace-pre-wrap break-words leading-relaxed">{content}</p>;
-  }
+const AttachmentBlock = memo(function AttachmentBlock({ attachment }: { attachment: ChatAttachment }) {
+  const [expanded, setExpanded] = useState(false);
+  const isImage = attachment.mimeType.startsWith("image/");
+  const hasContent = attachment.content.length > 0;
 
   return (
-    <p className="whitespace-pre-wrap break-words leading-relaxed">
-      {segments.map((seg, i) => {
-        if (seg.kind === "text") {
-          return <span key={i}>{seg.value}</span>;
-        }
-
-        return (
-          <span
-            key={i}
-            title={seg.path}
-            className={cn(
-              "inline-flex items-center gap-1 rounded-md border px-1.5 py-0 text-xs align-baseline",
-              seg.isDirectory
-                ? "border-amber-500/30 bg-amber-500/15 text-amber-400"
-                : "border-blue-500/30 bg-blue-500/15 text-blue-400",
-            )}
-          >
-            {seg.isDirectory ? (
-              <Folder className="h-3 w-3 shrink-0 inline-block" />
-            ) : (
-              <FileText className="h-3 w-3 shrink-0 inline-block" />
-            )}
-            <span className="max-w-[140px] truncate">{seg.name}</span>
-          </span>
-        );
-      })}
-    </p>
+    <div className="overflow-hidden rounded-lg border border-border/30 bg-secondary/20">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-secondary/40"
+      >
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+        )}
+        {isImage ? (
+          <Paperclip className="h-3 w-3 shrink-0 text-purple-400" />
+        ) : (
+          <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+        )}
+        <span className="truncate font-medium">{attachment.filename}</span>
+        <span className="shrink-0 rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {formatFileSize(attachment.sizeBytes)}
+        </span>
+      </button>
+      {expanded && (
+        <div className="border-t border-border/30 px-3 py-2">
+          {isImage ? (
+            <p className="text-xs italic text-muted-foreground">
+              Image file{attachment.storagePath ? ` saved at ${attachment.storagePath}` : ""}
+            </p>
+          ) : hasContent ? (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+              {attachment.content.length > 500 ? `${attachment.content.slice(0, 500)}…` : attachment.content}
+            </pre>
+          ) : (
+            <p className="text-xs italic text-muted-foreground">No content preview available</p>
+          )}
+        </div>
+      )}
+    </div>
   );
 });
+
+const InlineAttachmentChip = memo(function InlineAttachmentChip({ attachment }: { attachment: ChatAttachment }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <span className="inline-flex flex-col align-baseline mx-0.5">
+      <button
+        type="button"
+        onClick={() => setExpanded(!expanded)}
+        className="inline-flex items-center gap-1 rounded-md border border-purple-500/30 bg-purple-500/15 px-1.5 py-0 text-xs text-purple-400 cursor-pointer select-none hover:bg-purple-500/25"
+        title={`${attachment.filename} (${formatFileSize(attachment.sizeBytes)})`}
+      >
+        <Paperclip className="h-3 w-3 shrink-0 inline-block" />
+        <span className="max-w-[140px] truncate">{attachment.filename}</span>
+        {expanded ? (
+          <ChevronDown className="h-2.5 w-2.5 shrink-0" />
+        ) : (
+          <ChevronRight className="h-2.5 w-2.5 shrink-0" />
+        )}
+      </button>
+      {expanded && (
+        <span className="mt-1 block rounded-lg border border-border/30 bg-secondary/20 px-3 py-2">
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+            {attachment.content.length > 500 ? `${attachment.content.slice(0, 500)}…` : attachment.content}
+          </pre>
+        </span>
+      )}
+    </span>
+  );
+});
+
+const ATTACHMENT_MARKER_RE = /\{\{attachment:([^}]+)\}\}/g;
+
+const UserMessageContent = memo(function UserMessageContent({ content, attachments }: { content: string; attachments?: ChatAttachment[] }) {
+  const attachmentMap = useMemo(() => {
+    const map = new Map<string, ChatAttachment>();
+    if (attachments) {
+      for (const att of attachments) map.set(att.id, att);
+    }
+    return map;
+  }, [attachments]);
+
+  // Check if content has inline attachment markers
+  const hasInlineMarkers = ATTACHMENT_MARKER_RE.test(content);
+  // Reset lastIndex after test
+  ATTACHMENT_MARKER_RE.lastIndex = 0;
+
+  // Collect IDs of attachments referenced inline so we can show the rest as blocks
+  const inlineAttachmentIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!hasInlineMarkers) return ids;
+    let match;
+    while ((match = ATTACHMENT_MARKER_RE.exec(content)) !== null) {
+      ids.add(match[1]);
+    }
+    ATTACHMENT_MARKER_RE.lastIndex = 0;
+    return ids;
+  }, [content, hasInlineMarkers]);
+
+  // Attachments not placed inline via markers
+  const remainingAttachments = useMemo(
+    () => (attachments ?? []).filter((att) => !inlineAttachmentIds.has(att.id)),
+    [attachments, inlineAttachmentIds],
+  );
+
+  // clipboard_text attachments always render as inline chips (even if not marker-positioned)
+  const clipboardTextAttachments = useMemo(
+    () => remainingAttachments.filter((att) => att.source === "clipboard_text"),
+    [remainingAttachments],
+  );
+
+  // Everything else (file_picker, drag_drop, clipboard_image) renders as collapsible blocks
+  const blockAttachments = useMemo(
+    () => remainingAttachments.filter((att) => att.source !== "clipboard_text"),
+    [remainingAttachments],
+  );
+
+  // Strip {{attachment:...}} markers from display text (for cases where marker IDs don't match)
+  const displayContent = useMemo(
+    () => content.replace(ATTACHMENT_MARKER_RE, "").replace(/  +/g, " ").trim(),
+    [content],
+  );
+
+  // Split content into text segments and inline attachment markers
+  const renderContent = () => {
+    if (!hasInlineMarkers) {
+      // No inline markers — render with mention parsing only
+      const segments = parseUserMentions(displayContent);
+      if (segments.length === 1 && segments[0].kind === "text") {
+        return (
+          <p className="whitespace-pre-wrap break-words leading-relaxed">
+            {displayContent}
+            {clipboardTextAttachments.map((att) => (
+              <InlineAttachmentChip key={att.id} attachment={att} />
+            ))}
+          </p>
+        );
+      }
+      return (
+        <p className="whitespace-pre-wrap break-words leading-relaxed">
+          {segments.map((seg, i) => renderMentionSegment(seg, i))}
+          {clipboardTextAttachments.map((att) => (
+            <InlineAttachmentChip key={att.id} attachment={att} />
+          ))}
+        </p>
+      );
+    }
+
+    // Split on attachment markers, interleave text + chips
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+    let partKey = 0;
+
+    while ((match = ATTACHMENT_MARKER_RE.exec(content)) !== null) {
+      // Text before the marker
+      const textBefore = content.slice(lastIndex, match.index);
+      if (textBefore) {
+        const segments = parseUserMentions(textBefore);
+        for (const seg of segments) {
+          parts.push(renderMentionSegment(seg, partKey++));
+        }
+      }
+
+      // Inline attachment chip
+      const attId = match[1];
+      const att = attachmentMap.get(attId);
+      if (att) {
+        parts.push(
+          <InlineAttachmentChip key={`att-${partKey++}`} attachment={att} />,
+        );
+      }
+
+      lastIndex = match.index + match[0].length;
+    }
+    ATTACHMENT_MARKER_RE.lastIndex = 0;
+
+    // Remaining text after last marker
+    const remaining = content.slice(lastIndex);
+    if (remaining) {
+      const segments = parseUserMentions(remaining);
+      for (const seg of segments) {
+        parts.push(renderMentionSegment(seg, partKey++));
+      }
+    }
+
+    // Append any clipboard_text attachments not matched by markers
+    for (const att of clipboardTextAttachments) {
+      parts.push(
+        <InlineAttachmentChip key={`att-${partKey++}`} attachment={att} />,
+      );
+    }
+
+    return <p className="whitespace-pre-wrap break-words leading-relaxed">{parts}</p>;
+  };
+
+  const textContent = renderContent();
+
+  if (blockAttachments.length === 0) return textContent;
+
+  return (
+    <div className="space-y-2">
+      {textContent}
+      <div className="space-y-1.5">
+        {blockAttachments.map((att) => (
+          <AttachmentBlock key={att.id} attachment={att} />
+        ))}
+      </div>
+    </div>
+  );
+});
+
+function renderMentionSegment(seg: ReturnType<typeof parseUserMentions>[number], key: number) {
+  if (seg.kind === "text") {
+    return <span key={key}>{seg.value}</span>;
+  }
+  return (
+    <span
+      key={key}
+      title={seg.path}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0 text-xs align-baseline",
+        seg.isDirectory
+          ? "border-amber-500/30 bg-amber-500/15 text-amber-400"
+          : "border-blue-500/30 bg-blue-500/15 text-blue-400",
+      )}
+    >
+      {seg.isDirectory ? (
+        <Folder className="h-3 w-3 shrink-0 inline-block" />
+      ) : (
+        <FileText className="h-3 w-3 shrink-0 inline-block" />
+      )}
+      <span className="max-w-[140px] truncate">{seg.name}</span>
+    </span>
+  );
+}
 
 function downloadTextFile(fileName: string, content: string) {
   const blob = new Blob([content], { type: "text/markdown" });
@@ -1858,7 +2068,7 @@ const TimelineItem = memo(function TimelineItem({
             )}
           </div>
         ) : (
-          <UserMessageContent content={message.content} />
+          <UserMessageContent content={message.content} attachments={message.attachments} />
         )}
       </div>
     </article>

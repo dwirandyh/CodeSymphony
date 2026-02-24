@@ -67,8 +67,36 @@ export const ChatMessageSchema = z.object({
   seq: z.number().int().nonnegative(),
   role: ChatRoleSchema,
   content: z.string(),
+  attachments: z.array(z.lazy(() => ChatAttachmentSchema)).optional().default([]),
   createdAt: z.string().datetime(),
 });
+
+// ── Attachment Types ──
+
+export const AttachmentSourceSchema = z.enum(["file_picker", "drag_drop", "clipboard_text", "clipboard_image"]);
+export type AttachmentSource = z.infer<typeof AttachmentSourceSchema>;
+
+export const ChatAttachmentSchema = z.object({
+  id: z.string(),
+  messageId: z.string(),
+  filename: z.string(),
+  mimeType: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  content: z.string(),
+  storagePath: z.string().nullable(),
+  source: AttachmentSourceSchema,
+  createdAt: z.string().datetime(),
+});
+export type ChatAttachment = z.infer<typeof ChatAttachmentSchema>;
+
+export const AttachmentInputSchema = z.object({
+  id: z.string().trim().min(1).optional(),
+  filename: z.string().trim().min(1),
+  mimeType: z.string().trim().min(1),
+  content: z.string(),
+  source: AttachmentSourceSchema,
+});
+export type AttachmentInput = z.infer<typeof AttachmentInputSchema>;
 
 export const ChatEventSchema = z.object({
   id: z.string(),
@@ -97,9 +125,13 @@ export const ChatModeSchema = z.enum(["default", "plan"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
 
 export const SendChatMessageInputSchema = z.object({
-  content: z.string().trim().min(1),
+  content: z.string().trim(),
   mode: ChatModeSchema.optional().default("default"),
-});
+  attachments: z.array(AttachmentInputSchema).max(20).optional().default([]),
+}).refine(
+  (data) => data.content.length > 0 || data.attachments.length > 0,
+  { message: "Message must have content or attachments" },
+);
 
 export const PermissionDecisionSchema = z.enum(["allow", "allow_always", "deny"]);
 export type PermissionDecision = z.infer<typeof PermissionDecisionSchema>;

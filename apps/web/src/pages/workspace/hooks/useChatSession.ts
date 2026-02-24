@@ -1,6 +1,8 @@
 import { startTransition, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ChatEvent, ChatMessage, ChatMode, ChatThread } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatMode, ChatThread, AttachmentInput } from "@codesymphony/shared-types";
+import type { PendingAttachment } from "../../../lib/attachments";
+import { isImageMimeType } from "../../../lib/attachments";
 import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { logService } from "../../../lib/logService";
@@ -50,6 +52,7 @@ function applyMessageMutations(
           seq: current.length + toCreate.length,
           role: "assistant" as const,
           content: "",
+          attachments: [],
           createdAt: new Date().toISOString(),
         });
       }
@@ -62,6 +65,7 @@ function applyMessageMutations(
           seq: current.length + toCreate.length,
           role: mut.role,
           content: mut.delta,
+          attachments: [],
           createdAt: new Date().toISOString(),
         });
       } else if (mut.role !== "user") {
@@ -108,6 +112,7 @@ export function useChatSession(
 
   const [chatInput, setChatInput] = useState("");
   const [chatMode, setChatMode] = useState<ChatMode>("default");
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
 
   const [sendingMessage, setSendingMessage] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
@@ -752,7 +757,7 @@ export function useChatSession(
       startWaitingAssistant(created.id);
       setSendingMessage(true);
       try {
-        await api.sendMessage(created.id, { content, mode: chatMode });
+        await api.sendMessage(created.id, { content, mode: chatMode, attachments: [] });
         setChatInput("");
       } catch (e) {
         setWaitingAssistant(null);
@@ -811,17 +816,26 @@ export function useChatSession(
 
   // ── Chat actions ──
 
-  async function submitMessage(content?: string) {
+  async function submitMessage(content?: string, messageAttachments?: PendingAttachment[]) {
     const messageContent = content ?? chatInput;
-    if (!selectedThreadId || !messageContent.trim()) return;
+    const attachmentsToSend: AttachmentInput[] = (messageAttachments ?? pendingAttachments).map((att) => ({
+      id: att.id,
+      filename: att.filename,
+      mimeType: att.mimeType,
+      content: att.content,
+      source: att.source,
+    }));
+
+    if (!selectedThreadId || (!messageContent.trim() && attachmentsToSend.length === 0)) return;
 
     startWaitingAssistant(selectedThreadId);
     setSendingMessage(true);
     onError(null);
 
     try {
-      await api.sendMessage(selectedThreadId, { content: messageContent, mode: chatMode });
+      await api.sendMessage(selectedThreadId, { content: messageContent, mode: chatMode, attachments: attachmentsToSend });
       setChatInput("");
+      setPendingAttachments([]);
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.messages(selectedThreadId) });
     } catch (e) {
       setWaitingAssistant(null);
@@ -900,6 +914,8 @@ export function useChatSession(
     setChatInput,
     chatMode,
     setChatMode,
+    pendingAttachments,
+    setPendingAttachments,
 
     sendingMessage,
     waitingAssistant,
