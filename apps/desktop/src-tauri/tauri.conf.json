@@ -14,15 +14,18 @@
       {
         "title": "CodeSymphony",
         "width": 1280,
-        "height": 820
+        "height": 820,
+        "visible": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:4321 ws://127.0.0.1:4321; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "externalBin": ["binaries/node"],
+    "resources": ["runtime-bundle/**/*"]
   }
 }

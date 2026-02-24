@@ -26,13 +26,9 @@ import type {
   UpdateRepositoryScriptsInput,
   Worktree,
 } from "@codesymphony/shared-types";
+import { resolveRuntimeApiBase } from "./runtimeUrl";
 
-const DEFAULT_RUNTIME_URL =
-  typeof window === "undefined"
-    ? "http://127.0.0.1:4321/api"
-    : `${window.location.protocol}//${window.location.hostname}:4321/api`;
-
-const API_BASE = import.meta.env.VITE_RUNTIME_URL ?? DEFAULT_RUNTIME_URL;
+const API_BASE = resolveRuntimeApiBase();
 
 export class TeardownFailedError extends Error {
   public readonly output: string;

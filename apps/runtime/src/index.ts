@@ -119,20 +119,30 @@ function createApp() {
   return app;
 }
 
-const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
-const port = Number(process.env.RUNTIME_PORT ?? "4321");
+async function main() {
+  // Run Prisma migrations in production before starting the server
+  if (process.env.NODE_ENV === "production") {
+    const { runPrismaMigrations } = await import("./migrate");
+    runPrismaMigrations();
+  }
 
-const app = createApp();
+  const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
+  const port = Number(process.env.RUNTIME_PORT ?? "4321");
 
-app
-  .listen({ host, port })
-  .then(() => {
-    app.log.info(`Runtime listening on http://${host}:${port}`);
-    void app.chatService.recoverStuckThreads().then((count) => {
-      if (count > 0) app.logService.log("info", "runtime", `Recovered ${count} stuck thread(s)`);
+  const app = createApp();
+
+  app
+    .listen({ host, port })
+    .then(() => {
+      app.log.info(`Runtime listening on http://${host}:${port}`);
+      void app.chatService.recoverStuckThreads().then((count) => {
+        if (count > 0) app.logService.log("info", "runtime", `Recovered ${count} stuck thread(s)`);
+      });
+    })
+    .catch((error) => {
+      app.log.error(error);
+      process.exit(1);
     });
-  })
-  .catch((error) => {
-    app.log.error(error);
-    process.exit(1);
-  });
+}
+
+main();
