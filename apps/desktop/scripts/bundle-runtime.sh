@@ -82,7 +82,8 @@ copy_dependency() {
 
 echo "=== Fixing node-pty permissions ==="
 # node-pty v1.x uses prebuilds/<platform>/spawn-helper
-find "${BUNDLE_DIR}/node_modules/node-pty" -name "spawn-helper" -exec chmod +x {} \; -exec echo "✓ Fixed permissions: {}" \;
+# Search the entire bundle to catch all copies (.pnpm, hoisted, scoped)
+find "${BUNDLE_DIR}/node_modules" -name "spawn-helper" -exec chmod +x {} \; -exec echo "✓ Fixed permissions: {}" \;
 
 echo "=== Runtime bundle ready at ${BUNDLE_DIR} ==="
 du -sh "${BUNDLE_DIR}"

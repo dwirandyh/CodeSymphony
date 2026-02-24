@@ -1,7 +1,30 @@
 import * as pty from "node-pty";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
+
+/**
+ * Ensure node-pty's spawn-helper binary has executable permissions.
+ * Tauri's resource copying can strip the +x bit, causing posix_spawnp to fail.
+ */
+function fixSpawnHelperPermissions(): void {
+    try {
+        const require = createRequire(import.meta.url);
+        const nodePtyRoot = dirname(require.resolve("node-pty/package.json"));
+        const platform = process.platform === "darwin" ? "darwin" : process.platform;
+        const arch = process.arch;
+        const spawnHelper = join(nodePtyRoot, "prebuilds", `${platform}-${arch}`, "spawn-helper");
+        if (existsSync(spawnHelper)) {
+            chmodSync(spawnHelper, 0o755);
+        }
+    } catch {
+        // Best-effort; if we can't fix it, pty.spawn will throw with a clear error
+    }
+}
+
+fixSpawnHelperPermissions();
 
 export interface TerminalSession {
     id: string;
