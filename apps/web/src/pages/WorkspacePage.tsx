@@ -210,7 +210,6 @@ export function WorkspacePage() {
 
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [activeBottomTab, setActiveBottomTab] = useState("terminal");
-  const [activeOutputSection, setActiveOutputSection] = useState<"runner" | "logs">("logs");
   const [runScriptActive, setRunScriptActive] = useState(false);
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
 
@@ -264,7 +263,6 @@ export function WorkspacePage() {
     });
     setActiveBottomTab("output");
     if (event.type === "setup" || event.type === "teardown") {
-      setActiveOutputSection("logs");
     }
   }, []);
 
@@ -427,7 +425,6 @@ export function WorkspacePage() {
   const handleRerunSetup = useCallback(() => {
     if (!repos.selectedWorktreeId) return;
     setActiveBottomTab("output");
-    setActiveOutputSection("logs");
     void repos.rerunSetup(repos.selectedWorktreeId);
   }, [repos.rerunSetup, repos.selectedWorktreeId]);
 
@@ -438,7 +435,6 @@ export function WorkspacePage() {
 
   useEffect(() => {
     setRunScriptActive(false);
-    setActiveOutputSection("logs");
   }, [repos.selectedWorktreeId]);
 
   const handleRunScript = useCallback(async () => {
@@ -456,7 +452,6 @@ export function WorkspacePage() {
 
     try {
       setActiveBottomTab("output");
-      setActiveOutputSection("runner");
       await api.runTerminalCommand({
         sessionId,
         command,
@@ -473,7 +468,6 @@ export function WorkspacePage() {
     if (!sessionId) return;
     try {
       setActiveBottomTab("output");
-      setActiveOutputSection("runner");
       await api.interruptTerminalSession(sessionId);
       setRunScriptActive(false);
     } catch (e) {
@@ -679,8 +673,6 @@ export function WorkspacePage() {
             scriptOutputs={scriptOutputs}
             activeTab={activeBottomTab}
             onTabChange={setActiveBottomTab}
-            outputSection={activeOutputSection}
-            onOutputSectionChange={setActiveOutputSection}
             onRerunSetup={handleRerunSetup}
           />
         </main>
