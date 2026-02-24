@@ -329,8 +329,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const worktree = await app.worktreeService.getById(params.id);
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
-    const status = await getGitStatus(worktree.path);
-    return { data: status };
+    try {
+      const status = await getGitStatus(worktree.path);
+      return { data: status };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to get git status";
+      return reply.code(500).send({ error: message });
+    }
   });
 
   const diffQuery = z.object({ filePath: z.string().optional() });
@@ -341,10 +346,15 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const worktree = await app.worktreeService.getById(params.id);
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
-    const diff = await getGitDiff(worktree.path, query.filePath);
-    const status = await getGitStatus(worktree.path);
-    const summary = status.entries.map((e) => `${e.status}: ${e.path}`).join("\n");
-    return { data: { diff, summary } };
+    try {
+      const diff = await getGitDiff(worktree.path, query.filePath);
+      const status = await getGitStatus(worktree.path);
+      const summary = status.entries.map((e) => `${e.status}: ${e.path}`).join("\n");
+      return { data: { diff, summary } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to get git diff";
+      return reply.code(500).send({ error: message });
+    }
   });
 
   const fileContentsQuery = z.object({ path: z.string().min(1) });

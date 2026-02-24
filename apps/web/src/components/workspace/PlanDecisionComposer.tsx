@@ -7,11 +7,12 @@ type PlanDecisionComposerProps = {
   busy: boolean;
   onApprove: () => void;
   onRevise: (feedback: string) => void;
+  onDismiss: () => void;
 };
 
 type DecisionMode = "accept" | "revise";
 
-export function PlanDecisionComposer({ busy, onApprove, onRevise }: PlanDecisionComposerProps) {
+export function PlanDecisionComposer({ busy, onApprove, onRevise, onDismiss }: PlanDecisionComposerProps) {
   const [mode, setMode] = useState<DecisionMode>("accept");
   const [feedback, setFeedback] = useState("");
 
@@ -26,11 +27,6 @@ export function PlanDecisionComposer({ busy, onApprove, onRevise }: PlanDecision
 
     return feedback.trim().length > 0;
   }, [busy, feedback, mode]);
-
-  function resetRevision() {
-    setMode("accept");
-    setFeedback("");
-  }
 
   function handleSubmit() {
     if (!canSubmit) {
@@ -160,7 +156,7 @@ export function PlanDecisionComposer({ busy, onApprove, onRevise }: PlanDecision
               variant="ghost"
               disabled={busy}
               aria-label="Dismiss plan decision"
-              onClick={resetRevision}
+              onClick={onDismiss}
             >
               Dismiss
             </Button>
