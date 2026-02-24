@@ -241,8 +241,38 @@ export function Composer({
   // Stores the last stable editor innerHTML (after chip insertions and normal edits).
   // Used by handleInput CASE 2 to preserve existing chips when rebuilding the editor.
   const lastStableHTMLRef = useRef<string>("");
+  const attachmentsRef = useRef<PendingAttachment[]>(attachments);
+  const [pendingAttachmentReads, setPendingAttachmentReads] = useState(0);
+  const pendingAttachmentReadsRef = useRef(0);
 
-  const cannotSend = disabled || (value.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
+  const startAttachmentRead = useCallback(() => {
+    pendingAttachmentReadsRef.current += 1;
+    setPendingAttachmentReads((current) => current + 1);
+  }, []);
+
+  const finishAttachmentRead = useCallback(() => {
+    pendingAttachmentReadsRef.current = Math.max(0, pendingAttachmentReadsRef.current - 1);
+    setPendingAttachmentReads((current) => Math.max(0, current - 1));
+  }, []);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  const applyAttachmentsChange = useCallback(
+    (next: PendingAttachment[] | ((prev: PendingAttachment[]) => PendingAttachment[])) => {
+      const resolved = typeof next === "function"
+        ? next(attachmentsRef.current)
+        : next;
+      attachmentsRef.current = resolved;
+      onAttachmentsChange(resolved);
+    },
+    [onAttachmentsChange],
+  );
+
+  const cannotSend = disabled
+    || pendingAttachmentReads > 0
+    || (value.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
 
   type SuggestionEntry = FileEntry & { highlighted?: string };
 
@@ -398,7 +428,7 @@ export function Composer({
           sel.addRange(range);
         }
 
-        onAttachmentsChange(prev => [...prev, att]);
+        applyAttachmentsChange((prev) => [...prev, att]);
         syncValueFromEditor();
         prevContentLenRef.current = (editor.textContent ?? "").length;
         lastStableHTMLRef.current = editor.innerHTML;
@@ -445,8 +475,10 @@ export function Composer({
 
   const handleSubmit = useCallback(() => {
     if (cannotSend) return;
+    if (pendingAttachmentReadsRef.current > 0) return;
     const content = buildFinalContent();
-    if (!content.trim() && attachments.length === 0) return;
+    const currentAttachments = attachmentsRef.current;
+    if (!content.trim() && currentAttachments.length === 0) return;
 
     // Collect inline attachments from the editor
     const editor = editorRef.current;
@@ -460,9 +492,9 @@ export function Composer({
 
     // Combine all attachments (bar attachments + inline)
     const allAttachments = [
-      ...attachments,
+      ...currentAttachments,
       ...inlineAttachmentIds.size > 0
-        ? attachments.filter((a) => inlineAttachmentIds.has(a.id))
+        ? currentAttachments.filter((a) => inlineAttachmentIds.has(a.id))
         : [],
     ];
 
@@ -479,9 +511,9 @@ export function Composer({
     }
     mentionedFilesRef.current = [];
     onSubmitMessage(content, dedupedAttachments);
-    onAttachmentsChange([]);
+    applyAttachmentsChange([]);
     onChange("");
-  }, [cannotSend, buildFinalContent, attachments, onSubmitMessage, onAttachmentsChange, onChange]);
+  }, [cannotSend, buildFinalContent, onSubmitMessage, applyAttachmentsChange, onChange]);
 
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLDivElement>) => {
@@ -493,16 +525,21 @@ export function Composer({
       );
       if (imageFiles.length > 0) {
         event.preventDefault();
+        startAttachmentRead();
         void (async () => {
-          const newAttachments: PendingAttachment[] = [];
-          for (const file of imageFiles) {
-            const sizeError = validateAttachmentSize(file);
-            if (sizeError) continue;
-            const att = await fileToAttachment(file, "clipboard_image");
-            newAttachments.push(att);
-          }
-          if (newAttachments.length > 0) {
-            onAttachmentsChange(prev => [...prev, ...newAttachments]);
+          try {
+            const newAttachments: PendingAttachment[] = [];
+            for (const file of imageFiles) {
+              const sizeError = validateAttachmentSize(file);
+              if (sizeError) continue;
+              const att = await fileToAttachment(file, "clipboard_image");
+              newAttachments.push(att);
+            }
+            if (newAttachments.length > 0) {
+              applyAttachmentsChange((prev) => [...prev, ...newAttachments]);
+            }
+          } finally {
+            finishAttachmentRead();
           }
         })();
         return;
@@ -535,7 +572,7 @@ export function Composer({
           isInline: true,
         };
 
-        onAttachmentsChange(prev => [...prev, att]);
+        applyAttachmentsChange((prev) => [...prev, att]);
 
         // Insert chip synchronously. Disable contentEditable during DOM manipulation
         // to prevent the browser from firing input events that cause infinite loops on mobile.
@@ -603,7 +640,7 @@ export function Composer({
       prevContentLenRef.current = (editorRef.current?.textContent ?? "").length;
       lastStableHTMLRef.current = editorRef.current?.innerHTML ?? "";
     },
-    [syncValueFromEditor, onAttachmentsChange],
+    [syncValueFromEditor, applyAttachmentsChange, startAttachmentRead, finishAttachmentRead],
   );
 
   const handleKeyDown = useCallback(
@@ -652,7 +689,7 @@ export function Composer({
             const attachmentId = chip.dataset.attachmentId;
             chip.remove();
             if (attachmentId) {
-              onAttachmentsChange(attachments.filter((a) => a.id !== attachmentId));
+              applyAttachmentsChange((prev) => prev.filter((a) => a.id !== attachmentId));
             }
             syncValueFromEditor();
             return;
@@ -671,7 +708,7 @@ export function Composer({
             const attachmentId = chip.dataset.attachmentId;
             chip.remove();
             if (attachmentId) {
-              onAttachmentsChange(attachments.filter((a) => a.id !== attachmentId));
+              applyAttachmentsChange((prev) => prev.filter((a) => a.id !== attachmentId));
             }
             syncValueFromEditor();
             return;
@@ -692,7 +729,7 @@ export function Composer({
             anchorNode.textContent = "";
             chip.remove();
             if (attachmentId) {
-              onAttachmentsChange(attachments.filter((a) => a.id !== attachmentId));
+              applyAttachmentsChange((prev) => prev.filter((a) => a.id !== attachmentId));
             }
             syncValueFromEditor();
             return;
@@ -717,7 +754,7 @@ export function Composer({
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit, syncValueFromEditor, attachments, onAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
@@ -750,23 +787,28 @@ export function Composer({
       const files = event.target.files;
       if (!files || files.length === 0) return;
 
+      startAttachmentRead();
       void (async () => {
-        const newAttachments: PendingAttachment[] = [];
-        for (const file of Array.from(files)) {
-          const sizeError = validateAttachmentSize(file);
-          if (sizeError) continue;
-          const att = await fileToAttachment(file, "file_picker");
-          newAttachments.push(att);
-        }
-        if (newAttachments.length > 0) {
-          onAttachmentsChange(prev => [...prev, ...newAttachments]);
+        try {
+          const newAttachments: PendingAttachment[] = [];
+          for (const file of Array.from(files)) {
+            const sizeError = validateAttachmentSize(file);
+            if (sizeError) continue;
+            const att = await fileToAttachment(file, "file_picker");
+            newAttachments.push(att);
+          }
+          if (newAttachments.length > 0) {
+            applyAttachmentsChange((prev) => [...prev, ...newAttachments]);
+          }
+        } finally {
+          finishAttachmentRead();
         }
       })();
 
       // Reset file input so the same file can be re-selected
       event.target.value = "";
     },
-    [onAttachmentsChange],
+    [applyAttachmentsChange, startAttachmentRead, finishAttachmentRead],
   );
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
@@ -790,20 +832,25 @@ export function Composer({
       const files = event.dataTransfer.files;
       if (!files || files.length === 0) return;
 
+      startAttachmentRead();
       void (async () => {
-        const newAttachments: PendingAttachment[] = [];
-        for (const file of Array.from(files)) {
-          const sizeError = validateAttachmentSize(file);
-          if (sizeError) continue;
-          const att = await fileToAttachment(file, "drag_drop");
-          newAttachments.push(att);
-        }
-        if (newAttachments.length > 0) {
-          onAttachmentsChange(prev => [...prev, ...newAttachments]);
+        try {
+          const newAttachments: PendingAttachment[] = [];
+          for (const file of Array.from(files)) {
+            const sizeError = validateAttachmentSize(file);
+            if (sizeError) continue;
+            const att = await fileToAttachment(file, "drag_drop");
+            newAttachments.push(att);
+          }
+          if (newAttachments.length > 0) {
+            applyAttachmentsChange((prev) => [...prev, ...newAttachments]);
+          }
+        } finally {
+          finishAttachmentRead();
         }
       })();
     },
-    [onAttachmentsChange],
+    [applyAttachmentsChange, startAttachmentRead, finishAttachmentRead],
   );
 
   const removeAttachment = useCallback(
@@ -814,9 +861,9 @@ export function Composer({
         const chip = editor.querySelector(`[data-attachment-id="${id}"]`);
         if (chip) chip.remove();
       }
-      onAttachmentsChange(attachments.filter((a) => a.id !== id));
+      applyAttachmentsChange((prev) => prev.filter((a) => a.id !== id));
     },
-    [attachments, onAttachmentsChange],
+    [applyAttachmentsChange],
   );
 
   // Non-inline attachments shown as chips above the editor

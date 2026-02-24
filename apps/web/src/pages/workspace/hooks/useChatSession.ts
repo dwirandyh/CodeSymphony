@@ -14,6 +14,7 @@ import { useThreadEvents } from "../../../hooks/queries/useThreadEvents";
 import { EVENT_TYPES } from "../constants";
 import { payloadStringOrNull, shouldClearWaitingAssistantOnEvent } from "../eventUtils";
 import { useWorkspaceTimeline, type TimelineRefs } from "./useWorkspaceTimeline";
+import { areMessageArraysEqual, mergeThreadMessages } from "./messageMerge";
 
 type PendingMessageMutation =
   | { kind: "ensure-placeholder"; id: string; threadId: string }
@@ -297,18 +298,8 @@ export function useChatSession(
     // Same thread → merge with SSE-delivered data
     if (!queriedMessages) return;
     setMessages((current) => {
-      const merged = new Map<string, ChatMessage>();
-      for (const m of queriedMessages) merged.set(m.id, m);
-      for (const m of current) {
-        const existing = merged.get(m.id);
-        if (existing && m.content.length > existing.content.length) {
-          merged.set(m.id, m);
-        } else if (!existing) {
-          merged.set(m.id, m);
-        }
-      }
-      const sorted = [...merged.values()].sort((a, b) => a.seq - b.seq);
-      if (sorted.length === current.length && sorted.every((m, i) => m.id === current[i].id && m.content.length === current[i].content.length)) {
+      const sorted = mergeThreadMessages(queriedMessages, current);
+      if (areMessageArraysEqual(sorted, current)) {
         return current;
       }
       return sorted;

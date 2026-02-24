@@ -1,7 +1,8 @@
-import { act } from "react";
+import { act, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry } from "@codesymphony/shared-types";
+import type { PendingAttachment } from "../../lib/attachments";
 import { Composer } from "./Composer";
 
 function noop() {}
@@ -84,6 +85,18 @@ describe("Composer", () => {
   /** Flush queueMicrotask callbacks and pending React state updates. */
   async function flushMicrotasks() {
     await act(async () => {});
+  }
+
+  function dispatchPasteWithText(editor: HTMLDivElement, text: string) {
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: {
+        files: [],
+        getData: (type: string) => (type === "text/plain" ? text : ""),
+      },
+      configurable: true,
+    });
+    editor.dispatchEvent(pasteEvent);
   }
 
   it("renders the editor", () => {
@@ -298,5 +311,52 @@ describe("Composer", () => {
     // Mention popover should appear even during composition
     const buttons = container.querySelectorAll("button[data-index]");
     expect(buttons.length).toBeGreaterThan(0);
+  });
+
+  it("submits pasted attachment even when parent attachment prop is delayed", async () => {
+    const onSubmitMessage = vi.fn();
+
+    function DelayedAttachmentHarness() {
+      const [value, setValue] = useState("");
+      const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+      const attachmentRef = useRef<PendingAttachment[]>([]);
+
+      return (
+        <Composer
+          {...defaultProps}
+          value={value}
+          attachments={attachments}
+          onChange={setValue}
+          onSubmitMessage={onSubmitMessage}
+          onAttachmentsChange={(next) => {
+            const resolved = typeof next === "function" ? next(attachmentRef.current) : next;
+            attachmentRef.current = resolved;
+            setTimeout(() => setAttachments(resolved), 20);
+          }}
+        />
+      );
+    }
+
+    act(() => {
+      root.render(<DelayedAttachmentHarness />);
+    });
+
+    const editor = getEditor();
+    const longText = "x".repeat(400);
+
+    act(() => {
+      dispatchPasteWithText(editor, longText);
+    });
+    await flushMicrotasks();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    const [, sentAttachments] = onSubmitMessage.mock.calls[0] as [string, PendingAttachment[]];
+    expect(sentAttachments).toHaveLength(1);
+    expect(sentAttachments[0].source).toBe("clipboard_text");
+    expect(sentAttachments[0].content).toBe(longText);
   });
 });
