@@ -10,9 +10,12 @@ function isDesktopRuntimeWindow(windowRef: Window): boolean {
   return windowRef.location.protocol !== "http:" && windowRef.location.protocol !== "https:";
 }
 
+const WEB_RUNTIME_PORT = 4321;
+const DESKTOP_RUNTIME_PORT = 4322;
+
 export function resolveRuntimeApiBase(): string {
   if (import.meta.env.VITE_RUNTIME_URL) return import.meta.env.VITE_RUNTIME_URL;
-  if (typeof window === "undefined") return "http://127.0.0.1:4321/api";
-  if (isDesktopRuntimeWindow(window)) return "http://127.0.0.1:4321/api";
-  return `${window.location.protocol}//${window.location.hostname}:4321/api`;
+  if (typeof window === "undefined") return `http://127.0.0.1:${WEB_RUNTIME_PORT}/api`;
+  if (isDesktopRuntimeWindow(window)) return `http://127.0.0.1:${DESKTOP_RUNTIME_PORT}/api`;
+  return `${window.location.protocol}//${window.location.hostname}:${WEB_RUNTIME_PORT}/api`;
 }

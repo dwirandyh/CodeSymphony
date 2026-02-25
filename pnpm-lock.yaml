@@ -51,6 +51,9 @@ importers:
       node-pty:
         specifier: ^1.1.0
         version: 1.1.0
+      prisma:
+        specifier: ^6.4.1
+        version: 6.19.2(typescript@5.9.3)
       zod:
         specifier: ^4.0.0
         version: 4.3.6
@@ -58,9 +61,6 @@ importers:
       '@types/node':
         specifier: ^22.13.10
         version: 22.19.11
-      prisma:
-        specifier: ^6.4.1
-        version: 6.19.2(typescript@5.9.3)
       tsx:
         specifier: ^4.19.3
         version: 4.21.0
