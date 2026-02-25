@@ -210,6 +210,28 @@ export function Composer({
   const isPlan = mode === "plan";
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia("(max-width: 767px)").matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    setIsMobile(mediaQuery.matches);
+
+    const handleChange = (event: MediaQueryListEvent) => {
+      setIsMobile(event.matches);
+    };
+
+    mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
 
   // Close model popover on outside click
   useEffect(() => {
@@ -751,10 +773,14 @@ export function Composer({
         return;
       }
 
+      if (isMobile) {
+        return;
+      }
+
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
@@ -985,7 +1011,7 @@ export function Composer({
               handleInput();
             }}
             data-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type @ to mention files)"}
-            className={`min-h-[60px] w-full resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground empty:before:pointer-events-none md:min-h-[74px] ${
+            className={`min-h-[60px] max-h-[140px] w-full overflow-y-auto resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground empty:before:pointer-events-none md:min-h-[74px] md:max-h-[400px] ${
               disabled ? "cursor-not-allowed opacity-50" : ""
             }`}
           />
@@ -1022,14 +1048,14 @@ export function Composer({
                 onClick={() => !hasMessages && setModelPopoverOpen(!modelPopoverOpen)}
                 disabled={hasMessages}
                 title={hasMessages ? "Model is locked for this thread. Start a new thread to change models." : undefined}
-                className={`flex items-center gap-1 rounded-full bg-secondary/40 px-2 py-1 text-[10px] text-muted-foreground transition-colors ${
+                className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors ${
                   hasMessages
                     ? "cursor-not-allowed opacity-50"
                     : "hover:bg-secondary/70 hover:text-foreground"
                 }`}
               >
                 <span className="max-w-[180px] truncate">{modelLabel}</span>
-                <ChevronDown className="h-2.5 w-2.5 shrink-0" />
+                <ChevronDown className="h-3 w-3 shrink-0" />
               </button>
 
               {modelPopoverOpen && (

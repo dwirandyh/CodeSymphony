@@ -41,12 +41,28 @@ describe("Composer", () => {
   let container: HTMLDivElement;
   let root: Root;
 
+  function setMobileViewport(isMobile: boolean) {
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      configurable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === "(max-width: 767px)" ? isMobile : false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+  }
+
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
     // jsdom does not implement scrollIntoView
     Element.prototype.scrollIntoView = vi.fn();
+    setMobileViewport(false);
   });
 
   afterEach(() => {
@@ -104,6 +120,14 @@ describe("Composer", () => {
     const editor = getEditor();
     expect(editor).toBeDefined();
     expect(editor.getAttribute("contenteditable")).not.toBe("false");
+  });
+
+  it("applies responsive max-height with internal scroll", () => {
+    renderComposer();
+    const editor = getEditor();
+    expect(editor.className).toContain("overflow-y-auto");
+    expect(editor.className).toContain("max-h-[140px]");
+    expect(editor.className).toContain("md:max-h-[400px]");
   });
 
   it("shows suggestions immediately when @ is typed", async () => {
@@ -193,6 +217,7 @@ describe("Composer", () => {
   });
 
   it("submits message on Enter when no mention is active", async () => {
+    setMobileViewport(false);
     const onSubmitMessage = vi.fn();
     renderComposer({ onSubmitMessage, value: "hello" });
     const editor = getEditor();
@@ -204,6 +229,21 @@ describe("Composer", () => {
     });
 
     expect(onSubmitMessage).toHaveBeenCalled();
+  });
+
+  it("does not submit on Enter in mobile viewport", async () => {
+    setMobileViewport(true);
+    const onSubmitMessage = vi.fn();
+    renderComposer({ onSubmitMessage, value: "hello" });
+    const editor = getEditor();
+    typeInEditor(editor, "hello");
+    await flushMicrotasks();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onSubmitMessage).not.toHaveBeenCalled();
   });
 
   it("toggles mode on Shift+Tab", () => {
