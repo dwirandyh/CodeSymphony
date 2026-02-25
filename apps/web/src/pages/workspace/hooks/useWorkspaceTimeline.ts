@@ -491,6 +491,7 @@ export function useWorkspaceTimeline(
         ? [...exploreContext, ...deltaEventsForExplore].sort((a, b) => a.idx - b.idx)
         : exploreContext;
       const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(exploreContextWithDeltas) : [];
+
       const exploreEventIds = new Set<string>();
       for (const group of exploreActivityGroups) {
         group.eventIds.forEach((id) => exploreEventIds.add(id));
@@ -562,13 +563,65 @@ export function useWorkspaceTimeline(
       }
 
       // Insert thinking blocks for all assistant messages (including those with inline inserts).
-      // Each "round" is a contiguous run of thinking.delta events separated by message.delta events.
+      // Merge adjacent thinking rounds that fall within the same inline-insert section so that
+      // tiny fragments (caused by interleaved message.delta events) don't scatter as separate
+      // thinking cards throughout the timeline.
       if (message.role === "assistant") {
-        const rounds = thinkingRoundsByMessageId.get(message.id) ?? [];
-        for (let i = 0; i < rounds.length; i++) {
-          const round = rounds[i];
+        const rawRounds = thinkingRoundsByMessageId.get(message.id) ?? [];
+        const hasInlineInserts = bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput;
+
+        let mergedRounds = rawRounds;
+        if (hasInlineInserts && rawRounds.length > 1) {
+          const insertStartIdxes = [
+            ...bashRuns.map(r => r.startIdx),
+            ...editedRuns.map(r => r.startIdx),
+            ...exploreActivityGroups.map(g => g.startIdx),
+            ...subagentGroups.map(g => g.startIdx),
+            ...(planFileOutput ? [planFileOutput.idx] : []),
+          ].sort((a, b) => a - b);
+
+          const sectionOf = (idx: number) => {
+            let section = 0;
+            for (const boundary of insertStartIdxes) {
+              if (idx >= boundary) section++;
+              else break;
+            }
+            return section;
+          };
+
+          mergedRounds = [];
+          for (const round of rawRounds) {
+            const section = sectionOf(round.firstIdx);
+            const prev = mergedRounds.length > 0 ? mergedRounds[mergedRounds.length - 1] : null;
+            if (prev && sectionOf(prev.firstIdx) === section) {
+              prev.content += round.content;
+              prev.lastIdx = round.lastIdx;
+            } else {
+              mergedRounds.push({ ...round });
+            }
+          }
+
+          // Second pass: absorb rounds that are mid-sentence continuations of the
+          // previous round back into it, even across section boundaries. This
+          // handles cases where the AI's thinking text spans an inline insert
+          // boundary (e.g. "...approach to double" [subagent] " the timeout").
+          for (let mi = mergedRounds.length - 1; mi >= 1; mi--) {
+            const cur = mergedRounds[mi];
+            const firstNonWs = cur.content.trimStart();
+            if (firstNonWs.length === 0) continue;
+            const ch = firstNonWs.charAt(0);
+            const isContinuation = ch === ch.toLowerCase() && ch !== ch.toUpperCase();
+            if (isContinuation) {
+              mergedRounds[mi - 1].content += cur.content;
+              mergedRounds[mi - 1].lastIdx = cur.lastIdx;
+              mergedRounds.splice(mi, 1);
+            }
+          }
+        }
+
+        for (let i = 0; i < mergedRounds.length; i++) {
+          const round = mergedRounds[i];
           if (round.content.length === 0) continue;
-          // Hide thinking rounds that appear after a plan file output (post-plan noise)
           if (planFileOutput && round.firstIdx > planFileOutput.idx) continue;
           sortable.push({
             item: {
@@ -576,7 +629,7 @@ export function useWorkspaceTimeline(
               id: `thinking:${message.id}:${i}`,
               messageId: message.id,
               content: round.content,
-              isStreaming: i === rounds.length - 1 && !isCompleted
+              isStreaming: i === mergedRounds.length - 1 && !isCompleted
                 && refs.streamingMessageIds.has(message.id)
                 && (assistantDeltaEventsByMessageId.get(message.id)?.length ?? 0) === 0,
             },
@@ -871,8 +924,7 @@ export function useWorkspaceTimeline(
           !hasLeadingText
           && hasAnyTrailingText
           && inlineInserts.length > 0
-          && !isSentenceAwareInlineInsertKind(firstInsertKind)
-          && firstInsertKind !== "subagent-activity";
+          && !isSentenceAwareInlineInsertKind(firstInsertKind);
         const delayFirstInlineInsert = shouldDelayFirstInlineInsert(
           firstInsertKind,
           segmentBuckets[0]?.content ?? "",
@@ -881,6 +933,7 @@ export function useWorkspaceTimeline(
         let shouldDelayFirstInsert = deferFirstInsertUntilText || delayFirstInlineInsert;
         let nextInsertIndex = 0;
         let stableOffset = 0;
+
         let delayedFirstSegmentContent = "";
         let delayedFirstSegmentAnchorIdx: number | null = null;
         let delayedFirstSegmentTimestamp: number | null = null;

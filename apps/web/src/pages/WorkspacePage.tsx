@@ -14,6 +14,8 @@ import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
 import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Button } from "../components/ui/button";
 
 const DiffReviewPanel = lazy(() =>
   import("../components/workspace/DiffReviewPanel").then(m => ({ default: m.DiffReviewPanel }))
@@ -29,6 +31,7 @@ import { useSidebarResize } from "./workspace/hooks/useSidebarResize";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
+import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -375,6 +378,7 @@ export function WorkspacePage() {
   const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
 
   // ── What-changed detector ──
@@ -412,12 +416,28 @@ export function WorkspacePage() {
     "gitChanges.loading": gitChanges.loading,
     mobilePanelOpen,
   };
+
+  const canSendNow =
+    !!chat.selectedThreadId &&
+    !chat.sendingMessage &&
+    !gates.planActionBusy &&
+    !gates.isWaitingForUserGate;
   const changed: string[] = [];
   for (const [key, val] of Object.entries(trackables)) {
     if (prevRefsRef.current[key] !== val) changed.push(key);
   }
   prevRefsRef.current = { ...trackables };
-  debugLog("WorkspacePage", "render", { renderCount: renderCountRef.current, changed });
+  debugLog("WorkspacePage", "render", {
+    renderCount: renderCountRef.current,
+    changed,
+    selectedThreadId: chat.selectedThreadId,
+    canSendNow,
+    showStopAction: chat.showStopAction,
+    sendingMessage: chat.sendingMessage,
+    waitingAssistant: chat.waitingAssistant,
+    isWaitingForUserGate: gates.isWaitingForUserGate,
+    hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
+  });
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
 
   const activeView = search.view ?? "chat";
@@ -438,8 +458,10 @@ export function WorkspacePage() {
     };
   }, [mobilePanelOpen]);
 
+  const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
+
   const showThinkingPlaceholder =
-    chat.waitingAssistant?.threadId === chat.selectedThreadId && !gates.isWaitingForUserGate;
+    waitingAssistantThreadId === chat.selectedThreadId && !gates.isWaitingForUserGate;
 
   const openReadFile = useCallback(
     async (filePath: string) => {
@@ -632,6 +654,47 @@ export function WorkspacePage() {
     [chat.setSelectedThreadId, updateSearch],
   );
 
+  const handleRequestCloseThread = useCallback((threadId: string) => {
+    const targetThread = chat.threads.find((thread) => thread.id === threadId) ?? null;
+    const needsConfirm = shouldConfirmCloseThread({
+      threadId,
+      selectedThreadId: chat.selectedThreadId,
+      showStopAction: chat.showStopAction,
+      waitingAssistantThreadId,
+      threads: chat.threads,
+    });
+
+    debugLog("WorkspacePage", "close-thread decision", {
+      threadId,
+      selectedThreadId: chat.selectedThreadId,
+      targetThreadActive: targetThread?.active ?? null,
+      showStopAction: chat.showStopAction,
+      waitingAssistantThreadId,
+      canSendNow,
+      needsConfirm,
+    });
+
+    if (needsConfirm) {
+      setConfirmCloseThreadId(threadId);
+      return;
+    }
+
+    void chat.closeThread(threadId);
+  }, [canSendNow, chat.closeThread, chat.selectedThreadId, chat.showStopAction, chat.threads, waitingAssistantThreadId]);
+
+  const handleConfirmCloseThread = useCallback(async () => {
+    if (!confirmCloseThreadId) return;
+    const threadId = confirmCloseThreadId;
+    await chat.closeThread(threadId);
+    setConfirmCloseThreadId(null);
+  }, [chat.closeThread, confirmCloseThreadId]);
+
+  const confirmCloseThread = confirmCloseThreadId
+    ? chat.threads.find((thread) => thread.id === confirmCloseThreadId) ?? null
+    : null;
+  const closingConfirmedThread =
+    confirmCloseThreadId !== null && chat.closingThreadId === confirmCloseThreadId;
+
   return (
     <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-3 lg:pb-0">
       <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
@@ -695,7 +758,7 @@ export function WorkspacePage() {
               reviewTabActive={activeView === "review"}
               onSelectThread={handleSelectThread}
               onCreateThread={() => void chat.createAdditionalThread()}
-              onCloseThread={(threadId) => void chat.closeThread(threadId)}
+              onCloseThread={handleRequestCloseThread}
               onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
               runScriptRunning={runScriptActive}
@@ -950,6 +1013,41 @@ export function WorkspacePage() {
         onForceDelete={(id) => void handleForceDelete(id)}
         onClose={() => setTeardownError(null)}
       />
+
+      <Dialog
+        open={confirmCloseThreadId !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setConfirmCloseThreadId(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Close session?</DialogTitle>
+            <DialogDescription>
+              {confirmCloseThread
+                ? `AI is still responding in "${confirmCloseThread.title}". Closing now will end this session.`
+                : "AI is still responding in this session. Closing now will end this session."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmCloseThreadId(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => void handleConfirmCloseThread()}
+              disabled={closingConfirmedThread}
+            >
+              Close session
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

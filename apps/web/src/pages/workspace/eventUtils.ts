@@ -37,12 +37,8 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
   const rawSource = payload.source;
-  if (rawSource === "claude_plan_file") {
+  if (rawSource === "claude_plan_file" || rawSource === "streaming_fallback") {
     return true;
-  }
-
-  if (rawSource === "streaming_fallback") {
-    return false;
   }
 
   const filePath = typeof payload.filePath === "string" ? payload.filePath : "";
@@ -50,7 +46,8 @@ export function isClaudePlanFilePayload(payload: Record<string, unknown>): boole
 }
 
 export function isPlanFilePath(filePath: string): boolean {
-  return filePath.includes(".claude/plans/") && filePath.endsWith(".md");
+  if (!filePath.endsWith(".md")) return false;
+  return filePath.includes(".claude/plans/") || filePath.includes("codesymphony-claude-provider/plans/");
 }
 
 export function isPlanModeToolEvent(event: ChatEvent): boolean {
