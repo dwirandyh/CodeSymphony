@@ -4,7 +4,7 @@ import type {
   AssistantRenderHint,
   ChatTimelineItem,
 } from "../../../components/workspace/ChatMessageList";
-import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "../constants";
+import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX, SENTENCE_BOUNDARY_PATTERN } from "../constants";
 import { extractBashRuns } from "../bashUtils";
 import { extractEditedRuns } from "../editUtils";
 import { extractExploreActivityGroups } from "../exploreUtils";
@@ -23,6 +23,7 @@ import {
   isPlanFilePath,
   isPlanModeToolEvent,
   isLikelyDiffContent,
+  isMetadataToolEvent,
   isReadToolEvent,
   isWorktreeDiffEvent,
   parseTimestamp,
@@ -42,6 +43,7 @@ import { logService } from "../../../lib/logService";
 
 // ── Hoisted RegExp constants for subagent/plan summary markers ──
 const SUBAGENT_SUMMARY_REGEX = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
+const MAIN_SUMMARY_REGEX = /###main(?:\s+agent)? summary(?:\s+start)?\n?[\s\S]*?###main(?:\s+agent)? summary end\n?/g;
 const MAIN_SUMMARY_START_MARKER = /###main(?:\s+agent)? summary(?:\s+start)?\n?/g;
 const MAIN_SUMMARY_END_MARKER = /###main(?:\s+agent)? summary end\n?/g;
 
@@ -397,6 +399,7 @@ export function useWorkspaceTimeline(
         subagentSummaryRegex.lastIndex = 0;
         cleanedContent = message.content
           .replace(subagentSummaryRegex, "")
+          .replace(MAIN_SUMMARY_REGEX, "")
           .replace(mainSummaryStartMarker, "")
           .replace(mainSummaryEndMarker, "")
           .trim();
@@ -408,12 +411,11 @@ export function useWorkspaceTimeline(
       // streaming before subagent events arrive).
       if (message.role === "assistant" && message.content.length > 0) {
         subagentSummaryRegex.lastIndex = 0;
-        mainSummaryStartMarker.lastIndex = 0;
-        mainSummaryEndMarker.lastIndex = 0;
         cleanedContent = message.content
           .replace(subagentSummaryRegex, "")
-          .replace(mainSummaryEndMarker, "")
+          .replace(MAIN_SUMMARY_REGEX, "")
           .replace(mainSummaryStartMarker, "")
+          .replace(mainSummaryEndMarker, "")
           .trim();
       }
       const nonSubagentContext = message.role === "assistant"
@@ -602,9 +604,10 @@ export function useWorkspaceTimeline(
           }
 
           // Second pass: absorb rounds that are mid-sentence continuations of the
-          // previous round back into it, even across section boundaries. This
-          // handles cases where the AI's thinking text spans an inline insert
-          // boundary (e.g. "...approach to double" [subagent] " the timeout").
+          // previous round back into it. When an inline insert boundary falls
+          // between the two rounds, only merge the leading sentence fragment
+          // (up to the first sentence boundary) rather than the entire round,
+          // to avoid pulling unrelated later thinking into the earlier block.
           for (let mi = mergedRounds.length - 1; mi >= 1; mi--) {
             const cur = mergedRounds[mi];
             const firstNonWs = cur.content.trimStart();
@@ -612,9 +615,29 @@ export function useWorkspaceTimeline(
             const ch = firstNonWs.charAt(0);
             const isContinuation = ch === ch.toLowerCase() && ch !== ch.toUpperCase();
             if (isContinuation) {
-              mergedRounds[mi - 1].content += cur.content;
-              mergedRounds[mi - 1].lastIdx = cur.lastIdx;
-              mergedRounds.splice(mi, 1);
+              const prev = mergedRounds[mi - 1];
+              const hasInsertBetween = insertStartIdxes.some(
+                b => b > prev.lastIdx && b <= cur.firstIdx,
+              );
+              if (hasInsertBetween) {
+                // Only merge the leading partial sentence across the boundary.
+                const sbp = new RegExp(SENTENCE_BOUNDARY_PATTERN.source, "g");
+                const match = sbp.exec(cur.content);
+                if (match) {
+                  const boundary = match.index + match[0].length;
+                  prev.content += cur.content.slice(0, boundary);
+                  cur.content = cur.content.slice(boundary);
+                } else {
+                  // No sentence boundary — it's just a small fragment, merge entirely
+                  prev.content += cur.content;
+                  prev.lastIdx = cur.lastIdx;
+                  mergedRounds.splice(mi, 1);
+                }
+              } else {
+                prev.content += cur.content;
+                prev.lastIdx = cur.lastIdx;
+                mergedRounds.splice(mi, 1);
+              }
             }
           }
         }
@@ -623,12 +646,62 @@ export function useWorkspaceTimeline(
           const round = mergedRounds[i];
           if (round.content.length === 0) continue;
           if (planFileOutput && round.firstIdx > planFileOutput.idx) continue;
+          let thinkingContent = round.content;
+
+          // Truncate thinking that spans the plan boundary — rebuild content
+          // from only pre-plan thinking deltas to avoid leaking post-plan
+          // meta-reasoning (e.g. "I should call ExitPlanMode now").
+          if (planFileOutput && round.lastIdx > planFileOutput.idx && round.firstIdx < planFileOutput.idx) {
+            let prePlanContent = "";
+            for (const ev of orderedEventsByIdx) {
+              if (ev.type !== "thinking.delta") continue;
+              const mid = typeof ev.payload.messageId === "string" ? ev.payload.messageId : "";
+              if (mid !== message.id) continue;
+              if (ev.idx < round.firstIdx || ev.idx > round.lastIdx) continue;
+              if (ev.idx >= planFileOutput.idx) break;
+              prePlanContent += typeof ev.payload.delta === "string" ? ev.payload.delta : "";
+            }
+            if (prePlanContent.length > 0) {
+              thinkingContent = prePlanContent;
+            }
+          }
+
+          // Trim trailing sentences that are meta-reasoning about plan
+          // creation (e.g. "Let me now create the plan file and exit plan
+          // mode."). These are operational artifacts, not useful thinking.
+          if (planFileOutput && thinkingContent.length > 0) {
+            const PLAN_META_RE = /\b(plan\s+file|exit\s*plan\s*mode|ExitPlanMode|create\s+the\s+plan|write\s+the\s+plan|call\s+ExitPlanMode)\b/i;
+            if (PLAN_META_RE.test(thinkingContent)) {
+              const sentences = thinkingContent.split(/(?<=[.!?])\s+/);
+              while (sentences.length > 0 && PLAN_META_RE.test(sentences[sentences.length - 1])) {
+                sentences.pop();
+              }
+              thinkingContent = sentences.join(" ").trimEnd();
+            }
+          }
+
+          if (thinkingContent.length === 0) continue;
+
+          if (isCompleted && thinkingContent.length > 0) {
+            const lastChar = thinkingContent.trimEnd().slice(-1);
+            if (lastChar && !".!?\"')".includes(lastChar)) {
+              const sbpTrim = new RegExp(SENTENCE_BOUNDARY_PATTERN.source, "g");
+              let lastBoundaryEnd = -1;
+              let mTrim: RegExpExecArray | null;
+              while ((mTrim = sbpTrim.exec(thinkingContent)) !== null) {
+                lastBoundaryEnd = mTrim.index + mTrim[0].length;
+              }
+              if (lastBoundaryEnd > 0) {
+                thinkingContent = thinkingContent.slice(0, lastBoundaryEnd).trimEnd();
+              }
+            }
+          }
           sortable.push({
             item: {
               kind: "thinking",
               id: `thinking:${message.id}:${i}`,
               messageId: message.id,
-              content: round.content,
+              content: thinkingContent,
               isStreaming: i === mergedRounds.length - 1 && !isCompleted
                 && refs.streamingMessageIds.has(message.id)
                 && (assistantDeltaEventsByMessageId.get(message.id)?.length ?? 0) === 0,
@@ -748,21 +821,31 @@ export function useWorkspaceTimeline(
           timestamp: null as number | null,
         }));
 
-        // Filter out post-plan delta events — post-plan text (e.g. "Ready whenever
-        // you approve!") is redundant since the plan card implies approval is needed.
+        // Filter out ALL post-plan delta events — text after the plan card is
+        // always redundant narration (plan summary, approval prompts, implementation
+        // announcements) since the plan card itself conveys the plan.
         const planInlineInsertIdx = inlineInserts.findIndex(i => i.kind === "plan-file-output");
         let effectiveDeltaEvents = messageDeltaEvents;
         if (planInlineInsertIdx >= 0) {
           const planStartIdx = inlineInserts[planInlineInsertIdx].startIdx;
-          effectiveDeltaEvents = messageDeltaEvents.filter(e => e.idx < planStartIdx);
-          // Also strip post-plan text from cleanedContent so fallback paths
-          // don't re-introduce it.
           const postPlanText = messageDeltaEvents
             .filter(e => e.idx >= planStartIdx)
             .map(e => typeof e.payload.delta === "string" ? e.payload.delta : "")
             .join("");
-          if (postPlanText.length > 0 && cleanedContent.endsWith(postPlanText)) {
-            cleanedContent = cleanedContent.slice(0, -postPlanText.length).trimEnd();
+          if (postPlanText.length > 0) {
+            effectiveDeltaEvents = messageDeltaEvents.filter(e => e.idx < planStartIdx);
+            if (cleanedContent.endsWith(postPlanText)) {
+              cleanedContent = cleanedContent.slice(0, -postPlanText.length).trimEnd();
+            } else if (cleanedContent.endsWith(postPlanText.trimEnd())) {
+              cleanedContent = cleanedContent.slice(0, -postPlanText.trimEnd().length).trimEnd();
+            } else {
+              const prePlanDeltaText = effectiveDeltaEvents
+                .map(e => typeof e.payload.delta === "string" ? e.payload.delta : "")
+                .join("");
+              if (prePlanDeltaText.length > 0) {
+                cleanedContent = prePlanDeltaText;
+              }
+            }
           }
         }
 
@@ -782,6 +865,78 @@ export function useWorkspaceTimeline(
           bucket.anchorIdx = bucket.anchorIdx == null ? deltaEvent.idx : Math.min(bucket.anchorIdx, deltaEvent.idx);
           if (bucket.timestamp == null) {
             bucket.timestamp = parseTimestamp(deltaEvent.createdAt);
+          }
+        }
+
+        // Merge announcement text emitted immediately after a tool call
+        // back into the preceding bucket. Claude often says "Let me do X"
+        // right after starting tool X (anchorIdx within a few of the
+        // insert's startIdx). Merging keeps it in the earlier bucket so
+        // the sentence-aware first-insert logic can position it before
+        // the card rather than after it.
+        const ANNOUNCE_IDX_GAP = 5;
+        for (let mergeBackIdx = 1; mergeBackIdx < segmentBuckets.length && mergeBackIdx <= inlineInserts.length; mergeBackIdx++) {
+          const prevInsert = inlineInserts[mergeBackIdx - 1];
+          const bkt = segmentBuckets[mergeBackIdx];
+          if (!prevInsert || bkt.content.length === 0) continue;
+          if (bkt.anchorIdx != null && bkt.anchorIdx <= prevInsert.startIdx + ANNOUNCE_IDX_GAP) {
+            const prevBucket = segmentBuckets[mergeBackIdx - 1];
+            prevBucket.content += bkt.content;
+            if (prevBucket.anchorIdx == null) {
+              prevBucket.anchorIdx = bkt.anchorIdx;
+            }
+            if (prevBucket.timestamp == null) {
+              prevBucket.timestamp = bkt.timestamp;
+            }
+            bkt.content = "";
+            bkt.anchorIdx = null;
+            bkt.timestamp = null;
+          }
+        }
+
+        for (let bi = 0; bi < segmentBuckets.length - 1; bi++) {
+          const bkt = segmentBuckets[bi];
+          if (bkt.content.length === 0) continue;
+          const sbp = new RegExp(SENTENCE_BOUNDARY_PATTERN.source, "g");
+          let lastEnd = -1;
+          let m: RegExpExecArray | null;
+          while ((m = sbp.exec(bkt.content)) !== null) {
+            lastEnd = m.index + m[0].length;
+          }
+          if (lastEnd > 0 && lastEnd < bkt.content.length) {
+            const trailing = bkt.content.slice(lastEnd);
+            segmentBuckets[bi + 1].content = trailing + segmentBuckets[bi + 1].content;
+            if (segmentBuckets[bi + 1].anchorIdx == null) {
+              segmentBuckets[bi + 1].anchorIdx = bkt.anchorIdx;
+            }
+            if (segmentBuckets[bi + 1].timestamp == null) {
+              segmentBuckets[bi + 1].timestamp = bkt.timestamp;
+            }
+            bkt.content = bkt.content.slice(0, lastEnd);
+          }
+        }
+
+        // Reverse pass: if a bucket ends without a sentence boundary and the
+        // next bucket starts with a continuation (lowercase or digit), merge
+        // the next bucket's content back into this one.
+        for (let ri = 0; ri < segmentBuckets.length - 1; ri++) {
+          const bkt = segmentBuckets[ri];
+          if (bkt.content.length === 0) continue;
+          const trimmed = bkt.content.trimEnd();
+          if (trimmed.length === 0) continue;
+          const lastChar = trimmed.slice(-1);
+          // If bucket ends at a sentence boundary, no merge needed
+          if (".!?\"')".includes(lastChar)) continue;
+
+          const nextBkt = segmentBuckets[ri + 1];
+          if (nextBkt.content.length === 0) continue;
+          const firstChar = nextBkt.content.trimStart().charAt(0);
+          // Merge if next bucket starts with lowercase, digit, or common continuation
+          if (firstChar && (firstChar === firstChar.toLowerCase() || /\d/.test(firstChar))) {
+            bkt.content += nextBkt.content;
+            nextBkt.content = "";
+            nextBkt.anchorIdx = null;
+            nextBkt.timestamp = null;
           }
         }
 
@@ -815,6 +970,7 @@ export function useWorkspaceTimeline(
               if (bucket.content.length > 0) {
                 bucket.content = bucket.content
                   .replace(subagentSummaryRegex, "")
+                  .replace(MAIN_SUMMARY_REGEX, "")
                   .replace(mainSummaryStartMarker, "")
                   .replace(mainSummaryEndMarker, "")
                   .trim();
@@ -1185,20 +1341,26 @@ export function useWorkspaceTimeline(
               && hasAnyTrailingText
               && inlineInserts.length > 0
             ) {
-              const splitSegment = hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null;
-              if (splitSegment) {
-                const tailIsAnnouncement = (bucket.anchorIdx ?? 0) < inlineInserts[0].startIdx;
-                pushMessageSegment(splitSegment.head, `${bucketIndex}:head`, bucket.anchorIdx, bucket.timestamp);
-                if (tailIsAnnouncement && splitSegment.tail.length > 0) {
-                  pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, inlineInserts[0].startIdx, bucket.timestamp);
-                }
+              const textIsAfterInsert = (bucket.anchorIdx ?? 0) > inlineInserts[0].startIdx;
+              if (textIsAfterInsert) {
+                const preInsertAnchor = inlineInserts[0].startIdx - 0.5;
+                pushMessageSegment(bucket.content, `${bucketIndex}`, preInsertAnchor, bucket.timestamp);
                 pushInlineInsert(inlineInserts[0], bucket.timestamp);
-                if (!tailIsAnnouncement && splitSegment.tail.length > 0) {
-                  pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, bucket.anchorIdx, bucket.timestamp);
-                }
                 nextInsertIndex = 1;
                 shouldDelayFirstInsert = false;
                 segmentRendered = true;
+              } else {
+                const splitSegment = hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null;
+                if (splitSegment) {
+                  pushMessageSegment(splitSegment.head, `${bucketIndex}:head`, bucket.anchorIdx, bucket.timestamp);
+                  if (splitSegment.tail.length > 0) {
+                    pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, inlineInserts[0].startIdx, bucket.timestamp);
+                  }
+                  pushInlineInsert(inlineInserts[0], bucket.timestamp);
+                  nextInsertIndex = 1;
+                  shouldDelayFirstInsert = false;
+                  segmentRendered = true;
+                }
               }
             }
 
@@ -1217,6 +1379,7 @@ export function useWorkspaceTimeline(
             const shouldHoldLeadingSentenceAwareInsert =
               nextInsertIndex === 0
               && isSentenceAwareInlineInsertKind(firstInsertKind)
+              && firstInsertKind !== "subagent-activity"
               && hasAnyTrailingText
               && bucketIndex === 0;
             if (shouldHoldLeadingSentenceAwareInsert) {
@@ -1351,6 +1514,7 @@ export function useWorkspaceTimeline(
         && event.type !== "plan.revision_requested"
         && event.type !== "chat.failed"
         && !isPlanModeToolEvent(event)
+        && !isMetadataToolEvent(event)
       )
       .sort((a, b) => a.idx - b.idx);
 

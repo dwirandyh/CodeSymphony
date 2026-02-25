@@ -95,6 +95,10 @@ export function isWorktreeDiffEvent(event: ChatEvent): boolean {
   return event.type === "tool.finished" && event.payload.source === "worktree.diff";
 }
 
+export function isMetadataToolEvent(event: ChatEvent): boolean {
+  return event.payload.source === "chat.thread.metadata";
+}
+
 export function eventPayloadText(event: ChatEvent): string {
   return JSON.stringify(event.payload ?? {}).toLowerCase();
 }
