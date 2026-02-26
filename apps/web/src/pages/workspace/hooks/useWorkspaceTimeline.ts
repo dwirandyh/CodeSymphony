@@ -25,6 +25,7 @@ import {
   isLikelyDiffContent,
   isMetadataToolEvent,
   isReadToolEvent,
+  isRecord,
   isWorktreeDiffEvent,
   parseTimestamp,
   payloadStringArray,
@@ -164,9 +165,48 @@ export function useWorkspaceTimeline(
         continue;
       }
 
-      const content = typeof event.payload.content === "string" ? event.payload.content : "";
-      const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "plan.md";
+      let content = typeof event.payload.content === "string" ? event.payload.content : "";
+      let filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "plan.md";
       if (content.trim().length === 0) {
+        continue;
+      }
+
+      // When streaming_fallback has a synthetic filePath, look for the real plan
+      // file write later in the event stream and use its content instead.
+      // If no real plan file write exists, suppress the false plan card entirely
+      // (the text is just introductory assistant narration, not an actual plan).
+      if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath)) {
+        const realWrite = orderedEventsByIdx.find(e =>
+          e.idx > event.idx
+          && e.type === "tool.finished"
+          && isPlanFilePath(
+            payloadStringOrNull(e.payload.editTarget)
+              ?? payloadStringOrNull(e.payload.file_path)
+              ?? "",
+          )
+        );
+        if (realWrite) {
+          const toolInput = isRecord(realWrite.payload.toolInput)
+            ? realWrite.payload.toolInput
+            : null;
+          const realContent = toolInput
+            ? payloadStringOrNull(toolInput.content)
+            : null;
+          const realPath = payloadStringOrNull(realWrite.payload.editTarget)
+            ?? payloadStringOrNull(realWrite.payload.file_path)
+            ?? filePath;
+          if (realContent && realContent.trim().length > 0) {
+            planFileOutputByMessageId.set(messageId, {
+              id: realWrite.id,
+              messageId,
+              content: realContent,
+              filePath: realPath,
+              idx: realWrite.idx,
+              createdAt: realWrite.createdAt,
+            });
+          }
+        }
+        // Either replaced with real content above or suppressed — skip default.
         continue;
       }
 
