@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { debugLog } from "../../../lib/debugLog";
+import { isPlanFilePath, payloadStringOrNull } from "../eventUtils";
 import { useResolvePermission } from "../../../hooks/mutations/useResolvePermission";
 import { useAnswerQuestion } from "../../../hooks/mutations/useAnswerQuestion";
 import { useApprovePlan } from "../../../hooks/mutations/useApprovePlan";
@@ -224,9 +225,39 @@ export function usePendingGates(
       if (event.type === "plan.created") {
         const content = typeof event.payload.content === "string" ? event.payload.content : "";
         const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
-        if (content.length > 0) {
-          latestPlan = { content, filePath, createdIdx: event.idx, status: "pending" };
+        if (content.length === 0) continue;
+
+        // Streaming fallback with a synthetic filePath — only treat as a real
+        // plan if a real plan file write exists later in the event stream.
+        if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath)) {
+          const realWrite = orderedEvents.find(e =>
+            e.idx > event.idx
+            && e.type === "tool.finished"
+            && isPlanFilePath(
+              payloadStringOrNull(e.payload.editTarget)
+                ?? payloadStringOrNull(e.payload.file_path)
+                ?? "",
+            )
+          );
+          if (realWrite) {
+            const toolInput = isRecord(realWrite.payload.toolInput)
+              ? realWrite.payload.toolInput
+              : null;
+            const realContent = toolInput
+              ? payloadStringOrNull(toolInput.content)
+              : null;
+            const realPath = payloadStringOrNull(realWrite.payload.editTarget)
+              ?? payloadStringOrNull(realWrite.payload.file_path)
+              ?? filePath;
+            if (realContent && realContent.trim().length > 0) {
+              latestPlan = { content: realContent, filePath: realPath, createdIdx: realWrite.idx, status: "pending" };
+            }
+          }
+          // No real plan file → skip (don't create a pending plan from intro text)
+          continue;
         }
+
+        latestPlan = { content, filePath, createdIdx: event.idx, status: "pending" };
       } else if (event.type === "plan.approved") {
         if (latestPlan) {
           latestPlan = {

@@ -5,12 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && tauri build"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.2.0"
+    "@tauri-apps/api": "2.2.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.2.0"
+    "@tauri-apps/cli": "2.2.0"
   }
 }

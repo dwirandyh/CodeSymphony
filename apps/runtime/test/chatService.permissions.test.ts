@@ -163,7 +163,7 @@ describe("chatService permission flow", () => {
     expect(claudeRunner).toHaveBeenCalledTimes(2);
   });
 
-  it("auto renames default thread title after first assistant reply and emits threadTitle on completion", async () => {
+  it("auto renames default thread title after first assistant reply via metadata event", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
         await onText("Summarize README.md");
@@ -196,13 +196,23 @@ describe("chatService permission flow", () => {
     const completed = events.find((event) => event.type === "chat.completed");
 
     expect(completed).toBeDefined();
-    expect(completed?.payload.threadTitle).toBe("Summarize README.md");
+    expect(completed?.payload.threadTitle).toBeUndefined();
+
+    const titleEvent = await waitForEvent(
+      chatService,
+      threadId,
+      (event) =>
+        event.type === "tool.finished"
+        && String(event.payload.source ?? "") === "chat.thread.metadata"
+        && String(event.payload.threadTitle ?? "") === "Summarize README.md",
+    );
+    expect(titleEvent.payload.threadTitle).toBe("Summarize README.md");
 
     const thread = await chatService.getThreadById(threadId);
     expect(thread?.title).toBe("Summarize README.md");
   });
 
-  it("does not overwrite non-default thread title and still emits threadTitle on completion", async () => {
+  it("does not overwrite non-default thread title and emits no metadata title event", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
       await onText("Done.");
       return {
@@ -226,7 +236,15 @@ describe("chatService permission flow", () => {
     const events = await waitForTerminalEvent(chatService, threadId);
     const completed = events.find((event) => event.type === "chat.completed");
     expect(completed).toBeDefined();
-    expect(completed?.payload.threadTitle).toBe("Session Integrasi API");
+    expect(completed?.payload.threadTitle).toBeUndefined();
+
+    const metadataTitleEvent = events.find(
+      (event) =>
+        event.type === "tool.finished"
+        && String(event.payload.source ?? "") === "chat.thread.metadata"
+        && typeof event.payload.threadTitle === "string",
+    );
+    expect(metadataTitleEvent).toBeUndefined();
 
     const thread = await chatService.getThreadById(threadId);
     expect(thread?.title).toBe("Session Integrasi API");

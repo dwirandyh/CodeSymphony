@@ -7,7 +7,7 @@
     "dev": "turbo run dev --parallel --filter=@codesymphony/runtime --filter=@codesymphony/web",
     "dev:web": "pnpm --filter @codesymphony/web dev",
     "dev:runtime": "pnpm --filter @codesymphony/runtime dev",
-    "dev:desktop": "pnpm --filter @codesymphony/desktop dev",
+    "dev:desktop": "RUNTIME_PORT=4322 DATABASE_URL='file:./desktop.db' turbo run dev --parallel --filter=@codesymphony/runtime --filter=@codesymphony/desktop",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",

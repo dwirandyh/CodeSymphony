@@ -2,16 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { resolveRuntimeApiBase } from "../../lib/runtimeUrl";
 import "@xterm/xterm/css/xterm.css";
 
 function getWsBase(): string {
-  const runtimeUrl = import.meta.env.VITE_RUNTIME_URL;
-  if (runtimeUrl) {
-    return runtimeUrl.replace(/^http/, "ws");
-  }
-  return typeof window === "undefined"
-    ? "ws://127.0.0.1:4321/api"
-    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:4321/api`;
+  const apiBase = resolveRuntimeApiBase();
+  return apiBase.replace(/^http/, "ws");
 }
 
 const WS_BASE = getWsBase();
@@ -43,9 +39,10 @@ const XTERM_THEME: Record<string, string> = {
 interface TerminalTabProps {
     sessionId: string;
     cwd: string | null;
+    onSessionExit?: (event: { exitCode: number; signal: number }) => void;
 }
 
-export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
+export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
@@ -122,14 +119,34 @@ export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
 
             ws.onmessage = (event) => {
                 if (!disposedRef.current) {
-                    terminal.write(event.data as string);
+                    const chunk = event.data as string;
+                    try {
+                        const parsed = JSON.parse(chunk) as Record<string, unknown>;
+                        if (
+                            parsed.kind === "cs-terminal-event"
+                            && parsed.type === "exit"
+                            && typeof parsed.exitCode === "number"
+                            && typeof parsed.signal === "number"
+                        ) {
+                            onSessionExit?.({
+                                exitCode: parsed.exitCode,
+                                signal: parsed.signal,
+                            });
+                            return;
+                        }
+                    } catch {
+                        // Not an internal event payload; treat as terminal output.
+                    }
+                    terminal.write(chunk);
                 }
             };
 
-            ws.onclose = () => {
+            ws.onclose = (event) => {
                 setConnected(false);
                 if (!disposedRef.current) {
-                    terminal.write("\r\n\x1b[33m[Disconnected — reconnecting...]\x1b[0m\r\n");
+                    const reason = event.reason?.trim();
+                    const detail = reason ? ` code=${event.code} reason=${reason}` : ` code=${event.code}`;
+                    terminal.write(`\r\n\x1b[33m[Disconnected — reconnecting...${detail}]\x1b[0m\r\n`);
                     reconnectTimerRef.current = setTimeout(connectWebSocket, 2000);
                 }
             };
@@ -172,7 +189,7 @@ export function TerminalTab({ sessionId, cwd }: TerminalTabProps) {
             terminalRef.current = null;
             fitAddonRef.current = null;
         };
-    }, [sessionId, cwd]);
+    }, [sessionId, cwd, onSessionExit]);
 
     return (
         <div className="relative flex h-full flex-col">

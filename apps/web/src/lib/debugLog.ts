@@ -2,6 +2,8 @@
 // Sends entries via navigator.sendBeacon (survives blocked main threads)
 // and persists them to a server-side log file for offline inspection.
 
+import { resolveRuntimeApiBase } from "./runtimeUrl";
+
 interface DebugLogEntry {
   seq: number;
   ts: number;
@@ -18,17 +20,7 @@ declare global {
 
 let counter = 0;
 
-const DEFAULT_RUNTIME_BASE =
-  typeof window === "undefined"
-    ? "http://127.0.0.1:4321/api"
-    : `${window.location.protocol}//${window.location.hostname}:4321/api`;
-
-const RUNTIME_BASE =
-  typeof import.meta !== "undefined" && import.meta.env?.VITE_RUNTIME_URL
-    ? import.meta.env.VITE_RUNTIME_URL
-    : DEFAULT_RUNTIME_BASE;
-
-const BEACON_URL = `${RUNTIME_BASE}/debug/log`;
+const BEACON_URL = `${resolveRuntimeApiBase()}/debug/log`;
 
 if (typeof window !== "undefined" && !window.__CS_DEBUG_LOG__) {
   window.__CS_DEBUG_LOG__ = [];

@@ -1,5 +1,5 @@
 import type { ChatThread } from "@codesymphony/shared-types";
-import { GitPullRequestArrow, Play, Plus, Square, X } from "lucide-react";
+import { GitPullRequestArrow, Plus, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { OpenInAppButton } from "./OpenInAppButton";
@@ -22,6 +22,23 @@ type WorkspaceHeaderProps = {
   runScriptRunning?: boolean;
   onToggleRunScript?: () => void;
 };
+
+function FilledPlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <path fill="currentColor" d="M4 2.5v11l9-5.5-9-5.5z" />
+    </svg>
+  );
+}
+
+function FilledPauseIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <rect x="3.5" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
+      <rect x="9" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
+    </svg>
+  );
+}
 
 export function WorkspaceHeader({
   selectedRepositoryName,
@@ -69,9 +86,9 @@ export function WorkspaceHeader({
               onClick={onToggleRunScript}
             >
               {runScriptRunning ? (
-                <Square className="h-3.5 w-3.5" />
+                <FilledPauseIcon className="h-3.5 w-3.5" />
               ) : (
-                <Play className="h-3.5 w-3.5" />
+                <FilledPlayIcon className="h-3.5 w-3.5" />
               )}
             </Button>
           )}

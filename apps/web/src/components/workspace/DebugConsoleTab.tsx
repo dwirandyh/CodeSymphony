@@ -1,17 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { logService, type LogEntry } from "../../lib/logService";
+import { resolveRuntimeApiBase } from "../../lib/runtimeUrl";
 import { ScrollArea } from "../ui/scroll-area";
 import { Copy, CheckCircle2 } from "lucide-react";
 
-const DEFAULT_RUNTIME_BASE =
-    typeof window === "undefined"
-        ? "http://127.0.0.1:4321/api"
-        : `${window.location.protocol}//${window.location.hostname}:4321/api`;
-
-const RUNTIME_BASE =
-    typeof import.meta !== "undefined" && import.meta.env?.VITE_RUNTIME_URL
-        ? import.meta.env.VITE_RUNTIME_URL
-        : DEFAULT_RUNTIME_BASE;
+const RUNTIME_BASE = resolveRuntimeApiBase();
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 

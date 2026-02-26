@@ -240,7 +240,10 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
 
   for (const event of ordered) {
     if (event.type === "message.delta") {
-      flushGroup();
+      const hasPendingRuns = Array.from(currentRuns.values()).some((r) => r.pending);
+      if (!hasPendingRuns) {
+        flushGroup();
+      }
       continue;
     }
 

@@ -127,6 +127,8 @@ Desktop shell:
 pnpm dev:desktop
 ```
 
+- Desktop dev web URL (used by Tauri): `http://127.0.0.1:5174`
+
 ## Makefile Shortcuts
 
 ```bash

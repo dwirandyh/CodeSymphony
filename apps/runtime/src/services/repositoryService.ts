@@ -1,9 +1,11 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import prismaClientPkg, { type PrismaClient } from "@prisma/client";
 import { CreateRepositoryInputSchema, UpdateRepositoryScriptsInputSchema, type CreateRepositoryInput, type Repository, type UpdateRepositoryScriptsInput } from "@codesymphony/shared-types";
-import { ensureGitRepository, detectDefaultBranch, listBranches } from "./git";
-import { mapRepository } from "./mappers";
+import { ensureGitRepository, detectDefaultBranch, listBranches } from "./git.js";
+import { mapRepository } from "./mappers.js";
+
+const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
 
 function normalizeFsPath(inputPath: string): string {
   return path.resolve(inputPath.trim());

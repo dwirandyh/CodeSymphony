@@ -5,6 +5,7 @@ const runTerminalInputSchema = z.object({
     sessionId: z.string().min(1),
     command: z.string().min(1),
     cwd: z.string().min(1).optional(),
+    mode: z.enum(["stdin", "exec"]).optional(),
 });
 const interruptTerminalInputSchema = z.object({
     sessionId: z.string().min(1),
@@ -14,8 +15,16 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
     app.post("/terminal/run", async (request, reply) => {
         try {
             const input = runTerminalInputSchema.parse(request.body ?? {});
-            app.terminalService.spawn(input.sessionId, input.cwd);
-            app.terminalService.write(input.sessionId, `${input.command}\r`);
+            if (input.mode === "exec") {
+                app.terminalService.spawn(input.sessionId, input.cwd, {
+                    mode: "exec",
+                    command: input.command,
+                    replace: true,
+                });
+            } else {
+                app.terminalService.spawn(input.sessionId, input.cwd);
+                app.terminalService.write(input.sessionId, `${input.command}\r`);
+            }
             return reply.code(204).send();
         } catch (error) {
             const message = error instanceof Error ? error.message : "Failed to run terminal command";
@@ -68,6 +77,23 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
                     }
                 },
             );
+            const removeExitListener = app.terminalService.addExitListener(
+                sessionId,
+                (event) => {
+                    try {
+                        if (socket.readyState === 1) {
+                            socket.send(JSON.stringify({
+                                kind: "cs-terminal-event",
+                                type: "exit",
+                                exitCode: event.exitCode,
+                                signal: event.signal,
+                            }));
+                        }
+                    } catch {
+                        // ignore send errors
+                    }
+                },
+            );
 
             socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
                 const message = raw.toString();
@@ -89,12 +115,14 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
 
             socket.on("close", () => {
                 removeListener();
+                removeExitListener();
                 app.logService.log("info", "terminal", `Terminal session disconnected: ${sessionId}`);
             });
 
             socket.on("error", (error: Error) => {
                 app.logService.log("error", "terminal", `Terminal WebSocket error: ${error.message}`);
                 removeListener();
+                removeExitListener();
             });
         },
     );

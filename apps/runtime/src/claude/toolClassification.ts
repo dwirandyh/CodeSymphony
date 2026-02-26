@@ -1,4 +1,4 @@
-import { truncateForPreview } from "./sanitize";
+import { truncateForPreview } from "./sanitize.js";
 
 const SENSITIVE_KEY_PATTERN = /(token|secret|password|api[_-]?key|authorization|cookie)/i;
 
