@@ -14,6 +14,7 @@ import { useThreadEvents } from "../../../hooks/queries/useThreadEvents";
 import { EVENT_TYPES } from "../constants";
 import { payloadStringOrNull, shouldClearWaitingAssistantOnEvent } from "../eventUtils";
 import { useWorkspaceTimeline, type TimelineRefs } from "./useWorkspaceTimeline";
+import { areMessageArraysEqual, mergeThreadMessages } from "./messageMerge";
 
 type PendingMessageMutation =
   | { kind: "ensure-placeholder"; id: string; threadId: string }
@@ -297,18 +298,8 @@ export function useChatSession(
     // Same thread → merge with SSE-delivered data
     if (!queriedMessages) return;
     setMessages((current) => {
-      const merged = new Map<string, ChatMessage>();
-      for (const m of queriedMessages) merged.set(m.id, m);
-      for (const m of current) {
-        const existing = merged.get(m.id);
-        if (existing && m.content.length > existing.content.length) {
-          merged.set(m.id, m);
-        } else if (!existing) {
-          merged.set(m.id, m);
-        }
-      }
-      const sorted = [...merged.values()].sort((a, b) => a.seq - b.seq);
-      if (sorted.length === current.length && sorted.every((m, i) => m.id === current[i].id && m.content.length === current[i].content.length)) {
+      const sorted = mergeThreadMessages(queriedMessages, current);
+      if (areMessageArraysEqual(sorted, current)) {
         return current;
       }
       return sorted;
@@ -417,10 +408,12 @@ export function useChatSession(
 
   function startWaitingAssistant(threadId: string) {
     const afterIdx = lastEventIdxByThreadRef.current.get(threadId) ?? -1;
+    debugLog("useChatSession", "waitingAssistant set", { threadId, afterIdx, reason: "startWaitingAssistant" });
     setWaitingAssistant({ threadId, afterIdx });
   }
 
   function clearWaitingAssistantForThread(threadId: string) {
+    debugLog("useChatSession", "waitingAssistant clear requested", { threadId, reason: "clearWaitingAssistantForThread" });
     setWaitingAssistant((current) => (current?.threadId === threadId ? null : current));
   }
 
@@ -492,12 +485,28 @@ export function useChatSession(
           type: payload.type,
           toolUseId: typeof payload.payload.toolUseId === "string" ? payload.payload.toolUseId : null,
           toolName: typeof payload.payload.toolName === "string" ? payload.payload.toolName : null,
+          source: typeof payload.payload.source === "string" ? payload.payload.source : null,
         });
       }
 
       setWaitingAssistant((current) => {
         if (!current || current.threadId !== selectedThreadId || payload.idx <= current.afterIdx) return current;
-        if (shouldClearWaitingAssistantOnEvent(payload)) return null;
+        const shouldClear = shouldClearWaitingAssistantOnEvent(payload);
+        debugLog("useChatSession", "waitingAssistant event check", {
+          eventType: payload.type,
+          eventIdx: payload.idx,
+          afterIdx: current.afterIdx,
+          selectedThreadId,
+          shouldClear,
+        });
+        if (shouldClear) {
+          debugLog("useChatSession", "waitingAssistant cleared by SSE event", {
+            eventType: payload.type,
+            eventIdx: payload.idx,
+            selectedThreadId,
+          });
+          return null;
+        }
         return current;
       });
 
@@ -531,7 +540,15 @@ export function useChatSession(
         });
 
         if (messageId.length > 0) {
-          if (role === "assistant") streamingMessageIdsRef.current.add(messageId);
+          if (role === "assistant") {
+            streamingMessageIdsRef.current.add(messageId);
+            debugLog("useChatSession", "streaming message tracked", {
+              selectedThreadId,
+              messageId,
+              reason: "message.delta.assistant",
+              trackedCount: streamingMessageIdsRef.current.size,
+            });
+          }
           pendingMessageMutationsRef.current.push({
             kind: "message-delta",
             id: messageId,
@@ -574,7 +591,16 @@ export function useChatSession(
         const completedMessageId = String(payload.payload.messageId ?? "");
         const completedThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
         const completedBranch = payloadStringOrNull(payload.payload.worktreeBranch);
-        if (completedMessageId.length > 0) streamingMessageIdsRef.current.delete(completedMessageId);
+        if (completedMessageId.length > 0) {
+          const deleted = streamingMessageIdsRef.current.delete(completedMessageId);
+          debugLog("useChatSession", "streaming message untracked", {
+            selectedThreadId,
+            messageId: completedMessageId,
+            reason: "chat.completed",
+            deleted,
+            trackedCount: streamingMessageIdsRef.current.size,
+          });
+        }
         if (completedThreadTitle) {
           setThreads((current) => {
             const target = current.find((t) => t.id === selectedThreadId);
@@ -599,6 +625,28 @@ export function useChatSession(
         // produces a new array reference on every cycle, causing an infinite
         // render loop ("Maximum update depth exceeded") on large threads.
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.messages(selectedThreadId) });
+      }
+
+      if (payload.type === "tool.finished") {
+        const source = payloadStringOrNull(payload.payload.source);
+        if (source === "chat.thread.metadata") {
+          const metadataThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
+          const metadataBranch = payloadStringOrNull(payload.payload.worktreeBranch);
+
+          if (metadataThreadTitle) {
+            setThreads((current) => {
+              const target = current.find((t) => t.id === selectedThreadId);
+              if (target && target.title === metadataThreadTitle) return current;
+              return current.map((t) =>
+                t.id === selectedThreadId ? { ...t, title: metadataThreadTitle } : t,
+              );
+            });
+          }
+
+          if (metadataBranch && selectedWorktreeId) {
+            onBranchRenamed?.(selectedWorktreeId, metadataBranch);
+          }
+        }
       }
     };
 
@@ -714,10 +762,19 @@ export function useChatSession(
 
     setWaitingAssistant((current) => {
       if (!current || current.threadId !== selectedThreadId) return current;
-      const shouldClear = events.some(
+      const matchedEvent = events.find(
         (event) => event.idx > current.afterIdx && shouldClearWaitingAssistantOnEvent(event),
       );
-      return shouldClear ? null : current;
+      if (matchedEvent) {
+        debugLog("useChatSession", "waitingAssistant cleared by events effect", {
+          selectedThreadId,
+          eventType: matchedEvent.type,
+          eventIdx: matchedEvent.idx,
+          afterIdx: current.afterIdx,
+        });
+        return null;
+      }
+      return current;
     });
   }, [events, selectedThreadId]);
 
@@ -828,19 +885,30 @@ export function useChatSession(
 
     if (!selectedThreadId || (!messageContent.trim() && attachmentsToSend.length === 0)) return;
 
+    debugLog("useChatSession", "submitMessage start", {
+      selectedThreadId,
+      contentLength: messageContent.length,
+      attachmentsCount: attachmentsToSend.length,
+    });
     startWaitingAssistant(selectedThreadId);
     setSendingMessage(true);
     onError(null);
 
     try {
       await api.sendMessage(selectedThreadId, { content: messageContent, mode: chatMode, attachments: attachmentsToSend });
+      debugLog("useChatSession", "submitMessage ack", { selectedThreadId });
       setChatInput("");
       setPendingAttachments([]);
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.messages(selectedThreadId) });
     } catch (e) {
+      debugLog("useChatSession", "submitMessage failed", {
+        selectedThreadId,
+        error: e instanceof Error ? e.message : String(e),
+      });
       setWaitingAssistant(null);
       onError(e instanceof Error ? e.message : "Failed to send message");
     } finally {
+      debugLog("useChatSession", "submitMessage end", { selectedThreadId });
       setSendingMessage(false);
     }
   }
@@ -878,6 +946,20 @@ export function useChatSession(
   const showStopAction =
     selectedThreadId != null &&
     (sendingMessage || waitingAssistant?.threadId === selectedThreadId || hasStreamingAssistantMessage);
+
+  const selectedThreadActiveFlag =
+    selectedThreadId != null && threads.some((thread) => thread.id === selectedThreadId && thread.active);
+
+  useEffect(() => {
+    debugLog("useChatSession", "activity flags", {
+      selectedThreadId,
+      sendingMessage,
+      waitingAssistant,
+      hasStreamingAssistantMessage,
+      showStopAction,
+      selectedThreadActiveFlag,
+    });
+  }, [selectedThreadId, sendingMessage, waitingAssistant, hasStreamingAssistantMessage, showStopAction, selectedThreadActiveFlag]);
 
   const stopRequestedForActiveThread = selectedThreadId != null && stopRequestedThreadId === selectedThreadId;
   const stoppingRun =

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.codesymphony.app",
   "build": {
-    "beforeDevCommand": "pnpm --filter @codesymphony/web dev",
+    "beforeDevCommand": "pnpm --filter @codesymphony/web dev -- --port 5174 --strictPort",
     "beforeBuildCommand": "pnpm --filter @codesymphony/web build",
-    "devUrl": "http://127.0.0.1:5173",
+    "devUrl": "http://127.0.0.1:5174",
     "frontendDist": "../../web/dist"
   },
   "app": {
@@ -14,15 +14,23 @@
       {
         "title": "CodeSymphony",
         "width": 1280,
-        "height": 820
+        "height": 820,
+        "visible": false,
+        "useHttpsScheme": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:4322 ws://127.0.0.1:4322 http://localhost:4322 ws://localhost:4322; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "externalBin": [
+      "binaries/node"
+    ],
+    "resources": [
+      "runtime-bundle/**/*"
+    ]
   }
 }

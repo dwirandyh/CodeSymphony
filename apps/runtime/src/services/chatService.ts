@@ -20,10 +20,10 @@ import {
   type ResolvePermissionInput,
   type SendChatMessageInput,
 } from "@codesymphony/shared-types";
-import type { ClaudeToolInstrumentationEvent, PlanDetectionSource, RuntimeDeps } from "../types";
-import { mapChatMessage, mapChatThread } from "./mappers";
-import { isDefaultBranchName } from "./worktreeService";
-import { renameBranch as renameBranchGit } from "./git";
+import type { ClaudeToolInstrumentationEvent, PlanDetectionSource, RuntimeDeps } from "../types.js";
+import { mapChatMessage, mapChatThread } from "./mappers.js";
+import { isDefaultBranchName } from "./worktreeService.js";
+import { renameBranch as renameBranchGit } from "./git.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
@@ -40,7 +40,9 @@ function inferPlanDetectionSource(filePath: string, source?: PlanDetectionSource
     return source;
   }
 
-  return filePath.includes(".claude/plans/") && filePath.endsWith(".md") ? "claude_plan_file" : "streaming_fallback";
+  if (!filePath.endsWith(".md")) return "streaming_fallback";
+  if (filePath.includes(".claude/plans/") || filePath.includes("codesymphony-claude-provider/plans/")) return "claude_plan_file";
+  return "streaming_fallback";
 }
 
 type WorktreeStateSnapshot = {
@@ -412,6 +414,7 @@ export function createChatService(deps: RuntimeDeps) {
 
     clearTimeout(timer);
     scheduledAssistantRunsByThread.delete(threadId);
+    deps.logService?.log("debug", "chat.lifecycle", "cleared scheduled assistant run", { threadId });
     return true;
   }
 
@@ -525,7 +528,7 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  async function maybeAutoRenameThreadAfterFirstAssistantReply(threadId: string): Promise<string | null> {
+  async function maybeAutoRenameThreadAfterFirstAssistantReply(threadId: string, expectedAssistantMessageId: string): Promise<string | null> {
     try {
       const thread = await deps.prisma.chatThread.findUnique({
         where: { id: threadId },
@@ -543,7 +546,7 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       if (!isDefaultThreadTitle(thread.title)) {
-        return thread.title;
+        return null;
       }
 
       const assistantMessageCount = await deps.prisma.chatMessage.count({
@@ -553,7 +556,7 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
       if (assistantMessageCount !== 1) {
-        return thread.title;
+        return null;
       }
 
       const firstUserMessage = await deps.prisma.chatMessage.findFirst({
@@ -569,7 +572,7 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
       if (!firstUserMessage) {
-        return thread.title;
+        return null;
       }
 
       const firstAssistantMessage = await deps.prisma.chatMessage.findFirst({
@@ -581,11 +584,12 @@ export function createChatService(deps: RuntimeDeps) {
           seq: "asc",
         },
         select: {
+          id: true,
           content: true,
         },
       });
-      if (!firstAssistantMessage) {
-        return thread.title;
+      if (!firstAssistantMessage || firstAssistantMessage.id !== expectedAssistantMessageId) {
+        return null;
       }
 
       const nextTitle = await buildThreadTitleWithAi(
@@ -595,7 +599,7 @@ export function createChatService(deps: RuntimeDeps) {
         firstAssistantMessage.content,
       );
       if (!nextTitle || nextTitle === thread.title) {
-        return thread.title;
+        return null;
       }
 
       const updated = await deps.prisma.chatThread.update({
@@ -716,7 +720,7 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  async function maybeAutoRenameBranchAfterFirstAssistantReply(threadId: string): Promise<string | null> {
+  async function maybeAutoRenameBranchAfterFirstAssistantReply(threadId: string, expectedAssistantMessageId: string): Promise<string | null> {
     try {
       const thread = await deps.prisma.chatThread.findUnique({
         where: { id: threadId },
@@ -754,9 +758,9 @@ export function createChatService(deps: RuntimeDeps) {
       const firstAssistantMessage = await deps.prisma.chatMessage.findFirst({
         where: { threadId, role: "assistant" },
         orderBy: { seq: "asc" },
-        select: { content: true },
+        select: { id: true, content: true },
       });
-      if (!firstAssistantMessage) return null;
+      if (!firstAssistantMessage || firstAssistantMessage.id !== expectedAssistantMessageId) return null;
 
       const newBranch = await buildBranchNameWithAi(
         threadId,
@@ -905,9 +909,17 @@ export function createChatService(deps: RuntimeDeps) {
   }
 
   async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
+    deps.logService?.log("debug", "chat.lifecycle", "runAssistant started", {
+      threadId,
+      mode,
+      promptLength: prompt.length,
+      autoAcceptTools: options?.autoAcceptTools ?? false,
+    });
     let assistantMessageId: string | null = null;
     let fullOutput = "";
     let activeProvider: { apiKey: string; baseUrl: string; name: string; modelId: string } | null = null;
+    let threadWorktreePath: string | null = null;
+    let completionEmitted = false;
     const abortController = new AbortController();
     runningAbortControllersByThread.set(threadId, abortController);
 
@@ -929,6 +941,7 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       const worktreePath = thread.worktree.path;
+      threadWorktreePath = worktreePath;
       if (!existsSync(worktreePath)) {
         throw new Error(`Worktree path not found: ${worktreePath}. Create a new worktree from Repository panel.`);
       }
@@ -1154,58 +1167,70 @@ export function createChatService(deps: RuntimeDeps) {
           });
         } catch { /* session id is non-critical */ }
       }
-      const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(threadId);
-      let completionThreadTitle: string | null = renamedThreadTitle;
-      if (!completionThreadTitle) {
-        try {
-          const completionThread = await deps.prisma.chatThread.findUnique({
-            where: { id: threadId },
-            select: {
-              title: true,
-            },
-          });
-          completionThreadTitle = completionThread?.title ?? null;
-        } catch (error) {
-          deps.logService?.log(
-            "warn",
-            "chat.thread.title",
-            "Failed to read thread title for completion payload.",
-            {
-              threadId,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-        }
-      }
-
-      const afterState = await captureWorktreeState(thread.worktree.path);
-      const diffSnapshot = beforeState && afterState ? buildDiffDelta(beforeState, afterState) : null;
-      if (diffSnapshot) {
-        const fileCount = diffSnapshot.changedFiles.length;
-        const summary = fileCount > 0 ? `Edited ${fileCount} file${fileCount === 1 ? "" : "s"}` : "Captured worktree diff";
-
-        await deps.eventHub.emit(threadId, "tool.finished", {
-          summary,
-          precedingToolUseIds: [],
-          source: "worktree.diff",
-          changedFiles: diffSnapshot.changedFiles,
-          diff: diffSnapshot.diff,
-          diffTruncated: diffSnapshot.diffTruncated,
-        });
-      }
-
-      // Only auto-rename branch when there are actual file changes (not just exploration/Q&A)
-      const hasFileChanges = diffSnapshot != null && diffSnapshot.changedFiles.length > 0;
-      const renamedBranch = hasFileChanges
-        ? await maybeAutoRenameBranchAfterFirstAssistantReply(threadId)
-        : null;
-
+      deps.logService?.log("debug", "chat.lifecycle", "run about to emit chat.completed", {
+        threadId,
+        assistantMessageId: assistantMessage.id,
+      });
       await deps.eventHub.emit(threadId, "chat.completed", {
         messageId: assistantMessage.id,
-        ...(completionThreadTitle ? { threadTitle: completionThreadTitle } : {}),
-        ...(renamedBranch ? { worktreeBranch: renamedBranch } : {}),
       });
+      completionEmitted = true;
+
+      void (async () => {
+        try {
+          const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(threadId, assistantMessage.id);
+          if (renamedThreadTitle) {
+            await deps.eventHub.emit(threadId, "tool.finished", {
+              source: "chat.thread.metadata",
+              summary: "Updated thread title",
+              threadTitle: renamedThreadTitle,
+              mode,
+              precedingToolUseIds: [],
+            });
+          }
+
+          const afterState = threadWorktreePath ? await captureWorktreeState(threadWorktreePath) : null;
+          const diffSnapshot = beforeState && afterState ? buildDiffDelta(beforeState, afterState) : null;
+          if (diffSnapshot) {
+            const fileCount = diffSnapshot.changedFiles.length;
+            const summary = fileCount > 0 ? `Edited ${fileCount} file${fileCount === 1 ? "" : "s"}` : "Captured worktree diff";
+
+            await deps.eventHub.emit(threadId, "tool.finished", {
+              summary,
+              precedingToolUseIds: [],
+              source: "worktree.diff",
+              changedFiles: diffSnapshot.changedFiles,
+              diff: diffSnapshot.diff,
+              diffTruncated: diffSnapshot.diffTruncated,
+            });
+
+            // Only auto-rename branch when there are actual file changes (not just exploration/Q&A)
+            const hasFileChanges = diffSnapshot.changedFiles.length > 0;
+            if (hasFileChanges) {
+              const renamedBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(threadId, assistantMessage.id);
+              if (renamedBranch) {
+                await deps.eventHub.emit(threadId, "tool.finished", {
+                  source: "chat.thread.metadata",
+                  summary: "Updated worktree branch",
+                  worktreeBranch: renamedBranch,
+                  mode,
+                  precedingToolUseIds: [],
+                });
+              }
+            }
+          }
+        } catch (postError) {
+          deps.logService?.log("warn", "chat.lifecycle", "Post-completion enrichment failed", {
+            threadId,
+            error: postError instanceof Error ? postError.message : String(postError),
+          });
+        }
+      })();
     } catch (error) {
+      deps.logService?.log("error", "chat.lifecycle", "runAssistant failed", {
+        threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       let errorMessage = error instanceof Error ? error.message : "Unknown chat error";
       const wasCancelled = abortController.signal.aborted || isAbortError(error);
 
@@ -1223,32 +1248,63 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       if (wasCancelled) {
-        await deps.eventHub.emit(threadId, "chat.completed", {
-          ...(assistantMessageId ? { messageId: assistantMessageId } : {}),
-          cancelled: true,
-        });
+        if (!completionEmitted) {
+          deps.logService?.log("debug", "chat.lifecycle", "run cancelled, emitting chat.completed(cancelled)", {
+            threadId,
+            assistantMessageId,
+          });
+          await deps.eventHub.emit(threadId, "chat.completed", {
+            ...(assistantMessageId ? { messageId: assistantMessageId } : {}),
+            cancelled: true,
+          });
+        }
       } else {
         await deps.eventHub.emit(threadId, "chat.failed", {
           message: errorMessage,
         });
       }
     } finally {
+      deps.logService?.log("debug", "chat.lifecycle", "runAssistant entering finally", {
+        threadId,
+      });
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
         flushTimer = null;
       }
       runningAbortControllersByThread.delete(threadId);
+      const hadScheduled = scheduledAssistantRunsByThread.has(threadId);
       scheduledAssistantRunsByThread.delete(threadId);
+      deps.logService?.log("debug", "chat.lifecycle", "run cleanup removed scheduling + abort state", {
+        threadId,
+        hadScheduled,
+      });
       rejectPendingPermissions(threadId, "Permission request cancelled because the chat run ended.");
       rejectPendingQuestions(threadId, "Question cancelled because the chat run ended.");
+      const wasActive = activeThreads.has(threadId);
       activeThreads.delete(threadId);
+      deps.logService?.log("debug", "chat.lifecycle", "activeThreads cleared", {
+        threadId,
+        wasActive,
+      });
     }
   }
 
   function scheduleAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): void {
     clearScheduledAssistantRun(threadId);
+    deps.logService?.log("debug", "chat.lifecycle", "scheduling assistant run", {
+      threadId,
+      mode,
+      delayMs: AUTO_EXECUTE_DELAY_MS,
+    });
+    const scheduledAt = Date.now();
     const timer = setTimeout(() => {
+      const waitedMs = Date.now() - scheduledAt;
       scheduledAssistantRunsByThread.delete(threadId);
+      deps.logService?.log("debug", "chat.lifecycle", "scheduled assistant run started", {
+        threadId,
+        mode,
+        waitedMs,
+      });
       void runAssistant(threadId, prompt, mode, options);
     }, AUTO_EXECUTE_DELAY_MS);
     scheduledAssistantRunsByThread.set(threadId, timer);
@@ -1547,9 +1603,15 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       if (activeThreads.has(threadId)) {
+        deps.logService?.log("debug", "chat.lifecycle", "sendMessage rejected because thread still active", {
+          threadId,
+        });
         throw new Error("Assistant is still processing the previous message");
       }
       activeThreads.add(threadId);
+      deps.logService?.log("debug", "chat.lifecycle", "sendMessage marked thread active", {
+        threadId,
+      });
 
       try {
         const seq = await nextMessageSeq(deps.prisma, threadId);

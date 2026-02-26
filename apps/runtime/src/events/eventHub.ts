@@ -1,6 +1,6 @@
 import type { Prisma, ChatEvent as DbChatEvent, ChatEventType as DbChatEventType } from "@prisma/client";
 import type { ChatEvent, ChatEventType } from "@codesymphony/shared-types";
-import type { RuntimeEventHub } from "../types";
+import type { RuntimeEventHub } from "../types.js";
 import type { PrismaClient } from "@prisma/client";
 
 const typeToDb: Record<ChatEventType, DbChatEventType> = {

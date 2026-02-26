@@ -1,33 +1,33 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-export function findLatestPlanFile(afterTimestamp: number): { filePath: string; content: string } | null {
-    const plansDir = join(homedir(), ".claude", "plans");
-    if (!existsSync(plansDir)) {
-        return null;
-    }
-
-    let latestFile: { filePath: string; mtime: number } | null = null;
+function scanPlanDir(dir: string, afterTimestamp: number): { filePath: string; mtime: number } | null {
+    if (!existsSync(dir)) return null;
+    let latest: { filePath: string; mtime: number } | null = null;
     try {
-        const entries = readdirSync(plansDir);
-        for (const entry of entries) {
-            if (!entry.endsWith(".md")) {
-                continue;
-            }
-            const filePath = join(plansDir, entry);
+        for (const entry of readdirSync(dir)) {
+            if (!entry.endsWith(".md")) continue;
+            const filePath = join(dir, entry);
             const stat = statSync(filePath);
-            if (stat.mtimeMs > afterTimestamp && (!latestFile || stat.mtimeMs > latestFile.mtime)) {
-                latestFile = { filePath, mtime: stat.mtimeMs };
+            if (stat.mtimeMs > afterTimestamp && (!latest || stat.mtimeMs > latest.mtime)) {
+                latest = { filePath, mtime: stat.mtimeMs };
             }
         }
-    } catch {
-        return null;
-    }
+    } catch { /* skip unreadable dirs */ }
+    return latest;
+}
 
-    if (!latestFile) {
-        return null;
-    }
+export function findLatestPlanFile(afterTimestamp: number): { filePath: string; content: string } | null {
+    const candidates = [
+        scanPlanDir(join(homedir(), ".claude", "plans"), afterTimestamp),
+        scanPlanDir(join(tmpdir(), "codesymphony-claude-provider", "plans"), afterTimestamp),
+    ].filter(Boolean) as { filePath: string; mtime: number }[];
+
+    candidates.sort((a, b) => b.mtime - a.mtime);
+    const latestFile = candidates[0] ?? null;
+
+    if (!latestFile) return null;
 
     try {
         const content = readFileSync(latestFile.filePath, "utf-8");

@@ -1,3 +1,5 @@
+import { resolveRuntimeApiBase } from "./runtimeUrl";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export interface LogEntry {
@@ -17,15 +19,7 @@ const MIRROR_DEBOUNCE_MS = 200;
 const MIRROR_INITIAL_RETRY_MS = 500;
 const MIRROR_MAX_RETRY_MS = 8000;
 
-const DEFAULT_RUNTIME_API_BASE =
-  typeof window === "undefined"
-    ? "http://127.0.0.1:4321/api"
-    : `${window.location.protocol}//${window.location.hostname}:4321/api`;
-
-const RUNTIME_API_BASE =
-  typeof import.meta !== "undefined" && import.meta.env?.VITE_RUNTIME_URL
-    ? import.meta.env.VITE_RUNTIME_URL
-    : DEFAULT_RUNTIME_API_BASE;
+const RUNTIME_API_BASE = resolveRuntimeApiBase();
 
 const CLIENT_LOG_ENDPOINT = `${RUNTIME_API_BASE}/logs/client`;
 const SESSION_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;

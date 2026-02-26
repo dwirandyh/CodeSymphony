@@ -1,7 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Play, XCircle } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Loader2, Play } from "lucide-react";
 import { ScrollArea } from "../ui/scroll-area";
 import { Button } from "../ui/button";
+
+const TerminalTab = lazy(() =>
+  import("./TerminalTab").then((m) => ({ default: m.TerminalTab })),
+);
 
 export interface ScriptOutputEntry {
   id: string;
@@ -18,117 +22,129 @@ interface ScriptOutputTabProps {
   entries: ScriptOutputEntry[];
   onRerunSetup?: () => void;
   rerunning?: boolean;
+  scriptRunnerSessionId: string | null;
+  worktreePath: string | null;
+  onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
 }
 
-export function ScriptOutputTab({ entries, onRerunSetup, rerunning }: ScriptOutputTabProps) {
+export function ScriptOutputTab({
+  entries,
+  onRerunSetup,
+  rerunning,
+  scriptRunnerSessionId,
+  worktreePath,
+  onRunScriptExit,
+}: ScriptOutputTabProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const [setupCollapsed, setSetupCollapsed] = useState(false);
+  const [runCollapsed, setRunCollapsed] = useState(false);
 
-  const latestOutputLength = entries[entries.length - 1]?.output.length ?? 0;
+  const setupEntries = useMemo(
+    () => entries.filter((entry) => entry.type === "setup" || entry.type === "teardown"),
+    [entries],
+  );
+
+  const setupOutput = useMemo(
+    () => setupEntries.map((entry) => entry.output).join(""),
+    [setupEntries],
+  );
+
+  const latestSetupOutputLength = setupEntries[setupEntries.length - 1]?.output.length ?? 0;
 
   useEffect(() => {
+    if (setupCollapsed) {
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [entries.length, latestOutputLength]);
+  }, [setupEntries.length, latestSetupOutputLength, setupCollapsed]);
 
-  function toggleCollapse(id: string) {
-    setCollapsedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }
+  useEffect(() => {
+    if (scriptRunnerSessionId) {
+      setRunCollapsed(false);
+    }
+  }, [scriptRunnerSessionId]);
 
   return (
-    <div className="flex h-full flex-col">
-      {/* Toolbar */}
-      {onRerunSetup && (
-        <div className="flex items-center gap-2 border-b border-border/20 px-2 py-1">
-          <Button
+    <div className="flex h-full flex-col gap-2 overflow-auto p-2">
+      <div className="overflow-hidden rounded-md border border-border/20 bg-card/30">
+        <div className="flex items-center gap-2 px-2 py-1.5">
+          <button
             type="button"
-            variant="ghost"
-            size="sm"
-            className="h-6 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-            disabled={rerunning}
-            onClick={onRerunSetup}
+            onClick={() => setSetupCollapsed((prev) => !prev)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
           >
-            {rerunning ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
+            {setupCollapsed ? (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
             ) : (
-              <Play className="h-3 w-3" />
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
             )}
-            Re-run setup
-          </Button>
+            <span className="text-xs font-medium text-foreground">Setup Script</span>
+          </button>
+
+          {onRerunSetup && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              disabled={rerunning}
+              onClick={onRerunSetup}
+            >
+              {rerunning ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Play className="h-3 w-3" />
+              )}
+              Re-run setup
+            </Button>
+          )}
         </div>
-      )}
 
-      {/* Entries */}
-      {entries.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
-          No script output yet.
-        </div>
-      ) : (
-        <ScrollArea className="flex-1">
-          <div className="space-y-1 p-2 font-mono text-xs">
-            {entries.map((entry) => {
-              const isCollapsed = collapsedIds.has(entry.id);
-              const isRunning = entry.status === "running";
-
-              return (
-                <div key={entry.id} className="rounded border border-border/20 bg-background/30">
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
-                    onClick={() => toggleCollapse(entry.id)}
-                  >
-                    {isCollapsed ? (
-                      <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                    )}
-                    {isRunning ? (
-                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-400" />
-                    ) : entry.success ? (
-                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-500" />
-                    ) : (
-                      <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
-                    )}
-                    <span className="font-semibold text-foreground">
-                      {entry.worktreeName}
-                    </span>
-                    <span className="text-muted-foreground">
-                      {entry.type}
-                    </span>
-                    {isRunning && (
-                      <span className="text-[10px] text-blue-400">running...</span>
-                    )}
-                    <span className="ml-auto text-[10px] text-muted-foreground">
-                      {new Date(entry.timestamp).toLocaleTimeString()}
-                    </span>
-                  </button>
-
-                  {!isCollapsed && (
-                    <div className="px-2 pb-2">
-                      {entry.output ? (
-                        <pre className="max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded bg-black/20 px-2 py-1 text-[11px] text-muted-foreground">
-                          {entry.output}
-                        </pre>
-                      ) : isRunning ? (
-                        <div className="text-[11px] text-muted-foreground/60">Waiting for output...</div>
-                      ) : (
-                        <div className="text-[11px] text-muted-foreground/60">No output.</div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            <div ref={bottomRef} />
+        {!setupCollapsed && (
+          <div className="border-t border-border/10">
+            {setupEntries.length === 0 ? (
+              <div className="px-2 py-3 text-xs text-muted-foreground">No setup output yet.</div>
+            ) : (
+              <ScrollArea className={scriptRunnerSessionId ? "max-h-40" : "max-h-[280px]"}>
+                <pre className="whitespace-pre-wrap break-all p-2 font-mono text-[11px] text-muted-foreground">
+                  {setupOutput}
+                </pre>
+                <div ref={bottomRef} />
+              </ScrollArea>
+            )}
           </div>
-        </ScrollArea>
+        )}
+      </div>
+
+      {scriptRunnerSessionId && (
+        <div className="overflow-hidden rounded-md border border-border/20 bg-card/30">
+          <button
+            type="button"
+            onClick={() => setRunCollapsed((prev) => !prev)}
+            className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left"
+          >
+            {runCollapsed ? (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+            )}
+            <span className="text-xs font-medium text-foreground">Run Script</span>
+          </button>
+
+          {!runCollapsed && (
+            <div className="h-56 border-t border-border/10">
+              <Suspense
+                fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}
+              >
+                <TerminalTab
+                  sessionId={scriptRunnerSessionId}
+                  cwd={worktreePath}
+                  onSessionExit={onRunScriptExit}
+                />
+              </Suspense>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

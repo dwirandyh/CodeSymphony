@@ -2,9 +2,9 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { ClaudeRunner, ClaudeToolInstrumentationDecision, ClaudeToolInstrumentationEvent } from "../types";
+import type { ClaudeRunner, ClaudeToolInstrumentationDecision, ClaudeToolInstrumentationEvent } from "../types.js";
 
-import { sanitizeForLog, truncateForPreview, toIso } from "./sanitize";
+import { sanitizeForLog, truncateForPreview, toIso } from "./sanitize.js";
 import {
   isBashTool,
   isSearchTool,
@@ -15,18 +15,18 @@ import {
   searchParamsFromUnknownToolInput,
   editTargetFromUnknownToolInput,
   type ToolMetadata,
-} from "./toolClassification";
-import { completionSummaryFromMetadata, failureSummaryFromMetadata } from "./toolSummary";
-import { extractBashToolResult, type BashToolResult } from "./bashResult";
+} from "./toolClassification.js";
+import { completionSummaryFromMetadata, failureSummaryFromMetadata } from "./toolSummary.js";
+import { extractBashToolResult, type BashToolResult } from "./bashResult.js";
 import {
   DEFAULT_CLAUDE_EXECUTABLE,
   buildExecutableCandidates,
   selectExecutableForCurrentProcess,
   captureStderrLine,
   withClaudeSetupHint,
-} from "./executableResolver";
-import { parseSubagentTranscript, extractSubagentResponse } from "./subagentTranscript";
-import { findLatestPlanFile } from "./planFile";
+} from "./executableResolver.js";
+import { parseSubagentTranscript, extractSubagentResponse } from "./subagentTranscript.js";
+import { findLatestPlanFile } from "./planFile.js";
 
 // Re-export for backward-compatible __testing API used by existing tests
 export const __testing = {

@@ -35,9 +35,10 @@ interface BottomPanelProps {
     scriptOutputs: ScriptOutputEntry[];
     activeTab: string;
     onTabChange: (tab: string) => void;
-    outputSection: "runner" | "logs";
-    onOutputSectionChange: (section: "runner" | "logs") => void;
     onRerunSetup?: () => void;
+    runScriptActive: boolean;
+    onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
+    openSignal?: number;
 }
 
 export function BottomPanel({
@@ -47,9 +48,10 @@ export function BottomPanel({
     scriptOutputs,
     activeTab,
     onTabChange,
-    outputSection,
-    onOutputSectionChange,
     onRerunSetup,
+    runScriptActive,
+    onRunScriptExit,
+    openSignal,
 }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
     const [collapsed, setCollapsed] = useState(() => {
@@ -59,14 +61,15 @@ export function BottomPanel({
     const panelRef = useRef<HTMLDivElement>(null);
     const startYRef = useRef(0);
     const startHeightRef = useRef(0);
+    const prevOpenSignalRef = useRef<number | undefined>(openSignal);
 
     const filteredOutputs = useMemo(
         () => worktreeId ? scriptOutputs.filter((e) => e.worktreeId === worktreeId) : [],
         [scriptOutputs, worktreeId],
     );
     const scriptRunnerSessionId = useMemo(
-        () => (worktreeId ? `${worktreeId}:script-runner` : null),
-        [worktreeId],
+        () => (worktreeId && runScriptActive ? `${worktreeId}:script-runner` : null),
+        [worktreeId, runScriptActive],
     );
 
     const handleMouseDown = useCallback(
@@ -120,6 +123,16 @@ export function BottomPanel({
             document.removeEventListener("touchend", handleEnd);
         };
     }, [isDragging]);
+
+    useEffect(() => {
+        if (openSignal === undefined) {
+            return;
+        }
+        if (prevOpenSignalRef.current !== openSignal) {
+            setCollapsed(false);
+            prevOpenSignalRef.current = openSignal;
+        }
+    }, [openSignal]);
 
     return (
         <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-3">
@@ -180,7 +193,7 @@ export function BottomPanel({
                 {/* Panel body — hidden via CSS when collapsed so children stay mounted */}
                 <div
                     ref={panelRef}
-                    className={`flex flex-col ${collapsed ? "invisible h-0 overflow-hidden" : ""}`}
+                    className={`flex flex-col overflow-hidden ${collapsed ? "invisible h-0" : ""}`}
                     style={collapsed ? undefined : { height: `${height}px` }}
                 >
                     {/* Resize handle — taller tap target on mobile */}
@@ -208,43 +221,15 @@ export function BottomPanel({
                         <DebugConsoleTab selectedThreadId={selectedThreadId} />
                     </Tabs.Content>
 
-                    <Tabs.Content value="output" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                        <div className="flex h-full min-h-0 flex-col">
-                            {scriptRunnerSessionId && (
-                                <div className="min-h-0 shrink-0 border-b border-border/20">
-                                    <button
-                                        type="button"
-                                        className="flex w-full items-center justify-between px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:text-foreground"
-                                        onClick={() => onOutputSectionChange("runner")}
-                                    >
-                                        <span>Script Runner</span>
-                                        <span className="text-[9px]">{outputSection === "runner" ? "Expanded" : "Collapsed"}</span>
-                                    </button>
-                                    {outputSection === "runner" && (
-                                        <div className="h-[180px]">
-                                            <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading script runner...</div>}>
-                                                <TerminalTab sessionId={scriptRunnerSessionId} cwd={worktreePath} />
-                                            </Suspense>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                            <div className="min-h-0 flex-1">
-                                <button
-                                    type="button"
-                                    className="flex w-full items-center justify-between border-b border-border/20 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground transition-colors hover:text-foreground"
-                                    onClick={() => onOutputSectionChange("logs")}
-                                >
-                                    <span>Script Output</span>
-                                    <span className="text-[9px]">{outputSection === "logs" ? "Expanded" : "Collapsed"}</span>
-                                </button>
-                                {outputSection === "logs" && (
-                                    <div className="min-h-0 h-full">
-                                        <ScriptOutputTab entries={filteredOutputs} onRerunSetup={onRerunSetup} rerunning={filteredOutputs.some((e) => e.status === "running")} />
-                                    </div>
-                                )}
-                            </div>
-                        </div>
+                    <Tabs.Content value="output" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
+                        <ScriptOutputTab
+                            entries={filteredOutputs}
+                            onRerunSetup={onRerunSetup}
+                            rerunning={filteredOutputs.some((e) => e.type !== "run" && e.status === "running")}
+                            scriptRunnerSessionId={scriptRunnerSessionId}
+                            worktreePath={worktreePath}
+                            onRunScriptExit={onRunScriptExit}
+                        />
                     </Tabs.Content>
                 </div>
             </Tabs.Root>

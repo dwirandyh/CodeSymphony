@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Menu, Play, Settings, Square, X } from "lucide-react";
+import { GitBranch, Menu, Settings, X } from "lucide-react";
 import type { ModelProvider } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/Composer";
 import { ChatMessageList } from "../components/workspace/ChatMessageList";
@@ -14,6 +14,8 @@ import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
 import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Button } from "../components/ui/button";
 
 const DiffReviewPanel = lazy(() =>
   import("../components/workspace/DiffReviewPanel").then(m => ({ default: m.DiffReviewPanel }))
@@ -29,11 +31,33 @@ import { useSidebarResize } from "./workspace/hooks/useSidebarResize";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
+import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../lib/queryKeys";
 
 type RepoManager = ReturnType<typeof useRepositoryManager>;
 type GitChangesData = ReturnType<typeof useGitChanges>;
+
+function createRunScriptToken(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function FilledPlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <path fill="currentColor" d="M4 2.5v11l9-5.5-9-5.5z" />
+    </svg>
+  );
+}
+
+function FilledPauseIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <rect x="3.5" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
+      <rect x="9" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
+    </svg>
+  );
+}
 
 const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos, onOpenSettings }: { repos: RepoManager; onOpenSettings: () => void }) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
@@ -210,9 +234,11 @@ export function WorkspacePage() {
 
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [activeBottomTab, setActiveBottomTab] = useState("terminal");
-  const [activeOutputSection, setActiveOutputSection] = useState<"runner" | "logs">("logs");
+  const [bottomPanelOpenSignal, setBottomPanelOpenSignal] = useState(0);
   const [runScriptActive, setRunScriptActive] = useState(false);
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
+  const runScriptWorktreeIdRef = useRef<string | null>(null);
+  const runScriptTokenRef = useRef<string | null>(null);
 
   // ── Model/Provider state ──
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
@@ -264,7 +290,6 @@ export function WorkspacePage() {
     });
     setActiveBottomTab("output");
     if (event.type === "setup" || event.type === "teardown") {
-      setActiveOutputSection("logs");
     }
   }, []);
 
@@ -278,6 +303,36 @@ export function WorkspacePage() {
         ? { ...entry, output: entry.output + chunk }
         : entry
     ));
+  }, []);
+
+  const handleRunScriptTerminalExit = useCallback(({ exitCode, signal }: { exitCode: number; signal: number }) => {
+    const targetWorktreeId = runScriptWorktreeIdRef.current;
+    const token = runScriptTokenRef.current;
+    debugLog("WorkspacePage", "run:session-exit", {
+      exitCode,
+      signal,
+      targetWorktreeId,
+      token,
+    });
+    debugLog("WorkspacePage", "run:state", {
+      nextActive: false,
+      reason: "session-exit",
+      exitCode,
+      signal,
+      token,
+    });
+    setRunScriptActive(false);
+
+    if (targetWorktreeId) {
+      setScriptOutputs((prev) => prev.map((entry) =>
+        entry.worktreeId === targetWorktreeId && entry.type === "run" && entry.status === "running"
+          ? { ...entry, status: "completed", success: exitCode === 0 }
+          : entry,
+      ));
+    }
+
+    runScriptWorktreeIdRef.current = null;
+    runScriptTokenRef.current = null;
   }, []);
 
   const repos = useRepositoryManager(setError, {
@@ -323,6 +378,7 @@ export function WorkspacePage() {
   const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
 
   // ── What-changed detector ──
@@ -360,12 +416,28 @@ export function WorkspacePage() {
     "gitChanges.loading": gitChanges.loading,
     mobilePanelOpen,
   };
+
+  const canSendNow =
+    !!chat.selectedThreadId &&
+    !chat.sendingMessage &&
+    !gates.planActionBusy &&
+    !gates.isWaitingForUserGate;
   const changed: string[] = [];
   for (const [key, val] of Object.entries(trackables)) {
     if (prevRefsRef.current[key] !== val) changed.push(key);
   }
   prevRefsRef.current = { ...trackables };
-  debugLog("WorkspacePage", "render", { renderCount: renderCountRef.current, changed });
+  debugLog("WorkspacePage", "render", {
+    renderCount: renderCountRef.current,
+    changed,
+    selectedThreadId: chat.selectedThreadId,
+    canSendNow,
+    showStopAction: chat.showStopAction,
+    sendingMessage: chat.sendingMessage,
+    waitingAssistant: chat.waitingAssistant,
+    isWaitingForUserGate: gates.isWaitingForUserGate,
+    hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
+  });
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
 
   const activeView = search.view ?? "chat";
@@ -386,8 +458,10 @@ export function WorkspacePage() {
     };
   }, [mobilePanelOpen]);
 
+  const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
+
   const showThinkingPlaceholder =
-    chat.waitingAssistant?.threadId === chat.selectedThreadId && !gates.isWaitingForUserGate;
+    waitingAssistantThreadId === chat.selectedThreadId && !gates.isWaitingForUserGate;
 
   const openReadFile = useCallback(
     async (filePath: string) => {
@@ -427,7 +501,6 @@ export function WorkspacePage() {
   const handleRerunSetup = useCallback(() => {
     if (!repos.selectedWorktreeId) return;
     setActiveBottomTab("output");
-    setActiveOutputSection("logs");
     void repos.rerunSetup(repos.selectedWorktreeId);
   }, [repos.rerunSetup, repos.selectedWorktreeId]);
 
@@ -437,9 +510,23 @@ export function WorkspacePage() {
   }, [repos.selectedWorktreeId]);
 
   useEffect(() => {
+    debugLog("WorkspacePage", "run:state", {
+      nextActive: false,
+      reason: "selected-worktree-changed",
+      selectedWorktreeId: repos.selectedWorktreeId,
+    });
     setRunScriptActive(false);
-    setActiveOutputSection("logs");
+    runScriptWorktreeIdRef.current = null;
+    runScriptTokenRef.current = null;
   }, [repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    debugLog("WorkspacePage", "run:active-changed", {
+      runScriptActive,
+      selectedWorktreeId: repos.selectedWorktreeId,
+      token: runScriptTokenRef.current,
+    });
+  }, [runScriptActive, repos.selectedWorktreeId]);
 
   const handleRunScript = useCallback(async () => {
     if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
@@ -450,20 +537,54 @@ export function WorkspacePage() {
       setSettingsOpen(true);
       return;
     }
-    const command = runCommands.join("\n");
+    const shellScript = runCommands.join(" ; ");
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
 
     try {
       setActiveBottomTab("output");
-      setActiveOutputSection("runner");
-      await api.runTerminalCommand({
+      setBottomPanelOpenSignal((prev) => prev + 1);
+      const runToken = createRunScriptToken();
+      debugLog("WorkspacePage", "run:start", {
+        selectedWorktreeId: repos.selectedWorktreeId,
         sessionId,
-        command,
-        cwd: repos.selectedWorktree.path,
+        runToken,
+        runCommandsCount: runCommands.length,
+      });
+      debugLog("WorkspacePage", "run:state", {
+        nextActive: true,
+        reason: "run-start",
+        token: runToken,
+        sessionId,
       });
       setRunScriptActive(true);
+      runScriptWorktreeIdRef.current = repos.selectedWorktreeId;
+      runScriptTokenRef.current = runToken;
+      await api.runTerminalCommand({
+        sessionId,
+        command: shellScript,
+        cwd: repos.selectedWorktree.path,
+        mode: "exec",
+      });
+      debugLog("WorkspacePage", "run:command-dispatched", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        runToken,
+      });
     } catch (e) {
+      debugLog("WorkspacePage", "run:command-error", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        token: runScriptTokenRef.current,
+        error: e instanceof Error ? e.message : "unknown error",
+      });
+      runScriptWorktreeIdRef.current = null;
+      runScriptTokenRef.current = null;
+      debugLog("WorkspacePage", "run:state", {
+        nextActive: false,
+        reason: "run-command-error",
+      });
+      setRunScriptActive(false);
       setError(e instanceof Error ? e.message : "Failed to run script");
     }
   }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, resolveRunScriptSessionId]);
@@ -472,16 +593,44 @@ export function WorkspacePage() {
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
     try {
+      debugLog("WorkspacePage", "run:stop-request", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        token: runScriptTokenRef.current,
+      });
       setActiveBottomTab("output");
-      setActiveOutputSection("runner");
+      setBottomPanelOpenSignal((prev) => prev + 1);
       await api.interruptTerminalSession(sessionId);
+      debugLog("WorkspacePage", "run:state", {
+        nextActive: false,
+        reason: "stop-requested",
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        token: runScriptTokenRef.current,
+      });
       setRunScriptActive(false);
+      runScriptWorktreeIdRef.current = null;
+      runScriptTokenRef.current = null;
+      debugLog("WorkspacePage", "run:stop-complete", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+      });
     } catch (e) {
+      debugLog("WorkspacePage", "run:stop-error", {
+        selectedWorktreeId: repos.selectedWorktreeId,
+        sessionId,
+        error: e instanceof Error ? e.message : "unknown error",
+      });
       setError(e instanceof Error ? e.message : "Failed to stop script");
     }
-  }, [resolveRunScriptSessionId]);
+  }, [repos.selectedWorktreeId, resolveRunScriptSessionId]);
 
   const handleToggleRunScript = useCallback(() => {
+    debugLog("WorkspacePage", "run:toggle", {
+      runScriptActive,
+      selectedWorktreeId: repos.selectedWorktreeId,
+      token: runScriptTokenRef.current,
+    });
     if (runScriptActive) {
       void handleStopRunScript();
       return;
@@ -504,6 +653,47 @@ export function WorkspacePage() {
     },
     [chat.setSelectedThreadId, updateSearch],
   );
+
+  const handleRequestCloseThread = useCallback((threadId: string) => {
+    const targetThread = chat.threads.find((thread) => thread.id === threadId) ?? null;
+    const needsConfirm = shouldConfirmCloseThread({
+      threadId,
+      selectedThreadId: chat.selectedThreadId,
+      showStopAction: chat.showStopAction,
+      waitingAssistantThreadId,
+      threads: chat.threads,
+    });
+
+    debugLog("WorkspacePage", "close-thread decision", {
+      threadId,
+      selectedThreadId: chat.selectedThreadId,
+      targetThreadActive: targetThread?.active ?? null,
+      showStopAction: chat.showStopAction,
+      waitingAssistantThreadId,
+      canSendNow,
+      needsConfirm,
+    });
+
+    if (needsConfirm) {
+      setConfirmCloseThreadId(threadId);
+      return;
+    }
+
+    void chat.closeThread(threadId);
+  }, [canSendNow, chat.closeThread, chat.selectedThreadId, chat.showStopAction, chat.threads, waitingAssistantThreadId]);
+
+  const handleConfirmCloseThread = useCallback(async () => {
+    if (!confirmCloseThreadId) return;
+    const threadId = confirmCloseThreadId;
+    await chat.closeThread(threadId);
+    setConfirmCloseThreadId(null);
+  }, [chat.closeThread, confirmCloseThreadId]);
+
+  const confirmCloseThread = confirmCloseThreadId
+    ? chat.threads.find((thread) => thread.id === confirmCloseThreadId) ?? null
+    : null;
+  const closingConfirmedThread =
+    confirmCloseThreadId !== null && chat.closingThreadId === confirmCloseThreadId;
 
   return (
     <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-3 lg:pb-0">
@@ -535,9 +725,9 @@ export function WorkspacePage() {
               aria-label={runScriptActive ? "Stop script" : "Run script"}
             >
               {runScriptActive ? (
-                <Square className="h-4 w-4" />
+                <FilledPauseIcon className="h-4 w-4" />
               ) : (
-                <Play className="h-4 w-4" />
+                <FilledPlayIcon className="h-4 w-4" />
               )}
             </button>
             <button
@@ -568,7 +758,7 @@ export function WorkspacePage() {
               reviewTabActive={activeView === "review"}
               onSelectThread={handleSelectThread}
               onCreateThread={() => void chat.createAdditionalThread()}
-              onCloseThread={(threadId) => void chat.closeThread(threadId)}
+              onCloseThread={handleRequestCloseThread}
               onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
               runScriptRunning={runScriptActive}
@@ -679,9 +869,10 @@ export function WorkspacePage() {
             scriptOutputs={scriptOutputs}
             activeTab={activeBottomTab}
             onTabChange={setActiveBottomTab}
-            outputSection={activeOutputSection}
-            onOutputSectionChange={setActiveOutputSection}
             onRerunSetup={handleRerunSetup}
+            runScriptActive={runScriptActive}
+            onRunScriptExit={handleRunScriptTerminalExit}
+            openSignal={bottomPanelOpenSignal}
           />
         </main>
 
@@ -822,6 +1013,41 @@ export function WorkspacePage() {
         onForceDelete={(id) => void handleForceDelete(id)}
         onClose={() => setTeardownError(null)}
       />
+
+      <Dialog
+        open={confirmCloseThreadId !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setConfirmCloseThreadId(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Close session?</DialogTitle>
+            <DialogDescription>
+              {confirmCloseThread
+                ? `AI is still responding in "${confirmCloseThread.title}". Closing now will end this session.`
+                : "AI is still responding in this session. Closing now will end this session."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmCloseThreadId(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => void handleConfirmCloseThread()}
+              disabled={closingConfirmedThread}
+            >
+              Close session
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,11 +1,13 @@
 import { mkdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import prismaClientPkg, { type PrismaClient } from "@prisma/client";
 import { CreateWorktreeInputSchema, type CreateWorktreeInput, type ScriptResult, type Worktree } from "@codesymphony/shared-types";
-import { createGitWorktree, removeGitWorktree, renameBranch as renameBranchGit } from "./git";
-import { mapWorktree } from "./mappers";
-import { runScripts } from "./scriptRunner";
+import { createGitWorktree, removeGitWorktree, renameBranch as renameBranchGit } from "./git.js";
+import { mapWorktree } from "./mappers.js";
+import { runScripts } from "./scriptRunner.js";
+
+const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
 
 export interface CreateWorktreeResult {
   worktree: Worktree;

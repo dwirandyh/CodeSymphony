@@ -2,27 +2,27 @@ import Fastify, { type FastifyError } from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { ZodError } from "zod";
-import { prisma } from "./db/prisma";
-import { createEventHub } from "./events/eventHub";
-import { runClaudeWithStreaming } from "./claude/sessionRunner";
-import { createRepositoryService } from "./services/repositoryService";
-import { createWorktreeService } from "./services/worktreeService";
-import { createChatService } from "./services/chatService";
-import { createSystemService } from "./services/systemService";
-import { createFileService } from "./services/fileService";
-import { createTerminalService } from "./services/terminalService";
-import { createLogService } from "./services/logService";
-import { createFilesystemService } from "./services/filesystemService";
-import { createScriptStreamService } from "./services/scriptStreamService";
-import { createModelProviderService } from "./services/modelProviderService";
-import { registerRepositoryRoutes } from "./routes/repositories";
-import { registerChatRoutes } from "./routes/chats";
-import { registerSystemRoutes } from "./routes/system";
-import { registerTerminalRoutes } from "./routes/terminal";
-import { registerLogRoutes } from "./routes/logs";
-import { registerFilesystemRoutes } from "./routes/filesystem";
-import { registerDebugRoutes } from "./routes/debug";
-import { registerModelRoutes } from "./routes/models";
+import { prisma } from "./db/prisma.js";
+import { createEventHub } from "./events/eventHub.js";
+import { runClaudeWithStreaming } from "./claude/sessionRunner.js";
+import { createRepositoryService } from "./services/repositoryService.js";
+import { createWorktreeService } from "./services/worktreeService.js";
+import { createChatService } from "./services/chatService.js";
+import { createSystemService } from "./services/systemService.js";
+import { createFileService } from "./services/fileService.js";
+import { createTerminalService } from "./services/terminalService.js";
+import { createLogService } from "./services/logService.js";
+import { createFilesystemService } from "./services/filesystemService.js";
+import { createScriptStreamService } from "./services/scriptStreamService.js";
+import { createModelProviderService } from "./services/modelProviderService.js";
+import { registerRepositoryRoutes } from "./routes/repositories.js";
+import { registerChatRoutes } from "./routes/chats.js";
+import { registerSystemRoutes } from "./routes/system.js";
+import { registerTerminalRoutes } from "./routes/terminal.js";
+import { registerLogRoutes } from "./routes/logs.js";
+import { registerFilesystemRoutes } from "./routes/filesystem.js";
+import { registerDebugRoutes } from "./routes/debug.js";
+import { registerModelRoutes } from "./routes/models.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -119,20 +119,34 @@ function createApp() {
   return app;
 }
 
-const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
-const port = Number(process.env.RUNTIME_PORT ?? "4321");
+async function main() {
+  // Run Prisma migrations in production before starting the server
+  if (process.env.NODE_ENV === "production") {
+    const { runPrismaMigrations } = await import("./migrate.js");
+    try {
+      runPrismaMigrations();
+    } catch (error) {
+      console.error("Failed to run Prisma migrations — the runtime will start but the database may be out of date.", error);
+    }
+  }
 
-const app = createApp();
+  const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
+  const port = Number(process.env.RUNTIME_PORT ?? "4321");
 
-app
-  .listen({ host, port })
-  .then(() => {
-    app.log.info(`Runtime listening on http://${host}:${port}`);
-    void app.chatService.recoverStuckThreads().then((count) => {
-      if (count > 0) app.logService.log("info", "runtime", `Recovered ${count} stuck thread(s)`);
+  const app = createApp();
+
+  app
+    .listen({ host, port })
+    .then(() => {
+      app.log.info(`Runtime listening on http://${host}:${port}`);
+      void app.chatService.recoverStuckThreads().then((count) => {
+        if (count > 0) app.logService.log("info", "runtime", `Recovered ${count} stuck thread(s)`);
+      });
+    })
+    .catch((error) => {
+      app.log.error(error);
+      process.exit(1);
     });
-  })
-  .catch((error) => {
-    app.log.error(error);
-    process.exit(1);
-  });
+}
+
+main();
