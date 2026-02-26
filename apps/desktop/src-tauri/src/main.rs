@@ -75,6 +75,20 @@ fn spawn_runtime_dev() -> Option<Child> {
     cmd.spawn().ok()
 }
 
+fn resolve_claude_binary() -> Option<PathBuf> {
+    let candidates = [
+        "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude",
+    ];
+    for candidate in candidates {
+        let path = Path::new(candidate);
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    None
+}
+
 fn spawn_runtime_prod(app_handle: &tauri::AppHandle) -> Option<Child> {
     let resource_dir = match app_handle.path().resource_dir() {
         Ok(path) => path,
@@ -129,7 +143,12 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle) -> Option<Child> {
         .env("PRISMA_SCHEMA_PATH", prisma_dir.join("schema.prisma"))
         .env("PRISMA_MIGRATIONS_DIR", prisma_dir.join("migrations"))
         .env("RUNTIME_HOST", "127.0.0.1")
-        .env("RUNTIME_PORT", "4321");
+        .env("RUNTIME_PORT", "4321")
+        .env("WEB_DIST_PATH", resource_dir.join("runtime-bundle").join("web-dist"));
+
+    if let Some(claude_bin) = resolve_claude_binary() {
+        cmd.env("CLAUDE_CODE_EXECUTABLE", &claude_bin);
+    }
 
     #[cfg(unix)]
     cmd.process_group(0);

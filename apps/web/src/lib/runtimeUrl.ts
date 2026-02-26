@@ -11,11 +11,16 @@ function isDesktopRuntimeWindow(windowRef: Window): boolean {
 }
 
 const WEB_RUNTIME_PORT = 4321;
-const DESKTOP_RUNTIME_PORT = 4322;
+const DESKTOP_RUNTIME_PORT = 4321;
 
 export function resolveRuntimeApiBase(): string {
   if (import.meta.env.VITE_RUNTIME_URL) return import.meta.env.VITE_RUNTIME_URL;
   if (typeof window === "undefined") return `http://127.0.0.1:${WEB_RUNTIME_PORT}/api`;
   if (isDesktopRuntimeWindow(window)) return `http://127.0.0.1:${DESKTOP_RUNTIME_PORT}/api`;
-  return `${window.location.protocol}//${window.location.hostname}:${WEB_RUNTIME_PORT}/api`;
+  // Vite dev server → point to runtime on known port
+  if (import.meta.env.DEV) {
+    return `${window.location.protocol}//${window.location.hostname}:${WEB_RUNTIME_PORT}/api`;
+  }
+  // Production build served from runtime → same origin
+  return `${window.location.origin}/api`;
 }

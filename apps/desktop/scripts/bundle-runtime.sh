@@ -40,6 +40,13 @@ cd "${BUNDLE_DIR}"
 "${WORKSPACE_ROOT}/apps/runtime/node_modules/.bin/prisma" generate --schema=prisma/schema.prisma
 cd "${SCRIPT_DIR}"
 
+echo "=== Building web frontend ==="
+pnpm --filter @codesymphony/web build
+
+echo "=== Copying web dist ==="
+rm -rf "${BUNDLE_DIR}/web-dist"
+cp -r "${WORKSPACE_ROOT}/apps/web/dist" "${BUNDLE_DIR}/web-dist"
+
 echo "=== Hoisting transitive dependencies for Tauri bundle ==="
 NODE_MODULES_DIR="${BUNDLE_DIR}/node_modules"
 
