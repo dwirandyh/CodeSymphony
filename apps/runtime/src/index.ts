@@ -1,5 +1,8 @@
+import path from "node:path";
+import { existsSync } from "node:fs";
 import Fastify, { type FastifyError } from "fastify";
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { ZodError } from "zod";
 import { prisma } from "./db/prisma.js";
@@ -113,6 +116,42 @@ function createApp() {
   app.register(registerFilesystemRoutes, { prefix: "/api" });
   app.register(registerDebugRoutes, { prefix: "/api" });
   app.register(registerModelRoutes, { prefix: "/api" });
+
+  // Serve web frontend static files when WEB_DIST_PATH is set (production)
+  const webDistPath = process.env.WEB_DIST_PATH;
+  if (webDistPath) {
+    const resolvedDistPath = path.resolve(webDistPath);
+    if (existsSync(resolvedDistPath)) {
+      app.register(fastifyStatic, {
+        root: resolvedDistPath,
+        wildcard: false,
+        setHeaders(res, filePath) {
+          if (filePath.includes("/assets/")) {
+            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          } else {
+            res.setHeader("Cache-Control", "no-cache");
+          }
+        },
+      });
+
+      app.setNotFoundHandler((request, reply) => {
+        // API misses → JSON 404
+        if (
+          request.url.startsWith("/api/") ||
+          request.url === "/health" ||
+          request.method !== "GET" ||
+          request.headers.accept?.includes("application/json")
+        ) {
+          reply.code(404).send({ error: "Not found" });
+          return;
+        }
+        // SPA fallback → serve index.html
+        reply.sendFile("index.html");
+      });
+    } else {
+      app.log.warn(`WEB_DIST_PATH is set but path does not exist: ${resolvedDistPath}`);
+    }
+  }
 
   logService.log("info", "runtime", "CodeSymphony runtime started");
 
