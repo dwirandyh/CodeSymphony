@@ -132,6 +132,10 @@ export function RepositoryPanel({
           {repositories.map((repository) => {
             const isSelected = selectedRepositoryId === repository.id;
             const activeWorktrees = repository.worktrees.filter((worktree) => worktree.status === "active");
+            const rootWorkspace = activeWorktrees.find((worktree) => worktree.path === repository.rootPath) ?? null;
+            const branchWorktrees = rootWorkspace
+              ? activeWorktrees.filter((worktree) => worktree.id !== rootWorkspace.id)
+              : activeWorktrees;
             const isExpanded = expandedByRepo[repository.id] ?? isSelected;
 
             return (
@@ -158,7 +162,7 @@ export function RepositoryPanel({
                     )}
                     <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                     <span className="truncate text-left text-xs font-medium">{repository.name}</span>
-                    <span className="ml-auto text-[11px] text-muted-foreground">{activeWorktrees.length} active</span>
+                    <span className="ml-auto text-[11px] text-muted-foreground">{branchWorktrees.length} worktrees</span>
                   </Button>
 
                   <Button
@@ -180,122 +184,167 @@ export function RepositoryPanel({
 
                 {isExpanded ? (
                   <div className="ml-4 mt-1 min-w-0 space-y-1">
-                    {activeWorktrees.length === 0 ? (
+                    {!rootWorkspace && branchWorktrees.length === 0 ? (
                       <div className="flex items-center gap-2 py-1">
                         <div className="text-xs text-muted-foreground">No active worktrees yet.</div>
                       </div>
                     ) : null}
 
-                    {activeWorktrees.map((worktree) => {
-                      const isWorktreeSelected = selectedWorktreeId === worktree.id;
-                      const stats = worktreeStats[worktree.id];
-
-                      return (
-                        <div key={worktree.id} className="group/wt relative">
+                    {rootWorkspace ? (
+                      <div className="space-y-1">
+                        <div className="px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+                          Root Workspace
+                        </div>
+                        <div className="group/wt relative">
                           <button
                             type="button"
                             className={cn(
                               "flex w-full min-w-0 items-start gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40",
-                              isWorktreeSelected && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
+                              selectedWorktreeId === rootWorkspace.id && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
                             )}
-                            onClick={() => onSelectWorktree(repository.id, worktree.id)}
+                            onClick={() => onSelectWorktree(repository.id, rootWorkspace.id)}
                           >
                             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                               <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-                                <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                                {editingWorktreeId === worktree.id ? (
-                                  <input
-                                    type="text"
-                                    className="min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
-                                    value={editingBranchValue}
-                                    autoFocus
-                                    onChange={(e) => setEditingBranchValue(e.target.value)}
-                                    onClick={(e) => e.stopPropagation()}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter") {
-                                        const trimmed = editingBranchValue.trim();
-                                        if (trimmed && trimmed !== worktree.branch) {
-                                          onRenameWorktreeBranch(worktree.id, trimmed);
-                                        }
-                                        setEditingWorktreeId(null);
-                                      }
-                                      if (e.key === "Escape") {
-                                        setEditingWorktreeId(null);
-                                      }
-                                    }}
-                                    onBlur={() => {
-                                      const trimmed = editingBranchValue.trim();
-                                      if (trimmed && trimmed !== worktree.branch) {
-                                        onRenameWorktreeBranch(worktree.id, trimmed);
-                                      }
-                                      setEditingWorktreeId(null);
-                                    }}
-                                  />
-                                ) : (
-                                  <span
-                                    className="truncate text-xs"
-                                    onDoubleClick={(e) => {
-                                      e.stopPropagation();
-                                      setEditingWorktreeId(worktree.id);
-                                      setEditingBranchValue(worktree.branch);
-                                    }}
-                                  >
-                                    {worktree.branch}
-                                  </span>
-                                )}
+                                <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                <span className="truncate text-xs font-medium">Root Workspace</span>
                               </div>
 
                               <div className="flex h-4 items-center gap-1.5 pl-5">
-                                {stats && (stats.insertions > 0 || stats.deletions > 0) ? (
+                                {worktreeStats[rootWorkspace.id] && ((worktreeStats[rootWorkspace.id].insertions > 0) || (worktreeStats[rootWorkspace.id].deletions > 0)) ? (
                                   <span className="flex items-center gap-1 text-[10px] leading-none">
-                                    <span className="text-green-500">+{stats.insertions}</span>
-                                    <span className="text-red-500">-{stats.deletions}</span>
+                                    <span className="text-green-500">+{worktreeStats[rootWorkspace.id].insertions}</span>
+                                    <span className="text-red-500">-{worktreeStats[rootWorkspace.id].deletions}</span>
                                   </span>
                                 ) : null}
                               </div>
                             </div>
 
-                            <div className="relative mt-0.5 ml-auto flex shrink-0 items-center justify-end">
-                              {/* Default: baseBranch label */}
-                              <div className="flex items-center transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0">
-                                <span className="whitespace-nowrap text-[10px] text-muted-foreground">{worktree.baseBranch}</span>
-                              </div>
-
-                              {/* Hover: action buttons */}
-                              <div className="absolute inset-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:opacity-100">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingWorktreeId(worktree.id);
-                                    setEditingBranchValue(worktree.branch);
-                                  }}
-                                  title="Rename branch"
-                                >
-                                  <Pencil className="h-3.5 w-3.5" />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteWorktree(worktree.id);
-                                  }}
-                                  title="Delete worktree"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
-                              </div>
+                            <div className="mt-0.5 ml-auto flex shrink-0 items-center justify-end">
+                              <span className="whitespace-nowrap text-[10px] text-muted-foreground">root</span>
                             </div>
                           </button>
                         </div>
-                      );
-                    })}
+                      </div>
+                    ) : null}
+
+                    {branchWorktrees.length > 0 ? (
+                      <div className="space-y-1">
+                        <div className="px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
+                          Worktrees
+                        </div>
+                        {branchWorktrees.map((worktree) => {
+                          const isWorktreeSelected = selectedWorktreeId === worktree.id;
+                          const stats = worktreeStats[worktree.id];
+
+                          return (
+                            <div key={worktree.id} className="group/wt relative">
+                              <button
+                                type="button"
+                                className={cn(
+                                  "flex w-full min-w-0 items-start gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40",
+                                  isWorktreeSelected && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
+                                )}
+                                onClick={() => onSelectWorktree(repository.id, worktree.id)}
+                              >
+                                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                                    <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                    {editingWorktreeId === worktree.id ? (
+                                      <input
+                                        type="text"
+                                        className="min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
+                                        value={editingBranchValue}
+                                        autoFocus
+                                        onChange={(e) => setEditingBranchValue(e.target.value)}
+                                        onClick={(e) => e.stopPropagation()}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter") {
+                                            const trimmed = editingBranchValue.trim();
+                                            if (trimmed && trimmed !== worktree.branch) {
+                                              onRenameWorktreeBranch(worktree.id, trimmed);
+                                            }
+                                            setEditingWorktreeId(null);
+                                          }
+                                          if (e.key === "Escape") {
+                                            setEditingWorktreeId(null);
+                                          }
+                                        }}
+                                        onBlur={() => {
+                                          const trimmed = editingBranchValue.trim();
+                                          if (trimmed && trimmed !== worktree.branch) {
+                                            onRenameWorktreeBranch(worktree.id, trimmed);
+                                          }
+                                          setEditingWorktreeId(null);
+                                        }}
+                                      />
+                                    ) : (
+                                      <span
+                                        className="truncate text-xs"
+                                        onDoubleClick={(e) => {
+                                          e.stopPropagation();
+                                          setEditingWorktreeId(worktree.id);
+                                          setEditingBranchValue(worktree.branch);
+                                        }}
+                                      >
+                                        {worktree.branch}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="flex h-4 items-center gap-1.5 pl-5">
+                                    {stats && (stats.insertions > 0 || stats.deletions > 0) ? (
+                                      <span className="flex items-center gap-1 text-[10px] leading-none">
+                                        <span className="text-green-500">+{stats.insertions}</span>
+                                        <span className="text-red-500">-{stats.deletions}</span>
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </div>
+
+                                <div className="relative mt-0.5 ml-auto flex shrink-0 items-center justify-end">
+                                  {/* Default: baseBranch label */}
+                                  <div className="flex items-center transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0">
+                                    <span className="whitespace-nowrap text-[10px] text-muted-foreground">{worktree.baseBranch}</span>
+                                  </div>
+
+                                  {/* Hover: action buttons */}
+                                  <div className="absolute inset-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:opacity-100">
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingWorktreeId(worktree.id);
+                                        setEditingBranchValue(worktree.branch);
+                                      }}
+                                      title="Rename branch"
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteWorktree(worktree.id);
+                                      }}
+                                      title="Delete worktree"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </article>

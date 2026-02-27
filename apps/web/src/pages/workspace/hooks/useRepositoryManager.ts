@@ -185,6 +185,13 @@ export function useRepositoryManager(
     return null;
   }, [repositories, selectedWorktreeId]);
 
+  function findPrimaryWorktreeId(repository: Repository): string | null {
+    const primary = repository.worktrees.find(
+      (worktree) => worktree.status === "active" && worktree.path === repository.rootPath,
+    );
+    return primary?.id ?? null;
+  }
+
   // Auto-select first repo/worktree when data arrives, respecting initial URL IDs
   useEffect(() => {
     debugLog("useRepositoryManager", "auto-select effect", {
@@ -219,8 +226,13 @@ export function useRepositoryManager(
         const repo = repositories.find((r) => r.id === options.initialRepoId);
         if (repo) {
           setSelectedRepositoryId(repo.id);
-          const firstWorktree = repo.worktrees[0];
-          if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+          const primaryWorktreeId = findPrimaryWorktreeId(repo);
+          if (primaryWorktreeId) {
+            setSelectedWorktreeId(primaryWorktreeId);
+          } else {
+            const firstWorktree = repo.worktrees[0];
+            if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+          }
           return;
         }
       }
@@ -235,8 +247,16 @@ export function useRepositoryManager(
       setSelectedRepositoryId(repositories[0].id);
     }
     if (!selectedWorktreeId) {
-      const firstWorktree = repositories[0]?.worktrees[0];
-      if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+      const firstRepo = repositories[0];
+      if (firstRepo) {
+        const primaryWorktreeId = findPrimaryWorktreeId(firstRepo);
+        if (primaryWorktreeId) {
+          setSelectedWorktreeId(primaryWorktreeId);
+        } else {
+          const firstWorktree = firstRepo.worktrees[0];
+          if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+        }
+      }
     }
   }, [repositories, selectedRepositoryId, selectedWorktreeId]);
 

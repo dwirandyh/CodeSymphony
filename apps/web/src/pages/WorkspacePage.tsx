@@ -59,7 +59,15 @@ function FilledPauseIcon({ className }: { className?: string }) {
   );
 }
 
-const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos, onOpenSettings }: { repos: RepoManager; onOpenSettings: () => void }) {
+const WorkspaceSidebar = memo(function WorkspaceSidebar({
+  repos,
+  onOpenSettings,
+  onSelectRepository,
+}: {
+  repos: RepoManager;
+  onOpenSettings: () => void;
+  onSelectRepository: (repositoryId: string) => void;
+}) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
 
   return (
@@ -83,7 +91,7 @@ const WorkspaceSidebar = memo(function WorkspaceSidebar({ repos, onOpenSettings 
             submittingRepo={repos.submittingRepo}
             submittingWorktree={repos.submittingWorktree}
             onAttachRepository={repos.openFileBrowser}
-            onSelectRepository={repos.setSelectedRepositoryId}
+            onSelectRepository={onSelectRepository}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
             onSelectWorktree={(repositoryId, worktreeId) => {
               repos.setSelectedRepositoryId(repositoryId);
@@ -360,6 +368,33 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
+
+  const handleSelectRepository = useCallback((repositoryId: string) => {
+    repos.setSelectedRepositoryId(repositoryId);
+    const repository = repos.repositories.find((entry) => entry.id === repositoryId);
+    if (!repository) {
+      repos.setSelectedWorktreeId(null);
+      return;
+    }
+
+    const primaryWorktree =
+      repository.worktrees.find((worktree) =>
+        worktree.status === "active" && worktree.path === repository.rootPath,
+      ) ?? null;
+    repos.setSelectedWorktreeId(primaryWorktree?.id ?? null);
+  }, [repos.repositories, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
+
+  const selectedIsRootWorkspace = !!(
+    repos.selectedRepository &&
+    repos.selectedWorktree &&
+    repos.selectedWorktree.path === repos.selectedRepository.rootPath
+  );
+  const selectedContextLabel = repos.selectedWorktree
+    ? (selectedIsRootWorkspace
+      ? "Root Workspace"
+      : `Worktree ${repos.selectedWorktree.branch} from ${repos.selectedWorktree.baseBranch}`)
+    : "Choose a workspace";
+
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     initialThreadId: search.threadId,
     onThreadChange: useCallback(
@@ -698,7 +733,11 @@ export function WorkspacePage() {
   return (
     <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-3 lg:pb-0">
       <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
-        <WorkspaceSidebar repos={repos} onOpenSettings={() => setSettingsOpen(true)} />
+        <WorkspaceSidebar
+          repos={repos}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onSelectRepository={handleSelectRepository}
+        />
 
         {/* ── Main content area (chat + bottom panel) ── */}
         <main className="flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
@@ -715,7 +754,10 @@ export function WorkspacePage() {
             <div className="min-w-0 flex-1">
               <h1 className="truncate text-[13px] font-semibold tracking-wide">CodeSymphony</h1>
               <p className="truncate text-[10px] text-muted-foreground">
-                {repos.selectedRepository?.name ?? "No repository"}{repos.selectedWorktree ? ` · ${repos.selectedWorktree.branch}` : ""}
+                {repos.selectedRepository?.name ?? "No repository"}
+                {repos.selectedWorktree
+                  ? ` · ${selectedIsRootWorkspace ? "Root Workspace" : repos.selectedWorktree.branch}`
+                  : ""}
               </p>
             </div>
             <button
@@ -748,7 +790,7 @@ export function WorkspacePage() {
           <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-1 lg:gap-2">
             <WorkspaceHeader
               selectedRepositoryName={repos.selectedRepository?.name ?? "No repository selected"}
-              selectedWorktreeLabel={repos.selectedWorktree ? `Worktree: ${repos.selectedWorktree.branch}` : "Choose a worktree"}
+              selectedWorktreeLabel={selectedContextLabel}
               worktreePath={repos.selectedWorktree?.path ?? null}
               threads={chat.threads}
               selectedThreadId={chat.selectedThreadId}
@@ -927,7 +969,7 @@ export function WorkspacePage() {
             submittingRepo={repos.submittingRepo}
             submittingWorktree={repos.submittingWorktree}
             onAttachRepository={repos.openFileBrowser}
-            onSelectRepository={repos.setSelectedRepositoryId}
+            onSelectRepository={handleSelectRepository}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
             onSelectWorktree={(repositoryId, worktreeId) => {
               repos.setSelectedRepositoryId(repositoryId);

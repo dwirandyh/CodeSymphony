@@ -61,6 +61,15 @@ export async function listBranches(rootPath: string): Promise<string[]> {
   return [...new Set(branches)].sort();
 }
 
+export async function getCurrentBranch(cwd: string): Promise<string | null> {
+  try {
+    const branch = await runGit(["branch", "--show-current"], cwd);
+    return branch.length > 0 ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createGitWorktree(args: {
   repositoryPath: string;
   worktreePath: string;
