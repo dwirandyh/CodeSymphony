@@ -93,15 +93,18 @@ describe("RepositoryPanel", () => {
     });
   }
 
-  it("shows separate Root Workspace and Worktrees sections", async () => {
+  it("shows root and branch rows without section separators", async () => {
     renderPanel();
 
     await act(async () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain("Root Workspace");
-    expect(container.textContent).toContain("Worktrees");
+    expect(container.textContent).toContain("main");
+    expect(container.textContent).toContain("feature/test");
+    expect(container.textContent).not.toContain("Root Workspace");
+    expect(container.textContent).not.toContain("Worktrees");
+    expect(container.textContent).not.toContain("root");
   });
 
   it("does not render delete action for root workspace row", async () => {

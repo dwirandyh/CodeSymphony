@@ -192,9 +192,6 @@ export function RepositoryPanel({
 
                     {rootWorkspace ? (
                       <div className="space-y-1">
-                        <div className="px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
-                          Root Workspace
-                        </div>
                         <div className="group/wt relative">
                           <button
                             type="button"
@@ -207,7 +204,7 @@ export function RepositoryPanel({
                             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                               <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
                                 <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                                <span className="truncate text-xs font-medium">Root Workspace</span>
+                                <span className="truncate text-xs">{rootWorkspace.branch}</span>
                               </div>
 
                               <div className="flex h-4 items-center gap-1.5 pl-5">
@@ -220,9 +217,6 @@ export function RepositoryPanel({
                               </div>
                             </div>
 
-                            <div className="mt-0.5 ml-auto flex shrink-0 items-center justify-end">
-                              <span className="whitespace-nowrap text-[10px] text-muted-foreground">root</span>
-                            </div>
                           </button>
                         </div>
                       </div>
@@ -230,9 +224,6 @@ export function RepositoryPanel({
 
                     {branchWorktrees.length > 0 ? (
                       <div className="space-y-1">
-                        <div className="px-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/80">
-                          Worktrees
-                        </div>
                         {branchWorktrees.map((worktree) => {
                           const isWorktreeSelected = selectedWorktreeId === worktree.id;
                           const stats = worktreeStats[worktree.id];
