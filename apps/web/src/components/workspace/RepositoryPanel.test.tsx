@@ -14,7 +14,7 @@ vi.mock("../../lib/api", () => ({
 const repository: Repository = {
   id: "repo-1",
   name: "example",
-  rootPath: "/tmp/example",
+  rootPath: "/tmp/example/",
   defaultBranch: "main",
   setupScript: null,
   teardownScript: null,
@@ -72,11 +72,11 @@ describe("RepositoryPanel", () => {
     vi.clearAllMocks();
   });
 
-  function renderPanel() {
+  function renderPanel(overrides?: { repositories?: Repository[] }) {
     act(() => {
       root.render(
         <RepositoryPanel
-          repositories={[repository]}
+          repositories={overrides?.repositories ?? [repository]}
           selectedRepositoryId="repo-1"
           selectedWorktreeId="wt-root"
           loadingRepos={false}
@@ -104,11 +104,30 @@ describe("RepositoryPanel", () => {
     expect(container.textContent).toContain("feature/test");
     expect(container.textContent).not.toContain("Root Workspace");
     expect(container.textContent).not.toContain("Worktrees");
-    expect(container.textContent).not.toContain("root");
+    expect(container.textContent).toContain("root");
   });
 
   it("does not render delete action for root workspace row", async () => {
     renderPanel();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const deleteButtons = container.querySelectorAll('button[title="Delete worktree"]');
+    expect(deleteButtons.length).toBe(1);
+  });
+
+  it("treats /private-prefixed path as the same root workspace", async () => {
+    const privatePathRepository: Repository = {
+      ...repository,
+      rootPath: "/private/tmp/example",
+      worktrees: repository.worktrees.map((worktree) =>
+        worktree.id === "wt-root" ? { ...worktree, path: "/tmp/example" } : worktree,
+      ),
+    };
+
+    renderPanel({ repositories: [privatePathRepository] });
 
     await act(async () => {
       await Promise.resolve();

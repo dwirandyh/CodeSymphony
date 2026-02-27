@@ -5,6 +5,7 @@ import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api";
+import { isRootWorktree } from "../../lib/worktree";
 
 type RepositoryPanelProps = {
   repositories: Repository[];
@@ -132,7 +133,7 @@ export function RepositoryPanel({
           {repositories.map((repository) => {
             const isSelected = selectedRepositoryId === repository.id;
             const activeWorktrees = repository.worktrees.filter((worktree) => worktree.status === "active");
-            const rootWorkspace = activeWorktrees.find((worktree) => worktree.path === repository.rootPath) ?? null;
+            const rootWorkspace = activeWorktrees.find((worktree) => isRootWorktree(worktree, repository)) ?? null;
             const branchWorktrees = rootWorkspace
               ? activeWorktrees.filter((worktree) => worktree.id !== rootWorkspace.id)
               : activeWorktrees;
@@ -205,6 +206,9 @@ export function RepositoryPanel({
                               <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
                                 <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                                 <span className="truncate text-xs">{rootWorkspace.branch}</span>
+                                <span className="shrink-0 rounded border border-border/60 px-1 py-0 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                  root
+                                </span>
                               </div>
 
                               <div className="flex h-4 items-center gap-1.5 pl-5">

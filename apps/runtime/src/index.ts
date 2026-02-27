@@ -170,7 +170,7 @@ async function main() {
   }
 
   const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
-  const port = Number(process.env.RUNTIME_PORT ?? "4321");
+  const port = Number(process.env.RUNTIME_PORT ?? "4331");
 
   const app = createApp();
 

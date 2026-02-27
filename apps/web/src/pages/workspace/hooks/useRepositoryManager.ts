@@ -4,13 +4,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api, TeardownFailedError } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositories } from "../../../hooks/queries/useRepositories";
-import { debugLog } from "../../../lib/debugLog";
 import { useCreateRepository } from "../../../hooks/mutations/useCreateRepository";
 import { useCreateWorktree } from "../../../hooks/mutations/useCreateWorktree";
 import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
 import { useDeleteRepository } from "../../../hooks/mutations/useDeleteRepository";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { findRepositoryByWorktree } from "../eventUtils";
+import { findRootWorktree } from "../../../lib/worktree";
 
 export interface TeardownErrorState {
   worktreeId: string;
@@ -186,20 +186,12 @@ export function useRepositoryManager(
   }, [repositories, selectedWorktreeId]);
 
   function findPrimaryWorktreeId(repository: Repository): string | null {
-    const primary = repository.worktrees.find(
-      (worktree) => worktree.status === "active" && worktree.path === repository.rootPath,
-    );
+    const primary = findRootWorktree(repository);
     return primary?.id ?? null;
   }
 
   // Auto-select first repo/worktree when data arrives, respecting initial URL IDs
   useEffect(() => {
-    debugLog("useRepositoryManager", "auto-select effect", {
-      reposLength: repositories.length,
-      selectedRepositoryId,
-      selectedWorktreeId,
-      initialApplied: initialAppliedRef.current,
-    });
     if (repositories.length === 0) return;
 
     if (!initialAppliedRef.current && (options?.initialWorktreeId || options?.initialRepoId)) {
@@ -264,13 +256,6 @@ export function useRepositoryManager(
   useEffect(() => {
     const prev = prevSelectionRef.current;
     const willFire = prev.repoId !== selectedRepositoryId || prev.worktreeId !== selectedWorktreeId;
-    debugLog("useRepositoryManager", "notification effect", {
-      prevRepoId: prev.repoId,
-      prevWorktreeId: prev.worktreeId,
-      selectedRepositoryId,
-      selectedWorktreeId,
-      willFire,
-    });
     if (willFire) {
       prevSelectionRef.current = { repoId: selectedRepositoryId, worktreeId: selectedWorktreeId };
       options?.onSelectionChange?.({ repoId: selectedRepositoryId, worktreeId: selectedWorktreeId });

@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -59,10 +60,11 @@ describe("repositoryService primary root workspace", () => {
 
   it("creates a primary root worktree and main thread", async () => {
     const repositoryPath = createGitRepository();
+    const canonicalRepositoryPath = realpathSync(repositoryPath);
     const repositoryService = createRepositoryService(prisma);
 
     const created = await repositoryService.create({ path: repositoryPath });
-    const rootWorktree = created.worktrees.find((worktree) => worktree.path === repositoryPath);
+    const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
 
     expect(rootWorktree).toBeDefined();
 
@@ -77,10 +79,11 @@ describe("repositoryService primary root workspace", () => {
 
   it("syncs worktree branch from git on repository list", async () => {
     const repositoryPath = createGitRepository();
+    const canonicalRepositoryPath = realpathSync(repositoryPath);
     const repositoryService = createRepositoryService(prisma);
 
     const created = await repositoryService.create({ path: repositoryPath });
-    const rootWorktree = created.worktrees.find((worktree) => worktree.path === repositoryPath);
+    const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
     expect(rootWorktree).toBeDefined();
 
     execFileSync("git", ["checkout", "-b", "feature/root-sync"], { cwd: repositoryPath });
@@ -100,13 +103,75 @@ describe("repositoryService primary root workspace", () => {
 
   it("blocks deleting the primary root worktree", async () => {
     const repositoryPath = createGitRepository();
+    const canonicalRepositoryPath = realpathSync(repositoryPath);
     const repositoryService = createRepositoryService(prisma);
     const worktreeService = createWorktreeService(prisma);
 
     const created = await repositoryService.create({ path: repositoryPath });
-    const rootWorktree = created.worktrees.find((worktree) => worktree.path === repositoryPath);
+    const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
     expect(rootWorktree).toBeDefined();
 
     await expect(worktreeService.remove(rootWorktree!.id)).rejects.toThrow("Cannot delete primary worktree");
+  });
+
+  it("recovers missing primary worktree when listing repositories", async () => {
+    const repositoryPath = createGitRepository();
+    const canonicalRepositoryPath = realpathSync(repositoryPath);
+    const repositoryService = createRepositoryService(prisma);
+
+    const createdRepository = await prisma.repository.create({
+      data: {
+        name: "orphan-repo",
+        rootPath: canonicalRepositoryPath,
+        defaultBranch: "main",
+      },
+    });
+
+    const listed = await repositoryService.list();
+    const listedRepository = listed.find((repository) => repository.id === createdRepository.id);
+    expect(listedRepository).toBeDefined();
+    expect(listedRepository!.worktrees.length).toBe(1);
+    expect(listedRepository!.worktrees[0].path).toBe(canonicalRepositoryPath);
+    expect(listedRepository!.worktrees[0].status).toBe("active");
+
+    const thread = await prisma.chatThread.findFirst({
+      where: {
+        worktreeId: listedRepository!.worktrees[0].id,
+        title: "Main Thread",
+      },
+    });
+    expect(thread).toBeTruthy();
+  });
+
+  it("recovers primary root worktree when non-root worktrees already exist", async () => {
+    const repositoryPath = createGitRepository();
+    const canonicalRepositoryPath = realpathSync(repositoryPath);
+    const repositoryService = createRepositoryService(prisma);
+
+    const created = await repositoryService.create({ path: repositoryPath });
+    const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
+    expect(rootWorktree).toBeDefined();
+
+    await prisma.worktree.create({
+      data: {
+        repositoryId: created.id,
+        branch: "feature-non-root",
+        path: `${canonicalRepositoryPath}-orphan-worktree`,
+        baseBranch: "main",
+        status: "archived",
+      },
+    });
+    await prisma.worktree.delete({ where: { id: rootWorktree!.id } });
+
+    const listed = await repositoryService.list();
+    const listedRepository = listed.find((repository) => repository.id === created.id);
+    expect(listedRepository).toBeDefined();
+
+    const restoredRoot = listedRepository!.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
+    expect(restoredRoot).toBeDefined();
+    expect(restoredRoot!.status).toBe("active");
+
+    const nonRoot = listedRepository!.worktrees.find((worktree) => worktree.path !== canonicalRepositoryPath);
+    expect(nonRoot).toBeDefined();
   });
 });

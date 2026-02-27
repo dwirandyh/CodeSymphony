@@ -23,6 +23,7 @@ const DiffReviewPanel = lazy(() =>
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
 import { debugLog } from "../lib/debugLog";
+import { findRootWorktree, isRootWorktree } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
 import type { TeardownErrorState, ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
 import { useChatSession } from "./workspace/hooks/useChatSession";
@@ -377,17 +378,14 @@ export function WorkspacePage() {
       return;
     }
 
-    const primaryWorktree =
-      repository.worktrees.find((worktree) =>
-        worktree.status === "active" && worktree.path === repository.rootPath,
-      ) ?? null;
+    const primaryWorktree = findRootWorktree(repository);
     repos.setSelectedWorktreeId(primaryWorktree?.id ?? null);
   }, [repos.repositories, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
 
   const selectedIsRootWorkspace = !!(
     repos.selectedRepository &&
     repos.selectedWorktree &&
-    repos.selectedWorktree.path === repos.selectedRepository.rootPath
+    isRootWorktree(repos.selectedWorktree, repos.selectedRepository)
   );
   const selectedContextLabel = repos.selectedWorktree
     ? (selectedIsRootWorkspace
@@ -397,6 +395,10 @@ export function WorkspacePage() {
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     initialThreadId: search.threadId,
+    selectedRepositoryId: repos.selectedRepositoryId,
+    onWorktreeResolved: (worktreeId) => {
+      repos.setSelectedWorktreeId(worktreeId);
+    },
     onThreadChange: useCallback(
       (threadId: string | null) => {
         debugLog("WorkspacePage", "onThreadChange", { threadId });
@@ -795,6 +797,7 @@ export function WorkspacePage() {
               threads={chat.threads}
               selectedThreadId={chat.selectedThreadId}
               disabled={!repos.selectedWorktreeId}
+              createThreadDisabled={!repos.selectedRepositoryId}
               closingThreadId={chat.closingThreadId}
               showReviewTab={reviewTabOpen}
               reviewTabActive={activeView === "review"}
