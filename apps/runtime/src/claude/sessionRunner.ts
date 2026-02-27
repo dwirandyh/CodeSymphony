@@ -404,6 +404,20 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             options.blockedPath || options.decisionReason || (options.suggestions?.length ?? 0) > 0,
           );
 
+          if (requiresUserApproval && isEditTool(toolName)) {
+            await emitDecision(toolUseId, "auto_allow", toolName, null, {
+              ...(command ? { command } : {}),
+              input: sanitizeForLog(input),
+              blockedPath: options.blockedPath ?? null,
+              decisionReason: options.decisionReason ?? null,
+              suggestionsCount: options.suggestions?.length ?? 0,
+            });
+            return {
+              behavior: "allow",
+              updatedInput: input,
+            };
+          }
+
           if (!requiresUserApproval) {
             await emitDecision(toolUseId, "allow", toolName, null, {
               ...(command ? { command } : {}),
