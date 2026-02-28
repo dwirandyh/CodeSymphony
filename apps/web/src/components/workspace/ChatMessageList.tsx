@@ -1574,7 +1574,7 @@ const TimelineItem = memo(function TimelineItem({
 
   if (item.kind === "edited-diff") {
     const hasDiffContent = item.diff.trim().length > 0;
-    const expanded = hasDiffContent ? (ctx.editedExpandedById.get(item.id) ?? (item.diffKind === "proposed")) : false;
+    const expanded = hasDiffContent ? (ctx.editedExpandedById.get(item.id) ?? false) : false;
     const parsedFiles = hasDiffContent ? parsePatchFiles(item.diff).flatMap((p) => p.files) : [];
     const diffFileNames = parsedFiles.map((f) => f.name);
     const resolvedFiles = item.changedFiles.length > 0 ? item.changedFiles : diffFileNames;
