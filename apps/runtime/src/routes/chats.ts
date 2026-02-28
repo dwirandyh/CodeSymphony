@@ -201,6 +201,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.post("/threads/:id/questions/dismiss", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.dismissQuestion(params.id, request.body);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to dismiss question";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.post("/threads/:id/plan/approve", async (request, reply) => {
     const params = threadParams.parse(request.params);
 

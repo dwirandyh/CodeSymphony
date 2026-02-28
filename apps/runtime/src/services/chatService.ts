@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   AnswerQuestionInputSchema,
   CreateChatThreadInputSchema,
+  DismissQuestionInputSchema,
   PlanRevisionInputSchema,
   RenameChatThreadTitleInputSchema,
   ResolvePermissionInputSchema,
@@ -17,6 +18,7 @@ import {
   type ChatMode,
   type ChatThread,
   type CreateChatThreadInput,
+  type DismissQuestionInput,
   type PlanRevisionInput,
   type RenameChatThreadTitleInput,
   type ResolvePermissionInput,
@@ -862,19 +864,27 @@ export function createChatService(deps: RuntimeDeps) {
     return created;
   }
 
-  function rejectPendingPermissions(threadId: string, message: string): void {
+  function rejectPendingPermissions(threadId: string, message: string): number {
     const pendingMap = pendingPermissionsByThread.get(threadId);
     if (!pendingMap) {
-      return;
+      return 0;
     }
 
     pendingPermissionsByThread.delete(threadId);
+    let rejectedCount = 0;
     for (const pending of pendingMap.values()) {
       if (pending.status !== "pending" || !pending.reject) {
         continue;
       }
-      pending.reject(new Error(message));
+      pending.status = "resolved";
+      const reject = pending.reject;
+      pending.resolve = undefined;
+      pending.reject = undefined;
+      rejectedCount += 1;
+      reject(new Error(message));
     }
+
+    return rejectedCount;
   }
 
   type QuestionAnswerResult = { answers: Record<string, string> };
@@ -897,21 +907,39 @@ export function createChatService(deps: RuntimeDeps) {
     return created;
   }
 
-  function rejectPendingQuestions(threadId: string, message: string): void {
+  function rejectPendingQuestions(threadId: string, message: string): number {
     const pendingMap = pendingQuestionsByThread.get(threadId);
     if (!pendingMap) {
-      return;
+      return 0;
     }
 
     pendingQuestionsByThread.delete(threadId);
+    let rejectedCount = 0;
     for (const pending of pendingMap.values()) {
       if (pending.status !== "pending" || !pending.reject) {
         continue;
       }
-      pending.reject(new Error(message));
+      pending.status = "resolved";
+      const reject = pending.reject;
+      pending.resolve = undefined;
+      pending.reject = undefined;
+      rejectedCount += 1;
+      reject(new Error(message));
     }
+
+    return rejectedCount;
   }
 
+  function cancelPendingGateRequests(threadId: string): boolean {
+    const rejectedPermissions = rejectPendingPermissions(threadId, "Permission request cancelled by user.");
+    const rejectedQuestions = rejectPendingQuestions(threadId, "Question cancelled by user.");
+    return rejectedPermissions > 0 || rejectedQuestions > 0;
+  }
+
+  function clearPendingGateRequestsBecauseRunEnded(threadId: string): void {
+    rejectPendingPermissions(threadId, "Permission request cancelled because the chat run ended.");
+    rejectPendingQuestions(threadId, "Question cancelled because the chat run ended.");
+  }
   type PendingPlanEntry = {
     content: string;
     filePath: string;
@@ -1315,8 +1343,7 @@ export function createChatService(deps: RuntimeDeps) {
         threadId,
         hadScheduled,
       });
-      rejectPendingPermissions(threadId, "Permission request cancelled because the chat run ended.");
-      rejectPendingQuestions(threadId, "Question cancelled because the chat run ended.");
+      clearPendingGateRequestsBecauseRunEnded(threadId);
       const wasActive = activeThreads.has(threadId);
       activeThreads.delete(threadId);
       deps.logService?.log("debug", "chat.lifecycle", "activeThreads cleared", {
@@ -1446,8 +1473,9 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("No active assistant run for this thread");
       }
 
-      rejectPendingPermissions(threadId, "Permission request cancelled by user.");
-      rejectPendingQuestions(threadId, "Question cancelled by user.");
+      if (cancelPendingGateRequests(threadId)) {
+        return;
+      }
 
       const cancelledScheduledRun = clearScheduledAssistantRun(threadId);
       if (cancelledScheduledRun) {
@@ -1576,6 +1604,45 @@ export function createChatService(deps: RuntimeDeps) {
         entry.reject = undefined;
         resolve?.({ answers: input.answers });
       }
+    },
+
+    async dismissQuestion(threadId: string, rawInput: unknown): Promise<void> {
+      const input: DismissQuestionInput = DismissQuestionInputSchema.parse(rawInput);
+
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      const pendingMap = pendingQuestionsByThread.get(threadId);
+      const entry = pendingMap?.get(input.requestId);
+      const isPending = Boolean(entry && entry.status === "pending" && entry.resolve);
+      if (!isPending) {
+        await deps.eventHub.emit(threadId, "question.dismissed", {
+          requestId: input.requestId,
+          resolver: "system",
+          reason: "Session expired — the assistant is no longer waiting for this question.",
+          persisted: false,
+        });
+        return;
+      }
+
+      const normalizedReason = input.reason?.trim();
+      await deps.eventHub.emit(threadId, "question.dismissed", {
+        requestId: input.requestId,
+        resolver: "user",
+        reason: normalizedReason && normalizedReason.length > 0 ? normalizedReason : "Question dismissed by user.",
+        persisted: true,
+      });
+
+      if (!activeThreads.has(threadId)) {
+        return;
+      }
+
+      await this.stopRun(threadId);
     },
 
     async approvePlan(threadId: string): Promise<void> {

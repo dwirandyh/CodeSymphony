@@ -6,6 +6,7 @@ import { useResolvePermission } from "../../../hooks/mutations/useResolvePermiss
 import { useAnswerQuestion } from "../../../hooks/mutations/useAnswerQuestion";
 import { useApprovePlan } from "../../../hooks/mutations/useApprovePlan";
 import { useRevisePlan } from "../../../hooks/mutations/useRevisePlan";
+import { useDismissQuestion } from "../../../hooks/mutations/useDismissQuestion";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
 
@@ -54,11 +55,14 @@ export function usePendingGates(
   const answerQuestionMutation = useAnswerQuestion();
   const approvePlanMutation = useApprovePlan();
   const revisePlanMutation = useRevisePlan();
+  const dismissQuestionMutation = useDismissQuestion();
 
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set());
   const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(() => new Set());
+  const [dismissingQuestionIds, setDismissingQuestionIds] = useState<Set<string>>(() => new Set());
   const [planActionBusy, setPlanActionBusy] = useState(false);
   const [closedPlanDecision, setClosedPlanDecision] = useState<{ threadId: string; createdIdx: number } | null>(null);
+  const [closedQuestionsByThread, setClosedQuestionsByThread] = useState<Record<string, true>>({});
 
   const prevPendingRef = useRef<{
     permIds: string; qIds: string;
@@ -72,6 +76,7 @@ export function usePendingGates(
     setPlanActionBusy(false);
     setResolvingPermissionIds(new Set());
     setAnsweringQuestionIds(new Set());
+    setDismissingQuestionIds(new Set());
     setClosedPlanDecision(null);
   }, [selectedThreadId]);
 
@@ -131,7 +136,7 @@ export function usePendingGates(
         continue;
       }
 
-      if (event.type === "question.answered") {
+      if (event.type === "question.answered" || event.type === "question.dismissed") {
         const requestId = typeof event.payload.requestId === "string" ? event.payload.requestId : "";
         if (requestId.length > 0) pendingQById.delete(requestId);
       }
@@ -144,7 +149,9 @@ export function usePendingGates(
     }
 
     const newPermRequests = Array.from(pendingPermById.values()).sort((a, b) => a.idx - b.idx);
-    const newQRequests = Array.from(pendingQById.values()).sort((a, b) => a.idx - b.idx);
+    const newQRequests = Array.from(pendingQById.values())
+      .filter((request) => !closedQuestionsByThread[request.requestId])
+      .sort((a, b) => a.idx - b.idx);
 
     const newPermIds = newPermRequests.map(r => r.requestId).join(",");
     const newQIds = newQRequests.map(r => r.requestId).join(",");
@@ -157,7 +164,7 @@ export function usePendingGates(
       pendingPermissionRequests: newPermRequests,
       pendingQuestionRequests: newQRequests,
     };
-  }, [events]);
+  }, [events, closedQuestionsByThread]);
 
   async function resolvePermission(requestId: string, decision: "allow" | "allow_always" | "deny") {
     if (!selectedThreadId) return;
@@ -208,6 +215,46 @@ export function usePendingGates(
       onError(e instanceof Error ? e.message : "Failed to answer question");
     } finally {
       setAnsweringQuestionIds((current) => {
+        const next = new Set(current);
+        next.delete(requestId);
+        return next;
+      });
+    }
+  }
+
+  async function dismissQuestion(requestId: string) {
+    if (!selectedThreadId) return;
+
+    startWaitingAssistant(selectedThreadId);
+    setDismissingQuestionIds((current) => {
+      const next = new Set(current);
+      next.add(requestId);
+      return next;
+    });
+    setClosedQuestionsByThread((current) => ({
+      ...current,
+      [requestId]: true,
+    }));
+    onError(null);
+
+    try {
+      await dismissQuestionMutation.mutateAsync({
+        threadId: selectedThreadId,
+        input: { requestId },
+      });
+    } catch (e) {
+      clearWaitingAssistantForThread(selectedThreadId);
+      setClosedQuestionsByThread((current) => {
+        if (!current[requestId]) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[requestId];
+        return next;
+      });
+      onError(e instanceof Error ? e.message : "Failed to dismiss question");
+    } finally {
+      setDismissingQuestionIds((current) => {
         const next = new Set(current);
         next.delete(requestId);
         return next;
@@ -369,6 +416,7 @@ export function usePendingGates(
     pendingPlan,
     resolvingPermissionIds,
     answeringQuestionIds,
+    dismissingQuestionIds,
     planActionBusy,
     showPlanDecisionComposer,
     isWaitingForUserGate,
@@ -376,6 +424,7 @@ export function usePendingGates(
     hasPendingQuestionRequests,
     resolvePermission,
     answerQuestion,
+    dismissQuestion,
     handleApprovePlan,
     handleRevisePlan,
     handleDismissPlan,

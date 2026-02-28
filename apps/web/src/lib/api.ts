@@ -7,6 +7,7 @@ import type {
   CreateModelProviderInput,
   CreateRepositoryInput,
   CreateWorktreeInput,
+  DismissQuestionInput,
   ExternalApp,
   FileEntry,
   FilesystemBrowseResponse,
@@ -278,6 +279,18 @@ export const api = {
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to answer question");
+    }
+  },
+  dismissQuestion: async (threadId: string, input: DismissQuestionInput) => {
+    const response = await runtimeFetch(`/threads/${threadId}/questions/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to dismiss question");
     }
   },
   resolvePermission: async (threadId: string, input: ResolvePermissionInput) => {

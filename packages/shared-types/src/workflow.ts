@@ -16,6 +16,7 @@ export const ChatEventTypeSchema = z.enum([
   "permission.resolved",
   "question.requested",
   "question.answered",
+  "question.dismissed",
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
@@ -155,6 +156,12 @@ export const AnswerQuestionInputSchema = z.object({
   answers: z.record(z.string(), z.string()),
 });
 export type AnswerQuestionInput = z.infer<typeof AnswerQuestionInputSchema>;
+
+export const DismissQuestionInputSchema = z.object({
+  requestId: z.string().trim().min(1),
+  reason: z.string().trim().optional(),
+});
+export type DismissQuestionInput = z.infer<typeof DismissQuestionInputSchema>;
 
 export const PlanRevisionInputSchema = z.object({
   feedback: z.string().trim().min(1),
