@@ -11,6 +11,7 @@ type WorkspaceHeaderProps = {
   threads: ChatThread[];
   selectedThreadId: string | null;
   disabled: boolean;
+  createThreadDisabled?: boolean;
   closingThreadId: string | null;
   showReviewTab?: boolean;
   reviewTabActive?: boolean;
@@ -47,6 +48,7 @@ export function WorkspaceHeader({
   threads,
   selectedThreadId,
   disabled,
+  createThreadDisabled,
   closingThreadId,
   showReviewTab,
   reviewTabActive,
@@ -186,7 +188,7 @@ export function WorkspaceHeader({
           size="icon"
           aria-label="Add session"
           title="Add session"
-          disabled={disabled}
+          disabled={createThreadDisabled ?? disabled}
           className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
           onClick={onCreateThread}
         >

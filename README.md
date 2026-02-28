@@ -16,7 +16,10 @@ Local-first conductor.build-style workspace with:
 - `packages/shared-types` - shared API schemas/types
 - `packages/orchestrator-core` - standalone utility package (not required by runtime)
 
-Both clients connect to runtime on port `4321` by default.
+Default ports:
+
+- Web dev + runtime dev: `4331`
+- Installed desktop bundle runtime: `4321`
 
 ## Docker Compose
 
@@ -78,7 +81,7 @@ Recommended `.env` values:
 
 ```env
 RUNTIME_HOST=0.0.0.0
-RUNTIME_PORT=4321
+RUNTIME_PORT=4331
 DATABASE_URL="file:./dev.db"
 CLAUDE_CODE_EXECUTABLE=claude
 WORKTREE_ROOT="~/.codesymphony/worktrees"
@@ -107,7 +110,7 @@ make dev
 ```
 
 - Web (same machine): `http://127.0.0.1:5173`
-- Runtime (same machine): `http://127.0.0.1:4321`
+- Runtime (same machine): `http://127.0.0.1:4331`
 
 Runtime only:
 
@@ -153,7 +156,7 @@ make build
 
 ## API Quick Reference
 
-Base URL (same machine): `http://127.0.0.1:4321/api`
+Base URL (same machine): `http://127.0.0.1:4331/api`
 
 - `GET /repositories`
 - `GET /repositories/:id`
@@ -169,6 +172,7 @@ Base URL (same machine): `http://127.0.0.1:4321/api`
 - `POST /threads/:id/permissions/resolve`
 - `GET /threads/:id/events`
 - `GET /threads/:id/events/stream`
+- `GET /debug/runtime-info`
 - `GET /health`
 
 ## Test and Build

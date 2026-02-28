@@ -1,7 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import type { ChatEvent } from "@codesymphony/shared-types";
+import path from "node:path";
 import { z } from "zod";
 
+const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
 const eventQuery = z.object({ afterIdx: z.string().optional() });
@@ -35,6 +37,21 @@ export function formatSseEvent(event: ChatEvent): string {
   return `id: ${event.idx}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
+function stripPrivatePrefix(input: string): string {
+  if (input === "/private") return "/";
+  if (input.startsWith("/private/")) return input.slice("/private".length);
+  return input;
+}
+
+function areLikelySameFsPath(a: string, b: string): boolean {
+  const normalizedA = path.resolve(a.trim());
+  const normalizedB = path.resolve(b.trim());
+  if (normalizedA === normalizedB) return true;
+  if (stripPrivatePrefix(normalizedA) === normalizedB) return true;
+  if (normalizedA === stripPrivatePrefix(normalizedB)) return true;
+  return false;
+}
+
 export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/worktrees/:id/threads", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
@@ -53,6 +70,47 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
     try {
       const thread = await app.chatService.createThread(params.id, request.body);
+      return reply.code(201).send({ data: thread });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to create thread";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/repositories/:id/threads", async (request, reply) => {
+    const params = repositoryParams.parse(request.params);
+
+    try {
+      const repository = await app.repositoryService.getById(params.id);
+      if (!repository) {
+        return reply.code(404).send({ error: "Repository not found" });
+      }
+
+      const rootWorktree = repository.worktrees.find((worktree) =>
+        worktree.status === "active" && areLikelySameFsPath(worktree.path, repository.rootPath),
+      ) ?? null;
+      const targetWorktree = rootWorktree
+        ?? repository.worktrees.find((worktree) => worktree.status === "active")
+        ?? repository.worktrees[0]
+        ?? null;
+
+      if (!targetWorktree) {
+        return reply.code(400).send({ error: "No available worktree for repository" });
+      }
+
+      app.log.info(
+        {
+          repositoryId: repository.id,
+          repositoryRootPath: repository.rootPath,
+          targetWorktreeId: targetWorktree.id,
+          targetWorktreePath: targetWorktree.path,
+          targetWorktreeBranch: targetWorktree.branch,
+          targetReason: rootWorktree ? "root-worktree" : "fallback-active-worktree",
+        },
+        "create thread for repository",
+      );
+
+      const thread = await app.chatService.createThread(targetWorktree.id, request.body);
       return reply.code(201).send({ data: thread });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to create thread";

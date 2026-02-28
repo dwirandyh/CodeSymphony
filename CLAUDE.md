@@ -12,7 +12,7 @@ pnpm install
 pnpm dev
 
 # Start individual apps
-pnpm dev:runtime    # Fastify backend on :4321
+pnpm dev:runtime    # Fastify backend on :4331
 pnpm dev:web        # Vite dev server on :5173
 pnpm dev:desktop    # Tauri shell (requires Rust/Cargo)
 
@@ -44,7 +44,7 @@ Local-first monorepo (pnpm workspaces + Turbo) for a conductor.build-style AI co
 
 ### Apps
 
-- **`apps/runtime`** — Fastify API server + Prisma (SQLite) + Claude Agent SDK. The single local backend serving both web and desktop clients. Entry point: `src/index.ts`. Runs on port 4321.
+- **`apps/runtime`** — Fastify API server + Prisma (SQLite) + Claude Agent SDK. The single local backend serving both web and desktop clients. Entry point: `src/index.ts`. Defaults to port 4331 in dev; desktop bundle sets 4321 explicitly.
 - **`apps/web`** — React 19 + Vite + Tailwind CSS + Radix UI. Main workspace UI with chat panel, repository sidebar, and terminal. Runs on port 5173.
 - **`apps/desktop`** — Tauri shell wrapping the web app for desktop packaging.
 

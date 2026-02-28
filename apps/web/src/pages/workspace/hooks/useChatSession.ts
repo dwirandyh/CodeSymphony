@@ -93,6 +93,8 @@ function applyMessageMutations(
 interface UseChatSessionOptions {
   initialThreadId?: string;
   onThreadChange?: (threadId: string | null) => void;
+  selectedRepositoryId?: string | null;
+  onWorktreeResolved?: (worktreeId: string) => void;
 }
 
 export function useChatSession(
@@ -104,7 +106,11 @@ export function useChatSession(
   const queryClient = useQueryClient();
   const renderCountRef = useRef(0);
   renderCountRef.current++;
-  debugLog("useChatSession", "render", { renderCount: renderCountRef.current, selectedWorktreeId });
+  debugLog("useChatSession", "render", {
+    renderCount: renderCountRef.current,
+    selectedWorktreeId,
+    selectedRepositoryId: options?.selectedRepositoryId ?? null,
+  });
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -780,37 +786,56 @@ export function useChatSession(
 
   // ── Thread CRUD ──
 
+  async function createThreadInCurrentContext(title: string): Promise<{ created: ChatThread; worktreeId: string } | null> {
+    if (selectedWorktreeId) {
+      const created = await api.createThread(selectedWorktreeId, { title });
+      return { created, worktreeId: selectedWorktreeId };
+    }
+
+    const repositoryId = options?.selectedRepositoryId ?? null;
+    if (!repositoryId) {
+      return null;
+    }
+
+    const created = await api.createRepositoryThread(repositoryId, { title });
+    options?.onWorktreeResolved?.(created.worktreeId);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
+    return { created, worktreeId: created.worktreeId };
+  }
+
   async function createAdditionalThread() {
-    if (!selectedWorktreeId) return;
     onError(null);
 
     try {
-      const created = await api.createThread(selectedWorktreeId, {
-        title: `Thread ${threads.length + 1}`,
-      });
+      const result = await createThreadInCurrentContext(`Thread ${threads.length + 1}`);
+      if (!result) return;
+
+      const { created, worktreeId } = result;
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         return [...current, created];
       });
       setSelectedThreadId(created.id);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create thread");
     }
   }
 
   async function createThreadAndSendMessage(title: string, content: string) {
-    if (!selectedWorktreeId) return;
     onError(null);
 
     try {
-      const created = await api.createThread(selectedWorktreeId, { title });
+      const result = await createThreadInCurrentContext(title);
+      if (!result) return;
+
+      const { created, worktreeId } = result;
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         return [...current, created];
       });
       setSelectedThreadId(created.id);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
       startWaitingAssistant(created.id);
       setSendingMessage(true);
       try {

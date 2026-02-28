@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import prismaClientPkg, { type PrismaClient } from "@prisma/client";
 import { CreateWorktreeInputSchema, type CreateWorktreeInput, type ScriptResult, type Worktree } from "@codesymphony/shared-types";
-import { createGitWorktree, removeGitWorktree, renameBranch as renameBranchGit } from "./git.js";
+import { createGitWorktree, getCurrentBranch, removeGitWorktree, renameBranch as renameBranchGit } from "./git.js";
 import { mapWorktree } from "./mappers.js";
 import { runScripts } from "./scriptRunner.js";
 
@@ -119,7 +119,26 @@ export function createWorktreeService(prisma: PrismaClient) {
   return {
     async getById(id: string): Promise<Worktree | null> {
       const worktree = await prisma.worktree.findUnique({ where: { id } });
-      return worktree ? mapWorktree(worktree) : null;
+      if (!worktree) return null;
+
+      if (worktree.status === "active") {
+        const currentBranch = await getCurrentBranch(worktree.path);
+        if (currentBranch && currentBranch !== worktree.branch) {
+          try {
+            const updated = await prisma.worktree.update({
+              where: { id: worktree.id },
+              data: { branch: currentBranch },
+            });
+            return mapWorktree(updated);
+          } catch (error) {
+            if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) {
+              throw error;
+            }
+          }
+        }
+      }
+
+      return mapWorktree(worktree);
     },
 
     async create(repositoryId: string, rawInput: unknown): Promise<CreateWorktreeResult> {
@@ -229,6 +248,10 @@ export function createWorktreeService(prisma: PrismaClient) {
 
       if (!worktree) {
         throw new Error("Worktree not found");
+      }
+
+      if (worktree.path === worktree.repository.rootPath) {
+        throw new Error("Cannot delete primary worktree");
       }
 
       // Run teardown scripts if configured (skip if force-deleting)
