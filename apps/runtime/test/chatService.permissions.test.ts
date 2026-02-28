@@ -212,6 +212,61 @@ describe("chatService permission flow", () => {
     expect(thread?.title).toBe("Summarize README.md");
   });
 
+  it("passes active provider config to AI title generation", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({
+      onText,
+      prompt,
+      model,
+      providerApiKey,
+      providerBaseUrl,
+    }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        expect(model).toBe("claude-3-7-sonnet");
+        expect(providerApiKey).toBe("provider-key");
+        expect(providerBaseUrl).toBe("https://provider.example.com/v1");
+        await onText("Provider-aware title");
+        return {
+          output: "Provider-aware title",
+          sessionId: null,
+        };
+      }
+
+      await onText("Siap.");
+      return {
+        output: "Siap.",
+        sessionId: "session-provider-title",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: {
+        getActiveProvider: async () => ({
+          apiKey: "provider-key",
+          baseUrl: "https://provider.example.com/v1",
+          name: "Custom Provider",
+          modelId: "claude-3-7-sonnet",
+        }),
+      },
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "Summarize project setup flow",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) =>
+        event.type === "tool.finished"
+        && String(event.payload.source ?? "") === "chat.thread.metadata"
+        && String(event.payload.threadTitle ?? "") === "Provider-aware title",
+    );
+  });
+
   it("does not overwrite non-default thread title and emits no metadata title event", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
       await onText("Done.");

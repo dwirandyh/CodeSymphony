@@ -17,6 +17,7 @@ import type {
   OpenInAppInput,
   OpenWorktreeFileInput,
   PlanRevisionInput,
+  RenameChatThreadTitleInput,
   RenameWorktreeBranchInput,
   ResolvePermissionInput,
   Repository,
@@ -26,9 +27,62 @@ import type {
   UpdateRepositoryScriptsInput,
   Worktree,
 } from "@codesymphony/shared-types";
-import { resolveRuntimeApiBase } from "./runtimeUrl";
+import { resolveRuntimeApiBases } from "./runtimeUrl";
 
-const API_BASE = resolveRuntimeApiBase();
+const API_BASES = resolveRuntimeApiBases();
+let activeApiBase = API_BASES[0] ?? "http://127.0.0.1:4331/api";
+
+function getCandidateApiBases(): string[] {
+  return [activeApiBase, ...API_BASES.filter((base) => base !== activeApiBase)];
+}
+
+function toApiUrl(apiBase: string, path: string): string {
+  return `${apiBase}${path}`;
+}
+
+function toRuntimeUnavailableError(cause: unknown): Error {
+  const triedBases = getCandidateApiBases().join(", ");
+  const error = new Error(
+    `Runtime API unavailable. Tried ${triedBases}. Start runtime with "pnpm dev:runtime" or set VITE_RUNTIME_URL.`,
+  );
+  if (cause instanceof Error && cause.stack) {
+    error.stack = cause.stack;
+  }
+  return error;
+}
+
+async function runtimeFetch(path: string, init?: RequestInit): Promise<Response> {
+  let lastError: unknown = null;
+
+  for (const apiBase of getCandidateApiBases()) {
+    try {
+      const response = await fetch(toApiUrl(apiBase, path), init);
+      if (activeApiBase !== apiBase) {
+        activeApiBase = apiBase;
+      }
+      return response;
+    } catch (error) {
+      // Abort errors should propagate as-is.
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+
+  throw toRuntimeUnavailableError(lastError);
+}
+
+function createEventSource(path: string): EventSource {
+  return new EventSource(toApiUrl(activeApiBase, path));
+}
+
+function extractDataEnvelope<T>(payload: unknown): T {
+  if (payload != null && typeof payload === "object" && "data" in payload) {
+    return (payload as { data: T }).data;
+  }
+  throw new Error("Runtime returned an unexpected response shape");
+}
 
 export class TeardownFailedError extends Error {
   public readonly output: string;
@@ -46,7 +100,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await runtimeFetch(path, {
     headers,
     ...init,
   });
@@ -57,7 +111,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(payload?.error ?? "Request failed");
   }
 
-  return payload.data as T;
+  return extractDataEnvelope<T>(payload);
 }
 
 export const api = {
@@ -77,7 +131,7 @@ export const api = {
   listBranches: (repositoryId: string) =>
     request<string[]>(`/repositories/${repositoryId}/branches`),
   deleteRepository: async (repositoryId: string) => {
-    const response = await fetch(`${API_BASE}/repositories/${repositoryId}`, {
+    const response = await runtimeFetch(`/repositories/${repositoryId}`, {
       method: "DELETE",
     });
 
@@ -87,7 +141,7 @@ export const api = {
     }
   },
   createWorktree: async (repositoryId: string, input: CreateWorktreeInput = {}): Promise<{ worktree: Worktree; scriptResult?: ScriptResult }> => {
-    const response = await fetch(`${API_BASE}/repositories/${repositoryId}/worktrees`, {
+    const response = await runtimeFetch(`/repositories/${repositoryId}/worktrees`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -99,11 +153,15 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to create worktree");
     }
 
-    return { worktree: payload.data as Worktree, scriptResult: payload.scriptResult as ScriptResult | undefined };
+    const envelope = payload as { scriptResult?: ScriptResult } | null;
+    return {
+      worktree: extractDataEnvelope<Worktree>(payload),
+      scriptResult: envelope?.scriptResult,
+    };
   },
   deleteWorktree: async (worktreeId: string, options?: { force?: boolean }) => {
     const query = options?.force ? "?force=true" : "";
-    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}${query}`, {
+    const response = await runtimeFetch(`/worktrees/${worktreeId}${query}`, {
       method: "DELETE",
     });
 
@@ -126,23 +184,23 @@ export const api = {
       method: "POST",
     }),
   runSetupStream: (worktreeId: string): EventSource =>
-    new EventSource(`${API_BASE}/worktrees/${worktreeId}/run-setup/stream`),
+    createEventSource(`/worktrees/${worktreeId}/run-setup/stream`),
   stopSetupScript: async (worktreeId: string): Promise<void> => {
-    await fetch(`${API_BASE}/worktrees/${worktreeId}/run-setup/stop`, {
+    await runtimeFetch(`/worktrees/${worktreeId}/run-setup/stop`, {
       method: "POST",
     });
   },
   runScriptStream: (worktreeId: string, cmd?: string): EventSource => {
     const params = cmd ? `?cmd=${encodeURIComponent(cmd)}` : "";
-    return new EventSource(`${API_BASE}/worktrees/${worktreeId}/run-script/stream${params}`);
+    return createEventSource(`/worktrees/${worktreeId}/run-script/stream${params}`);
   },
   stopRunScript: async (worktreeId: string): Promise<void> => {
-    await fetch(`${API_BASE}/worktrees/${worktreeId}/run-script/stop`, {
+    await runtimeFetch(`/worktrees/${worktreeId}/run-script/stop`, {
       method: "POST",
     });
   },
   runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string; mode?: "stdin" | "exec" }): Promise<void> => {
-    const response = await fetch(`${API_BASE}/terminal/run`, {
+    const response = await runtimeFetch("/terminal/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -154,7 +212,7 @@ export const api = {
     }
   },
   interruptTerminalSession: async (sessionId: string): Promise<void> => {
-    const response = await fetch(`${API_BASE}/terminal/interrupt`, {
+    const response = await runtimeFetch("/terminal/interrupt", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId }),
@@ -177,8 +235,13 @@ export const api = {
       body: JSON.stringify(input),
     }),
   getThread: (id: string) => request<ChatThread>(`/threads/${id}`),
+  renameThreadTitle: (threadId: string, input: RenameChatThreadTitleInput) =>
+    request<ChatThread>(`/threads/${threadId}/title`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
   deleteThread: async (threadId: string) => {
-    const response = await fetch(`${API_BASE}/threads/${threadId}`, {
+    const response = await runtimeFetch(`/threads/${threadId}`, {
       method: "DELETE",
     });
 
@@ -194,7 +257,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
   stopRun: async (threadId: string) => {
-    const response = await fetch(`${API_BASE}/threads/${threadId}/stop`, {
+    const response = await runtimeFetch(`/threads/${threadId}/stop`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
@@ -206,7 +269,7 @@ export const api = {
     }
   },
   answerQuestion: async (threadId: string, input: AnswerQuestionInput) => {
-    const response = await fetch(`${API_BASE}/threads/${threadId}/questions/answer`, {
+    const response = await runtimeFetch(`/threads/${threadId}/questions/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -218,7 +281,7 @@ export const api = {
     }
   },
   resolvePermission: async (threadId: string, input: ResolvePermissionInput) => {
-    const response = await fetch(`${API_BASE}/threads/${threadId}/permissions/resolve`, {
+    const response = await runtimeFetch(`/threads/${threadId}/permissions/resolve`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -232,7 +295,7 @@ export const api = {
     }
   },
   approvePlan: async (threadId: string) => {
-    const response = await fetch(`${API_BASE}/threads/${threadId}/plan/approve`, {
+    const response = await runtimeFetch(`/threads/${threadId}/plan/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
@@ -244,7 +307,7 @@ export const api = {
     }
   },
   revisePlan: async (threadId: string, input: PlanRevisionInput) => {
-    const response = await fetch(`${API_BASE}/threads/${threadId}/plan/revise`, {
+    const response = await runtimeFetch(`/threads/${threadId}/plan/revise`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -274,7 +337,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
   discardGitChange: async (worktreeId: string, filePath: string) => {
-    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}/git/discard`, {
+    const response = await runtimeFetch(`/worktrees/${worktreeId}/git/discard`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ filePath }),
@@ -290,7 +353,7 @@ export const api = {
   getFileIndex: (worktreeId: string, signal?: AbortSignal) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files/index`, { signal }),
   openWorktreeFile: async (worktreeId: string, input: OpenWorktreeFileInput) => {
-    const response = await fetch(`${API_BASE}/worktrees/${worktreeId}/files/open`, {
+    const response = await runtimeFetch(`/worktrees/${worktreeId}/files/open`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -301,7 +364,9 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to open file");
     }
   },
-  runtimeBaseUrl: API_BASE.replace(/\/api$/, ""),
+  get runtimeBaseUrl() {
+    return activeApiBase.replace(/\/api$/, "");
+  },
   browseFilesystem: (path?: string) => {
     const params = path ? `?path=${encodeURIComponent(path)}` : "";
     return request<FilesystemBrowseResponse>(`/filesystem/browse${params}`);
@@ -309,7 +374,7 @@ export const api = {
   getInstalledApps: () =>
     request<{ apps: ExternalApp[] }>("/system/installed-apps").then((r) => r.apps),
   openInApp: async (input: OpenInAppInput) => {
-    const response = await fetch(`${API_BASE}/system/open-in-app`, {
+    const response = await runtimeFetch("/system/open-in-app", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -335,7 +400,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
   deleteModelProvider: async (id: string) => {
-    const response = await fetch(`${API_BASE}/model-providers/${id}`, {
+    const response = await runtimeFetch(`/model-providers/${id}`, {
       method: "DELETE",
     });
     if (!response.ok && response.status !== 204) {
@@ -348,7 +413,7 @@ export const api = {
       method: "POST",
     }),
   deactivateAllProviders: async () => {
-    const response = await fetch(`${API_BASE}/model-providers/deactivate`, {
+    const response = await runtimeFetch("/model-providers/deactivate", {
       method: "POST",
     });
     if (!response.ok && response.status !== 204) {

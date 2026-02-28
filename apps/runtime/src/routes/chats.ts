@@ -129,6 +129,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
     return { data: thread };
   });
 
+  app.patch("/threads/:id/title", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      const thread = await app.chatService.renameThreadTitle(params.id, request.body);
+      return { data: thread };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to rename thread title";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.delete("/threads/:id", async (request, reply) => {
     const params = threadParams.parse(request.params);
 

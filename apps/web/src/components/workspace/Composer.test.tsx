@@ -82,6 +82,15 @@ describe("Composer", () => {
     return el;
   }
 
+  function getModelSelectorButton(): HTMLButtonElement {
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+    const modelButton = buttons.find((button) => button.textContent?.trim() === "Default");
+    if (!modelButton) {
+      throw new Error("Model selector button not found");
+    }
+    return modelButton;
+  }
+
   function typeInEditor(editor: HTMLDivElement, text: string) {
     act(() => {
       editor.textContent = text;
@@ -266,6 +275,29 @@ describe("Composer", () => {
 
     const loadingText = container.querySelector(".text-muted-foreground");
     expect(loadingText?.textContent).toContain("Loading files...");
+  });
+
+  it("keeps model selector next to send button in right action row", () => {
+    renderComposer();
+
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+    if (!sendButton) {
+      throw new Error("Send button not found");
+    }
+
+    const modelButton = getModelSelectorButton();
+    const rightActionRow = sendButton.closest("div");
+    expect(rightActionRow).not.toBeNull();
+    expect(rightActionRow?.className).toContain("bottom-2 right-2.5");
+    expect(rightActionRow?.contains(modelButton)).toBe(true);
+  });
+
+  it("locks model selector when thread already has messages", () => {
+    renderComposer({ hasMessages: true });
+
+    const modelButton = getModelSelectorButton();
+    expect(modelButton.disabled).toBe(true);
+    expect(modelButton.title).toContain("Model is locked for this thread");
   });
 
   it("filters out already-mentioned files from suggestions", async () => {

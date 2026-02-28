@@ -369,6 +369,10 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
+  const repositoriesLoadError = repos.repositoriesError instanceof Error
+    ? repos.repositoriesError.message
+    : null;
+  const uiError = error ?? repositoriesLoadError;
 
   const handleSelectRepository = useCallback((repositoryId: string) => {
     repos.setSelectedRepositoryId(repositoryId);
@@ -804,15 +808,16 @@ export function WorkspacePage() {
               onSelectThread={handleSelectThread}
               onCreateThread={() => void chat.createAdditionalThread()}
               onCloseThread={handleRequestCloseThread}
+              onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
               onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
               runScriptRunning={runScriptActive}
               onToggleRunScript={handleToggleRunScript}
             />
 
-            {error ? (
+            {uiError ? (
               <div className="flex items-center gap-2 px-3 py-2 text-xs text-destructive">
-                <strong>!</strong> {error}
+                <strong>!</strong> {uiError}
               </div>
             ) : null}
 

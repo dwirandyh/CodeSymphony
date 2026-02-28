@@ -1040,7 +1040,9 @@ export function Composer({
               {isPlan ? "Plan" : "Execute"}
             </button>
             <kbd className="hidden text-[10px] text-muted-foreground/50 sm:inline">Shift+Tab</kbd>
+          </div>
 
+          <div className="absolute bottom-2 right-2.5 flex items-center gap-2 lg:bottom-3 lg:right-3">
             {/* Model selector */}
             <div className="relative" ref={modelPopoverRef}>
               <button
@@ -1059,7 +1061,7 @@ export function Composer({
               </button>
 
               {modelPopoverOpen && (
-                <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[240px] rounded-lg border border-border/60 bg-popover p-1 shadow-lg">
+                <div className="absolute bottom-full right-0 z-50 mb-1.5 w-[240px] rounded-lg border border-border/60 bg-popover p-1 shadow-lg">
                   <div className="max-h-48 overflow-y-auto">
                     <button
                       type="button"
@@ -1100,21 +1102,21 @@ export function Composer({
                 </div>
               )}
             </div>
-          </div>
 
-          <Button
-            type="button"
-            onClick={showStop ? onStop : handleSubmit}
-            disabled={showStop ? stopping : cannotSend}
-            size="icon"
-            aria-label={showStop ? "Stop run" : "Send message"}
-            className="absolute bottom-2 right-2.5 h-8 w-8 rounded-full bg-white text-black hover:bg-white/90 disabled:bg-white/80 disabled:text-black/70 lg:bottom-3 lg:right-3"
-          >
-            {showStop ? <Square className="h-3.5 w-3.5" fill="currentColor" /> : <ArrowUp className="h-3.5 w-3.5" />}
-            <span className="sr-only">
-              {showStop ? (stopping ? "Stopping..." : "Stop run") : sending ? "Running..." : "Send message"}
-            </span>
-          </Button>
+            <Button
+              type="button"
+              onClick={showStop ? onStop : handleSubmit}
+              disabled={showStop ? stopping : cannotSend}
+              size="icon"
+              aria-label={showStop ? "Stop run" : "Send message"}
+              className="h-8 w-8 rounded-full bg-white text-black hover:bg-white/90 disabled:bg-white/80 disabled:text-black/70"
+            >
+              {showStop ? <Square className="h-3.5 w-3.5" fill="currentColor" /> : <ArrowUp className="h-3.5 w-3.5" />}
+              <span className="sr-only">
+                {showStop ? (stopping ? "Stopping..." : "Stop run") : sending ? "Running..." : "Send message"}
+              </span>
+            </Button>
+          </div>
         </div>
       </div>
     </section>

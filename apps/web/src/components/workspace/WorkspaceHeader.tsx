@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
 import { GitPullRequestArrow, Plus, X } from "lucide-react";
 import { Button } from "../ui/button";
@@ -18,6 +19,7 @@ type WorkspaceHeaderProps = {
   onSelectThread: (threadId: string | null) => void;
   onCreateThread: () => void;
   onCloseThread: (threadId: string) => void;
+  onRenameThread: (threadId: string, title: string) => Promise<void> | void;
   onSelectReviewTab?: () => void;
   onCloseReviewTab?: () => void;
   runScriptRunning?: boolean;
@@ -55,11 +57,66 @@ export function WorkspaceHeader({
   onSelectThread,
   onCreateThread,
   onCloseThread,
+  onRenameThread,
   onSelectReviewTab,
   onCloseReviewTab,
   runScriptRunning,
   onToggleRunScript,
 }: WorkspaceHeaderProps) {
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!editingThreadId) {
+      return;
+    }
+
+    if (!threads.some((thread) => thread.id === editingThreadId)) {
+      setEditingThreadId(null);
+    }
+  }, [editingThreadId, threads]);
+
+  useEffect(() => {
+    if (!editingThreadId) {
+      return;
+    }
+
+    const input = renameInputRef.current;
+    if (!input) {
+      return;
+    }
+
+    input.focus();
+    input.select();
+  }, [editingThreadId]);
+
+  function startThreadRename(threadId: string, isSelected: boolean) {
+    if (!isSelected || disabled) {
+      return;
+    }
+
+    setEditingThreadId(threadId);
+  }
+
+  function cancelThreadRename() {
+    setEditingThreadId(null);
+  }
+
+  function saveThreadRename(threadId: string, currentTitle: string, rawTitle: string) {
+    if (editingThreadId !== threadId) {
+      return;
+    }
+
+    const nextTitle = rawTitle.trim();
+    cancelThreadRename();
+
+    if (!nextTitle || nextTitle === currentTitle) {
+      return;
+    }
+
+    void onRenameThread(threadId, nextTitle);
+  }
+
   return (
     <section className="space-y-1 pb-1 lg:space-y-1.5 lg:pb-2">
       <div className="hidden items-center justify-between gap-3 lg:flex">
@@ -103,6 +160,7 @@ export function WorkspaceHeader({
             {threads.map((thread) => {
               const isSelected = thread.id === selectedThreadId && !reviewTabActive;
               const isClosing = closingThreadId === thread.id;
+              const isEditing = editingThreadId === thread.id;
 
               return (
                 <div
@@ -112,20 +170,43 @@ export function WorkspaceHeader({
                     isSelected && "border-b-primary text-foreground",
                   )}
                 >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={isSelected}
-                    title={thread.title}
-                    className={cn(
-                      "max-w-[180px] truncate px-2 py-1.5 text-xs font-medium transition-colors",
-                      isSelected && "text-foreground",
-                    )}
-                    onClick={() => onSelectThread(thread.id)}
-                    disabled={disabled}
-                  >
-                    {thread.title}
-                  </button>
+                  {isEditing ? (
+                    <input
+                      ref={renameInputRef}
+                      defaultValue={thread.title}
+                      onBlur={(event) => saveThreadRename(thread.id, thread.title, event.currentTarget.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          saveThreadRename(thread.id, thread.title, event.currentTarget.value);
+                          return;
+                        }
+
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelThreadRename();
+                        }
+                      }}
+                      aria-label="Rename thread title"
+                      className="w-[180px] rounded-sm border border-border bg-background px-2 py-1 text-xs font-medium text-foreground outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={isSelected}
+                      title={thread.title}
+                      className={cn(
+                        "max-w-[180px] truncate px-2 py-1.5 text-xs font-medium transition-colors",
+                        isSelected && "text-foreground",
+                      )}
+                      onClick={() => onSelectThread(thread.id)}
+                      onDoubleClick={() => startThreadRename(thread.id, isSelected)}
+                      disabled={disabled}
+                    >
+                      {thread.title}
+                    </button>
+                  )}
 
                   <button
                     type="button"
@@ -136,7 +217,7 @@ export function WorkspaceHeader({
                       isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100",
                     )}
                     onClick={() => onCloseThread(thread.id)}
-                    disabled={disabled || isClosing}
+                    disabled={disabled || isClosing || isEditing}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -179,21 +260,21 @@ export function WorkspaceHeader({
                 </button>
               </div>
             )}
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Add session"
+              title="Add session"
+              disabled={createThreadDisabled ?? disabled}
+              className="ml-1 h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={onCreateThread}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
           </div>
         </div>
-
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Add session"
-          title="Add session"
-          disabled={createThreadDisabled ?? disabled}
-          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={onCreateThread}
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
       </div>
     </section>
   );

@@ -90,6 +90,65 @@ function applyMessageMutations(
   return result;
 }
 
+type ThreadMetadataSnapshot = {
+  threadTitle: string | null;
+  worktreeBranch: string | null;
+};
+
+export function extractLatestThreadMetadata(events: ChatEvent[]): ThreadMetadataSnapshot {
+  let latestThreadTitle: string | null = null;
+  let latestWorktreeBranch: string | null = null;
+
+  for (const event of events) {
+    if (event.type === "chat.completed") {
+      const completedThreadTitle = payloadStringOrNull(event.payload.threadTitle);
+      const completedWorktreeBranch = payloadStringOrNull(event.payload.worktreeBranch);
+      if (completedThreadTitle) {
+        latestThreadTitle = completedThreadTitle;
+      }
+      if (completedWorktreeBranch) {
+        latestWorktreeBranch = completedWorktreeBranch;
+      }
+      continue;
+    }
+
+    if (event.type === "tool.finished" && payloadStringOrNull(event.payload.source) === "chat.thread.metadata") {
+      const metadataThreadTitle = payloadStringOrNull(event.payload.threadTitle);
+      const metadataWorktreeBranch = payloadStringOrNull(event.payload.worktreeBranch);
+      if (metadataThreadTitle) {
+        latestThreadTitle = metadataThreadTitle;
+      }
+      if (metadataWorktreeBranch) {
+        latestWorktreeBranch = metadataWorktreeBranch;
+      }
+    }
+  }
+
+  return {
+    threadTitle: latestThreadTitle,
+    worktreeBranch: latestWorktreeBranch,
+  };
+}
+
+export function applyThreadTitleUpdate(
+  currentThreads: ChatThread[],
+  threadId: string | null,
+  threadTitle: string | null,
+): ChatThread[] {
+  if (!threadId || !threadTitle) {
+    return currentThreads;
+  }
+
+  const index = currentThreads.findIndex((thread) => thread.id === threadId);
+  if (index === -1 || currentThreads[index].title === threadTitle) {
+    return currentThreads;
+  }
+
+  const updated = [...currentThreads];
+  updated[index] = { ...updated[index], title: threadTitle };
+  return updated;
+}
+
 interface UseChatSessionOptions {
   initialThreadId?: string;
   onThreadChange?: (threadId: string | null) => void;
@@ -362,31 +421,21 @@ export function useChatSession(
     if (!queriedEvents) return;
     const seenEventIds = new Set<string>();
     let lastIdx: number | null = null;
-    let latestThreadTitle: string | null = null;
-    let latestWorktreeBranch: string | null = null;
     for (const event of queriedEvents) {
       seenEventIds.add(event.id);
       if (lastIdx == null || event.idx > lastIdx) lastIdx = event.idx;
-      if (event.type === "chat.completed") {
-        const title = payloadStringOrNull(event.payload.threadTitle);
-        if (title) latestThreadTitle = title;
-        const branch = payloadStringOrNull(event.payload.worktreeBranch);
-        if (branch) latestWorktreeBranch = branch;
-      }
     }
 
-    if (latestThreadTitle) {
+    const latestMetadata = extractLatestThreadMetadata(queriedEvents);
+
+    if (latestMetadata.threadTitle) {
       setThreads((current) => {
-        const target = current.find((t) => t.id === selectedThreadId);
-        if (target && target.title === latestThreadTitle) return current;
-        return current.map((t) =>
-          t.id === selectedThreadId ? { ...t, title: latestThreadTitle } : t,
-        );
+        return applyThreadTitleUpdate(current, selectedThreadId, latestMetadata.threadTitle);
       });
     }
 
-    if (latestWorktreeBranch && selectedWorktreeId) {
-      onBranchRenamed?.(selectedWorktreeId, latestWorktreeBranch);
+    if (latestMetadata.worktreeBranch && selectedWorktreeId) {
+      onBranchRenamed?.(selectedWorktreeId, latestMetadata.worktreeBranch);
     }
 
     seenEventIdsByThreadRef.current.set(selectedThreadId!, seenEventIds);
@@ -395,7 +444,7 @@ export function useChatSession(
     } else {
       lastEventIdxByThreadRef.current.set(selectedThreadId!, lastIdx);
     }
-  }, [queriedEvents, selectedThreadId]);
+  }, [onBranchRenamed, queriedEvents, selectedThreadId, selectedWorktreeId]);
 
   function ensureSeenEventIds(threadId: string): Set<string> {
     const existing = seenEventIdsByThreadRef.current.get(threadId);
@@ -609,11 +658,7 @@ export function useChatSession(
         }
         if (completedThreadTitle) {
           setThreads((current) => {
-            const target = current.find((t) => t.id === selectedThreadId);
-            if (target && target.title === completedThreadTitle) return current;
-            return current.map((t) =>
-              t.id === selectedThreadId ? { ...t, title: completedThreadTitle } : t,
-            );
+            return applyThreadTitleUpdate(current, selectedThreadId, completedThreadTitle);
           });
         }
         if (completedBranch && selectedWorktreeId) {
@@ -641,11 +686,7 @@ export function useChatSession(
 
           if (metadataThreadTitle) {
             setThreads((current) => {
-              const target = current.find((t) => t.id === selectedThreadId);
-              if (target && target.title === metadataThreadTitle) return current;
-              return current.map((t) =>
-                t.id === selectedThreadId ? { ...t, title: metadataThreadTitle } : t,
-              );
+              return applyThreadTitleUpdate(current, selectedThreadId, metadataThreadTitle);
             });
           }
 
@@ -896,6 +937,35 @@ export function useChatSession(
     }
   }
 
+  async function renameThreadTitle(threadId: string, title: string) {
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) {
+      return;
+    }
+
+    onError(null);
+
+    try {
+      const updated = await api.renameThreadTitle(threadId, { title: normalizedTitle });
+      setThreads((current) => applyThreadTitleUpdate(current, updated.id, updated.title));
+
+      const cacheWorktreeId = selectedWorktreeId ?? updated.worktreeId;
+      if (cacheWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(cacheWorktreeId),
+          (current) => {
+            if (!current) {
+              return current;
+            }
+            return applyThreadTitleUpdate(current, updated.id, updated.title);
+          },
+        );
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to rename thread title");
+    }
+  }
+
   // ── Chat actions ──
 
   async function submitMessage(content?: string, messageAttachments?: PendingAttachment[]) {
@@ -1034,6 +1104,7 @@ export function useChatSession(
     createAdditionalThread,
     createThreadAndSendMessage,
     closeThread,
+    renameThreadTitle,
     submitMessage,
     stopAssistantRun,
 

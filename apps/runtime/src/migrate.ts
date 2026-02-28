@@ -1,16 +1,19 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
+import { existsSync } from "node:fs";
 
 /**
  * Run Prisma migrations in production.
  * Uses process.execPath (the bundled Node.js binary) to invoke prisma CLI.
  */
 export function runPrismaMigrations(): void {
-  const schemaPath = process.env.PRISMA_SCHEMA_PATH;
+  const schemaPathFromEnv = process.env.PRISMA_SCHEMA_PATH;
+  const fallbackSchemaPath = path.resolve(process.cwd(), "prisma", "schema.prisma");
+  const schemaPath = schemaPathFromEnv ?? (existsSync(fallbackSchemaPath) ? fallbackSchemaPath : undefined);
   const migrationsDir = process.env.PRISMA_MIGRATIONS_DIR;
 
   if (!schemaPath) {
-    console.log("PRISMA_SCHEMA_PATH not set, skipping migrations");
+    console.log("PRISMA schema not found, skipping migrations");
     return;
   }
 

@@ -7,6 +7,7 @@ function createThread(overrides: Partial<ChatThread> = {}): ChatThread {
     id: "thread-1",
     worktreeId: "worktree-1",
     title: "Thread 1",
+    titleEditedManually: false,
     claudeSessionId: null,
     active: false,
     createdAt: "2026-02-25T00:00:00.000Z",

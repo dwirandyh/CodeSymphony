@@ -70,12 +70,13 @@ model Worktree {
 }
 
 model ChatThread {
-  id              String        @id @default(cuid())
-  worktreeId      String
-  title           String
-  claudeSessionId String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id                 String        @id @default(cuid())
+  worktreeId         String
+  title              String
+  titleEditedManually Boolean      @default(false)
+  claudeSessionId    String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
 
   worktree Worktree     @relation(fields: [worktreeId], references: [id], onDelete: Cascade)
   messages ChatMessage[]

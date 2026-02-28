@@ -7,6 +7,7 @@ import {
   AnswerQuestionInputSchema,
   CreateChatThreadInputSchema,
   PlanRevisionInputSchema,
+  RenameChatThreadTitleInputSchema,
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   type AnswerQuestionInput,
@@ -17,6 +18,7 @@ import {
   type ChatThread,
   type CreateChatThreadInput,
   type PlanRevisionInput,
+  type RenameChatThreadTitleInput,
   type ResolvePermissionInput,
   type SendChatMessageInput,
 } from "@codesymphony/shared-types";
@@ -50,6 +52,19 @@ type WorktreeStateSnapshot = {
   unstagedDiff: string;
   stagedDiff: string;
   changedFiles: string[];
+};
+
+type ActiveModelProvider = {
+  apiKey: string;
+  baseUrl: string;
+  name: string;
+  modelId: string;
+};
+
+type ProviderOptions = {
+  model?: string;
+  providerApiKey?: string;
+  providerBaseUrl?: string;
 };
 
 function toStringArray(value: unknown): string[] {
@@ -468,6 +483,7 @@ export function createChatService(deps: RuntimeDeps) {
     worktreePath: string,
     firstUserContent: string,
     firstAssistantContent: string,
+    providerOptions?: ProviderOptions,
   ): Promise<string | null> {
     const prompt = [
       "You generate concise chat thread titles.",
@@ -495,6 +511,9 @@ export function createChatService(deps: RuntimeDeps) {
         cwd: worktreePath,
         abortController,
         permissionMode: "plan",
+        model: providerOptions?.model,
+        providerApiKey: providerOptions?.providerApiKey,
+        providerBaseUrl: providerOptions?.providerBaseUrl,
         onText: (chunk) => {
           streamedOutput += chunk;
         },
@@ -528,12 +547,17 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  async function maybeAutoRenameThreadAfterFirstAssistantReply(threadId: string, expectedAssistantMessageId: string): Promise<string | null> {
+  async function maybeAutoRenameThreadAfterFirstAssistantReply(
+    threadId: string,
+    expectedAssistantMessageId: string,
+    providerOptions?: ProviderOptions,
+  ): Promise<string | null> {
     try {
       const thread = await deps.prisma.chatThread.findUnique({
         where: { id: threadId },
         select: {
           title: true,
+          titleEditedManually: true,
           worktree: {
             select: {
               path: true,
@@ -542,6 +566,10 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
       if (!thread) {
+        return null;
+      }
+
+      if (thread.titleEditedManually) {
         return null;
       }
 
@@ -597,6 +625,7 @@ export function createChatService(deps: RuntimeDeps) {
         thread.worktree.path,
         firstUserMessage.content,
         firstAssistantMessage.content,
+        providerOptions,
       );
       if (!nextTitle || nextTitle === thread.title) {
         return null;
@@ -917,7 +946,7 @@ export function createChatService(deps: RuntimeDeps) {
     });
     let assistantMessageId: string | null = null;
     let fullOutput = "";
-    let activeProvider: { apiKey: string; baseUrl: string; name: string; modelId: string } | null = null;
+    let activeProvider: ActiveModelProvider | null = null;
     let threadWorktreePath: string | null = null;
     let completionEmitted = false;
     const abortController = new AbortController();
@@ -1178,7 +1207,15 @@ export function createChatService(deps: RuntimeDeps) {
 
       void (async () => {
         try {
-          const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(threadId, assistantMessage.id);
+          const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(
+            threadId,
+            assistantMessage.id,
+            {
+              model: activeProvider?.modelId,
+              providerApiKey: activeProvider?.apiKey,
+              providerBaseUrl: activeProvider?.baseUrl,
+            },
+          );
           if (renamedThreadTitle) {
             await deps.eventHub.emit(threadId, "tool.finished", {
               source: "chat.thread.metadata",
@@ -1341,6 +1378,28 @@ export function createChatService(deps: RuntimeDeps) {
     async getThreadById(threadId: string): Promise<ChatThread | null> {
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
       return thread ? mapChatThread(thread, activeThreads.has(thread.id)) : null;
+    },
+
+    async renameThreadTitle(threadId: string, rawInput: unknown): Promise<ChatThread> {
+      const input: RenameChatThreadTitleInput = RenameChatThreadTitleInputSchema.parse(rawInput);
+      const normalizedTitle = clampThreadTitle(input.title.trim());
+
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      const updatedThread = await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: {
+          title: normalizedTitle,
+          titleEditedManually: true,
+        },
+      });
+
+      return mapChatThread(updatedThread, activeThreads.has(updatedThread.id));
     },
 
     async deleteThread(threadId: string): Promise<void> {

@@ -55,6 +55,7 @@ export const ChatThreadSchema = z.object({
   id: z.string(),
   worktreeId: z.string(),
   title: z.string().min(1),
+  titleEditedManually: z.boolean(),
   claudeSessionId: z.string().nullable(),
   active: z.boolean(),
   createdAt: z.string().datetime(),
@@ -117,9 +118,16 @@ export const CreateWorktreeInputSchema = z.object({
   baseBranch: z.string().trim().min(1).optional(),
 });
 
+const MAX_THREAD_TITLE_LENGTH = 48;
+
 export const CreateChatThreadInputSchema = z.object({
-  title: z.string().trim().min(1).optional(),
+  title: z.string().trim().min(1).max(MAX_THREAD_TITLE_LENGTH).optional(),
 });
+
+export const RenameChatThreadTitleInputSchema = z.object({
+  title: z.string().trim().min(1).max(MAX_THREAD_TITLE_LENGTH),
+});
+export type RenameChatThreadTitleInput = z.infer<typeof RenameChatThreadTitleInputSchema>;
 
 export const ChatModeSchema = z.enum(["default", "plan"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
