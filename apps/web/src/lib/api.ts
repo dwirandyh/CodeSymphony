@@ -171,6 +171,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  createRepositoryThread: (repositoryId: string, input: CreateChatThreadInput = {}) =>
+    request<ChatThread>(`/repositories/${repositoryId}/threads`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
   getThread: (id: string) => request<ChatThread>(`/threads/${id}`),
   deleteThread: async (threadId: string) => {
     const response = await fetch(`${API_BASE}/threads/${threadId}`, {

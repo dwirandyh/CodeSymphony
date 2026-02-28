@@ -10,7 +10,7 @@ function isDesktopRuntimeWindow(windowRef: Window): boolean {
   return windowRef.location.protocol !== "http:" && windowRef.location.protocol !== "https:";
 }
 
-const WEB_RUNTIME_PORT = 4321;
+const WEB_RUNTIME_PORT = 4331;
 const DESKTOP_RUNTIME_PORT = 4321;
 
 export function resolveRuntimeApiBase(): string {

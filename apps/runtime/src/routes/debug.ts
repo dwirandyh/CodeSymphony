@@ -1,11 +1,44 @@
 import { type FastifyInstance } from "fastify";
 import { appendFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import path, { join } from "node:path";
 
 const LOG_PATH = join(process.cwd(), "debug.log");
 
 // Clear log file on startup
 writeFileSync(LOG_PATH, "", "utf-8");
+
+type RuntimeDatabaseInfo = {
+  urlKind: "missing" | "file" | "non-file";
+  resolvedPath: string | null;
+  urlPreview: string | null;
+};
+
+function resolveDatabaseInfo(databaseUrl: string | undefined): RuntimeDatabaseInfo {
+  if (!databaseUrl) {
+    return { urlKind: "missing", resolvedPath: null, urlPreview: null };
+  }
+
+  if (!databaseUrl.startsWith("file:")) {
+    const scheme = databaseUrl.split(":")[0]?.trim() || "unknown";
+    return { urlKind: "non-file", resolvedPath: null, urlPreview: `${scheme}:<redacted>` };
+  }
+
+  const rawPath = databaseUrl.slice("file:".length).split("?")[0]?.split("#")[0] ?? "";
+  if (rawPath === ":memory:") {
+    return { urlKind: "file", resolvedPath: ":memory:", urlPreview: "file::memory:" };
+  }
+
+  const normalizedRawPath = rawPath.startsWith("//") ? rawPath.slice(2) : rawPath;
+  const resolvedPath = path.isAbsolute(normalizedRawPath)
+    ? path.normalize(normalizedRawPath)
+    : path.resolve(process.cwd(), normalizedRawPath);
+
+  return {
+    urlKind: "file",
+    resolvedPath,
+    urlPreview: `file:${rawPath}`,
+  };
+}
 
 export async function registerDebugRoutes(app: FastifyInstance) {
   // Accept both application/json and text/plain (sendBeacon sends text/plain)
@@ -44,5 +77,28 @@ export async function registerDebugRoutes(app: FastifyInstance) {
     appendFileSync(LOG_PATH, lines + "\n", "utf-8");
 
     return { ok: true, count: entries.length };
+  });
+
+  app.get("/debug/runtime-info", async () => {
+    const address = app.server.address();
+    const listenAddress = typeof address === "string"
+      ? { kind: "pipe" as const, value: address }
+      : address
+        ? { kind: "tcp" as const, value: address.address, family: address.family, port: address.port }
+        : null;
+    const database = resolveDatabaseInfo(process.env.DATABASE_URL);
+
+    return {
+      data: {
+        pid: process.pid,
+        cwd: process.cwd(),
+        nodeVersion: process.version,
+        runtimeHost: process.env.RUNTIME_HOST ?? null,
+        runtimePort: Number(process.env.RUNTIME_PORT ?? 0) || null,
+        uptimeSec: Number(process.uptime().toFixed(1)),
+        database,
+        listenAddress,
+      },
+    };
   });
 }

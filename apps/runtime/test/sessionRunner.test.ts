@@ -526,6 +526,119 @@ describe("tool instrumentation", () => {
     expect(anomalyEvent).toBeDefined();
   });
 
+  it("auto-allows Edit tool with approval hints without prompting user", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
+    const instrumentationEvents: Array<Record<string, unknown>> = [];
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        const result = await canUseTool("Edit", {
+          file_path: "src/main.ts",
+          old_string: "a",
+          new_string: "b",
+        }, {
+          toolUseID: "tool-edit-auto",
+          blockedPath: "/outside-workspace/src/main.ts",
+          decisionReason: "Path requires approval",
+          suggestions: [{ type: "addRules" }],
+        });
+
+        expect(result.behavior).toBe("allow");
+
+        yield { type: "system", subtype: "init", session_id: "session-edit-auto" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "edited" }],
+          },
+        };
+      })();
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "edit file",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: (event) => {
+        instrumentationEvents.push(event as unknown as Record<string, unknown>);
+      },
+    });
+
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+
+    const decisionEvent = instrumentationEvents.find(
+      (event) => event.stage === "decision" && event.toolUseId === "tool-edit-auto",
+    );
+    expect(decisionEvent).toBeDefined();
+    expect(decisionEvent?.decision).toBe("auto_allow");
+  });
+
+  it("keeps non-edit tools on permission request path", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        const result = await canUseTool("Bash", {
+          command: "cat /etc/hosts",
+        }, {
+          toolUseID: "tool-bash-perm",
+          blockedPath: "/etc/hosts",
+          decisionReason: "Path outside project directory",
+          suggestions: [{ type: "addRules" }],
+        });
+
+        expect(result.behavior).toBe("deny");
+
+        yield { type: "system", subtype: "init", session_id: "session-bash-perm" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "denied" }],
+          },
+        };
+      })();
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "run bash",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(onPermissionRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: "tool-bash-perm",
+      toolName: "Bash",
+    }));
+  });
+
   it("allows AskUserQuestion in default (execute) mode", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return (async function* () {
