@@ -443,6 +443,8 @@ export function WorkspacePage() {
     "chat.waitingAssistant": chat.waitingAssistant,
     "chat.showStopAction": chat.showStopAction,
     "chat.stoppingRun": chat.stoppingRun,
+    "chat.hasOlderHistory": chat.hasOlderHistory,
+    "chat.loadingOlderHistory": chat.loadingOlderHistory,
     "chat.chatInput": chat.chatInput,
     "chat.chatMode": chat.chatMode,
     "gates.pendingPermissionRequests": gates.pendingPermissionRequests,
@@ -746,7 +748,7 @@ export function WorkspacePage() {
         />
 
         {/* ── Main content area (chat + bottom panel) ── */}
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
+        <main className="workspace-main flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
           {/* ── Mobile top bar ── */}
           <div className="flex items-center gap-2 pb-1.5 lg:hidden">
             <button
@@ -836,6 +838,9 @@ export function WorkspacePage() {
                       items={chat.timelineItems}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       sendingMessage={chat.sendingMessage}
+                      hasOlderHistory={chat.hasOlderHistory}
+                      loadingOlderHistory={chat.loadingOlderHistory}
+                      onLoadOlderHistory={(metadata) => void chat.loadOlderHistory(metadata)}
                       onOpenReadFile={openReadFile}
                     />
                   </div>

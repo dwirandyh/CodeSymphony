@@ -1,4 +1,4 @@
-import { useCallback, memo, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { ChatAttachment, ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { Bot, Brain, Check, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, Copy, Download, FileText, Folder, Loader2, Paperclip, XCircle } from "lucide-react";
@@ -13,9 +13,10 @@ import { cn } from "../../lib/utils";
 import { Popover, PopoverTrigger, PopoverContent } from "../ui/popover";
 import { copyRenderDebugLog, isRenderDebugEnabled, pushRenderDebug } from "../../lib/renderDebug";
 import { parseUserMentions } from "../../lib/mentions";
+import { debugLog } from "../../lib/debugLog";
 import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
-import { Virtuoso } from "react-virtuoso";
+import { VList, type VListHandle } from "virtua";
 
 export type AssistantRenderHint = "markdown" | "raw-file" | "raw-fallback" | "diff";
 
@@ -136,11 +137,58 @@ export type ChatTimelineItem =
     createdAt: string;
   };
 
+const TOP_LOAD_REARM_COOLDOWN_MS = 180;
+const AT_BOTTOM_THRESHOLD = 48;
+
+type LoadOlderRequestMetadata = {
+  cycleId: number;
+  requestId: string;
+};
+
+type LoadOlderRequestResult = {
+  cycleId?: number | null;
+  requestId?: string;
+  completionReason?: string;
+  messagesAdded?: number;
+  eventsAdded?: number;
+  estimatedRenderableGrowth?: boolean;
+};
+
+function getTimelineItemKey(item: ChatTimelineItem): string {
+  switch (item.kind) {
+    case "message":
+      return `message:${item.message.id}`;
+    case "plan-file-output":
+      return `plan-file-output:${item.id}`;
+    case "activity":
+      return `activity:${item.messageId}`;
+    case "tool":
+      return `tool:${item.event.id}`;
+    case "bash-command":
+      return `bash-command:${item.id}`;
+    case "edited-diff":
+      return `edited-diff:${item.id}`;
+    case "explore-activity":
+      return `explore-activity:${item.id}`;
+    case "subagent-activity":
+      return `subagent-activity:${item.id}`;
+    case "thinking":
+      return `thinking:${item.id}`;
+    case "error":
+      return `error:${item.id}`;
+    default:
+      return "unknown";
+  }
+}
+
 type ChatMessageListProps = {
   items: ChatTimelineItem[];
   showThinkingPlaceholder?: boolean;
   sendingMessage?: boolean;
   onOpenReadFile?: (path: string) => void | Promise<void>;
+  hasOlderHistory?: boolean;
+  loadingOlderHistory?: boolean;
+  onLoadOlderHistory?: (metadata?: LoadOlderRequestMetadata) => Promise<LoadOlderRequestResult | void> | LoadOlderRequestResult | void;
 };
 
 type AnsiSegment = {
@@ -2103,25 +2151,20 @@ const TimelineItem = memo(function TimelineItem({
   );
 });
 
-const ScrollSeekPlaceholder = memo(function ScrollSeekPlaceholder({
-  height,
-}: { height: number; index: number }) {
-  return (
-    <div className="mx-auto max-w-3xl px-3 pb-4">
-      <div
-        style={{ height: Math.max(height - 16, 24) }}
-        className="rounded-lg bg-muted/20 animate-pulse"
-      />
-    </div>
-  );
-});
-
 export function ChatMessageList({
   items,
   showThinkingPlaceholder = false,
   sendingMessage = false,
   onOpenReadFile,
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  onLoadOlderHistory,
 }: ChatMessageListProps) {
+  const vlistRef = useRef<VListHandle>(null);
+  const loadingOlderRef = useRef(false);
+  const topLoadArmedRef = useRef(true);
+  const topLoadCooldownUntilRef = useRef(0);
+  const topLoadRearmTimeoutRef = useRef<number | null>(null);
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(() => new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
@@ -2134,19 +2177,322 @@ export function ChatMessageList({
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
 
+  const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  const userScrolledAwayRef = useRef(false);
+  const lastItemCountChangeRef = useRef(0);
+  const [atTop, setAtTop] = useState(false);
+  const atTopRef = useRef(atTop);
+  const loadCycleCounterRef = useRef(0);
+  const loadCycleInFlightRef = useRef(false);
+  // Track whether shift should be active (only during prepend operations)
+  const [shiftActive, setShiftActive] = useState(false);
+  const pendingShiftReleaseRef = useRef<{
+    cycleId: number;
+    requestId: string;
+    baselineRenderableCount: number;
+    expectRenderableGrowth: boolean;
+  } | null>(null);
+  const shiftReleaseTimeoutRef = useRef<number | null>(null);
+
+  const releaseShift = useCallback((reason: string) => {
+    const pending = pendingShiftReleaseRef.current;
+    pendingShiftReleaseRef.current = null;
+    if (shiftReleaseTimeoutRef.current != null) {
+      window.clearTimeout(shiftReleaseTimeoutRef.current);
+      shiftReleaseTimeoutRef.current = null;
+    }
+    debugLog("ChatMessageList", "load-older-release-shift", {
+      reason,
+      cycleId: pending?.cycleId ?? null,
+      requestId: pending?.requestId ?? null,
+    });
+    setShiftActive(false);
+  }, []);
 
   const renderableItems = useMemo(
     () => items.filter((item) => item.kind !== "activity"),
     [items],
   );
 
-  const itemCount = renderableItems.length + (showThinkingPlaceholder ? 1 : 0);
+  const displayItems = useMemo(() => {
+    const result: (ChatTimelineItem | "thinking-placeholder")[] = [...renderableItems];
+    if (showThinkingPlaceholder) {
+      result.push("thinking-placeholder");
+    }
+    return result;
+  }, [renderableItems, showThinkingPlaceholder]);
 
-  // When sending a new message, tell Virtuoso to follow
+  const prevDisplayCountRef = useRef(displayItems.length);
+  useLayoutEffect(() => {
+    const prevCount = prevDisplayCountRef.current;
+    if (displayItems.length !== prevCount) {
+      lastItemCountChangeRef.current = Date.now();
+      prevDisplayCountRef.current = displayItems.length;
+
+      const pending = pendingShiftReleaseRef.current;
+      if (pending) {
+        const grew = renderableItems.length > pending.baselineRenderableCount;
+        if (!pending.expectRenderableGrowth || grew) {
+          requestAnimationFrame(() => {
+            releaseShift(grew ? "renderable-growth" : "no-growth");
+          });
+        }
+      }
+    }
+  }, [displayItems.length, releaseShift, renderableItems.length]);
+
+  // Normal scroll direction: offset 0 = top (oldest), max offset = bottom (newest).
+  const handleScroll = useCallback((offset: number) => {
+    const handle = vlistRef.current;
+    if (!handle) return;
+
+    const { scrollSize, viewportSize } = handle;
+    const maxScroll = scrollSize - viewportSize;
+
+    const isAtTop = offset <= AT_BOTTOM_THRESHOLD;
+    const isAtBottom = maxScroll > 0 ? offset >= maxScroll - AT_BOTTOM_THRESHOLD : true;
+
+    const prevSize = lastScrollSizeRef.current;
+    const contentGrew = scrollSize > prevSize && prevSize > 0;
+
+    // Only flip stickyBottom off when the user has scrolled far enough from
+    // the bottom that it's clearly intentional. Small drifts near the bottom
+    // are VList measurement artifacts, not user scrolling.
+    const distFromBottom = maxScroll > 0 ? maxScroll - offset : 0;
+    const STICKY_OFF_THRESHOLD = viewportSize * 0.25;
+    if (!isAtBottom && distFromBottom > STICKY_OFF_THRESHOLD && !contentGrew) {
+      stickyBottomRef.current = false;
+    }
+    if (isAtBottom) {
+      stickyBottomRef.current = true;
+    }
+
+    // If content grew while sticky but we're no longer at bottom, re-scroll.
+    if (contentGrew && stickyBottomRef.current && !isAtBottom && viewportSize > 0) {
+      handle.scrollTo(maxScroll);
+    }
+
+    lastScrollSizeRef.current = scrollSize;
+
+    const now = Date.now();
+    const msSinceItemChange = now - lastItemCountChangeRef.current;
+    const suppressBottom = isAtBottom && userScrolledAwayRef.current && msSinceItemChange < 300;
+
+    if (!suppressBottom) {
+      if (!isAtBottom) userScrolledAwayRef.current = true;
+      if (isAtBottom) userScrolledAwayRef.current = false;
+      if (atBottomRef.current !== isAtBottom) {
+        atBottomRef.current = isAtBottom;
+        setAtBottom(isAtBottom);
+      }
+    }
+
+    if (atTopRef.current !== isAtTop) {
+      atTopRef.current = isAtTop;
+      setAtTop(isAtTop);
+    }
+  }, []);
+
   useEffect(() => {
-    if (sendingMessage) setAtBottom(true);
-  }, [sendingMessage]);
+    atTopRef.current = atTop;
+  }, [atTop]);
+
+  // Scroll to bottom helper — uses scrollToIndex after a rAF to ensure VList
+  // has measured items. Without this delay, scrollToIndex fires before layout
+  // and the scroll lands at the wrong position.
+  const scrollToBottom = useCallback(() => {
+    const handle = vlistRef.current;
+    if (!handle || displayItems.length === 0) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (!vlistRef.current) return;
+      vlistRef.current.scrollToIndex(displayItems.length - 1, { align: "end" });
+    });
+  }, [displayItems.length]);
+
+  // On mount (or when component re-keys on thread switch), scroll to bottom.
+  // useEffect (not useLayoutEffect) so VList has rendered and measured items.
+  const mountedRef = useRef(false);
+  // Tracks whether we intend to stay pinned to the bottom. Unlike atBottomRef
+  // (which is derived from scroll offset and can flip false when VList items
+  // resize), this only flips false on genuine upward user scrolls.
+  const stickyBottomRef = useRef(true);
+  const lastScrollSizeRef = useRef(0);
+  useEffect(() => {
+    if (mountedRef.current) return;
+    if (displayItems.length === 0) return;
+    mountedRef.current = true;
+    stickyBottomRef.current = true;
+    scrollToBottom();
+  }, [displayItems.length, scrollToBottom]);
+
+  // When VList fires onScrollEnd and we're still logically sticky, ensure
+  // we're actually at the bottom. This catches cases where content resized
+  // during scroll settling and the final position isn't quite at bottom.
+  const handleScrollEnd = useCallback(() => {
+    if (!stickyBottomRef.current) return;
+    const h = vlistRef.current;
+    if (!h) return;
+    const { scrollSize, viewportSize, scrollOffset } = h;
+    const maxScroll = scrollSize - viewportSize;
+    if (viewportSize > 0 && maxScroll > 0 && scrollOffset < maxScroll - AT_BOTTOM_THRESHOLD) {
+      h.scrollTo(maxScroll);
+    }
+  }, []);
+
+  // Auto-scroll to bottom when new items are appended and user is at bottom
+  useEffect(() => {
+    if (!mountedRef.current) return;
+    if ((!atBottomRef.current && !stickyBottomRef.current) || displayItems.length === 0) return;
+    scrollToBottom();
+    // Only react to item count changes, not atBottom state changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayItems.length, scrollToBottom]);
+
+  // When sending a new message, snap to bottom
+  useEffect(() => {
+    if (sendingMessage && displayItems.length > 0) {
+      userScrolledAwayRef.current = false;
+      atBottomRef.current = true;
+      stickyBottomRef.current = true;
+      setAtBottom(true);
+      scrollToBottom();
+    }
+  }, [sendingMessage, displayItems.length, scrollToBottom]);
+
+  // Rearm cooldown timer for top-load
+  useEffect(() => {
+    if (topLoadRearmTimeoutRef.current != null) return;
+
+    if (!atTop && Date.now() >= topLoadCooldownUntilRef.current) {
+      topLoadArmedRef.current = true;
+      return;
+    }
+
+    const waitMs = Math.max(topLoadCooldownUntilRef.current - Date.now(), 0);
+    if (waitMs === 0) {
+      if (!atTop) topLoadArmedRef.current = true;
+      return;
+    }
+
+    topLoadRearmTimeoutRef.current = window.setTimeout(() => {
+      topLoadRearmTimeoutRef.current = null;
+      if (!atTopRef.current) topLoadArmedRef.current = true;
+    }, waitMs);
+
+    return () => {
+      if (topLoadRearmTimeoutRef.current != null) {
+        window.clearTimeout(topLoadRearmTimeoutRef.current);
+        topLoadRearmTimeoutRef.current = null;
+      }
+    };
+  }, [atTop]);
+
+  useEffect(() => {
+    debugLog("ChatMessageList", "list-state", {
+      itemCount: displayItems.length,
+      renderableCount: renderableItems.length,
+      loadingOlderHistory,
+      hasOlderHistory,
+      atTop,
+      atBottom,
+      shiftActive,
+    });
+  }, [atBottom, atTop, hasOlderHistory, displayItems.length, loadingOlderHistory, renderableItems.length, shiftActive]);
+
+  const loadOlder = useCallback(async () => {
+    if (loadCycleInFlightRef.current) return;
+    if (!hasOlderHistory || loadingOlderHistory || loadingOlderRef.current) return;
+
+    const now = Date.now();
+    if (now < topLoadCooldownUntilRef.current) return;
+
+    const cycleId = loadCycleCounterRef.current + 1;
+    loadCycleCounterRef.current = cycleId;
+    const requestId = `older-${cycleId}`;
+
+    loadCycleInFlightRef.current = true;
+    loadingOlderRef.current = true;
+    topLoadArmedRef.current = false;
+    topLoadCooldownUntilRef.current = now + TOP_LOAD_REARM_COOLDOWN_MS;
+
+    if (topLoadRearmTimeoutRef.current != null) {
+      window.clearTimeout(topLoadRearmTimeoutRef.current);
+      topLoadRearmTimeoutRef.current = null;
+    }
+
+    // Enable shift before prepend so VList anchors scroll from the end.
+    // Keep it active until the prepend render commits, then release.
+    setShiftActive(true);
+    pendingShiftReleaseRef.current = {
+      cycleId,
+      requestId,
+      baselineRenderableCount: renderableItems.length,
+      expectRenderableGrowth: true,
+    };
+
+    debugLog("ChatMessageList", "load-older-start", {
+      cycleId,
+      requestId,
+      renderableCount: renderableItems.length,
+    });
+
+    try {
+      await onLoadOlderHistory?.({ cycleId, requestId });
+    } catch (error) {
+      debugLog("ChatMessageList", "load-older-error", {
+        cycleId,
+        requestId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      releaseShift("load-error");
+      throw error;
+    } finally {
+      loadCycleInFlightRef.current = false;
+      loadingOlderRef.current = false;
+      const pending = pendingShiftReleaseRef.current;
+      const isCurrentCyclePending =
+        pending != null && pending.cycleId === cycleId && pending.requestId === requestId;
+      if (isCurrentCyclePending) {
+        pending.expectRenderableGrowth = false;
+        if (shiftReleaseTimeoutRef.current != null) {
+          window.clearTimeout(shiftReleaseTimeoutRef.current);
+        }
+        shiftReleaseTimeoutRef.current = window.setTimeout(() => {
+          shiftReleaseTimeoutRef.current = null;
+          releaseShift("timeout");
+        }, 220);
+      }
+      debugLog("ChatMessageList", "load-older-finished", { cycleId, requestId });
+    }
+  }, [hasOlderHistory, loadingOlderHistory, onLoadOlderHistory, releaseShift, renderableItems.length]);
+
+  // Trigger load-older when user scrolls to top (oldest messages)
+  useEffect(() => {
+    if (!atTop) {
+      if (Date.now() >= topLoadCooldownUntilRef.current && topLoadRearmTimeoutRef.current == null) {
+        topLoadArmedRef.current = true;
+      }
+      return;
+    }
+
+    if (loadCycleInFlightRef.current || !topLoadArmedRef.current) return;
+
+    topLoadArmedRef.current = false;
+    debugLog("ChatMessageList", "top-trigger-load-older", { atTop });
+    void loadOlder();
+  }, [atTop, loadOlder]);
+
+  useEffect(() => {
+    return () => {
+      if (shiftReleaseTimeoutRef.current != null) {
+        window.clearTimeout(shiftReleaseTimeoutRef.current);
+        shiftReleaseTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   function toggleRawOutput(messageId: string) {
     setRawOutputMessageIds((current) => {
@@ -2223,50 +2569,33 @@ export function ChatMessageList({
     ],
   );
 
-  const scrollSeekConfig = useMemo(
-    () => ({
-      enter: (velocity: number) => Math.abs(velocity) > 800,
-      exit: (velocity: number) => Math.abs(velocity) < 200,
-      change: () => {},
-    }),
-    [],
-  );
-
-  const virtuosoComponents = useMemo(
-    () => ({ ScrollSeekPlaceholder }),
-    [],
-  );
-
   return (
-    <div className="h-full" data-testid="chat-scroll">
+    <div className="relative h-full min-h-0" data-testid="chat-scroll">
       {items.length === 0 && !showThinkingPlaceholder ? (
         <div className="py-10 text-center text-xs text-muted-foreground">No messages yet. Send a prompt to start.</div>
       ) : (
-        <Virtuoso
-          style={{ height: "100%" }}
-          totalCount={itemCount}
-          initialTopMostItemIndex={itemCount - 1}
-          followOutput={atBottom ? "smooth" : false}
-          atBottomStateChange={setAtBottom}
-          atBottomThreshold={48}
-          overscan={600}
-          scrollSeekConfiguration={scrollSeekConfig}
-          components={virtuosoComponents}
-          itemContent={(index) => {
-            if (index >= renderableItems.length) {
+        <VList
+          ref={vlistRef}
+          shift={shiftActive}
+          style={{ height: "100%", overflowAnchor: "none" }}
+          onScroll={handleScroll}
+          onScrollEnd={handleScrollEnd}
+        >
+          {displayItems.map((item) => {
+            if (item === "thinking-placeholder") {
               return (
-                <div className="mx-auto max-w-3xl px-3 pb-4">
+                <div key="thinking-placeholder" className="mx-auto max-w-3xl px-3 pb-4">
                   <ThinkingPlaceholder />
                 </div>
               );
             }
             return (
-              <div className="mx-auto max-w-3xl px-3 pb-4">
-                <TimelineItem item={renderableItems[index]} ctx={timelineCtx} />
+              <div key={getTimelineItemKey(item)} className="mx-auto max-w-3xl px-3 pb-4">
+                <TimelineItem item={item} ctx={timelineCtx} />
               </div>
             );
-          }}
-        />
+          })}
+        </VList>
       )}
     </div>
   );

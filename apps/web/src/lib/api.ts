@@ -1,7 +1,8 @@
 import type {
   AnswerQuestionInput,
-  ChatEvent,
+  ChatEventsPage,
   ChatMessage,
+  ChatMessagesPage,
   ChatThread,
   CreateChatThreadInput,
   CreateModelProviderInput,
@@ -113,6 +114,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return extractDataEnvelope<T>(payload);
+}
+
+async function requestPaged<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+
+  if (init?.body != null && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const response = await runtimeFetch(path, {
+    headers,
+    ...init,
+  });
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(payload?.error ?? "Request failed");
+  }
+
+  if (payload != null && typeof payload === "object" && "data" in payload && "pageInfo" in payload) {
+    return payload as T;
+  }
+
+  throw new Error("Runtime returned an unexpected paged response shape");
 }
 
 export const api = {
@@ -251,7 +277,18 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to delete thread");
     }
   },
-  listMessages: (threadId: string) => request<ChatMessage[]>(`/threads/${threadId}/messages`),
+  listMessagesPage: (threadId: string, opts?: { beforeSeq?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (typeof opts?.beforeSeq === "number") {
+      params.set("beforeSeq", String(opts.beforeSeq));
+    }
+    if (typeof opts?.limit === "number") {
+      params.set("limit", String(opts.limit));
+    }
+    const query = params.toString();
+    const path = `/threads/${threadId}/messages${query.length > 0 ? `?${query}` : ""}`;
+    return requestPaged<ChatMessagesPage>(path);
+  },
   sendMessage: (threadId: string, input: SendChatMessageInput) =>
     request<ChatMessage>(`/threads/${threadId}/messages`, {
       method: "POST",
@@ -331,7 +368,18 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to revise plan");
     }
   },
-  listEvents: (threadId: string) => request<ChatEvent[]>(`/threads/${threadId}/events`),
+  listEventsPage: (threadId: string, opts?: { beforeIdx?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (typeof opts?.beforeIdx === "number") {
+      params.set("beforeIdx", String(opts.beforeIdx));
+    }
+    if (typeof opts?.limit === "number") {
+      params.set("limit", String(opts.limit));
+    }
+    const query = params.toString();
+    const path = `/threads/${threadId}/events${query.length > 0 ? `?${query}` : ""}`;
+    return requestPaged<ChatEventsPage>(path);
+  },
   getGitStatus: (worktreeId: string) =>
     request<GitStatus>(`/worktrees/${worktreeId}/git/status`),
   getGitDiff: (worktreeId: string, opts?: { filePath?: string }) => {

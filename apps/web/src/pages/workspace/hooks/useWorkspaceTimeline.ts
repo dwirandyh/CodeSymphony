@@ -55,6 +55,94 @@ export type TimelineRefs = {
   loggedOrphanEventIdsByThread: Map<string, Set<string>>;
 };
 
+export function computeMessageAnchorIdxById(
+  sortedMessages: ChatMessage[],
+  firstMessageEventIdxById: Map<string, number>,
+  completedEventIdxByMessageId: Map<string, number>,
+): Map<string, number> {
+  const anchorByMessageId = new Map<string, number>();
+  const knownAnchors: Array<{ index: number; anchorIdx: number }> = [];
+
+  for (let index = 0; index < sortedMessages.length; index += 1) {
+    const message = sortedMessages[index];
+    const anchorIdx = firstMessageEventIdxById.get(message.id)
+      ?? completedEventIdxByMessageId.get(message.id)
+      ?? null;
+    if (anchorIdx == null) {
+      continue;
+    }
+
+    anchorByMessageId.set(message.id, anchorIdx);
+    knownAnchors.push({ index, anchorIdx });
+  }
+
+  if (sortedMessages.length === 0) {
+    return anchorByMessageId;
+  }
+
+  if (knownAnchors.length === 0) {
+    for (const message of sortedMessages) {
+      anchorByMessageId.set(message.id, message.seq);
+    }
+    return anchorByMessageId;
+  }
+
+  const positivePerMessageSteps: number[] = [];
+  for (let knownIndex = 0; knownIndex < knownAnchors.length - 1; knownIndex += 1) {
+    const left = knownAnchors[knownIndex];
+    const right = knownAnchors[knownIndex + 1];
+    const messageGap = right.index - left.index;
+    const anchorGap = right.anchorIdx - left.anchorIdx;
+    if (messageGap <= 0 || anchorGap <= 0) {
+      continue;
+    }
+    positivePerMessageSteps.push(anchorGap / messageGap);
+  }
+  const inferredPerMessageStep = positivePerMessageSteps.length > 0
+    ? [...positivePerMessageSteps].sort((a, b) => a - b)[Math.floor(positivePerMessageSteps.length / 2)]
+    : 1;
+
+  const firstKnownAnchor = knownAnchors[0];
+  const firstKnownHasDelta = firstMessageEventIdxById.has(sortedMessages[firstKnownAnchor.index].id);
+  for (let index = firstKnownAnchor.index - 1; index >= 0; index -= 1) {
+    const message = sortedMessages[index];
+    if (firstKnownHasDelta) {
+      anchorByMessageId.set(message.id, message.seq);
+      continue;
+    }
+
+    const distance = firstKnownAnchor.index - index;
+    const projectedAnchor = firstKnownAnchor.anchorIdx - (distance * inferredPerMessageStep);
+    anchorByMessageId.set(message.id, projectedAnchor);
+  }
+
+  for (let knownIndex = 0; knownIndex < knownAnchors.length - 1; knownIndex += 1) {
+    const left = knownAnchors[knownIndex];
+    const right = knownAnchors[knownIndex + 1];
+    const gapCount = right.index - left.index - 1;
+    if (gapCount <= 0) {
+      continue;
+    }
+
+    const rawStep = (right.anchorIdx - left.anchorIdx) / (gapCount + 1);
+    const step = rawStep > 0 ? rawStep : 0.0001;
+
+    for (let offset = 1; offset <= gapCount; offset += 1) {
+      const messageIndex = left.index + offset;
+      anchorByMessageId.set(sortedMessages[messageIndex].id, left.anchorIdx + (step * offset));
+    }
+  }
+
+  const lastKnownAnchor = knownAnchors[knownAnchors.length - 1];
+  for (let index = lastKnownAnchor.index + 1; index < sortedMessages.length; index += 1) {
+    const distance = index - lastKnownAnchor.index;
+    const projectedAnchor = lastKnownAnchor.anchorIdx + (distance * inferredPerMessageStep);
+    anchorByMessageId.set(sortedMessages[index].id, projectedAnchor);
+  }
+
+  return anchorByMessageId;
+}
+
 export function useWorkspaceTimeline(
   messages: ChatMessage[],
   events: ChatEvent[],
@@ -204,10 +292,12 @@ export function useWorkspaceTimeline(
               idx: realWrite.idx,
               createdAt: realWrite.createdAt,
             });
+            continue;
           }
         }
-        // Either replaced with real content above or suppressed — skip default.
-        continue;
+
+        // Keep fallback plan card while waiting for older pages to load.
+        // This avoids flicker where the card is suppressed on initial partial windows.
       }
 
       planFileOutputByMessageId.set(messageId, {
@@ -221,6 +311,11 @@ export function useWorkspaceTimeline(
     }
 
     const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
+    const messageAnchorIdxById = computeMessageAnchorIdxById(
+      sortedMessages,
+      firstMessageEventIdxById,
+      completedEventIdxByMessageId,
+    );
     const latestUserPromptByAssistantId = new Map<string, string>();
     let latestUserPrompt = "";
     for (const message of sortedMessages) {
@@ -253,11 +348,19 @@ export function useWorkspaceTimeline(
 
     const assistantContextById = new Map<string, ChatEvent[]>();
     const assistantMessages = sortedMessages.filter((message) => message.role === "assistant");
+    const assistantStartIdxByMessageId = new Map<string, number>();
     const nextAssistantStartIdxByMessageId = new Map<string, number>();
+    for (const message of assistantMessages) {
+      const startIdx = firstMessageEventIdxById.get(message.id);
+      if (typeof startIdx === "number") {
+        assistantStartIdxByMessageId.set(message.id, startIdx);
+      }
+    }
+
     for (let index = 0; index < assistantMessages.length; index += 1) {
       const currentMessage = assistantMessages[index];
       for (let nextIndex = index + 1; nextIndex < assistantMessages.length; nextIndex += 1) {
-        const nextStartIdx = firstMessageEventIdxById.get(assistantMessages[nextIndex].id);
+        const nextStartIdx = assistantStartIdxByMessageId.get(assistantMessages[nextIndex].id);
         if (typeof nextStartIdx === "number") {
           nextAssistantStartIdxByMessageId.set(currentMessage.id, nextStartIdx);
           break;
@@ -267,20 +370,20 @@ export function useWorkspaceTimeline(
 
     let previousAssistantBoundaryIdx = -1;
     for (const message of assistantMessages) {
+      const messageStartIdx = assistantStartIdxByMessageId.get(message.id);
       const completedIdx = completedEventIdxByMessageId.get(message.id);
       const nextAssistantStartIdx = nextAssistantStartIdxByMessageId.get(message.id);
+      const lowerBoundaryIdx =
+        typeof messageStartIdx === "number"
+          ? messageStartIdx - 1
+          : previousAssistantBoundaryIdx;
       const upperBoundaryIdx =
         typeof completedIdx === "number"
           ? completedIdx
           : typeof nextAssistantStartIdx === "number"
             ? nextAssistantStartIdx - 1
             : Number.POSITIVE_INFINITY;
-      const context = inlineToolEvents.filter((event) => {
-        if (event.idx <= previousAssistantBoundaryIdx) {
-          return false;
-        }
-        return event.idx <= upperBoundaryIdx;
-      });
+      const context = inlineToolEvents.filter((event) => event.idx > lowerBoundaryIdx && event.idx <= upperBoundaryIdx);
 
       assistantContextById.set(message.id, context);
       pushRenderDebug({
@@ -288,6 +391,7 @@ export function useWorkspaceTimeline(
         event: "activityContextCollected",
         messageId: message.id,
         details: {
+          lowerBoundaryIdx,
           upperBoundaryIdx,
           contextSize: context.length,
           contextEvents: context.map((event) => ({
@@ -314,11 +418,11 @@ export function useWorkspaceTimeline(
     let hasEditedRunsWithDiffs = false;
 
     for (const message of sortedMessages) {
-      const anchorIdx = firstMessageEventIdxById.get(message.id) ?? MAX_ORDER_INDEX;
+      const anchorIdx = messageAnchorIdxById.get(message.id) ?? message.seq;
       const firstAssistantDeltaTimestamp = message.role === "assistant"
         ? parseTimestamp(assistantDeltaEventsByMessageId.get(message.id)?.[0]?.createdAt ?? "")
         : null;
-      const timestamp = firstAssistantDeltaTimestamp ?? parseTimestamp(message.createdAt);
+      const timestamp = parseTimestamp(message.createdAt) ?? firstAssistantDeltaTimestamp;
       const context = message.role === "assistant" ? assistantContextById.get(message.id) ?? [] : [];
       const nearestUserPrompt = latestUserPromptByAssistantId.get(message.id) ?? "";
       const hasReadContext = context.some((event) => isReadToolEvent(event));
@@ -983,7 +1087,10 @@ export function useWorkspaceTimeline(
         const totalSegmentLength = segmentBuckets.reduce((sum, b) => sum + b.content.length, 0);
         const hasSegmentContent = totalSegmentLength > 0;
         const deltasCoverageRatio = cleanedContent.length > 0 ? totalSegmentLength / cleanedContent.length : 1;
-        const deltasSignificantlyIncomplete = hasSegmentContent && deltasCoverageRatio < 0.9;
+        const hasAnyMessageDelta = messageDeltaEvents.length > 0;
+        const hasLowerMessageDeltaCoverage = hasAnyMessageDelta && !firstMessageEventIdxById.has(message.id);
+        const deltasSignificantlyIncomplete =
+          hasSegmentContent && (deltasCoverageRatio < 0.9 || hasLowerMessageDeltaCoverage);
 
         // Suppress text segments when subagent groups with valid lastMessage exist
         // AND the cleaned content is empty (i.e., the entire message was just

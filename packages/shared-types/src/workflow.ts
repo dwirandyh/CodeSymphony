@@ -109,6 +109,30 @@ export const ChatEventSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+export const ChatMessagesPageInfoSchema = z.object({
+  hasMoreOlder: z.boolean(),
+  nextBeforeSeq: z.number().int().nonnegative().nullable(),
+  oldestSeq: z.number().int().nonnegative().nullable(),
+  newestSeq: z.number().int().nonnegative().nullable(),
+});
+
+export const ChatEventsPageInfoSchema = z.object({
+  hasMoreOlder: z.boolean(),
+  nextBeforeIdx: z.number().int().nonnegative().nullable(),
+  oldestIdx: z.number().int().nonnegative().nullable(),
+  newestIdx: z.number().int().nonnegative().nullable(),
+});
+
+export const ChatMessagesPageSchema = z.object({
+  data: z.array(ChatMessageSchema),
+  pageInfo: ChatMessagesPageInfoSchema,
+});
+
+export const ChatEventsPageSchema = z.object({
+  data: z.array(ChatEventSchema),
+  pageInfo: ChatEventsPageInfoSchema,
+});
+
 export const CreateRepositoryInputSchema = z.object({
   path: z.string().trim().min(1),
   name: z.string().trim().min(1).optional(),
@@ -199,6 +223,10 @@ export type Worktree = z.infer<typeof WorktreeSchema>;
 export type ChatThread = z.infer<typeof ChatThreadSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type ChatEvent = z.infer<typeof ChatEventSchema>;
+export type ChatMessagesPageInfo = z.infer<typeof ChatMessagesPageInfoSchema>;
+export type ChatEventsPageInfo = z.infer<typeof ChatEventsPageInfoSchema>;
+export type ChatMessagesPage = z.infer<typeof ChatMessagesPageSchema>;
+export type ChatEventsPage = z.infer<typeof ChatEventsPageSchema>;
 export type CreateRepositoryInput = z.infer<typeof CreateRepositoryInputSchema>;
 export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInputSchema>;
 export type CreateChatThreadInput = z.infer<typeof CreateChatThreadInputSchema>;

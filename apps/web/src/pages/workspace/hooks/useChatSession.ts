@@ -1,6 +1,14 @@
 import { startTransition, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ChatEvent, ChatMessage, ChatMode, ChatThread, AttachmentInput } from "@codesymphony/shared-types";
+import type {
+  ChatEvent,
+  ChatEventsPage,
+  ChatMessage,
+  ChatMessagesPage,
+  ChatMode,
+  ChatThread,
+  AttachmentInput,
+} from "@codesymphony/shared-types";
 import type { PendingAttachment } from "../../../lib/attachments";
 import { isImageMimeType } from "../../../lib/attachments";
 import { api } from "../../../lib/api";
@@ -11,7 +19,7 @@ import { debugLog } from "../../../lib/debugLog";
 import { useThreads } from "../../../hooks/queries/useThreads";
 import { useThreadMessages } from "../../../hooks/queries/useThreadMessages";
 import { useThreadEvents } from "../../../hooks/queries/useThreadEvents";
-import { EVENT_TYPES } from "../constants";
+import { EVENT_TYPES, INITIAL_EVENTS_PAGE_LIMIT, INITIAL_MESSAGES_PAGE_LIMIT } from "../constants";
 import { payloadStringOrNull, shouldClearWaitingAssistantOnEvent } from "../eventUtils";
 import { useWorkspaceTimeline, type TimelineRefs } from "./useWorkspaceTimeline";
 import { areMessageArraysEqual, mergeThreadMessages } from "./messageMerge";
@@ -19,6 +27,54 @@ import { areMessageArraysEqual, mergeThreadMessages } from "./messageMerge";
 type PendingMessageMutation =
   | { kind: "ensure-placeholder"; id: string; threadId: string }
   | { kind: "message-delta"; id: string; threadId: string; role: "assistant" | "user"; delta: string };
+
+type LoadOlderHistoryRequestMetadata = {
+  cycleId?: number;
+  requestId?: string;
+};
+
+type LoadOlderHistoryResult = {
+  cycleId: number | null;
+  requestId: string;
+  completionReason: "applied" | "empty-cursors" | "thread-changed";
+  messagesAdded: number;
+  eventsAdded: number;
+  estimatedRenderableGrowth: boolean;
+};
+
+export function prependUniqueMessages(current: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  if (incoming.length === 0) return current;
+  const seen = new Set<string>();
+  const merged: ChatMessage[] = [];
+  for (const message of incoming) {
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    merged.push(message);
+  }
+  for (const message of current) {
+    if (seen.has(message.id)) continue;
+    seen.add(message.id);
+    merged.push(message);
+  }
+  return merged.sort((a, b) => a.seq - b.seq);
+}
+
+export function prependUniqueEvents(current: ChatEvent[], incoming: ChatEvent[]): ChatEvent[] {
+  if (incoming.length === 0) return current;
+  const seen = new Set<string>();
+  const merged: ChatEvent[] = [];
+  for (const event of incoming) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    merged.push(event);
+  }
+  for (const event of current) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    merged.push(event);
+  }
+  return merged.sort((a, b) => a.idx - b.idx);
+}
 
 function insertAllEvents(current: ChatEvent[], incoming: ChatEvent[]): ChatEvent[] {
   if (incoming.length === 0) return current;
@@ -163,13 +219,6 @@ export function useChatSession(
   options?: UseChatSessionOptions,
 ) {
   const queryClient = useQueryClient();
-  const renderCountRef = useRef(0);
-  renderCountRef.current++;
-  debugLog("useChatSession", "render", {
-    renderCount: renderCountRef.current,
-    selectedWorktreeId,
-    selectedRepositoryId: options?.selectedRepositoryId ?? null,
-  });
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -185,9 +234,14 @@ export function useChatSession(
   const [stopRequestedThreadId, setStopRequestedThreadId] = useState<string | null>(null);
   const [closingThreadId, setClosingThreadId] = useState<string | null>(null);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
+  const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
+  const [hasMoreOlderEvents, setHasMoreOlderEvents] = useState(false);
+  const [loadingOlderHistory, setLoadingOlderHistory] = useState(false);
 
   const seenEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const lastEventIdxByThreadRef = useRef<Map<string, number>>(new Map());
+  const nextBeforeSeqByThreadRef = useRef<Map<string, number | null>>(new Map());
+  const nextBeforeIdxByThreadRef = useRef<Map<string, number | null>>(new Map());
   const streamingMessageIdsRef = useRef<Set<string>>(new Set());
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
@@ -202,6 +256,7 @@ export function useChatSession(
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
   const rafIdRef = useRef<number | null>(null);
+  const loadOlderRequestCounterRef = useRef(0);
 
   // Keep activeThreadIdRef in sync during render so seed effects see the correct
   // value immediately (they run before the SSE effect in React's execution order).
@@ -237,6 +292,9 @@ export function useChatSession(
     if (!selectedWorktreeId) {
       prevWorktreeIdRef2.current = selectedWorktreeId;
       setWaitingAssistant(null);
+      setHasMoreOlderMessages(false);
+      setHasMoreOlderEvents(false);
+      setLoadingOlderHistory(false);
       setThreads([]);
       setSelectedThreadId(null);
       setMessages([]);
@@ -247,6 +305,9 @@ export function useChatSession(
     // Worktree changed → reset transient state
     if (worktreeChanged) {
       setWaitingAssistant(null);
+      setHasMoreOlderMessages(false);
+      setHasMoreOlderEvents(false);
+      setLoadingOlderHistory(false);
       setMessages([]);
       setEvents([]);
     }
@@ -320,23 +381,25 @@ export function useChatSession(
   }, [selectedThreadId, threads]);
 
   // ── TanStack Query: thread messages & events (initial seed) ──
-  const { data: queriedMessages } = useThreadMessages(selectedThreadId);
-  const { data: queriedEvents } = useThreadEvents(selectedThreadId);
-  const prevQueriedMessagesRef = useRef(queriedMessages);
-  const prevQueriedEventsRef = useRef(queriedEvents);
-  if (prevQueriedMessagesRef.current !== queriedMessages) {
+  const { data: queriedMessagesPage } = useThreadMessages(selectedThreadId);
+  const { data: queriedEventsPage } = useThreadEvents(selectedThreadId);
+  const queriedMessages = queriedMessagesPage?.data;
+  const queriedEvents = queriedEventsPage?.data;
+  const prevQueriedMessagesRef = useRef(queriedMessagesPage);
+  const prevQueriedEventsRef = useRef(queriedEventsPage);
+  if (prevQueriedMessagesRef.current !== queriedMessagesPage) {
     debugLog("useChatSession", "queriedMessages ref changed", {
-      prevLength: prevQueriedMessagesRef.current?.length ?? null,
-      newLength: queriedMessages?.length ?? null,
+      prevLength: prevQueriedMessagesRef.current?.data.length ?? null,
+      newLength: queriedMessagesPage?.data.length ?? null,
     });
-    prevQueriedMessagesRef.current = queriedMessages;
+    prevQueriedMessagesRef.current = queriedMessagesPage;
   }
-  if (prevQueriedEventsRef.current !== queriedEvents) {
+  if (prevQueriedEventsRef.current !== queriedEventsPage) {
     debugLog("useChatSession", "queriedEvents ref changed", {
-      prevLength: prevQueriedEventsRef.current?.length ?? null,
-      newLength: queriedEvents?.length ?? null,
+      prevLength: prevQueriedEventsRef.current?.data.length ?? null,
+      newLength: queriedEventsPage?.data.length ?? null,
     });
-    prevQueriedEventsRef.current = queriedEvents;
+    prevQueriedEventsRef.current = queriedEventsPage;
   }
 
   // Seed local messages from query, merging with any SSE-delivered data
@@ -369,7 +432,13 @@ export function useChatSession(
       }
       return sorted;
     });
-  }, [queriedMessages, selectedThreadId]);
+
+    if (!selectedThreadId || !queriedMessagesPage) return;
+    nextBeforeSeqByThreadRef.current.set(selectedThreadId, queriedMessagesPage.pageInfo.nextBeforeSeq);
+    if (activeThreadIdRef.current === selectedThreadId) {
+      setHasMoreOlderMessages(queriedMessagesPage.pageInfo.hasMoreOlder);
+    }
+  }, [queriedMessages, queriedMessagesPage, selectedThreadId]);
 
   // Seed local events from query, merging with SSE-delivered data
   useEffect(() => {
@@ -418,7 +487,7 @@ export function useChatSession(
     }
 
     // Update tracking refs (runs for both thread-change and same-thread cases)
-    if (!queriedEvents) return;
+    if (!queriedEvents || !selectedThreadId) return;
     const seenEventIds = new Set<string>();
     let lastIdx: number | null = null;
     for (const event of queriedEvents) {
@@ -438,13 +507,18 @@ export function useChatSession(
       onBranchRenamed?.(selectedWorktreeId, latestMetadata.worktreeBranch);
     }
 
-    seenEventIdsByThreadRef.current.set(selectedThreadId!, seenEventIds);
-    if (lastIdx == null) {
-      lastEventIdxByThreadRef.current.delete(selectedThreadId!);
-    } else {
-      lastEventIdxByThreadRef.current.set(selectedThreadId!, lastIdx);
+    nextBeforeIdxByThreadRef.current.set(selectedThreadId, queriedEventsPage?.pageInfo.nextBeforeIdx ?? null);
+    if (activeThreadIdRef.current === selectedThreadId && queriedEventsPage) {
+      setHasMoreOlderEvents(queriedEventsPage.pageInfo.hasMoreOlder);
     }
-  }, [onBranchRenamed, queriedEvents, selectedThreadId, selectedWorktreeId]);
+
+    seenEventIdsByThreadRef.current.set(selectedThreadId, seenEventIds);
+    if (lastIdx == null) {
+      lastEventIdxByThreadRef.current.delete(selectedThreadId);
+    } else {
+      lastEventIdxByThreadRef.current.set(selectedThreadId, lastIdx);
+    }
+  }, [onBranchRenamed, queriedEvents, queriedEventsPage, selectedThreadId, selectedWorktreeId]);
 
   function ensureSeenEventIds(threadId: string): Set<string> {
     const existing = seenEventIdsByThreadRef.current.get(threadId);
@@ -493,6 +567,9 @@ export function useChatSession(
   useEffect(() => {
     if (!selectedThreadId) {
       setWaitingAssistant(null);
+      setHasMoreOlderMessages(false);
+      setHasMoreOlderEvents(false);
+      setLoadingOlderHistory(false);
       setStoppingThreadId(null);
       setStopRequestedThreadId(null);
       streamingMessageIdsRef.current = new Set();
@@ -506,6 +583,9 @@ export function useChatSession(
     stickyRawFallbackMessageIdsRef.current = new Set();
     renderDecisionByMessageIdRef.current = new Map();
     setWaitingAssistant(null);
+    setHasMoreOlderMessages(nextBeforeSeqByThreadRef.current.get(selectedThreadId) != null);
+    setHasMoreOlderEvents(nextBeforeIdxByThreadRef.current.get(selectedThreadId) != null);
+    setLoadingOlderHistory(false);
     setStoppingThreadId(null);
     setStopRequestedThreadId(null);
 
@@ -708,12 +788,12 @@ export function useChatSession(
 
       // Pre-seed seenEventIds and lastEventIdx from query cache so the SSE
       // stream doesn't replay events we already have.
-      const cachedEvents = queryClient.getQueryData<ChatEvent[]>(
+      const cachedEvents = queryClient.getQueryData<ChatEventsPage>(
         queryKeys.threads.events(selectedThreadId),
       );
-      if (cachedEvents && cachedEvents.length > 0) {
+      if (cachedEvents && cachedEvents.data.length > 0) {
         const seenEventIds = ensureSeenEventIds(selectedThreadId);
-        for (const e of cachedEvents) {
+        for (const e of cachedEvents.data) {
           seenEventIds.add(e.id);
           updateLastEventIdx(selectedThreadId, e.idx);
         }
@@ -765,12 +845,12 @@ export function useChatSession(
       try {
         const cachedEvents = await queryClient.fetchQuery({
           queryKey: queryKeys.threads.events(selectedThreadId),
-          queryFn: () => api.listEvents(selectedThreadId),
+          queryFn: () => api.listEventsPage(selectedThreadId, { limit: INITIAL_EVENTS_PAGE_LIMIT }),
         });
         if (disposed) return;
-        if (cachedEvents && cachedEvents.length > 0) {
+        if (cachedEvents && cachedEvents.data.length > 0) {
           const seenEventIds = ensureSeenEventIds(selectedThreadId);
-          for (const e of cachedEvents) {
+          for (const e of cachedEvents.data) {
             seenEventIds.add(e.id);
             updateLastEventIdx(selectedThreadId, e.idx);
           }
@@ -918,6 +998,8 @@ export function useChatSession(
       // Prune tracking refs for the deleted thread
       seenEventIdsByThreadRef.current.delete(threadId);
       lastEventIdxByThreadRef.current.delete(threadId);
+      nextBeforeSeqByThreadRef.current.delete(threadId);
+      nextBeforeIdxByThreadRef.current.delete(threadId);
       loggedOrphanEventIdsByThreadRef.current.delete(threadId);
       // Prune stale entries if tracking refs grow too large
       if (seenEventIdsByThreadRef.current.size > 10) {
@@ -926,6 +1008,8 @@ export function useChatSession(
           if (!activeThreadIds.has(key)) {
             seenEventIdsByThreadRef.current.delete(key);
             lastEventIdxByThreadRef.current.delete(key);
+            nextBeforeSeqByThreadRef.current.delete(key);
+            nextBeforeIdxByThreadRef.current.delete(key);
             loggedOrphanEventIdsByThreadRef.current.delete(key);
           }
         }
@@ -1008,6 +1092,149 @@ export function useChatSession(
     }
   }
 
+  async function loadOlderHistory(metadata?: LoadOlderHistoryRequestMetadata): Promise<LoadOlderHistoryResult | void> {
+    if (!selectedThreadId || loadingOlderHistory) return;
+
+    const threadId = selectedThreadId;
+    const beforeSeq = nextBeforeSeqByThreadRef.current.get(threadId) ?? null;
+    const beforeIdx = nextBeforeIdxByThreadRef.current.get(threadId) ?? null;
+    const requestNumber = loadOlderRequestCounterRef.current + 1;
+    loadOlderRequestCounterRef.current = requestNumber;
+    const cycleId = metadata?.cycleId ?? null;
+    const requestId = metadata?.requestId ?? `load-older-${threadId}-${requestNumber}`;
+
+    if (beforeSeq == null && beforeIdx == null) {
+      setHasMoreOlderMessages(false);
+      setHasMoreOlderEvents(false);
+      debugLog("useChatSession", "loadOlderHistory skipped empty cursors", {
+        threadId,
+        cycleId,
+        requestId,
+      });
+      return {
+        cycleId,
+        requestId,
+        completionReason: "empty-cursors",
+        messagesAdded: 0,
+        eventsAdded: 0,
+        estimatedRenderableGrowth: false,
+      };
+    }
+
+    setLoadingOlderHistory(true);
+    onError(null);
+    debugLog("useChatSession", "loadOlderHistory start", { threadId, beforeSeq, beforeIdx, cycleId, requestId });
+
+    try {
+      const [messagesPage, eventsPage] = await Promise.all([
+        beforeSeq == null
+          ? Promise.resolve<ChatMessagesPage | null>(null)
+          : api.listMessagesPage(threadId, {
+            beforeSeq,
+            limit: INITIAL_MESSAGES_PAGE_LIMIT,
+          }),
+        beforeIdx == null
+          ? Promise.resolve<ChatEventsPage | null>(null)
+          : api.listEventsPage(threadId, {
+            beforeIdx,
+            limit: INITIAL_EVENTS_PAGE_LIMIT,
+          }),
+      ]);
+
+      if (selectedThreadId !== threadId) {
+        debugLog("useChatSession", "loadOlderHistory skipped thread changed", {
+          threadId,
+          selectedThreadId,
+          cycleId,
+          requestId,
+        });
+        return {
+          cycleId,
+          requestId,
+          completionReason: "thread-changed",
+          messagesAdded: 0,
+          eventsAdded: 0,
+          estimatedRenderableGrowth: false,
+        };
+      }
+
+      if (messagesPage) {
+        nextBeforeSeqByThreadRef.current.set(threadId, messagesPage.pageInfo.nextBeforeSeq);
+        setHasMoreOlderMessages(messagesPage.pageInfo.hasMoreOlder);
+      } else {
+        nextBeforeSeqByThreadRef.current.set(threadId, null);
+        setHasMoreOlderMessages(false);
+      }
+
+      if (eventsPage) {
+        nextBeforeIdxByThreadRef.current.set(threadId, eventsPage.pageInfo.nextBeforeIdx);
+        setHasMoreOlderEvents(eventsPage.pageInfo.hasMoreOlder);
+        const seenEventIds = ensureSeenEventIds(threadId);
+        for (const event of eventsPage.data) {
+          seenEventIds.add(event.id);
+        }
+      } else {
+        nextBeforeIdxByThreadRef.current.set(threadId, null);
+        setHasMoreOlderEvents(false);
+      }
+
+      const messagesAdded = messagesPage?.data.length ?? 0;
+      const eventsAdded = eventsPage?.data.length ?? 0;
+
+      debugLog("useChatSession", "loadOlderHistory page result", {
+        threadId,
+        cycleId,
+        requestId,
+        messagesPageCount: messagesAdded,
+        eventsPageCount: eventsAdded,
+        nextBeforeSeq: messagesPage?.pageInfo.nextBeforeSeq ?? null,
+        nextBeforeIdx: eventsPage?.pageInfo.nextBeforeIdx ?? null,
+        hasMoreOlderMessages: messagesPage?.pageInfo.hasMoreOlder ?? false,
+        hasMoreOlderEvents: eventsPage?.pageInfo.hasMoreOlder ?? false,
+      });
+
+      if (messagesPage) {
+        debugLog("useChatSession", "loadOlderHistory apply messages", {
+          threadId,
+          cycleId,
+          requestId,
+          incomingCount: messagesAdded,
+        });
+      }
+
+      if (eventsPage) {
+        debugLog("useChatSession", "loadOlderHistory apply events", {
+          threadId,
+          cycleId,
+          requestId,
+          incomingCount: eventsAdded,
+        });
+      }
+
+      if (messagesPage) {
+        setMessages((current) => prependUniqueMessages(current, messagesPage.data));
+      }
+      if (eventsPage) {
+        setEvents((current) => prependUniqueEvents(current, eventsPage.data));
+      }
+
+      return {
+        cycleId,
+        requestId,
+        completionReason: "applied",
+        messagesAdded,
+        eventsAdded,
+        estimatedRenderableGrowth: messagesAdded > 0 || eventsAdded > 0,
+      };
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to load older history");
+      throw e;
+    } finally {
+      debugLog("useChatSession", "loadOlderHistory end", { threadId, cycleId, requestId });
+      setLoadingOlderHistory(false);
+    }
+  }
+
   async function stopAssistantRun() {
     if (!selectedThreadId) return;
     const threadId = selectedThreadId;
@@ -1028,6 +1255,8 @@ export function useChatSession(
   }
 
   // ── Derived flags ──
+
+  const hasOlderHistory = hasMoreOlderMessages || hasMoreOlderEvents;
 
   const hasStreamingAssistantMessage =
     selectedThreadId != null &&
@@ -1098,6 +1327,8 @@ export function useChatSession(
     waitingAssistant,
     showStopAction,
     stoppingRun,
+    hasOlderHistory,
+    loadingOlderHistory,
 
     timelineItems,
 
@@ -1106,6 +1337,7 @@ export function useChatSession(
     closeThread,
     renameThreadTitle,
     submitMessage,
+    loadOlderHistory,
     stopAssistantRun,
 
     startWaitingAssistant,

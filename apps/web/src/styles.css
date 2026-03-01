@@ -121,27 +121,22 @@ mark {
   text-underline-offset: 2px;
 }
 
-/* Virtuoso scroller scrollbar styling */
-[data-virtuoso-scroller] {
-  scrollbar-width: thin;
-  scrollbar-color: hsl(var(--border)) transparent;
-}
-[data-virtuoso-scroller]::-webkit-scrollbar {
-  width: 8px;
-}
-[data-virtuoso-scroller]::-webkit-scrollbar-track {
-  background: transparent;
-}
-[data-virtuoso-scroller]::-webkit-scrollbar-thumb {
-  background-color: hsl(var(--border));
-  border-radius: 9999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-
 /* Override Radix ScrollArea internal "display: table" wrapper that prevents
    content from shrinking below its intrinsic width on narrow viewports. */
-[data-radix-scroll-area-viewport] > div {
+[data-radix-scroll-area-viewport]>div {
   display: block !important;
 }
 
+/* iOS Safari can switch flex children to sticky/scroll containers while
+   momentum scrolling, making headers appear to float inside the timeline.
+   Keep the workspace header as a stable non-flexing top row. */
+.workspace-main {
+  overflow: hidden;
+}
+
+.workspace-header {
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 2;
+  contain: layout paint;
+}

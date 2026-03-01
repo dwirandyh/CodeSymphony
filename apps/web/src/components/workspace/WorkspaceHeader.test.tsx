@@ -141,13 +141,13 @@ describe("WorkspaceHeader", () => {
     expect(container.querySelector('input[aria-label="Rename thread title"]')).toBeNull();
   });
 
-  it("keeps add session button beside tabs inside scroll row", () => {
+  it("keeps add session button pinned outside scroll area", () => {
     const onCreateThread = vi.fn();
     renderHeader({ onCreateThread });
 
-    const scrollRow = container.querySelector('[data-testid="session-tabs-scroll"] > div');
-    if (!(scrollRow instanceof HTMLDivElement)) {
-      throw new Error("Session tab row not found");
+    const scrollRegion = container.querySelector('[data-testid="session-tabs-scroll"]');
+    if (!(scrollRegion instanceof HTMLDivElement)) {
+      throw new Error("Session tab scroll region not found");
     }
 
     const addSessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Add session"]');
@@ -155,7 +155,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Add session button not found");
     }
 
-    expect(scrollRow.contains(addSessionButton)).toBe(true);
+    expect(scrollRegion.contains(addSessionButton)).toBe(false);
 
     act(() => {
       addSessionButton.click();

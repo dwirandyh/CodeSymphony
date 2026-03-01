@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { ChatEventType as DbChatEventType, PrismaClient } from "@prisma/client";
 import { execFile as execFileRaw } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
@@ -17,6 +17,8 @@ import {
   type ChatMessage,
   type ChatMode,
   type ChatThread,
+  type ChatEventsPageInfo,
+  type ChatMessagesPageInfo,
   type CreateChatThreadInput,
   type DismissQuestionInput,
   type PlanRevisionInput,
@@ -37,7 +39,31 @@ const MAX_BRANCH_NAME_LENGTH = 60;
 const BRANCH_GENERATION_TIMEOUT_MS = 15000;
 const CLAUDE_SETTINGS_DIR = ".claude";
 const CLAUDE_LOCAL_SETTINGS_FILE = "settings.local.json";
+const DEFAULT_MESSAGES_PAGE_LIMIT = 50;
+const MAX_MESSAGES_PAGE_LIMIT = 200;
+const DEFAULT_EVENTS_PAGE_LIMIT = 400;
+const MAX_EVENTS_PAGE_LIMIT = 2000;
 const execFile = promisify(execFileRaw);
+
+const chatEventTypeFromDb: Record<DbChatEventType, ChatEvent["type"]> = {
+  message_delta: "message.delta",
+  thinking_delta: "thinking.delta",
+  tool_started: "tool.started",
+  tool_output: "tool.output",
+  tool_finished: "tool.finished",
+  permission_requested: "permission.requested",
+  permission_resolved: "permission.resolved",
+  question_requested: "question.requested",
+  question_answered: "question.answered",
+  question_dismissed: "question.dismissed",
+  plan_created: "plan.created",
+  plan_approved: "plan.approved",
+  plan_revision_requested: "plan.revision_requested",
+  subagent_started: "subagent.started",
+  subagent_finished: "subagent.finished",
+  chat_completed: "chat.completed",
+  chat_failed: "chat.failed",
+};
 
 function inferPlanDetectionSource(filePath: string, source?: PlanDetectionSource): PlanDetectionSource {
   if (source === "claude_plan_file" || source === "streaming_fallback") {
@@ -242,6 +268,17 @@ function appendUnique(items: string[], seen: Set<string>, candidate: string): vo
   }
   seen.add(candidate);
   items.push(candidate);
+}
+
+function normalizePageLimit(rawLimit: number | undefined, defaults: { fallback: number; max: number }): number {
+  if (typeof rawLimit !== "number" || !Number.isFinite(rawLimit)) {
+    return defaults.fallback;
+  }
+  const integer = Math.trunc(rawLimit);
+  if (integer <= 0) {
+    return defaults.fallback;
+  }
+  return Math.min(integer, defaults.max);
 }
 
 function symmetricStatusDelta(before: string[], after: string[]): string[] {
@@ -1457,8 +1494,80 @@ export function createChatService(deps: RuntimeDeps) {
       return messages.map(mapChatMessage);
     },
 
+    async listMessagesPage(
+      threadId: string,
+      options?: { beforeSeq?: number; limit?: number },
+    ): Promise<{ data: ChatMessage[]; pageInfo: ChatMessagesPageInfo }> {
+      const limit = normalizePageLimit(options?.limit, {
+        fallback: DEFAULT_MESSAGES_PAGE_LIMIT,
+        max: MAX_MESSAGES_PAGE_LIMIT,
+      });
+      const rows = await deps.prisma.chatMessage.findMany({
+        where: {
+          threadId,
+          ...(typeof options?.beforeSeq === "number" ? { seq: { lt: options.beforeSeq } } : {}),
+        },
+        orderBy: { seq: "desc" },
+        take: limit + 1,
+        include: { attachments: true },
+      });
+      const hasMoreOlder = rows.length > limit;
+      const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
+      const ordered = pageRows.reverse().map(mapChatMessage);
+      const oldestSeq = ordered.length > 0 ? ordered[0].seq : null;
+      const newestSeq = ordered.length > 0 ? ordered[ordered.length - 1].seq : null;
+      return {
+        data: ordered,
+        pageInfo: {
+          hasMoreOlder,
+          nextBeforeSeq: hasMoreOlder ? oldestSeq : null,
+          oldestSeq,
+          newestSeq,
+        },
+      };
+    },
+
     async listEvents(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
       return deps.eventHub.list(threadId, afterIdx);
+    },
+
+    async listEventsPage(
+      threadId: string,
+      options?: { beforeIdx?: number; limit?: number },
+    ): Promise<{ data: ChatEvent[]; pageInfo: ChatEventsPageInfo }> {
+      const limit = normalizePageLimit(options?.limit, {
+        fallback: DEFAULT_EVENTS_PAGE_LIMIT,
+        max: MAX_EVENTS_PAGE_LIMIT,
+      });
+      const rows = await deps.prisma.chatEvent.findMany({
+        where: {
+          threadId,
+          ...(typeof options?.beforeIdx === "number" ? { idx: { lt: options.beforeIdx } } : {}),
+        },
+        orderBy: { idx: "desc" },
+        take: limit + 1,
+      });
+      const hasMoreOlder = rows.length > limit;
+      const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
+      const ordered = pageRows.reverse().map((row) => ({
+        id: row.id,
+        threadId: row.threadId,
+        idx: row.idx,
+        type: chatEventTypeFromDb[row.type],
+        payload: row.payload as Record<string, unknown>,
+        createdAt: row.createdAt.toISOString(),
+      }));
+      const oldestIdx = ordered.length > 0 ? ordered[0].idx : null;
+      const newestIdx = ordered.length > 0 ? ordered[ordered.length - 1].idx : null;
+      return {
+        data: ordered,
+        pageInfo: {
+          hasMoreOlder,
+          nextBeforeIdx: hasMoreOlder ? oldestIdx : null,
+          oldestIdx,
+          newestIdx,
+        },
+      };
     },
 
     async stopRun(threadId: string): Promise<void> {

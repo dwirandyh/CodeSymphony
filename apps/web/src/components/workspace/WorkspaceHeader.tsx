@@ -118,7 +118,7 @@ export function WorkspaceHeader({
   }
 
   return (
-    <section className="space-y-1 pb-1 lg:space-y-1.5 lg:pb-2">
+    <section className="workspace-header space-y-1 pb-1 lg:space-y-1.5 lg:pb-2">
       <div className="hidden items-center justify-between gap-3 lg:flex">
         <div className="min-w-0 truncate text-[11px]">
           <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Session</span>
@@ -260,21 +260,21 @@ export function WorkspaceHeader({
                 </button>
               </div>
             )}
-
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Add session"
-              title="Add session"
-              disabled={createThreadDisabled ?? disabled}
-              className="ml-1 h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-              onClick={onCreateThread}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </Button>
           </div>
         </div>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label="Add session"
+          title="Add session"
+          disabled={createThreadDisabled ?? disabled}
+          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={onCreateThread}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </Button>
       </div>
     </section>
   );

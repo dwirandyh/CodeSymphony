@@ -149,7 +149,7 @@ export function parseTimestamp(input: string): number | null {
 }
 
 export function getEventMessageId(event: ChatEvent): string | null {
-  if (event.type !== "message.delta") {
+  if (event.type !== "message.delta" && event.type !== "thinking.delta") {
     return null;
   }
 
