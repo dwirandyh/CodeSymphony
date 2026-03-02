@@ -26,9 +26,9 @@ function makeEvent(
   };
 }
 
-function makeThread(title: string): ChatThread {
+function makeThread(title: string, id = "thread-1"): ChatThread {
   return {
-    id: "thread-1",
+    id,
     worktreeId: "wt-1",
     title,
     titleEditedManually: false,
@@ -57,6 +57,10 @@ function makeSnapshot(overrides?: {
     recommendedBackfill?: boolean;
     nextBeforeIdx?: number | null;
   };
+  watermarks?: {
+    newestSeq?: number;
+    newestIdx?: number;
+  };
 }) {
   return {
     messages: {
@@ -78,8 +82,8 @@ function makeSnapshot(overrides?: {
       },
     },
     watermarks: {
-      newestSeq: 1,
-      newestIdx: 1,
+      newestSeq: overrides?.watermarks?.newestSeq ?? 1,
+      newestIdx: overrides?.watermarks?.newestIdx ?? 1,
     },
     coverage: {
       eventsStatus: overrides?.coverage?.eventsStatus ?? "complete",
@@ -117,6 +121,41 @@ describe("useChatSession metadata seed helpers", () => {
     expect(metadata.threadTitle).toBe("Final metadata title");
     expect(metadata.worktreeBranch).toBe("feat/rename-thread");
   });
+
+  it("returns null when no metadata is present", () => {
+    const events: ChatEvent[] = [
+      makeEvent(1, "tool.started", { toolName: "Read" }),
+      makeEvent(2, "tool.finished", { toolName: "Read" }),
+    ];
+    const metadata = extractLatestThreadMetadata(events);
+    expect(metadata.threadTitle).toBeNull();
+    expect(metadata.worktreeBranch).toBeNull();
+  });
+
+  it("extracts worktreeBranch from chat.completed event", () => {
+    const events: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { worktreeBranch: "feat/new-branch" }),
+    ];
+    const metadata = extractLatestThreadMetadata(events);
+    expect(metadata.worktreeBranch).toBe("feat/new-branch");
+  });
+
+  it("ignores tool.finished without chat.thread.metadata source", () => {
+    const events: ChatEvent[] = [
+      makeEvent(1, "tool.finished", {
+        source: "other",
+        threadTitle: "Should be ignored",
+      }),
+    ];
+    const metadata = extractLatestThreadMetadata(events);
+    expect(metadata.threadTitle).toBeNull();
+  });
+
+  it("handles empty events array", () => {
+    const metadata = extractLatestThreadMetadata([]);
+    expect(metadata.threadTitle).toBeNull();
+    expect(metadata.worktreeBranch).toBeNull();
+  });
 });
 
 describe("applyThreadTitleUpdate", () => {
@@ -131,6 +170,31 @@ describe("applyThreadTitleUpdate", () => {
     const next = applyThreadTitleUpdate(threads, "thread-1", "Renamed title");
     expect(next).not.toBe(threads);
     expect(next[0].title).toBe("Renamed title");
+  });
+
+  it("returns same array when threadId is null", () => {
+    const threads = [makeThread("Main Thread")];
+    const next = applyThreadTitleUpdate(threads, null, "New Title");
+    expect(next).toBe(threads);
+  });
+
+  it("returns same array when threadTitle is null", () => {
+    const threads = [makeThread("Main Thread")];
+    const next = applyThreadTitleUpdate(threads, "thread-1", null);
+    expect(next).toBe(threads);
+  });
+
+  it("returns same array when thread is not found", () => {
+    const threads = [makeThread("Main Thread")];
+    const next = applyThreadTitleUpdate(threads, "non-existent", "New Title");
+    expect(next).toBe(threads);
+  });
+
+  it("only updates the matching thread in a multi-thread list", () => {
+    const threads = [makeThread("Thread A", "t-a"), makeThread("Thread B", "t-b")];
+    const next = applyThreadTitleUpdate(threads, "t-b", "Updated B");
+    expect(next[0].title).toBe("Thread A");
+    expect(next[1].title).toBe("Updated B");
   });
 });
 
@@ -176,15 +240,21 @@ describe("prependUniqueMessages", () => {
     const nextAfterPage2 = prependUniqueMessages(nextAfterPage1, page2);
 
     expect(nextAfterPage2.map((message) => message.id)).toEqual([
-      "m-1",
-      "m-2",
-      "m-3",
-      "m-4",
-      "m-5",
-      "m-6",
-      "m-7",
+      "m-1", "m-2", "m-3", "m-4", "m-5", "m-6", "m-7",
     ]);
     expect(nextAfterPage2.map((message) => message.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("returns current when incoming is empty", () => {
+    const current = [makeMessage("m-1", 1)];
+    const result = prependUniqueMessages(current, []);
+    expect(result).toBe(current);
+  });
+
+  it("handles empty current with incoming messages", () => {
+    const incoming = [makeMessage("m-1", 1), makeMessage("m-2", 2)];
+    const result = prependUniqueMessages([], incoming);
+    expect(result.map((m) => m.id)).toEqual(["m-1", "m-2"]);
   });
 });
 
@@ -230,15 +300,24 @@ describe("prependUniqueEvents", () => {
     const nextAfterPage2 = prependUniqueEvents(nextAfterPage1, page2);
 
     expect(nextAfterPage2.map((event) => event.id)).toEqual([
-      "event-2",
-      "event-3",
-      "event-4",
-      "event-5",
-      "event-6",
-      "event-7",
-      "event-8",
+      "event-2", "event-3", "event-4", "event-5", "event-6", "event-7", "event-8",
     ]);
     expect(nextAfterPage2.map((event) => event.idx)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  it("returns current when incoming is empty", () => {
+    const current: ChatEvent[] = [makeEvent(1, "chat.completed", { messageId: "m-1" })];
+    const result = prependUniqueEvents(current, []);
+    expect(result).toBe(current);
+  });
+
+  it("handles empty current with incoming events", () => {
+    const incoming: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { messageId: "m-1" }),
+      makeEvent(2, "chat.completed", { messageId: "m-2" }),
+    ];
+    const result = prependUniqueEvents([], incoming);
+    expect(result.map((e) => e.idx)).toEqual([1, 2]);
   });
 });
 
@@ -273,6 +352,47 @@ describe("mergeEventsWithCurrent", () => {
     const next = mergeEventsWithCurrent(queried, current);
     expect(next.map((event) => event.idx)).toEqual([1, 2, 3, 4, 5]);
   });
+
+  it("returns current when both arrays are identical", () => {
+    const events: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { messageId: "m-1" }),
+      makeEvent(2, "chat.completed", { messageId: "m-2" }),
+    ];
+    const result = mergeEventsWithCurrent([...events], events);
+    expect(result).toBe(events);
+  });
+
+  it("handles empty current array", () => {
+    const queried: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { messageId: "m-1" }),
+    ];
+    const result = mergeEventsWithCurrent(queried, []);
+    expect(result.map((e) => e.idx)).toEqual([1]);
+  });
+
+  it("handles empty queried array", () => {
+    const current: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { messageId: "m-1" }),
+    ];
+    const result = mergeEventsWithCurrent([], current);
+    expect(result).toBe(current);
+  });
+
+  it("adds unique events from current that are not in queried", () => {
+    const current: ChatEvent[] = [
+      makeEvent(3, "tool.finished", { toolName: "Read" }),
+      makeEvent(5, "chat.completed", { messageId: "m-5" }),
+    ];
+    const queried: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { messageId: "m-1" }),
+      makeEvent(2, "chat.completed", { messageId: "m-2" }),
+      makeEvent(3, "tool.finished", { toolName: "Read" }),
+      makeEvent(4, "tool.started", { toolName: "Edit" }),
+    ];
+
+    const result = mergeEventsWithCurrent(queried, current);
+    expect(result.map((e) => e.idx)).toEqual([1, 2, 3, 4, 5]);
+  });
 });
 
 describe("auto-backfill hydration helpers", () => {
@@ -288,6 +408,20 @@ describe("auto-backfill hydration helpers", () => {
     expect(shouldAutoBackfillOnHydration(needsBackfillSnapshot, false)).toBe(true);
     expect(shouldAutoBackfillOnHydration(makeSnapshot(), true)).toBe(true);
     expect(shouldAutoBackfillOnHydration(makeSnapshot(), false)).toBe(false);
+  });
+
+  it("enables backfill when capped", () => {
+    const snapshot = makeSnapshot({
+      coverage: { eventsStatus: "capped", recommendedBackfill: false, nextBeforeIdx: 50 },
+    });
+    expect(shouldAutoBackfillOnHydration(snapshot, false)).toBe(true);
+  });
+
+  it("enables backfill when recommendedBackfill is true even if status is complete", () => {
+    const snapshot = makeSnapshot({
+      coverage: { eventsStatus: "complete", recommendedBackfill: true, nextBeforeIdx: null },
+    });
+    expect(shouldAutoBackfillOnHydration(snapshot, false)).toBe(true);
   });
 
   it("builds a stable snapshot key from watermarks and coverage", () => {
@@ -315,6 +449,12 @@ describe("auto-backfill hydration helpers", () => {
 
     expect(buildAutoBackfillSnapshotKey(snapshotA)).toBe(buildAutoBackfillSnapshotKey(snapshotB));
     expect(buildAutoBackfillSnapshotKey(snapshotA)).not.toBe(buildAutoBackfillSnapshotKey(snapshotC));
+  });
+
+  it("produces different keys for different watermarks", () => {
+    const a = makeSnapshot({ watermarks: { newestSeq: 1, newestIdx: 1 } });
+    const b = makeSnapshot({ watermarks: { newestSeq: 2, newestIdx: 5 } });
+    expect(buildAutoBackfillSnapshotKey(a)).not.toBe(buildAutoBackfillSnapshotKey(b));
   });
 
   it("stops auto-backfill loop when timeline becomes complete", async () => {
@@ -423,5 +563,64 @@ describe("auto-backfill hydration helpers", () => {
     });
 
     expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "token-or-thread-changed" });
+  });
+
+  it("stops when isLoadingOlderHistory returns true", async () => {
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => true,
+      getBeforeIdx: () => 100,
+      loadOlderHistoryPage: async () => undefined as never,
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 0, stopReason: "loading-older-history" });
+  });
+
+  it("stops when getBeforeIdx returns null", async () => {
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      getBeforeIdx: () => null,
+      loadOlderHistoryPage: async () => undefined as never,
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 0, stopReason: "no-more-events" });
+  });
+
+  it("stops when loadOlderHistoryPage returns void", async () => {
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      getBeforeIdx: () => 50,
+      loadOlderHistoryPage: async () => undefined,
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "no-result" });
+  });
+
+  it("stops when completionReason is not applied", async () => {
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      getBeforeIdx: () => 50,
+      loadOlderHistoryPage: async () => ({
+        cycleId: 1,
+        requestId: "auto-1",
+        completionReason: "thread-changed",
+        messagesAdded: 0,
+        eventsAdded: 0,
+        estimatedRenderableGrowth: false,
+      }),
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "completion-reason" });
   });
 });
