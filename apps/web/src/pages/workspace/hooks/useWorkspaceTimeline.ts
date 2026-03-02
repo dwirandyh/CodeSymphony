@@ -55,6 +55,11 @@ export type TimelineRefs = {
   loggedOrphanEventIdsByThread: Map<string, Set<string>>;
 };
 
+export type WorkspaceTimelineResult = {
+  items: ChatTimelineItem[];
+  hasIncompleteCoverage: boolean;
+};
+
 export function computeMessageAnchorIdxById(
   sortedMessages: ChatMessage[],
   firstMessageEventIdxById: Map<string, number>,
@@ -148,12 +153,12 @@ export function useWorkspaceTimeline(
   events: ChatEvent[],
   selectedThreadId: string | null,
   refs: TimelineRefs,
-): ChatTimelineItem[] {
+): WorkspaceTimelineResult {
   // Fast-path: skip full recomputation if the input fingerprint hasn't changed
   const prevFingerprintRef = useRef<{ messageCount: number; eventCount: number; lastEventIdx: number; threadId: string | null } | null>(null);
-  const prevResultRef = useRef<ChatTimelineItem[]>([]);
+  const prevResultRef = useRef<WorkspaceTimelineResult>({ items: [], hasIncompleteCoverage: false });
 
-  return useMemo<ChatTimelineItem[]>(() => {
+  return useMemo<WorkspaceTimelineResult>(() => {
     const lastEventIdx = events.length > 0 ? events[events.length - 1].idx : -1;
     const fingerprint = { messageCount: messages.length, eventCount: events.length, lastEventIdx, threadId: selectedThreadId };
     const prev = prevFingerprintRef.current;
@@ -163,7 +168,7 @@ export function useWorkspaceTimeline(
       prev.eventCount === fingerprint.eventCount &&
       prev.lastEventIdx === fingerprint.lastEventIdx &&
       prev.threadId === fingerprint.threadId &&
-      prevResultRef.current.length > 0
+      prevResultRef.current.items.length > 0
     ) {
       return prevResultRef.current;
     }
@@ -330,6 +335,17 @@ export function useWorkspaceTimeline(
     }
 
     const inlineToolEvents = orderedEventsByIdx.filter((event) => INLINE_TOOL_EVENT_TYPES.has(event.type));
+    const semanticContextEvents = orderedEventsByIdx.filter((event) =>
+      event.type === "tool.started"
+      || event.type === "tool.output"
+      || event.type === "tool.finished"
+      || event.type === "subagent.started"
+      || event.type === "subagent.finished"
+      || event.type === "plan.created"
+      || event.type === "plan.approved"
+      || event.type === "plan.revision_requested"
+      || event.type === "thinking.delta",
+    );
     const assistantDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
     for (const event of orderedEventsByIdx) {
       if (event.type !== "message.delta" || event.payload.role !== "assistant") {
@@ -416,6 +432,7 @@ export function useWorkspaceTimeline(
     const sortable: SortableEntry[] = [];
     const assignedToolEventIds = new Set<string>();
     let hasEditedRunsWithDiffs = false;
+    let hasIncompleteCoverage = false;
 
     for (const message of sortedMessages) {
       const anchorIdx = messageAnchorIdxById.get(message.id) ?? message.seq;
@@ -1091,6 +1108,9 @@ export function useWorkspaceTimeline(
         const hasLowerMessageDeltaCoverage = hasAnyMessageDelta && !firstMessageEventIdxById.has(message.id);
         const deltasSignificantlyIncomplete =
           hasSegmentContent && (deltasCoverageRatio < 0.9 || hasLowerMessageDeltaCoverage);
+        if (deltasSignificantlyIncomplete) {
+          hasIncompleteCoverage = true;
+        }
 
         // Suppress text segments when subagent groups with valid lastMessage exist
         // AND the cleaned content is empty (i.e., the entire message was just
@@ -1665,6 +1685,32 @@ export function useWorkspaceTimeline(
       )
       .sort((a, b) => a.idx - b.idx);
 
+    if (messages.length > 0 && orphanToolEvents.length > 0) {
+      hasIncompleteCoverage = true;
+    }
+
+    if (messages.length > 0 && !hasIncompleteCoverage) {
+      const assignedSemanticEventIds = new Set<string>(assignedToolEventIds);
+      for (const [messageId, contextEvents] of assistantContextById.entries()) {
+        if (!sortedMessages.some((message) => message.id === messageId && message.role === "assistant")) {
+          continue;
+        }
+        for (const event of contextEvents) {
+          assignedSemanticEventIds.add(event.id);
+        }
+      }
+      for (const deltaEvents of assistantDeltaEventsByMessageId.values()) {
+        for (const event of deltaEvents) {
+          assignedSemanticEventIds.add(event.id);
+        }
+      }
+
+      const unassignedSemanticEvents = semanticContextEvents.filter((event) => !assignedSemanticEventIds.has(event.id));
+      if (unassignedSemanticEvents.length > 0) {
+        hasIncompleteCoverage = true;
+      }
+    }
+
     // --- chat.failed → error banner ---
     const failedEvents = inlineToolEvents.filter(
       (event) => event.type === "chat.failed" && !assignedToolEventIds.has(event.id),
@@ -1792,8 +1838,12 @@ export function useWorkspaceTimeline(
     }
 
     const result = sortable.map((entry) => entry.item);
+    const timelineResult: WorkspaceTimelineResult = {
+      items: result,
+      hasIncompleteCoverage,
+    };
     prevFingerprintRef.current = fingerprint;
-    prevResultRef.current = result;
-    return result;
+    prevResultRef.current = timelineResult;
+    return timelineResult;
   }, [messages, events, selectedThreadId]);
 }

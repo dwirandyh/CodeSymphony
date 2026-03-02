@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatThread } from "@codesymphony/shared-types";
 import {
   applyThreadTitleUpdate,
+  buildAutoBackfillSnapshotKey,
   extractLatestThreadMetadata,
+  mergeEventsWithCurrent,
   prependUniqueEvents,
   prependUniqueMessages,
+  runAutoBackfillLoop,
+  shouldAutoBackfillOnHydration,
 } from "./useChatSession";
 
 function makeEvent(
@@ -44,6 +48,44 @@ function makeMessage(id: string, seq: number) {
     content: id,
     attachments: [],
     createdAt: "2026-02-28T00:00:00.000Z",
+  };
+}
+
+function makeSnapshot(overrides?: {
+  coverage?: {
+    eventsStatus?: "complete" | "needs_backfill" | "capped";
+    recommendedBackfill?: boolean;
+    nextBeforeIdx?: number | null;
+  };
+}) {
+  return {
+    messages: {
+      data: [makeMessage("m-1", 1)],
+      pageInfo: {
+        hasMoreOlder: false,
+        nextBeforeSeq: null,
+        oldestSeq: 1,
+        newestSeq: 1,
+      },
+    },
+    events: {
+      data: [makeEvent(1, "chat.completed", { messageId: "m-1" })],
+      pageInfo: {
+        hasMoreOlder: false,
+        nextBeforeIdx: null,
+        oldestIdx: 1,
+        newestIdx: 1,
+      },
+    },
+    watermarks: {
+      newestSeq: 1,
+      newestIdx: 1,
+    },
+    coverage: {
+      eventsStatus: overrides?.coverage?.eventsStatus ?? "complete",
+      recommendedBackfill: overrides?.coverage?.recommendedBackfill ?? false,
+      nextBeforeIdx: overrides?.coverage?.nextBeforeIdx ?? null,
+    },
   };
 }
 
@@ -197,5 +239,189 @@ describe("prependUniqueEvents", () => {
       "event-8",
     ]);
     expect(nextAfterPage2.map((event) => event.idx)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+  });
+});
+
+describe("mergeEventsWithCurrent", () => {
+  it("returns current when local state is already ahead of queried events", () => {
+    const current: ChatEvent[] = [
+      makeEvent(1, "tool.started", { toolName: "Read" }),
+      makeEvent(2, "tool.output", { toolName: "Read", output: "ok" }),
+      makeEvent(3, "tool.finished", { toolName: "Read" }),
+    ];
+    const queried: ChatEvent[] = [
+      makeEvent(1, "tool.started", { toolName: "Read" }),
+      makeEvent(2, "tool.output", { toolName: "Read", output: "ok" }),
+    ];
+
+    const next = mergeEventsWithCurrent(queried, current);
+    expect(next).toBe(current);
+  });
+
+  it("merges queried events with local events and keeps idx order", () => {
+    const current: ChatEvent[] = [
+      makeEvent(4, "tool.output", { toolName: "Edit", output: "ok" }),
+      makeEvent(5, "tool.finished", { toolName: "Edit" }),
+    ];
+    const queried: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { messageId: "msg-1" }),
+      makeEvent(2, "chat.completed", { messageId: "msg-2" }),
+      makeEvent(3, "tool.started", { toolName: "Edit" }),
+      makeEvent(4, "tool.output", { toolName: "Edit", output: "ok" }),
+    ];
+
+    const next = mergeEventsWithCurrent(queried, current);
+    expect(next.map((event) => event.idx)).toEqual([1, 2, 3, 4, 5]);
+  });
+});
+
+describe("auto-backfill hydration helpers", () => {
+  it("enables auto-backfill when snapshot coverage is incomplete", () => {
+    const needsBackfillSnapshot = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 120,
+      },
+    });
+
+    expect(shouldAutoBackfillOnHydration(needsBackfillSnapshot, false)).toBe(true);
+    expect(shouldAutoBackfillOnHydration(makeSnapshot(), true)).toBe(true);
+    expect(shouldAutoBackfillOnHydration(makeSnapshot(), false)).toBe(false);
+  });
+
+  it("builds a stable snapshot key from watermarks and coverage", () => {
+    const snapshotA = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 220,
+      },
+    });
+    const snapshotB = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 220,
+      },
+    });
+    const snapshotC = makeSnapshot({
+      coverage: {
+        eventsStatus: "capped",
+        recommendedBackfill: true,
+        nextBeforeIdx: 220,
+      },
+    });
+
+    expect(buildAutoBackfillSnapshotKey(snapshotA)).toBe(buildAutoBackfillSnapshotKey(snapshotB));
+    expect(buildAutoBackfillSnapshotKey(snapshotA)).not.toBe(buildAutoBackfillSnapshotKey(snapshotC));
+  });
+
+  it("stops auto-backfill loop when timeline becomes complete", async () => {
+    let beforeIdx: number | null = 120;
+    let incomplete = true;
+
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      getBeforeIdx: () => beforeIdx,
+      loadOlderHistoryPage: async () => {
+        beforeIdx = 80;
+        incomplete = false;
+        return {
+          cycleId: 1,
+          requestId: "auto-1",
+          completionReason: "applied",
+          messagesAdded: 0,
+          eventsAdded: 25,
+          estimatedRenderableGrowth: true,
+        };
+      },
+      isTimelineIncomplete: () => incomplete,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "timeline-complete" });
+  });
+
+  it("caps auto-backfill loop by max pages", async () => {
+    let beforeIdx: number | null = 500;
+    let calls = 0;
+
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 2,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      getBeforeIdx: () => beforeIdx,
+      loadOlderHistoryPage: async () => {
+        calls += 1;
+        beforeIdx = beforeIdx == null ? null : beforeIdx - 50;
+        return {
+          cycleId: 1,
+          requestId: `auto-${calls}`,
+          completionReason: "applied",
+          messagesAdded: 0,
+          eventsAdded: 10,
+          estimatedRenderableGrowth: true,
+        };
+      },
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 2, stopReason: "max-pages" });
+  });
+
+  it("stops auto-backfill loop on no progress", async () => {
+    const beforeIdx = 300;
+
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      getBeforeIdx: () => beforeIdx,
+      loadOlderHistoryPage: async () => ({
+        cycleId: 7,
+        requestId: "auto-stall",
+        completionReason: "applied",
+        messagesAdded: 0,
+        eventsAdded: 0,
+        estimatedRenderableGrowth: false,
+      }),
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "no-progress" });
+  });
+
+  it("stops auto-backfill loop when thread is switched", async () => {
+    let firstCall = true;
+    let beforeIdx = 100;
+
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => {
+        if (firstCall) {
+          firstCall = false;
+          return false;
+        }
+        return true;
+      },
+      isLoadingOlderHistory: () => false,
+      getBeforeIdx: () => beforeIdx,
+      loadOlderHistoryPage: async () => {
+        beforeIdx = 80;
+        return {
+          cycleId: 9,
+          requestId: "auto-switch",
+          completionReason: "applied",
+          messagesAdded: 0,
+          eventsAdded: 15,
+          estimatedRenderableGrowth: true,
+        };
+      },
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "token-or-thread-changed" });
   });
 });

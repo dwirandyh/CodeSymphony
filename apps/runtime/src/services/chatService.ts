@@ -17,8 +17,11 @@ import {
   type ChatMessage,
   type ChatMode,
   type ChatThread,
+  type ChatEventsPage,
   type ChatEventsPageInfo,
+  type ChatMessagesPage,
   type ChatMessagesPageInfo,
+  type ChatThreadSnapshot,
   type CreateChatThreadInput,
   type DismissQuestionInput,
   type PlanRevisionInput,
@@ -43,6 +46,7 @@ const DEFAULT_MESSAGES_PAGE_LIMIT = 50;
 const MAX_MESSAGES_PAGE_LIMIT = 200;
 const DEFAULT_EVENTS_PAGE_LIMIT = 400;
 const MAX_EVENTS_PAGE_LIMIT = 2000;
+const SNAPSHOT_EVENT_BUDGET_MAX = 2000;
 const execFile = promisify(execFileRaw);
 
 const chatEventTypeFromDb: Record<DbChatEventType, ChatEvent["type"]> = {
@@ -279,6 +283,72 @@ function normalizePageLimit(rawLimit: number | undefined, defaults: { fallback: 
     return defaults.fallback;
   }
   return Math.min(integer, defaults.max);
+}
+
+function buildMessagesPage(rows: Array<Parameters<typeof mapChatMessage>[0]>, limit: number): ChatMessagesPage {
+  const hasMoreOlder = rows.length > limit;
+  const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
+  const ordered = pageRows.reverse().map(mapChatMessage);
+  const oldestSeq = ordered.length > 0 ? ordered[0].seq : null;
+  const newestSeq = ordered.length > 0 ? ordered[ordered.length - 1].seq : null;
+
+  return {
+    data: ordered,
+    pageInfo: {
+      hasMoreOlder,
+      nextBeforeSeq: hasMoreOlder ? oldestSeq : null,
+      oldestSeq,
+      newestSeq,
+    },
+  };
+}
+
+function buildEventsPage(
+  rows: Array<{ id: string; threadId: string; idx: number; type: DbChatEventType; payload: unknown; createdAt: Date }>,
+  limit: number,
+): ChatEventsPage {
+  const hasMoreOlder = rows.length > limit;
+  const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
+  const ordered = pageRows.reverse().map((row) => ({
+    id: row.id,
+    threadId: row.threadId,
+    idx: row.idx,
+    type: chatEventTypeFromDb[row.type],
+    payload: row.payload as Record<string, unknown>,
+    createdAt: row.createdAt.toISOString(),
+  }));
+  const oldestIdx = ordered.length > 0 ? ordered[0].idx : null;
+  const newestIdx = ordered.length > 0 ? ordered[ordered.length - 1].idx : null;
+
+  return {
+    data: ordered,
+    pageInfo: {
+      hasMoreOlder,
+      nextBeforeIdx: hasMoreOlder ? oldestIdx : null,
+      oldestIdx,
+      newestIdx,
+    },
+  };
+}
+
+function eventCarriesTimelineContext(payload: unknown): boolean {
+  if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  const record = payload as Record<string, unknown>;
+
+  const toolUseId = record.toolUseId;
+  if (typeof toolUseId === "string" && toolUseId.length > 0) {
+    return true;
+  }
+
+  const precedingToolUseIds = record.precedingToolUseIds;
+  if (Array.isArray(precedingToolUseIds) && precedingToolUseIds.some((entry) => typeof entry === "string" && entry.length > 0)) {
+    return true;
+  }
+
+  const messageId = record.messageId;
+  return typeof messageId === "string" && messageId.length > 0;
 }
 
 function symmetricStatusDelta(before: string[], after: string[]): string[] {
@@ -1511,20 +1581,8 @@ export function createChatService(deps: RuntimeDeps) {
         take: limit + 1,
         include: { attachments: true },
       });
-      const hasMoreOlder = rows.length > limit;
-      const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
-      const ordered = pageRows.reverse().map(mapChatMessage);
-      const oldestSeq = ordered.length > 0 ? ordered[0].seq : null;
-      const newestSeq = ordered.length > 0 ? ordered[ordered.length - 1].seq : null;
-      return {
-        data: ordered,
-        pageInfo: {
-          hasMoreOlder,
-          nextBeforeSeq: hasMoreOlder ? oldestSeq : null,
-          oldestSeq,
-          newestSeq,
-        },
-      };
+
+      return buildMessagesPage(rows, limit);
     },
 
     async listEvents(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
@@ -1547,25 +1605,102 @@ export function createChatService(deps: RuntimeDeps) {
         orderBy: { idx: "desc" },
         take: limit + 1,
       });
-      const hasMoreOlder = rows.length > limit;
-      const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
-      const ordered = pageRows.reverse().map((row) => ({
-        id: row.id,
-        threadId: row.threadId,
-        idx: row.idx,
-        type: chatEventTypeFromDb[row.type],
-        payload: row.payload as Record<string, unknown>,
-        createdAt: row.createdAt.toISOString(),
-      }));
-      const oldestIdx = ordered.length > 0 ? ordered[0].idx : null;
-      const newestIdx = ordered.length > 0 ? ordered[ordered.length - 1].idx : null;
+
+      return buildEventsPage(rows, limit);
+    },
+
+    async listThreadSnapshot(
+      threadId: string,
+      options?: { messageLimit?: number; eventLimit?: number },
+    ): Promise<ChatThreadSnapshot> {
+      const messageLimit = normalizePageLimit(options?.messageLimit, {
+        fallback: DEFAULT_MESSAGES_PAGE_LIMIT,
+        max: MAX_MESSAGES_PAGE_LIMIT,
+      });
+      const requestedEventLimit = options?.eventLimit;
+      const eventLimit = normalizePageLimit(requestedEventLimit, {
+        fallback: DEFAULT_EVENTS_PAGE_LIMIT,
+        max: MAX_EVENTS_PAGE_LIMIT,
+      });
+      const cappedEventLimit = Math.min(eventLimit, SNAPSHOT_EVENT_BUDGET_MAX);
+      const requestedBeyondSnapshotBudget =
+        typeof requestedEventLimit === "number" && requestedEventLimit > SNAPSHOT_EVENT_BUDGET_MAX;
+
+      const [messageRows, eventRows] = await deps.prisma.$transaction([
+        deps.prisma.chatMessage.findMany({
+          where: { threadId },
+          orderBy: { seq: "desc" },
+          take: messageLimit + 1,
+          include: { attachments: true },
+        }),
+        deps.prisma.chatEvent.findMany({
+          where: { threadId },
+          orderBy: { idx: "desc" },
+          take: cappedEventLimit + 1,
+        }),
+      ]);
+
+      const messages = buildMessagesPage(messageRows, messageLimit);
+      const events = buildEventsPage(eventRows, cappedEventLimit);
+
+      const oldestLoadedMessageSeq = messages.pageInfo.oldestSeq;
+      const loadedMessageIds = new Set(messages.data.map((message) => message.id));
+      const messageIdsWithoutAnyLoadedContext = new Set(loadedMessageIds);
+      const coveredMessageIds = new Set<string>();
+      const loadedContextfulEventCount = events.data.reduce((count, event) =>
+        count + (eventCarriesTimelineContext(event.payload) ? 1 : 0), 0,
+      );
+
+      for (const event of events.data) {
+        if (!eventCarriesTimelineContext(event.payload)) {
+          continue;
+        }
+
+        const payload = event.payload as Record<string, unknown>;
+        const messageId = typeof payload.messageId === "string" && payload.messageId.length > 0
+          ? payload.messageId
+          : null;
+        if (messageId && loadedMessageIds.has(messageId)) {
+          messageIdsWithoutAnyLoadedContext.delete(messageId);
+          coveredMessageIds.add(messageId);
+        }
+      }
+
+      let boundaryMessageHasContext = true;
+      if (oldestLoadedMessageSeq != null) {
+        const oldestLoadedMessage = messages.data.find((message) => message.seq === oldestLoadedMessageSeq) ?? null;
+        if (oldestLoadedMessage) {
+          boundaryMessageHasContext = coveredMessageIds.has(oldestLoadedMessage.id);
+        }
+      }
+
+      let eventsStatus: ChatThreadSnapshot["coverage"]["eventsStatus"] = "complete";
+
+      if (requestedBeyondSnapshotBudget && events.pageInfo.hasMoreOlder) {
+        eventsStatus = "capped";
+      } else if (
+        messages.data.length > 0
+        && events.pageInfo.hasMoreOlder
+        && (
+          messageIdsWithoutAnyLoadedContext.size > 0
+          || !boundaryMessageHasContext
+          || loadedContextfulEventCount === 0
+        )
+      ) {
+        eventsStatus = "needs_backfill";
+      }
+
       return {
-        data: ordered,
-        pageInfo: {
-          hasMoreOlder,
-          nextBeforeIdx: hasMoreOlder ? oldestIdx : null,
-          oldestIdx,
-          newestIdx,
+        messages,
+        events,
+        watermarks: {
+          newestSeq: messages.pageInfo.newestSeq,
+          newestIdx: events.pageInfo.newestIdx,
+        },
+        coverage: {
+          eventsStatus,
+          recommendedBackfill: eventsStatus !== "complete",
+          nextBeforeIdx: events.pageInfo.nextBeforeIdx,
         },
       };
     },

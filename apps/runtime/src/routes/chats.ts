@@ -16,6 +16,10 @@ const eventsPageQuery = z.object({
   beforeIdx: z.string().optional(),
   limit: z.string().optional(),
 }).strict();
+const threadSnapshotQuery = z.object({
+  messageLimit: z.string().optional(),
+  eventLimit: z.string().optional(),
+}).strict();
 
 function parseNonNegativeInt(input: unknown): number | null {
   const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
@@ -198,6 +202,32 @@ export async function registerChatRoutes(app: FastifyInstance) {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list messages";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.get("/threads/:id/snapshot", async (request, reply) => {
+    try {
+      const params = threadParams.parse(request.params);
+      const query = threadSnapshotQuery.parse(request.query);
+      const messageLimit = query.messageLimit == null ? undefined : parsePositiveInt(query.messageLimit);
+      const eventLimit = query.eventLimit == null ? undefined : parsePositiveInt(query.eventLimit);
+
+      if (query.messageLimit != null && messageLimit == null) {
+        return reply.code(400).send({ error: "Invalid messageLimit query value" });
+      }
+      if (query.eventLimit != null && eventLimit == null) {
+        return reply.code(400).send({ error: "Invalid eventLimit query value" });
+      }
+
+      const snapshot = await app.chatService.listThreadSnapshot(params.id, {
+        messageLimit: messageLimit ?? undefined,
+        eventLimit: eventLimit ?? undefined,
+      });
+
+      return { data: snapshot };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to load thread snapshot";
       return reply.code(400).send({ error: message });
     }
   });

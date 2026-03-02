@@ -144,6 +144,14 @@ async function flushMicrotasks() {
   });
 }
 
+async function flushTimers(ms = 260) {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  });
+}
+
 describe("ChatMessageList pagination with virtua", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -266,6 +274,8 @@ describe("ChatMessageList pagination with virtua", () => {
     });
 
     await flushMicrotasks();
+    await flushMicrotasks();
+    await flushTimers();
 
     const vlistEl = container.querySelector("[data-testid='vlist-mock']");
     expect(vlistEl).toBeTruthy();

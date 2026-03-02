@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ChatMessagesPage,
   ChatThread,
+  ChatThreadSnapshot,
   CreateChatThreadInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
@@ -288,6 +289,18 @@ export const api = {
     const query = params.toString();
     const path = `/threads/${threadId}/messages${query.length > 0 ? `?${query}` : ""}`;
     return requestPaged<ChatMessagesPage>(path);
+  },
+  getThreadSnapshot: (threadId: string, opts?: { messageLimit?: number; eventLimit?: number }) => {
+    const params = new URLSearchParams();
+    if (typeof opts?.messageLimit === "number") {
+      params.set("messageLimit", String(opts.messageLimit));
+    }
+    if (typeof opts?.eventLimit === "number") {
+      params.set("eventLimit", String(opts.eventLimit));
+    }
+    const query = params.toString();
+    const path = `/threads/${threadId}/snapshot${query.length > 0 ? `?${query}` : ""}`;
+    return request<ChatThreadSnapshot>(path);
   },
   sendMessage: (threadId: string, input: SendChatMessageInput) =>
     request<ChatMessage>(`/threads/${threadId}/messages`, {
