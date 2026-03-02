@@ -411,6 +411,16 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
+  const loadOlderHistoryRef = useRef(chat.loadOlderHistory);
+  useEffect(() => {
+    loadOlderHistoryRef.current = chat.loadOlderHistory;
+  }, [chat.loadOlderHistory]);
+
+  const handleLoadOlderHistory = useCallback(
+    (metadata?: Parameters<typeof chat.loadOlderHistory>[0]) => void loadOlderHistoryRef.current(metadata),
+    [],
+  );
+
   const gates = usePendingGates(chat.events, chat.selectedThreadId, {
     onError: setError,
     startWaitingAssistant: chat.startWaitingAssistant,
@@ -840,7 +850,7 @@ export function WorkspacePage() {
                       sendingMessage={chat.sendingMessage}
                       hasOlderHistory={chat.hasOlderHistory}
                       loadingOlderHistory={chat.loadingOlderHistory}
-                      onLoadOlderHistory={(metadata) => void chat.loadOlderHistory(metadata)}
+                      onLoadOlderHistory={handleLoadOlderHistory}
                       onOpenReadFile={openReadFile}
                     />
                   </div>

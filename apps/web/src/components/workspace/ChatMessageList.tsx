@@ -2194,6 +2194,10 @@ export function ChatMessageList({
     expectRenderableGrowth: boolean;
   } | null>(null);
   const shiftReleaseTimeoutRef = useRef<number | null>(null);
+  const hasOlderHistoryRef = useRef(hasOlderHistory);
+  const loadingOlderHistoryPropRef = useRef(loadingOlderHistory);
+  const onLoadOlderHistoryRef = useRef(onLoadOlderHistory);
+  const renderableCountRef = useRef(0);
 
   const releaseShift = useCallback((reason: string) => {
     const pending = pendingShiftReleaseRef.current;
@@ -2222,6 +2226,13 @@ export function ChatMessageList({
     }
     return result;
   }, [renderableItems, showThinkingPlaceholder]);
+
+  useEffect(() => {
+    hasOlderHistoryRef.current = hasOlderHistory;
+    loadingOlderHistoryPropRef.current = loadingOlderHistory;
+    onLoadOlderHistoryRef.current = onLoadOlderHistory;
+    renderableCountRef.current = renderableItems.length;
+  }, [hasOlderHistory, loadingOlderHistory, onLoadOlderHistory, renderableItems.length]);
 
   const prevDisplayCountRef = useRef(displayItems.length);
   useLayoutEffect(() => {
@@ -2403,8 +2414,14 @@ export function ChatMessageList({
   }, [atBottom, atTop, hasOlderHistory, displayItems.length, loadingOlderHistory, renderableItems.length, shiftActive]);
 
   const loadOlder = useCallback(async () => {
+    const hasOlderHistoryCurrent = hasOlderHistoryRef.current;
+    const loadingOlderHistoryCurrent = loadingOlderHistoryPropRef.current;
+    const onLoadOlderHistoryCurrent = onLoadOlderHistoryRef.current;
+    const renderableCount = renderableCountRef.current;
+
     if (loadCycleInFlightRef.current) return;
-    if (!hasOlderHistory || loadingOlderHistory || loadingOlderRef.current) return;
+    if (!hasOlderHistoryCurrent || loadingOlderHistoryCurrent || loadingOlderRef.current) return;
+    if (!onLoadOlderHistoryCurrent) return;
 
     const now = Date.now();
     if (now < topLoadCooldownUntilRef.current) return;
@@ -2429,18 +2446,18 @@ export function ChatMessageList({
     pendingShiftReleaseRef.current = {
       cycleId,
       requestId,
-      baselineRenderableCount: renderableItems.length,
+      baselineRenderableCount: renderableCount,
       expectRenderableGrowth: true,
     };
 
     debugLog("ChatMessageList", "load-older-start", {
       cycleId,
       requestId,
-      renderableCount: renderableItems.length,
+      renderableCount,
     });
 
     try {
-      await onLoadOlderHistory?.({ cycleId, requestId });
+      await onLoadOlderHistoryCurrent({ cycleId, requestId });
     } catch (error) {
       debugLog("ChatMessageList", "load-older-error", {
         cycleId,
@@ -2467,7 +2484,7 @@ export function ChatMessageList({
       }
       debugLog("ChatMessageList", "load-older-finished", { cycleId, requestId });
     }
-  }, [hasOlderHistory, loadingOlderHistory, onLoadOlderHistory, releaseShift, renderableItems.length]);
+  }, [releaseShift]);
 
   // Trigger load-older when user scrolls to top (oldest messages)
   useEffect(() => {
@@ -2478,10 +2495,15 @@ export function ChatMessageList({
       return;
     }
 
+    if (!hasOlderHistoryRef.current || loadingOlderHistoryPropRef.current || !onLoadOlderHistoryRef.current) return;
     if (loadCycleInFlightRef.current || !topLoadArmedRef.current) return;
 
     topLoadArmedRef.current = false;
-    debugLog("ChatMessageList", "top-trigger-load-older", { atTop });
+    debugLog("ChatMessageList", "top-trigger-load-older", {
+      atTop,
+      hasOlderHistory: hasOlderHistoryRef.current,
+      loadingOlderHistory: loadingOlderHistoryPropRef.current,
+    });
     void loadOlder();
   }, [atTop, loadOlder]);
 

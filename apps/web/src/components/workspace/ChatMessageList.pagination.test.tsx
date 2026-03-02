@@ -2,7 +2,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
+import { debugLog } from "../../lib/debugLog";
 import { ChatMessageList, type ChatTimelineItem } from "./ChatMessageList";
+
+vi.mock("../../lib/debugLog", () => ({
+  debugLog: vi.fn(),
+}));
 
 type LoadOlderMetadata = { cycleId: number; requestId: string };
 type LoadOlderResult = {
@@ -161,6 +166,7 @@ describe("ChatMessageList pagination with virtua", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     vlistMock.reset();
+    vi.mocked(debugLog).mockClear();
   });
 
   afterEach(() => {
@@ -333,7 +339,7 @@ describe("ChatMessageList pagination with virtua", () => {
     });
   });
 
-  it("does not trigger load when hasOlderHistory is false", async () => {
+  it("does not trigger load or top-trigger log when hasOlderHistory is false", async () => {
     const onLoadOlderHistory = vi.fn<
       (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
     >().mockResolvedValue({
@@ -366,6 +372,70 @@ describe("ChatMessageList pagination with virtua", () => {
     await flushMicrotasks();
 
     expect(onLoadOlderHistory).not.toHaveBeenCalled();
+    expect(debugLog).not.toHaveBeenCalledWith(
+      "ChatMessageList",
+      "top-trigger-load-older",
+      expect.anything(),
+    );
+  });
+
+  it("does not retrigger load when parent rerenders with new callback identity while still at top", async () => {
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >().mockResolvedValue({
+      completionReason: "applied",
+      estimatedRenderableGrowth: true,
+      messagesAdded: 2,
+      eventsAdded: 0,
+    });
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+
+    const nextOnLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >().mockResolvedValue({
+      completionReason: "applied",
+      estimatedRenderableGrowth: true,
+      messagesAdded: 1,
+      eventsAdded: 0,
+    });
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          onLoadOlderHistory={nextOnLoadOlderHistory}
+        />,
+      );
+    });
+    await flushMicrotasks();
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+    expect(nextOnLoadOlderHistory).toHaveBeenCalledTimes(0);
   });
 
   it("renders thinking placeholder at the end of the list", async () => {

@@ -1,5 +1,6 @@
 import {
   startTransition,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -1261,7 +1262,7 @@ export function useChatSession(
     }
   }
 
-  async function loadOlderHistory(metadata?: LoadOlderHistoryRequestMetadata): Promise<LoadOlderHistoryResult | void> {
+  const loadOlderHistory = useCallback(async (metadata?: LoadOlderHistoryRequestMetadata): Promise<LoadOlderHistoryResult | void> => {
     if (!selectedThreadId || loadingOlderHistory) return;
 
     const threadId = selectedThreadId;
@@ -1402,7 +1403,7 @@ export function useChatSession(
       debugLog("useChatSession", "loadOlderHistory end", { threadId, cycleId, requestId });
       setLoadingOlderHistory(false);
     }
-  }
+  }, [loadingOlderHistory, onError, selectedThreadId]);
 
   async function stopAssistantRun() {
     if (!selectedThreadId) return;
