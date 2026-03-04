@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatThread } from "@codesymphony/shared-types";
 import {
   applyThreadTitleUpdate,
+  buildAutoBackfillLaunchKey,
   buildAutoBackfillSnapshotKey,
   extractLatestThreadMetadata,
   mergeEventsWithCurrent,
   prependUniqueEvents,
   prependUniqueMessages,
+  resolveHydrationBackfillPolicy,
+  resolveSnapshotSeedDecision,
   runAutoBackfillLoop,
   shouldAutoBackfillOnHydration,
+  shouldInvalidateSnapshotImmediatelyAfterSubmit,
 } from "./useChatSession";
 
 function makeEvent(
@@ -395,7 +399,112 @@ describe("mergeEventsWithCurrent", () => {
   });
 });
 
+describe("snapshot seed decision helpers", () => {
+  it("returns no-thread-or-snapshot when selected thread is null", () => {
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: null,
+      queriedThreadSnapshot: makeSnapshot(),
+      threadChanged: false,
+      lastAppliedSnapshotKey: null,
+    });
+
+    expect(decision).toEqual({
+      shouldApply: false,
+      reason: "no-thread-or-snapshot",
+      snapshotKey: null,
+    });
+  });
+
+  it("returns no-thread-or-snapshot when snapshot is temporarily unavailable", () => {
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: "thread-1",
+      queriedThreadSnapshot: undefined,
+      threadChanged: false,
+      lastAppliedSnapshotKey: "existing-snapshot-key",
+    });
+
+    expect(decision).toEqual({
+      shouldApply: false,
+      reason: "no-thread-or-snapshot",
+      snapshotKey: null,
+    });
+  });
+
+  it("snapshot_seed_skips_same_snapshot_key_for_same_thread", () => {
+    const snapshot = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 120,
+      },
+    });
+    const snapshotKey = buildAutoBackfillSnapshotKey(snapshot);
+
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: "thread-1",
+      queriedThreadSnapshot: snapshot,
+      threadChanged: false,
+      lastAppliedSnapshotKey: snapshotKey,
+    });
+
+    expect(decision).toEqual({
+      shouldApply: false,
+      reason: "same-snapshot-key",
+      snapshotKey,
+    });
+  });
+
+  it("snapshot_seed_applies_on_thread_change_even_with_same_lengths", () => {
+    const snapshotA = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 120,
+      },
+      watermarks: {
+        newestSeq: 1,
+        newestIdx: 100,
+      },
+    });
+    const snapshotB = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 120,
+      },
+      watermarks: {
+        newestSeq: 2,
+        newestIdx: 110,
+      },
+    });
+
+    expect(snapshotA.messages.data).toHaveLength(snapshotB.messages.data.length);
+    expect(snapshotA.events.data).toHaveLength(snapshotB.events.data.length);
+
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: "thread-2",
+      queriedThreadSnapshot: snapshotB,
+      threadChanged: true,
+      lastAppliedSnapshotKey: buildAutoBackfillSnapshotKey(snapshotA),
+    });
+
+    expect(decision.shouldApply).toBe(true);
+    expect(decision.reason).toBe("thread-changed");
+    expect(decision.snapshotKey).toBe(buildAutoBackfillSnapshotKey(snapshotB));
+  });
+
+  it("submit_message_does_not_force_immediate_snapshot_invalidation", () => {
+    expect(shouldInvalidateSnapshotImmediatelyAfterSubmit()).toBe(false);
+  });
+});
+
 describe("auto-backfill hydration helpers", () => {
+  it("defaults hydration backfill policy to manual", () => {
+    expect(resolveHydrationBackfillPolicy(undefined)).toBe("manual");
+    expect(resolveHydrationBackfillPolicy("manual")).toBe("manual");
+    expect(resolveHydrationBackfillPolicy("auto")).toBe("auto");
+  });
+
   it("enables auto-backfill when snapshot coverage is incomplete", () => {
     const needsBackfillSnapshot = makeSnapshot({
       coverage: {
@@ -457,7 +566,83 @@ describe("auto-backfill hydration helpers", () => {
     expect(buildAutoBackfillSnapshotKey(a)).not.toBe(buildAutoBackfillSnapshotKey(b));
   });
 
-  it("stops auto-backfill loop when timeline becomes complete", async () => {
+  it("builds stable auto-backfill launch keys from snapshot transition inputs", () => {
+    const snapshot = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 220,
+      },
+      watermarks: {
+        newestSeq: 4,
+        newestIdx: 25,
+      },
+    });
+    const snapshotKey = buildAutoBackfillSnapshotKey(snapshot);
+
+    const launchA = buildAutoBackfillLaunchKey({
+      snapshotKey,
+      coverageNextBeforeIdx: 220,
+      timelineHasIncompleteCoverage: true,
+    });
+    const launchB = buildAutoBackfillLaunchKey({
+      snapshotKey,
+      coverageNextBeforeIdx: 220,
+      timelineHasIncompleteCoverage: true,
+    });
+    const launchC = buildAutoBackfillLaunchKey({
+      snapshotKey,
+      coverageNextBeforeIdx: 180,
+      timelineHasIncompleteCoverage: true,
+    });
+
+    expect(launchA).toBe(launchB);
+    expect(launchA).not.toBe(launchC);
+  });
+
+  it("resets per-thread launch cap count when snapshot key changes", () => {
+    const snapshotA = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 220,
+      },
+      watermarks: {
+        newestSeq: 4,
+        newestIdx: 25,
+      },
+    });
+    const snapshotB = makeSnapshot({
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 140,
+      },
+      watermarks: {
+        newestSeq: 5,
+        newestIdx: 41,
+      },
+    });
+
+    const keyA = buildAutoBackfillSnapshotKey(snapshotA);
+    const keyB = buildAutoBackfillSnapshotKey(snapshotB);
+    expect(keyA).not.toBe(keyB);
+
+    const launchA = buildAutoBackfillLaunchKey({
+      snapshotKey: keyA,
+      coverageNextBeforeIdx: 220,
+      timelineHasIncompleteCoverage: true,
+    });
+    const launchB = buildAutoBackfillLaunchKey({
+      snapshotKey: keyB,
+      coverageNextBeforeIdx: 140,
+      timelineHasIncompleteCoverage: true,
+    });
+
+    expect(launchA).not.toBe(launchB);
+  });
+
+  it("stops auto-backfill loop when auto-backfill is no longer allowed", async () => {
     let beforeIdx: number | null = 120;
     let incomplete = true;
 
@@ -465,6 +650,7 @@ describe("auto-backfill hydration helpers", () => {
       maxPages: 4,
       shouldAbort: () => false,
       isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => incomplete,
       getBeforeIdx: () => beforeIdx,
       loadOlderHistoryPage: async () => {
         beforeIdx = 80;
@@ -476,12 +662,30 @@ describe("auto-backfill hydration helpers", () => {
           messagesAdded: 0,
           eventsAdded: 25,
           estimatedRenderableGrowth: true,
+          semanticBoundaryDetected: false,
+          semanticBoundary: null,
         };
       },
       isTimelineIncomplete: () => incomplete,
     });
 
-    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "timeline-complete" });
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "timeline-complete", semanticBoundary: null });
+  });
+
+  it("stops auto-backfill loop before page load when auto-backfill disallows immediately", async () => {
+    const loadOlderHistoryPage = () => Promise.resolve(undefined as never);
+
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => false,
+      getBeforeIdx: () => 120,
+      loadOlderHistoryPage,
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 0, stopReason: "timeline-complete", semanticBoundary: null });
   });
 
   it("caps auto-backfill loop by max pages", async () => {
@@ -492,6 +696,7 @@ describe("auto-backfill hydration helpers", () => {
       maxPages: 2,
       shouldAbort: () => false,
       isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
       getBeforeIdx: () => beforeIdx,
       loadOlderHistoryPage: async () => {
         calls += 1;
@@ -503,34 +708,70 @@ describe("auto-backfill hydration helpers", () => {
           messagesAdded: 0,
           eventsAdded: 10,
           estimatedRenderableGrowth: true,
+          semanticBoundaryDetected: false,
+          semanticBoundary: null,
         };
       },
       isTimelineIncomplete: () => true,
     });
 
-    expect(outcome).toEqual({ pagesLoaded: 2, stopReason: "max-pages" });
+    expect(outcome).toEqual({ pagesLoaded: 2, stopReason: "max-pages", semanticBoundary: null });
   });
 
   it("stops auto-backfill loop on no progress", async () => {
-    const beforeIdx = 300;
+    let beforeIdx = 300;
 
     const outcome = await runAutoBackfillLoop({
       maxPages: 4,
       shouldAbort: () => false,
       isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
       getBeforeIdx: () => beforeIdx,
-      loadOlderHistoryPage: async () => ({
-        cycleId: 7,
-        requestId: "auto-stall",
-        completionReason: "applied",
-        messagesAdded: 0,
-        eventsAdded: 0,
-        estimatedRenderableGrowth: false,
-      }),
+      loadOlderHistoryPage: async () => {
+        beforeIdx = 300;
+        return {
+          cycleId: 7,
+          requestId: "auto-stall",
+          completionReason: "applied",
+          messagesAdded: 0,
+          eventsAdded: 0,
+          estimatedRenderableGrowth: false,
+          semanticBoundaryDetected: false,
+          semanticBoundary: null,
+        };
+      },
       isTimelineIncomplete: () => true,
     });
 
-    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "no-progress" });
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "no-progress", semanticBoundary: null });
+  });
+
+  it("stops auto-backfill loop when cursor does not monotonically decrease", async () => {
+    let beforeIdx = 300;
+
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
+      getBeforeIdx: () => beforeIdx,
+      loadOlderHistoryPage: async () => {
+        beforeIdx = 320;
+        return {
+          cycleId: 8,
+          requestId: "auto-non-monotonic",
+          completionReason: "applied",
+          messagesAdded: 0,
+          eventsAdded: 3,
+          estimatedRenderableGrowth: true,
+          semanticBoundaryDetected: false,
+          semanticBoundary: null,
+        };
+      },
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "no-progress", semanticBoundary: null });
   });
 
   it("stops auto-backfill loop when thread is switched", async () => {
@@ -547,6 +788,7 @@ describe("auto-backfill hydration helpers", () => {
         return true;
       },
       isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
       getBeforeIdx: () => beforeIdx,
       loadOlderHistoryPage: async () => {
         beforeIdx = 80;
@@ -557,12 +799,14 @@ describe("auto-backfill hydration helpers", () => {
           messagesAdded: 0,
           eventsAdded: 15,
           estimatedRenderableGrowth: true,
+          semanticBoundaryDetected: false,
+          semanticBoundary: null,
         };
       },
       isTimelineIncomplete: () => true,
     });
 
-    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "token-or-thread-changed" });
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "abort", semanticBoundary: null });
   });
 
   it("stops when isLoadingOlderHistory returns true", async () => {
@@ -570,12 +814,13 @@ describe("auto-backfill hydration helpers", () => {
       maxPages: 4,
       shouldAbort: () => false,
       isLoadingOlderHistory: () => true,
+      isAutoBackfillAllowed: () => true,
       getBeforeIdx: () => 100,
       loadOlderHistoryPage: async () => undefined as never,
       isTimelineIncomplete: () => true,
     });
 
-    expect(outcome).toEqual({ pagesLoaded: 0, stopReason: "loading-older-history" });
+    expect(outcome).toEqual({ pagesLoaded: 0, stopReason: "loading-older-history", semanticBoundary: null });
   });
 
   it("stops when getBeforeIdx returns null", async () => {
@@ -583,12 +828,13 @@ describe("auto-backfill hydration helpers", () => {
       maxPages: 4,
       shouldAbort: () => false,
       isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
       getBeforeIdx: () => null,
       loadOlderHistoryPage: async () => undefined as never,
       isTimelineIncomplete: () => true,
     });
 
-    expect(outcome).toEqual({ pagesLoaded: 0, stopReason: "no-more-events" });
+    expect(outcome).toEqual({ pagesLoaded: 0, stopReason: "no-more-events", semanticBoundary: null });
   });
 
   it("stops when loadOlderHistoryPage returns void", async () => {
@@ -596,12 +842,13 @@ describe("auto-backfill hydration helpers", () => {
       maxPages: 4,
       shouldAbort: () => false,
       isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
       getBeforeIdx: () => 50,
       loadOlderHistoryPage: async () => undefined,
       isTimelineIncomplete: () => true,
     });
 
-    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "no-result" });
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "no-result", semanticBoundary: null });
   });
 
   it("stops when completionReason is not applied", async () => {
@@ -609,6 +856,7 @@ describe("auto-backfill hydration helpers", () => {
       maxPages: 4,
       shouldAbort: () => false,
       isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
       getBeforeIdx: () => 50,
       loadOlderHistoryPage: async () => ({
         cycleId: 1,
@@ -617,10 +865,105 @@ describe("auto-backfill hydration helpers", () => {
         messagesAdded: 0,
         eventsAdded: 0,
         estimatedRenderableGrowth: false,
+        semanticBoundaryDetected: false,
+        semanticBoundary: null,
       }),
       isTimelineIncomplete: () => true,
     });
 
-    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "completion-reason" });
+    expect(outcome).toEqual({ pagesLoaded: 1, stopReason: "completion-reason", semanticBoundary: null });
+  });
+
+  it("stops auto-backfill loop on semantic boundary when enabled", async () => {
+    let beforeIdx: number | null = 120;
+
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 4,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
+      stopOnSemanticBoundary: true,
+      getBeforeIdx: () => beforeIdx,
+      loadOlderHistoryPage: async () => {
+        beforeIdx = 90;
+        return {
+          cycleId: 11,
+          requestId: "auto-semantic-stop",
+          completionReason: "applied",
+          messagesAdded: 0,
+          eventsAdded: 8,
+          estimatedRenderableGrowth: true,
+          semanticBoundaryDetected: true,
+          semanticBoundary: {
+            kind: "plan-file-output",
+            eventId: "event-120",
+            eventIdx: 120,
+            eventType: "plan.created",
+          },
+        };
+      },
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({
+      pagesLoaded: 1,
+      stopReason: "semantic-boundary-detected",
+      semanticBoundary: {
+        kind: "plan-file-output",
+        eventId: "event-120",
+        eventIdx: 120,
+        eventType: "plan.created",
+      },
+    });
+  });
+
+  it("does not stop on semantic boundary when disabled", async () => {
+    let beforeIdx: number | null = 120;
+    let page = 0;
+
+    const outcome = await runAutoBackfillLoop({
+      maxPages: 2,
+      shouldAbort: () => false,
+      isLoadingOlderHistory: () => false,
+      isAutoBackfillAllowed: () => true,
+      stopOnSemanticBoundary: false,
+      getBeforeIdx: () => beforeIdx,
+      loadOlderHistoryPage: async () => {
+        page += 1;
+        if (page === 1) {
+          beforeIdx = 80;
+          return {
+            cycleId: 12,
+            requestId: "auto-semantic-disabled-1",
+            completionReason: "applied",
+            messagesAdded: 0,
+            eventsAdded: 6,
+            estimatedRenderableGrowth: true,
+            semanticBoundaryDetected: true,
+            semanticBoundary: {
+              kind: "explore-activity",
+              eventId: "event-95",
+              eventIdx: 95,
+              eventType: "tool.finished",
+            },
+          };
+        }
+
+        beforeIdx = 40;
+        return {
+          cycleId: 12,
+          requestId: "auto-semantic-disabled-2",
+          completionReason: "applied",
+          messagesAdded: 0,
+          eventsAdded: 5,
+          estimatedRenderableGrowth: true,
+          semanticBoundaryDetected: false,
+          semanticBoundary: null,
+        };
+      },
+      isTimelineIncomplete: () => true,
+    });
+
+    expect(outcome).toEqual({ pagesLoaded: 2, stopReason: "max-pages", semanticBoundary: null });
   });
 });

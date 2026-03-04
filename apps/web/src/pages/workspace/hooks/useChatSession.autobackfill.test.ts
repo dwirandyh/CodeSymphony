@@ -45,7 +45,7 @@ vi.mock("../../../lib/api", () => ({
   },
 }));
 
-import { useChatSession } from "./useChatSession";
+import { useChatSession, resolveHydrationBackfillPolicy } from "./useChatSession";
 
 function makeThread(): ChatThread {
   return {
@@ -60,13 +60,16 @@ function makeThread(): ChatThread {
   };
 }
 
-function makeEvent(idx: number): ChatEvent {
+function makeEvent(
+  idx: number,
+  overrides?: Partial<Pick<ChatEvent, "type" | "payload">>,
+): ChatEvent {
   return {
     id: `event-${idx}`,
     threadId: "thread-1",
     idx,
-    type: "chat.completed",
-    payload: { messageId: "msg-1" },
+    type: overrides?.type ?? "chat.completed",
+    payload: overrides?.payload ?? { messageId: "msg-1" },
     createdAt: "2026-03-01T00:00:00.000Z",
   };
 }
@@ -76,6 +79,7 @@ function makeSnapshot(params: {
   recommendedBackfill: boolean;
   nextBeforeIdx: number | null;
   hasMoreOlderEvents: boolean;
+  newestIdx?: number;
 }): ChatThreadSnapshot {
   return {
     messages: {
@@ -98,17 +102,17 @@ function makeSnapshot(params: {
       },
     },
     events: {
-      data: [makeEvent(1000)],
+      data: [makeEvent(params.newestIdx ?? 1000)],
       pageInfo: {
         hasMoreOlder: params.hasMoreOlderEvents,
         nextBeforeIdx: params.nextBeforeIdx,
         oldestIdx: params.nextBeforeIdx,
-        newestIdx: 1000,
+        newestIdx: params.newestIdx ?? 1000,
       },
     },
     watermarks: {
       newestSeq: 1,
-      newestIdx: 1000,
+      newestIdx: params.newestIdx ?? 1000,
     },
     coverage: {
       eventsStatus: params.eventsStatus,
@@ -120,16 +124,18 @@ function makeSnapshot(params: {
 
 type HookHarnessProps = {
   onResult: (result: ReturnType<typeof useChatSession>) => void;
+  onBranchRenamed?: (worktreeId: string, newBranch: string) => void;
+  hydrationBackfillPolicy?: "manual" | "auto";
 };
 
-function HookHarness({ onResult }: HookHarnessProps) {
+function HookHarness({ onResult, onBranchRenamed, hydrationBackfillPolicy }: HookHarnessProps) {
   const result = useChatSession(
     "wt-1",
     () => {
       // noop for test
     },
-    undefined,
-    { initialThreadId: "thread-1" },
+    onBranchRenamed,
+    { initialThreadId: "thread-1", hydrationBackfillPolicy },
   );
   onResult(result);
   return null;
@@ -144,6 +150,42 @@ async function flushMicrotasks(times = 3) {
 }
 
 describe("useChatSession auto-backfill reseed regression", () => {
+  it("defaults hydration policy to manual and does not auto-load older pages on mount", async () => {
+    expect(resolveHydrationBackfillPolicy(undefined)).toBe("manual");
+
+    const snapshotNeedsBackfill = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 500,
+      hasMoreOlderEvents: true,
+    });
+
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? snapshotNeedsBackfill : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => snapshotNeedsBackfill);
+
+    act(() => {
+      root.render(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(HookHarness, {
+            onResult: () => {
+              // noop
+            },
+          }),
+        ),
+      );
+    });
+
+    await flushMicrotasks(6);
+
+    expect(listEventsPageMock).not.toHaveBeenCalled();
+    expect(listMessagesPageMock).not.toHaveBeenCalled();
+  });
+
   let container: HTMLDivElement;
   let root: Root;
   let queryClient: QueryClient;
@@ -225,7 +267,267 @@ describe("useChatSession auto-backfill reseed regression", () => {
     (globalThis as { EventSource: unknown }).EventSource = originalEventSource;
   });
 
-  it("auto-backfills when same-thread snapshot reseed changes to needs_backfill", async () => {
+  it("does not relaunch auto-backfill for same launch key", async () => {
+    const snapshotNeedsBackfill = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 80,
+      hasMoreOlderEvents: true,
+    });
+
+    let currentSnapshot: ChatThreadSnapshot = snapshotNeedsBackfill;
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? currentSnapshot : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    const renderHarness = () => {
+      act(() => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(HookHarness, {
+              onResult: () => {
+                // noop
+              },
+              hydrationBackfillPolicy: "auto",
+            }),
+          ),
+        );
+      });
+    };
+
+    renderHarness();
+    await flushMicrotasks(6);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+
+    renderHarness();
+    await flushMicrotasks(6);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not relaunch same launch key after productive abort", async () => {
+    const snapshotNeedsBackfill = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 80,
+      hasMoreOlderEvents: true,
+    });
+
+    let currentSnapshot: ChatThreadSnapshot = snapshotNeedsBackfill;
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? currentSnapshot : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    let resolveFirstEventsPage: ((value: {
+      data: ChatEvent[];
+      pageInfo: {
+        hasMoreOlder: boolean;
+        nextBeforeIdx: number | null;
+        oldestIdx: number | null;
+        newestIdx: number | null;
+      };
+    }) => void) | null = null;
+
+    listMessagesPageMock.mockResolvedValue({
+      data: [],
+      pageInfo: {
+        hasMoreOlder: false,
+        nextBeforeSeq: null,
+        oldestSeq: null,
+        newestSeq: null,
+      },
+    });
+
+    listEventsPageMock.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveFirstEventsPage = resolve;
+      }),
+    );
+
+    const renderHarness = () => {
+      act(() => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(HookHarness, {
+              onResult: () => {
+                // noop
+              },
+              hydrationBackfillPolicy: "auto",
+            }),
+          ),
+        );
+      });
+    };
+
+    renderHarness();
+    await flushMicrotasks(5);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+
+    currentSnapshot = {
+      ...snapshotNeedsBackfill,
+      messages: {
+        ...snapshotNeedsBackfill.messages,
+        data: [...snapshotNeedsBackfill.messages.data],
+      },
+      events: {
+        ...snapshotNeedsBackfill.events,
+        data: [...snapshotNeedsBackfill.events.data],
+      },
+      watermarks: { ...snapshotNeedsBackfill.watermarks },
+      coverage: { ...snapshotNeedsBackfill.coverage },
+    };
+
+    renderHarness();
+    await flushMicrotasks(2);
+
+    if (!resolveFirstEventsPage) {
+      throw new Error("Expected deferred events page resolver");
+    }
+
+    await act(async () => {
+      resolveFirstEventsPage?.({
+        data: [makeEvent(70)],
+        pageInfo: {
+          hasMoreOlder: true,
+          nextBeforeIdx: 70,
+          oldestIdx: 70,
+          newestIdx: 70,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    await flushMicrotasks(6);
+
+    renderHarness();
+    await flushMicrotasks(4);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("relaunches auto-backfill when snapshot key changes", async () => {
+    const snapshotA = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 80,
+      hasMoreOlderEvents: true,
+    });
+
+    const snapshotB = {
+      ...makeSnapshot({
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 60,
+        hasMoreOlderEvents: true,
+      }),
+      watermarks: {
+        newestSeq: 2,
+        newestIdx: 1200,
+      },
+    } satisfies ChatThreadSnapshot;
+
+    let currentSnapshot: ChatThreadSnapshot = snapshotA;
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? currentSnapshot : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    const renderHarness = () => {
+      act(() => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(HookHarness, {
+              onResult: () => {
+                // noop
+              },
+              hydrationBackfillPolicy: "auto",
+            }),
+          ),
+        );
+      });
+    };
+
+    renderHarness();
+    await flushMicrotasks(6);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+
+    currentSnapshot = snapshotB;
+    renderHarness();
+    await flushMicrotasks(6);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(2);
+    expect(listEventsPageMock).toHaveBeenLastCalledWith(
+      "thread-1",
+      expect.objectContaining({ beforeIdx: 60 }),
+    );
+  });
+
+  it("stops and does not reenter when cursor makes no progress", async () => {
+    const snapshotNeedsBackfill = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 80,
+      hasMoreOlderEvents: true,
+    });
+
+    let currentSnapshot: ChatThreadSnapshot = snapshotNeedsBackfill;
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? currentSnapshot : undefined,
+    }));
+
+    listEventsPageMock.mockResolvedValue({
+      data: [makeEvent(500)],
+      pageInfo: {
+        hasMoreOlder: true,
+        nextBeforeIdx: 500,
+        oldestIdx: 500,
+        newestIdx: 500,
+      },
+    });
+
+    getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    const renderHarness = () => {
+      act(() => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(HookHarness, {
+              onResult: () => {
+                // noop
+              },
+              hydrationBackfillPolicy: "auto",
+            }),
+          ),
+        );
+      });
+    };
+
+    renderHarness();
+    await flushMicrotasks(8);
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+
+    renderHarness();
+    await flushMicrotasks(8);
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-backfill still runs for real needs-backfill transition", async () => {
     const snapshotComplete = makeSnapshot({
       eventsStatus: "complete",
       recommendedBackfill: false,
@@ -236,7 +538,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     const snapshotNeedsBackfill = makeSnapshot({
       eventsStatus: "needs_backfill",
       recommendedBackfill: true,
-      nextBeforeIdx: 500,
+      nextBeforeIdx: 80,
       hasMoreOlderEvents: true,
     });
 
@@ -259,6 +561,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
               onResult: (result) => {
                 latestResult = result;
               },
+              hydrationBackfillPolicy: "auto",
             }),
           ),
         );
@@ -282,7 +585,487 @@ describe("useChatSession auto-backfill reseed regression", () => {
     expect(listEventsPageMock).toHaveBeenCalledTimes(1);
     expect(listEventsPageMock).toHaveBeenCalledWith(
       "thread-1",
-      expect.objectContaining({ beforeIdx: 500 }),
+      expect.objectContaining({ beforeIdx: 80 }),
     );
   });
+
+  it("runs bounded auto-backfill for large initial gap when timeline is not marked incomplete", async () => {
+    const snapshotLargeGap = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 500,
+      hasMoreOlderEvents: true,
+    });
+
+    let currentSnapshot: ChatThreadSnapshot = snapshotLargeGap;
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? currentSnapshot : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    const renderHarness = () => {
+      act(() => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(HookHarness, {
+              onResult: () => {
+                // noop
+              },
+              hydrationBackfillPolicy: "auto",
+            }),
+          ),
+        );
+      });
+    };
+
+    renderHarness();
+    await flushMicrotasks(6);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+    expect(listEventsPageMock).toHaveBeenCalledWith(
+      "thread-1",
+      expect.objectContaining({ beforeIdx: 500, limit: 300 }),
+    );
+  });
+
+  it("stops bounded auto-backfill after first semantic boundary page", async () => {
+    const snapshotLargeGap = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 500,
+      hasMoreOlderEvents: true,
+    });
+
+    let currentSnapshot: ChatThreadSnapshot = snapshotLargeGap;
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? currentSnapshot : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    listEventsPageMock.mockResolvedValue({
+      data: [
+        makeEvent(500, {
+          type: "plan.created",
+          payload: {
+            messageId: "msg-1",
+            source: "claude_plan_file",
+            content: "# Plan\n- Step 1",
+            filePath: ".claude/plans/plan.md",
+          },
+        }),
+      ],
+      pageInfo: {
+        hasMoreOlder: true,
+        nextBeforeIdx: 450,
+        oldestIdx: 500,
+        newestIdx: 500,
+      },
+    });
+
+    const renderHarness = () => {
+      act(() => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(HookHarness, {
+              onResult: () => {
+                // noop
+              },
+              hydrationBackfillPolicy: "auto",
+            }),
+          ),
+        );
+      });
+    };
+
+    renderHarness();
+    await flushMicrotasks(8);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues bounded auto-backfill when first page has no semantic boundary", async () => {
+    const snapshotLargeGap = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 500,
+      hasMoreOlderEvents: true,
+    });
+
+    let currentSnapshot: ChatThreadSnapshot = snapshotLargeGap;
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? currentSnapshot : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    listEventsPageMock
+      .mockResolvedValueOnce({
+        data: [
+          makeEvent(500, {
+            type: "chat.completed",
+            payload: { messageId: "msg-1", source: "chat.thread.metadata" },
+          }),
+        ],
+        pageInfo: {
+          hasMoreOlder: true,
+          nextBeforeIdx: 450,
+          oldestIdx: 500,
+          newestIdx: 500,
+        },
+      })
+      .mockResolvedValueOnce({
+        data: [
+          makeEvent(450, {
+            type: "tool.finished",
+            payload: { toolName: "Read", summary: "Read file.ts" },
+          }),
+        ],
+        pageInfo: {
+          hasMoreOlder: true,
+          nextBeforeIdx: 400,
+          oldestIdx: 450,
+          newestIdx: 450,
+        },
+      });
+
+    const renderHarness = () => {
+      act(() => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(HookHarness, {
+              onResult: () => {
+                // noop
+              },
+              hydrationBackfillPolicy: "auto",
+            }),
+          ),
+        );
+      });
+    };
+
+    renderHarness();
+    await flushMicrotasks(8);
+
+    expect(listEventsPageMock).toHaveBeenCalledTimes(2);
+    expect(listEventsPageMock).toHaveBeenNthCalledWith(
+      1,
+      "thread-1",
+      expect.objectContaining({ beforeIdx: 500, limit: 300 }),
+    );
+    expect(listEventsPageMock).toHaveBeenNthCalledWith(
+      2,
+      "thread-1",
+      expect.objectContaining({ beforeIdx: 450, limit: 300 }),
+    );
+  });
+
+  it("opens and closes semantic hydration gate around manual loadOlderHistory", async () => {
+    const snapshotNeedsBackfill = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 500,
+      hasMoreOlderEvents: true,
+    });
+
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? snapshotNeedsBackfill : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => snapshotNeedsBackfill);
+
+    let resolveEventsPage: ((value: {
+      data: ChatEvent[];
+      pageInfo: {
+        hasMoreOlder: boolean;
+        nextBeforeIdx: number | null;
+        oldestIdx: number | null;
+        newestIdx: number | null;
+      };
+    }) => void) | null = null;
+
+    listMessagesPageMock.mockResolvedValue({
+      data: [],
+      pageInfo: {
+        hasMoreOlder: false,
+        nextBeforeSeq: null,
+        oldestSeq: null,
+        newestSeq: null,
+      },
+    });
+
+    listEventsPageMock.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveEventsPage = resolve;
+      }),
+    );
+
+    let latestResult: ReturnType<typeof useChatSession> | undefined;
+
+    act(() => {
+      root.render(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(HookHarness, {
+            onResult: (result) => {
+              latestResult = result;
+            },
+          }),
+        ),
+      );
+    });
+
+    await flushMicrotasks(4);
+
+    if (!latestResult) {
+      throw new Error("Expected useChatSession result");
+    }
+
+    expect(latestResult.semanticHydrationInProgress).toBe(false);
+
+    await act(async () => {
+      void latestResult?.loadOlderHistory({ requestId: "manual-gate-test", source: "manual" });
+      await Promise.resolve();
+    });
+
+    expect(latestResult.semanticHydrationInProgress).toBe(true);
+
+    if (!resolveEventsPage) {
+      throw new Error("Expected deferred events page resolver");
+    }
+
+    await act(async () => {
+      resolveEventsPage?.({
+        data: [makeEvent(500)],
+        pageInfo: {
+          hasMoreOlder: false,
+          nextBeforeIdx: null,
+          oldestIdx: 500,
+          newestIdx: 500,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    await flushMicrotasks(4);
+    expect(latestResult.semanticHydrationInProgress).toBe(false);
+  });
+
+  it("opens and closes semantic hydration gate during auto-backfill", async () => {
+    const snapshotNeedsBackfill = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 80,
+      hasMoreOlderEvents: true,
+    });
+
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? snapshotNeedsBackfill : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => snapshotNeedsBackfill);
+
+    let resolveEventsPage: ((value: {
+      data: ChatEvent[];
+      pageInfo: {
+        hasMoreOlder: boolean;
+        nextBeforeIdx: number | null;
+        oldestIdx: number | null;
+        newestIdx: number | null;
+      };
+    }) => void) | null = null;
+
+    listMessagesPageMock.mockResolvedValue({
+      data: [],
+      pageInfo: {
+        hasMoreOlder: false,
+        nextBeforeSeq: null,
+        oldestSeq: null,
+        newestSeq: null,
+      },
+    });
+
+    listEventsPageMock.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveEventsPage = resolve;
+      }),
+    );
+
+    let latestResult: ReturnType<typeof useChatSession> | undefined;
+
+    act(() => {
+      root.render(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(HookHarness, {
+            onResult: (result) => {
+              latestResult = result;
+            },
+            hydrationBackfillPolicy: "auto",
+          }),
+        ),
+      );
+    });
+
+    await flushMicrotasks(5);
+
+    if (!latestResult) {
+      throw new Error("Expected useChatSession result");
+    }
+
+    expect(latestResult.semanticHydrationInProgress).toBe(true);
+
+    if (!resolveEventsPage) {
+      throw new Error("Expected deferred events page resolver");
+    }
+
+    await act(async () => {
+      resolveEventsPage?.({
+        data: [makeEvent(70)],
+        pageInfo: {
+          hasMoreOlder: false,
+          nextBeforeIdx: null,
+          oldestIdx: 70,
+          newestIdx: 70,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    await flushMicrotasks(5);
+    expect(latestResult.semanticHydrationInProgress).toBe(false);
+  });
+
+  it("preserves messages/events when same-thread snapshot is temporarily unavailable", async () => {
+    const stableSnapshot = makeSnapshot({
+      eventsStatus: "complete",
+      recommendedBackfill: false,
+      nextBeforeIdx: null,
+      hasMoreOlderEvents: false,
+      newestIdx: 1000,
+    });
+
+    let currentSnapshot: ChatThreadSnapshot | undefined = stableSnapshot;
+
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? currentSnapshot : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => stableSnapshot);
+
+    let latestResult: ReturnType<typeof useChatSession> | undefined;
+
+    const renderHarness = () => {
+      act(() => {
+        root.render(
+          createElement(
+            QueryClientProvider,
+            { client: queryClient },
+            createElement(HookHarness, {
+              onResult: (result) => {
+                latestResult = result;
+              },
+            }),
+          ),
+        );
+      });
+    };
+
+    renderHarness();
+    await flushMicrotasks(6);
+
+    if (!latestResult) {
+      throw new Error("Expected useChatSession result");
+    }
+
+    expect(latestResult.selectedThreadId).toBe("thread-1");
+    expect(latestResult.messages.map((message) => message.id)).toEqual(["msg-1"]);
+    expect(latestResult.events.map((event) => event.id)).toEqual(["event-1000"]);
+
+    currentSnapshot = undefined;
+    renderHarness();
+    await flushMicrotasks(4);
+
+    if (!latestResult) {
+      throw new Error("Expected useChatSession result");
+    }
+
+    expect(latestResult.selectedThreadId).toBe("thread-1");
+    expect(latestResult.messages.map((message) => message.id)).toEqual(["msg-1"]);
+    expect(latestResult.events.map((event) => event.id)).toEqual(["event-1000"]);
+  });
+
+  it("clears messages/events when switching to a new thread without snapshot", async () => {
+    const stableSnapshot = makeSnapshot({
+      eventsStatus: "complete",
+      recommendedBackfill: false,
+      nextBeforeIdx: null,
+      hasMoreOlderEvents: false,
+      newestIdx: 1000,
+    });
+
+    const secondThread: ChatThread = {
+      ...makeThread(),
+      id: "thread-2",
+      title: "Thread 2",
+    };
+
+    useThreadsMock.mockReturnValue({ data: [makeThread(), secondThread] });
+
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId === "thread-1" ? stableSnapshot : undefined,
+    }));
+
+    getThreadSnapshotMock.mockImplementation(async () => stableSnapshot);
+
+    let latestResult: ReturnType<typeof useChatSession> | undefined;
+
+    act(() => {
+      root.render(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(HookHarness, {
+            onResult: (result) => {
+              latestResult = result;
+            },
+          }),
+        ),
+      );
+    });
+
+    await flushMicrotasks(6);
+
+    if (!latestResult) {
+      throw new Error("Expected useChatSession result");
+    }
+
+    expect(latestResult.selectedThreadId).toBe("thread-1");
+    expect(latestResult.messages.map((message) => message.id)).toEqual(["msg-1"]);
+    expect(latestResult.events.map((event) => event.id)).toEqual(["event-1000"]);
+
+    act(() => {
+      latestResult?.setSelectedThreadId("thread-2");
+    });
+
+    await flushMicrotasks(5);
+
+    if (!latestResult) {
+      throw new Error("Expected useChatSession result");
+    }
+
+    expect(latestResult.selectedThreadId).toBe("thread-2");
+    expect(latestResult.messages).toEqual([]);
+    expect(latestResult.events).toEqual([]);
+  });
+
 });

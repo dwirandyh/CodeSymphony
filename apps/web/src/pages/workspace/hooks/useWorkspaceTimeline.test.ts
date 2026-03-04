@@ -36,11 +36,12 @@ type TimelineHarnessProps = {
   events: ChatEvent[];
   selectedThreadId: string | null;
   refs: TimelineRefs;
+  options?: { semanticHydrationInProgress?: boolean };
   onResult: (result: ReturnType<typeof useWorkspaceTimeline>) => void;
 };
 
-function TimelineHarness({ messages, events, selectedThreadId, refs, onResult }: TimelineHarnessProps) {
-  const result = useWorkspaceTimeline(messages, events, selectedThreadId, refs);
+function TimelineHarness({ messages, events, selectedThreadId, refs, options, onResult }: TimelineHarnessProps) {
+  const result = useWorkspaceTimeline(messages, events, selectedThreadId, refs, options);
   onResult(result);
   return null;
 }
@@ -51,6 +52,7 @@ function createTimelineRefs(): TimelineRefs {
     stickyRawFallbackMessageIds: new Set<string>(),
     renderDecisionByMessageId: new Map<string, string>(),
     loggedOrphanEventIdsByThread: new Map<string, Set<string>>(),
+    loggedFirstInsertOrderByMessageId: new Set<string>(),
   };
 }
 

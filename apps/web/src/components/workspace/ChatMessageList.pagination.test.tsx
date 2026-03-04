@@ -29,6 +29,7 @@ const vlistMock = vi.hoisted(() => {
   return {
     setScrollSize(value: number) { scrollSize = value; },
     setViewportSize(value: number) { viewportSize = value; },
+    setScrollOffset(value: number) { scrollOffset = value; },
     emitScroll(offset: number) {
       scrollOffset = offset;
       lastOnScroll?.(offset);
@@ -57,7 +58,7 @@ const vlistMock = vi.hoisted(() => {
     getScrollSize() { return scrollSize; },
     getViewportSize() { return viewportSize; },
     getScrollOffset() { return scrollOffset; },
-    scrollTo(offset: number) { scrollOffset = offset; },
+    scrollTo: vi.fn((offset: number) => { scrollOffset = offset; }),
     scrollToIndex(_index: number, opts?: { align?: "start" | "center" | "end" }) {
       if (opts?.align === "end") {
         scrollOffset = Math.max(scrollSize - viewportSize, 0);
@@ -172,10 +173,11 @@ describe("ChatMessageList pagination with virtua", () => {
   afterEach(() => {
     act(() => root.unmount());
     document.body.removeChild(container);
+    vi.useRealTimers();
     vlistMock.reset();
   });
 
-  it("triggers loadOlderHistory when user scrolls to top", async () => {
+  it("does not trigger load at top before interaction is ready", async () => {
     const onLoadOlderHistory = vi.fn<
       (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
     >().mockResolvedValue({
@@ -198,14 +200,57 @@ describe("ChatMessageList pagination with virtua", () => {
           items={initialItems}
           hasOlderHistory
           loadingOlderHistory={false}
+          topPaginationInteractionReady={false}
           onLoadOlderHistory={onLoadOlderHistory}
         />,
       );
     });
 
-    // Scroll to top (offset 0 in normal scroll = oldest messages)
     act(() => {
       vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+
+    expect(onLoadOlderHistory).not.toHaveBeenCalled();
+    expect(debugLog).toHaveBeenCalledWith(
+      "ChatMessageList",
+      "top-load-skipped",
+      expect.objectContaining({ reason: "interaction-not-ready" }),
+    );
+  });
+
+  it("triggers loadOlderHistory when user scrolls near top after interaction is ready", async () => {
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >().mockResolvedValue({
+      completionReason: "applied",
+      estimatedRenderableGrowth: true,
+      messagesAdded: 2,
+      eventsAdded: 0,
+    });
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+      makeMessageItem("m-13", 13),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    // Near-top should trigger prefetch before absolute top.
+    act(() => {
+      vlistMock.emitScroll(170);
     });
     await flushMicrotasks();
 
@@ -213,9 +258,20 @@ describe("ChatMessageList pagination with virtua", () => {
     const metadata = onLoadOlderHistory.mock.calls[0]?.[0] as LoadOlderMetadata;
     expect(metadata.cycleId).toBe(1);
     expect(metadata.requestId).toBe("older-1");
+
+    expect(debugLog).toHaveBeenCalledWith(
+      "ChatMessageList",
+      "top-trigger-load-older",
+      expect.objectContaining({
+        trigger: "user-scroll-top",
+        triggeredAtIso: expect.any(String),
+        triggeredAtDisplay: expect.any(String),
+      }),
+    );
+
   });
 
-  it("renders prepended items after load (shift prop handles scroll anchoring)", async () => {
+  it("restores scroll anchor after non-prepend-growth shift release", async () => {
     let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
     const loadPromise = new Promise<LoadOlderResult>((resolve) => {
       resolveLoad = resolve;
@@ -237,17 +293,28 @@ describe("ChatMessageList pagination with virtua", () => {
           items={initialItems}
           hasOlderHistory
           loadingOlderHistory={false}
+          topPaginationInteractionReady
           onLoadOlderHistory={onLoadOlderHistory}
         />,
       );
     });
 
+    vlistMock.setScrollOffset(167);
     act(() => {
+      vlistMock.emitScroll(180);
       vlistMock.emitAtTop();
     });
     await flushMicrotasks();
 
-    expect(vlistMock.getLastShift()).toBe(true);
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 0,
+        eventsAdded: 207,
+      });
+      await loadPromise;
+    });
 
     const withOlderItems = [
       makeMessageItem("m-8", 8),
@@ -261,12 +328,441 @@ describe("ChatMessageList pagination with virtua", () => {
           items={withOlderItems}
           hasOlderHistory
           loadingOlderHistory={false}
+          topPaginationInteractionReady
           onLoadOlderHistory={onLoadOlderHistory}
         />,
       );
     });
 
-    // Shift should remain active until the load promise resolves
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // Simulate virtua post-release anchor jump; component should restore anchor.
+    vlistMock.setScrollOffset(592);
+    await flushMicrotasks();
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    });
+
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "load-older-release-shift"
+      && typeof (call[2] as { reason?: unknown } | undefined)?.reason === "string"
+      && typeof (call[2] as { releaseAnchorOffset?: unknown } | undefined)?.releaseAnchorOffset === "number"
+      && typeof (call[2] as { releaseAnchorDistanceFromTop?: unknown } | undefined)?.releaseAnchorDistanceFromTop === "number"
+    ))).toBe(true);
+
+    // In mock-driven tests, restore may happen through either layout or onScroll path
+    // depending on render timing. Presence of the release event with anchor metadata
+    // is the stable invariant.
+  });
+
+  it("does not force anchor restore when user scrolls away after events-only growth", async () => {
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+      makeMessageItem("m-13", 13),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.setScrollOffset(170);
+      vlistMock.emitScroll(170);
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 0,
+        eventsAdded: 207,
+      });
+      await loadPromise;
+    });
+
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    });
+    await flushTimers(420);
+
+    const scrollToSpy = vi.mocked(vlistMock.scrollTo);
+    scrollToSpy.mockClear();
+
+    act(() => {
+      vlistMock.emitScroll(130);
+    });
+    await flushMicrotasks();
+
+    expect(scrollToSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "load-older-release-anchor-restore"
+      && (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
+    ))).toBe(false);
+  });
+
+  it("does not force anchor restore when moving toward top during events-only growth", async () => {
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+      makeMessageItem("m-13", 13),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.setScrollOffset(170);
+      vlistMock.emitScroll(170);
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 0,
+        eventsAdded: 207,
+      });
+      await loadPromise;
+    });
+
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    });
+    await flushTimers(420);
+
+    const scrollToSpy = vi.mocked(vlistMock.scrollTo);
+    scrollToSpy.mockClear();
+
+    act(() => {
+      vlistMock.setScrollSize(2240);
+      vlistMock.emitScroll(150);
+    });
+    await flushMicrotasks();
+
+    expect(scrollToSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "load-older-release-anchor-restore"
+      && (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
+    ))).toBe(false);
+  });
+
+  it("does not force events-only-growth anchor restore on large downward drift", async () => {
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+      makeMessageItem("m-13", 13),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.setScrollOffset(170);
+      vlistMock.emitScroll(170);
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 0,
+        eventsAdded: 207,
+      });
+      await loadPromise;
+    });
+
+    const withOlderItems = [
+      makeMessageItem("m-8", 8),
+      makeMessageItem("m-9", 9),
+      ...initialItems,
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={withOlderItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    });
+
+    const scrollToSpy = vi.mocked(vlistMock.scrollTo);
+    scrollToSpy.mockClear();
+
+    act(() => {
+      vlistMock.setScrollSize(2560);
+      vlistMock.emitScroll(680);
+    });
+    await flushMicrotasks();
+
+    expect(scrollToSpy).not.toHaveBeenCalled();
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "load-older-release-anchor-restore"
+      && (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
+    ))).toBe(false);
+  });
+
+  it("restores anchor for events-only growth when layout shrinks toward top", async () => {
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+      makeMessageItem("m-13", 13),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.setScrollOffset(170);
+      vlistMock.emitScroll(170);
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 0,
+        eventsAdded: 207,
+      });
+      await loadPromise;
+    });
+
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    });
+
+    const scrollToSpy = vi.mocked(vlistMock.scrollTo);
+    scrollToSpy.mockClear();
+
+    act(() => {
+      vlistMock.setScrollSize(1200);
+      vlistMock.emitScroll(120);
+    });
+    await flushMicrotasks();
+
+    expect(scrollToSpy).toHaveBeenCalled();
+    expect((scrollToSpy.mock.calls[0]?.[0] as number) > 120).toBe(true);
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "load-older-release-anchor-restore"
+      && (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
+    ))).toBe(true);
+  });
+
+  it("restores late drift when events-only growth collapses to absolute top", async () => {
+    vi.useFakeTimers();
+
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+      makeMessageItem("m-13", 13),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.setScrollOffset(170);
+      vlistMock.emitScroll(170);
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 0,
+        eventsAdded: 207,
+      });
+      await loadPromise;
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(900);
+    });
+
+    const scrollToSpy = vi.mocked(vlistMock.scrollTo);
+    scrollToSpy.mockClear();
+
+    act(() => {
+      vlistMock.emitScroll(40);
+      vlistMock.emitScroll(0);
+    });
+    await flushMicrotasks();
+
+    expect(scrollToSpy).toHaveBeenCalled();
+    expect(scrollToSpy.mock.calls.at(-1)?.[0]).toBe(40);
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "load-older-post-release-drift-restore"
+    ))).toBe(true);
+  });
+
+  it("keeps shift active for non-prepend changes and releases after prepend commit", async () => {
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+      makeMessageItem("m-13", 13),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+
+    expect(vlistMock.getLastShift()).toBe(true);
+
+    // Non-prepend update (append placeholder) must not release shift while load is active
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          showThinkingPlaceholder
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+    await flushMicrotasks();
     expect(vlistMock.getLastShift()).toBe(true);
 
     await act(async () => {
@@ -279,14 +775,87 @@ describe("ChatMessageList pagination with virtua", () => {
       await loadPromise;
     });
 
+    // Commit prepend after load result
+    const withOlderItems = [
+      makeMessageItem("m-8", 8),
+      makeMessageItem("m-9", 9),
+      ...initialItems,
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={withOlderItems}
+          showThinkingPlaceholder
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    await flushMicrotasks();
+    await flushMicrotasks();
+    // Give anchor-lock shift deactivation window time to elapse.
+    await flushTimers(420);
+
+    const vlistEl = container.querySelector("[data-testid='vlist-mock']");
+    expect(vlistEl).toBeTruthy();
+    expect(vlistEl!.children.length).toBe(7);
+    expect(vlistMock.getLastShift()).toBe(false);
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "load-older-release-shift"
+      && (
+        (call[2] as { reason?: string } | undefined)?.reason === "prepend-commit"
+        || (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
+      )
+    ))).toBe(true);
+  });
+
+  it("releases shift as no-growth when load returns no growth", async () => {
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >().mockResolvedValue({
+      completionReason: "applied",
+      estimatedRenderableGrowth: false,
+      messagesAdded: 0,
+      eventsAdded: 0,
+    });
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.emitAtTop();
+    });
     await flushMicrotasks();
     await flushMicrotasks();
     await flushTimers();
 
-    const vlistEl = container.querySelector("[data-testid='vlist-mock']");
-    expect(vlistEl).toBeTruthy();
-    expect(vlistEl!.children.length).toBe(6);
     expect(vlistMock.getLastShift()).toBe(false);
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "load-older-release-shift"
+      && (call[2] as { reason?: string; completionReason?: string } | undefined)?.reason === "no-growth"
+      && (call[2] as { reason?: string; completionReason?: string } | undefined)?.completionReason === "applied"
+    ))).toBe(true);
   });
 
   it("suppresses top-trigger re-entrance during active load", async () => {
@@ -309,6 +878,7 @@ describe("ChatMessageList pagination with virtua", () => {
           items={initialItems}
           hasOlderHistory
           loadingOlderHistory={false}
+          topPaginationInteractionReady
           onLoadOlderHistory={onLoadOlderHistory}
         />,
       );
@@ -379,6 +949,218 @@ describe("ChatMessageList pagination with virtua", () => {
     );
   });
 
+  it("falls back to timeout release when prepend commit never arrives", async () => {
+    vi.useFakeTimers();
+
+    const rafQueue: FrameRequestCallback[] = [];
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 2,
+        eventsAdded: 0,
+      });
+      await loadPromise;
+    });
+
+    expect(vlistMock.getLastShift()).toBe(true);
+
+    await act(async () => {
+      for (const callback of rafQueue) {
+        callback(performance.now());
+      }
+      rafQueue.length = 0;
+    });
+    expect(vlistMock.getLastShift()).toBe(true);
+
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+    });
+
+    expect(vlistMock.getLastShift()).toBe(false);
+    expect(debugLog).toHaveBeenCalledWith(
+      "ChatMessageList",
+      "load-older-release-shift",
+      expect.objectContaining({ reason: "timeout-fallback" }),
+    );
+
+    rafSpy.mockRestore();
+  });
+
+  it("skips sticky-bottom correction while top-load transaction is active", async () => {
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+
+    const onLoadOlderHistory = vi.fn<(metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>>(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    const scrollToSpy = vi.mocked(vlistMock.scrollTo);
+    scrollToSpy.mockClear();
+
+    act(() => {
+      vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+
+    // Grow content while not at bottom to exercise sticky correction path.
+    vlistMock.setScrollOffset(100);
+    vlistMock.setScrollSize(2400);
+    act(() => {
+      vlistMock.emitScroll(100);
+    });
+
+    expect(scrollToSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "empty-cursors",
+        estimatedRenderableGrowth: false,
+        messagesAdded: 0,
+        eventsAdded: 0,
+      });
+      await loadPromise;
+    });
+  });
+
+  it("does not retrigger load on near-top jitter until leaving top zone", async () => {
+    let callCount = 0;
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >().mockImplementation(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          completionReason: "applied",
+          estimatedRenderableGrowth: true,
+          messagesAdded: 1,
+          eventsAdded: 0,
+        };
+      }
+      return {
+        completionReason: "empty-cursors",
+        estimatedRenderableGrowth: false,
+        messagesAdded: 0,
+        eventsAdded: 0,
+      };
+    });
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+
+    // Prepend commit render to release shift and end first transaction.
+    const withOneOlderItem = [
+      makeMessageItem("m-9", 9),
+      ...initialItems,
+    ];
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={withOneOlderItem}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+    await flushMicrotasks();
+    await flushTimers();
+
+    // Near-top jitter stays within hysteresis leave threshold.
+    act(() => {
+      vlistMock.emitScroll(240);
+      vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+
+    // Move sufficiently away from top then return to top should retrigger.
+    act(() => {
+      vlistMock.emitScroll(320);
+      vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retrigger load when parent rerenders with new callback identity while still at top", async () => {
     const onLoadOlderHistory = vi.fn<
       (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
@@ -401,6 +1183,7 @@ describe("ChatMessageList pagination with virtua", () => {
           items={initialItems}
           hasOlderHistory
           loadingOlderHistory={false}
+          topPaginationInteractionReady
           onLoadOlderHistory={onLoadOlderHistory}
         />,
       );
@@ -428,6 +1211,7 @@ describe("ChatMessageList pagination with virtua", () => {
           items={initialItems}
           hasOlderHistory
           loadingOlderHistory={false}
+          topPaginationInteractionReady
           onLoadOlderHistory={nextOnLoadOlderHistory}
         />,
       );

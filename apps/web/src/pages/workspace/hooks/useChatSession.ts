@@ -29,7 +29,12 @@ import { debugLog } from "../../../lib/debugLog";
 import { useThreads } from "../../../hooks/queries/useThreads";
 import { useThreadSnapshot } from "../../../hooks/queries/useThreadSnapshot";
 import { EVENT_TYPES, INITIAL_EVENTS_PAGE_LIMIT, INITIAL_MESSAGES_PAGE_LIMIT } from "../constants";
-import { payloadStringOrNull, shouldClearWaitingAssistantOnEvent } from "../eventUtils";
+import {
+  detectSemanticBoundaryFromEvents,
+  payloadStringOrNull,
+  shouldClearWaitingAssistantOnEvent,
+  type SemanticBoundary,
+} from "../eventUtils";
 import { useWorkspaceTimeline, type TimelineRefs } from "./useWorkspaceTimeline";
 import { areMessageArraysEqual, mergeThreadMessages } from "./messageMerge";
 
@@ -40,6 +45,8 @@ type PendingMessageMutation =
 type LoadOlderHistoryRequestMetadata = {
   cycleId?: number;
   requestId?: string;
+  source?: "manual" | "auto-hydration";
+  eventsLimitOverride?: number;
 };
 
 type LoadOlderHistoryResult = {
@@ -49,33 +56,62 @@ type LoadOlderHistoryResult = {
   messagesAdded: number;
   eventsAdded: number;
   estimatedRenderableGrowth: boolean;
+  source: "manual" | "auto-hydration";
+  semanticBoundaryDetected: boolean;
+  semanticBoundary: SemanticBoundary | null;
+};
+
+type SemanticHydrationGateMetadata = {
+  threadId: string | null;
+  reason: "load-older-history" | "auto-backfill" | "thread-cleared" | "thread-switched";
+  source?: "manual" | "auto-hydration" | "auto-backfill";
+  cycleId?: number | null;
+  requestId?: string | null;
+  launchKey?: string | null;
 };
 
 const AUTO_BACKFILL_MAX_PAGES = 4;
+const AUTO_BACKFILL_MAX_LAUNCHES_PER_THREAD = 16;
+const AUTO_HYDRATION_MAX_INITIAL_GAP = 120;
+const AUTO_HYDRATION_LARGE_GAP_EVENTS_LIMIT = 300;
+const AUTO_HYDRATION_LARGE_GAP_MAX_PAGES = 2;
 
-type AutoBackfillStopReason =
-  | "token-or-thread-changed"
+export type AutoBackfillStopReason =
+  | "abort"
   | "loading-older-history"
   | "no-more-events"
   | "no-result"
+  | "empty-cursors"
   | "completion-reason"
   | "no-progress"
   | "timeline-complete"
+  | "semantic-boundary-detected"
   | "max-pages";
 
-type AutoBackfillLoopOutcome = {
+export type AutoBackfillLoopOutcome = {
   pagesLoaded: number;
   stopReason: AutoBackfillStopReason;
+  semanticBoundary: SemanticBoundary | null;
 };
 
-type AutoBackfillLoopInput = {
+export type AutoBackfillLoopInput = {
   maxPages: number;
   shouldAbort: () => boolean;
   isLoadingOlderHistory: () => boolean;
   getBeforeIdx: () => number | null;
   loadOlderHistoryPage: (pageNumber: number) => Promise<LoadOlderHistoryResult | void>;
   isTimelineIncomplete: () => boolean;
+  isAutoBackfillAllowed?: () => boolean;
+  stopOnSemanticBoundary?: boolean;
 };
+
+export type HydrationBackfillPolicy = "manual" | "auto";
+
+export function resolveHydrationBackfillPolicy(
+  policy: HydrationBackfillPolicy | undefined,
+): HydrationBackfillPolicy {
+  return policy ?? "manual";
+}
 
 export function shouldAutoBackfillOnHydration(
   snapshot: ChatThreadSnapshot,
@@ -97,48 +133,113 @@ export function buildAutoBackfillSnapshotKey(snapshot: ChatThreadSnapshot): stri
   ].join(":");
 }
 
+export type SnapshotSeedDecision = {
+  shouldApply: boolean;
+  reason: "thread-changed" | "no-thread-or-snapshot" | "same-snapshot-key" | "snapshot-key-changed";
+  snapshotKey: string | null;
+};
+
+export function resolveSnapshotSeedDecision(params: {
+  selectedThreadId: string | null;
+  queriedThreadSnapshot: ChatThreadSnapshot | undefined;
+  threadChanged: boolean;
+  lastAppliedSnapshotKey: string | null;
+}): SnapshotSeedDecision {
+  const { selectedThreadId, queriedThreadSnapshot, threadChanged, lastAppliedSnapshotKey } = params;
+  if (!selectedThreadId || !queriedThreadSnapshot) {
+    return { shouldApply: false, reason: "no-thread-or-snapshot", snapshotKey: null };
+  }
+
+  const snapshotKey = buildAutoBackfillSnapshotKey(queriedThreadSnapshot);
+  if (threadChanged) {
+    return { shouldApply: true, reason: "thread-changed", snapshotKey };
+  }
+
+  if (lastAppliedSnapshotKey === snapshotKey) {
+    return { shouldApply: false, reason: "same-snapshot-key", snapshotKey };
+  }
+
+  return { shouldApply: true, reason: "snapshot-key-changed", snapshotKey };
+}
+
+export function shouldInvalidateSnapshotImmediatelyAfterSubmit(): boolean {
+  return false;
+}
+
+export function buildAutoBackfillLaunchKey(params: {
+  snapshotKey: string;
+  coverageNextBeforeIdx: number | null;
+  timelineHasIncompleteCoverage: boolean;
+}): string {
+  const { snapshotKey, coverageNextBeforeIdx, timelineHasIncompleteCoverage } = params;
+  return [
+    snapshotKey,
+    coverageNextBeforeIdx ?? "null",
+    timelineHasIncompleteCoverage ? "1" : "0",
+  ].join("|");
+}
+
 export async function runAutoBackfillLoop(input: AutoBackfillLoopInput): Promise<AutoBackfillLoopOutcome> {
   let pagesLoaded = 0;
   let previousBeforeIdx: number | null = input.getBeforeIdx();
 
   while (pagesLoaded < input.maxPages) {
     if (input.shouldAbort()) {
-      return { pagesLoaded, stopReason: "token-or-thread-changed" };
+      return { pagesLoaded, stopReason: "abort", semanticBoundary: null };
     }
 
     if (input.isLoadingOlderHistory()) {
-      return { pagesLoaded, stopReason: "loading-older-history" };
+      return { pagesLoaded, stopReason: "loading-older-history", semanticBoundary: null };
+    }
+
+    if (input.isAutoBackfillAllowed && !input.isAutoBackfillAllowed()) {
+      return { pagesLoaded, stopReason: "timeline-complete", semanticBoundary: null };
     }
 
     const beforeIdx = input.getBeforeIdx();
     if (beforeIdx == null) {
-      return { pagesLoaded, stopReason: "no-more-events" };
+      return { pagesLoaded, stopReason: "no-more-events", semanticBoundary: null };
     }
 
     const result = await input.loadOlderHistoryPage(pagesLoaded + 1);
     pagesLoaded += 1;
 
     if (!result) {
-      return { pagesLoaded, stopReason: "no-result" };
+      return { pagesLoaded, stopReason: "no-result", semanticBoundary: null };
+    }
+
+    if (result.completionReason === "empty-cursors") {
+      return { pagesLoaded, stopReason: "empty-cursors", semanticBoundary: result.semanticBoundary };
     }
 
     if (result.completionReason !== "applied") {
-      return { pagesLoaded, stopReason: "completion-reason" };
+      return { pagesLoaded, stopReason: "completion-reason", semanticBoundary: result.semanticBoundary };
     }
 
     const nextBeforeIdx = input.getBeforeIdx();
-    if (result.eventsAdded === 0 || nextBeforeIdx === previousBeforeIdx) {
-      return { pagesLoaded, stopReason: "no-progress" };
+    const cursorAdvanced = nextBeforeIdx == null
+      ? previousBeforeIdx != null
+      : previousBeforeIdx != null && nextBeforeIdx < previousBeforeIdx;
+    if (result.eventsAdded === 0 || !cursorAdvanced) {
+      return { pagesLoaded, stopReason: "no-progress", semanticBoundary: result.semanticBoundary };
+    }
+
+    if (input.stopOnSemanticBoundary && result.semanticBoundaryDetected) {
+      return {
+        pagesLoaded,
+        stopReason: "semantic-boundary-detected",
+        semanticBoundary: result.semanticBoundary,
+      };
     }
 
     previousBeforeIdx = nextBeforeIdx;
 
-    if (!input.isTimelineIncomplete()) {
-      return { pagesLoaded, stopReason: "timeline-complete" };
+    if (!input.stopOnSemanticBoundary && !input.isTimelineIncomplete()) {
+      return { pagesLoaded, stopReason: "timeline-complete", semanticBoundary: result.semanticBoundary };
     }
   }
 
-  return { pagesLoaded, stopReason: "max-pages" };
+  return { pagesLoaded, stopReason: "max-pages", semanticBoundary: null };
 }
 
 export function prependUniqueMessages(current: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
@@ -420,6 +521,7 @@ interface UseChatSessionOptions {
   onThreadChange?: (threadId: string | null) => void;
   selectedRepositoryId?: string | null;
   onWorktreeResolved?: (worktreeId: string) => void;
+  hydrationBackfillPolicy?: HydrationBackfillPolicy;
 }
 
 export function useChatSession(
@@ -429,6 +531,7 @@ export function useChatSession(
   options?: UseChatSessionOptions,
 ) {
   const queryClient = useQueryClient();
+  const hydrationBackfillPolicy = resolveHydrationBackfillPolicy(options?.hydrationBackfillPolicy);
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -447,6 +550,7 @@ export function useChatSession(
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
   const [hasMoreOlderEvents, setHasMoreOlderEvents] = useState(false);
   const [loadingOlderHistory, setLoadingOlderHistory] = useState(false);
+  const [semanticHydrationInProgress, setSemanticHydrationInProgress] = useState(false);
 
   const seenEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const lastEventIdxByThreadRef = useRef<Map<string, number>>(new Map());
@@ -456,6 +560,7 @@ export function useChatSession(
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
+  const loggedFirstInsertOrderByMessageIdRef = useRef<Set<string>>(new Set());
   const activeThreadIdRef = useRef<string | null>(null);
   const initialThreadAppliedRef = useRef(false);
   const creatingThreadRef = useRef(false);
@@ -466,9 +571,89 @@ export function useChatSession(
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
   const rafIdRef = useRef<number | null>(null);
   const loadOlderRequestCounterRef = useRef(0);
+  const loadingOlderHistoryRef = useRef(false);
   const autoBackfillRunTokenByThreadRef = useRef<Map<string, number>>(new Map());
   const autoBackfillRequestCounterRef = useRef(0);
+  const semanticHydrationGateInFlightCountRef = useRef(0);
   const seededSnapshotKeyByThreadRef = useRef<Map<string, string>>(new Map());
+  const lastAppliedSnapshotKeyByThreadRef = useRef<Map<string, string>>(new Map());
+  const lastAutoBackfillLaunchKeyByThreadRef = useRef<Map<string, string>>(new Map());
+  const autoBackfillInFlightLaunchKeyByThreadRef = useRef<Map<string, string>>(new Map());
+  const autoBackfillLaunchCountByThreadRef = useRef<Map<string, number>>(new Map());
+  const autoBackfillLaunchSnapshotKeyByThreadRef = useRef<Map<string, string>>(new Map());
+  const autoBackfillLastLaunchConsumptionReasonByThreadRef = useRef<Map<string, "normal-stop" | "productive-abort">>(new Map());
+  const autoBackfillEffectSignatureRef = useRef<{
+    threadId: string;
+    snapshotKey: string;
+    timelineIncompleteCoverage: boolean;
+  } | null>(null);
+
+  loadingOlderHistoryRef.current = loadingOlderHistory;
+
+  const updateSemanticHydrationGate = useCallback(
+    (delta: 1 | -1, metadata: SemanticHydrationGateMetadata) => {
+      const previousInFlightCount = semanticHydrationGateInFlightCountRef.current;
+      const nextInFlightCount = Math.max(0, previousInFlightCount + delta);
+      semanticHydrationGateInFlightCountRef.current = nextInFlightCount;
+      debugLog(
+        "useChatSession",
+        delta > 0 ? "semanticHydrationGate open" : "semanticHydrationGate close",
+        {
+          ...metadata,
+          previousInFlightCount,
+          inFlightCount: nextInFlightCount,
+        },
+      );
+      const nextActive = nextInFlightCount > 0;
+      setSemanticHydrationInProgress((current) => {
+        if (current === nextActive) {
+          return current;
+        }
+        debugLog("useChatSession", "semanticHydrationGate state", {
+          ...metadata,
+          active: nextActive,
+          inFlightCount: nextInFlightCount,
+        });
+        return nextActive;
+      });
+    },
+    [],
+  );
+
+  const openSemanticHydrationGate = useCallback(
+    (metadata: SemanticHydrationGateMetadata) => {
+      updateSemanticHydrationGate(1, metadata);
+    },
+    [updateSemanticHydrationGate],
+  );
+
+  const closeSemanticHydrationGate = useCallback(
+    (metadata: SemanticHydrationGateMetadata) => {
+      updateSemanticHydrationGate(-1, metadata);
+    },
+    [updateSemanticHydrationGate],
+  );
+
+  const resetSemanticHydrationGate = useCallback((metadata: SemanticHydrationGateMetadata) => {
+    const previousInFlightCount = semanticHydrationGateInFlightCountRef.current;
+    semanticHydrationGateInFlightCountRef.current = 0;
+    debugLog("useChatSession", "semanticHydrationGate reset", {
+      ...metadata,
+      previousInFlightCount,
+      inFlightCount: 0,
+    });
+    setSemanticHydrationInProgress((current) => {
+      if (!current) {
+        return current;
+      }
+      debugLog("useChatSession", "semanticHydrationGate state", {
+        ...metadata,
+        active: false,
+        inFlightCount: 0,
+      });
+      return false;
+    });
+  }, []);
 
   // Keep activeThreadIdRef in sync during render so seed effects see the correct
   // value immediately (they run before the SSE effect in React's execution order).
@@ -506,6 +691,7 @@ export function useChatSession(
       setWaitingAssistant(null);
       setHasMoreOlderMessages(false);
       setHasMoreOlderEvents(false);
+      loadingOlderHistoryRef.current = false;
       setLoadingOlderHistory(false);
       setThreads([]);
       setSelectedThreadId(null);
@@ -519,6 +705,7 @@ export function useChatSession(
       setWaitingAssistant(null);
       setHasMoreOlderMessages(false);
       setHasMoreOlderEvents(false);
+      loadingOlderHistoryRef.current = false;
       setLoadingOlderHistory(false);
       setMessages([]);
       setEvents([]);
@@ -539,19 +726,40 @@ export function useChatSession(
     });
 
     if (queriedThreads.length > 0) {
-      if (worktreeChanged || selectedThreadId == null) {
-        // Apply initialThreadId on first load
-        if (!initialThreadAppliedRef.current && options?.initialThreadId) {
-          initialThreadAppliedRef.current = true;
-          const match = queriedThreads.find((t) => t.id === options.initialThreadId);
-          setSelectedThreadId(match ? match.id : queriedThreads[0].id);
-        } else {
-          setSelectedThreadId((current) => {
-            // Keep current selection if it still exists in the new threads list
-            if (current && queriedThreads.some((t) => t.id === current)) return current;
-            return queriedThreads[0].id;
-          });
+      const selectedThreadStillExists =
+        selectedThreadId != null && queriedThreads.some((thread) => thread.id === selectedThreadId);
+
+      if (selectedThreadStillExists) {
+        debugLog("useChatSession", "consolidated thread-sync selection", {
+          reason: "keep-selected-thread",
+          selectedThreadId,
+        });
+        return;
+      }
+
+      let nextThreadId = queriedThreads[0].id;
+      let selectionReason: "apply-initial-thread" | "select-first-thread" | "reconcile-missing-thread" =
+        selectedThreadId == null ? "select-first-thread" : "reconcile-missing-thread";
+
+      if (!initialThreadAppliedRef.current) {
+        initialThreadAppliedRef.current = true;
+        if (options?.initialThreadId) {
+          const match = queriedThreads.find((thread) => thread.id === options.initialThreadId);
+          if (match) {
+            nextThreadId = match.id;
+            selectionReason = "apply-initial-thread";
+          }
         }
+      }
+
+      if (selectedThreadId !== nextThreadId) {
+        debugLog("useChatSession", "consolidated thread-sync selection", {
+          reason: selectionReason,
+          selectedThreadId,
+          nextThreadId,
+          initialThreadId: options?.initialThreadId ?? null,
+        });
+        setSelectedThreadId(nextThreadId);
       }
     } else {
       // No threads → auto-create one
@@ -607,48 +815,71 @@ export function useChatSession(
 
   useEffect(() => {
     const threadChanged = prevSeedThreadRef.current !== selectedThreadId;
+    const lastAppliedSnapshotKey = selectedThreadId
+      ? lastAppliedSnapshotKeyByThreadRef.current.get(selectedThreadId) ?? null
+      : null;
+    const seedDecision = resolveSnapshotSeedDecision({
+      selectedThreadId,
+      queriedThreadSnapshot,
+      threadChanged,
+      lastAppliedSnapshotKey,
+    });
     debugLog("useChatSession", "seed snapshot effect", {
       selectedThreadId,
       threadChanged,
       queriedMessagesLength: queriedThreadSnapshot?.messages.data.length ?? null,
       queriedEventsLength: queriedThreadSnapshot?.events.data.length ?? null,
+      snapshotKey: seedDecision.snapshotKey,
+      lastAppliedSnapshotKey,
+      seedReason: seedDecision.reason,
+      shouldApplySnapshot: seedDecision.shouldApply,
     });
 
     if (threadChanged) {
       prevSeedThreadRef.current = selectedThreadId;
-      if (!queriedThreadSnapshot || !selectedThreadId) {
-        if (selectedThreadId) {
-          seededSnapshotKeyByThreadRef.current.delete(selectedThreadId);
-        }
-        setMessages([]);
-        setEvents([]);
-        return;
-      }
+    }
 
-      applySnapshotSeed({
-        snapshot: queriedThreadSnapshot,
+    if (!selectedThreadId) {
+      debugLog("useChatSession", "seed snapshot skipped", {
         selectedThreadId,
-        selectedWorktreeId,
-        setMessages,
-        setEvents,
-        setThreads,
-        setHasMoreOlderMessages,
-        setHasMoreOlderEvents,
-        nextBeforeSeqByThreadRef,
-        nextBeforeIdxByThreadRef,
-        seenEventIdsByThreadRef,
-        lastEventIdxByThreadRef,
-        activeThreadIdRef,
-        onBranchRenamed,
+        reason: "no-thread-or-snapshot",
+        snapshotKey: seedDecision.snapshotKey,
       });
-      seededSnapshotKeyByThreadRef.current.set(
-        selectedThreadId,
-        buildAutoBackfillSnapshotKey(queriedThreadSnapshot),
-      );
+      setMessages([]);
+      setEvents([]);
       return;
     }
 
-    if (!queriedThreadSnapshot || !selectedThreadId) return;
+    if (!queriedThreadSnapshot || seedDecision.snapshotKey == null) {
+      if (threadChanged) {
+        seededSnapshotKeyByThreadRef.current.delete(selectedThreadId);
+        lastAppliedSnapshotKeyByThreadRef.current.delete(selectedThreadId);
+        debugLog("useChatSession", "seed snapshot skipped", {
+          selectedThreadId,
+          reason: "no-thread-or-snapshot-thread-changed",
+          snapshotKey: seedDecision.snapshotKey,
+        });
+        setMessages([]);
+        setEvents([]);
+      } else {
+        debugLog("useChatSession", "seed snapshot skipped", {
+          selectedThreadId,
+          reason: "no-thread-or-snapshot-preserve-current-thread",
+          snapshotKey: seedDecision.snapshotKey,
+        });
+      }
+      return;
+    }
+
+    if (!seedDecision.shouldApply) {
+      seededSnapshotKeyByThreadRef.current.set(selectedThreadId, seedDecision.snapshotKey);
+      debugLog("useChatSession", "seed snapshot skipped", {
+        selectedThreadId,
+        reason: seedDecision.reason,
+        snapshotKey: seedDecision.snapshotKey,
+      });
+      return;
+    }
 
     applySnapshotSeed({
       snapshot: queriedThreadSnapshot,
@@ -666,24 +897,58 @@ export function useChatSession(
       activeThreadIdRef,
       onBranchRenamed,
     });
-    seededSnapshotKeyByThreadRef.current.set(
+    seededSnapshotKeyByThreadRef.current.set(selectedThreadId, seedDecision.snapshotKey);
+    lastAppliedSnapshotKeyByThreadRef.current.set(selectedThreadId, seedDecision.snapshotKey);
+    debugLog("useChatSession", "seed snapshot applied", {
       selectedThreadId,
-      buildAutoBackfillSnapshotKey(queriedThreadSnapshot),
-    );
+      reason: seedDecision.reason,
+      snapshotKey: seedDecision.snapshotKey,
+      previousSnapshotKey: lastAppliedSnapshotKey,
+    });
   }, [onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId]);
 
   useEffect(() => {
     if (!selectedThreadId) {
       seededSnapshotKeyByThreadRef.current.clear();
+      lastAppliedSnapshotKeyByThreadRef.current.clear();
       autoBackfillRunTokenByThreadRef.current.clear();
+      lastAutoBackfillLaunchKeyByThreadRef.current.clear();
+      autoBackfillInFlightLaunchKeyByThreadRef.current.clear();
+      autoBackfillLaunchCountByThreadRef.current.clear();
+      autoBackfillLaunchSnapshotKeyByThreadRef.current.clear();
+      autoBackfillLastLaunchConsumptionReasonByThreadRef.current.clear();
+      autoBackfillEffectSignatureRef.current = null;
+      resetSemanticHydrationGate({
+        threadId: null,
+        reason: "thread-cleared",
+      });
       return;
     }
 
     return () => {
-      seededSnapshotKeyByThreadRef.current.delete(selectedThreadId);
-      autoBackfillRunTokenByThreadRef.current.delete(selectedThreadId);
+      clearThreadTrackingState(selectedThreadId);
+      resetSemanticHydrationGate({
+        threadId: selectedThreadId,
+        reason: "thread-switched",
+      });
     };
-  }, [selectedThreadId]);
+  }, [selectedThreadId, resetSemanticHydrationGate]);
+
+  function clearThreadTrackingState(threadId: string) {
+    seenEventIdsByThreadRef.current.delete(threadId);
+    lastEventIdxByThreadRef.current.delete(threadId);
+    nextBeforeSeqByThreadRef.current.delete(threadId);
+    nextBeforeIdxByThreadRef.current.delete(threadId);
+    loggedOrphanEventIdsByThreadRef.current.delete(threadId);
+    seededSnapshotKeyByThreadRef.current.delete(threadId);
+    lastAppliedSnapshotKeyByThreadRef.current.delete(threadId);
+    autoBackfillRunTokenByThreadRef.current.delete(threadId);
+    lastAutoBackfillLaunchKeyByThreadRef.current.delete(threadId);
+    autoBackfillInFlightLaunchKeyByThreadRef.current.delete(threadId);
+    autoBackfillLaunchCountByThreadRef.current.delete(threadId);
+    autoBackfillLaunchSnapshotKeyByThreadRef.current.delete(threadId);
+    autoBackfillLastLaunchConsumptionReasonByThreadRef.current.delete(threadId);
+  }
 
   function ensureSeenEventIds(threadId: string): Set<string> {
     const existing = seenEventIdsByThreadRef.current.get(threadId);
@@ -734,11 +999,13 @@ export function useChatSession(
       setWaitingAssistant(null);
       setHasMoreOlderMessages(false);
       setHasMoreOlderEvents(false);
+      loadingOlderHistoryRef.current = false;
       setLoadingOlderHistory(false);
       setStoppingThreadId(null);
       setStopRequestedThreadId(null);
       streamingMessageIdsRef.current = new Set();
       stickyRawFallbackMessageIdsRef.current = new Set();
+      loggedFirstInsertOrderByMessageIdRef.current = new Set();
       setMessages([]);
       setEvents([]);
       return;
@@ -747,9 +1014,11 @@ export function useChatSession(
     streamingMessageIdsRef.current = new Set();
     stickyRawFallbackMessageIdsRef.current = new Set();
     renderDecisionByMessageIdRef.current = new Map();
+    loggedFirstInsertOrderByMessageIdRef.current = new Set();
     setWaitingAssistant(null);
     setHasMoreOlderMessages(nextBeforeSeqByThreadRef.current.get(selectedThreadId) != null);
     setHasMoreOlderEvents(nextBeforeIdxByThreadRef.current.get(selectedThreadId) != null);
+    loadingOlderHistoryRef.current = false;
     setLoadingOlderHistory(false);
     setStoppingThreadId(null);
     setStopRequestedThreadId(null);
@@ -1166,21 +1435,13 @@ export function useChatSession(
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
       }
       // Prune tracking refs for the deleted thread
-      seenEventIdsByThreadRef.current.delete(threadId);
-      lastEventIdxByThreadRef.current.delete(threadId);
-      nextBeforeSeqByThreadRef.current.delete(threadId);
-      nextBeforeIdxByThreadRef.current.delete(threadId);
-      loggedOrphanEventIdsByThreadRef.current.delete(threadId);
+      clearThreadTrackingState(threadId);
       // Prune stale entries if tracking refs grow too large
       if (seenEventIdsByThreadRef.current.size > 10) {
         const activeThreadIds = new Set(threads.map(t => t.id));
         for (const key of [...seenEventIdsByThreadRef.current.keys()]) {
           if (!activeThreadIds.has(key)) {
-            seenEventIdsByThreadRef.current.delete(key);
-            lastEventIdxByThreadRef.current.delete(key);
-            nextBeforeSeqByThreadRef.current.delete(key);
-            nextBeforeIdxByThreadRef.current.delete(key);
-            loggedOrphanEventIdsByThreadRef.current.delete(key);
+            clearThreadTrackingState(key);
           }
         }
       }
@@ -1223,6 +1484,7 @@ export function useChatSession(
   // ── Chat actions ──
 
   async function submitMessage(content?: string, messageAttachments?: PendingAttachment[]) {
+    const shouldInvalidateSnapshot = shouldInvalidateSnapshotImmediatelyAfterSubmit();
     const messageContent = content ?? chatInput;
     const attachmentsToSend: AttachmentInput[] = (messageAttachments ?? pendingAttachments).map((att) => ({
       id: att.id,
@@ -1245,10 +1507,15 @@ export function useChatSession(
 
     try {
       await api.sendMessage(selectedThreadId, { content: messageContent, mode: chatMode, attachments: attachmentsToSend });
-      debugLog("useChatSession", "submitMessage ack", { selectedThreadId });
+      debugLog("useChatSession", "submitMessage ack", {
+        selectedThreadId,
+        shouldInvalidateSnapshot,
+      });
       setChatInput("");
       setPendingAttachments([]);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(selectedThreadId) });
+      if (shouldInvalidateSnapshot) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(selectedThreadId) });
+      }
     } catch (e) {
       debugLog("useChatSession", "submitMessage failed", {
         selectedThreadId,
@@ -1263,7 +1530,17 @@ export function useChatSession(
   }
 
   const loadOlderHistory = useCallback(async (metadata?: LoadOlderHistoryRequestMetadata): Promise<LoadOlderHistoryResult | void> => {
-    if (!selectedThreadId || loadingOlderHistory) return;
+    if (!selectedThreadId) return;
+
+    if (loadingOlderHistoryRef.current) {
+      debugLog("useChatSession", "loadOlderHistory reentry skipped", {
+        threadId: selectedThreadId,
+        cycleId: metadata?.cycleId ?? null,
+        requestId: metadata?.requestId ?? null,
+        source: metadata?.source ?? "manual",
+      });
+      return;
+    }
 
     const threadId = selectedThreadId;
     const beforeSeq = nextBeforeSeqByThreadRef.current.get(threadId) ?? null;
@@ -1272,6 +1549,8 @@ export function useChatSession(
     loadOlderRequestCounterRef.current = requestNumber;
     const cycleId = metadata?.cycleId ?? null;
     const requestId = metadata?.requestId ?? `load-older-${threadId}-${requestNumber}`;
+    const source = metadata?.source ?? "manual";
+    const eventsLimit = metadata?.eventsLimitOverride ?? INITIAL_EVENTS_PAGE_LIMIT;
 
     if (beforeSeq == null && beforeIdx == null) {
       setHasMoreOlderMessages(false);
@@ -1280,6 +1559,7 @@ export function useChatSession(
         threadId,
         cycleId,
         requestId,
+        source,
       });
       return {
         cycleId,
@@ -1288,12 +1568,33 @@ export function useChatSession(
         messagesAdded: 0,
         eventsAdded: 0,
         estimatedRenderableGrowth: false,
+        source,
+        semanticBoundaryDetected: false,
+        semanticBoundary: null,
       };
     }
 
+    const semanticHydrationGateMetadata: SemanticHydrationGateMetadata = {
+      threadId,
+      reason: "load-older-history",
+      source,
+      cycleId,
+      requestId,
+    };
+
+    openSemanticHydrationGate(semanticHydrationGateMetadata);
+    loadingOlderHistoryRef.current = true;
     setLoadingOlderHistory(true);
     onError(null);
-    debugLog("useChatSession", "loadOlderHistory start", { threadId, beforeSeq, beforeIdx, cycleId, requestId });
+    debugLog("useChatSession", "loadOlderHistory start", {
+      threadId,
+      beforeSeq,
+      beforeIdx,
+      cycleId,
+      requestId,
+      source,
+      eventsLimit,
+    });
 
     try {
       const [messagesPage, eventsPage] = await Promise.all([
@@ -1307,9 +1608,14 @@ export function useChatSession(
           ? Promise.resolve<ChatEventsPage | null>(null)
           : api.listEventsPage(threadId, {
             beforeIdx,
-            limit: INITIAL_EVENTS_PAGE_LIMIT,
+            limit: eventsLimit,
           }),
       ]);
+
+      const semanticBoundary = eventsPage
+        ? detectSemanticBoundaryFromEvents(eventsPage.data)
+        : null;
+      const semanticBoundaryDetected = semanticBoundary != null;
 
       if (selectedThreadId !== threadId) {
         debugLog("useChatSession", "loadOlderHistory skipped thread changed", {
@@ -1317,6 +1623,7 @@ export function useChatSession(
           selectedThreadId,
           cycleId,
           requestId,
+          source,
         });
         return {
           cycleId,
@@ -1325,6 +1632,9 @@ export function useChatSession(
           messagesAdded: 0,
           eventsAdded: 0,
           estimatedRenderableGrowth: false,
+          source,
+          semanticBoundaryDetected,
+          semanticBoundary,
         };
       }
 
@@ -1355,12 +1665,19 @@ export function useChatSession(
         threadId,
         cycleId,
         requestId,
+        source,
+        eventsLimit,
         messagesPageCount: messagesAdded,
         eventsPageCount: eventsAdded,
         nextBeforeSeq: messagesPage?.pageInfo.nextBeforeSeq ?? null,
         nextBeforeIdx: eventsPage?.pageInfo.nextBeforeIdx ?? null,
         hasMoreOlderMessages: messagesPage?.pageInfo.hasMoreOlder ?? false,
         hasMoreOlderEvents: eventsPage?.pageInfo.hasMoreOlder ?? false,
+        semanticBoundaryDetected,
+        semanticBoundaryKind: semanticBoundary?.kind ?? null,
+        semanticBoundaryEventId: semanticBoundary?.eventId ?? null,
+        semanticBoundaryEventIdx: semanticBoundary?.eventIdx ?? null,
+        semanticBoundaryEventType: semanticBoundary?.eventType ?? null,
       });
 
       if (messagesPage) {
@@ -1368,6 +1685,7 @@ export function useChatSession(
           threadId,
           cycleId,
           requestId,
+          source,
           incomingCount: messagesAdded,
         });
       }
@@ -1377,6 +1695,7 @@ export function useChatSession(
           threadId,
           cycleId,
           requestId,
+          source,
           incomingCount: eventsAdded,
         });
       }
@@ -1395,15 +1714,20 @@ export function useChatSession(
         messagesAdded,
         eventsAdded,
         estimatedRenderableGrowth: messagesAdded > 0 || eventsAdded > 0,
+        source,
+        semanticBoundaryDetected,
+        semanticBoundary,
       };
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to load older history");
       throw e;
     } finally {
-      debugLog("useChatSession", "loadOlderHistory end", { threadId, cycleId, requestId });
+      debugLog("useChatSession", "loadOlderHistory end", { threadId, cycleId, requestId, source });
+      loadingOlderHistoryRef.current = false;
       setLoadingOlderHistory(false);
+      closeSemanticHydrationGate(semanticHydrationGateMetadata);
     }
-  }, [loadingOlderHistory, onError, selectedThreadId]);
+  }, [closeSemanticHydrationGate, onError, openSemanticHydrationGate, selectedThreadId]);
 
   async function stopAssistantRun() {
     if (!selectedThreadId) return;
@@ -1470,48 +1794,182 @@ export function useChatSession(
     stickyRawFallbackMessageIds: stickyRawFallbackMessageIdsRef.current,
     renderDecisionByMessageId: renderDecisionByMessageIdRef.current,
     loggedOrphanEventIdsByThread: loggedOrphanEventIdsByThreadRef.current,
+    loggedFirstInsertOrderByMessageId: loggedFirstInsertOrderByMessageIdRef.current,
   });
   timelineRefsRef.current.streamingMessageIds = streamingMessageIdsRef.current;
   timelineRefsRef.current.stickyRawFallbackMessageIds = stickyRawFallbackMessageIdsRef.current;
   timelineRefsRef.current.renderDecisionByMessageId = renderDecisionByMessageIdRef.current;
   timelineRefsRef.current.loggedOrphanEventIdsByThread = loggedOrphanEventIdsByThreadRef.current;
+  timelineRefsRef.current.loggedFirstInsertOrderByMessageId = loggedFirstInsertOrderByMessageIdRef.current;
 
   const {
     items: timelineItems,
     hasIncompleteCoverage: timelineHasIncompleteCoverage,
-  } = useWorkspaceTimeline(messages, events, selectedThreadId, timelineRefsRef.current);
-
-  const loadingOlderHistoryRef = useRef(false);
-  loadingOlderHistoryRef.current = loadingOlderHistory;
+  } = useWorkspaceTimeline(messages, events, selectedThreadId, timelineRefsRef.current, {
+    semanticHydrationInProgress,
+  });
 
   const timelineIncompleteCoverageRef = useRef(false);
   timelineIncompleteCoverageRef.current = timelineHasIncompleteCoverage;
 
+  const shouldAutoBackfillNow = useCallback(() => {
+    if (!selectedThreadId || !queriedThreadSnapshot) {
+      return false;
+    }
+    if (hydrationBackfillPolicy !== "auto") {
+      return false;
+    }
+    return shouldAutoBackfillOnHydration(queriedThreadSnapshot, timelineIncompleteCoverageRef.current);
+  }, [hydrationBackfillPolicy, queriedThreadSnapshot, selectedThreadId]);
+
+  const loadOlderHistoryFnRef = useRef(loadOlderHistory);
+  loadOlderHistoryFnRef.current = loadOlderHistory;
+
   useEffect(() => {
     if (!selectedThreadId || !queriedThreadSnapshot) {
-      return;
-    }
-
-    const shouldAutoBackfill = shouldAutoBackfillOnHydration(queriedThreadSnapshot, timelineHasIncompleteCoverage);
-    if (!shouldAutoBackfill) {
-      return;
-    }
-
-    if (loadingOlderHistoryRef.current) {
+      autoBackfillEffectSignatureRef.current = null;
       return;
     }
 
     const coverage = queriedThreadSnapshot.coverage;
-    const initialBeforeIdx = nextBeforeIdxByThreadRef.current.get(selectedThreadId) ?? coverage.nextBeforeIdx ?? null;
-    if (initialBeforeIdx == null) {
+    const snapshotKey = buildAutoBackfillSnapshotKey(queriedThreadSnapshot);
+    const lastSignature = autoBackfillEffectSignatureRef.current;
+    const trigger: "initial-run" | "snapshot-key-change" | "timeline-incomplete-change" = lastSignature == null
+      ? "initial-run"
+      : lastSignature.threadId !== selectedThreadId || lastSignature.snapshotKey !== snapshotKey
+        ? "snapshot-key-change"
+        : "timeline-incomplete-change";
+    autoBackfillEffectSignatureRef.current = {
+      threadId: selectedThreadId,
+      snapshotKey,
+      timelineIncompleteCoverage: timelineHasIncompleteCoverage,
+    };
+
+    const launchKey = buildAutoBackfillLaunchKey({
+      snapshotKey,
+      coverageNextBeforeIdx: coverage.nextBeforeIdx,
+      timelineHasIncompleteCoverage,
+    });
+    const inFlightLaunchKey = autoBackfillInFlightLaunchKeyByThreadRef.current.get(selectedThreadId) ?? null;
+    const lastLaunchKey = lastAutoBackfillLaunchKeyByThreadRef.current.get(selectedThreadId) ?? null;
+
+    debugLog("useChatSession", "autoBackfill effect cycle", {
+      threadId: selectedThreadId,
+      snapshotKey,
+      launchKey,
+      coverageNextBeforeIdx: coverage.nextBeforeIdx,
+      timelineIncompleteCoverage: timelineHasIncompleteCoverage,
+      loadingOlderHistoryRef: loadingOlderHistoryRef.current,
+      inFlightLaunchKey,
+      lastLaunchKey,
+      selectedThreadId,
+      trigger,
+      reason: trigger,
+    });
+
+    const shouldAutoBackfill = shouldAutoBackfillOnHydration(
+      queriedThreadSnapshot,
+      timelineHasIncompleteCoverage,
+    );
+
+    if (!shouldAutoBackfill) {
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: "timeline-complete",
+        hydrationBackfillPolicy,
+      });
       return;
     }
 
-    const snapshotKey = buildAutoBackfillSnapshotKey(queriedThreadSnapshot);
-    const lastSeededSnapshotKey = seededSnapshotKeyByThreadRef.current.get(selectedThreadId) ?? null;
-    if (lastSeededSnapshotKey !== snapshotKey) {
+    if (hydrationBackfillPolicy !== "auto") {
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: "policy-manual",
+        hydrationBackfillPolicy,
+        coverageEventsStatus: coverage.eventsStatus,
+        coverageRecommendedBackfill: coverage.recommendedBackfill,
+        coverageNextBeforeIdx: coverage.nextBeforeIdx,
+        timelineIncompleteCoverage: timelineHasIncompleteCoverage,
+      });
       return;
     }
+
+    if (loadingOlderHistoryRef.current) {
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: "loading-older-history",
+        hydrationBackfillPolicy,
+      });
+      return;
+    }
+
+    const launchBeforeIdx = nextBeforeIdxByThreadRef.current.get(selectedThreadId) ?? coverage.nextBeforeIdx ?? null;
+    if (launchBeforeIdx == null) {
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: "empty-cursors",
+        hydrationBackfillPolicy,
+      });
+      return;
+    }
+
+    const useBoundedLargeGapMode = !timelineHasIncompleteCoverage && launchBeforeIdx > AUTO_HYDRATION_MAX_INITIAL_GAP;
+    const stopOnSemanticBoundary = useBoundedLargeGapMode;
+    const eventsLimitOverride = useBoundedLargeGapMode ? AUTO_HYDRATION_LARGE_GAP_EVENTS_LIMIT : undefined;
+    const maxPages = useBoundedLargeGapMode ? AUTO_HYDRATION_LARGE_GAP_MAX_PAGES : AUTO_BACKFILL_MAX_PAGES;
+
+    const lastSeededSnapshotKey = seededSnapshotKeyByThreadRef.current.get(selectedThreadId) ?? null;
+    if (lastSeededSnapshotKey !== snapshotKey) {
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: "snapshot-not-seeded-yet",
+        hydrationBackfillPolicy,
+        snapshotKey,
+        lastSeededSnapshotKey,
+      });
+      return;
+    }
+
+    if (inFlightLaunchKey === launchKey) {
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: "launch-key-in-flight",
+        hydrationBackfillPolicy,
+        launchKey,
+      });
+      return;
+    }
+
+    if (lastLaunchKey === launchKey) {
+      const consumedReason = autoBackfillLastLaunchConsumptionReasonByThreadRef.current.get(selectedThreadId) ?? null;
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: consumedReason === "productive-abort"
+          ? "same-launch-key-after-productive-abort"
+          : "same-launch-key",
+        hydrationBackfillPolicy,
+        launchKey,
+      });
+      return;
+    }
+
+    const previousLaunchSnapshotKey = autoBackfillLaunchSnapshotKeyByThreadRef.current.get(selectedThreadId) ?? null;
+    const previousLaunchCount = autoBackfillLaunchCountByThreadRef.current.get(selectedThreadId) ?? 0;
+    const nextLaunchCount = previousLaunchSnapshotKey === snapshotKey ? previousLaunchCount + 1 : 1;
+    autoBackfillLaunchCountByThreadRef.current.set(selectedThreadId, nextLaunchCount);
+    autoBackfillLaunchSnapshotKeyByThreadRef.current.set(selectedThreadId, snapshotKey);
+    if (nextLaunchCount > AUTO_BACKFILL_MAX_LAUNCHES_PER_THREAD) {
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: "launch-cap-reached",
+        hydrationBackfillPolicy,
+        launchKey,
+        launchCount: nextLaunchCount,
+      });
+      return;
+    }
+
+    autoBackfillInFlightLaunchKeyByThreadRef.current.set(selectedThreadId, launchKey);
 
     const nextToken = (autoBackfillRunTokenByThreadRef.current.get(selectedThreadId) ?? 0) + 1;
     autoBackfillRunTokenByThreadRef.current.set(selectedThreadId, nextToken);
@@ -1523,52 +1981,142 @@ export function useChatSession(
 
     let cancelled = false;
 
+    const semanticHydrationGateMetadata: SemanticHydrationGateMetadata = {
+      threadId: selectedThreadId,
+      reason: "auto-backfill",
+      source: "auto-backfill",
+      cycleId,
+      launchKey,
+    };
+
     void (async () => {
-      debugLog("useChatSession", "autoBackfill start", {
+      openSemanticHydrationGate(semanticHydrationGateMetadata);
+      debugLog("useChatSession", "autoBackfill launch", {
         threadId: selectedThreadId,
         cycleId,
+        launchKey,
+        snapshotKey,
+        launchBeforeIdx,
+        hydrationBackfillPolicy,
         coverageEventsStatus: coverage.eventsStatus,
         coverageRecommendedBackfill: coverage.recommendedBackfill,
+        coverageNextBeforeIdx: coverage.nextBeforeIdx,
         timelineIncompleteCoverage: timelineHasIncompleteCoverage,
-        initialBeforeIdx,
+        launchCount: nextLaunchCount,
+        boundedLargeGapMode: useBoundedLargeGapMode,
+        stopOnSemanticBoundary,
+        maxPages,
+        eventsLimitOverride: eventsLimitOverride ?? null,
       });
 
       const outcome = await runAutoBackfillLoop({
-        maxPages: AUTO_BACKFILL_MAX_PAGES,
+        maxPages,
         shouldAbort: () => {
           const activeToken = autoBackfillRunTokenByThreadRef.current.get(selectedThreadId) ?? 0;
           return cancelled || activeToken !== nextToken || activeThreadIdRef.current !== selectedThreadId;
         },
         isLoadingOlderHistory: () => loadingOlderHistoryRef.current,
+        isAutoBackfillAllowed: shouldAutoBackfillNow,
+        stopOnSemanticBoundary,
         getBeforeIdx: () => nextBeforeIdxByThreadRef.current.get(selectedThreadId) ?? null,
-        loadOlderHistoryPage: (pageNumber) => loadOlderHistory({
+        loadOlderHistoryPage: (pageNumber) => loadOlderHistoryFnRef.current({
           cycleId,
           requestId: `${cyclePrefix}-page-${pageNumber}`,
+          source: "auto-hydration",
+          eventsLimitOverride,
         }),
         isTimelineIncomplete: () => timelineIncompleteCoverageRef.current,
       });
 
-      debugLog("useChatSession", `autoBackfill stop ${outcome.stopReason}`, {
+      const treatAsConsumedLaunch = outcome.stopReason !== "abort" || outcome.pagesLoaded > 0;
+      if (treatAsConsumedLaunch) {
+        lastAutoBackfillLaunchKeyByThreadRef.current.set(selectedThreadId, launchKey);
+      }
+
+      const consumedReason = outcome.stopReason === "abort" && outcome.pagesLoaded > 0
+        ? "productive-abort"
+        : outcome.stopReason === "abort"
+          ? "non-productive-abort"
+          : "normal-stop";
+
+      if (treatAsConsumedLaunch && consumedReason === "productive-abort") {
+        autoBackfillLastLaunchConsumptionReasonByThreadRef.current.set(selectedThreadId, "productive-abort");
+      } else if (outcome.stopReason !== "abort") {
+        autoBackfillLastLaunchConsumptionReasonByThreadRef.current.set(selectedThreadId, "normal-stop");
+      }
+
+      if (outcome.stopReason === "abort") {
+        debugLog("useChatSession", "autoBackfill abort handling", {
+          threadId: selectedThreadId,
+          launchKey,
+          pagesLoaded: outcome.pagesLoaded,
+          eventsAddedTotal: null,
+          treatAsConsumedLaunch,
+          consumedReason,
+        });
+      }
+
+      debugLog("useChatSession", "autoBackfill stop", {
         threadId: selectedThreadId,
         cycleId,
+        launchKey,
+        snapshotKey,
+        hydrationBackfillPolicy,
+        stopReason: outcome.stopReason,
         pagesLoaded: outcome.pagesLoaded,
+        semanticBoundaryKind: outcome.semanticBoundary?.kind ?? null,
+        semanticBoundaryEventId: outcome.semanticBoundary?.eventId ?? null,
+        semanticBoundaryEventIdx: outcome.semanticBoundary?.eventIdx ?? null,
+        semanticBoundaryEventType: outcome.semanticBoundary?.eventType ?? null,
       });
 
       debugLog("useChatSession", "autoBackfill end", {
         threadId: selectedThreadId,
         cycleId,
+        launchKey,
+        hydrationBackfillPolicy,
         pagesLoaded: outcome.pagesLoaded,
       });
-    })();
+    })().finally(() => {
+      const currentInFlightLaunchKey = autoBackfillInFlightLaunchKeyByThreadRef.current.get(selectedThreadId) ?? null;
+      if (currentInFlightLaunchKey === launchKey) {
+        autoBackfillInFlightLaunchKeyByThreadRef.current.delete(selectedThreadId);
+      }
+      closeSemanticHydrationGate(semanticHydrationGateMetadata);
+    });
 
     return () => {
+      const activeThreadId = activeThreadIdRef.current;
+      const cleanupReason: "dependency-rerun" | "thread-switch" | "unmount" = activeThreadId == null
+        ? "unmount"
+        : activeThreadId !== selectedThreadId
+          ? "thread-switch"
+          : "dependency-rerun";
+      const tokenBefore = autoBackfillRunTokenByThreadRef.current.get(selectedThreadId) ?? 0;
       cancelled = true;
       const currentToken = autoBackfillRunTokenByThreadRef.current.get(selectedThreadId) ?? 0;
       if (currentToken === nextToken) {
         autoBackfillRunTokenByThreadRef.current.set(selectedThreadId, nextToken + 1);
       }
+      const tokenAfter = autoBackfillRunTokenByThreadRef.current.get(selectedThreadId) ?? 0;
+      debugLog("useChatSession", "autoBackfill effect cleanup", {
+        threadId: selectedThreadId,
+        launchKey,
+        tokenBefore,
+        tokenAfter,
+        cancelled,
+        cleanupReason,
+      });
     };
-  }, [queriedThreadSnapshot, selectedThreadId, timelineHasIncompleteCoverage]);
+  }, [
+    closeSemanticHydrationGate,
+    hydrationBackfillPolicy,
+    openSemanticHydrationGate,
+    queriedThreadSnapshot,
+    selectedThreadId,
+    shouldAutoBackfillNow,
+    timelineHasIncompleteCoverage,
+  ]);
 
   return {
     threads,
@@ -1591,6 +2139,7 @@ export function useChatSession(
     stoppingRun,
     hasOlderHistory,
     loadingOlderHistory,
+    semanticHydrationInProgress,
 
     timelineItems,
 

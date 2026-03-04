@@ -3,6 +3,7 @@ import type { ActivityTraceStep } from "../../components/workspace/ChatMessageLi
 import {
   EXPLORE_BASH_COMMAND_PATTERN,
   FILE_PATH_PATTERN,
+  INLINE_TOOL_EVENT_TYPES,
   MCP_TOOL_PATTERN,
   READ_PROMPT_PATTERN,
   READ_TOOL_PATTERN,
@@ -10,6 +11,15 @@ import {
   TRIM_FILE_TOKEN_PATTERN,
 } from "./constants";
 import type { StepCandidate } from "./types";
+
+export type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "bash-command" | "edited-diff" | "explore-activity" | "fallback-tool";
+
+export type SemanticBoundary = {
+  kind: SemanticBoundaryKind;
+  eventId: string;
+  eventIdx: number;
+  eventType: ChatEvent["type"];
+};
 
 // ── Payload helpers ──
 
@@ -516,4 +526,94 @@ export function finishedToolUseIds(event: ChatEvent): string[] {
   }
 
   return [`finished:${event.id}`];
+}
+
+export function detectSemanticBoundaryFromEvents(events: ChatEvent[]): SemanticBoundary | null {
+  const ordered = [...events].sort((a, b) => a.idx - b.idx);
+
+  for (const event of ordered) {
+    if (isMetadataToolEvent(event)) {
+      continue;
+    }
+
+    if (event.type === "plan.created" && isClaudePlanFilePayload(event.payload)) {
+      return {
+        kind: "plan-file-output",
+        eventId: event.id,
+        eventIdx: event.idx,
+        eventType: event.type,
+      };
+    }
+
+    if (event.type === "subagent.started" || event.type === "subagent.finished") {
+      return {
+        kind: "subagent-activity",
+        eventId: event.id,
+        eventIdx: event.idx,
+        eventType: event.type,
+      };
+    }
+
+    if (!INLINE_TOOL_EVENT_TYPES.has(event.type)) {
+      continue;
+    }
+
+    if (event.type === "chat.failed") {
+      continue;
+    }
+
+    if (event.type === "permission.requested" || event.type === "permission.resolved") {
+      continue;
+    }
+
+    if (event.type === "question.requested" || event.type === "question.answered" || event.type === "question.dismissed") {
+      continue;
+    }
+
+    if (event.type === "plan.approved" || event.type === "plan.revision_requested") {
+      continue;
+    }
+
+    if (isPlanModeToolEvent(event)) {
+      continue;
+    }
+
+    if (isWorktreeDiffEvent(event)) {
+      return {
+        kind: "edited-diff",
+        eventId: event.id,
+        eventIdx: event.idx,
+        eventType: event.type,
+      };
+    }
+
+    if (isBashToolEvent(event)) {
+      return {
+        kind: "bash-command",
+        eventId: event.id,
+        eventIdx: event.idx,
+        eventType: event.type,
+      };
+    }
+
+    if (isExploreLikeBashEvent(event) || isReadToolEvent(event) || isSearchToolEvent(event)) {
+      return {
+        kind: "explore-activity",
+        eventId: event.id,
+        eventIdx: event.idx,
+        eventType: event.type,
+      };
+    }
+
+    if (event.type === "tool.started" || event.type === "tool.output" || event.type === "tool.finished") {
+      return {
+        kind: "fallback-tool",
+        eventId: event.id,
+        eventIdx: event.idx,
+        eventType: event.type,
+      };
+    }
+  }
+
+  return null;
 }

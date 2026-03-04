@@ -40,6 +40,7 @@ import {
 } from "../textUtils";
 import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types";
 import { pushRenderDebug } from "../../../lib/renderDebug";
+import { debugLog } from "../../../lib/debugLog";
 import { logService } from "../../../lib/logService";
 
 // ── Hoisted RegExp constants for subagent/plan summary markers ──
@@ -53,11 +54,16 @@ export type TimelineRefs = {
   stickyRawFallbackMessageIds: Set<string>;
   renderDecisionByMessageId: Map<string, string>;
   loggedOrphanEventIdsByThread: Map<string, Set<string>>;
+  loggedFirstInsertOrderByMessageId: Set<string>;
 };
 
 export type WorkspaceTimelineResult = {
   items: ChatTimelineItem[];
   hasIncompleteCoverage: boolean;
+};
+
+export type UseWorkspaceTimelineOptions = {
+  semanticHydrationInProgress?: boolean;
 };
 
 export function computeMessageAnchorIdxById(
@@ -153,14 +159,28 @@ export function useWorkspaceTimeline(
   events: ChatEvent[],
   selectedThreadId: string | null,
   refs: TimelineRefs,
+  options?: UseWorkspaceTimelineOptions,
 ): WorkspaceTimelineResult {
   // Fast-path: skip full recomputation if the input fingerprint hasn't changed
-  const prevFingerprintRef = useRef<{ messageCount: number; eventCount: number; lastEventIdx: number; threadId: string | null } | null>(null);
+  const prevFingerprintRef = useRef<{
+    messageCount: number;
+    eventCount: number;
+    lastEventIdx: number;
+    threadId: string | null;
+    semanticHydrationInProgress: boolean;
+  } | null>(null);
   const prevResultRef = useRef<WorkspaceTimelineResult>({ items: [], hasIncompleteCoverage: false });
 
   return useMemo<WorkspaceTimelineResult>(() => {
+    const semanticHydrationInProgress = options?.semanticHydrationInProgress === true;
     const lastEventIdx = events.length > 0 ? events[events.length - 1].idx : -1;
-    const fingerprint = { messageCount: messages.length, eventCount: events.length, lastEventIdx, threadId: selectedThreadId };
+    const fingerprint = {
+      messageCount: messages.length,
+      eventCount: events.length,
+      lastEventIdx,
+      threadId: selectedThreadId,
+      semanticHydrationInProgress,
+    };
     const prev = prevFingerprintRef.current;
     if (
       prev !== null &&
@@ -168,6 +188,7 @@ export function useWorkspaceTimeline(
       prev.eventCount === fingerprint.eventCount &&
       prev.lastEventIdx === fingerprint.lastEventIdx &&
       prev.threadId === fingerprint.threadId &&
+      prev.semanticHydrationInProgress === fingerprint.semanticHydrationInProgress &&
       prevResultRef.current.items.length > 0
     ) {
       return prevResultRef.current;
@@ -347,7 +368,18 @@ export function useWorkspaceTimeline(
       || event.type === "thinking.delta",
     );
     const assistantDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
+    const thinkingDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
     for (const event of orderedEventsByIdx) {
+      if (event.type === "thinking.delta") {
+        const thinkingMessageId = getEventMessageId(event);
+        if (thinkingMessageId) {
+          const existingThinking = thinkingDeltaEventsByMessageId.get(thinkingMessageId) ?? [];
+          existingThinking.push(event);
+          thinkingDeltaEventsByMessageId.set(thinkingMessageId, existingThinking);
+        }
+        continue;
+      }
+
       if (event.type !== "message.delta" || event.payload.role !== "assistant") {
         continue;
       }
@@ -433,6 +465,7 @@ export function useWorkspaceTimeline(
     const assignedToolEventIds = new Set<string>();
     let hasEditedRunsWithDiffs = false;
     let hasIncompleteCoverage = false;
+    const oldestAssistantMessageId = sortedMessages.find((message) => message.role === "assistant")?.id ?? null;
 
     for (const message of sortedMessages) {
       const anchorIdx = messageAnchorIdxById.get(message.id) ?? message.seq;
@@ -458,6 +491,29 @@ export function useWorkspaceTimeline(
         && (assistantContextById.get(message.id)?.length ?? 0) > 0;
 
       const hasThinkingRounds = (thinkingRoundsByMessageId.get(message.id)?.length ?? 0) > 0;
+      const shouldGateBoundaryAssistantText =
+        semanticHydrationInProgress
+        && message.role === "assistant"
+        && oldestAssistantMessageId != null
+        && message.id === oldestAssistantMessageId
+        && message.content.trim().length > 0
+        && !hasToolEventsInContext
+        && !hasThinkingRounds
+        && !hasMessageDelta;
+      if (shouldGateBoundaryAssistantText) {
+        debugLog("useWorkspaceTimeline", "assistant-text-gated", {
+          threadId: selectedThreadId,
+          messageId: message.id,
+          oldestAssistantMessageId,
+          semanticHydrationInProgress,
+          hasToolEventsInContext,
+          hasThinkingRounds,
+          hasMessageDelta,
+          contentLength: message.content.length,
+        });
+        hasIncompleteCoverage = true;
+        continue;
+      }
 
       if (
         message.role === "assistant" &&
@@ -650,8 +706,11 @@ export function useWorkspaceTimeline(
       const deltaEventsForExplore = message.role === "assistant"
         ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
         : [];
-      const exploreContextWithDeltas = deltaEventsForExplore.length > 0
-        ? [...exploreContext, ...deltaEventsForExplore].sort((a, b) => a.idx - b.idx)
+      const thinkingEventsForExplore = message.role === "assistant"
+        ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
+        : [];
+      const exploreContextWithDeltas = (deltaEventsForExplore.length > 0 || thinkingEventsForExplore.length > 0)
+        ? [...exploreContext, ...thinkingEventsForExplore, ...deltaEventsForExplore].sort((a, b) => a.idx - b.idx)
         : exploreContext;
       const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(exploreContextWithDeltas) : [];
 
@@ -765,41 +824,60 @@ export function useWorkspaceTimeline(
           }
 
           // Second pass: absorb rounds that are mid-sentence continuations of the
-          // previous round back into it. When an inline insert boundary falls
-          // between the two rounds, only merge the leading sentence fragment
-          // (up to the first sentence boundary) rather than the entire round,
-          // to avoid pulling unrelated later thinking into the earlier block.
+          // previous round back into it. If an inline insert boundary exists
+          // between rounds, preserve separation by default; only merge a tightly
+          // bounded leading sentence fragment to avoid pulling unrelated thought
+          // across tool/explore boundaries.
+          const CROSS_BOUNDARY_FRAGMENT_CHAR_LIMIT = 180;
+          const CROSS_BOUNDARY_FRAGMENT_WORD_LIMIT = 24;
           for (let mi = mergedRounds.length - 1; mi >= 1; mi--) {
             const cur = mergedRounds[mi];
             const firstNonWs = cur.content.trimStart();
             if (firstNonWs.length === 0) continue;
             const ch = firstNonWs.charAt(0);
             const isContinuation = ch === ch.toLowerCase() && ch !== ch.toUpperCase();
-            if (isContinuation) {
-              const prev = mergedRounds[mi - 1];
-              const hasInsertBetween = insertStartIdxes.some(
-                b => b > prev.lastIdx && b <= cur.firstIdx,
-              );
-              if (hasInsertBetween) {
-                // Only merge the leading partial sentence across the boundary.
-                const sbp = new RegExp(SENTENCE_BOUNDARY_PATTERN.source, "g");
-                const match = sbp.exec(cur.content);
-                if (match) {
-                  const boundary = match.index + match[0].length;
-                  prev.content += cur.content.slice(0, boundary);
-                  cur.content = cur.content.slice(boundary);
-                } else {
-                  // No sentence boundary — it's just a small fragment, merge entirely
-                  prev.content += cur.content;
-                  prev.lastIdx = cur.lastIdx;
-                  mergedRounds.splice(mi, 1);
-                }
-              } else {
-                prev.content += cur.content;
-                prev.lastIdx = cur.lastIdx;
-                mergedRounds.splice(mi, 1);
-              }
+            if (!isContinuation) {
+              continue;
             }
+
+            const prev = mergedRounds[mi - 1];
+            const hasInsertBetween = insertStartIdxes.some(
+              b => b > prev.lastIdx && b <= cur.firstIdx,
+            );
+            if (hasInsertBetween) {
+              if (!hasSentenceBoundary(cur.content)) {
+                continue;
+              }
+
+              const split = splitAtFirstSentenceBoundary(cur.content);
+              if (!split) {
+                continue;
+              }
+
+              const leadingFragment = split.head.trim();
+              if (split.tail.length === 0) {
+                continue;
+              }
+              const leadingWords = leadingFragment.length > 0
+                ? leadingFragment.split(/\s+/).length
+                : 0;
+              const isTightlyBoundedFragment =
+                leadingFragment.length > 0
+                && leadingFragment.length <= CROSS_BOUNDARY_FRAGMENT_CHAR_LIMIT
+                && leadingWords <= CROSS_BOUNDARY_FRAGMENT_WORD_LIMIT;
+              if (!isTightlyBoundedFragment) {
+                continue;
+              }
+
+              prev.content += split.head;
+              prev.lastIdx = Math.max(prev.lastIdx, cur.firstIdx);
+              cur.content = split.tail;
+              continue;
+            }
+
+            prev.content += cur.content;
+            prev.lastIdx = cur.lastIdx;
+            mergedRounds.splice(mi, 1);
           }
         }
 
@@ -939,9 +1017,9 @@ export function useWorkspaceTimeline(
               createdAt: run.createdAt,
               run,
             })),
-          ...(hasInlineExploreRuns ? exploreActivityGroups.map((group, index) => ({
+          ...(hasInlineExploreRuns ? exploreActivityGroups.map((group) => ({
             kind: "explore-activity" as const,
-            id: `explore:${group.id}:${index}`,
+            id: group.id,
             startIdx: group.startIdx,
             anchorIdx: group.anchorIdx,
             createdAt: group.createdAt,
@@ -976,6 +1054,9 @@ export function useWorkspaceTimeline(
         });
 
         const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
+        const firstInlineInsert = inlineInserts[0] ?? null;
+        const firstInsertLogKey = `${selectedThreadId ?? "no-thread"}:${message.id}`;
+        let firstInsertOrderingLogged = false;
         const segmentBuckets = Array.from({ length: inlineInserts.length + 1 }, () => ({
           content: "",
           anchorIdx: null as number | null,
@@ -1172,7 +1253,7 @@ export function useWorkspaceTimeline(
           const fallbackAnchorIdx = inlineInserts.length > 0
             ? hasInlineSubagentRuns
               ? inlineInserts[inlineInserts.length - 1].startIdx + 1
-              : inlineInserts[0].startIdx - 1
+              : inlineInserts[0].startIdx + 1
             : anchorIdx;
           segmentBuckets[fallbackBucketIndex] = {
             content: cleanedContent,
@@ -1239,6 +1320,52 @@ export function useWorkspaceTimeline(
             break;
           }
         }
+
+        const logFirstInsertOrdering = (
+          decision: "tool-before-text" | "text-before-tool" | "delay-first-insert",
+          options?: {
+            bucketIndex?: number;
+            bucketAnchorIdx?: number | null;
+            splitHeadLength?: number;
+            splitTailLength?: number;
+          },
+        ) => {
+          if (!firstInlineInsert || firstInsertOrderingLogged) {
+            return;
+          }
+          if (refs.loggedFirstInsertOrderByMessageId.has(firstInsertLogKey)) {
+            firstInsertOrderingLogged = true;
+            return;
+          }
+
+          refs.loggedFirstInsertOrderByMessageId.add(firstInsertLogKey);
+          firstInsertOrderingLogged = true;
+
+          const firstNonEmptyBucketIndex = segmentBuckets.findIndex((bucket) => bucket.content.length > 0);
+          const firstNonEmptyBucket = firstNonEmptyBucketIndex >= 0
+            ? segmentBuckets[firstNonEmptyBucketIndex]
+            : null;
+
+          debugLog("useWorkspaceTimeline", "first-insert-ordering", {
+            threadId: selectedThreadId,
+            messageId: message.id,
+            decision,
+            firstInsertKind: firstInlineInsert.kind,
+            firstInsertId: firstInlineInsert.id,
+            firstInsertStartIdx: firstInlineInsert.startIdx,
+            firstInsertAnchorIdx: firstInlineInsert.anchorIdx,
+            firstNonEmptyBucketIndex,
+            firstNonEmptyBucketAnchorIdx: firstNonEmptyBucket?.anchorIdx ?? null,
+            firstNonEmptyBucketLength: firstNonEmptyBucket?.content.length ?? 0,
+            firstBucketAnchorIdx: segmentBuckets[0]?.anchorIdx ?? null,
+            hasAnyTrailingText,
+            firstInsertHasTrailingTextScenario: hasAnyTrailingText && segmentBuckets[0].content.length === 0,
+            bucketIndex: options?.bucketIndex ?? null,
+            bucketAnchorIdx: options?.bucketAnchorIdx ?? null,
+            splitHeadLength: options?.splitHeadLength ?? null,
+            splitTailLength: options?.splitTailLength ?? null,
+          });
+        };
 
         const hasLeadingText = segmentBuckets[0].content.length > 0;
         const hasAnyTrailingText = segmentBuckets.slice(1).some((bucket) => bucket.content.length > 0);
@@ -1357,7 +1484,7 @@ export function useWorkspaceTimeline(
           sortable.push({
             item: {
               kind: "explore-activity",
-              id: `${message.id}:${group.id}:${insert.id}`,
+              id: group.id,
               status: resolvedExploreStatus,
               fileCount: group.fileCount,
               searchCount: group.searchCount,
@@ -1435,6 +1562,10 @@ export function useWorkspaceTimeline(
               && nextInsertIndex === 0
               && isSentenceAwareInlineInsertKind(firstInsertKind)
             ) {
+              logFirstInsertOrdering("delay-first-insert", {
+                bucketIndex,
+                bucketAnchorIdx: bucket.anchorIdx,
+              });
               delayedFirstSegmentContent += bucket.content;
               delayedFirstSegmentAnchorIdx = delayedFirstSegmentAnchorIdx == null
                 ? bucket.anchorIdx
@@ -1510,20 +1641,29 @@ export function useWorkspaceTimeline(
             ) {
               const textIsAfterInsert = (bucket.anchorIdx ?? 0) > inlineInserts[0].startIdx;
               if (textIsAfterInsert) {
-                const preInsertAnchor = inlineInserts[0].startIdx - 0.5;
-                pushMessageSegment(bucket.content, `${bucketIndex}`, preInsertAnchor, bucket.timestamp);
+                logFirstInsertOrdering("tool-before-text", {
+                  bucketIndex,
+                  bucketAnchorIdx: bucket.anchorIdx,
+                });
                 pushInlineInsert(inlineInserts[0], bucket.timestamp);
+                pushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
                 nextInsertIndex = 1;
                 shouldDelayFirstInsert = false;
                 segmentRendered = true;
               } else {
                 const splitSegment = hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null;
                 if (splitSegment) {
+                  logFirstInsertOrdering("text-before-tool", {
+                    bucketIndex,
+                    bucketAnchorIdx: bucket.anchorIdx,
+                    splitHeadLength: splitSegment.head.length,
+                    splitTailLength: splitSegment.tail.length,
+                  });
                   pushMessageSegment(splitSegment.head, `${bucketIndex}:head`, bucket.anchorIdx, bucket.timestamp);
+                  pushInlineInsert(inlineInserts[0], bucket.timestamp);
                   if (splitSegment.tail.length > 0) {
                     pushMessageSegment(splitSegment.tail, `${bucketIndex}:tail`, inlineInserts[0].startIdx, bucket.timestamp);
                   }
-                  pushInlineInsert(inlineInserts[0], bucket.timestamp);
                   nextInsertIndex = 1;
                   shouldDelayFirstInsert = false;
                   segmentRendered = true;
@@ -1656,7 +1796,7 @@ export function useWorkspaceTimeline(
       sortable.push({
         item: {
           kind: "explore-activity",
-          id: `orphan:${group.id}`,
+          id: group.id,
           status: resolvedStatus,
           fileCount: group.fileCount,
           searchCount: group.searchCount,
@@ -1689,6 +1829,7 @@ export function useWorkspaceTimeline(
       hasIncompleteCoverage = true;
     }
 
+    let unassignedSemanticEvents: ChatEvent[] = [];
     if (messages.length > 0 && !hasIncompleteCoverage) {
       const assignedSemanticEventIds = new Set<string>(assignedToolEventIds);
       for (const [messageId, contextEvents] of assistantContextById.entries()) {
@@ -1704,10 +1845,70 @@ export function useWorkspaceTimeline(
           assignedSemanticEventIds.add(event.id);
         }
       }
+      for (const thinkingEvents of thinkingDeltaEventsByMessageId.values()) {
+        for (const event of thinkingEvents) {
+          assignedSemanticEventIds.add(event.id);
+        }
+      }
 
-      const unassignedSemanticEvents = semanticContextEvents.filter((event) => !assignedSemanticEventIds.has(event.id));
+      unassignedSemanticEvents = semanticContextEvents.filter((event) => !assignedSemanticEventIds.has(event.id));
       if (unassignedSemanticEvents.length > 0) {
         hasIncompleteCoverage = true;
+      }
+    }
+
+    if (messages.length > 0 && unassignedSemanticEvents.length > 0) {
+      const unresolvedAssistantMessageIds = new Set<string>();
+      for (const event of unassignedSemanticEvents) {
+        if (event.type !== "message.delta" && event.type !== "thinking.delta") {
+          continue;
+        }
+        const messageId = getEventMessageId(event);
+        if (!messageId) {
+          continue;
+        }
+        const hasMessage = sortedMessages.some((message) => message.id === messageId && message.role === "assistant");
+        if (!hasMessage) {
+          unresolvedAssistantMessageIds.add(messageId);
+        }
+      }
+
+      if (unresolvedAssistantMessageIds.size > 0) {
+        if (semanticHydrationInProgress) {
+          debugLog("useWorkspaceTimeline", "hydration-fallback-suppressed", {
+            threadId: selectedThreadId,
+            unresolvedMessageIds: Array.from(unresolvedAssistantMessageIds).sort(),
+            unresolvedMessageCount: unresolvedAssistantMessageIds.size,
+          });
+          hasIncompleteCoverage = true;
+        } else {
+          const firstAssistantMessage = sortedMessages.find((message) => message.role === "assistant") ?? null;
+          if (firstAssistantMessage) {
+            const firstAssistantAnchor = messageAnchorIdxById.get(firstAssistantMessage.id) ?? firstAssistantMessage.seq;
+            sortable.push({
+              item: {
+                kind: "message",
+                message: firstAssistantMessage,
+                renderHint: "markdown",
+                rawFileLanguage: undefined,
+                isCompleted: completedMessageIds.has(firstAssistantMessage.id),
+                context: [],
+              },
+              anchorIdx: firstAssistantAnchor,
+              timestamp: parseTimestamp(firstAssistantMessage.createdAt),
+              rank: 3,
+              stableOrder: firstAssistantMessage.seq,
+            });
+
+            const unresolvedIds = Array.from(unresolvedAssistantMessageIds).sort();
+            logService.log("warn", "chat.sync", "Hydration fallback attached unresolved assistant deltas to first assistant message", {
+              threadId: selectedThreadId,
+              fallbackMessageId: firstAssistantMessage.id,
+              unresolvedMessageIds: unresolvedIds,
+              unresolvedMessageCount: unresolvedIds.length,
+            });
+          }
+        }
       }
     }
 
@@ -1845,5 +2046,5 @@ export function useWorkspaceTimeline(
     prevFingerprintRef.current = fingerprint;
     prevResultRef.current = timelineResult;
     return timelineResult;
-  }, [messages, events, selectedThreadId]);
+  }, [messages, events, options?.semanticHydrationInProgress, selectedThreadId]);
 }

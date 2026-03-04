@@ -64,6 +64,7 @@ export type ExploreActivityGroup = {
   searchCount: number;
   entries: ExploreActivityEntry[];
   startIdx: number;
+  endIdx: number;
   anchorIdx: number;
   createdAt: string;
   eventIds: Set<string>;
