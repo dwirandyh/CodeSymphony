@@ -54,9 +54,7 @@ export function BottomPanel({
     openSignal,
 }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
-    const [collapsed, setCollapsed] = useState(() => {
-        return typeof window !== "undefined" && window.innerWidth < 768;
-    });
+    const [collapsed, setCollapsed] = useState(true);
     const [isDragging, setIsDragging] = useState(false);
     const panelRef = useRef<HTMLDivElement>(null);
     const startYRef = useRef(0);
