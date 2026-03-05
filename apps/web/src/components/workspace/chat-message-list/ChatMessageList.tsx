@@ -90,19 +90,11 @@ export function ChatMessageList({
     lockUntilAt: number;
     watchUntilAt: number;
     suppressRestore?: boolean;
-    armedScrollSize?: number | null;
   } | null>(null);
   const pendingShiftRestoreFrameRef = useRef(false);
   const shiftPendingVisibilityHideRef = useRef(false);
   const shiftBaselineDfbRef = useRef<number | null>(null);
-  // #region agent log
-  const prePaginationDomGeoRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
-  const frameTrackerActiveRef = useRef(false);
-  const visualTrackerRafRef = useRef<number | null>(null);
-  const visualTrackerActiveRef = useRef(false);
-  const visualTrackerLastScrollTimeRef = useRef(0);
   const scrollJumpCompensationActiveRef = useRef(false);
-  // #endregion
   const scrollFreezeActiveRef = useRef(false);
   const scrollFreezeCleanupRef = useRef<(() => void) | null>(null);
   const remeasureSettledCountRef = useRef(0);
@@ -115,17 +107,11 @@ export function ChatMessageList({
       scrollFreezeActiveRef.current = false;
       scrollFreezeCleanupRef.current = null;
     };
-    // #region agent log
-    fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:freezeScrollInertia',message:'freeze flag set',data:{},timestamp:Date.now(),hypothesisId:'H20'})}).catch(()=>{});
-    // #endregion
   }, []);
 
   const unfreezeScrollInertia = useCallback(() => {
     if (!scrollFreezeActiveRef.current) return;
     scrollFreezeCleanupRef.current?.();
-    // #region agent log
-    fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:unfreezeScrollInertia',message:'scroll inertia unfrozen',data:{},timestamp:Date.now(),hypothesisId:'H15'})}).catch(()=>{});
-    // #endregion
   }, []);
 
   const topLoadTransactionActiveRef = useRef(false);
@@ -167,10 +153,6 @@ export function ChatMessageList({
   }, []);
 
   const clearPendingShiftAnchorRestore = useCallback(() => {
-    // #region agent log
-    const clrHandle = vlistRef.current;
-    fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:clearPendingShiftAnchor',message:'clearing shift anchor',data:{scrollOffset:clrHandle?.scrollOffset,scrollSize:clrHandle?.scrollSize,viewportSize:clrHandle?.viewportSize,hadAnchor:pendingShiftAnchorRestoreRef.current!=null,suppressRestore:pendingShiftAnchorRestoreRef.current?.suppressRestore},timestamp:Date.now(),hypothesisId:'H7'})}).catch(()=>{});
-    // #endregion
     pendingShiftAnchorRestoreRef.current = null;
     topLoadPostReleaseCooldownUntilRef.current = 0;
     if (shiftReleaseAnchorWatchTimeoutRef.current != null) {
@@ -230,15 +212,10 @@ export function ChatMessageList({
 
     const shouldArmAnchorRestore = true;
     if (shouldArmAnchorRestore && anchorOffset != null && anchorDistanceFromTop != null) {
-      // #region agent log
-      const rlsHandle = vlistRef.current;
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:releaseShift-arm-anchor',message:'arming anchor restore',data:{reason,anchorOffset,anchorDistFromTop:anchorDistanceFromTop,currentOffset:rlsHandle?.scrollOffset,currentScrollSize:rlsHandle?.scrollSize,lockMs:TOP_LOAD_RELEASE_ANCHOR_LOCK_MS,watchMs:TOP_LOAD_RELEASE_ANCHOR_WATCH_MS},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-      // #endregion
       pendingShiftAnchorRestoreRef.current = {
         reason,
         targetOffset: anchorOffset,
         releaseAnchorDistanceFromTop: anchorDistanceFromTop,
-        armedScrollSize: rlsHandle?.scrollSize ?? null,
         lockUntilAt: now + TOP_LOAD_RELEASE_ANCHOR_LOCK_MS,
         watchUntilAt: now + TOP_LOAD_RELEASE_ANCHOR_WATCH_MS,
       };
@@ -302,9 +279,6 @@ export function ChatMessageList({
               stickyBottom: stickyBottomRef.current,
               topLoadTransactionActive: topLoadTransactionActiveRef.current,
             });
-            // #region agent log
-            fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:rAF-anchor-scrollTo',message:'rAF anchor restore scrollTo',data:{from:currentOffset,to:pendingRestore.targetOffset,delta,scrollSize:handle.scrollSize,viewportSize:handle.viewportSize},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-            // #endregion
             handle.scrollTo(pendingRestore.targetOffset);
           }
         }
@@ -342,10 +316,6 @@ export function ChatMessageList({
           return;
         }
         shiftForceDisabledRef.current = true;
-        // #region agent log
-        const deactHandle = vlistRef.current;
-        fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:shift-deactivate-timer',message:'shift deactivate timer fired',data:{reason,delayMs:shiftDeactivateDelayMs,token:nextToken,scrollOffset:deactHandle?.scrollOffset,scrollSize:deactHandle?.scrollSize,viewportSize:deactHandle?.viewportSize,pendingAnchor:pendingShiftAnchorRestoreRef.current!=null},timestamp:Date.now(),hypothesisId:'H7'})}).catch(()=>{});
-        // #endregion
         debugLog("ChatMessageList", "shift-deactivate-fired", {
           reason,
           delayMs: shiftDeactivateDelayMs,
@@ -407,128 +377,12 @@ export function ChatMessageList({
     renderableFirstKeyRef.current = firstRenderableKey;
   }, [firstRenderableKey, renderableItems.length]);
 
-  // #region agent log — continuous visual position tracker (H10/H11)
-  useEffect(() => {
-    const wrapper = scrollWrapperRef.current;
-    if (!wrapper) return;
-
-    let prevSt = 0;
-    let prevSh = 0;
-    let prevItemTops: number[] = [];
-    let idleFrames = 0;
-    let rafId: number | null = null;
-    let started = false;
-
-    const tick = () => {
-      const scroller = wrapper.firstElementChild as HTMLElement | null;
-      if (!scroller) { rafId = requestAnimationFrame(tick); return; }
-
-      if (!started) {
-        started = true;
-        prevSt = scroller.scrollTop;
-        prevSh = scroller.scrollHeight;
-      }
-
-      const st = scroller.scrollTop;
-      const sh = scroller.scrollHeight;
-      const stDelta = st - prevSt;
-      const shDelta = sh - prevSh;
-
-      const children = scroller.children;
-      const scrollerRect = scroller.getBoundingClientRect();
-      const visibleItems: { idx: number; top: number }[] = [];
-      for (let i = 0; i < children.length; i++) {
-        const r = children[i].getBoundingClientRect();
-        if (r.bottom > scrollerRect.top && r.top < scrollerRect.bottom) {
-          visibleItems.push({ idx: i, top: r.top - scrollerRect.top });
-        }
-      }
-
-      let maxItemShift = 0;
-      if (prevItemTops.length > 0 && visibleItems.length > 0) {
-        for (const vi of visibleItems) {
-          const prevTop = prevItemTops[vi.idx];
-          if (prevTop !== undefined) {
-            const itemVisualDelta = (vi.top - prevTop) + stDelta;
-            if (Math.abs(itemVisualDelta) > Math.abs(maxItemShift)) {
-              maxItemShift = itemVisualDelta;
-            }
-          }
-        }
-      }
-
-      const hasSignificant = Math.abs(stDelta) > 50 || Math.abs(shDelta) > 50 || Math.abs(maxItemShift) > 15;
-
-      if (hasSignificant) {
-        idleFrames = 0;
-        const sample = visibleItems.slice(0, 3).map(v => ({ i: v.idx, t: Math.round(v.top) }));
-        fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:visual-tracker',message:'vt',data:{st:Math.round(st),sh:Math.round(sh),stD:Math.round(stDelta),shD:Math.round(shDelta),mis:Math.round(maxItemShift),vis:sample,nVis:visibleItems.length},timestamp:Date.now(),hypothesisId:'H10'})}).catch(()=>{});
-      } else if (stDelta !== 0 || shDelta !== 0) {
-        idleFrames = 0;
-      } else {
-        idleFrames++;
-      }
-
-      const newTops: number[] = [];
-      for (const vi of visibleItems) { newTops[vi.idx] = vi.top; }
-      prevItemTops = newTops;
-      prevSt = st;
-      prevSh = sh;
-
-      if (idleFrames < 600) {
-        rafId = requestAnimationFrame(tick);
-      } else {
-        visualTrackerActiveRef.current = false;
-      }
-    };
-
-    visualTrackerActiveRef.current = true;
-    rafId = requestAnimationFrame(tick);
-
-    return () => {
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      visualTrackerActiveRef.current = false;
-    };
-  }, []);
-  // #endregion
-
   const prevDisplayCountRef = useRef(displayItems.length);
   useLayoutEffect(() => {
     const prevCount = prevDisplayCountRef.current;
     if (displayItems.length !== prevCount) {
       lastItemCountChangeRef.current = Date.now();
       prevDisplayCountRef.current = displayItems.length;
-      // #region agent log
-      const leH = vlistRef.current;
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:layoutEffect-items-changed',message:'displayItems count changed',data:{prevCount,newCount:displayItems.length,delta:displayItems.length-prevCount,scrollOffset:leH?.scrollOffset,scrollSize:leH?.scrollSize,viewportSize:leH?.viewportSize,shiftActive,topLoadTxActive:topLoadTransactionActiveRef.current,effectiveShift:topLoadTransactionActiveRef.current||(shiftActive&&!shiftForceDisabledRef.current&&pendingShiftAnchorRestoreRef.current!=null)},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-      if (displayItems.length > prevCount && !frameTrackerActiveRef.current) {
-        const ftContainer = scrollWrapperRef.current?.firstElementChild as HTMLElement | null;
-        if (ftContainer) {
-          frameTrackerActiveRef.current = true;
-          const preGeo = prePaginationDomGeoRef.current;
-          prePaginationDomGeoRef.current = null;
-          const leScrollTop = ftContainer.scrollTop;
-          const leScrollHeight = ftContainer.scrollHeight;
-          fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:frame-track-init',message:'frame tracker start (layoutEffect)',data:{preScrollTop:preGeo?.scrollTop??null,preScrollHeight:preGeo?.scrollHeight??null,leScrollTop,leScrollHeight,heightGrowth:preGeo?leScrollHeight-preGeo.scrollHeight:null,topShift:preGeo?leScrollTop-preGeo.scrollTop:null,itemDelta:displayItems.length-prevCount},timestamp:Date.now(),hypothesisId:'H8'})}).catch(()=>{});
-          let prevFt = leScrollTop;
-          let prevFh = leScrollHeight;
-          let fi = 0;
-          const trackFrame = () => {
-            if (fi > 25) { frameTrackerActiveRef.current = false; return; }
-            const ct = ftContainer.scrollTop;
-            const ch = ftContainer.scrollHeight;
-            const td = ct - prevFt;
-            const hd = ch - prevFh;
-            fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:frame-track',message:'frame '+fi,data:{f:fi,scrollTop:ct,scrollHeight:ch,topDelta:td,heightDelta:hd,visualShift:hd-td,cumTopFromPre:preGeo?ct-preGeo.scrollTop:null,cumHeightFromPre:preGeo?ch-preGeo.scrollHeight:null},timestamp:Date.now(),hypothesisId:'H8'})}).catch(()=>{});
-            prevFt = ct;
-            prevFh = ch;
-            fi++;
-            requestAnimationFrame(trackFrame);
-          };
-          requestAnimationFrame(trackFrame);
-        }
-      }
-      // #endregion
     }
 
     if (shiftPendingVisibilityHideRef.current && displayItems.length > prevCount) {
@@ -538,10 +392,6 @@ export function ChatMessageList({
         const scrollerEl = wrapper.firstElementChild as HTMLElement | null;
         if (scrollerEl) {
           scrollerEl.style.visibility = "hidden";
-          // #region agent log
-          const h = vlistRef.current;
-          fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:layoutEffect-hide',message:'hiding scroller before paint',data:{prevCount,newCount:displayItems.length,scrollSize:h?.scrollSize,offset:h?.scrollOffset,viewportSize:h?.viewportSize},timestamp:Date.now(),hypothesisId:'H22A'})}).catch(()=>{});
-          // #endregion
           requestAnimationFrame(() => {
             if (scrollerEl.style.visibility === "hidden") {
               scrollerEl.style.visibility = "";
@@ -549,9 +399,6 @@ export function ChatMessageList({
               if (pendingAnchor && !pendingAnchor.suppressRestore) {
                 pendingAnchor.suppressRestore = true;
               }
-              // #region agent log
-              fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:layoutEffect-rAF-fallback',message:'rAF fallback unhide',data:{},timestamp:Date.now(),hypothesisId:'H22A'})}).catch(()=>{});
-              // #endregion
             }
           });
         }
@@ -571,7 +418,6 @@ export function ChatMessageList({
         const handle = vlistRef.current;
         if (handle) {
           const currentOffset = handle.scrollOffset;
-          // #region agent log
           const prevGeomLayout = lastScrollGeometryRef.current;
           const layoutSizeDelta = prevGeomLayout ? handle.scrollSize - prevGeomLayout.scrollSize : 0;
           const layoutOffsetDelta = prevGeomLayout ? currentOffset - prevGeomLayout.offset : 0;
@@ -592,7 +438,6 @@ export function ChatMessageList({
               }
             }
           }
-          // #endregion
           if (pendingAnchorRestore?.suppressRestore) {
             // Shift mode is handling visual stability; skip all restore logic.
           } else {
@@ -762,26 +607,6 @@ export function ChatMessageList({
     const maxScroll = scrollSize - viewportSize;
     const prevGeometry = lastScrollGeometryRef.current;
 
-    // #region agent log
-    const shiftJustFired = prevGeometry && Math.abs(offset - prevGeometry.offset) > 200;
-    const recentShift = prevGeometry && prevGeometry.scrollSize > 5500 && scrollSize > 5500;
-    const scrollSizeChanged = prevGeometry && Math.abs(scrollSize - prevGeometry.scrollSize) > 1;
-    const inAnchorWindow = pendingShiftAnchorRestoreRef.current != null;
-    const scrollSizeDelta = prevGeometry ? scrollSize - prevGeometry.scrollSize : 0;
-    if (offset <= 500 || shiftJustFired || recentShift || scrollSizeChanged || inAnchorWindow) {
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-track',message:'scroll track',data:{offset,prevOffset:prevGeometry?.offset??null,jumpDelta:prevGeometry?offset-prevGeometry.offset:null,scrollSize,scrollSizeDelta,viewportSize,maxScroll,shiftTxActive:topLoadTransactionActiveRef.current,pendingAnchor:inAnchorWindow,pendingAnchorTarget:pendingShiftAnchorRestoreRef.current?.targetOffset??null,driftGuardActive:Date.now()<=eventsOnlyLateDriftGuardUntilRef.current,scrollSizeChanged:!!scrollSizeChanged,shiftActive},timestamp:Date.now(),hypothesisId:'H6'})}).catch(()=>{});
-    }
-    if (scrollSizeChanged && Math.abs(scrollSizeDelta) > 50 && !inAnchorWindow) {
-      const ftC = scrollWrapperRef.current?.firstElementChild as HTMLElement | null;
-      const innerEl = ftC?.firstElementChild as HTMLElement | null;
-      const innerStyle = innerEl ? (innerEl.style.top || innerEl.style.transform || '') : '';
-      const innerRect = innerEl?.getBoundingClientRect();
-      const parentRect = ftC?.getBoundingClientRect();
-      const innerVisualTop = innerRect && parentRect ? innerRect.top - parentRect.top : null;
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-remeasure',message:'remeasure event',data:{offset,prevOffset:prevGeometry?.offset??null,jumpDelta:prevGeometry?offset-prevGeometry.offset:null,scrollSize,scrollSizeDelta,innerStyle,innerVisualTop},timestamp:Date.now(),hypothesisId:'H10'})}).catch(()=>{});
-    }
-    // #endregion
-
     if (
       prevGeometry
       && !scrollJumpCompensationActiveRef.current
@@ -798,18 +623,10 @@ export function ChatMessageList({
         if (innerContainer) {
           scrollJumpCompensationActiveRef.current = true;
           innerContainer.style.visibility = "hidden";
-
-          // #region agent log
-          fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:jump-hide',message:'hiding inner for remeasure',data:{jumpDelta,sizeDelta},timestamp:Date.now(),hypothesisId:'H13'})}).catch(()=>{});
-          // #endregion
-
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
               innerContainer.style.visibility = "";
               scrollJumpCompensationActiveRef.current = false;
-              // #region agent log
-              fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:jump-reveal',message:'revealing inner after re-render',data:{},timestamp:Date.now(),hypothesisId:'H13'})}).catch(()=>{});
-              // #endregion
             });
           });
         }
@@ -823,7 +640,6 @@ export function ChatMessageList({
       if (now >= pendingAnchorRestore.watchUntilAt) {
         clearPendingShiftAnchorRestore();
       } else {
-        // #region agent log
         const sizeDeltaForAnchorAdj = prevGeometry ? scrollSize - prevGeometry.scrollSize : 0;
         const offsetDeltaForAnchorAdj = prevGeometry ? offset - prevGeometry.offset : 0;
         const shiftGrowthDetected =
@@ -835,9 +651,6 @@ export function ChatMessageList({
         if (shiftGrowthDetected && !pendingAnchorRestore.suppressRestore) {
           pendingAnchorRestore.suppressRestore = true;
           shiftBaselineDfbRef.current = null;
-          // #region agent log
-          fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-shift-suppress',message:'shift growth: suppress restore, let VList shift handle remeasurement',data:{oldTarget:pendingAnchorRestore.targetOffset,sizeDelta:sizeDeltaForAnchorAdj,offsetDelta:offsetDeltaForAnchorAdj,offset,prevOffset:prevGeometry.offset},timestamp:Date.now(),hypothesisId:'FIX4'})}).catch(()=>{});
-          // #endregion
           const wrapper = scrollWrapperRef.current;
           if (wrapper) {
             const scrollerEl = wrapper.firstElementChild as HTMLElement | null;
@@ -846,7 +659,6 @@ export function ChatMessageList({
             }
           }
         }
-        // #endregion
         if (!shiftGrowthDetected && !pendingAnchorRestore.suppressRestore) {
           const movedAwayFromTopDuringEventsGrowth = pendingAnchorRestore.reason === "events-only-growth"
             && offset > pendingAnchorRestore.targetOffset + TOP_LOAD_RELEASE_ANCHOR_TOLERANCE_PX;
@@ -970,9 +782,6 @@ export function ChatMessageList({
                     stickyBottom: stickyBottomRef.current,
                     topLoadTransactionActive: topLoadTransactionActiveRef.current,
                   });
-                  // #region agent log
-                  fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-anchor-scrollTo',message:'handleScroll anchor restore scrollTo',data:{from:offset,to:pendingAnchorRestore.targetOffset,reason:pendingAnchorRestore.reason,scrollSize,maxScroll},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-                  // #endregion
                   handle.scrollTo(pendingAnchorRestore.targetOffset);
                   return;
                 }
@@ -1023,9 +832,6 @@ export function ChatMessageList({
           stickyBottom: stickyBottomRef.current,
           topLoadTransactionActive: topLoadTransactionActiveRef.current,
         });
-        // #region agent log
-        fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:lateDriftGuard-scrollTo',message:'late drift guard scrollTo',data:{from:offset,to:prevGeometry.offset,offsetDelta,guardUntil:eventsOnlyLateDriftGuardUntilRef.current,recentUserIntent:now-lastUserScrollIntentAtRef.current},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-        // #endregion
         handle.scrollTo(prevGeometry.offset);
         return;
       }
@@ -1152,9 +958,6 @@ export function ChatMessageList({
     }
 
     if (atTopRef.current !== isAtTop) {
-      // #region agent log
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-atTop-change',message:'atTop transition',data:{from:atTopRef.current,to:isAtTop,offset,scrollSize,viewportSize,maxScroll,shiftActive:topLoadTransactionActiveRef.current},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-      // #endregion
       if (!isAtTop) {
         leftTopZoneRef.current = true;
       }
@@ -1211,9 +1014,6 @@ export function ChatMessageList({
         if (Math.abs(correction) > 3 && targetOff >= 0 && targetOff <= curMax) {
           h.scrollTo(targetOff);
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:scrollEnd-correction',message:'scrollEnd drift correction',data:{baselineDfb,correction,targetOff,currentOffset:curOff},timestamp:Date.now(),hypothesisId:'H22A'})}).catch(()=>{});
-        // #endregion
       }
     }
     if (topLoadTransactionActiveRef.current) {
@@ -1370,14 +1170,6 @@ export function ChatMessageList({
     shiftForceDisabledRef.current = false;
     eventsOnlyLateDriftGuardUntilRef.current = 0;
     eventsOnlyLateDriftRestoreCooldownUntilRef.current = 0;
-    // #region agent log
-    const preShiftHandle = vlistRef.current;
-    fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:loadOlder-pre-shift',message:'about to enable shift',data:{scrollOffset:preShiftHandle?.scrollOffset,scrollSize:preShiftHandle?.scrollSize,viewportSize:preShiftHandle?.viewportSize,cycleId,renderableCount},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-    const prePagContainer = scrollWrapperRef.current?.firstElementChild as HTMLElement | null;
-    if (prePagContainer) {
-      prePaginationDomGeoRef.current = { scrollTop: prePagContainer.scrollTop, scrollHeight: prePagContainer.scrollHeight };
-    }
-    // #endregion
     setShiftActive(true);
     topLoadTransactionActiveRef.current = true;
     pendingShiftReleaseRef.current = {
