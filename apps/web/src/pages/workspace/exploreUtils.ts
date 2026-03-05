@@ -1,5 +1,5 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
-import type { ExploreActivityEntry, ReadFileTimelineEntry } from "../../components/workspace/ChatMessageList";
+import type { ExploreActivityEntry, ReadFileTimelineEntry } from "../../components/workspace/chat-message-list";
 import { finishedToolUseIds, isExploreLikeBashEvent, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
 import type { ExploreActivityGroup, ExploreRunKind, ExploreRunState } from "./types";
 

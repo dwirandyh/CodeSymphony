@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { useWorkspaceTimeline, type TimelineRefs, type WorkspaceTimelineResult } from "./useWorkspaceTimeline";
+import { useWorkspaceTimeline, type TimelineRefs, type WorkspaceTimelineResult } from "./workspace-timeline";
 
 vi.mock("../../../lib/renderDebug", () => ({
   pushRenderDebug: vi.fn(),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatMessage } from "@codesymphony/shared-types";
-import { computeMessageAnchorIdxById } from "./useWorkspaceTimeline";
+import { computeMessageAnchorIdxById } from "./workspace-timeline";
 
 function makeMessage(id: string, seq: number): ChatMessage {
   return {

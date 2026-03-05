@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { debugLog } from "../../lib/debugLog";
-import { ChatMessageList, type ChatTimelineItem } from "./ChatMessageList";
+import { ChatMessageList, type ChatTimelineItem } from "./chat-message-list";
 
 vi.mock("../../lib/debugLog", () => ({
   debugLog: vi.fn(),

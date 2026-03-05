@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { computeMessageAnchorIdxById, useWorkspaceTimeline, type TimelineRefs } from "./useWorkspaceTimeline";
+import { computeMessageAnchorIdxById, useWorkspaceTimeline, type TimelineRefs } from "./workspace-timeline";
 
 function makeMessage(id: string, seq: number, role: "assistant" | "user" = "assistant"): ChatMessage {
   return {

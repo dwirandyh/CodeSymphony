@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
-import { createChatService } from "../src/services/chatService";
+import { createChatService } from "../src/services/chat";
 import { createLogService } from "../src/services/logService";
 import type { ClaudeRunner } from "../src/types";
 

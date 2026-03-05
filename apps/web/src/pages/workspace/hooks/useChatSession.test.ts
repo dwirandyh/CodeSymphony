@@ -13,7 +13,7 @@ import {
   runAutoBackfillLoop,
   shouldAutoBackfillOnHydration,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
-} from "./useChatSession";
+} from "./chat-session";
 
 function makeEvent(
   idx: number,

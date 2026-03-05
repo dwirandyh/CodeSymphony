@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry } from "@codesymphony/shared-types";
 import type { PendingAttachment } from "../../lib/attachments";
-import { Composer } from "./Composer";
+import { Composer } from "./composer";
 
 function noop() {}
 

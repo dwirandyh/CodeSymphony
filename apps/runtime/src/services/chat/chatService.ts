@@ -1,8 +1,5 @@
-import type { ChatEventType as DbChatEventType, PrismaClient } from "@prisma/client";
-import { execFile as execFileRaw } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
-import { promisify } from "node:util";
 import {
   AnswerQuestionInputSchema,
   CreateChatThreadInputSchema,
@@ -17,9 +14,7 @@ import {
   type ChatMessage,
   type ChatMode,
   type ChatThread,
-  type ChatEventsPage,
   type ChatEventsPageInfo,
-  type ChatMessagesPage,
   type ChatMessagesPageInfo,
   type ChatThreadSnapshot,
   type CreateChatThreadInput,
@@ -29,506 +24,64 @@ import {
   type ResolvePermissionInput,
   type SendChatMessageInput,
 } from "@codesymphony/shared-types";
-import type { ClaudeToolInstrumentationEvent, PlanDetectionSource, RuntimeDeps } from "../types.js";
-import { mapChatMessage, mapChatThread } from "./mappers.js";
-import { isDefaultBranchName } from "./worktreeService.js";
-import { renameBranch as renameBranchGit } from "./git.js";
+import type { RuntimeDeps } from "../../types.js";
+import { mapChatMessage, mapChatThread } from "../mappers.js";
+import type {
+  ActiveModelProvider,
+  PendingPermissionEntry,
+  PendingPlanEntry,
+  PendingQuestionEntry,
+  PermissionDecisionResult,
+  QuestionAnswerResult,
+} from "./chatService.types.js";
+import { captureWorktreeState, buildDiffDelta } from "./gitDiffUtils.js";
+import {
+  normalizePageLimit,
+  buildMessagesPage,
+  buildEventsPage,
+  eventCarriesTimelineContext,
+  DEFAULT_MESSAGES_PAGE_LIMIT,
+  MAX_MESSAGES_PAGE_LIMIT,
+  DEFAULT_EVENTS_PAGE_LIMIT,
+  MAX_EVENTS_PAGE_LIMIT,
+  SNAPSHOT_EVENT_BUDGET_MAX,
+} from "./chatPaginationUtils.js";
+import {
+  isImageMimeType,
+  buildPromptWithAttachments,
+  isAbortError,
+  instrumentationMessage,
+  nextMessageSeq,
+  persistAlwaysAllowRule,
+  inferPlanDetectionSource,
+} from "./chatAttachmentUtils.js";
+import {
+  ensureThreadPermissionMap,
+  ensureThreadQuestionMap,
+  rejectPendingPermissions,
+  cancelPendingGateRequests,
+  clearPendingGateRequestsBecauseRunEnded,
+} from "./chatGateService.js";
+import {
+  clampThreadTitle,
+  isDefaultThreadTitle,
+  maybeAutoRenameThreadAfterFirstAssistantReply,
+  maybeAutoRenameBranchAfterFirstAssistantReply,
+} from "./chatNamingService.js";
+import { recoverPendingPlan } from "./chatPlanService.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
-const MAX_THREAD_TITLE_LENGTH = 48;
-const TITLE_GENERATION_TIMEOUT_MS = 15000;
-const MAX_BRANCH_NAME_LENGTH = 60;
-const BRANCH_GENERATION_TIMEOUT_MS = 15000;
-const CLAUDE_SETTINGS_DIR = ".claude";
-const CLAUDE_LOCAL_SETTINGS_FILE = "settings.local.json";
-const DEFAULT_MESSAGES_PAGE_LIMIT = 50;
-const MAX_MESSAGES_PAGE_LIMIT = 200;
-const DEFAULT_EVENTS_PAGE_LIMIT = 400;
-const MAX_EVENTS_PAGE_LIMIT = 2000;
-const SNAPSHOT_EVENT_BUDGET_MAX = 2000;
-const execFile = promisify(execFileRaw);
-
-const chatEventTypeFromDb: Record<DbChatEventType, ChatEvent["type"]> = {
-  message_delta: "message.delta",
-  thinking_delta: "thinking.delta",
-  tool_started: "tool.started",
-  tool_output: "tool.output",
-  tool_finished: "tool.finished",
-  permission_requested: "permission.requested",
-  permission_resolved: "permission.resolved",
-  question_requested: "question.requested",
-  question_answered: "question.answered",
-  question_dismissed: "question.dismissed",
-  plan_created: "plan.created",
-  plan_approved: "plan.approved",
-  plan_revision_requested: "plan.revision_requested",
-  subagent_started: "subagent.started",
-  subagent_finished: "subagent.finished",
-  chat_completed: "chat.completed",
-  chat_failed: "chat.failed",
-};
-
-function inferPlanDetectionSource(filePath: string, source?: PlanDetectionSource): PlanDetectionSource {
-  if (source === "claude_plan_file" || source === "streaming_fallback") {
-    return source;
-  }
-
-  if (!filePath.endsWith(".md")) return "streaming_fallback";
-  if (filePath.includes(".claude/plans/") || filePath.includes("codesymphony-claude-provider/plans/")) return "claude_plan_file";
-  return "streaming_fallback";
-}
-
-type WorktreeStateSnapshot = {
-  statusOutput: string;
-  unstagedDiff: string;
-  stagedDiff: string;
-  changedFiles: string[];
-};
-
-type ActiveModelProvider = {
-  apiKey: string;
-  baseUrl: string;
-  name: string;
-  modelId: string;
-};
-
-type ProviderOptions = {
-  model?: string;
-  providerApiKey?: string;
-  providerBaseUrl?: string;
-};
-
-function toStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-}
-
-function persistAlwaysAllowRule(worktreePath: string, rule: string): { settingsPath: string; persisted: boolean } {
-  const claudeDirPath = join(worktreePath, CLAUDE_SETTINGS_DIR);
-  const settingsPath = join(claudeDirPath, CLAUDE_LOCAL_SETTINGS_FILE);
-
-  let settings: Record<string, unknown> = {};
-  if (existsSync(settingsPath)) {
-    const raw = readFileSync(settingsPath, "utf8");
-    try {
-      const parsed = JSON.parse(raw);
-      if (typeof parsed !== "object" || parsed == null || Array.isArray(parsed)) {
-        throw new Error("settings.local.json must contain a JSON object.");
-      }
-      settings = parsed as Record<string, unknown>;
-    } catch (error) {
-      throw new Error(
-        `Invalid JSON in ${settingsPath}: ${error instanceof Error ? error.message : "unknown error"}`,
-      );
-    }
-  }
-
-  const existingPermissions =
-    typeof settings.permissions === "object" && settings.permissions != null && !Array.isArray(settings.permissions)
-      ? (settings.permissions as Record<string, unknown>)
-      : {};
-
-  const allow = toStringArray(existingPermissions.allow);
-  const persisted = !allow.includes(rule);
-  if (persisted) {
-    allow.push(rule);
-  }
-
-  const nextSettings: Record<string, unknown> = {
-    ...settings,
-    permissions: {
-      ...existingPermissions,
-      allow,
-      deny: toStringArray(existingPermissions.deny),
-      ask: toStringArray(existingPermissions.ask),
-    },
-  };
-
-  mkdirSync(claudeDirPath, { recursive: true });
-  writeFileSync(settingsPath, `${JSON.stringify(nextSettings, null, 2)}\n`, "utf8");
-
-  return { settingsPath, persisted };
-}
-
-async function nextMessageSeq(prisma: PrismaClient, threadId: string): Promise<number> {
-  const result = await prisma.chatMessage.aggregate({
-    where: { threadId },
-    _max: { seq: true },
-  });
-
-  return (result._max.seq ?? -1) + 1;
-}
-
-async function runGit(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFile("git", args, {
-    cwd,
-    encoding: "utf8",
-  });
-
-  return stdout.trim();
-}
-
-function parseChangedFiles(statusOutput: string): string[] {
-  if (statusOutput.length === 0) {
-    return [];
-  }
-
-  const files = new Set<string>();
-  for (const line of statusOutput.split("\n")) {
-    const normalized = line.trimEnd();
-    if (normalized.length === 0) {
-      continue;
-    }
-
-    let path = "";
-    if (normalized.startsWith("?? ") || normalized.startsWith("!! ")) {
-      path = normalized.slice(3).trim();
-    } else {
-      const porcelainMatch = /^[ MADRCU?!][ MADRCU?!]\s+(.+)$/.exec(normalized);
-      if (porcelainMatch?.[1]) {
-        path = porcelainMatch[1].trim();
-      } else {
-        const fallbackParts = normalized.split(/\s+/, 2);
-        if (fallbackParts.length === 2) {
-          path = fallbackParts[1].trim();
-        }
-      }
-    }
-
-    if (path.length > 0) {
-      files.add(path);
-    }
-  }
-
-  return Array.from(files);
-}
-
-type ParsedDiffSections = {
-  byFile: Map<string, string>;
-  order: string[];
-};
-
-function parseDiffSections(diffOutput: string): ParsedDiffSections {
-  const byFile = new Map<string, string>();
-  const order: string[] = [];
-
-  if (diffOutput.trim().length === 0) {
-    return { byFile, order };
-  }
-
-  const lines = diffOutput.split(/\r?\n/);
-  let currentFile: string | null = null;
-  let currentLines: string[] = [];
-
-  function flushCurrentSection(): void {
-    if (!currentFile || currentLines.length === 0) {
-      currentFile = null;
-      currentLines = [];
-      return;
-    }
-
-    const section = currentLines.join("\n").trimEnd();
-    const existing = byFile.get(currentFile);
-    if (!existing) {
-      byFile.set(currentFile, section);
-      order.push(currentFile);
-    } else {
-      byFile.set(currentFile, `${existing}\n\n${section}`);
-    }
-
-    currentFile = null;
-    currentLines = [];
-  }
-
-  for (const line of lines) {
-    if (line.startsWith("diff --git ")) {
-      flushCurrentSection();
-      const match = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
-      currentFile = match?.[2] ?? null;
-      currentLines = [line];
-      continue;
-    }
-
-    if (!currentFile) {
-      continue;
-    }
-    currentLines.push(line);
-  }
-
-  flushCurrentSection();
-  return { byFile, order };
-}
-
-function appendUnique(items: string[], seen: Set<string>, candidate: string): void {
-  if (seen.has(candidate)) {
-    return;
-  }
-  seen.add(candidate);
-  items.push(candidate);
-}
-
-function normalizePageLimit(rawLimit: number | undefined, defaults: { fallback: number; max: number }): number {
-  if (typeof rawLimit !== "number" || !Number.isFinite(rawLimit)) {
-    return defaults.fallback;
-  }
-  const integer = Math.trunc(rawLimit);
-  if (integer <= 0) {
-    return defaults.fallback;
-  }
-  return Math.min(integer, defaults.max);
-}
-
-function buildMessagesPage(rows: Array<Parameters<typeof mapChatMessage>[0]>, limit: number): ChatMessagesPage {
-  const hasMoreOlder = rows.length > limit;
-  const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
-  const ordered = pageRows.reverse().map(mapChatMessage);
-  const oldestSeq = ordered.length > 0 ? ordered[0].seq : null;
-  const newestSeq = ordered.length > 0 ? ordered[ordered.length - 1].seq : null;
-
-  return {
-    data: ordered,
-    pageInfo: {
-      hasMoreOlder,
-      nextBeforeSeq: hasMoreOlder ? oldestSeq : null,
-      oldestSeq,
-      newestSeq,
-    },
-  };
-}
-
-function buildEventsPage(
-  rows: Array<{ id: string; threadId: string; idx: number; type: DbChatEventType; payload: unknown; createdAt: Date }>,
-  limit: number,
-): ChatEventsPage {
-  const hasMoreOlder = rows.length > limit;
-  const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
-  const ordered = pageRows.reverse().map((row) => ({
-    id: row.id,
-    threadId: row.threadId,
-    idx: row.idx,
-    type: chatEventTypeFromDb[row.type],
-    payload: row.payload as Record<string, unknown>,
-    createdAt: row.createdAt.toISOString(),
-  }));
-  const oldestIdx = ordered.length > 0 ? ordered[0].idx : null;
-  const newestIdx = ordered.length > 0 ? ordered[ordered.length - 1].idx : null;
-
-  return {
-    data: ordered,
-    pageInfo: {
-      hasMoreOlder,
-      nextBeforeIdx: hasMoreOlder ? oldestIdx : null,
-      oldestIdx,
-      newestIdx,
-    },
-  };
-}
-
-function eventCarriesTimelineContext(payload: unknown): boolean {
-  if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
-    return false;
-  }
-  const record = payload as Record<string, unknown>;
-
-  const toolUseId = record.toolUseId;
-  if (typeof toolUseId === "string" && toolUseId.length > 0) {
-    return true;
-  }
-
-  const precedingToolUseIds = record.precedingToolUseIds;
-  if (Array.isArray(precedingToolUseIds) && precedingToolUseIds.some((entry) => typeof entry === "string" && entry.length > 0)) {
-    return true;
-  }
-
-  const messageId = record.messageId;
-  return typeof messageId === "string" && messageId.length > 0;
-}
-
-function symmetricStatusDelta(before: string[], after: string[]): string[] {
-  const beforeSet = new Set(before);
-  const afterSet = new Set(after);
-  const delta: string[] = [];
-  const seen = new Set<string>();
-
-  for (const file of after) {
-    if (!beforeSet.has(file)) {
-      appendUnique(delta, seen, file);
-    }
-  }
-  for (const file of before) {
-    if (!afterSet.has(file)) {
-      appendUnique(delta, seen, file);
-    }
-  }
-
-  return delta;
-}
-
-async function captureWorktreeState(worktreePath: string): Promise<WorktreeStateSnapshot | null> {
-  try {
-    const [statusOutput, unstagedDiff, stagedDiff] = await Promise.all([
-      runGit(worktreePath, ["status", "--porcelain"]),
-      runGit(worktreePath, ["diff", "--no-color"]),
-      runGit(worktreePath, ["diff", "--cached", "--no-color"]),
-    ]);
-
-    return {
-      statusOutput,
-      unstagedDiff,
-      stagedDiff,
-      changedFiles: parseChangedFiles(statusOutput),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeStateSnapshot): {
-  changedFiles: string[];
-  diff: string;
-  diffTruncated: boolean;
-} | null {
-  const beforeCombinedDiff = [before.unstagedDiff, before.stagedDiff].filter((part) => part.length > 0).join("\n\n");
-  const afterCombinedDiff = [after.unstagedDiff, after.stagedDiff].filter((part) => part.length > 0).join("\n\n");
-
-  if (before.statusOutput === after.statusOutput && beforeCombinedDiff === afterCombinedDiff) {
-    return null;
-  }
-
-  const beforeSections = parseDiffSections(beforeCombinedDiff);
-  const afterSections = parseDiffSections(afterCombinedDiff);
-
-  const diffDeltaFiles = new Set<string>();
-  const orderedDiffDeltaFiles: string[] = [];
-  const allSectionFiles = new Set([
-    ...beforeSections.byFile.keys(),
-    ...afterSections.byFile.keys(),
-  ]);
-
-  for (const file of afterSections.order) {
-    const beforeSection = beforeSections.byFile.get(file) ?? "";
-    const afterSection = afterSections.byFile.get(file) ?? "";
-    if (beforeSection !== afterSection) {
-      diffDeltaFiles.add(file);
-      orderedDiffDeltaFiles.push(file);
-    }
-  }
-  for (const file of beforeSections.order) {
-    if (diffDeltaFiles.has(file)) {
-      continue;
-    }
-    const beforeSection = beforeSections.byFile.get(file) ?? "";
-    const afterSection = afterSections.byFile.get(file) ?? "";
-    if (beforeSection !== afterSection) {
-      diffDeltaFiles.add(file);
-      orderedDiffDeltaFiles.push(file);
-    }
-  }
-  for (const file of allSectionFiles) {
-    if (diffDeltaFiles.has(file)) {
-      continue;
-    }
-    const beforeSection = beforeSections.byFile.get(file) ?? "";
-    const afterSection = afterSections.byFile.get(file) ?? "";
-    if (beforeSection !== afterSection) {
-      diffDeltaFiles.add(file);
-      orderedDiffDeltaFiles.push(file);
-    }
-  }
-
-  const deltaSections = orderedDiffDeltaFiles
-    .map((file) => afterSections.byFile.get(file) ?? "")
-    .filter((section) => section.length > 0);
-  const diffDelta = deltaSections.join("\n\n");
-
-  const changedFiles: string[] = [];
-  const changedFilesSeen = new Set<string>();
-  for (const file of orderedDiffDeltaFiles) {
-    appendUnique(changedFiles, changedFilesSeen, file);
-  }
-
-  for (const file of symmetricStatusDelta(before.changedFiles, after.changedFiles)) {
-    appendUnique(changedFiles, changedFilesSeen, file);
-  }
-
-  if (changedFiles.length === 0 && diffDelta.length === 0) {
-    return null;
-  }
-
-  const diffTruncated = diffDelta.length > MAX_DIFF_PREVIEW_CHARS;
-  const diff = diffTruncated
-    ? `${diffDelta.slice(0, MAX_DIFF_PREVIEW_CHARS)}\n\n... [diff truncated]`
-    : diffDelta;
-
-  return {
-    changedFiles,
-    diff,
-    diffTruncated,
-  };
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && (error.name === "AbortError" || /abort|cancel|interrupt/i.test(error.message));
-}
-
-function instrumentationMessage(event: ClaudeToolInstrumentationEvent): string {
-  if (event.stage === "anomaly") {
-    return event.anomaly?.message ?? `Tool anomaly (${event.toolName})`;
-  }
-
-  if (event.stage === "decision") {
-    return `${event.toolName} decision: ${event.decision ?? "unknown"}`;
-  }
-
-  if (event.stage === "requested") {
-    return `${event.toolName} requested`;
-  }
-
-  if (event.stage === "started") {
-    return `${event.toolName} started`;
-  }
-
-  if (event.stage === "failed") {
-    return `${event.toolName} failed`;
-  }
-
-  return event.summary?.trim().length ? event.summary : `${event.toolName} finished`;
-}
-
-const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
-
-function isImageMimeType(mimeType: string): boolean {
-  return mimeType.startsWith("image/");
-}
-
-function buildPromptWithAttachments(content: string, attachments: Array<{ filename: string; mimeType: string; content: string; storagePath: string | null }>): string {
-  // Strip {{attachment:ID}} markers used by the frontend for inline rendering
-  const cleanContent = content.replace(/\{\{attachment:[^}]+\}\}/g, "").trim();
-
-  if (attachments.length === 0) return cleanContent;
-
-  const attachmentBlocks = attachments.map((att) => {
-    if (isImageMimeType(att.mimeType) && att.storagePath) {
-      return `<attachment filename="${att.filename}" type="${att.mimeType}" path="${att.storagePath}">[Image saved at path. Use Read tool to view.]</attachment>`;
-    }
-    return `<attachment filename="${att.filename}" type="${att.mimeType}">${att.content}</attachment>`;
-  });
-
-  return `${cleanContent}\n\n${attachmentBlocks.join("\n\n")}`;
-}
 
 export function createChatService(deps: RuntimeDeps) {
   const activeThreads = new Set<string>();
   const scheduledAssistantRunsByThread = new Map<string, ReturnType<typeof setTimeout>>();
   const runningAbortControllersByThread = new Map<string, AbortController>();
+  const pendingPermissionsByThread = new Map<string, Map<string, PendingPermissionEntry>>();
+  const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
+  const pendingPlanByThread = new Map<string, PendingPlanEntry>();
 
   function clearScheduledAssistantRun(threadId: string): boolean {
     const timer = scheduledAssistantRunsByThread.get(threadId);
@@ -540,536 +93,6 @@ export function createChatService(deps: RuntimeDeps) {
     scheduledAssistantRunsByThread.delete(threadId);
     deps.logService?.log("debug", "chat.lifecycle", "cleared scheduled assistant run", { threadId });
     return true;
-  }
-
-  function isDefaultThreadTitle(title: string): boolean {
-    const normalized = title.trim();
-    return normalized === "Main Thread" || /^Thread\s+\d+$/.test(normalized);
-  }
-
-  function clampThreadTitle(input: string, maxLength = MAX_THREAD_TITLE_LENGTH): string {
-    if (input.length <= maxLength) {
-      return input;
-    }
-
-    const sliced = input.slice(0, maxLength).trimEnd();
-    const minBoundary = Math.floor(maxLength * 0.6);
-    const lastSpace = sliced.lastIndexOf(" ");
-    if (lastSpace >= minBoundary) {
-      return sliced.slice(0, lastSpace).trim();
-    }
-
-    return sliced;
-  }
-
-  function normalizeGeneratedThreadTitle(raw: string): string | null {
-    const firstLine = raw
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
-    if (!firstLine) {
-      return null;
-    }
-
-    let candidate = firstLine
-      .replace(/^[-*]\s*/, "")
-      .replace(/^title\s*[:\-]\s*/i, "")
-      .replace(/^["'`]+/, "")
-      .replace(/["'`]+$/, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    candidate = candidate.replace(/[.!?,;:]+$/g, "").trim();
-    if (candidate.length === 0) {
-      return null;
-    }
-
-    const clamped = clampThreadTitle(candidate);
-    return clamped.length >= 3 ? clamped : null;
-  }
-
-  async function buildThreadTitleWithAi(
-    threadId: string,
-    worktreePath: string,
-    firstUserContent: string,
-    firstAssistantContent: string,
-    providerOptions?: ProviderOptions,
-  ): Promise<string | null> {
-    const prompt = [
-      "You generate concise chat thread titles.",
-      "Return exactly one title line only.",
-      "Rules:",
-      "- Capture the user's core intent.",
-      "- Keep it concise (2-6 words, max 48 chars).",
-      "- No quotes.",
-      "- No trailing punctuation.",
-      "",
-      `User message: ${firstUserContent.trim()}`,
-      `Assistant reply: ${firstAssistantContent.trim()}`,
-    ].join("\n");
-
-    let streamedOutput = "";
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => {
-      abortController.abort();
-    }, TITLE_GENERATION_TIMEOUT_MS);
-
-    try {
-      const result = await deps.claudeRunner({
-        prompt,
-        sessionId: null,
-        cwd: worktreePath,
-        abortController,
-        permissionMode: "plan",
-        model: providerOptions?.model,
-        providerApiKey: providerOptions?.providerApiKey,
-        providerBaseUrl: providerOptions?.providerBaseUrl,
-        onText: (chunk) => {
-          streamedOutput += chunk;
-        },
-        onToolStarted: async () => { },
-        onToolOutput: async () => { },
-        onToolFinished: async () => { },
-        onQuestionRequest: async () => ({ answers: {} }),
-        onPermissionRequest: () => ({ decision: "deny", message: "Tool use is disabled for title generation." }),
-        onPlanFileDetected: async () => { },
-        onSubagentStarted: async () => { },
-        onSubagentStopped: async () => { },
-        onThinking: async () => { },
-      });
-
-      const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
-      return normalizeGeneratedThreadTitle(raw);
-    } catch (error) {
-      deps.logService?.log(
-        "warn",
-        "chat.thread.title",
-        "AI title generation failed; keeping current title.",
-        {
-          threadId,
-          worktreePath,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      );
-      return null;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  async function maybeAutoRenameThreadAfterFirstAssistantReply(
-    threadId: string,
-    expectedAssistantMessageId: string,
-    providerOptions?: ProviderOptions,
-  ): Promise<string | null> {
-    try {
-      const thread = await deps.prisma.chatThread.findUnique({
-        where: { id: threadId },
-        select: {
-          title: true,
-          titleEditedManually: true,
-          worktree: {
-            select: {
-              path: true,
-            },
-          },
-        },
-      });
-      if (!thread) {
-        return null;
-      }
-
-      if (thread.titleEditedManually) {
-        return null;
-      }
-
-      if (!isDefaultThreadTitle(thread.title)) {
-        return null;
-      }
-
-      const assistantMessageCount = await deps.prisma.chatMessage.count({
-        where: {
-          threadId,
-          role: "assistant",
-        },
-      });
-      if (assistantMessageCount !== 1) {
-        return null;
-      }
-
-      const firstUserMessage = await deps.prisma.chatMessage.findFirst({
-        where: {
-          threadId,
-          role: "user",
-        },
-        orderBy: {
-          seq: "asc",
-        },
-        select: {
-          content: true,
-        },
-      });
-      if (!firstUserMessage) {
-        return null;
-      }
-
-      const firstAssistantMessage = await deps.prisma.chatMessage.findFirst({
-        where: {
-          threadId,
-          role: "assistant",
-        },
-        orderBy: {
-          seq: "asc",
-        },
-        select: {
-          id: true,
-          content: true,
-        },
-      });
-      if (!firstAssistantMessage || firstAssistantMessage.id !== expectedAssistantMessageId) {
-        return null;
-      }
-
-      const nextTitle = await buildThreadTitleWithAi(
-        threadId,
-        thread.worktree.path,
-        firstUserMessage.content,
-        firstAssistantMessage.content,
-        providerOptions,
-      );
-      if (!nextTitle || nextTitle === thread.title) {
-        return null;
-      }
-
-      const updated = await deps.prisma.chatThread.update({
-        where: { id: threadId },
-        data: { title: nextTitle },
-        select: { title: true },
-      });
-      return updated.title;
-    } catch (error) {
-      deps.logService?.log(
-        "warn",
-        "chat.thread.title",
-        "Auto rename failed; keeping current title.",
-        {
-          threadId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      );
-      return null;
-    }
-  }
-
-  function normalizeGeneratedBranchName(raw: string): string | null {
-    const firstLine = raw
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.length > 0);
-    if (!firstLine) return null;
-
-    let candidate = firstLine
-      .replace(/^[-*]\s*/, "")
-      .replace(/^branch\s*[:\-]\s*/i, "")
-      .replace(/^["'`]+/, "")
-      .replace(/["'`]+$/, "")
-      .trim();
-
-    candidate = candidate
-      .toLowerCase()
-      .replace(/[^a-z0-9/\-]+/g, "-")
-      .replace(/(^-|-$)/g, "")
-      .replace(/\/{2,}/g, "/")
-      .replace(/(^\/|\/\s*$)/g, "");
-
-    if (candidate.length < 3) return null;
-    if (candidate.length > MAX_BRANCH_NAME_LENGTH) {
-      candidate = candidate.slice(0, MAX_BRANCH_NAME_LENGTH).replace(/-$/, "");
-    }
-
-    return candidate;
-  }
-
-  async function buildBranchNameWithAi(
-    threadId: string,
-    worktreePath: string,
-    firstUserContent: string,
-    firstAssistantContent: string,
-  ): Promise<string | null> {
-    const prompt = [
-      "You generate concise git branch names.",
-      "Return exactly one branch name line only.",
-      "Rules:",
-      "- Capture the user's core intent for the code change.",
-      "- Use lowercase letters, hyphens only (no spaces, no underscores).",
-      "- Keep it concise (2-5 words, max 60 chars).",
-      "- Use a conventional prefix: feat/, fix/, refactor/, docs/, chore/",
-      "- No quotes, no trailing punctuation.",
-      "",
-      `User message: ${firstUserContent.trim()}`,
-      `Assistant reply: ${firstAssistantContent.trim()}`,
-    ].join("\n");
-
-    let streamedOutput = "";
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => {
-      abortController.abort();
-    }, BRANCH_GENERATION_TIMEOUT_MS);
-
-    try {
-      const result = await deps.claudeRunner({
-        prompt,
-        sessionId: null,
-        cwd: worktreePath,
-        abortController,
-        permissionMode: "plan",
-        onText: (chunk) => {
-          streamedOutput += chunk;
-        },
-        onToolStarted: async () => { },
-        onToolOutput: async () => { },
-        onToolFinished: async () => { },
-        onQuestionRequest: async () => ({ answers: {} }),
-        onPermissionRequest: () => ({
-          decision: "deny",
-          message: "Tool use is disabled for branch name generation.",
-        }),
-        onPlanFileDetected: async () => { },
-        onSubagentStarted: async () => { },
-        onSubagentStopped: async () => { },
-        onThinking: async () => { },
-      });
-
-      const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
-      return normalizeGeneratedBranchName(raw);
-    } catch (error) {
-      deps.logService?.log(
-        "warn",
-        "chat.branch.rename",
-        "AI branch name generation failed; keeping current branch.",
-        {
-          threadId,
-          worktreePath,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      );
-      return null;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  async function maybeAutoRenameBranchAfterFirstAssistantReply(threadId: string, expectedAssistantMessageId: string): Promise<string | null> {
-    try {
-      const thread = await deps.prisma.chatThread.findUnique({
-        where: { id: threadId },
-        select: {
-          worktree: {
-            select: {
-              id: true,
-              branch: true,
-              path: true,
-              branchRenamed: true,
-              repositoryId: true,
-            },
-          },
-        },
-      });
-      if (!thread) return null;
-
-      const worktree = thread.worktree;
-
-      if (worktree.branchRenamed) {
-        return null;
-      }
-
-      if (!isDefaultBranchName(worktree.branch)) {
-        return null;
-      }
-
-      const firstUserMessage = await deps.prisma.chatMessage.findFirst({
-        where: { threadId, role: "user" },
-        orderBy: { seq: "asc" },
-        select: { content: true },
-      });
-      if (!firstUserMessage) return null;
-
-      const firstAssistantMessage = await deps.prisma.chatMessage.findFirst({
-        where: { threadId, role: "assistant" },
-        orderBy: { seq: "asc" },
-        select: { id: true, content: true },
-      });
-      if (!firstAssistantMessage || firstAssistantMessage.id !== expectedAssistantMessageId) return null;
-
-      const newBranch = await buildBranchNameWithAi(
-        threadId,
-        worktree.path,
-        firstUserMessage.content,
-        firstAssistantMessage.content,
-      );
-
-      if (!newBranch || newBranch === worktree.branch) {
-        return null;
-      }
-
-      const existing = await deps.prisma.worktree.findFirst({
-        where: {
-          repositoryId: worktree.repositoryId,
-          branch: newBranch,
-          id: { not: worktree.id },
-        },
-      });
-      if (existing) {
-        return null;
-      }
-
-      await renameBranchGit({
-        cwd: worktree.path,
-        oldBranch: worktree.branch,
-        newBranch,
-      });
-
-      await deps.prisma.worktree.update({
-        where: { id: worktree.id },
-        data: { branch: newBranch, branchRenamed: true },
-      });
-
-      return newBranch;
-    } catch (error) {
-      deps.logService?.log(
-        "warn",
-        "chat.branch.rename",
-        "Auto branch rename failed; keeping current branch.",
-        {
-          threadId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      );
-      return null;
-    }
-  }
-
-  type PermissionDecisionResult = { decision: "allow" | "deny"; message?: string };
-  type PendingPermissionEntry = {
-    status: "pending" | "resolved";
-    promise: Promise<PermissionDecisionResult>;
-    resolve?: (result: PermissionDecisionResult) => void;
-    reject?: (error: Error) => void;
-    result?: PermissionDecisionResult;
-    toolName: string;
-    command: string | null;
-  };
-  const pendingPermissionsByThread = new Map<string, Map<string, PendingPermissionEntry>>();
-
-  function ensureThreadPermissionMap(threadId: string): Map<string, PendingPermissionEntry> {
-    const existing = pendingPermissionsByThread.get(threadId);
-    if (existing) {
-      return existing;
-    }
-
-    const created = new Map<string, PendingPermissionEntry>();
-    pendingPermissionsByThread.set(threadId, created);
-    return created;
-  }
-
-  function rejectPendingPermissions(threadId: string, message: string): number {
-    const pendingMap = pendingPermissionsByThread.get(threadId);
-    if (!pendingMap) {
-      return 0;
-    }
-
-    pendingPermissionsByThread.delete(threadId);
-    let rejectedCount = 0;
-    for (const pending of pendingMap.values()) {
-      if (pending.status !== "pending" || !pending.reject) {
-        continue;
-      }
-      pending.status = "resolved";
-      const reject = pending.reject;
-      pending.resolve = undefined;
-      pending.reject = undefined;
-      rejectedCount += 1;
-      reject(new Error(message));
-    }
-
-    return rejectedCount;
-  }
-
-  type QuestionAnswerResult = { answers: Record<string, string> };
-  type PendingQuestionEntry = {
-    status: "pending" | "resolved";
-    promise: Promise<QuestionAnswerResult>;
-    resolve?: (result: QuestionAnswerResult) => void;
-    reject?: (error: Error) => void;
-  };
-  const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
-
-  function ensureThreadQuestionMap(threadId: string): Map<string, PendingQuestionEntry> {
-    const existing = pendingQuestionsByThread.get(threadId);
-    if (existing) {
-      return existing;
-    }
-
-    const created = new Map<string, PendingQuestionEntry>();
-    pendingQuestionsByThread.set(threadId, created);
-    return created;
-  }
-
-  function rejectPendingQuestions(threadId: string, message: string): number {
-    const pendingMap = pendingQuestionsByThread.get(threadId);
-    if (!pendingMap) {
-      return 0;
-    }
-
-    pendingQuestionsByThread.delete(threadId);
-    let rejectedCount = 0;
-    for (const pending of pendingMap.values()) {
-      if (pending.status !== "pending" || !pending.reject) {
-        continue;
-      }
-      pending.status = "resolved";
-      const reject = pending.reject;
-      pending.resolve = undefined;
-      pending.reject = undefined;
-      rejectedCount += 1;
-      reject(new Error(message));
-    }
-
-    return rejectedCount;
-  }
-
-  function cancelPendingGateRequests(threadId: string): boolean {
-    const rejectedPermissions = rejectPendingPermissions(threadId, "Permission request cancelled by user.");
-    const rejectedQuestions = rejectPendingQuestions(threadId, "Question cancelled by user.");
-    return rejectedPermissions > 0 || rejectedQuestions > 0;
-  }
-
-  function clearPendingGateRequestsBecauseRunEnded(threadId: string): void {
-    rejectPendingPermissions(threadId, "Permission request cancelled because the chat run ended.");
-    rejectPendingQuestions(threadId, "Question cancelled because the chat run ended.");
-  }
-  type PendingPlanEntry = {
-    content: string;
-    filePath: string;
-  };
-  const pendingPlanByThread = new Map<string, PendingPlanEntry>();
-
-  async function recoverPendingPlan(threadId: string): Promise<PendingPlanEntry | null> {
-    const events = await deps.eventHub.list(threadId);
-    let lastPlan: PendingPlanEntry | null = null;
-
-    for (const event of events) {
-      if (event.type === "plan.created") {
-        const content = typeof event.payload.content === "string" ? event.payload.content : "";
-        const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
-        if (content.length > 0) {
-          lastPlan = { content, filePath };
-        }
-      } else if (event.type === "plan.approved" || event.type === "plan.revision_requested") {
-        lastPlan = null;
-      }
-    }
-
-    return lastPlan;
   }
 
   async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
@@ -1087,7 +110,6 @@ export function createChatService(deps: RuntimeDeps) {
     const abortController = new AbortController();
     runningAbortControllersByThread.set(threadId, abortController);
 
-    // Incremental flush: periodically persist fullOutput to avoid losing content on crash
     const FLUSH_INTERVAL_MS = 2000;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let lastFlushedLength = 0;
@@ -1205,7 +227,7 @@ export function createChatService(deps: RuntimeDeps) {
           );
         },
         onQuestionRequest: async (payload) => {
-          const pendingMap = ensureThreadQuestionMap(threadId);
+          const pendingMap = ensureThreadQuestionMap(pendingQuestionsByThread, threadId);
           const existing = pendingMap.get(payload.requestId);
           if (existing) {
             return existing.promise;
@@ -1248,7 +270,7 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onPermissionRequest: async (payload) => {
-          const pendingMap = ensureThreadPermissionMap(threadId);
+          const pendingMap = ensureThreadPermissionMap(pendingPermissionsByThread, threadId);
           const existing = pendingMap.get(payload.requestId);
           if (existing) {
             if (existing.status === "resolved" && existing.result) {
@@ -1290,13 +312,11 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
 
-      // Clear the incremental flush timer
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
         flushTimer = null;
       }
 
-      // Final persistence — try transaction first, fall back to individual updates
       try {
         await deps.prisma.$transaction(async (tx) => {
           await tx.chatMessage.update({
@@ -1343,6 +363,7 @@ export function createChatService(deps: RuntimeDeps) {
       void (async () => {
         try {
           const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(
+            deps,
             threadId,
             assistantMessage.id,
             {
@@ -1376,10 +397,9 @@ export function createChatService(deps: RuntimeDeps) {
               diffTruncated: diffSnapshot.diffTruncated,
             });
 
-            // Only auto-rename branch when there are actual file changes (not just exploration/Q&A)
             const hasFileChanges = diffSnapshot.changedFiles.length > 0;
             if (hasFileChanges) {
-              const renamedBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(threadId, assistantMessage.id);
+              const renamedBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(deps, threadId, assistantMessage.id);
               if (renamedBranch) {
                 await deps.eventHub.emit(threadId, "tool.finished", {
                   source: "chat.thread.metadata",
@@ -1450,7 +470,7 @@ export function createChatService(deps: RuntimeDeps) {
         threadId,
         hadScheduled,
       });
-      clearPendingGateRequestsBecauseRunEnded(threadId);
+      clearPendingGateRequestsBecauseRunEnded(pendingPermissionsByThread, pendingQuestionsByThread, threadId);
       const wasActive = activeThreads.has(threadId);
       activeThreads.delete(threadId);
       deps.logService?.log("debug", "chat.lifecycle", "activeThreads cleared", {
@@ -1717,7 +737,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("No active assistant run for this thread");
       }
 
-      if (cancelPendingGateRequests(threadId)) {
+      if (cancelPendingGateRequests(pendingPermissionsByThread, pendingQuestionsByThread, threadId)) {
         return;
       }
 
@@ -1897,7 +917,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       let plan = pendingPlanByThread.get(threadId);
       if (!plan) {
-        plan = await recoverPendingPlan(threadId) ?? undefined;
+        plan = await recoverPendingPlan(deps.eventHub, threadId) ?? undefined;
         if (!plan) {
           throw new Error("No pending plan to approve for this thread");
         }
@@ -1928,7 +948,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       let plan = pendingPlanByThread.get(threadId);
       if (!plan) {
-        plan = await recoverPendingPlan(threadId) ?? undefined;
+        plan = await recoverPendingPlan(deps.eventHub, threadId) ?? undefined;
         if (!plan) {
           throw new Error("No pending plan to revise for this thread");
         }
@@ -1994,7 +1014,6 @@ export function createChatService(deps: RuntimeDeps) {
           },
         });
 
-        // Process attachments
         const attachmentRecords: Array<{ filename: string; mimeType: string; content: string; storagePath: string | null }> = [];
         const inputAttachments: AttachmentInput[] = input.attachments ?? [];
         for (const att of inputAttachments) {
@@ -2011,13 +1030,12 @@ export function createChatService(deps: RuntimeDeps) {
           let dbContent = att.content;
 
           if (isImageMimeType(att.mimeType)) {
-            // Write image to disk
             const attachDir = join(thread.worktree.path, ATTACHMENT_DIR_NAME, message.id);
             mkdirSync(attachDir, { recursive: true });
             const safeFilename = basename(att.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
             storagePath = join(attachDir, safeFilename);
             writeFileSync(storagePath, contentBytes);
-            dbContent = ""; // Don't store image binary in DB
+            dbContent = "";
           }
 
           await deps.prisma.chatAttachment.create({
@@ -2050,7 +1068,6 @@ export function createChatService(deps: RuntimeDeps) {
         const prompt = buildPromptWithAttachments(input.content, attachmentRecords);
         scheduleAssistant(threadId, prompt, input.mode);
 
-        // Re-fetch with attachments for the response
         const messageWithAttachments = await deps.prisma.chatMessage.findUnique({
           where: { id: message.id },
           include: { attachments: true },
@@ -2113,14 +1130,12 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
     },
 
     async recoverStuckThreads(): Promise<number> {
-      // Find all threads and check if their last event is a terminal event
       const threads = await deps.prisma.chatThread.findMany({
         select: { id: true },
       });
 
       let recoveredCount = 0;
       for (const thread of threads) {
-        // Skip threads that are currently active
         if (activeThreads.has(thread.id)) continue;
 
         const events = await deps.eventHub.list(thread.id);
@@ -2129,7 +1144,6 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
         const lastEvent = events[events.length - 1];
         if (lastEvent.type === "chat.completed" || lastEvent.type === "chat.failed") continue;
 
-        // This thread has events but no terminal event — it was stuck
         await deps.eventHub.emit(thread.id, "chat.failed", {
           message: "Chat run interrupted by a runtime restart. You can send a new message to continue.",
         });

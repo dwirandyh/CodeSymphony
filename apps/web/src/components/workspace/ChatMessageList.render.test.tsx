@@ -2,8 +2,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import type { ChatTimelineItem } from "./ChatMessageList";
-import { MarkdownBody, ChatMessageList } from "./ChatMessageList";
+import type { ChatTimelineItem } from "./chat-message-list";
+import { MarkdownBody, ChatMessageList } from "./chat-message-list";
 
 vi.mock("@pierre/diffs", () => ({
   parsePatchFiles: vi.fn().mockReturnValue([]),

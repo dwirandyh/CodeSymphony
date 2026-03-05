@@ -1,7 +1,7 @@
 import { PrismaClient, type ChatEventType } from "@prisma/client";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
-import { createChatService } from "../src/services/chatService";
+import { createChatService } from "../src/services/chat";
 
 const stubModelProviderService = {
   getActiveProvider: async () => null,

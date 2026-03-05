@@ -26,7 +26,7 @@ vi.mock("../../../hooks/queries/useThreadSnapshot", () => ({
   useThreadSnapshot: (...args: unknown[]) => useThreadSnapshotMock(...args),
 }));
 
-vi.mock("./useWorkspaceTimeline", () => ({
+vi.mock("./workspace-timeline", () => ({
   useWorkspaceTimeline: (...args: unknown[]) => useWorkspaceTimelineMock(...args),
 }));
 
@@ -45,7 +45,7 @@ vi.mock("../../../lib/api", () => ({
   },
 }));
 
-import { useChatSession, resolveHydrationBackfillPolicy } from "./useChatSession";
+import { useChatSession, resolveHydrationBackfillPolicy } from "./chat-session";
 
 function makeThread(): ChatThread {
   return {

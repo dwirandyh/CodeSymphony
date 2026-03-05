@@ -1,5 +1,5 @@
 import type { ChatEvent, Repository } from "@codesymphony/shared-types";
-import type { ActivityTraceStep } from "../../components/workspace/ChatMessageList";
+import type { ActivityTraceStep } from "../../components/workspace/chat-message-list";
 import {
   EXPLORE_BASH_COMMAND_PATTERN,
   FILE_PATH_PATTERN,
