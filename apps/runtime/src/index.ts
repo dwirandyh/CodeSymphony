@@ -10,7 +10,7 @@ import { createEventHub } from "./events/eventHub.js";
 import { runClaudeWithStreaming } from "./claude/sessionRunner.js";
 import { createRepositoryService } from "./services/repositoryService.js";
 import { createWorktreeService } from "./services/worktreeService.js";
-import { createChatService } from "./services/chatService.js";
+import { createChatService } from "./services/chat/index.js";
 import { createSystemService } from "./services/systemService.js";
 import { createFileService } from "./services/fileService.js";
 import { createTerminalService } from "./services/terminalService.js";

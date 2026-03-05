@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
-import { createChatService } from "../src/services/chatService";
+import { createChatService } from "../src/services/chat";
 import type { ClaudeRunner } from "../src/types";
 
 const stubModelProviderService = {

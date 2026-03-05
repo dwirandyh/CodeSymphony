@@ -24,3 +24,24 @@ export function resolveRuntimeApiBase(): string {
   // Production build served from runtime → same origin
   return `${window.location.origin}/api`;
 }
+
+export function resolveRuntimeApiBases(): string[] {
+  const primary = resolveRuntimeApiBase();
+
+  if (typeof window === "undefined") {
+    return [primary];
+  }
+
+  if (import.meta.env.VITE_RUNTIME_URL) {
+    return [primary];
+  }
+
+  if (isDesktopRuntimeWindow(window) || !import.meta.env.DEV) {
+    return [primary];
+  }
+
+  const webBase = `${window.location.protocol}//${window.location.hostname}:${WEB_RUNTIME_PORT}/api`;
+  const desktopBase = `${window.location.protocol}//${window.location.hostname}:${DESKTOP_RUNTIME_PORT}/api`;
+
+  return Array.from(new Set([primary, webBase, desktopBase]));
+}

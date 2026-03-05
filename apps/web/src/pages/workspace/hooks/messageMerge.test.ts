@@ -1,107 +1,162 @@
 import { describe, expect, it } from "vitest";
-import type { ChatAttachment, ChatMessage } from "@codesymphony/shared-types";
-import { areMessageArraysEqual, mergeThreadMessages } from "./messageMerge";
+import type { ChatMessage, ChatAttachment } from "@codesymphony/shared-types";
+import {
+  areMessagesEqual,
+  areMessageArraysEqual,
+  mergeThreadMessages,
+} from "./messageMerge";
 
-function createAttachment(overrides: Partial<ChatAttachment> = {}): ChatAttachment {
+function makeMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
   return {
-    id: "att-1",
-    messageId: "msg-1",
-    filename: "file.txt",
-    mimeType: "text/plain",
-    sizeBytes: 11,
-    content: "hello world",
-    storagePath: null,
-    source: "file_picker",
-    createdAt: "2026-02-24T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
-function createMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
-  return {
-    id: "msg-1",
-    threadId: "thread-1",
+    id: "m1",
+    threadId: "t1",
     seq: 1,
     role: "user",
-    content: "Please review this",
+    content: "hello",
     attachments: [],
-    createdAt: "2026-02-24T00:00:00.000Z",
+    createdAt: "2026-01-01T00:00:00Z",
     ...overrides,
   };
 }
 
-describe("messageMerge", () => {
-  it("keeps queried attachment data for file picker attachments when local message has none", () => {
-    const local = [createMessage()];
-    const queried = [
-      createMessage({
-        attachments: [createAttachment({ source: "file_picker", filename: "notes.md", content: "# notes" })],
-      }),
-    ];
+function makeAttachment(overrides: Partial<ChatAttachment> = {}): ChatAttachment {
+  return {
+    id: "a1",
+    messageId: "m1",
+    filename: "file.txt",
+    mimeType: "text/plain",
+    sizeBytes: 100,
+    source: "upload",
+    storagePath: "/uploads/file.txt",
+    content: "file content",
+    ...overrides,
+  };
+}
 
-    const merged = mergeThreadMessages(queried, local);
-
-    expect(merged[0].attachments).toHaveLength(1);
-    expect(merged[0].attachments[0].filename).toBe("notes.md");
-    expect(areMessageArraysEqual(merged, local)).toBe(false);
+describe("areMessagesEqual", () => {
+  it("returns true for identical messages", () => {
+    const m = makeMessage();
+    expect(areMessagesEqual(m, { ...m })).toBe(true);
   });
 
-  it("keeps queried attachment data for clipboard text attachments", () => {
-    const local = [createMessage({ content: "Here is pasted text" })];
-    const queried = [
-      createMessage({
-        content: "Here is pasted text",
-        attachments: [
-          createAttachment({
-            id: "att-clipboard",
-            source: "clipboard_text",
-            filename: "pasted-1.txt",
-            content: "some clipboard content",
-            sizeBytes: 22,
-          }),
-        ],
-      }),
-    ];
-
-    const merged = mergeThreadMessages(queried, local);
-
-    expect(merged[0].attachments).toHaveLength(1);
-    expect(merged[0].attachments[0].source).toBe("clipboard_text");
-    expect(merged[0].attachments[0].filename).toBe("pasted-1.txt");
+  it("returns false for different id", () => {
+    expect(areMessagesEqual(makeMessage({ id: "m1" }), makeMessage({ id: "m2" }))).toBe(false);
   });
 
-  it("prefers local streaming assistant content when longer than queried content", () => {
-    const local = [
-      createMessage({
-        role: "assistant",
-        content: "This is the longer streaming response",
-        attachments: [],
-      }),
-    ];
-    const queried = [
-      createMessage({
-        role: "assistant",
-        content: "This is shorter",
-        attachments: [],
-      }),
-    ];
-
-    const merged = mergeThreadMessages(queried, local);
-
-    expect(merged[0].content).toBe("This is the longer streaming response");
+  it("returns false for different content", () => {
+    expect(areMessagesEqual(
+      makeMessage({ content: "a" }),
+      makeMessage({ content: "b" }),
+    )).toBe(false);
   });
 
-  it("treats attachment changes as message-array changes even when text is unchanged", () => {
-    const local = [createMessage({ content: "same text", attachments: [] })];
-    const queried = [
-      createMessage({
-        content: "same text",
-        attachments: [createAttachment({ id: "att-2", filename: "same-length.txt", content: "abc" })],
-      }),
-    ];
+  it("returns false for different role", () => {
+    expect(areMessagesEqual(
+      makeMessage({ role: "user" }),
+      makeMessage({ role: "assistant" }),
+    )).toBe(false);
+  });
 
-    const merged = mergeThreadMessages(queried, local);
+  it("returns false for different seq", () => {
+    expect(areMessagesEqual(
+      makeMessage({ seq: 1 }),
+      makeMessage({ seq: 2 }),
+    )).toBe(false);
+  });
 
-    expect(areMessageArraysEqual(local, merged)).toBe(false);
+  it("returns true when both have empty attachments", () => {
+    expect(areMessagesEqual(
+      makeMessage({ attachments: [] }),
+      makeMessage({ attachments: [] }),
+    )).toBe(true);
+  });
+
+  it("returns false when attachment counts differ", () => {
+    expect(areMessagesEqual(
+      makeMessage({ attachments: [makeAttachment()] }),
+      makeMessage({ attachments: [] }),
+    )).toBe(false);
+  });
+
+  it("returns false when attachment content differs", () => {
+    expect(areMessagesEqual(
+      makeMessage({ attachments: [makeAttachment({ content: "a" })] }),
+      makeMessage({ attachments: [makeAttachment({ content: "b" })] }),
+    )).toBe(false);
+  });
+
+  it("returns false when attachment filename differs", () => {
+    expect(areMessagesEqual(
+      makeMessage({ attachments: [makeAttachment({ filename: "a.txt" })] }),
+      makeMessage({ attachments: [makeAttachment({ filename: "b.txt" })] }),
+    )).toBe(false);
+  });
+});
+
+describe("areMessageArraysEqual", () => {
+  it("returns true for empty arrays", () => {
+    expect(areMessageArraysEqual([], [])).toBe(true);
+  });
+
+  it("returns true for identical arrays", () => {
+    const arr = [makeMessage({ id: "m1" }), makeMessage({ id: "m2", seq: 2 })];
+    expect(areMessageArraysEqual(arr, [...arr])).toBe(true);
+  });
+
+  it("returns false for different lengths", () => {
+    expect(areMessageArraysEqual([makeMessage()], [])).toBe(false);
+  });
+
+  it("returns false for different messages at same index", () => {
+    expect(areMessageArraysEqual(
+      [makeMessage({ content: "a" })],
+      [makeMessage({ content: "b" })],
+    )).toBe(false);
+  });
+});
+
+describe("mergeThreadMessages", () => {
+  it("returns queried messages when no local", () => {
+    const queried = [makeMessage({ id: "m1", seq: 1 })];
+    const result = mergeThreadMessages(queried, []);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("m1");
+  });
+
+  it("returns local messages when no queried", () => {
+    const local = [makeMessage({ id: "m1", seq: 1, content: "local" })];
+    const result = mergeThreadMessages([], local);
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toBe("local");
+  });
+
+  it("merges local-only messages into result", () => {
+    const queried = [makeMessage({ id: "m1", seq: 1 })];
+    const local = [makeMessage({ id: "m2", seq: 2, content: "local" })];
+    const result = mergeThreadMessages(queried, local);
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe("m1");
+    expect(result[1].id).toBe("m2");
+  });
+
+  it("prefers local message when it has longer content", () => {
+    const queried = [makeMessage({ id: "m1", content: "short" })];
+    const local = [makeMessage({ id: "m1", content: "longer content here" })];
+    const result = mergeThreadMessages(queried, local);
+    expect(result[0].content).toBe("longer content here");
+  });
+
+  it("keeps queried message when local has shorter content", () => {
+    const queried = [makeMessage({ id: "m1", content: "longer queried content" })];
+    const local = [makeMessage({ id: "m1", content: "short" })];
+    const result = mergeThreadMessages(queried, local);
+    expect(result[0].content).toBe("longer queried content");
+  });
+
+  it("sorts merged messages by seq", () => {
+    const queried = [makeMessage({ id: "m3", seq: 3 })];
+    const local = [makeMessage({ id: "m1", seq: 1 }), makeMessage({ id: "m2", seq: 2 })];
+    const result = mergeThreadMessages(queried, local);
+    expect(result.map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
   });
 });

@@ -40,7 +40,11 @@ export function useRepositoryManager(
   options?: UseRepositoryManagerOptions,
 ) {
   const queryClient = useQueryClient();
-  const { data: repositories = [], isLoading: loadingRepos } = useRepositories();
+  const {
+    data: repositories = [],
+    isLoading: loadingRepos,
+    error: repositoriesError,
+  } = useRepositories();
 
   const createRepoMutation = useCreateRepository();
   const createWorktreeMutation = useCreateWorktree();
@@ -377,6 +381,7 @@ export function useRepositoryManager(
 
   return {
     repositories,
+    repositoriesError,
     selectedRepositoryId,
     selectedWorktreeId,
     selectedRepository,

@@ -10,6 +10,7 @@ export const EVENT_TYPES = [
   "permission.resolved",
   "question.requested",
   "question.answered",
+  "question.dismissed",
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
@@ -27,6 +28,7 @@ export const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "permission.resolved",
   "question.requested",
   "question.answered",
+  "question.dismissed",
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
@@ -36,6 +38,9 @@ export const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
 ]);
 
 export const MAX_ORDER_INDEX = Number.MAX_SAFE_INTEGER;
+
+export const INITIAL_MESSAGES_PAGE_LIMIT = 50;
+export const INITIAL_EVENTS_PAGE_LIMIT = 800;
 
 export const READ_TOOL_PATTERN = /\b(read|open|cat)\b/i;
 export const SEARCH_TOOL_PATTERN = /\b(glob|grep|search|find|list|scan|ls)\b/i;

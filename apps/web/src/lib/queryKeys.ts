@@ -12,6 +12,7 @@ export const queryKeys = {
   },
   threads: {
     list: (worktreeId: string) => ["threads", "list", worktreeId] as const,
+    snapshot: (threadId: string) => ["threads", threadId, "snapshot"] as const,
     messages: (threadId: string) => ["threads", threadId, "messages"] as const,
     events: (threadId: string) => ["threads", threadId, "events"] as const,
   },

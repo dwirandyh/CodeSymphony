@@ -67,6 +67,8 @@ fn spawn_runtime_dev() -> Option<Child> {
 
     let mut cmd = Command::new("pnpm");
     cmd.args(["--filter", "@codesymphony/runtime", "dev"])
+        .env("RUNTIME_HOST", "127.0.0.1")
+        .env("RUNTIME_PORT", "4321")
         .current_dir(workspace_root);
 
     #[cfg(unix)]

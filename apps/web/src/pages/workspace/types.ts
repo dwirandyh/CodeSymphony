@@ -1,10 +1,10 @@
-import type { ExploreActivityEntry } from "../../components/workspace/ChatMessageList";
+import type { ExploreActivityEntry } from "../../components/workspace/chat-message-list";
 
 export type StepCandidate = {
   key: string | null;
   priority: number;
   idx: number;
-  step: import("../../components/workspace/ChatMessageList").ActivityTraceStep;
+  step: import("../../components/workspace/chat-message-list").ActivityTraceStep;
 };
 
 export type BashRun = {
@@ -64,6 +64,7 @@ export type ExploreActivityGroup = {
   searchCount: number;
   entries: ExploreActivityEntry[];
   startIdx: number;
+  endIdx: number;
   anchorIdx: number;
   createdAt: string;
   eventIds: Set<string>;

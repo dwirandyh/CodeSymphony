@@ -19,9 +19,10 @@ type QuestionCardProps = {
   questions: QuestionItem[];
   busy: boolean;
   onAnswer: (requestId: string, answers: Record<string, string>) => void;
+  onDismiss: (requestId: string) => void;
 };
 
-export function QuestionCard({ requestId, questions, busy, onAnswer }: QuestionCardProps) {
+export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }: QuestionCardProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [selectedByQuestion, setSelectedByQuestion] = useState<Map<string, Set<string>>>(() => new Map());
   const [freeTextByQuestion, setFreeTextByQuestion] = useState<Map<string, string>>(() => new Map());
@@ -234,7 +235,7 @@ export function QuestionCard({ requestId, questions, busy, onAnswer }: QuestionC
               type="button"
               size="sm"
               variant="ghost"
-              disabled={currentStep === 0}
+              disabled={currentStep === 0 || busy}
               className="h-7 w-7 p-0"
               onClick={handlePrev}
               aria-label="Previous question"
@@ -247,7 +248,7 @@ export function QuestionCard({ requestId, questions, busy, onAnswer }: QuestionC
               type="button"
               size="sm"
               variant="ghost"
-              disabled={!canGoNext}
+              disabled={!canGoNext || busy}
               className="h-7 w-7 p-0"
               onClick={handleNext}
               aria-label="Next question"
@@ -257,16 +258,28 @@ export function QuestionCard({ requestId, questions, busy, onAnswer }: QuestionC
           ) : null}
         </div>
 
-        <Button
-          type="button"
-          size="sm"
-          disabled={busy || !canSubmit}
-          className="h-8 rounded-md px-4 text-xs"
-          onClick={() => onAnswer(requestId, buildAnswers())}
-          aria-label={`Submit answer ${requestId}`}
-        >
-          {busy ? "Sending..." : "Submit Answer"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => onDismiss(requestId)}
+            aria-label={`Dismiss question ${requestId}`}
+          >
+            Dismiss
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || !canSubmit}
+            className="h-8 rounded-md px-4 text-xs"
+            onClick={() => onAnswer(requestId, buildAnswers())}
+            aria-label={`Submit answer ${requestId}`}
+          >
+            {busy ? "Sending..." : "Submit Answer"}
+          </Button>
+        </div>
       </div>
     </section>
   );

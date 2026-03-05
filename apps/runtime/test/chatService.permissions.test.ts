@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
-import { createChatService } from "../src/services/chatService";
+import { createChatService } from "../src/services/chat";
 import { createLogService } from "../src/services/logService";
 import type { ClaudeRunner } from "../src/types";
 
@@ -210,6 +210,61 @@ describe("chatService permission flow", () => {
 
     const thread = await chatService.getThreadById(threadId);
     expect(thread?.title).toBe("Summarize README.md");
+  });
+
+  it("passes active provider config to AI title generation", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({
+      onText,
+      prompt,
+      model,
+      providerApiKey,
+      providerBaseUrl,
+    }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        expect(model).toBe("claude-3-7-sonnet");
+        expect(providerApiKey).toBe("provider-key");
+        expect(providerBaseUrl).toBe("https://provider.example.com/v1");
+        await onText("Provider-aware title");
+        return {
+          output: "Provider-aware title",
+          sessionId: null,
+        };
+      }
+
+      await onText("Siap.");
+      return {
+        output: "Siap.",
+        sessionId: "session-provider-title",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: {
+        getActiveProvider: async () => ({
+          apiKey: "provider-key",
+          baseUrl: "https://provider.example.com/v1",
+          name: "Custom Provider",
+          modelId: "claude-3-7-sonnet",
+        }),
+      },
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "Summarize project setup flow",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) =>
+        event.type === "tool.finished"
+        && String(event.payload.source ?? "") === "chat.thread.metadata"
+        && String(event.payload.threadTitle ?? "") === "Provider-aware title",
+    );
   });
 
   it("does not overwrite non-default thread title and emits no metadata title event", async () => {
@@ -653,6 +708,53 @@ describe("chatService permission flow", () => {
     expect(receivedAbortController?.signal.aborted).toBe(true);
   });
 
+  it("stops run while waiting for question without aborting controller", async () => {
+    let receivedAbortController: AbortController | undefined;
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onQuestionRequest, abortController }) => {
+      receivedAbortController = abortController;
+      if (!abortController) {
+        throw new Error("Missing abort controller");
+      }
+
+      await onQuestionRequest({
+        requestId: "q-stop-1",
+        questions: [{ question: "Continue with the task?" }],
+      });
+
+      return {
+        output: "Unexpected completion",
+        sessionId: "session-stop-question",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "ask me first before continuing",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "question.requested" && event.payload.requestId === "q-stop-1",
+    );
+
+    await chatService.stopRun(threadId);
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const completedEvent = events.find((event) => event.type === "chat.completed" && event.payload.cancelled === true);
+    expect(completedEvent).toBeDefined();
+    expect(events.some((event) => event.type === "chat.failed")).toBe(false);
+    expect(receivedAbortController).toBeDefined();
+    expect(receivedAbortController?.signal.aborted).toBe(false);
+  });
+
   it("rejects stop when no active run exists", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async () => ({
       output: "",
@@ -861,5 +963,117 @@ describe("chatService permission flow", () => {
     });
 
     await waitForTerminalEvent(chatService, threadId);
+  });
+
+  it("dismisses pending plan question and cancels the active run", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
+      if (permissionMode === "plan") {
+        try {
+          await onQuestionRequest({
+            requestId: "q-dismiss-1",
+            questions: [{ question: "Which approach do you prefer?" }],
+          });
+        } catch {
+          // Dismiss path cancels the waiting question.
+        }
+
+        await onText("Question flow ended.");
+        return {
+          output: "Question flow ended.",
+          sessionId: "session-plan-dismiss",
+        };
+      }
+
+      await onText("Done.");
+      return { output: "Done.", sessionId: "session-plan-dismiss-default" };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "plan something",
+      mode: "plan",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "question.requested" && event.payload.requestId === "q-dismiss-1",
+    );
+
+    await chatService.dismissQuestion(threadId, {
+      requestId: "q-dismiss-1",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const dismissed = events.find((event) => event.type === "question.dismissed" && event.payload.requestId === "q-dismiss-1");
+    expect(dismissed).toBeDefined();
+    expect(dismissed?.payload.persisted).toBe(true);
+
+    const completed = events.find((event) => event.type === "chat.completed");
+    expect(completed).toBeDefined();
+  });
+
+  it("records stale dismisses as non-persisted and keeps run stable", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
+      if (permissionMode === "plan") {
+        const result = await onQuestionRequest({
+          requestId: "q-stale-1",
+          questions: [{ question: "Pick one" }],
+        });
+        await onText(`Answer: ${JSON.stringify(result.answers)}`);
+        return {
+          output: `Answer: ${JSON.stringify(result.answers)}`,
+          sessionId: "session-plan-stale-dismiss",
+        };
+      }
+
+      await onText("Done.");
+      return { output: "Done.", sessionId: "session-plan-stale-dismiss-default" };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "plan something",
+      mode: "plan",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "question.requested" && event.payload.requestId === "q-stale-1",
+    );
+
+    await chatService.answerQuestion(threadId, {
+      requestId: "q-stale-1",
+      answers: { "0": "Option A" },
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+
+    await chatService.dismissQuestion(threadId, {
+      requestId: "q-stale-1",
+    });
+
+    const staleDismissed = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "question.dismissed" && event.payload.requestId === "q-stale-1" && event.payload.persisted === false,
+    );
+
+    expect(staleDismissed.payload.resolver).toBe("system");
   });
 });

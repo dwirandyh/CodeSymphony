@@ -16,6 +16,7 @@ export const ChatEventTypeSchema = z.enum([
   "permission.resolved",
   "question.requested",
   "question.answered",
+  "question.dismissed",
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
@@ -55,6 +56,7 @@ export const ChatThreadSchema = z.object({
   id: z.string(),
   worktreeId: z.string(),
   title: z.string().min(1),
+  titleEditedManually: z.boolean(),
   claudeSessionId: z.string().nullable(),
   active: z.boolean(),
   createdAt: z.string().datetime(),
@@ -107,6 +109,48 @@ export const ChatEventSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+export const ChatMessagesPageInfoSchema = z.object({
+  hasMoreOlder: z.boolean(),
+  nextBeforeSeq: z.number().int().nonnegative().nullable(),
+  oldestSeq: z.number().int().nonnegative().nullable(),
+  newestSeq: z.number().int().nonnegative().nullable(),
+});
+
+export const ChatEventsPageInfoSchema = z.object({
+  hasMoreOlder: z.boolean(),
+  nextBeforeIdx: z.number().int().nonnegative().nullable(),
+  oldestIdx: z.number().int().nonnegative().nullable(),
+  newestIdx: z.number().int().nonnegative().nullable(),
+});
+
+export const ChatMessagesPageSchema = z.object({
+  data: z.array(ChatMessageSchema),
+  pageInfo: ChatMessagesPageInfoSchema,
+});
+
+export const ChatEventsPageSchema = z.object({
+  data: z.array(ChatEventSchema),
+  pageInfo: ChatEventsPageInfoSchema,
+});
+
+export const ChatThreadSnapshotWatermarksSchema = z.object({
+  newestSeq: z.number().int().nonnegative().nullable(),
+  newestIdx: z.number().int().nonnegative().nullable(),
+});
+
+export const ChatThreadSnapshotCoverageSchema = z.object({
+  eventsStatus: z.enum(["complete", "needs_backfill", "capped"]),
+  recommendedBackfill: z.boolean(),
+  nextBeforeIdx: z.number().int().nonnegative().nullable(),
+});
+
+export const ChatThreadSnapshotSchema = z.object({
+  messages: ChatMessagesPageSchema,
+  events: ChatEventsPageSchema,
+  watermarks: ChatThreadSnapshotWatermarksSchema,
+  coverage: ChatThreadSnapshotCoverageSchema,
+});
+
 export const CreateRepositoryInputSchema = z.object({
   path: z.string().trim().min(1),
   name: z.string().trim().min(1).optional(),
@@ -117,9 +161,16 @@ export const CreateWorktreeInputSchema = z.object({
   baseBranch: z.string().trim().min(1).optional(),
 });
 
+const MAX_THREAD_TITLE_LENGTH = 48;
+
 export const CreateChatThreadInputSchema = z.object({
-  title: z.string().trim().min(1).optional(),
+  title: z.string().trim().min(1).max(MAX_THREAD_TITLE_LENGTH).optional(),
 });
+
+export const RenameChatThreadTitleInputSchema = z.object({
+  title: z.string().trim().min(1).max(MAX_THREAD_TITLE_LENGTH),
+});
+export type RenameChatThreadTitleInput = z.infer<typeof RenameChatThreadTitleInputSchema>;
 
 export const ChatModeSchema = z.enum(["default", "plan"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
@@ -147,6 +198,12 @@ export const AnswerQuestionInputSchema = z.object({
   answers: z.record(z.string(), z.string()),
 });
 export type AnswerQuestionInput = z.infer<typeof AnswerQuestionInputSchema>;
+
+export const DismissQuestionInputSchema = z.object({
+  requestId: z.string().trim().min(1),
+  reason: z.string().trim().optional(),
+});
+export type DismissQuestionInput = z.infer<typeof DismissQuestionInputSchema>;
 
 export const PlanRevisionInputSchema = z.object({
   feedback: z.string().trim().min(1),
@@ -184,6 +241,13 @@ export type Worktree = z.infer<typeof WorktreeSchema>;
 export type ChatThread = z.infer<typeof ChatThreadSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type ChatEvent = z.infer<typeof ChatEventSchema>;
+export type ChatMessagesPageInfo = z.infer<typeof ChatMessagesPageInfoSchema>;
+export type ChatEventsPageInfo = z.infer<typeof ChatEventsPageInfoSchema>;
+export type ChatMessagesPage = z.infer<typeof ChatMessagesPageSchema>;
+export type ChatEventsPage = z.infer<typeof ChatEventsPageSchema>;
+export type ChatThreadSnapshotWatermarks = z.infer<typeof ChatThreadSnapshotWatermarksSchema>;
+export type ChatThreadSnapshotCoverage = z.infer<typeof ChatThreadSnapshotCoverageSchema>;
+export type ChatThreadSnapshot = z.infer<typeof ChatThreadSnapshotSchema>;
 export type CreateRepositoryInput = z.infer<typeof CreateRepositoryInputSchema>;
 export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInputSchema>;
 export type CreateChatThreadInput = z.infer<typeof CreateChatThreadInputSchema>;

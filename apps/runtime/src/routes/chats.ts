@@ -6,7 +6,20 @@ import { z } from "zod";
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
-const eventQuery = z.object({ afterIdx: z.string().optional() });
+const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
+const STREAM_PREFLUSH_BUFFER_LIMIT = 1000;
+const messagesPageQuery = z.object({
+  beforeSeq: z.string().optional(),
+  limit: z.string().optional(),
+}).strict();
+const eventsPageQuery = z.object({
+  beforeIdx: z.string().optional(),
+  limit: z.string().optional(),
+}).strict();
+const threadSnapshotQuery = z.object({
+  messageLimit: z.string().optional(),
+  eventLimit: z.string().optional(),
+}).strict();
 
 function parseNonNegativeInt(input: unknown): number | null {
   const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
@@ -19,6 +32,18 @@ function parseNonNegativeInt(input: unknown): number | null {
     return null;
   }
 
+  return parsed;
+}
+
+function parsePositiveInt(input: unknown): number | null {
+  const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
+  if (typeof rawValue !== "string" && typeof rawValue !== "number") {
+    return null;
+  }
+  const parsed = Number(rawValue);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null;
+  }
   return parsed;
 }
 
@@ -129,6 +154,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
     return { data: thread };
   });
 
+  app.patch("/threads/:id/title", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      const thread = await app.chatService.renameThreadTitle(params.id, request.body);
+      return { data: thread };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to rename thread title";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.delete("/threads/:id", async (request, reply) => {
     const params = threadParams.parse(request.params);
 
@@ -142,13 +179,55 @@ export async function registerChatRoutes(app: FastifyInstance) {
   });
 
   app.get("/threads/:id/messages", async (request, reply) => {
-    const params = threadParams.parse(request.params);
-
     try {
-      const messages = await app.chatService.listMessages(params.id);
-      return { data: messages };
+      const params = threadParams.parse(request.params);
+      const query = messagesPageQuery.parse(request.query);
+      const beforeSeq = query.beforeSeq == null ? undefined : parseNonNegativeInt(query.beforeSeq);
+      const limit = query.limit == null ? undefined : parsePositiveInt(query.limit);
+
+      if (query.beforeSeq != null && beforeSeq == null) {
+        return reply.code(400).send({ error: "Invalid beforeSeq query value" });
+      }
+      if (query.limit != null && limit == null) {
+        return reply.code(400).send({ error: "Invalid limit query value" });
+      }
+
+      const page = await app.chatService.listMessagesPage(params.id, {
+        beforeSeq: beforeSeq ?? undefined,
+        limit: limit ?? undefined,
+      });
+      return {
+        data: page.data,
+        pageInfo: page.pageInfo,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list messages";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.get("/threads/:id/snapshot", async (request, reply) => {
+    try {
+      const params = threadParams.parse(request.params);
+      const query = threadSnapshotQuery.parse(request.query);
+      const messageLimit = query.messageLimit == null ? undefined : parsePositiveInt(query.messageLimit);
+      const eventLimit = query.eventLimit == null ? undefined : parsePositiveInt(query.eventLimit);
+
+      if (query.messageLimit != null && messageLimit == null) {
+        return reply.code(400).send({ error: "Invalid messageLimit query value" });
+      }
+      if (query.eventLimit != null && eventLimit == null) {
+        return reply.code(400).send({ error: "Invalid eventLimit query value" });
+      }
+
+      const snapshot = await app.chatService.listThreadSnapshot(params.id, {
+        messageLimit: messageLimit ?? undefined,
+        eventLimit: eventLimit ?? undefined,
+      });
+
+      return { data: snapshot };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to load thread snapshot";
       return reply.code(400).send({ error: message });
     }
   });
@@ -185,6 +264,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
       return reply.code(204).send();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to answer question";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/threads/:id/questions/dismiss", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.dismissQuestion(params.id, request.body);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to dismiss question";
       return reply.code(400).send({ error: message });
     }
   });
@@ -226,13 +317,27 @@ export async function registerChatRoutes(app: FastifyInstance) {
   });
 
   app.get("/threads/:id/events", async (request, reply) => {
-    const params = threadParams.parse(request.params);
-    const query = eventQuery.parse(request.query);
-    const afterIdx = query.afterIdx ? Number(query.afterIdx) : undefined;
-
     try {
-      const events = await app.chatService.listEvents(params.id, Number.isFinite(afterIdx) ? afterIdx : undefined);
-      return { data: events };
+      const params = threadParams.parse(request.params);
+      const query = eventsPageQuery.parse(request.query);
+      const beforeIdx = query.beforeIdx == null ? undefined : parseNonNegativeInt(query.beforeIdx);
+      const limit = query.limit == null ? undefined : parsePositiveInt(query.limit);
+
+      if (query.beforeIdx != null && beforeIdx == null) {
+        return reply.code(400).send({ error: "Invalid beforeIdx query value" });
+      }
+      if (query.limit != null && limit == null) {
+        return reply.code(400).send({ error: "Invalid limit query value" });
+      }
+
+      const page = await app.chatService.listEventsPage(params.id, {
+        beforeIdx: beforeIdx ?? undefined,
+        limit: limit ?? undefined,
+      });
+      return {
+        data: page.data,
+        pageInfo: page.pageInfo,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list events";
       return reply.code(400).send({ error: message });
@@ -240,58 +345,69 @@ export async function registerChatRoutes(app: FastifyInstance) {
   });
 
   app.get("/threads/:id/events/stream", async (request, reply) => {
-    const params = threadParams.parse(request.params);
-    const query = eventQuery.parse(request.query);
-    const startCursor = parseStreamStartCursor(query.afterIdx, request.headers["last-event-id"]);
+    try {
+      const params = threadParams.parse(request.params);
+      const query = streamEventQuery.parse(request.query);
+      const startCursor = parseStreamStartCursor(query.afterIdx, request.headers["last-event-id"]);
 
-    const requestOrigin = request.headers.origin;
+      const requestOrigin = request.headers.origin;
 
-    if (requestOrigin) {
-      reply.raw.setHeader("Access-Control-Allow-Origin", requestOrigin);
-      reply.raw.setHeader("Vary", "Origin");
-    }
+      if (requestOrigin) {
+        reply.raw.setHeader("Access-Control-Allow-Origin", requestOrigin);
+        reply.raw.setHeader("Vary", "Origin");
+      }
 
-    reply.raw.setHeader("Content-Type", "text/event-stream");
-    reply.raw.setHeader("Cache-Control", "no-cache");
-    reply.raw.setHeader("Connection", "keep-alive");
-    reply.raw.setHeader("X-Accel-Buffering", "no");
+      reply.raw.setHeader("Content-Type", "text/event-stream");
+      reply.raw.setHeader("Cache-Control", "no-cache");
+      reply.raw.setHeader("Connection", "keep-alive");
+      reply.raw.setHeader("X-Accel-Buffering", "no");
 
-    // Subscribe FIRST to avoid gaps between history fetch and live subscription
-    const buffer: ChatEvent[] = [];
-    let flushed = false;
-    const unsubscribe = app.eventHub.subscribe(params.id, (event) => {
-      if (!flushed) { buffer.push(event); return; }
-      reply.raw.write(formatSseEvent(event));
-    });
+      // Subscribe FIRST to avoid gaps between history fetch and live subscription
+      const buffer: ChatEvent[] = [];
+      let flushed = false;
+      const unsubscribe = app.eventHub.subscribe(params.id, (event) => {
+        if (!flushed) {
+          if (buffer.length >= STREAM_PREFLUSH_BUFFER_LIMIT) {
+            buffer.shift();
+          }
+          buffer.push(event);
+          return;
+        }
+        reply.raw.write(formatSseEvent(event));
+      });
 
-    const history = await app.chatService.listEvents(params.id, startCursor);
-    const seenIdx = new Set<number>();
-    for (const event of history) {
-      seenIdx.add(event.idx);
-      reply.raw.write(formatSseEvent(event));
-    }
-
-    // Flush buffered events, skipping duplicates
-    for (const event of buffer) {
-      if (!seenIdx.has(event.idx)) {
+      const history = await app.chatService.listEvents(params.id, startCursor);
+      const seenIdx = new Set<number>();
+      for (const event of history) {
+        seenIdx.add(event.idx);
         reply.raw.write(formatSseEvent(event));
       }
+
+      // Flush buffered events, skipping duplicates
+      for (const event of buffer) {
+        if (!seenIdx.has(event.idx)) {
+          reply.raw.write(formatSseEvent(event));
+        }
+      }
+      flushed = true;
+
+      const heartbeat = setInterval(() => {
+        reply.raw.write(": ping\n\n");
+      }, 15000);
+
+      request.raw.on("close", () => {
+        clearInterval(heartbeat);
+        unsubscribe();
+      });
+
+      await new Promise<void>((resolve) => {
+        request.raw.on("close", () => resolve());
+      });
+
+      return reply;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to stream events";
+      return reply.code(400).send({ error: message });
     }
-    flushed = true;
-
-    const heartbeat = setInterval(() => {
-      reply.raw.write(": ping\n\n");
-    }, 15000);
-
-    request.raw.on("close", () => {
-      clearInterval(heartbeat);
-      unsubscribe();
-    });
-
-    await new Promise<void>((resolve) => {
-      request.raw.on("close", () => resolve());
-    });
-
-    return reply;
   });
 }
