@@ -148,23 +148,6 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
   const byRunKey = new Map<string, EditedRun>();
 
-  const anchorSource = fullContext ? [...fullContext].sort((a, b) => a.idx - b.idx) : ordered;
-  let bestAnchorIdx: number | null = null;
-  for (const event of anchorSource) {
-    if (isWorktreeDiffEvent(event)) {
-      continue;
-    }
-    if (
-      event.type === "permission.resolved" ||
-      event.type === "permission.requested" ||
-      event.type === "tool.finished" ||
-      event.type === "tool.output" ||
-      event.type === "tool.started"
-    ) {
-      bestAnchorIdx = event.idx;
-    }
-  }
-
   function ensureRun(
     runKey: string,
     event: ChatEvent,
@@ -347,8 +330,8 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
 
     const run = targetRun
       ?? ensureRun(`worktree:${event.id}`, event, {
-        startIdx: bestAnchorIdx ?? event.idx,
-        anchorIdx: bestAnchorIdx ?? event.idx,
+        startIdx: event.idx,
+        anchorIdx: event.idx,
       });
     run.eventId = event.id;
     run.status = "success";

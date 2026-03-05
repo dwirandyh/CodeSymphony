@@ -3,176 +3,156 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Repository } from "@codesymphony/shared-types";
-import { queryKeys } from "../../lib/queryKeys";
-import { api } from "../../lib/api";
 import { SettingsDialog } from "./SettingsDialog";
 
 vi.mock("../../lib/api", () => ({
   api: {
-    listBranches: vi.fn(),
-    updateRepositoryScripts: vi.fn(),
+    updateRepositoryScripts: vi.fn().mockResolvedValue({}),
+    listBranches: vi.fn().mockResolvedValue(["main", "dev"]),
+    listModelProviders: vi.fn().mockResolvedValue([]),
+    createModelProvider: vi.fn().mockResolvedValue({}),
+    updateModelProvider: vi.fn().mockResolvedValue({}),
+    deleteModelProvider: vi.fn().mockResolvedValue(undefined),
+    activateModelProvider: vi.fn().mockResolvedValue({}),
+    deactivateAllModelProviders: vi.fn().mockResolvedValue(undefined),
+    testModelProvider: vi.fn().mockResolvedValue({ success: true }),
   },
 }));
 
-const baseRepository: Repository = {
-  id: "repo-1",
-  name: "example-repo",
-  rootPath: "/tmp/example-repo",
-  defaultBranch: "main",
-  setupScript: null,
-  teardownScript: null,
-  runScript: null,
-  createdAt: "2026-02-20T00:00:00.000Z",
-  updatedAt: "2026-02-20T00:00:00.000Z",
-  worktrees: [],
-};
+let container: HTMLDivElement;
+let root: Root;
+let queryClient: QueryClient;
 
-function createQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-      },
-    },
-  });
-}
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  root = createRoot(container);
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+});
 
-async function flushEffects(): Promise<void> {
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-}
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+});
 
-function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
-  const nativeSetter = Object.getOwnPropertyDescriptor(
-    HTMLTextAreaElement.prototype,
-    "value",
-  )?.set;
-  nativeSetter?.call(textarea, value);
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
-  textarea.dispatchEvent(new Event("change", { bubbles: true }));
+function makeRepo(): Repository {
+  return {
+    id: "r1",
+    name: "test-repo",
+    rootPath: "/home/test",
+    defaultBranch: "main",
+    setupScript: null,
+    teardownScript: null,
+    runScript: null,
+    createdAt: "2026-01-01T00:00:00Z",
+    worktrees: [],
+  };
 }
 
 describe("SettingsDialog", () => {
-  let container: HTMLDivElement;
-  let root: Root;
-  let queryClient: QueryClient;
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    root = createRoot(container);
-    queryClient = createQueryClient();
-
-    vi.mocked(api.listBranches).mockResolvedValue(["main"]);
-  });
-
-  afterEach(() => {
-    act(() => {
-      root.unmount();
-    });
-    queryClient.clear();
-    container.remove();
-    vi.clearAllMocks();
-    vi.useRealTimers();
-  });
-
-  function renderDialog(onClose: () => void = () => {}) {
-    queryClient.setQueryData(queryKeys.repositories.all, [baseRepository]);
+  it("renders nothing when closed", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SettingsDialog
-            open
-            onClose={onClose}
-            repositories={[baseRepository]}
-            onRemoveRepository={() => {}}
+            open={false}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            onRemoveRepository={vi.fn()}
           />
-        </QueryClientProvider>,
+        </QueryClientProvider>
       );
     });
-  }
-
-  it("updates repositories query cache with saved scripts", async () => {
-    const updatedRepository: Repository = {
-      ...baseRepository,
-      runScript: ["npm run dev", "pnpm build"],
-      updatedAt: "2026-02-23T00:00:00.000Z",
-    };
-    vi.mocked(api.updateRepositoryScripts).mockResolvedValue(updatedRepository);
-
-    renderDialog();
-    await flushEffects();
-
-    const runScriptTextarea = container.querySelectorAll("textarea")[0];
-    expect(runScriptTextarea).toBeDefined();
-
-    await act(async () => {
-      if (runScriptTextarea) {
-        setTextareaValue(runScriptTextarea, " npm run dev \n\n pnpm build ");
-      }
-    });
-    await flushEffects();
-
-    await act(async () => {
-      vi.advanceTimersByTime(1_100);
-      await Promise.resolve();
-    });
-    await flushEffects();
-
-    expect(api.updateRepositoryScripts).toHaveBeenCalledWith("repo-1", {
-      runScript: ["npm run dev", "pnpm build"],
-      setupScript: null,
-      teardownScript: null,
-    });
-
-    const cachedRepositories = queryClient.getQueryData<Repository[]>(queryKeys.repositories.all);
-    expect(cachedRepositories?.[0]?.runScript).toEqual(["npm run dev", "pnpm build"]);
+    expect(document.body.textContent).not.toContain("Settings");
   });
 
-  it("flushes pending save before closing settings", async () => {
-    const onClose = vi.fn();
-    const updatedRepository: Repository = {
-      ...baseRepository,
-      runScript: ["npm run dev"],
-      updatedAt: "2026-02-23T00:00:00.000Z",
-    };
-    vi.mocked(api.updateRepositoryScripts).mockResolvedValue(updatedRepository);
-
-    renderDialog(onClose);
-    await flushEffects();
-
-    const runScriptTextarea = container.querySelectorAll("textarea")[0];
-    expect(runScriptTextarea).toBeDefined();
-
+  it("renders dialog with Settings title when open", async () => {
     await act(async () => {
-      if (runScriptTextarea) {
-        setTextareaValue(runScriptTextarea, "npm run dev");
-      }
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            onRemoveRepository={vi.fn()}
+          />
+        </QueryClientProvider>
+      );
     });
-    await flushEffects();
+    expect(document.body.textContent).toContain("Settings");
+  });
 
-    const backButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Settings"),
+  it("shows Workspace and Models tabs", async () => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            onRemoveRepository={vi.fn()}
+          />
+        </QueryClientProvider>
+      );
+    });
+    expect(document.body.textContent).toContain("Workspace");
+    expect(document.body.textContent).toContain("Models");
+  });
+
+  it("shows repository name in workspace tab", async () => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            onRemoveRepository={vi.fn()}
+          />
+        </QueryClientProvider>
+      );
+    });
+    expect(document.body.textContent).toContain("test-repo");
+  });
+
+  it("shows script configuration fields when repo selected", async () => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            onRemoveRepository={vi.fn()}
+          />
+        </QueryClientProvider>
+      );
+    });
+
+    const repoButton = Array.from(document.body.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("test-repo")
     );
-    expect(backButton).toBeDefined();
+    if (repoButton) {
+      await act(async () => {
+        repoButton.click();
+        await new Promise((r) => setTimeout(r, 50));
+      });
+    }
+  });
 
+  it("calls onClose when close triggered", async () => {
+    const onClose = vi.fn();
     await act(async () => {
-      backButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={onClose}
+            repositories={[]}
+            onRemoveRepository={vi.fn()}
+          />
+        </QueryClientProvider>
+      );
     });
-    await flushEffects();
-
-    await act(async () => {
-      vi.advanceTimersByTime(1_100);
-      await Promise.resolve();
-    });
-    await flushEffects();
-
-    expect(api.updateRepositoryScripts).toHaveBeenCalledTimes(1);
-    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,8 +1,8 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Menu, Settings, X } from "lucide-react";
 import type { ModelProvider } from "@codesymphony/shared-types";
-import { Composer } from "../components/workspace/Composer";
-import { ChatMessageList } from "../components/workspace/ChatMessageList";
+import { Composer } from "../components/workspace/composer";
+import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
 import { GitChangesPanel } from "../components/workspace/GitChangesPanel";
@@ -26,211 +26,25 @@ import { debugLog } from "../lib/debugLog";
 import { findRootWorktree, isRootWorktree } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
 import type { TeardownErrorState, ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
-import { useChatSession } from "./workspace/hooks/useChatSession";
+import { useChatSession } from "./workspace/hooks/chat-session";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
-import { useSidebarResize } from "./workspace/hooks/useSidebarResize";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "../lib/queryKeys";
+import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
+import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
+import {
+  shouldResetTopPaginationInteraction,
+  resolveChatMessageListKey,
+  createRunScriptToken,
+  FilledPlayIcon,
+  FilledPauseIcon,
+} from "./workspace/workspacePageUtils";
 
-type RepoManager = ReturnType<typeof useRepositoryManager>;
-type GitChangesData = ReturnType<typeof useGitChanges>;
-
-function createRunScriptToken(): string {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function FilledPlayIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
-      <path fill="currentColor" d="M4 2.5v11l9-5.5-9-5.5z" />
-    </svg>
-  );
-}
-
-function FilledPauseIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
-      <rect x="3.5" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
-      <rect x="9" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
-    </svg>
-  );
-}
-
-const WorkspaceSidebar = memo(function WorkspaceSidebar({
-  repos,
-  onOpenSettings,
-  onSelectRepository,
-}: {
-  repos: RepoManager;
-  onOpenSettings: () => void;
-  onSelectRepository: (repositoryId: string) => void;
-}) {
-  const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
-
-  return (
-    <>
-      <aside
-        ref={panelRef}
-        className="mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden rounded-2xl bg-card/75 p-2 sm:mb-2 lg:mb-3 lg:flex lg:p-3"
-        style={{ width: `${sidebarWidth}px` }}
-      >
-        <div className="mb-3">
-          <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
-          <p className="text-xs text-muted-foreground">Multi-agent orchestrator</p>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <RepositoryPanel
-            repositories={repos.repositories}
-            selectedRepositoryId={repos.selectedRepositoryId}
-            selectedWorktreeId={repos.selectedWorktreeId}
-            loadingRepos={repos.loadingRepos}
-            submittingRepo={repos.submittingRepo}
-            submittingWorktree={repos.submittingWorktree}
-            onAttachRepository={repos.openFileBrowser}
-            onSelectRepository={onSelectRepository}
-            onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
-            onSelectWorktree={(repositoryId, worktreeId) => {
-              repos.setSelectedRepositoryId(repositoryId);
-              repos.setSelectedWorktreeId(worktreeId);
-            }}
-            onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
-            onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
-          />
-        </div>
-
-        <div className="shrink-0 border-t border-border/30 pt-2 pb-1 px-0">
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
-            onClick={onOpenSettings}
-          >
-            <Settings className="h-3.5 w-3.5" />
-            Settings
-          </button>
-        </div>
-      </aside>
-
-      {/* ── Sidebar resize handle ── */}
-      <div
-        className={`hidden w-1 cursor-col-resize items-center justify-center transition-colors hover:bg-primary/20 lg:flex ${sidebarDragging ? "bg-primary/30" : ""
-          }`}
-        onMouseDown={handleSidebarMouseDown}
-      >
-        <div
-          className={`h-8 w-[2px] rounded-full transition-colors ${sidebarDragging ? "bg-primary/60" : "bg-border/30"
-            }`}
-        />
-      </div>
-    </>
-  );
-});
-
-const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
-  rightPanelId,
-  gitChanges,
-  selectedDiffFilePath,
-  onOpenReview,
-  onSelectDiffFile,
-  onUpdatePanel,
-  onOpenReadFile,
-}: {
-  rightPanelId: string | null;
-  gitChanges: GitChangesData;
-  selectedDiffFilePath: string | null;
-  onOpenReview: () => void;
-  onSelectDiffFile: (filePath: string) => void;
-  onUpdatePanel: (panel: "git" | undefined) => void;
-  onOpenReadFile: (path: string) => void | Promise<void>;
-}) {
-  const {
-    sidebarWidth: rightPanelWidth,
-    sidebarDragging: rightDragging,
-    handleSidebarMouseDown: handleRightPanelMouseDown,
-    panelRef: rightPanelRef,
-  } = useSidebarResize(320, true);
-
-  return (
-    <>
-      {/* ── Right panel resize handle ── */}
-      {rightPanelId && (
-        <div
-          className={cn(
-            "hidden w-1 cursor-col-resize items-center justify-center transition-colors hover:bg-primary/20 lg:flex",
-            rightDragging && "bg-primary/30",
-          )}
-          onMouseDown={handleRightPanelMouseDown}
-        >
-          <div
-            className={cn(
-              "h-8 w-[2px] rounded-full transition-colors",
-              rightDragging ? "bg-primary/60" : "bg-border/30",
-            )}
-          />
-        </div>
-      )}
-
-      {/* ── Right Sidebar ── */}
-      <div className="mb-1 hidden min-h-0 shrink-0 flex-row rounded-2xl bg-card/75 sm:mb-2 lg:mb-3 lg:flex">
-        {/* ── Right panel content ── */}
-        {rightPanelId && (
-          <aside
-            ref={rightPanelRef}
-            id="source-control-panel"
-            aria-label="Source Control panel"
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden border-r border-border/30"
-            style={{ width: `${rightPanelWidth}px` }}
-          >
-            {rightPanelId === "git" && (
-              <GitChangesPanel
-                entries={gitChanges.entries}
-                branch={gitChanges.branch}
-                loading={gitChanges.loading}
-                committing={gitChanges.committing}
-                error={gitChanges.error}
-                selectedFilePath={selectedDiffFilePath}
-                onCommit={(msg) => void gitChanges.commit(msg)}
-                onReview={onOpenReview}
-                onRefresh={() => void gitChanges.refresh()}
-                onClose={() => onUpdatePanel(undefined)}
-                onSelectFile={onSelectDiffFile}
-                onDiscardChange={(path) => void gitChanges.discardChange(path)}
-                onOpenFile={(path) => void onOpenReadFile(path)}
-              />
-            )}
-          </aside>
-        )}
-
-        {/* ── Right icon bar ── */}
-        <nav className="flex w-[48px] shrink-0 flex-col items-center pt-[10px] lg:pt-[14px]">
-          <button
-            type="button"
-            title="Source Control"
-            aria-label="Source Control"
-            aria-expanded={rightPanelId === "git"}
-            aria-controls="source-control-panel"
-            className={cn(
-              "relative flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
-              rightPanelId === "git" && "bg-secondary text-foreground",
-            )}
-            onClick={() => onUpdatePanel(rightPanelId === "git" ? undefined : "git")}
-          >
-            <GitBranch className="h-[18px] w-[18px]" />
-            {gitChanges.entries.length > 0 && (
-              <span className="absolute right-0.5 top-0.5 flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-bold leading-none text-primary-foreground">
-                {gitChanges.entries.length > 99 ? "99+" : gitChanges.entries.length}
-              </span>
-            )}
-          </button>
-        </nav>
-      </div>
-    </>
-  );
-});
+export { shouldResetTopPaginationInteraction, resolveChatMessageListKey } from "./workspace/workspacePageUtils";
 
 export function WorkspacePage() {
   const renderCountRef = useRef(0);
@@ -369,6 +183,10 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
+  const repositoriesLoadError = repos.repositoriesError instanceof Error
+    ? repos.repositoriesError.message
+    : null;
+  const uiError = error ?? repositoriesLoadError;
 
   const handleSelectRepository = useCallback((repositoryId: string) => {
     repos.setSelectedRepositoryId(repositoryId);
@@ -396,6 +214,7 @@ export function WorkspacePage() {
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     initialThreadId: search.threadId,
     selectedRepositoryId: repos.selectedRepositoryId,
+    hydrationBackfillPolicy: "auto",
     onWorktreeResolved: (worktreeId) => {
       repos.setSelectedWorktreeId(worktreeId);
     },
@@ -407,6 +226,89 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
+  const loadOlderHistoryRef = useRef(chat.loadOlderHistory);
+  useEffect(() => {
+    loadOlderHistoryRef.current = chat.loadOlderHistory;
+  }, [chat.loadOlderHistory]);
+
+  const [topPaginationInteractionReady, setTopPaginationInteractionReady] = useState(false);
+  const prevSelectedThreadIdRef = useRef<string | null>(chat.selectedThreadId);
+  const [chatMessageListKey, setChatMessageListKey] = useState<string>(chat.selectedThreadId ?? "empty");
+
+  useEffect(() => {
+    setChatMessageListKey((current) => {
+      const next = resolveChatMessageListKey({
+        previousKey: current,
+        previousThreadId: prevSelectedThreadIdRef.current,
+        nextThreadId: chat.selectedThreadId,
+      });
+      if (next !== current) {
+        debugLog("WorkspacePage", "chat-message-list-key-update", {
+          previousKey: current,
+          nextKey: next,
+          previousThreadId: prevSelectedThreadIdRef.current,
+          nextThreadId: chat.selectedThreadId,
+        });
+      }
+      return next;
+    });
+  }, [chat.selectedThreadId]);
+
+  useEffect(() => {
+    const prevThreadId = prevSelectedThreadIdRef.current;
+    const nextThreadId = chat.selectedThreadId;
+    const shouldReset = shouldResetTopPaginationInteraction(prevThreadId, nextThreadId);
+
+    if (shouldReset) {
+      setTopPaginationInteractionReady(false);
+      debugLog("WorkspacePage", "top-pagination-interaction-reset", {
+        reason: "thread-switched",
+        prevThreadId,
+        threadId: nextThreadId,
+      });
+    } else {
+      debugLog("WorkspacePage", "top-pagination-interaction-reset-skipped", {
+        reason: "thread-churn",
+        prevThreadId,
+        threadId: nextThreadId,
+      });
+    }
+
+    prevSelectedThreadIdRef.current = nextThreadId;
+  }, [chat.selectedThreadId]);
+
+  useEffect(() => {
+    const markTopPaginationInteractionReady = (source: "wheel" | "touchstart") => {
+      setTopPaginationInteractionReady((current) => {
+        if (current) {
+          return current;
+        }
+        debugLog("WorkspacePage", "top-pagination-interaction-ready", { source });
+        return true;
+      });
+    };
+
+    const onWheel = () => {
+      markTopPaginationInteractionReady("wheel");
+    };
+    const onTouchStart = () => {
+      markTopPaginationInteractionReady("touchstart");
+    };
+
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+
+    return () => {
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("touchstart", onTouchStart);
+    };
+  }, []);
+
+  const handleLoadOlderHistory = useCallback(
+    (metadata?: Parameters<typeof chat.loadOlderHistory>[0]) => loadOlderHistoryRef.current(metadata),
+    [],
+  );
+
   const gates = usePendingGates(chat.events, chat.selectedThreadId, {
     onError: setError,
     startWaitingAssistant: chat.startWaitingAssistant,
@@ -439,6 +341,8 @@ export function WorkspacePage() {
     "chat.waitingAssistant": chat.waitingAssistant,
     "chat.showStopAction": chat.showStopAction,
     "chat.stoppingRun": chat.stoppingRun,
+    "chat.hasOlderHistory": chat.hasOlderHistory,
+    "chat.loadingOlderHistory": chat.loadingOlderHistory,
     "chat.chatInput": chat.chatInput,
     "chat.chatMode": chat.chatMode,
     "gates.pendingPermissionRequests": gates.pendingPermissionRequests,
@@ -742,7 +646,7 @@ export function WorkspacePage() {
         />
 
         {/* ── Main content area (chat + bottom panel) ── */}
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
+        <main className="workspace-main flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
           {/* ── Mobile top bar ── */}
           <div className="flex items-center gap-2 pb-1.5 lg:hidden">
             <button
@@ -804,15 +708,16 @@ export function WorkspacePage() {
               onSelectThread={handleSelectThread}
               onCreateThread={() => void chat.createAdditionalThread()}
               onCloseThread={handleRequestCloseThread}
+              onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
               onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
               runScriptRunning={runScriptActive}
               onToggleRunScript={handleToggleRunScript}
             />
 
-            {error ? (
+            {uiError ? (
               <div className="flex items-center gap-2 px-3 py-2 text-xs text-destructive">
-                <strong>!</strong> {error}
+                <strong>!</strong> {uiError}
               </div>
             ) : null}
 
@@ -827,10 +732,14 @@ export function WorkspacePage() {
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
                   <div className="min-h-0 min-w-0 flex-1">
                     <ChatMessageList
-                      key={chat.selectedThreadId ?? "empty"}
+                      key={chatMessageListKey}
                       items={chat.timelineItems}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       sendingMessage={chat.sendingMessage}
+                      hasOlderHistory={chat.hasOlderHistory}
+                      loadingOlderHistory={chat.loadingOlderHistory}
+                      topPaginationInteractionReady={topPaginationInteractionReady}
+                      onLoadOlderHistory={handleLoadOlderHistory}
                       onOpenReadFile={openReadFile}
                     />
                   </div>
@@ -865,8 +774,9 @@ export function WorkspacePage() {
                           key={request.requestId}
                           requestId={request.requestId}
                           questions={request.questions}
-                          busy={gates.answeringQuestionIds.has(request.requestId)}
+                          busy={gates.answeringQuestionIds.has(request.requestId) || gates.dismissingQuestionIds.has(request.requestId)}
                           onAnswer={(requestId, answers) => void gates.answerQuestion(requestId, answers)}
+                          onDismiss={(requestId) => void gates.dismissQuestion(requestId)}
                         />
                       ))}
                     </div>

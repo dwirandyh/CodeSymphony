@@ -133,8 +133,8 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
                 throw new Error(`Failed to fetch logs: ${response.status}`);
             }
 
-            const payload = (await response.json()) as { data?: LogEntry[] };
-            const remoteEntries = Array.isArray(payload.data) ? payload.data : [];
+            const payload = (await response.json().catch(() => null)) as { data?: LogEntry[] } | null;
+            const remoteEntries = Array.isArray(payload?.data) ? payload.data : [];
             if (remoteEntries.length > 0) {
                 logService.addRemoteEntries(remoteEntries);
                 for (const entry of remoteEntries) {

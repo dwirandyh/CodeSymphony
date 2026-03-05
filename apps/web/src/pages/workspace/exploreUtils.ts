@@ -1,5 +1,5 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
-import type { ExploreActivityEntry, ReadFileTimelineEntry } from "../../components/workspace/ChatMessageList";
+import type { ExploreActivityEntry, ReadFileTimelineEntry } from "../../components/workspace/chat-message-list";
 import { finishedToolUseIds, isExploreLikeBashEvent, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
 import type { ExploreActivityGroup, ExploreRunKind, ExploreRunState } from "./types";
 
@@ -140,13 +140,25 @@ export function extractExploreRunKind(event: ChatEvent): ExploreRunKind | null {
   return null;
 }
 
+const IDLE_GROUP_BOUNDARY_EVENT_TYPES = new Set<ChatEvent["type"]>([
+  "message.delta",
+  "thinking.delta",
+  "plan.created",
+  "plan.approved",
+  "plan.revision_requested",
+  "subagent.started",
+  "subagent.finished",
+  "chat.completed",
+  "chat.failed",
+]);
+
 export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActivityGroup[] {
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
   const groups: ExploreActivityGroup[] = [];
   let currentRuns = new Map<string, ExploreRunState>();
   let currentStartIdx: number | null = null;
+  let currentEndIdx: number | null = null;
   let currentCreatedAt: string | null = null;
-  let currentFirstEventId: string | null = null;
 
   function ensureRun(runId: string, kind: ExploreRunKind, event: ChatEvent): ExploreRunState {
     const existing = currentRuns.get(runId);
@@ -173,15 +185,44 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
     return created;
   }
 
+  function markGroupEvent(event: ChatEvent) {
+    currentStartIdx = currentStartIdx == null ? event.idx : Math.min(currentStartIdx, event.idx);
+    currentEndIdx = currentEndIdx == null ? event.idx : Math.max(currentEndIdx, event.idx);
+    if (currentCreatedAt == null) {
+      currentCreatedAt = event.createdAt;
+    }
+  }
+
+  function resetCurrentGroupState() {
+    currentRuns = new Map<string, ExploreRunState>();
+    currentStartIdx = null;
+    currentEndIdx = null;
+    currentCreatedAt = null;
+  }
+
+  function hasPendingRuns(): boolean {
+    for (const run of currentRuns.values()) {
+      if (run.pending) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function flushGroupIfIdle() {
+    if (!hasPendingRuns()) {
+      flushGroup();
+    }
+  }
+
   function flushGroup() {
-    if (currentRuns.size === 0 || currentStartIdx == null || currentCreatedAt == null || currentFirstEventId == null) {
-      currentRuns = new Map<string, ExploreRunState>();
-      currentStartIdx = null;
-      currentCreatedAt = null;
-      currentFirstEventId = null;
+    if (currentRuns.size === 0 || currentStartIdx == null || currentEndIdx == null || currentCreatedAt == null) {
+      resetCurrentGroupState();
       return;
     }
 
+    const groupStartIdx = currentStartIdx;
+    const groupEndIdx = currentEndIdx;
     const runs = Array.from(currentRuns.values());
     const entries = runs
       .map((run): ExploreActivityEntry => ({
@@ -209,10 +250,7 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
     const fileCount = runs.filter((run) => run.kind === "read").length;
     const searchCount = runs.filter((run) => run.kind === "search").length;
     if (fileCount === 0 && searchCount === 0) {
-      currentRuns = new Map<string, ExploreRunState>();
-      currentStartIdx = null;
-      currentCreatedAt = null;
-      currentFirstEventId = null;
+      resetCurrentGroupState();
       return;
     }
 
@@ -221,29 +259,24 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
       run.eventIds.forEach((eventId) => eventIds.add(eventId));
     });
     groups.push({
-      id: `explore:${currentFirstEventId}`,
+      id: `explore:${groupStartIdx}:${groupEndIdx}`,
       status: runs.some((run) => run.pending) ? "running" : "success",
       fileCount,
       searchCount,
       entries,
-      startIdx: currentStartIdx,
-      anchorIdx: currentStartIdx,
+      startIdx: groupStartIdx,
+      endIdx: groupEndIdx,
+      anchorIdx: groupStartIdx,
       createdAt: currentCreatedAt,
       eventIds,
     });
 
-    currentRuns = new Map<string, ExploreRunState>();
-    currentStartIdx = null;
-    currentCreatedAt = null;
-    currentFirstEventId = null;
+    resetCurrentGroupState();
   }
 
   for (const event of ordered) {
-    if (event.type === "message.delta") {
-      const hasPendingRuns = Array.from(currentRuns.values()).some((r) => r.pending);
-      if (!hasPendingRuns) {
-        flushGroup();
-      }
+    if (IDLE_GROUP_BOUNDARY_EVENT_TYPES.has(event.type)) {
+      flushGroupIfIdle();
       continue;
     }
 
@@ -262,12 +295,7 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
         continue;
       }
 
-      if (currentStartIdx == null) {
-        currentStartIdx = event.idx;
-        currentCreatedAt = event.createdAt;
-        currentFirstEventId = event.id;
-      }
-
+      markGroupEvent(event);
       const run = ensureRun(runId, kind, event);
       run.pending = true;
       run.orderIdx = Math.max(run.orderIdx, event.idx);
@@ -281,12 +309,6 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
     }
 
     const runIds = finishedToolUseIds(event);
-    if (currentStartIdx == null) {
-      currentStartIdx = event.idx;
-      currentCreatedAt = event.createdAt;
-      currentFirstEventId = event.id;
-    }
-
     for (const runId of runIds) {
       const existing = currentRuns.get(runId);
       const kind = existing?.kind ?? kindFromEvent;
@@ -294,6 +316,7 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
         continue;
       }
 
+      markGroupEvent(event);
       const run = existing ?? ensureRun(runId, kind, event);
       run.pending = false;
       run.orderIdx = event.idx;

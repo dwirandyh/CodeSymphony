@@ -1,0 +1,2 @@
+-- ChatEventType enum extension for question.dismissed.
+-- SQLite stores enum columns as TEXT; no SQL table rewrite required for this migration.
