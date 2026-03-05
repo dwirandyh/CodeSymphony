@@ -637,8 +637,8 @@ export function WorkspacePage() {
     confirmCloseThreadId !== null && chat.closingThreadId === confirmCloseThreadId;
 
   return (
-    <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-3 lg:pb-0">
-      <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
+    <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-0">
+      <div className="flex min-h-0 w-full">
         <WorkspaceSidebar
           repos={repos}
           onOpenSettings={() => setSettingsOpen(true)}

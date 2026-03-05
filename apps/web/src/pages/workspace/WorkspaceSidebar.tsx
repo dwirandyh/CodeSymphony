@@ -21,7 +21,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
     <>
       <aside
         ref={panelRef}
-        className="mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden rounded-2xl bg-card/75 p-2 sm:mb-2 lg:mb-3 lg:flex lg:p-3"
+        className="mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden bg-card/75 p-2 sm:mb-2 lg:mb-0 lg:flex lg:p-3"
         style={{ width: `${sidebarWidth}px` }}
       >
         <div className="mb-3">

@@ -142,8 +142,23 @@ export function BottomPanel({
                 }}
                 className="flex min-h-0 flex-1 flex-col"
             >
+                {/* Resize handle — always visible, including collapsed state */}
+                <div
+                    className={`group flex h-2 cursor-row-resize touch-none items-center justify-center bg-card/75 transition-colors hover:bg-primary/20 md:h-1 ${isDragging ? "bg-primary/30" : ""
+                        }`}
+                    onMouseDown={handleMouseDown}
+                    onTouchStart={handleTouchStart}
+                >
+                    <div
+                        className={`h-[2px] w-10 rounded-full transition-colors ${isDragging
+                                ? "bg-primary/60"
+                                : "bg-border/30 group-hover:bg-primary/40"
+                            }`}
+                    />
+                </div>
+
                 {/* Tab header — always visible in both collapsed and expanded states */}
-                <div className="flex items-center border-b border-border/20 px-1">
+                <div className="flex items-center border-b border-border/20 bg-card/75 px-1">
                     <Tabs.List className="flex items-center">
                         <Tabs.Trigger
                             value="terminal"
@@ -194,21 +209,6 @@ export function BottomPanel({
                     className={`flex flex-col overflow-hidden ${collapsed ? "invisible h-0" : ""}`}
                     style={collapsed ? undefined : { height: `${height}px` }}
                 >
-                    {/* Resize handle — taller tap target on mobile */}
-                    <div
-                        className={`group flex h-2 cursor-row-resize touch-none items-center justify-center transition-colors hover:bg-primary/20 md:h-1 ${isDragging ? "bg-primary/30" : ""
-                            }`}
-                        onMouseDown={handleMouseDown}
-                        onTouchStart={handleTouchStart}
-                    >
-                        <div
-                            className={`h-[2px] w-10 rounded-full transition-colors ${isDragging
-                                    ? "bg-primary/60"
-                                    : "bg-border/30 group-hover:bg-primary/40"
-                                }`}
-                        />
-                    </div>
-
                     <Tabs.Content value="terminal" className="min-h-0 flex-1 data-[state=inactive]:hidden">
                         <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
                             <TerminalTab sessionId={worktreeId && selectedThreadId ? `${worktreeId}:${selectedThreadId}` : worktreeId ?? "default"} cwd={worktreePath} />

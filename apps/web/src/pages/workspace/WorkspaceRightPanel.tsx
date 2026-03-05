@@ -52,7 +52,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
       )}
 
       {/* ── Right Sidebar ── */}
-      <div className="mb-1 hidden min-h-0 shrink-0 flex-row rounded-2xl bg-card/75 sm:mb-2 lg:mb-3 lg:flex">
+      <div className="mb-1 hidden min-h-0 shrink-0 flex-row bg-card/75 sm:mb-2 lg:mb-0 lg:flex">
         {/* ── Right panel content ── */}
         {rightPanelId && (
           <aside
