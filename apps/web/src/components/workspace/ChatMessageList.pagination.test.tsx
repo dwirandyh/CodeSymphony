@@ -798,7 +798,7 @@ describe("ChatMessageList pagination with virtua", () => {
     await flushMicrotasks();
     await flushMicrotasks();
     // Give anchor-lock shift deactivation window time to elapse.
-    await flushTimers(420);
+    await flushTimers(1700);
 
     const vlistEl = container.querySelector("[data-testid='vlist-mock']");
     expect(vlistEl).toBeTruthy();
