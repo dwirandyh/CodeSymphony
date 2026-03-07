@@ -237,7 +237,17 @@ describe("useChatSession auto-backfill reseed regression", () => {
     stopRunMock.mockReset();
 
     useThreadsMock.mockReturnValue({ data: [makeThread()] });
-    useWorkspaceTimelineMock.mockReturnValue({ items: [], hasIncompleteCoverage: false });
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      hasIncompleteCoverage: false,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
 
     listMessagesPageMock.mockResolvedValue({
       data: [],
@@ -267,7 +277,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     (globalThis as { EventSource: unknown }).EventSource = originalEventSource;
   });
 
-  it("does not relaunch auto-backfill for same launch key", async () => {
+  it("does not auto-backfill on mount when timeline coverage is already complete enough", async () => {
     const snapshotNeedsBackfill = makeSnapshot({
       eventsStatus: "needs_backfill",
       recommendedBackfill: true,
@@ -302,12 +312,79 @@ describe("useChatSession auto-backfill reseed regression", () => {
     renderHarness();
     await flushMicrotasks(6);
 
-    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+    expect(listEventsPageMock).not.toHaveBeenCalled();
 
     renderHarness();
     await flushMicrotasks(6);
 
+    expect(listEventsPageMock).not.toHaveBeenCalled();
+  });
+
+  it("auto-backfills one repair page on refresh when rich timeline context is missing", async () => {
+    const snapshotNeedsBackfill = makeSnapshot({
+      eventsStatus: "needs_backfill",
+      recommendedBackfill: true,
+      nextBeforeIdx: 80,
+      hasMoreOlderEvents: true,
+    });
+
+    useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
+      data: threadId ? snapshotNeedsBackfill : undefined,
+    }));
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [
+        {
+          kind: "message",
+          message: {
+            id: "msg-1",
+            threadId: "thread-1",
+            seq: 1,
+            role: "assistant",
+            content: "hello",
+            attachments: [],
+            createdAt: "2026-03-01T00:00:00.000Z",
+          },
+          renderHint: "markdown",
+          rawFileLanguage: undefined,
+          isCompleted: true,
+          context: [],
+        },
+      ],
+      hasIncompleteCoverage: true,
+      summary: {
+        oldestRenderableKey: "kind:message:msg-1",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "msg-1",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
+
+    getThreadSnapshotMock.mockImplementation(async () => snapshotNeedsBackfill);
+
+    act(() => {
+      root.render(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(HookHarness, {
+            onResult: () => {
+              // noop
+            },
+            hydrationBackfillPolicy: "auto",
+          }),
+        ),
+      );
+    });
+
+    await flushMicrotasks(6);
+
     expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+    expect(listEventsPageMock).toHaveBeenCalledWith(
+      "thread-1",
+      expect.objectContaining({ beforeIdx: 80, limit: 120 }),
+    );
   });
 
   it("does not relaunch same launch key after productive abort", async () => {
@@ -322,6 +399,18 @@ describe("useChatSession auto-backfill reseed regression", () => {
     useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
       data: threadId ? currentSnapshot : undefined,
     }));
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      hasIncompleteCoverage: true,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
 
     getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
 
@@ -415,7 +504,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     expect(listEventsPageMock).toHaveBeenCalledTimes(1);
   });
 
-  it("relaunches auto-backfill when snapshot key changes", async () => {
+  it("relaunches auto-backfill when snapshot key changes and timeline needs repair", async () => {
     const snapshotA = makeSnapshot({
       eventsStatus: "needs_backfill",
       recommendedBackfill: true,
@@ -441,6 +530,18 @@ describe("useChatSession auto-backfill reseed regression", () => {
       data: threadId ? currentSnapshot : undefined,
     }));
 
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      hasIncompleteCoverage: true,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
+
     getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
 
     const renderHarness = () => {
@@ -464,6 +565,10 @@ describe("useChatSession auto-backfill reseed regression", () => {
     await flushMicrotasks(6);
 
     expect(listEventsPageMock).toHaveBeenCalledTimes(1);
+    expect(listEventsPageMock).toHaveBeenLastCalledWith(
+      "thread-1",
+      expect.objectContaining({ beforeIdx: 80, limit: 120 }),
+    );
 
     currentSnapshot = snapshotB;
     renderHarness();
@@ -472,7 +577,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     expect(listEventsPageMock).toHaveBeenCalledTimes(2);
     expect(listEventsPageMock).toHaveBeenLastCalledWith(
       "thread-1",
-      expect.objectContaining({ beforeIdx: 60 }),
+      expect.objectContaining({ beforeIdx: 60, limit: 120 }),
     );
   });
 
@@ -488,6 +593,18 @@ describe("useChatSession auto-backfill reseed regression", () => {
     useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
       data: threadId ? currentSnapshot : undefined,
     }));
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      hasIncompleteCoverage: true,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
 
     listEventsPageMock.mockResolvedValue({
       data: [makeEvent(500)],
@@ -527,7 +644,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     expect(listEventsPageMock).toHaveBeenCalledTimes(1);
   });
 
-  it("auto-backfill still runs for real needs-backfill transition", async () => {
+  it("auto-backfill still runs when timeline becomes incomplete and older events exist", async () => {
     const snapshotComplete = makeSnapshot({
       eventsStatus: "complete",
       recommendedBackfill: false,
@@ -543,8 +660,21 @@ describe("useChatSession auto-backfill reseed regression", () => {
     });
 
     let currentSnapshot: ChatThreadSnapshot = snapshotComplete;
+    let hasIncompleteCoverage = false;
     useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
       data: threadId ? currentSnapshot : undefined,
+    }));
+
+    useWorkspaceTimelineMock.mockImplementation(() => ({
+      items: [],
+      hasIncompleteCoverage,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
     }));
 
     getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
@@ -579,17 +709,18 @@ describe("useChatSession auto-backfill reseed regression", () => {
     expect(listEventsPageMock).not.toHaveBeenCalled();
 
     currentSnapshot = snapshotNeedsBackfill;
+    hasIncompleteCoverage = true;
     renderHarness();
     await flushMicrotasks(5);
 
     expect(listEventsPageMock).toHaveBeenCalledTimes(1);
     expect(listEventsPageMock).toHaveBeenCalledWith(
       "thread-1",
-      expect.objectContaining({ beforeIdx: 80 }),
+      expect.objectContaining({ beforeIdx: 80, limit: 120 }),
     );
   });
 
-  it("runs bounded auto-backfill for large initial gap when timeline is not marked incomplete", async () => {
+  it("does not auto-backfill large older gaps unless timeline repair is needed", async () => {
     const snapshotLargeGap = makeSnapshot({
       eventsStatus: "needs_backfill",
       recommendedBackfill: true,
@@ -624,14 +755,10 @@ describe("useChatSession auto-backfill reseed regression", () => {
     renderHarness();
     await flushMicrotasks(6);
 
-    expect(listEventsPageMock).toHaveBeenCalledTimes(1);
-    expect(listEventsPageMock).toHaveBeenCalledWith(
-      "thread-1",
-      expect.objectContaining({ beforeIdx: 500, limit: 300 }),
-    );
+    expect(listEventsPageMock).not.toHaveBeenCalled();
   });
 
-  it("stops bounded auto-backfill after first semantic boundary page", async () => {
+  it("stops auto-backfill after first semantic boundary repair page", async () => {
     const snapshotLargeGap = makeSnapshot({
       eventsStatus: "needs_backfill",
       recommendedBackfill: true,
@@ -645,6 +772,18 @@ describe("useChatSession auto-backfill reseed regression", () => {
     }));
 
     getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      hasIncompleteCoverage: true,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
 
     listEventsPageMock.mockResolvedValue({
       data: [
@@ -689,7 +828,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     expect(listEventsPageMock).toHaveBeenCalledTimes(1);
   });
 
-  it("continues bounded auto-backfill when first page has no semantic boundary", async () => {
+  it("uses up to two bounded repair pages when the first page still lacks a semantic boundary", async () => {
     const snapshotLargeGap = makeSnapshot({
       eventsStatus: "needs_backfill",
       recommendedBackfill: true,
@@ -703,6 +842,18 @@ describe("useChatSession auto-backfill reseed regression", () => {
     }));
 
     getThreadSnapshotMock.mockImplementation(async () => currentSnapshot);
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      hasIncompleteCoverage: true,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
 
     listEventsPageMock
       .mockResolvedValueOnce({
@@ -758,12 +909,12 @@ describe("useChatSession auto-backfill reseed regression", () => {
     expect(listEventsPageMock).toHaveBeenNthCalledWith(
       1,
       "thread-1",
-      expect.objectContaining({ beforeIdx: 500, limit: 300 }),
+      expect.objectContaining({ beforeIdx: 500, limit: 120 }),
     );
     expect(listEventsPageMock).toHaveBeenNthCalledWith(
       2,
       "thread-1",
-      expect.objectContaining({ beforeIdx: 450, limit: 300 }),
+      expect.objectContaining({ beforeIdx: 450, limit: 120 }),
     );
   });
 
@@ -830,6 +981,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     }
 
     expect(latestResult.semanticHydrationInProgress).toBe(false);
+    expect(latestResult.timelineSummary.oldestRenderableHydrationPending).toBe(false);
 
     await act(async () => {
       void latestResult?.loadOlderHistory({ requestId: "manual-gate-test", source: "manual" });
@@ -837,6 +989,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     });
 
     expect(latestResult.semanticHydrationInProgress).toBe(true);
+    expect(latestResult.timelineSummary.headIdentityStable).toBe(true);
 
     if (!resolveEventsPage) {
       throw new Error("Expected deferred events page resolver");
@@ -857,6 +1010,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
 
     await flushMicrotasks(4);
     expect(latestResult.semanticHydrationInProgress).toBe(false);
+    expect(latestResult.timelineSummary.oldestRenderableHydrationPending).toBe(false);
   });
 
   it("opens and closes semantic hydration gate during auto-backfill", async () => {
@@ -870,6 +1024,18 @@ describe("useChatSession auto-backfill reseed regression", () => {
     useThreadSnapshotMock.mockImplementation((threadId: string | null) => ({
       data: threadId ? snapshotNeedsBackfill : undefined,
     }));
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      hasIncompleteCoverage: true,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
 
     getThreadSnapshotMock.mockImplementation(async () => snapshotNeedsBackfill);
 
@@ -918,11 +1084,17 @@ describe("useChatSession auto-backfill reseed regression", () => {
 
     await flushMicrotasks(5);
 
+    expect(listEventsPageMock).toHaveBeenCalledWith(
+      "thread-1",
+      expect.objectContaining({ beforeIdx: 80, limit: 120 }),
+    );
+
     if (!latestResult) {
       throw new Error("Expected useChatSession result");
     }
 
     expect(latestResult.semanticHydrationInProgress).toBe(true);
+    expect(latestResult.timelineSummary.headIdentityStable).toBe(true);
 
     if (!resolveEventsPage) {
       throw new Error("Expected deferred events page resolver");
@@ -943,6 +1115,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
 
     await flushMicrotasks(5);
     expect(latestResult.semanticHydrationInProgress).toBe(false);
+    expect(latestResult.timelineSummary.oldestRenderableHydrationPending).toBe(false);
   });
 
   it("preserves messages/events when same-thread snapshot is temporarily unavailable", async () => {

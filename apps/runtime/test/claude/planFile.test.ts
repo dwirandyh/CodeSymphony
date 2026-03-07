@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { findLatestPlanFile } from "../../src/claude/planFile";
 
 describe("findLatestPlanFile", () => {
-    const plansDir = join(homedir(), ".claude", "plans");
+    const plansDir = join(tmpdir(), "codesymphony-claude-provider", "plans");
     const testFile = join(plansDir, "__vitest_plan_test__.md");
 
     beforeEach(() => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Columns2, FileText, Rows3, RefreshCw } from "lucide-react";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
@@ -49,6 +49,30 @@ function computeStats(file: FileDiffMetadata) {
   return { additions, deletions };
 }
 
+type DiffFileEntry = {
+  file: FileDiffMetadata;
+  stats: { additions: number; deletions: number };
+};
+
+type DiffFetchResult = {
+  entries: DiffFileEntry[];
+  diffLength: number;
+  fileCount: number;
+  fetchedFullContents: boolean;
+  diffFetchDurationMs: number;
+  parseDurationMs: number;
+  contentFetchDurationMs: number;
+  totalDurationMs: number;
+};
+
+const diffRequestCache = new Map<string, DiffFetchResult>();
+const diffRequestInFlight = new Map<string, Promise<DiffFetchResult>>();
+
+export function __resetDiffReviewPanelCacheForTests() {
+  diffRequestCache.clear();
+  diffRequestInFlight.clear();
+}
+
 function useIsMobile(breakpoint = 768) {
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
@@ -62,48 +86,126 @@ function useIsMobile(breakpoint = 768) {
 }
 
 export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPanelProps) {
-  const [files, setFiles] = useState<FileDiffMetadata[]>([]);
+  const [entries, setEntries] = useState<DiffFileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const isMobile = useIsMobile();
+  const cacheKey = `${worktreeId}::${selectedFilePath ?? "__all__"}`;
+  const appliedCacheKeyRef = useRef<string | null>(null);
+  const mountedRef = useRef(false);
 
   const effectiveViewMode: ViewMode = isMobile ? "unified" : viewMode;
 
-  const fetchDiff = useCallback(async () => {
+  const applyResult = useCallback((nextCacheKey: string, result: DiffFetchResult) => {
+    if (!mountedRef.current) {
+      return;
+    }
+
+    appliedCacheKeyRef.current = nextCacheKey;
+    setEntries(result.entries);
+    setCollapsed(() => result.fetchedFullContents ? new Set() : new Set(result.entries.map((entry) => entry.file.name)));
+    setError(null);
+    setLoading(false);
+  }, []);
+
+  const fetchDiff = useCallback(async (options?: { force?: boolean }) => {
+    const force = options?.force === true;
     setLoading(true);
     setError(null);
     try {
-      const opts = selectedFilePath ? { filePath: selectedFilePath } : undefined;
-      const { diff } = await api.getGitDiff(worktreeId, opts);
-      const patches = parsePatchFiles(diff);
-      const allFiles = patches.flatMap((p) => p.files);
+      if (!force) {
+        const cached = diffRequestCache.get(cacheKey);
+        if (cached) {
+          applyResult(cacheKey, cached);
+          return;
+        }
+      } else {
+        diffRequestCache.delete(cacheKey);
+      }
 
-      // Fetch full file contents in parallel to enable expandable unchanged regions
-      await Promise.all(
-        allFiles.map(async (file) => {
-          try {
-            const { oldContent, newContent } = await api.getFileContents(worktreeId, file.name);
-            file.oldLines = (oldContent ?? "").split(SPLIT_WITH_NEWLINES);
-            file.newLines = (newContent ?? "").split(SPLIT_WITH_NEWLINES);
-          } catch {
-            // If fetching contents fails, the diff still renders without expand
+      let request = diffRequestInFlight.get(cacheKey);
+      if (!request) {
+        request = (async (): Promise<DiffFetchResult> => {
+          const fetchStartedAt = performance.now();
+          const opts = selectedFilePath ? { filePath: selectedFilePath } : undefined;
+          const diffStartedAt = performance.now();
+          const { diff } = await api.getGitDiff(worktreeId, opts);
+          const diffFetchedAt = performance.now();
+          const parseStartedAt = performance.now();
+          const patches = parsePatchFiles(diff);
+          const allFiles = patches.flatMap((p) => p.files);
+          const shouldFetchFullContents = Boolean(selectedFilePath);
+          const fileFetchStartedAt = performance.now();
+
+          if (shouldFetchFullContents) {
+            await Promise.all(
+              allFiles.map(async (file) => {
+                try {
+                  const { oldContent, newContent } = await api.getFileContents(worktreeId, file.name);
+                  file.oldLines = (oldContent ?? "").split(SPLIT_WITH_NEWLINES);
+                  file.newLines = (newContent ?? "").split(SPLIT_WITH_NEWLINES);
+                } catch {
+                  // If fetching contents fails, the diff still renders without expand
+                }
+              })
+            );
           }
-        })
-      );
 
-      setFiles(allFiles);
+          const entries = allFiles.map((file) => ({
+            file,
+            stats: computeStats(file),
+          }));
+          const totalDurationMs = performance.now() - fetchStartedAt;
+          const parseDurationMs = performance.now() - parseStartedAt;
+          const contentFetchDurationMs = shouldFetchFullContents ? performance.now() - fileFetchStartedAt : 0;
+          return {
+            entries,
+            diffLength: diff.length,
+            fileCount: allFiles.length,
+            fetchedFullContents: shouldFetchFullContents,
+            diffFetchDurationMs: Number((diffFetchedAt - diffStartedAt).toFixed(2)),
+            parseDurationMs: Number(parseDurationMs.toFixed(2)),
+            contentFetchDurationMs: Number(contentFetchDurationMs.toFixed(2)),
+            totalDurationMs: Number(totalDurationMs.toFixed(2)),
+          };
+        })();
+        diffRequestInFlight.set(cacheKey, request);
+      }
+
+      const result = await request;
+      if (diffRequestInFlight.get(cacheKey) === request) {
+        diffRequestInFlight.delete(cacheKey);
+      }
+      diffRequestCache.set(cacheKey, result);
+      applyResult(cacheKey, result);
+
     } catch (e) {
+      if (diffRequestInFlight.get(cacheKey)) {
+        diffRequestInFlight.delete(cacheKey);
+      }
+      if (!mountedRef.current) {
+        return;
+      }
       setError(e instanceof Error ? e.message : "Failed to load diff");
-    } finally {
       setLoading(false);
     }
-  }, [worktreeId, selectedFilePath]);
+  }, [applyResult, cacheKey, selectedFilePath, worktreeId]);
 
   useEffect(() => {
-    void fetchDiff();
-  }, [fetchDiff]);
+    mountedRef.current = true;
+
+    if (appliedCacheKeyRef.current !== cacheKey) {
+      void fetchDiff();
+    } else {
+      setLoading(false);
+    }
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [cacheKey, fetchDiff]);
 
   const toggleFile = (path: string) => {
     setCollapsed((prev) => {
@@ -117,13 +219,12 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
   const totals = useMemo(() => {
     let additions = 0;
     let deletions = 0;
-    for (const file of files) {
-      const s = computeStats(file);
-      additions += s.additions;
-      deletions += s.deletions;
+    for (const entry of entries) {
+      additions += entry.stats.additions;
+      deletions += entry.stats.deletions;
     }
     return { additions, deletions };
-  }, [files]);
+  }, [entries]);
 
   if (loading) {
     return (
@@ -139,7 +240,7 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
         <p className="text-sm text-destructive">{error}</p>
         <button
           type="button"
-          onClick={() => void fetchDiff()}
+          onClick={() => void fetchDiff({ force: true })}
           className="text-xs text-muted-foreground underline hover:text-foreground"
         >
           Retry
@@ -148,7 +249,7 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
     );
   }
 
-  if (files.length === 0) {
+  if (entries.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground/60">
         {selectedFilePath ? (
@@ -170,7 +271,7 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
         <span className="text-xs font-medium text-muted-foreground">
           {selectedFilePath
             ? selectedFilePath.split("/").pop()
-            : `${files.length} file${files.length !== 1 ? "s" : ""} changed`}
+            : `${entries.length} file${entries.length !== 1 ? "s" : ""} changed`}
         </span>
         {totals.additions > 0 && (
           <span className="text-xs font-semibold text-green-400">+{totals.additions}</span>
@@ -216,7 +317,7 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
 
         <button
           type="button"
-          onClick={() => void fetchDiff()}
+          onClick={() => void fetchDiff({ force: true })}
           className="rounded-sm p-1 text-muted-foreground/50 transition-colors hover:bg-secondary/40 hover:text-foreground"
           title="Refresh diff"
         >
@@ -224,13 +325,14 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
         </button>
       </div>
 
-      {/* Diff files */}
+      {/* Diff entries */}
       <ScrollArea className="min-h-0 flex-1">
         <div className={cn("space-y-3", isMobile ? "p-2" : "p-4")}>
-          {files.map((file) => {
+          {entries.map((entry) => {
+            const file = entry.file;
             const key = file.name;
             const isCollapsed = collapsed.has(key);
-            const stats = computeStats(file);
+            const stats = entry.stats;
             const status = mapFileType(file.type);
             const badge = STATUS_BADGE[status] ?? STATUS_BADGE.modified;
 

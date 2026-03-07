@@ -14,9 +14,7 @@ export function shouldAutoBackfillOnHydration(
   snapshot: ChatThreadSnapshot,
   timelineHasIncompleteCoverage: boolean,
 ): boolean {
-  return snapshot.coverage.eventsStatus !== "complete"
-    || snapshot.coverage.recommendedBackfill
-    || timelineHasIncompleteCoverage;
+  return timelineHasIncompleteCoverage && snapshot.coverage.nextBeforeIdx != null;
 }
 
 export function buildAutoBackfillSnapshotKey(snapshot: ChatThreadSnapshot): string {
@@ -37,13 +35,11 @@ export function shouldInvalidateSnapshotImmediatelyAfterSubmit(): boolean {
 export function buildAutoBackfillLaunchKey(params: {
   snapshotKey: string;
   coverageNextBeforeIdx: number | null;
-  timelineHasIncompleteCoverage: boolean;
 }): string {
-  const { snapshotKey, coverageNextBeforeIdx, timelineHasIncompleteCoverage } = params;
+  const { snapshotKey, coverageNextBeforeIdx } = params;
   return [
     snapshotKey,
     coverageNextBeforeIdx ?? "null",
-    timelineHasIncompleteCoverage ? "1" : "0",
   ].join("|");
 }
 

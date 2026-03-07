@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import {
   AnswerQuestionInputSchema,
@@ -74,6 +75,10 @@ const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
+
+function getAttachmentStorageDir(worktreeId: string, messageId: string): string {
+  return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, messageId);
+}
 
 export function createChatService(deps: RuntimeDeps) {
   const activeThreads = new Set<string>();
@@ -387,7 +392,6 @@ export function createChatService(deps: RuntimeDeps) {
           if (diffSnapshot) {
             const fileCount = diffSnapshot.changedFiles.length;
             const summary = fileCount > 0 ? `Edited ${fileCount} file${fileCount === 1 ? "" : "s"}` : "Captured worktree diff";
-
             await deps.eventHub.emit(threadId, "tool.finished", {
               summary,
               precedingToolUseIds: [],
@@ -1030,7 +1034,7 @@ export function createChatService(deps: RuntimeDeps) {
           let dbContent = att.content;
 
           if (isImageMimeType(att.mimeType)) {
-            const attachDir = join(thread.worktree.path, ATTACHMENT_DIR_NAME, message.id);
+            const attachDir = getAttachmentStorageDir(thread.worktree.id, message.id);
             mkdirSync(attachDir, { recursive: true });
             const safeFilename = basename(att.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
             storagePath = join(attachDir, safeFilename);

@@ -4,6 +4,7 @@ export type {
   ExploreActivityEntry,
   ActivityTraceStep,
   ChatTimelineItem,
+  ChatTimelineSummary,
   LoadOlderRequestMetadata,
   LoadOlderRequestResult,
   ChatMessageListProps,
