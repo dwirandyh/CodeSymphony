@@ -3,9 +3,12 @@ import { ChevronDown, ChevronRight, FolderGit2, GitBranch, Pencil, Plus, Trash2 
 import type { Repository } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
+import { Badge } from "../ui/badge";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api";
 import { isRootWorktree } from "../../lib/worktree";
+import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
+import type { WorktreeThreadUiStatus } from "../../pages/workspace/hooks/worktreeThreadStatus";
 
 type RepositoryPanelProps = {
   repositories: Repository[];
@@ -21,6 +24,27 @@ type RepositoryPanelProps = {
   onDeleteWorktree: (worktreeId: string) => void;
   onRenameWorktreeBranch: (worktreeId: string, newBranch: string) => void;
 };
+
+const WORKTREE_STATUS_META: Record<WorktreeThreadUiStatus, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+  waiting_approval: { label: "Waiting approval", variant: "destructive" },
+  review_plan: { label: "Review plan", variant: "secondary" },
+  running: { label: "Running", variant: "default" },
+  idle: { label: "Idle", variant: "outline" },
+};
+
+function WorktreeStatusBadge({ status }: { status: WorktreeThreadUiStatus | undefined }) {
+  const resolvedStatus = status ?? "idle";
+  const meta = WORKTREE_STATUS_META[resolvedStatus];
+  return (
+    <Badge
+      variant={meta.variant}
+      className="pointer-events-none h-4 rounded-md px-1.5 py-0 text-[10px] leading-none shadow-sm"
+      data-testid={`worktree-status-${resolvedStatus}`}
+    >
+      {meta.label}
+    </Badge>
+  );
+}
 
 export function RepositoryPanel({
   repositories,
@@ -46,6 +70,7 @@ export function RepositoryPanel({
     () => repositories.flatMap((r) => r.worktrees.filter((w) => w.status === "active").map((w) => w.id)),
     [repositories],
   );
+  const worktreeStatuses = useWorktreeStatuses(repositories);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -202,17 +227,14 @@ export function RepositoryPanel({
                             onClick={() => onSelectWorktree(repository.id, rootWorkspace.id)}
                           >
                             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                              <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                              <div className="flex min-w-0 items-center gap-1.5 overflow-hidden pr-20">
                                 <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                                   <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                                 </span>
                                 <span className="truncate text-xs">{rootWorkspace.branch}</span>
-                                <span className="shrink-0 rounded border border-border/60 px-1 py-0 text-[10px] uppercase tracking-wide text-muted-foreground">
-                                  root
-                                </span>
                               </div>
 
-                              <div className="flex h-4 items-center gap-1.5 pl-5">
+                              <div className="flex h-4 items-center gap-1.5 pl-5 pr-20">
                                 {worktreeStats[rootWorkspace.id] && ((worktreeStats[rootWorkspace.id].insertions > 0) || (worktreeStats[rootWorkspace.id].deletions > 0)) ? (
                                   <span className="flex items-center gap-1 text-[10px] leading-none">
                                     <span className="text-green-500">+{worktreeStats[rootWorkspace.id].insertions}</span>
@@ -222,6 +244,9 @@ export function RepositoryPanel({
                               </div>
                             </div>
 
+                            <div className="absolute top-1.5 right-2 flex items-center justify-end">
+                              <WorktreeStatusBadge status={worktreeStatuses[rootWorkspace.id]?.kind} />
+                            </div>
                           </button>
                         </div>
                       </div>
@@ -244,7 +269,7 @@ export function RepositoryPanel({
                                 onClick={() => onSelectWorktree(repository.id, worktree.id)}
                               >
                                 <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden pr-20">
                                     <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                                       <GitBranch className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                                     </span>
@@ -290,7 +315,7 @@ export function RepositoryPanel({
                                     )}
                                   </div>
 
-                                  <div className="flex h-4 items-center gap-1.5 pl-5">
+                                  <div className="flex h-4 items-center gap-1.5 pl-5 pr-20">
                                     {stats && (stats.insertions > 0 || stats.deletions > 0) ? (
                                       <span className="flex items-center gap-1 text-[10px] leading-none">
                                         <span className="text-green-500">+{stats.insertions}</span>
@@ -300,42 +325,38 @@ export function RepositoryPanel({
                                   </div>
                                 </div>
 
-                                <div className="relative mt-0.5 ml-auto flex shrink-0 items-center justify-end">
-                                  {/* Default: baseBranch label */}
-                                  <div className="flex items-center transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0">
-                                    <span className="whitespace-nowrap text-[10px] text-muted-foreground">{worktree.baseBranch}</span>
-                                  </div>
+                                <div className="absolute top-1.5 right-2 flex items-center justify-end transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0">
+                                  <WorktreeStatusBadge status={worktreeStatuses[worktree.id]?.kind} />
+                                </div>
 
-                                  {/* Hover: action buttons */}
-                                  <div className="absolute inset-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:opacity-100">
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setEditingWorktreeId(worktree.id);
-                                        setEditingBranchValue(worktree.branch);
-                                      }}
-                                      title="Rename branch"
-                                    >
-                                      <Pencil className="h-3.5 w-3.5" />
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onDeleteWorktree(worktree.id);
-                                      }}
-                                      title="Delete worktree"
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </div>
+                                <div className="absolute top-0 right-2 bottom-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:opacity-100">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingWorktreeId(worktree.id);
+                                      setEditingBranchValue(worktree.branch);
+                                    }}
+                                    title="Rename branch"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onDeleteWorktree(worktree.id);
+                                    }}
+                                    title="Delete worktree"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
                                 </div>
                               </button>
                             </div>

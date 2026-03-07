@@ -276,6 +276,25 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         });
       }
 
+      if (
+        payload.type === "permission.requested" ||
+        payload.type === "permission.resolved" ||
+        payload.type === "question.requested" ||
+        payload.type === "question.answered" ||
+        payload.type === "question.dismissed" ||
+        payload.type === "plan.created" ||
+        payload.type === "plan.approved" ||
+        payload.type === "plan.revision_requested"
+      ) {
+        debugLog("useChatSession", "chat.sse.gate-event", {
+          threadId: selectedThreadId,
+          eventId: payload.id,
+          idx: payload.idx,
+          type: payload.type,
+          requestId: typeof payload.payload.requestId === "string" ? payload.payload.requestId : null,
+        });
+      }
+
       if (payload.type === "chat.completed") {
         const completedMessageId = String(payload.payload.messageId ?? "");
         const completedThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
@@ -303,6 +322,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           event: "chatCompleted",
           messageId: completedMessageId,
           details: { idx: payload.idx },
+        });
+        debugLog("useChatSession", "chat.sse.invalidateSnapshot", {
+          threadId: selectedThreadId,
+          reason: "chat.completed",
+          eventId: payload.id,
+          idx: payload.idx,
         });
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(selectedThreadId) });
       }
@@ -338,6 +363,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         queryKeys.threads.snapshot(selectedThreadId),
       );
       const cachedEvents = cachedSnapshot?.events;
+      debugLog("useChatSession", "chat.sse.startStream", {
+        threadId: selectedThreadId,
+        cachedEventCount: cachedEvents?.data.length ?? 0,
+        cachedNewestIdx: cachedSnapshot?.watermarks.newestIdx ?? null,
+        lastEventIdxBeforeSeed: lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null,
+      });
       if (cachedEvents && cachedEvents.data.length > 0) {
         const seenEventIds = ensureSeenEventIds(selectedThreadId);
         for (const e of cachedEvents.data) {
@@ -425,6 +456,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
     void (async () => {
       try {
+        debugLog("useChatSession", "chat.sse.prefetchSnapshot:start", {
+          threadId: selectedThreadId,
+        });
         const snapshot = await queryClient.fetchQuery({
           queryKey: queryKeys.threads.snapshot(selectedThreadId),
           queryFn: () => api.getThreadSnapshot(selectedThreadId, {
@@ -433,6 +467,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           }),
         });
         if (disposed) return;
+        debugLog("useChatSession", "chat.sse.prefetchSnapshot:success", {
+          threadId: selectedThreadId,
+          messagesCount: snapshot.messages.data.length,
+          eventsCount: snapshot.events.data.length,
+          newestIdx: snapshot.watermarks.newestIdx ?? null,
+        });
         const snapshotEvents = snapshot.events;
         if (snapshotEvents.data.length > 0) {
           const seenEventIds = ensureSeenEventIds(selectedThreadId);
@@ -441,8 +481,11 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             updateLastEventIdx(selectedThreadId, e.idx);
           }
         }
-      } catch {
-        // Start stream without pre-seeding if fetch fails
+      } catch (error) {
+        debugLog("useChatSession", "chat.sse.prefetchSnapshot:error", {
+          threadId: selectedThreadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
       if (!disposed) startStream();
     })();

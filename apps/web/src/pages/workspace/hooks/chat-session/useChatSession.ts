@@ -331,6 +331,9 @@ export function useChatSession(
     const lastAppliedSnapshotKey = selectedThreadId
       ? lastAppliedSnapshotKeyByThreadRef.current.get(selectedThreadId) ?? null
       : null;
+    const previousSeededSnapshotKey = selectedThreadId
+      ? seededSnapshotKeyByThreadRef.current.get(selectedThreadId) ?? null
+      : null;
     const seedDecision = resolveSnapshotSeedDecision({
       selectedThreadId,
       queriedThreadSnapshot,
@@ -344,8 +347,11 @@ export function useChatSession(
       queriedEventsLength: queriedThreadSnapshot?.events.data.length ?? null,
       snapshotKey: seedDecision.snapshotKey,
       lastAppliedSnapshotKey,
+      previousSeededSnapshotKey,
       seedReason: seedDecision.reason,
       shouldApplySnapshot: seedDecision.shouldApply,
+      newestEventIdx: queriedThreadSnapshot?.watermarks.newestIdx ?? null,
+      newestMessageSeq: queriedThreadSnapshot?.watermarks.newestSeq ?? null,
     });
 
     if (threadChanged) {
@@ -418,6 +424,9 @@ export function useChatSession(
       reason: seedDecision.reason,
       snapshotKey: seedDecision.snapshotKey,
       previousSnapshotKey: lastAppliedSnapshotKey,
+      previousSeededSnapshotKey,
+      appliedMessagesLength: queriedThreadSnapshot.messages.data.length,
+      appliedEventsLength: queriedThreadSnapshot.events.data.length,
     });
   }, [onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId]);
 
