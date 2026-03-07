@@ -52,6 +52,7 @@ export function useChatSession(
 ) {
   const queryClient = useQueryClient();
   const hydrationBackfillPolicy = resolveHydrationBackfillPolicy(options?.hydrationBackfillPolicy);
+  const timelineEnabled = options?.timelineEnabled !== false;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -759,6 +760,7 @@ export function useChatSession(
     const requestId = metadata?.requestId ?? `load-older-${threadId}-${requestNumber}`;
     const source = metadata?.source ?? "manual";
     const eventsLimit = metadata?.eventsLimitOverride ?? INITIAL_EVENTS_PAGE_LIMIT;
+    const loadStartedAt = performance.now();
 
     if (beforeSeq == null && beforeIdx == null) {
       setHasMoreOlderMessages(false);
@@ -886,6 +888,7 @@ export function useChatSession(
         semanticBoundaryEventId: semanticBoundary?.eventId ?? null,
         semanticBoundaryEventIdx: semanticBoundary?.eventIdx ?? null,
         semanticBoundaryEventType: semanticBoundary?.eventType ?? null,
+        durationMs: Number((performance.now() - loadStartedAt).toFixed(2)),
       });
 
       if (messagesPage) {
@@ -1015,6 +1018,7 @@ export function useChatSession(
     hasIncompleteCoverage: timelineHasIncompleteCoverage,
   } = useWorkspaceTimeline(messages, events, selectedThreadId, timelineRefsRef.current, {
     semanticHydrationInProgress,
+    disabled: !timelineEnabled,
   });
 
   const timelineIncompleteCoverageRef = useRef(false);

@@ -76,6 +76,7 @@ export function useWorkspaceTimeline(
 
   return useMemo<WorkspaceTimelineResult>(() => {
     const semanticHydrationInProgress = options?.semanticHydrationInProgress === true;
+    const disabled = options?.disabled === true;
     const lastEventIdx = events.length > 0 ? events[events.length - 1].idx : -1;
     const fingerprint = {
       messageCount: messages.length,
@@ -96,6 +97,14 @@ export function useWorkspaceTimeline(
     ) {
       return prevResultRef.current;
     }
+
+    if (disabled) {
+      const disabledResult: WorkspaceTimelineResult = { items: [], hasIncompleteCoverage: false };
+      prevFingerprintRef.current = fingerprint;
+      prevResultRef.current = disabledResult;
+      return disabledResult;
+    }
+
     const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
 
     const localStickyIds = new Set(refs.stickyRawFallbackMessageIds);
@@ -792,5 +801,5 @@ export function useWorkspaceTimeline(
     prevFingerprintRef.current = fingerprint;
     prevResultRef.current = timelineResult;
     return timelineResult;
-  }, [messages, events, options?.semanticHydrationInProgress, selectedThreadId]);
+  }, [messages, events, options?.disabled, options?.semanticHydrationInProgress, selectedThreadId]);
 }

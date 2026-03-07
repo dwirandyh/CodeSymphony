@@ -211,10 +211,15 @@ export function WorkspacePage() {
       : `Worktree ${repos.selectedWorktree.branch} from ${repos.selectedWorktree.baseBranch}`)
     : "Choose a workspace";
 
+  const activeView = search.view ?? "chat";
+  const selectedDiffFilePath = search.file ?? null;
+  const reviewTabOpen = activeView === "review";
+
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     initialThreadId: search.threadId,
     selectedRepositoryId: repos.selectedRepositoryId,
-    hydrationBackfillPolicy: "auto",
+    hydrationBackfillPolicy: reviewTabOpen ? "manual" : "auto",
+    timelineEnabled: !reviewTabOpen,
     onWorktreeResolved: (worktreeId) => {
       repos.setSelectedWorktreeId(worktreeId);
     },
@@ -380,10 +385,6 @@ export function WorkspacePage() {
     hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
   });
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
-
-  const activeView = search.view ?? "chat";
-  const selectedDiffFilePath = search.file ?? null;
-  const reviewTabOpen = activeView === "review";
 
   // Close mobile drawer on Escape key
   useEffect(() => {

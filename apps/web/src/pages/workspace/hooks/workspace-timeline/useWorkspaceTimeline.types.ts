@@ -17,6 +17,7 @@ export type WorkspaceTimelineResult = {
 
 export type UseWorkspaceTimelineOptions = {
   semanticHydrationInProgress?: boolean;
+  disabled?: boolean;
 };
 
 export type ThinkingRound = {

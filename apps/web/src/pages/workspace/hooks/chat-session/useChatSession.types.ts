@@ -81,4 +81,5 @@ export interface UseChatSessionOptions {
   selectedRepositoryId?: string | null;
   onWorktreeResolved?: (worktreeId: string) => void;
   hydrationBackfillPolicy?: HydrationBackfillPolicy;
+  timelineEnabled?: boolean;
 }

@@ -34,7 +34,7 @@ Object.defineProperty(window, "matchMedia", {
   })),
 });
 
-import { DiffReviewPanel } from "./DiffReviewPanel";
+import { DiffReviewPanel, __resetDiffReviewPanelCacheForTests } from "./DiffReviewPanel";
 import { api } from "../../lib/api";
 import { parsePatchFiles } from "@pierre/diffs";
 
@@ -46,6 +46,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   vi.clearAllMocks();
+  __resetDiffReviewPanelCacheForTests();
 });
 
 afterEach(() => {
