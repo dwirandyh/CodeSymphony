@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useRef,
   type MutableRefObject,
 } from "react";
 import type { ChatThreadSnapshot } from "@codesymphony/shared-types";
@@ -19,11 +18,9 @@ import {
   shouldAutoBackfillOnHydration,
 } from "./hydrationUtils";
 
-const AUTO_BACKFILL_MAX_PAGES = 4;
+const AUTO_BACKFILL_MAX_PAGES = 2;
 const AUTO_BACKFILL_MAX_LAUNCHES_PER_THREAD = 16;
-const AUTO_HYDRATION_MAX_INITIAL_GAP = 120;
-const AUTO_HYDRATION_LARGE_GAP_EVENTS_LIMIT = 300;
-const AUTO_HYDRATION_LARGE_GAP_MAX_PAGES = 2;
+const AUTO_HYDRATION_EVENTS_LIMIT = 120;
 
 export async function runAutoBackfillLoop(input: AutoBackfillLoopInput): Promise<AutoBackfillLoopOutcome> {
   let pagesLoaded = 0;
@@ -173,7 +170,6 @@ export function useAutoBackfill(params: UseAutoBackfillParams) {
     const launchKey = buildAutoBackfillLaunchKey({
       snapshotKey,
       coverageNextBeforeIdx: coverage.nextBeforeIdx,
-      timelineHasIncompleteCoverage,
     });
     const inFlightLaunchKey = autoBackfillInFlightLaunchKeyByThreadRef.current.get(selectedThreadId) ?? null;
     const lastLaunchKey = lastAutoBackfillLaunchKeyByThreadRef.current.get(selectedThreadId) ?? null;
@@ -238,10 +234,9 @@ export function useAutoBackfill(params: UseAutoBackfillParams) {
       return;
     }
 
-    const useBoundedLargeGapMode = !timelineHasIncompleteCoverage && launchBeforeIdx > AUTO_HYDRATION_MAX_INITIAL_GAP;
-    const stopOnSemanticBoundary = useBoundedLargeGapMode;
-    const eventsLimitOverride = useBoundedLargeGapMode ? AUTO_HYDRATION_LARGE_GAP_EVENTS_LIMIT : undefined;
-    const maxPages = useBoundedLargeGapMode ? AUTO_HYDRATION_LARGE_GAP_MAX_PAGES : AUTO_BACKFILL_MAX_PAGES;
+    const stopOnSemanticBoundary = true;
+    const eventsLimitOverride = AUTO_HYDRATION_EVENTS_LIMIT;
+    const maxPages = AUTO_BACKFILL_MAX_PAGES;
 
     const lastSeededSnapshotKey = seededSnapshotKeyByThreadRef.current.get(selectedThreadId) ?? null;
     if (lastSeededSnapshotKey !== snapshotKey) {
@@ -328,7 +323,6 @@ export function useAutoBackfill(params: UseAutoBackfillParams) {
         coverageNextBeforeIdx: coverage.nextBeforeIdx,
         timelineIncompleteCoverage: timelineHasIncompleteCoverage,
         launchCount: nextLaunchCount,
-        boundedLargeGapMode: useBoundedLargeGapMode,
         stopOnSemanticBoundary,
         maxPages,
         eventsLimitOverride: eventsLimitOverride ?? null,

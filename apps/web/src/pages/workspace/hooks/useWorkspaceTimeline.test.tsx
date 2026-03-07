@@ -479,7 +479,57 @@ describe("useWorkspaceTimeline", () => {
     });
     const releasedAssistant = hookResult.items.find((item) => item.kind === "message" && item.message.id === "m2");
     expect(releasedAssistant).toBeDefined();
+    expect(hookResult.hasIncompleteCoverage).toBe(true);
     expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
     expect(hookResult.summary.oldestRenderableHydrationPending).toBe(false);
+  });
+
+  it("marks coverage incomplete when the oldest loaded assistant is missing rich context on refresh", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect"),
+      makeMessage("m2", 2, "assistant", "assistant text before semantic context"),
+    ];
+    const events = [
+      makeEvent(10, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} options={{ semanticHydrationInProgress: false }} />);
+    });
+
+    const assistantItem = hookResult.items.find((item) => item.kind === "message" && item.message.id === "m2");
+    expect(assistantItem).toBeDefined();
+    expect(hookResult.hasIncompleteCoverage).toBe(true);
+    expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
+  });
+
+  it("reuses the previous timeline result for prepend-only hydration changes when the head is stable", () => {
+    const refs = makeRefs();
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect"),
+      makeMessage("m2", 2, "assistant", "assistant text before semantic context"),
+    ];
+    const initialEvents = [
+      makeEvent(10, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+    const prependedEvents = [
+      makeEvent(5, "tool.finished", { toolName: "Read", summary: "Read /src/a.ts" }, "m2"),
+      ...initialEvents,
+    ];
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={initialEvents} threadId="t1" refs={refs} options={{ semanticHydrationInProgress: true }} />);
+    });
+    const previousResult = hookResult;
+    const previousSummary = hookResult.summary;
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={prependedEvents} threadId="t1" refs={refs} options={{ semanticHydrationInProgress: true }} />);
+    });
+
+    expect(previousSummary.headIdentityStable).toBe(true);
+    expect(hookResult).toBe(previousResult);
+    expect(hookResult.summary).toBe(previousSummary);
+    expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
   });
 });

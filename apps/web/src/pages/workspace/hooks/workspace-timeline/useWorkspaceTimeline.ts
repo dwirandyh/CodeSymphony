@@ -69,6 +69,7 @@ export function useWorkspaceTimeline(
     messageCount: number;
     eventCount: number;
     lastEventIdx: number;
+    firstEventIdx: number;
     threadId: string | null;
     semanticHydrationInProgress: boolean;
   } | null>(null);
@@ -89,10 +90,12 @@ export function useWorkspaceTimeline(
     const semanticHydrationInProgress = options?.semanticHydrationInProgress === true;
     const disabled = options?.disabled === true;
     const lastEventIdx = events.length > 0 ? events[events.length - 1].idx : -1;
+    const firstEventIdx = events.length > 0 ? events[0].idx : -1;
     const fingerprint = {
       messageCount: messages.length,
       eventCount: events.length,
       lastEventIdx,
+      firstEventIdx,
       threadId: selectedThreadId,
       semanticHydrationInProgress,
     };
@@ -102,10 +105,34 @@ export function useWorkspaceTimeline(
       prev.messageCount === fingerprint.messageCount &&
       prev.eventCount === fingerprint.eventCount &&
       prev.lastEventIdx === fingerprint.lastEventIdx &&
+      prev.firstEventIdx === fingerprint.firstEventIdx &&
       prev.threadId === fingerprint.threadId &&
       prev.semanticHydrationInProgress === fingerprint.semanticHydrationInProgress &&
       prevResultRef.current.items.length > 0
     ) {
+      return prevResultRef.current;
+    }
+
+    const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
+    const oldestMessageId = sortedMessages[0]?.id ?? null;
+    const canReusePrependOnlyHydrationResult =
+      prev !== null
+      && semanticHydrationInProgress
+      && prev.semanticHydrationInProgress
+      && prev.threadId === selectedThreadId
+      && prev.messageCount === messages.length
+      && prev.eventCount < events.length
+      && prev.lastEventIdx === lastEventIdx
+      && prevResultRef.current.summary.headIdentityStable
+      && prevResultRef.current.summary.oldestRenderableKind === "message"
+      && prevResultRef.current.summary.oldestRenderableMessageId != null
+      && prevResultRef.current.summary.oldestRenderableMessageId === oldestMessageId;
+    if (canReusePrependOnlyHydrationResult) {
+      prevFingerprintRef.current = fingerprint;
+      prevInputCountsRef.current = {
+        messageCount: messages.length,
+        eventCount: events.length,
+      };
       return prevResultRef.current;
     }
 
@@ -223,7 +250,6 @@ export function useWorkspaceTimeline(
       });
     }
 
-    const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
     const messageAnchorIdxById = computeMessageAnchorIdxById(
       sortedMessages,
       firstMessageEventIdxById,
@@ -371,26 +397,15 @@ export function useWorkspaceTimeline(
         && (assistantContextById.get(message.id)?.length ?? 0) > 0;
 
       const hasThinkingRounds = (thinkingRoundsByMessageId.get(message.id)?.length ?? 0) > 0;
-      const shouldPreserveBoundaryAssistantDuringHydration =
-        semanticHydrationInProgress
-        && message.role === "assistant"
+      const oldestAssistantMissingRichContext =
+        message.role === "assistant"
         && oldestAssistantMessageId != null
         && message.id === oldestAssistantMessageId
         && message.content.trim().length > 0
         && !hasToolEventsInContext
         && !hasThinkingRounds
         && !hasMessageDelta;
-      if (shouldPreserveBoundaryAssistantDuringHydration) {
-        debugLog("useWorkspaceTimeline", "assistant-text-preserved-during-hydration", {
-          threadId: selectedThreadId,
-          messageId: message.id,
-          oldestAssistantMessageId,
-          semanticHydrationInProgress,
-          hasToolEventsInContext,
-          hasThinkingRounds,
-          hasMessageDelta,
-          contentLength: message.content.length,
-        });
+      if (oldestAssistantMissingRichContext) {
         hasIncompleteCoverage = true;
       }
 

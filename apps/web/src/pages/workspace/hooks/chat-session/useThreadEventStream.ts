@@ -396,6 +396,33 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       };
     };
 
+    const cachedSnapshot = queryClient.getQueryData<ChatThreadSnapshot>(
+      queryKeys.threads.snapshot(selectedThreadId),
+    );
+
+    if (cachedSnapshot) {
+      startStream();
+      return () => {
+        disposed = true;
+        if (reconnectTimer !== null) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        if (rafIdRef.current !== null) {
+          cancelAnimationFrame(rafIdRef.current);
+          rafIdRef.current = null;
+        }
+        pendingEventsRef.current = [];
+        pendingMessageMutationsRef.current = [];
+        if (stream) {
+          for (const eventType of EVENT_TYPES) {
+            stream.removeEventListener(eventType, onEvent as EventListener);
+          }
+          stream.close();
+        }
+      };
+    }
+
     void (async () => {
       try {
         const snapshot = await queryClient.fetchQuery({

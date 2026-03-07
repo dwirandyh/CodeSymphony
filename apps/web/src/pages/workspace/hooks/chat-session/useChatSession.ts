@@ -409,6 +409,7 @@ export function useChatSession(
       lastEventIdxByThreadRef,
       activeThreadIdRef,
       onBranchRenamed,
+      mode: threadChanged ? "replace" : "merge",
     });
     seededSnapshotKeyByThreadRef.current.set(selectedThreadId, seedDecision.snapshotKey);
     lastAppliedSnapshotKeyByThreadRef.current.set(selectedThreadId, seedDecision.snapshotKey);

@@ -12,6 +12,8 @@ export type LoadOlderHistoryRequestMetadata = {
   eventsLimitOverride?: number;
 };
 
+export type SnapshotSeedMode = "replace" | "merge";
+
 export type LoadOlderHistoryResult = {
   cycleId: number | null;
   requestId: string;
