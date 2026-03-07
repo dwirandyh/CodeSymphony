@@ -142,7 +142,14 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         return;
       }
 
-      debugLog("useChatSession", "SSE event ACCEPTED", { type: payload.type, idx: payload.idx });
+      debugLog("useChatSession", "chat.sse.eventAccepted", {
+        threadId: selectedThreadId,
+        eventId: payload.id,
+        idx: payload.idx,
+        type: payload.type,
+        messageId: typeof payload.payload.messageId === "string" ? payload.payload.messageId : null,
+        duringOlderPagination: loadingOlderHistoryRef.current,
+      });
       seenEventIds.add(payload.id);
       updateLastEventIdx(selectedThreadId, payload.idx);
       pushRenderDebug({
@@ -241,10 +248,19 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           pendingEventsRef.current = [];
           pendingMessageMutationsRef.current = [];
 
-          debugLog("useChatSession", "rAF flush", {
+          debugLog("useChatSession", "chat.sse.flush", {
+            threadId: selectedThreadId,
+            duringOlderPagination: loadingOlderHistoryRef.current,
             pendingEventsCount: pendingEvents.length,
             pendingMutationsCount: pendingMutations.length,
+            mutationCount: pendingMutations.length,
             eventTypes: pendingEvents.map((e) => e.type),
+            eventIdxRange: pendingEvents.length > 0
+              ? {
+                min: pendingEvents[0]?.idx ?? null,
+                max: pendingEvents[pendingEvents.length - 1]?.idx ?? null,
+              }
+              : null,
           });
 
           if (pendingEvents.length > 0 || pendingMutations.length > 0) {
@@ -344,6 +360,10 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       stream.onopen = () => {
         reconnectAttempts = 0;
+        debugLog("useChatSession", "chat.sse.connected", {
+          threadId: selectedThreadId,
+          afterIdx: typeof lastEventIdx === "number" ? lastEventIdx : null,
+        });
         onError(null);
       };
 
@@ -359,6 +379,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             const delay = BASE_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttempts);
             reconnectAttempts++;
+            debugLog("useChatSession", "chat.sse.reconnect", {
+              threadId: selectedThreadId,
+              reconnectAttempts,
+              delay,
+              afterIdx: lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null,
+            });
             reconnectTimer = setTimeout(() => {
               reconnectTimer = null;
               startStream();

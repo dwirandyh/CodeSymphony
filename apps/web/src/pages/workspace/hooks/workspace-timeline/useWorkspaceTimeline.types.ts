@@ -13,6 +13,13 @@ export type TimelineRefs = {
 export type WorkspaceTimelineResult = {
   items: ChatTimelineItem[];
   hasIncompleteCoverage: boolean;
+  summary: {
+    oldestRenderableKey: string | null;
+    oldestRenderableKind: ChatTimelineItem["kind"] | null;
+    oldestRenderableMessageId: string | null;
+    oldestRenderableHydrationPending: boolean;
+    headIdentityStable: boolean;
+  };
 };
 
 export type UseWorkspaceTimelineOptions = {

@@ -237,7 +237,17 @@ describe("useChatSession auto-backfill reseed regression", () => {
     stopRunMock.mockReset();
 
     useThreadsMock.mockReturnValue({ data: [makeThread()] });
-    useWorkspaceTimelineMock.mockReturnValue({ items: [], hasIncompleteCoverage: false });
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      hasIncompleteCoverage: false,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
 
     listMessagesPageMock.mockResolvedValue({
       data: [],
@@ -830,6 +840,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     }
 
     expect(latestResult.semanticHydrationInProgress).toBe(false);
+    expect(latestResult.timelineSummary.oldestRenderableHydrationPending).toBe(false);
 
     await act(async () => {
       void latestResult?.loadOlderHistory({ requestId: "manual-gate-test", source: "manual" });
@@ -837,6 +848,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     });
 
     expect(latestResult.semanticHydrationInProgress).toBe(true);
+    expect(latestResult.timelineSummary.headIdentityStable).toBe(true);
 
     if (!resolveEventsPage) {
       throw new Error("Expected deferred events page resolver");
@@ -857,6 +869,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
 
     await flushMicrotasks(4);
     expect(latestResult.semanticHydrationInProgress).toBe(false);
+    expect(latestResult.timelineSummary.oldestRenderableHydrationPending).toBe(false);
   });
 
   it("opens and closes semantic hydration gate during auto-backfill", async () => {
@@ -923,6 +936,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
     }
 
     expect(latestResult.semanticHydrationInProgress).toBe(true);
+    expect(latestResult.timelineSummary.headIdentityStable).toBe(true);
 
     if (!resolveEventsPage) {
       throw new Error("Expected deferred events page resolver");
@@ -943,6 +957,7 @@ describe("useChatSession auto-backfill reseed regression", () => {
 
     await flushMicrotasks(5);
     expect(latestResult.semanticHydrationInProgress).toBe(false);
+    expect(latestResult.timelineSummary.oldestRenderableHydrationPending).toBe(false);
   });
 
   it("preserves messages/events when same-thread snapshot is temporarily unavailable", async () => {

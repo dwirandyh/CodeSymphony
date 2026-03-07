@@ -738,15 +738,20 @@ export function useChatSession(
     }
   }
 
+  const timelineMessageCount = messages.length;
+  const timelineEventCount = events.length;
   const loadOlderHistory = useCallback(async (metadata?: LoadOlderHistoryRequestMetadata): Promise<LoadOlderHistoryResult | void> => {
     if (!selectedThreadId) return;
 
     if (loadingOlderHistoryRef.current) {
-      debugLog("useChatSession", "loadOlderHistory reentry skipped", {
+      debugLog("useChatSession", "chat.pagination.skipped", {
         threadId: selectedThreadId,
         cycleId: metadata?.cycleId ?? null,
         requestId: metadata?.requestId ?? null,
         source: metadata?.source ?? "manual",
+        skipReason: "reentry",
+        localMessageCount: timelineMessageCount,
+        localEventCount: timelineEventCount,
       });
       return;
     }
@@ -765,11 +770,16 @@ export function useChatSession(
     if (beforeSeq == null && beforeIdx == null) {
       setHasMoreOlderMessages(false);
       setHasMoreOlderEvents(false);
-      debugLog("useChatSession", "loadOlderHistory skipped empty cursors", {
+      debugLog("useChatSession", "chat.pagination.skipped", {
         threadId,
         cycleId,
         requestId,
         source,
+        skipReason: "empty-cursors",
+        beforeSeq,
+        beforeIdx,
+        localMessageCount: timelineMessageCount,
+        localEventCount: timelineEventCount,
       });
       return {
         cycleId,
@@ -796,7 +806,7 @@ export function useChatSession(
     loadingOlderHistoryRef.current = true;
     setLoadingOlderHistory(true);
     onError(null);
-    debugLog("useChatSession", "loadOlderHistory start", {
+    debugLog("useChatSession", "chat.pagination.requested", {
       threadId,
       beforeSeq,
       beforeIdx,
@@ -804,6 +814,8 @@ export function useChatSession(
       requestId,
       source,
       eventsLimit,
+      localMessageCount: timelineMessageCount,
+      localEventCount: timelineEventCount,
     });
 
     try {
@@ -826,14 +838,37 @@ export function useChatSession(
         ? detectSemanticBoundaryFromEvents(eventsPage.data)
         : null;
       const semanticBoundaryDetected = semanticBoundary != null;
+      const responseKind = messagesPage && eventsPage
+        ? messagesPage.data.length > 0 && eventsPage.data.length > 0
+          ? "both"
+          : messagesPage.data.length > 0
+            ? "messages-only"
+            : eventsPage.data.length > 0
+              ? "events-only"
+              : "empty"
+        : messagesPage
+          ? messagesPage.data.length > 0
+            ? "messages-only"
+            : "empty"
+          : eventsPage
+            ? eventsPage.data.length > 0
+              ? "events-only"
+              : "empty"
+            : "empty";
 
       if (selectedThreadId !== threadId) {
-        debugLog("useChatSession", "loadOlderHistory skipped thread changed", {
+        debugLog("useChatSession", "chat.pagination.skipped", {
           threadId,
           selectedThreadId,
           cycleId,
           requestId,
           source,
+          skipReason: "thread-changed",
+          beforeSeq,
+          beforeIdx,
+          responseKind,
+          localMessageCount: timelineMessageCount,
+          localEventCount: timelineEventCount,
         });
         return {
           cycleId,
@@ -871,45 +906,42 @@ export function useChatSession(
       const messagesAdded = messagesPage?.data.length ?? 0;
       const eventsAdded = eventsPage?.data.length ?? 0;
 
-      debugLog("useChatSession", "loadOlderHistory page result", {
+      debugLog("useChatSession", "chat.pagination.response", {
         threadId,
         cycleId,
         requestId,
         source,
+        beforeSeq,
+        beforeIdx,
         eventsLimit,
-        messagesPageCount: messagesAdded,
-        eventsPageCount: eventsAdded,
+        responseKind,
+        messagesAdded,
+        eventsAdded,
         nextBeforeSeq: messagesPage?.pageInfo.nextBeforeSeq ?? null,
         nextBeforeIdx: eventsPage?.pageInfo.nextBeforeIdx ?? null,
         hasMoreOlderMessages: messagesPage?.pageInfo.hasMoreOlder ?? false,
         hasMoreOlderEvents: eventsPage?.pageInfo.hasMoreOlder ?? false,
+        messageSeqRange: messagesPage && messagesPage.data.length > 0
+          ? {
+            oldest: messagesPage.data[0]?.seq ?? null,
+            newest: messagesPage.data[messagesPage.data.length - 1]?.seq ?? null,
+          }
+          : null,
+        eventIdxRange: eventsPage && eventsPage.data.length > 0
+          ? {
+            oldest: eventsPage.data[0]?.idx ?? null,
+            newest: eventsPage.data[eventsPage.data.length - 1]?.idx ?? null,
+          }
+          : null,
         semanticBoundaryDetected,
         semanticBoundaryKind: semanticBoundary?.kind ?? null,
         semanticBoundaryEventId: semanticBoundary?.eventId ?? null,
         semanticBoundaryEventIdx: semanticBoundary?.eventIdx ?? null,
         semanticBoundaryEventType: semanticBoundary?.eventType ?? null,
         durationMs: Number((performance.now() - loadStartedAt).toFixed(2)),
+        localMessageCountBeforeApply: timelineMessageCount,
+        localEventCountBeforeApply: timelineEventCount,
       });
-
-      if (messagesPage) {
-        debugLog("useChatSession", "loadOlderHistory apply messages", {
-          threadId,
-          cycleId,
-          requestId,
-          source,
-          incomingCount: messagesAdded,
-        });
-      }
-
-      if (eventsPage) {
-        debugLog("useChatSession", "loadOlderHistory apply events", {
-          threadId,
-          cycleId,
-          requestId,
-          source,
-          incomingCount: eventsAdded,
-        });
-      }
 
       if (messagesPage) {
         setMessages((current) => prependUniqueMessages(current, messagesPage.data));
@@ -917,6 +949,23 @@ export function useChatSession(
       if (eventsPage) {
         setEvents((current) => prependUniqueEvents(current, eventsPage.data));
       }
+
+      debugLog("useChatSession", "chat.pagination.applied", {
+        threadId,
+        cycleId,
+        requestId,
+        source,
+        completionReason: "applied",
+        responseKind,
+        messagesAdded,
+        eventsAdded,
+        nextBeforeSeq: nextBeforeSeqByThreadRef.current.get(threadId) ?? null,
+        nextBeforeIdx: nextBeforeIdxByThreadRef.current.get(threadId) ?? null,
+        localMessageCountBeforeApply: timelineMessageCount,
+        localEventCountBeforeApply: timelineEventCount,
+        localMessageCountAfterApply: timelineMessageCount + messagesAdded,
+        localEventCountAfterApply: timelineEventCount + eventsAdded,
+      });
 
       return {
         cycleId,
@@ -933,12 +982,25 @@ export function useChatSession(
       onError(e instanceof Error ? e.message : "Failed to load older history");
       throw e;
     } finally {
-      debugLog("useChatSession", "loadOlderHistory end", { threadId, cycleId, requestId, source });
+      debugLog("useChatSession", "chat.pagination.completed", {
+        threadId,
+        cycleId,
+        requestId,
+        source,
+        loadingOlderHistory: false,
+      });
       loadingOlderHistoryRef.current = false;
       setLoadingOlderHistory(false);
       closeSemanticHydrationGate(semanticHydrationGateMetadata);
     }
-  }, [closeSemanticHydrationGate, onError, openSemanticHydrationGate, selectedThreadId]);
+  }, [
+    closeSemanticHydrationGate,
+    onError,
+    openSemanticHydrationGate,
+    selectedThreadId,
+    timelineEventCount,
+    timelineMessageCount,
+  ]);
 
   async function stopAssistantRun() {
     if (!selectedThreadId) return;
@@ -1016,6 +1078,7 @@ export function useChatSession(
   const {
     items: timelineItems,
     hasIncompleteCoverage: timelineHasIncompleteCoverage,
+    summary: timelineSummary,
   } = useWorkspaceTimeline(messages, events, selectedThreadId, timelineRefsRef.current, {
     semanticHydrationInProgress,
     disabled: !timelineEnabled,
@@ -1076,6 +1139,7 @@ export function useChatSession(
     semanticHydrationInProgress,
 
     timelineItems,
+    timelineSummary,
 
     createAdditionalThread,
     createThreadAndSendMessage,

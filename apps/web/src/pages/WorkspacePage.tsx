@@ -735,6 +735,7 @@ export function WorkspacePage() {
                     <ChatMessageList
                       key={chatMessageListKey}
                       items={chat.timelineItems}
+                      timelineSummary={chat.timelineSummary}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       sendingMessage={chat.sendingMessage}
                       hasOlderHistory={chat.hasOlderHistory}

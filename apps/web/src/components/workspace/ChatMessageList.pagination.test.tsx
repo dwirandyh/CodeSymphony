@@ -19,6 +19,14 @@ type LoadOlderResult = {
   estimatedRenderableGrowth?: boolean;
 };
 
+const stableTimelineSummary = {
+  oldestRenderableKey: "message:m-10",
+  oldestRenderableKind: "message" as const,
+  oldestRenderableMessageId: "m-10",
+  oldestRenderableHydrationPending: false,
+  headIdentityStable: true,
+};
+
 const vlistMock = vi.hoisted(() => {
   let lastOnScroll: ((offset: number) => void) | null = null;
   let scrollSize = 2000;
@@ -198,6 +206,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady={false}
@@ -240,6 +249,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -261,7 +271,7 @@ describe("ChatMessageList pagination with virtua", () => {
 
     expect(debugLog).toHaveBeenCalledWith(
       "ChatMessageList",
-      "top-trigger-load-older",
+      "chat.topLoad.triggered",
       expect.objectContaining({
         trigger: "user-scroll-top",
         triggeredAtIso: expect.any(String),
@@ -291,6 +301,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -326,6 +337,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={withOlderItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -348,7 +360,7 @@ describe("ChatMessageList pagination with virtua", () => {
 
     expect(vi.mocked(debugLog).mock.calls.some((call) => (
       call[0] === "ChatMessageList"
-      && call[1] === "load-older-release-shift"
+      && call[1] === "chat.topLoad.shiftReleased"
       && typeof (call[2] as { reason?: unknown } | undefined)?.reason === "string"
       && typeof (call[2] as { releaseAnchorOffset?: unknown } | undefined)?.releaseAnchorOffset === "number"
       && typeof (call[2] as { releaseAnchorDistanceFromTop?: unknown } | undefined)?.releaseAnchorDistanceFromTop === "number"
@@ -379,6 +391,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -421,7 +434,7 @@ describe("ChatMessageList pagination with virtua", () => {
     expect(scrollToSpy).not.toHaveBeenCalled();
     expect(vi.mocked(debugLog).mock.calls.some((call) => (
       call[0] === "ChatMessageList"
-      && call[1] === "load-older-release-anchor-restore"
+      && call[1] === "chat.topLoad.anchorRestore"
       && (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
     ))).toBe(false);
   });
@@ -446,6 +459,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -489,7 +503,7 @@ describe("ChatMessageList pagination with virtua", () => {
     expect(scrollToSpy).not.toHaveBeenCalled();
     expect(vi.mocked(debugLog).mock.calls.some((call) => (
       call[0] === "ChatMessageList"
-      && call[1] === "load-older-release-anchor-restore"
+      && call[1] === "chat.topLoad.anchorRestore"
       && (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
     ))).toBe(false);
   });
@@ -514,6 +528,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -548,6 +563,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={withOlderItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -574,7 +590,7 @@ describe("ChatMessageList pagination with virtua", () => {
     expect(scrollToSpy).not.toHaveBeenCalled();
     expect(vi.mocked(debugLog).mock.calls.some((call) => (
       call[0] === "ChatMessageList"
-      && call[1] === "load-older-release-anchor-restore"
+      && call[1] === "chat.topLoad.anchorRestore"
       && (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
     ))).toBe(false);
   });
@@ -599,6 +615,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -642,7 +659,7 @@ describe("ChatMessageList pagination with virtua", () => {
     expect((scrollToSpy.mock.calls[0]?.[0] as number) > 120).toBe(true);
     expect(vi.mocked(debugLog).mock.calls.some((call) => (
       call[0] === "ChatMessageList"
-      && call[1] === "load-older-release-anchor-restore"
+      && call[1] === "chat.topLoad.anchorRestore"
       && (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
     ))).toBe(true);
   });
@@ -669,6 +686,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -710,7 +728,7 @@ describe("ChatMessageList pagination with virtua", () => {
     expect(scrollToSpy.mock.calls.at(-1)?.[0]).toBe(40);
     expect(vi.mocked(debugLog).mock.calls.some((call) => (
       call[0] === "ChatMessageList"
-      && call[1] === "load-older-post-release-drift-restore"
+      && call[1] === "chat.scroll.geometryChanged"
     ))).toBe(true);
   });
 
@@ -734,6 +752,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -754,6 +773,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           showThinkingPlaceholder
           hasOlderHistory
           loadingOlderHistory={false}
@@ -786,6 +806,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={withOlderItems}
+          timelineSummary={stableTimelineSummary}
           showThinkingPlaceholder
           hasOlderHistory
           loadingOlderHistory={false}
@@ -806,9 +827,10 @@ describe("ChatMessageList pagination with virtua", () => {
     expect(vlistMock.getLastShift()).toBe(false);
     expect(vi.mocked(debugLog).mock.calls.some((call) => (
       call[0] === "ChatMessageList"
-      && call[1] === "load-older-release-shift"
+      && call[1] === "chat.topLoad.shiftReleased"
       && (
         (call[2] as { reason?: string } | undefined)?.reason === "prepend-commit"
+        || (call[2] as { reason?: string } | undefined)?.reason === "non-prepend-growth"
         || (call[2] as { reason?: string } | undefined)?.reason === "events-only-growth"
       )
     ))).toBe(true);
@@ -834,6 +856,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -852,9 +875,118 @@ describe("ChatMessageList pagination with virtua", () => {
     expect(vlistMock.getLastShift()).toBe(false);
     expect(vi.mocked(debugLog).mock.calls.some((call) => (
       call[0] === "ChatMessageList"
-      && call[1] === "load-older-release-shift"
+      && call[1] === "chat.topLoad.shiftReleased"
       && (call[2] as { reason?: string; completionReason?: string } | undefined)?.reason === "no-growth"
       && (call[2] as { reason?: string; completionReason?: string } | undefined)?.completionReason === "applied"
+    ))).toBe(true);
+  });
+
+  it("waits for stable head metadata before releasing events-only growth", async () => {
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          timelineSummary={{
+            ...stableTimelineSummary,
+            oldestRenderableKey: "message:m-10",
+            oldestRenderableMessageId: "m-10",
+            oldestRenderableHydrationPending: true,
+            headIdentityStable: true,
+          }}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.emitAtTop();
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 0,
+        eventsAdded: 32,
+      });
+      await loadPromise;
+    });
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={[
+            makeToolItem("tool-1", "m-10"),
+            ...initialItems,
+          ]}
+          timelineSummary={{
+            ...stableTimelineSummary,
+            oldestRenderableKey: "message:m-10",
+            oldestRenderableMessageId: "m-10",
+            oldestRenderableHydrationPending: true,
+            headIdentityStable: true,
+          }}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+    await flushMicrotasks();
+
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "chat.topLoad.prependEvaluationDeferred"
+    ))).toBe(true);
+    expect(vlistMock.getLastShift()).toBe(true);
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={[
+            makeToolItem("tool-1", "m-10"),
+            ...initialItems,
+          ]}
+          timelineSummary={{
+            ...stableTimelineSummary,
+            oldestRenderableKey: "message:m-10",
+            oldestRenderableMessageId: "m-10",
+            oldestRenderableHydrationPending: false,
+            headIdentityStable: true,
+          }}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+    await flushMicrotasks();
+    await flushTimers(1700);
+
+    expect(vi.mocked(debugLog).mock.calls.some((call) => (
+      call[0] === "ChatMessageList"
+      && call[1] === "chat.topLoad.shiftReleased"
+      && (call[2] as { reason?: string } | undefined)?.reason === "non-prepend-growth"
     ))).toBe(true);
   });
 
@@ -876,6 +1008,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -929,6 +1062,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory={false}
           loadingOlderHistory={false}
           onLoadOlderHistory={onLoadOlderHistory}
@@ -944,7 +1078,7 @@ describe("ChatMessageList pagination with virtua", () => {
     expect(onLoadOlderHistory).not.toHaveBeenCalled();
     expect(debugLog).not.toHaveBeenCalledWith(
       "ChatMessageList",
-      "top-trigger-load-older",
+      "chat.topLoad.triggered",
       expect.anything(),
     );
   });
@@ -977,6 +1111,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -1017,7 +1152,7 @@ describe("ChatMessageList pagination with virtua", () => {
     expect(vlistMock.getLastShift()).toBe(false);
     expect(debugLog).toHaveBeenCalledWith(
       "ChatMessageList",
-      "load-older-release-shift",
+      "chat.topLoad.shiftReleased",
       expect.objectContaining({ reason: "timeout-fallback" }),
     );
 
@@ -1042,6 +1177,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -1110,6 +1246,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -1181,6 +1318,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -1209,6 +1347,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={initialItems}
+          timelineSummary={stableTimelineSummary}
           hasOlderHistory
           loadingOlderHistory={false}
           topPaginationInteractionReady
@@ -1232,6 +1371,7 @@ describe("ChatMessageList pagination with virtua", () => {
       root.render(
         <ChatMessageList
           items={items}
+          timelineSummary={stableTimelineSummary}
           showThinkingPlaceholder
         />,
       );
@@ -1253,7 +1393,7 @@ describe("ChatMessageList pagination with virtua", () => {
 
     act(() => {
       root.render(
-        <ChatMessageList items={items} />,
+        <ChatMessageList items={items} timelineSummary={stableTimelineSummary} />,
       );
     });
 
