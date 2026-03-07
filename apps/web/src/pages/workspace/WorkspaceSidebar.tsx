@@ -21,7 +21,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
     <>
       <aside
         ref={panelRef}
-        className="mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden rounded-2xl bg-card/75 p-2 sm:mb-2 lg:mb-3 lg:flex lg:p-3"
+        className="mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden bg-card/75 p-2 sm:mb-2 lg:mb-0 lg:flex lg:p-3"
         style={{ width: `${sidebarWidth}px` }}
       >
         <div className="mb-3">
@@ -62,15 +62,19 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
       </aside>
 
       {/* ── Sidebar resize handle ── */}
-      <div
-        className={`hidden w-1 cursor-col-resize items-center justify-center transition-colors hover:bg-primary/20 lg:flex ${sidebarDragging ? "bg-primary/30" : ""
-          }`}
-        onMouseDown={handleSidebarMouseDown}
-      >
-        <div
-          className={`h-8 w-[2px] rounded-full transition-colors ${sidebarDragging ? "bg-primary/60" : "bg-border/30"
+      <div className="hidden relative w-0 lg:block" aria-hidden="true">
+        <button
+          type="button"
+          className={`absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors hover:bg-primary/20 ${sidebarDragging ? "bg-primary/30" : ""
             }`}
-        />
+          onMouseDown={handleSidebarMouseDown}
+          aria-label="Resize sidebar"
+        >
+          <span
+            className={`h-8 w-[2px] rounded-full transition-colors ${sidebarDragging ? "bg-primary/60" : "bg-border/30"
+              }`}
+          />
+        </button>
       </div>
     </>
   );

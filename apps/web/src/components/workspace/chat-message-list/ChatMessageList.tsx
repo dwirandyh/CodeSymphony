@@ -23,6 +23,7 @@ const TOP_LOAD_EVENTS_ONLY_LATE_DRIFT_RESTORE_COOLDOWN_MS = 240;
 
 export function ChatMessageList({
   items,
+  timelineSummary,
   showThinkingPlaceholder = false,
   sendingMessage = false,
   onOpenReadFile,
@@ -90,19 +91,11 @@ export function ChatMessageList({
     lockUntilAt: number;
     watchUntilAt: number;
     suppressRestore?: boolean;
-    armedScrollSize?: number | null;
   } | null>(null);
   const pendingShiftRestoreFrameRef = useRef(false);
   const shiftPendingVisibilityHideRef = useRef(false);
   const shiftBaselineDfbRef = useRef<number | null>(null);
-  // #region agent log
-  const prePaginationDomGeoRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
-  const frameTrackerActiveRef = useRef(false);
-  const visualTrackerRafRef = useRef<number | null>(null);
-  const visualTrackerActiveRef = useRef(false);
-  const visualTrackerLastScrollTimeRef = useRef(0);
   const scrollJumpCompensationActiveRef = useRef(false);
-  // #endregion
   const scrollFreezeActiveRef = useRef(false);
   const scrollFreezeCleanupRef = useRef<(() => void) | null>(null);
   const remeasureSettledCountRef = useRef(0);
@@ -115,17 +108,11 @@ export function ChatMessageList({
       scrollFreezeActiveRef.current = false;
       scrollFreezeCleanupRef.current = null;
     };
-    // #region agent log
-    fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:freezeScrollInertia',message:'freeze flag set',data:{},timestamp:Date.now(),hypothesisId:'H20'})}).catch(()=>{});
-    // #endregion
   }, []);
 
   const unfreezeScrollInertia = useCallback(() => {
     if (!scrollFreezeActiveRef.current) return;
     scrollFreezeCleanupRef.current?.();
-    // #region agent log
-    fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:unfreezeScrollInertia',message:'scroll inertia unfrozen',data:{},timestamp:Date.now(),hypothesisId:'H15'})}).catch(()=>{});
-    // #endregion
   }, []);
 
   const topLoadTransactionActiveRef = useRef(false);
@@ -166,11 +153,8 @@ export function ChatMessageList({
     };
   }, []);
 
+
   const clearPendingShiftAnchorRestore = useCallback(() => {
-    // #region agent log
-    const clrHandle = vlistRef.current;
-    fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:clearPendingShiftAnchor',message:'clearing shift anchor',data:{scrollOffset:clrHandle?.scrollOffset,scrollSize:clrHandle?.scrollSize,viewportSize:clrHandle?.viewportSize,hadAnchor:pendingShiftAnchorRestoreRef.current!=null,suppressRestore:pendingShiftAnchorRestoreRef.current?.suppressRestore},timestamp:Date.now(),hypothesisId:'H7'})}).catch(()=>{});
-    // #endregion
     pendingShiftAnchorRestoreRef.current = null;
     topLoadPostReleaseCooldownUntilRef.current = 0;
     if (shiftReleaseAnchorWatchTimeoutRef.current != null) {
@@ -211,7 +195,7 @@ export function ChatMessageList({
       eventsOnlyLateDriftGuardUntilRef.current = 0;
     }
 
-    debugLog("ChatMessageList", "load-older-release-shift", {
+    debugLog("ChatMessageList", "chat.topLoad.shiftReleased", {
       reason,
       cycleId: pending?.cycleId ?? null,
       requestId: pending?.requestId ?? null,
@@ -221,24 +205,15 @@ export function ChatMessageList({
       estimatedRenderableGrowth: pending?.estimatedRenderableGrowth ?? null,
       releaseAnchorOffset: anchorOffset,
       releaseAnchorDistanceFromTop: anchorDistanceFromTop,
-      ...readScrollSnapshot(),
-      atTop: atTopRef.current,
-      atBottom: atBottomRef.current,
-      stickyBottom: stickyBottomRef.current,
-      topLoadTransactionActive: topLoadTransactionActiveRef.current,
+      ...readTopLoadState(),
     });
 
     const shouldArmAnchorRestore = true;
     if (shouldArmAnchorRestore && anchorOffset != null && anchorDistanceFromTop != null) {
-      // #region agent log
-      const rlsHandle = vlistRef.current;
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:releaseShift-arm-anchor',message:'arming anchor restore',data:{reason,anchorOffset,anchorDistFromTop:anchorDistanceFromTop,currentOffset:rlsHandle?.scrollOffset,currentScrollSize:rlsHandle?.scrollSize,lockMs:TOP_LOAD_RELEASE_ANCHOR_LOCK_MS,watchMs:TOP_LOAD_RELEASE_ANCHOR_WATCH_MS},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-      // #endregion
       pendingShiftAnchorRestoreRef.current = {
         reason,
         targetOffset: anchorOffset,
         releaseAnchorDistanceFromTop: anchorDistanceFromTop,
-        armedScrollSize: rlsHandle?.scrollSize ?? null,
         lockUntilAt: now + TOP_LOAD_RELEASE_ANCHOR_LOCK_MS,
         watchUntilAt: now + TOP_LOAD_RELEASE_ANCHOR_WATCH_MS,
       };
@@ -285,7 +260,7 @@ export function ChatMessageList({
               ? delta > lockTolerancePx
               : delta > TOP_LOAD_RELEASE_ANCHOR_SCROLL_WATCH_TOLERANCE_PX;
           if (shouldRestore) {
-            debugLog("ChatMessageList", "load-older-release-anchor-restore", {
+            debugLog("ChatMessageList", "chat.topLoad.anchorRestore", {
               reason: pendingRestore.reason,
               restoreMode: severeTopCollapse
                 ? "raf-collapse"
@@ -296,15 +271,8 @@ export function ChatMessageList({
               targetOffset: pendingRestore.targetOffset,
               delta,
               releaseAnchorDistanceFromTop: pendingRestore.releaseAnchorDistanceFromTop,
-              ...readScrollSnapshot(),
-              atTop: atTopRef.current,
-              atBottom: atBottomRef.current,
-              stickyBottom: stickyBottomRef.current,
-              topLoadTransactionActive: topLoadTransactionActiveRef.current,
+              ...readTopLoadState(),
             });
-            // #region agent log
-            fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:rAF-anchor-scrollTo',message:'rAF anchor restore scrollTo',data:{from:currentOffset,to:pendingRestore.targetOffset,delta,scrollSize:handle.scrollSize,viewportSize:handle.viewportSize},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-            // #endregion
             handle.scrollTo(pendingRestore.targetOffset);
           }
         }
@@ -342,10 +310,6 @@ export function ChatMessageList({
           return;
         }
         shiftForceDisabledRef.current = true;
-        // #region agent log
-        const deactHandle = vlistRef.current;
-        fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:shift-deactivate-timer',message:'shift deactivate timer fired',data:{reason,delayMs:shiftDeactivateDelayMs,token:nextToken,scrollOffset:deactHandle?.scrollOffset,scrollSize:deactHandle?.scrollSize,viewportSize:deactHandle?.viewportSize,pendingAnchor:pendingShiftAnchorRestoreRef.current!=null},timestamp:Date.now(),hypothesisId:'H7'})}).catch(()=>{});
-        // #endregion
         debugLog("ChatMessageList", "shift-deactivate-fired", {
           reason,
           delayMs: shiftDeactivateDelayMs,
@@ -389,6 +353,39 @@ export function ChatMessageList({
     }
     return result;
   }, [renderableItems, showThinkingPlaceholder]);
+  const stableHeadKey = timelineSummary?.oldestRenderableKey ?? firstRenderableKey;
+  const stableHeadIdentity = timelineSummary?.oldestRenderableMessageId ?? firstRenderableKey;
+  const headIdentityStable = timelineSummary?.headIdentityStable ?? true;
+  const oldestRenderableHydrationPending = timelineSummary?.oldestRenderableHydrationPending ?? false;
+
+  const stickyBottomRef = useRef(true);
+
+  function readHeadSummary() {
+    return renderableItems.slice(0, 3).map((item) => ({
+      key: getTimelineItemKey(item),
+      kind: item.kind,
+    }));
+  }
+
+  function readTopLoadState() {
+    return {
+      renderableCount: renderableItems.length,
+      firstRenderableKey,
+      stableHeadKey,
+      stableHeadIdentity,
+      headIdentityStable,
+      oldestRenderableHydrationPending,
+      displayCount: displayItems.length,
+      head: readHeadSummary(),
+      shiftActive,
+      topLoadTransactionActive: topLoadTransactionActiveRef.current,
+      pendingShiftRestore: pendingShiftAnchorRestoreRef.current != null,
+      stickyBottom: stickyBottomRef.current,
+      atTop: atTopRef.current,
+      atBottom: atBottomRef.current,
+      ...readScrollSnapshot(),
+    };
+  }
 
   useEffect(() => {
     hasOlderHistoryRef.current = hasOlderHistory;
@@ -404,93 +401,8 @@ export function ChatMessageList({
 
   useEffect(() => {
     renderableCountRef.current = renderableItems.length;
-    renderableFirstKeyRef.current = firstRenderableKey;
-  }, [firstRenderableKey, renderableItems.length]);
-
-  // #region agent log — continuous visual position tracker (H10/H11)
-  useEffect(() => {
-    const wrapper = scrollWrapperRef.current;
-    if (!wrapper) return;
-
-    let prevSt = 0;
-    let prevSh = 0;
-    let prevItemTops: number[] = [];
-    let idleFrames = 0;
-    let rafId: number | null = null;
-    let started = false;
-
-    const tick = () => {
-      const scroller = wrapper.firstElementChild as HTMLElement | null;
-      if (!scroller) { rafId = requestAnimationFrame(tick); return; }
-
-      if (!started) {
-        started = true;
-        prevSt = scroller.scrollTop;
-        prevSh = scroller.scrollHeight;
-      }
-
-      const st = scroller.scrollTop;
-      const sh = scroller.scrollHeight;
-      const stDelta = st - prevSt;
-      const shDelta = sh - prevSh;
-
-      const children = scroller.children;
-      const scrollerRect = scroller.getBoundingClientRect();
-      const visibleItems: { idx: number; top: number }[] = [];
-      for (let i = 0; i < children.length; i++) {
-        const r = children[i].getBoundingClientRect();
-        if (r.bottom > scrollerRect.top && r.top < scrollerRect.bottom) {
-          visibleItems.push({ idx: i, top: r.top - scrollerRect.top });
-        }
-      }
-
-      let maxItemShift = 0;
-      if (prevItemTops.length > 0 && visibleItems.length > 0) {
-        for (const vi of visibleItems) {
-          const prevTop = prevItemTops[vi.idx];
-          if (prevTop !== undefined) {
-            const itemVisualDelta = (vi.top - prevTop) + stDelta;
-            if (Math.abs(itemVisualDelta) > Math.abs(maxItemShift)) {
-              maxItemShift = itemVisualDelta;
-            }
-          }
-        }
-      }
-
-      const hasSignificant = Math.abs(stDelta) > 50 || Math.abs(shDelta) > 50 || Math.abs(maxItemShift) > 15;
-
-      if (hasSignificant) {
-        idleFrames = 0;
-        const sample = visibleItems.slice(0, 3).map(v => ({ i: v.idx, t: Math.round(v.top) }));
-        fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:visual-tracker',message:'vt',data:{st:Math.round(st),sh:Math.round(sh),stD:Math.round(stDelta),shD:Math.round(shDelta),mis:Math.round(maxItemShift),vis:sample,nVis:visibleItems.length},timestamp:Date.now(),hypothesisId:'H10'})}).catch(()=>{});
-      } else if (stDelta !== 0 || shDelta !== 0) {
-        idleFrames = 0;
-      } else {
-        idleFrames++;
-      }
-
-      const newTops: number[] = [];
-      for (const vi of visibleItems) { newTops[vi.idx] = vi.top; }
-      prevItemTops = newTops;
-      prevSt = st;
-      prevSh = sh;
-
-      if (idleFrames < 600) {
-        rafId = requestAnimationFrame(tick);
-      } else {
-        visualTrackerActiveRef.current = false;
-      }
-    };
-
-    visualTrackerActiveRef.current = true;
-    rafId = requestAnimationFrame(tick);
-
-    return () => {
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      visualTrackerActiveRef.current = false;
-    };
-  }, []);
-  // #endregion
+    renderableFirstKeyRef.current = stableHeadKey;
+  }, [renderableItems.length, stableHeadKey]);
 
   const prevDisplayCountRef = useRef(displayItems.length);
   useLayoutEffect(() => {
@@ -498,37 +410,6 @@ export function ChatMessageList({
     if (displayItems.length !== prevCount) {
       lastItemCountChangeRef.current = Date.now();
       prevDisplayCountRef.current = displayItems.length;
-      // #region agent log
-      const leH = vlistRef.current;
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:layoutEffect-items-changed',message:'displayItems count changed',data:{prevCount,newCount:displayItems.length,delta:displayItems.length-prevCount,scrollOffset:leH?.scrollOffset,scrollSize:leH?.scrollSize,viewportSize:leH?.viewportSize,shiftActive,topLoadTxActive:topLoadTransactionActiveRef.current,effectiveShift:topLoadTransactionActiveRef.current||(shiftActive&&!shiftForceDisabledRef.current&&pendingShiftAnchorRestoreRef.current!=null)},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-      if (displayItems.length > prevCount && !frameTrackerActiveRef.current) {
-        const ftContainer = scrollWrapperRef.current?.firstElementChild as HTMLElement | null;
-        if (ftContainer) {
-          frameTrackerActiveRef.current = true;
-          const preGeo = prePaginationDomGeoRef.current;
-          prePaginationDomGeoRef.current = null;
-          const leScrollTop = ftContainer.scrollTop;
-          const leScrollHeight = ftContainer.scrollHeight;
-          fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:frame-track-init',message:'frame tracker start (layoutEffect)',data:{preScrollTop:preGeo?.scrollTop??null,preScrollHeight:preGeo?.scrollHeight??null,leScrollTop,leScrollHeight,heightGrowth:preGeo?leScrollHeight-preGeo.scrollHeight:null,topShift:preGeo?leScrollTop-preGeo.scrollTop:null,itemDelta:displayItems.length-prevCount},timestamp:Date.now(),hypothesisId:'H8'})}).catch(()=>{});
-          let prevFt = leScrollTop;
-          let prevFh = leScrollHeight;
-          let fi = 0;
-          const trackFrame = () => {
-            if (fi > 25) { frameTrackerActiveRef.current = false; return; }
-            const ct = ftContainer.scrollTop;
-            const ch = ftContainer.scrollHeight;
-            const td = ct - prevFt;
-            const hd = ch - prevFh;
-            fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:frame-track',message:'frame '+fi,data:{f:fi,scrollTop:ct,scrollHeight:ch,topDelta:td,heightDelta:hd,visualShift:hd-td,cumTopFromPre:preGeo?ct-preGeo.scrollTop:null,cumHeightFromPre:preGeo?ch-preGeo.scrollHeight:null},timestamp:Date.now(),hypothesisId:'H8'})}).catch(()=>{});
-            prevFt = ct;
-            prevFh = ch;
-            fi++;
-            requestAnimationFrame(trackFrame);
-          };
-          requestAnimationFrame(trackFrame);
-        }
-      }
-      // #endregion
     }
 
     if (shiftPendingVisibilityHideRef.current && displayItems.length > prevCount) {
@@ -538,10 +419,6 @@ export function ChatMessageList({
         const scrollerEl = wrapper.firstElementChild as HTMLElement | null;
         if (scrollerEl) {
           scrollerEl.style.visibility = "hidden";
-          // #region agent log
-          const h = vlistRef.current;
-          fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:layoutEffect-hide',message:'hiding scroller before paint',data:{prevCount,newCount:displayItems.length,scrollSize:h?.scrollSize,offset:h?.scrollOffset,viewportSize:h?.viewportSize},timestamp:Date.now(),hypothesisId:'H22A'})}).catch(()=>{});
-          // #endregion
           requestAnimationFrame(() => {
             if (scrollerEl.style.visibility === "hidden") {
               scrollerEl.style.visibility = "";
@@ -549,9 +426,6 @@ export function ChatMessageList({
               if (pendingAnchor && !pendingAnchor.suppressRestore) {
                 pendingAnchor.suppressRestore = true;
               }
-              // #region agent log
-              fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:layoutEffect-rAF-fallback',message:'rAF fallback unhide',data:{},timestamp:Date.now(),hypothesisId:'H22A'})}).catch(()=>{});
-              // #endregion
             }
           });
         }
@@ -571,7 +445,6 @@ export function ChatMessageList({
         const handle = vlistRef.current;
         if (handle) {
           const currentOffset = handle.scrollOffset;
-          // #region agent log
           const prevGeomLayout = lastScrollGeometryRef.current;
           const layoutSizeDelta = prevGeomLayout ? handle.scrollSize - prevGeomLayout.scrollSize : 0;
           const layoutOffsetDelta = prevGeomLayout ? currentOffset - prevGeomLayout.offset : 0;
@@ -592,14 +465,13 @@ export function ChatMessageList({
               }
             }
           }
-          // #endregion
           if (pendingAnchorRestore?.suppressRestore) {
             // Shift mode is handling visual stability; skip all restore logic.
           } else {
             const movedAwayFromTopDuringEventsGrowth = pendingAnchorRestore.reason === "events-only-growth"
               && currentOffset > pendingAnchorRestore.targetOffset + TOP_LOAD_RELEASE_ANCHOR_TOLERANCE_PX;
             if (movedAwayFromTopDuringEventsGrowth && !topLoadTransactionActiveRef.current) {
-              debugLog("ChatMessageList", "load-older-release-anchor-cancelled", {
+              debugLog("ChatMessageList", "chat.topLoad.anchorRestoreCancelled", {
                 reason: pendingAnchorRestore.reason,
                 cancelMode: "events-growth-away-from-top",
                 targetOffset: pendingAnchorRestore.targetOffset,
@@ -620,7 +492,7 @@ export function ChatMessageList({
               && !topLoadTransactionActiveRef.current
               && pendingAnchorRestore.reason !== "events-only-growth";
             if (shouldCancelTowardTop) {
-              debugLog("ChatMessageList", "load-older-release-anchor-cancelled", {
+              debugLog("ChatMessageList", "chat.topLoad.anchorRestoreCancelled", {
                 reason: pendingAnchorRestore.reason,
                 cancelMode: "toward-top",
                 targetOffset: pendingAnchorRestore.targetOffset,
@@ -657,7 +529,7 @@ export function ChatMessageList({
                 ? delta > lockTolerancePx
                 : delta > TOP_LOAD_RELEASE_ANCHOR_SCROLL_WATCH_TOLERANCE_PX;
             if (shouldRestore) {
-              debugLog("ChatMessageList", "load-older-release-anchor-restore", {
+              debugLog("ChatMessageList", "chat.topLoad.anchorRestore", {
                 reason: pendingAnchorRestore.reason,
                 restoreMode: eventsOnlyShrinkRestore
                   ? "layout-events-shrink"
@@ -694,9 +566,10 @@ export function ChatMessageList({
     }
 
     const renderableGrew = renderableItems.length > pending.baselineRenderableCount;
-    const firstKeyChanged = firstRenderableKey !== pending.baselineFirstRenderableKey;
+    const firstKeyChanged = stableHeadKey !== pending.baselineFirstRenderableKey;
     const prependCommitted = firstKeyChanged;
     const nonPrependGrowth = renderableGrew && !firstKeyChanged;
+    const canReleaseOnNonPrependGrowth = headIdentityStable && !oldestRenderableHydrationPending;
     const hasExplicitNoGrowth = isExplicitNoGrowthResult({
       completionReason: pending.completionReason,
       estimatedRenderableGrowth: pending.estimatedRenderableGrowth,
@@ -709,20 +582,41 @@ export function ChatMessageList({
       return;
     }
 
+    if (nonPrependGrowth && !canReleaseOnNonPrependGrowth) {
+      debugLog("ChatMessageList", "chat.topLoad.prependEvaluationDeferred", {
+        cycleId: pending.cycleId,
+        requestId: pending.requestId,
+        baselineRenderableCount: pending.baselineRenderableCount,
+        baselineFirstRenderableKey: pending.baselineFirstRenderableKey,
+        renderableGrew,
+        firstKeyChanged,
+        prependCommitted,
+        nonPrependGrowth,
+        noGrowthFinal,
+        headIdentityStable,
+        oldestRenderableHydrationPending,
+        completionReason: pending.completionReason,
+        messagesAdded: pending.messagesAdded,
+        eventsAdded: pending.eventsAdded,
+        estimatedRenderableGrowth: pending.estimatedRenderableGrowth,
+        ...readTopLoadState(),
+      });
+      return;
+    }
+
     const releaseAnchorOffset = (vlistRef.current?.scrollOffset ?? null);
     const releaseAnchorDistanceFromTop = releaseAnchorOffset;
     pending.releaseAnchorOffset = releaseAnchorOffset;
     pending.releaseAnchorDistanceFromTop = releaseAnchorDistanceFromTop;
 
-    debugLog("ChatMessageList", "load-older-prepend-eval", {
+    debugLog("ChatMessageList", "chat.topLoad.prependEvaluation", {
       cycleId: pending.cycleId,
       requestId: pending.requestId,
-      renderableCount: renderableItems.length,
       baselineRenderableCount: pending.baselineRenderableCount,
-      firstRenderableKey,
       baselineFirstRenderableKey: pending.baselineFirstRenderableKey,
       prependCommitted,
       nonPrependGrowth,
+      canReleaseOnNonPrependGrowth,
       noGrowthFinal,
       completionReason: pending.completionReason,
       messagesAdded: pending.messagesAdded,
@@ -730,12 +624,7 @@ export function ChatMessageList({
       estimatedRenderableGrowth: pending.estimatedRenderableGrowth,
       releaseAnchorOffset,
       releaseAnchorDistanceFromTop,
-      ...readScrollSnapshot(),
-      atTop: atTopRef.current,
-      atBottom: atBottomRef.current,
-      stickyBottom: stickyBottomRef.current,
-      shiftActive,
-      topLoadTransactionActive: topLoadTransactionActiveRef.current,
+      ...readTopLoadState(),
     });
 
     pending.releaseQueued = true;
@@ -747,11 +636,13 @@ export function ChatMessageList({
   }, [
     clearPendingShiftAnchorRestore,
     displayItems.length,
-    firstRenderableKey,
+    headIdentityStable,
+    oldestRenderableHydrationPending,
     readScrollSnapshot,
     releaseShift,
     renderableItems.length,
     shiftActive,
+    stableHeadKey,
   ]);
 
   const handleScroll = useCallback((offset: number) => {
@@ -761,26 +652,6 @@ export function ChatMessageList({
     const { scrollSize, viewportSize } = handle;
     const maxScroll = scrollSize - viewportSize;
     const prevGeometry = lastScrollGeometryRef.current;
-
-    // #region agent log
-    const shiftJustFired = prevGeometry && Math.abs(offset - prevGeometry.offset) > 200;
-    const recentShift = prevGeometry && prevGeometry.scrollSize > 5500 && scrollSize > 5500;
-    const scrollSizeChanged = prevGeometry && Math.abs(scrollSize - prevGeometry.scrollSize) > 1;
-    const inAnchorWindow = pendingShiftAnchorRestoreRef.current != null;
-    const scrollSizeDelta = prevGeometry ? scrollSize - prevGeometry.scrollSize : 0;
-    if (offset <= 500 || shiftJustFired || recentShift || scrollSizeChanged || inAnchorWindow) {
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-track',message:'scroll track',data:{offset,prevOffset:prevGeometry?.offset??null,jumpDelta:prevGeometry?offset-prevGeometry.offset:null,scrollSize,scrollSizeDelta,viewportSize,maxScroll,shiftTxActive:topLoadTransactionActiveRef.current,pendingAnchor:inAnchorWindow,pendingAnchorTarget:pendingShiftAnchorRestoreRef.current?.targetOffset??null,driftGuardActive:Date.now()<=eventsOnlyLateDriftGuardUntilRef.current,scrollSizeChanged:!!scrollSizeChanged,shiftActive},timestamp:Date.now(),hypothesisId:'H6'})}).catch(()=>{});
-    }
-    if (scrollSizeChanged && Math.abs(scrollSizeDelta) > 50 && !inAnchorWindow) {
-      const ftC = scrollWrapperRef.current?.firstElementChild as HTMLElement | null;
-      const innerEl = ftC?.firstElementChild as HTMLElement | null;
-      const innerStyle = innerEl ? (innerEl.style.top || innerEl.style.transform || '') : '';
-      const innerRect = innerEl?.getBoundingClientRect();
-      const parentRect = ftC?.getBoundingClientRect();
-      const innerVisualTop = innerRect && parentRect ? innerRect.top - parentRect.top : null;
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-remeasure',message:'remeasure event',data:{offset,prevOffset:prevGeometry?.offset??null,jumpDelta:prevGeometry?offset-prevGeometry.offset:null,scrollSize,scrollSizeDelta,innerStyle,innerVisualTop},timestamp:Date.now(),hypothesisId:'H10'})}).catch(()=>{});
-    }
-    // #endregion
 
     if (
       prevGeometry
@@ -798,18 +669,10 @@ export function ChatMessageList({
         if (innerContainer) {
           scrollJumpCompensationActiveRef.current = true;
           innerContainer.style.visibility = "hidden";
-
-          // #region agent log
-          fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:jump-hide',message:'hiding inner for remeasure',data:{jumpDelta,sizeDelta},timestamp:Date.now(),hypothesisId:'H13'})}).catch(()=>{});
-          // #endregion
-
           requestAnimationFrame(() => {
             requestAnimationFrame(() => {
               innerContainer.style.visibility = "";
               scrollJumpCompensationActiveRef.current = false;
-              // #region agent log
-              fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:jump-reveal',message:'revealing inner after re-render',data:{},timestamp:Date.now(),hypothesisId:'H13'})}).catch(()=>{});
-              // #endregion
             });
           });
         }
@@ -823,7 +686,6 @@ export function ChatMessageList({
       if (now >= pendingAnchorRestore.watchUntilAt) {
         clearPendingShiftAnchorRestore();
       } else {
-        // #region agent log
         const sizeDeltaForAnchorAdj = prevGeometry ? scrollSize - prevGeometry.scrollSize : 0;
         const offsetDeltaForAnchorAdj = prevGeometry ? offset - prevGeometry.offset : 0;
         const shiftGrowthDetected =
@@ -835,9 +697,6 @@ export function ChatMessageList({
         if (shiftGrowthDetected && !pendingAnchorRestore.suppressRestore) {
           pendingAnchorRestore.suppressRestore = true;
           shiftBaselineDfbRef.current = null;
-          // #region agent log
-          fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-shift-suppress',message:'shift growth: suppress restore, let VList shift handle remeasurement',data:{oldTarget:pendingAnchorRestore.targetOffset,sizeDelta:sizeDeltaForAnchorAdj,offsetDelta:offsetDeltaForAnchorAdj,offset,prevOffset:prevGeometry.offset},timestamp:Date.now(),hypothesisId:'FIX4'})}).catch(()=>{});
-          // #endregion
           const wrapper = scrollWrapperRef.current;
           if (wrapper) {
             const scrollerEl = wrapper.firstElementChild as HTMLElement | null;
@@ -846,7 +705,6 @@ export function ChatMessageList({
             }
           }
         }
-        // #endregion
         if (!shiftGrowthDetected && !pendingAnchorRestore.suppressRestore) {
           const movedAwayFromTopDuringEventsGrowth = pendingAnchorRestore.reason === "events-only-growth"
             && offset > pendingAnchorRestore.targetOffset + TOP_LOAD_RELEASE_ANCHOR_TOLERANCE_PX;
@@ -857,17 +715,13 @@ export function ChatMessageList({
             && !topLoadTransactionActiveRef.current
             && allowEventsGrowthUserCancel
           ) {
-            debugLog("ChatMessageList", "load-older-release-anchor-cancelled", {
+            debugLog("ChatMessageList", "chat.topLoad.anchorRestoreCancelled", {
               reason: pendingAnchorRestore.reason,
               cancelMode: "events-growth-away-from-top",
               targetOffset: pendingAnchorRestore.targetOffset,
               fromOffset: offset,
               deltaFromTarget: Math.abs(offset - pendingAnchorRestore.targetOffset),
-              ...readScrollSnapshot(),
-              atTop: atTopRef.current,
-              atBottom: atBottomRef.current,
-              stickyBottom: stickyBottomRef.current,
-              topLoadTransactionActive: topLoadTransactionActiveRef.current,
+              ...readTopLoadState(),
             });
             clearPendingShiftAnchorRestore();
           } else {
@@ -887,7 +741,7 @@ export function ChatMessageList({
                 || allowEventsGrowthUserCancel
               );
             if (shouldCancelTowardTop) {
-              debugLog("ChatMessageList", "load-older-release-anchor-cancelled", {
+              debugLog("ChatMessageList", "chat.topLoad.anchorRestoreCancelled", {
                 reason: pendingAnchorRestore.reason,
                 cancelMode: pendingAnchorRestore.reason === "events-only-growth"
                   ? "toward-top-user-intent"
@@ -922,7 +776,7 @@ export function ChatMessageList({
                 && !topLoadTransactionActiveRef.current
                 && allowEventsGrowthUserCancel
               ) {
-                debugLog("ChatMessageList", "load-older-release-anchor-cancelled", {
+                debugLog("ChatMessageList", "chat.topLoad.anchorRestoreCancelled", {
                   reason: pendingAnchorRestore.reason,
                   cancelMode: "user-scroll-intent",
                   targetOffset: pendingAnchorRestore.targetOffset,
@@ -953,7 +807,7 @@ export function ChatMessageList({
                     ? delta > lockTolerancePx
                     : delta > TOP_LOAD_RELEASE_ANCHOR_SCROLL_WATCH_TOLERANCE_PX;
                 if (shouldRestore) {
-                  debugLog("ChatMessageList", "load-older-release-anchor-restore", {
+                  debugLog("ChatMessageList", "chat.topLoad.anchorRestore", {
                     reason: pendingAnchorRestore.reason,
                     restoreMode: eventsOnlyShrinkRestore
                       ? "on-scroll-events-shrink"
@@ -970,9 +824,6 @@ export function ChatMessageList({
                     stickyBottom: stickyBottomRef.current,
                     topLoadTransactionActive: topLoadTransactionActiveRef.current,
                   });
-                  // #region agent log
-                  fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-anchor-scrollTo',message:'handleScroll anchor restore scrollTo',data:{from:offset,to:pendingAnchorRestore.targetOffset,reason:pendingAnchorRestore.reason,scrollSize,maxScroll},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-                  // #endregion
                   handle.scrollTo(pendingAnchorRestore.targetOffset);
                   return;
                 }
@@ -1023,9 +874,6 @@ export function ChatMessageList({
           stickyBottom: stickyBottomRef.current,
           topLoadTransactionActive: topLoadTransactionActiveRef.current,
         });
-        // #region agent log
-        fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:lateDriftGuard-scrollTo',message:'late drift guard scrollTo',data:{from:offset,to:prevGeometry.offset,offsetDelta,guardUntil:eventsOnlyLateDriftGuardUntilRef.current,recentUserIntent:now-lastUserScrollIntentAtRef.current},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-        // #endregion
         handle.scrollTo(prevGeometry.offset);
         return;
       }
@@ -1069,13 +917,7 @@ export function ChatMessageList({
         && prevGeometry.distanceFromTop <= TOP_LOAD_LEAVE_THRESHOLD;
 
       if (geometryChanged) {
-        debugLog("ChatMessageList", "scroll-geometry-update", {
-          offset,
-          scrollSize,
-          viewportSize,
-          maxScroll,
-          distanceFromTop: Math.max(offset, 0),
-          distanceFromBottom: Math.max(maxScroll - offset, 0),
+        debugLog("ChatMessageList", "chat.scroll.geometryChanged", {
           prevOffset: prevGeometry.offset,
           prevScrollSize: prevGeometry.scrollSize,
           prevViewportSize: prevGeometry.viewportSize,
@@ -1088,14 +930,10 @@ export function ChatMessageList({
           viewportDelta,
           suspiciousShrinkRebound,
           suspiciousScrollOnlyDrift,
-          shiftActive: topLoadTransactionActiveRef.current,
-          pendingShiftRestore: pendingShiftAnchorRestoreRef.current != null,
           pendingShiftRestoreFrame: pendingShiftRestoreFrameRef.current,
           topLoadPostReleaseCooldownUntil: topLoadPostReleaseCooldownUntilRef.current,
           eventsOnlyLateDriftGuardUntil: eventsOnlyLateDriftGuardUntilRef.current,
-          atTop: atTopRef.current,
-          atBottom: atBottomRef.current,
-          stickyBottom: stickyBottomRef.current,
+          ...readTopLoadState(),
         });
       }
     }
@@ -1105,23 +943,15 @@ export function ChatMessageList({
         debugLog("ChatMessageList", "sticky-bottom-correction-skipped", {
           reason: "top-load-transaction-active",
           offset,
-          ...readScrollSnapshot(),
-          atTop: atTopRef.current,
-          atBottom: atBottomRef.current,
-          shiftActive: topLoadTransactionActiveRef.current,
-          stickyBottom: stickyBottomRef.current,
+          ...readTopLoadState(),
         });
       } else {
-        debugLog("ChatMessageList", "sticky-bottom-correction-applied", {
+        debugLog("ChatMessageList", "chat.scroll.stickyBottomCorrection", {
           reason: "content-grew-while-sticky",
           offset,
           beforeScrollOffset: handle.scrollOffset,
           targetScrollOffset: maxScroll,
-          ...readScrollSnapshot(),
-          atTop: atTopRef.current,
-          atBottom: atBottomRef.current,
-          shiftActive: topLoadTransactionActiveRef.current,
-          stickyBottom: stickyBottomRef.current,
+          ...readTopLoadState(),
         });
         handle.scrollTo(maxScroll);
       }
@@ -1152,9 +982,6 @@ export function ChatMessageList({
     }
 
     if (atTopRef.current !== isAtTop) {
-      // #region agent log
-      fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:handleScroll-atTop-change',message:'atTop transition',data:{from:atTopRef.current,to:isAtTop,offset,scrollSize,viewportSize,maxScroll,shiftActive:topLoadTransactionActiveRef.current},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-      // #endregion
       if (!isAtTop) {
         leftTopZoneRef.current = true;
       }
@@ -1179,7 +1006,6 @@ export function ChatMessageList({
   }, [displayItems.length]);
 
   const mountedRef = useRef(false);
-  const stickyBottomRef = useRef(true);
   const lastScrollSizeRef = useRef(0);
   const lastScrollGeometryRef = useRef<{
     scrollSize: number;
@@ -1211,9 +1037,6 @@ export function ChatMessageList({
         if (Math.abs(correction) > 3 && targetOff >= 0 && targetOff <= curMax) {
           h.scrollTo(targetOff);
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'0a3070'},body:JSON.stringify({sessionId:'0a3070',location:'ChatMessageList.tsx:scrollEnd-correction',message:'scrollEnd drift correction',data:{baselineDfb,correction,targetOff,currentOffset:curOff},timestamp:Date.now(),hypothesisId:'H22A'})}).catch(()=>{});
-        // #endregion
       }
     }
     if (topLoadTransactionActiveRef.current) {
@@ -1233,15 +1056,11 @@ export function ChatMessageList({
     const { scrollSize, viewportSize, scrollOffset } = h;
     const maxScroll = scrollSize - viewportSize;
     if (viewportSize > 0 && maxScroll > 0 && scrollOffset < maxScroll - AT_BOTTOM_THRESHOLD) {
-      debugLog("ChatMessageList", "sticky-bottom-correction-applied", {
+      debugLog("ChatMessageList", "chat.scroll.stickyBottomCorrection", {
         reason: "scroll-end-not-at-bottom",
         beforeScrollOffset: scrollOffset,
         targetScrollOffset: maxScroll,
-        ...readScrollSnapshot(),
-        atTop: atTopRef.current,
-        atBottom: atBottomRef.current,
-        shiftActive: topLoadTransactionActiveRef.current,
-        stickyBottom: stickyBottomRef.current,
+        ...readTopLoadState(),
       });
       h.scrollTo(maxScroll);
     }
@@ -1300,28 +1119,21 @@ export function ChatMessageList({
   useEffect(() => {
     debugLog("ChatMessageList", "list-state", {
       itemCount: displayItems.length,
-      renderableCount: renderableItems.length,
       loadingOlderHistory,
       hasOlderHistory,
       topPaginationInteractionReady,
-      atTop,
-      atBottom,
-      shiftActive,
       effectiveShiftActive: topLoadTransactionActiveRef.current
         || (shiftActive
           && !shiftForceDisabledRef.current
           && pendingShiftAnchorRestoreRef.current != null),
-      topLoadTransactionActive: topLoadTransactionActiveRef.current,
-      ...readScrollSnapshot(),
-      stickyBottom: stickyBottomRef.current,
       leftTopZone: leftTopZoneRef.current,
       topLoadArmed: topLoadArmedRef.current,
       topLoadCooldownUntil: topLoadCooldownUntilRef.current,
-      pendingShiftRestore: pendingShiftAnchorRestoreRef.current != null,
       pendingShiftRestoreFrame: pendingShiftRestoreFrameRef.current,
       shiftForceDisabled: shiftForceDisabledRef.current,
       topLoadPostReleaseCooldownUntil: topLoadPostReleaseCooldownUntilRef.current,
       eventsOnlyLateDriftGuardUntil: eventsOnlyLateDriftGuardUntilRef.current,
+      ...readTopLoadState(),
     });
   }, [
     atBottom,
@@ -1329,10 +1141,12 @@ export function ChatMessageList({
     hasOlderHistory,
     topPaginationInteractionReady,
     displayItems.length,
+    firstRenderableKey,
     loadingOlderHistory,
-    readScrollSnapshot,
-    renderableItems.length,
+    oldestRenderableHydrationPending,
+    renderableItems,
     shiftActive,
+    stableHeadKey,
   ]);
 
   const loadOlder = useCallback(async () => {
@@ -1370,14 +1184,6 @@ export function ChatMessageList({
     shiftForceDisabledRef.current = false;
     eventsOnlyLateDriftGuardUntilRef.current = 0;
     eventsOnlyLateDriftRestoreCooldownUntilRef.current = 0;
-    // #region agent log
-    const preShiftHandle = vlistRef.current;
-    fetch('http://127.0.0.1:7409/ingest/eaaa0f37-f591-4ab7-b144-0dd9e5e2527b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6c0c5f'},body:JSON.stringify({sessionId:'6c0c5f',location:'ChatMessageList.tsx:loadOlder-pre-shift',message:'about to enable shift',data:{scrollOffset:preShiftHandle?.scrollOffset,scrollSize:preShiftHandle?.scrollSize,viewportSize:preShiftHandle?.viewportSize,cycleId,renderableCount},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-    const prePagContainer = scrollWrapperRef.current?.firstElementChild as HTMLElement | null;
-    if (prePagContainer) {
-      prePaginationDomGeoRef.current = { scrollTop: prePagContainer.scrollTop, scrollHeight: prePagContainer.scrollHeight };
-    }
-    // #endregion
     setShiftActive(true);
     topLoadTransactionActiveRef.current = true;
     pendingShiftReleaseRef.current = {
@@ -1395,17 +1201,13 @@ export function ChatMessageList({
       releaseAnchorDistanceFromTop: null,
     };
 
-    debugLog("ChatMessageList", "load-older-start", {
+    debugLog("ChatMessageList", "chat.topLoad.started", {
       cycleId,
       requestId,
-      renderableCount,
+      baselineRenderableCount: renderableCount,
       baselineFirstRenderableKey,
-      ...readScrollSnapshot(),
-      atTop: atTopRef.current,
-      atBottom: atBottomRef.current,
-      stickyBottom: stickyBottomRef.current,
-      topLoadTransactionActive: topLoadTransactionActiveRef.current,
       topPaginationInteractionReady: topPaginationInteractionReadyRef.current,
+      ...readTopLoadState(),
     });
 
     try {
@@ -1441,12 +1243,12 @@ export function ChatMessageList({
             && pending.messagesAdded <= 0
             && pending.eventsAdded > 0
             && pending.estimatedRenderableGrowth !== false;
-          if (likelyNonPrependGrowth) {
+          if (likelyNonPrependGrowth && headIdentityStable && !oldestRenderableHydrationPending) {
             const releaseAnchorOffset = (vlistRef.current?.scrollOffset ?? null);
             pending.releaseAnchorOffset = releaseAnchorOffset;
             pending.releaseAnchorDistanceFromTop = releaseAnchorOffset;
             pending.releaseQueued = true;
-            debugLog("ChatMessageList", "load-older-preemptive-release", {
+            debugLog("ChatMessageList", "chat.topLoad.result", {
               cycleId,
               requestId,
               reason: "events-only-growth",
@@ -1455,11 +1257,9 @@ export function ChatMessageList({
               eventsAdded: pending.eventsAdded,
               estimatedRenderableGrowth: pending.estimatedRenderableGrowth,
               releaseAnchorOffset,
-              ...readScrollSnapshot(),
-              atTop: atTopRef.current,
-              atBottom: atBottomRef.current,
-              stickyBottom: stickyBottomRef.current,
-              topLoadTransactionActive: topLoadTransactionActiveRef.current,
+              headIdentityStable,
+              oldestRenderableHydrationPending,
+              ...readTopLoadState(),
             });
             releaseShift("events-only-growth");
           }
@@ -1488,18 +1288,15 @@ export function ChatMessageList({
           releaseShift("timeout-fallback");
         }, 220);
       }
-      debugLog("ChatMessageList", "load-older-finished", {
+      debugLog("ChatMessageList", "chat.topLoad.result", {
         cycleId,
         requestId,
+        reason: "load-finished",
         completionReason: pending?.completionReason ?? null,
         messagesAdded: pending?.messagesAdded ?? null,
         eventsAdded: pending?.eventsAdded ?? null,
         estimatedRenderableGrowth: pending?.estimatedRenderableGrowth ?? null,
-        ...readScrollSnapshot(),
-        atTop: atTopRef.current,
-        atBottom: atBottomRef.current,
-        stickyBottom: stickyBottomRef.current,
-        topLoadTransactionActive: topLoadTransactionActiveRef.current,
+        ...readTopLoadState(),
       });
     }
   }, [readScrollSnapshot, releaseShift]);
@@ -1535,18 +1332,14 @@ export function ChatMessageList({
     const triggeredAtIso = triggeredAt.toISOString();
     const triggeredAtDisplay = triggeredAt.toLocaleString();
 
-    debugLog("ChatMessageList", "top-trigger-load-older", {
+    debugLog("ChatMessageList", "chat.topLoad.triggered", {
       trigger: "user-scroll-top",
-      atTop,
       hasOlderHistory: hasOlderHistoryRef.current,
       loadingOlderHistory: loadingOlderHistoryPropRef.current,
       topPaginationInteractionReady: topPaginationInteractionReadyRef.current,
       triggeredAtIso,
       triggeredAtDisplay,
-      ...readScrollSnapshot(),
-      atBottom: atBottomRef.current,
-      stickyBottom: stickyBottomRef.current,
-      topLoadTransactionActive: topLoadTransactionActiveRef.current,
+      ...readTopLoadState(),
     });
 
     void loadOlder();

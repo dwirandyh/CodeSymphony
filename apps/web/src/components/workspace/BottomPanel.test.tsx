@@ -32,6 +32,12 @@ describe("BottomPanel", () => {
     onTabChange: vi.fn(),
     runScriptActive: false,
   };
+  const findToggleButton = () => {
+    const buttons = container.querySelectorAll("button");
+    return Array.from(buttons).find(
+      (b) => b.title === "Collapse panel" || b.title === "Expand panel"
+    );
+  };
 
   it("renders Terminal, Debug Console, and Output tab buttons", () => {
     act(() => {
@@ -46,11 +52,16 @@ describe("BottomPanel", () => {
     act(() => {
       root.render(<BottomPanel {...baseProps} />);
     });
-    const buttons = container.querySelectorAll("button");
-    const collapseBtn = Array.from(buttons).find(
-      (b) => b.title === "Collapse panel" || b.title === "Expand panel"
-    );
+    const collapseBtn = findToggleButton();
     expect(collapseBtn).toBeTruthy();
+  });
+
+  it("starts collapsed on initial render", () => {
+    act(() => {
+      root.render(<BottomPanel {...baseProps} />);
+    });
+    const collapseBtn = findToggleButton();
+    expect(collapseBtn?.title).toBe("Expand panel");
   });
 
   it("calls onTabChange when switching tabs", () => {
@@ -88,13 +99,22 @@ describe("BottomPanel", () => {
     act(() => {
       root.render(<BottomPanel {...baseProps} />);
     });
-    const buttons = container.querySelectorAll("button");
-    const collapseBtn = Array.from(buttons).find(
-      (b) => b.title === "Collapse panel" || b.title === "Expand panel"
-    );
+    const collapseBtn = findToggleButton();
     if (collapseBtn) {
       act(() => collapseBtn.click());
-      expect(collapseBtn.title === "Expand panel" || collapseBtn.title === "Collapse panel").toBe(true);
+      expect(collapseBtn.title).toBe("Collapse panel");
     }
+  });
+
+  it("expands when openSignal changes", () => {
+    act(() => {
+      root.render(<BottomPanel {...baseProps} openSignal={0} />);
+    });
+    expect(findToggleButton()?.title).toBe("Expand panel");
+
+    act(() => {
+      root.render(<BottomPanel {...baseProps} openSignal={1} />);
+    });
+    expect(findToggleButton()?.title).toBe("Collapse panel");
   });
 });

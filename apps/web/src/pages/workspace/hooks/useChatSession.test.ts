@@ -505,7 +505,7 @@ describe("auto-backfill hydration helpers", () => {
     expect(resolveHydrationBackfillPolicy("auto")).toBe("auto");
   });
 
-  it("enables auto-backfill when snapshot coverage is incomplete", () => {
+  it("only enables auto-backfill when timeline repair is needed and older events exist", () => {
     const needsBackfillSnapshot = makeSnapshot({
       coverage: {
         eventsStatus: "needs_backfill",
@@ -514,23 +514,10 @@ describe("auto-backfill hydration helpers", () => {
       },
     });
 
-    expect(shouldAutoBackfillOnHydration(needsBackfillSnapshot, false)).toBe(true);
-    expect(shouldAutoBackfillOnHydration(makeSnapshot(), true)).toBe(true);
+    expect(shouldAutoBackfillOnHydration(needsBackfillSnapshot, true)).toBe(true);
+    expect(shouldAutoBackfillOnHydration(needsBackfillSnapshot, false)).toBe(false);
+    expect(shouldAutoBackfillOnHydration(makeSnapshot(), true)).toBe(false);
     expect(shouldAutoBackfillOnHydration(makeSnapshot(), false)).toBe(false);
-  });
-
-  it("enables backfill when capped", () => {
-    const snapshot = makeSnapshot({
-      coverage: { eventsStatus: "capped", recommendedBackfill: false, nextBeforeIdx: 50 },
-    });
-    expect(shouldAutoBackfillOnHydration(snapshot, false)).toBe(true);
-  });
-
-  it("enables backfill when recommendedBackfill is true even if status is complete", () => {
-    const snapshot = makeSnapshot({
-      coverage: { eventsStatus: "complete", recommendedBackfill: true, nextBeforeIdx: null },
-    });
-    expect(shouldAutoBackfillOnHydration(snapshot, false)).toBe(true);
   });
 
   it("builds a stable snapshot key from watermarks and coverage", () => {
@@ -583,17 +570,14 @@ describe("auto-backfill hydration helpers", () => {
     const launchA = buildAutoBackfillLaunchKey({
       snapshotKey,
       coverageNextBeforeIdx: 220,
-      timelineHasIncompleteCoverage: true,
     });
     const launchB = buildAutoBackfillLaunchKey({
       snapshotKey,
       coverageNextBeforeIdx: 220,
-      timelineHasIncompleteCoverage: true,
     });
     const launchC = buildAutoBackfillLaunchKey({
       snapshotKey,
       coverageNextBeforeIdx: 180,
-      timelineHasIncompleteCoverage: true,
     });
 
     expect(launchA).toBe(launchB);
@@ -631,12 +615,10 @@ describe("auto-backfill hydration helpers", () => {
     const launchA = buildAutoBackfillLaunchKey({
       snapshotKey: keyA,
       coverageNextBeforeIdx: 220,
-      timelineHasIncompleteCoverage: true,
     });
     const launchB = buildAutoBackfillLaunchKey({
       snapshotKey: keyB,
       coverageNextBeforeIdx: 140,
-      timelineHasIncompleteCoverage: true,
     });
 
     expect(launchA).not.toBe(launchB);

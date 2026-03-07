@@ -13,6 +13,50 @@ type RuntimeDatabaseInfo = {
   urlPreview: string | null;
 };
 
+export type DebugLogPayload = {
+  source: string;
+  message: string;
+  data?: unknown;
+};
+
+export function appendDebugLogEntries(entries: Array<{
+  seq: number;
+  ts: number;
+  source: string;
+  message: string;
+  data: unknown;
+}>): number {
+  if (entries.length === 0) {
+    return 0;
+  }
+
+  const lines = entries
+    .map(
+      (e) =>
+        `#${e.seq} [${e.ts.toFixed(1)}ms] ${e.source} | ${e.message} | ${JSON.stringify(e.data)}`,
+    )
+    .join("\n");
+
+  appendFileSync(LOG_PATH, lines + "\n", "utf-8");
+  return entries.length;
+}
+
+let runtimeDebugSeq = 0;
+
+export function appendRuntimeDebugLog(entry: DebugLogPayload): number {
+  const seq = ++runtimeDebugSeq;
+  appendDebugLogEntries([
+    {
+      seq,
+      ts: Number(process.uptime().toFixed(3)) * 1000,
+      source: entry.source,
+      message: entry.message,
+      data: entry.data ?? null,
+    },
+  ]);
+  return seq;
+}
+
 function resolveDatabaseInfo(databaseUrl: string | undefined): RuntimeDatabaseInfo {
   if (!databaseUrl) {
     return { urlKind: "missing", resolvedPath: null, urlPreview: null };
@@ -67,14 +111,7 @@ export async function registerDebugRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "Expected array" });
     }
 
-    const lines = entries
-      .map(
-        (e) =>
-          `#${e.seq} [${e.ts.toFixed(1)}ms] ${e.source} | ${e.message} | ${JSON.stringify(e.data)}`,
-      )
-      .join("\n");
-
-    appendFileSync(LOG_PATH, lines + "\n", "utf-8");
+    appendDebugLogEntries(entries);
 
     return { ok: true, count: entries.length };
   });

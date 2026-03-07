@@ -211,10 +211,15 @@ export function WorkspacePage() {
       : `Worktree ${repos.selectedWorktree.branch} from ${repos.selectedWorktree.baseBranch}`)
     : "Choose a workspace";
 
+  const activeView = search.view ?? "chat";
+  const selectedDiffFilePath = search.file ?? null;
+  const reviewTabOpen = activeView === "review";
+
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     initialThreadId: search.threadId,
     selectedRepositoryId: repos.selectedRepositoryId,
-    hydrationBackfillPolicy: "auto",
+    hydrationBackfillPolicy: reviewTabOpen ? "manual" : "auto",
+    timelineEnabled: !reviewTabOpen,
     onWorktreeResolved: (worktreeId) => {
       repos.setSelectedWorktreeId(worktreeId);
     },
@@ -380,10 +385,6 @@ export function WorkspacePage() {
     hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
   });
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
-
-  const activeView = search.view ?? "chat";
-  const selectedDiffFilePath = search.file ?? null;
-  const reviewTabOpen = activeView === "review";
 
   // Close mobile drawer on Escape key
   useEffect(() => {
@@ -637,8 +638,8 @@ export function WorkspacePage() {
     confirmCloseThreadId !== null && chat.closingThreadId === confirmCloseThreadId;
 
   return (
-    <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-3 lg:pb-0">
-      <div className="mx-auto flex min-h-0 w-full max-w-[1860px]">
+    <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-0">
+      <div className="flex min-h-0 w-full">
         <WorkspaceSidebar
           repos={repos}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -734,6 +735,7 @@ export function WorkspacePage() {
                     <ChatMessageList
                       key={chatMessageListKey}
                       items={chat.timelineItems}
+                      timelineSummary={chat.timelineSummary}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       sendingMessage={chat.sendingMessage}
                       hasOlderHistory={chat.hasOlderHistory}

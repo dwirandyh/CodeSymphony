@@ -128,8 +128,17 @@ export type LoadOlderRequestResult = {
   estimatedRenderableGrowth?: boolean;
 };
 
+export type ChatTimelineSummary = {
+  oldestRenderableKey: string | null;
+  oldestRenderableKind: ChatTimelineItem["kind"] | null;
+  oldestRenderableMessageId: string | null;
+  oldestRenderableHydrationPending: boolean;
+  headIdentityStable: boolean;
+};
+
 export type ChatMessageListProps = {
   items: ChatTimelineItem[];
+  timelineSummary?: ChatTimelineSummary;
   showThinkingPlaceholder?: boolean;
   sendingMessage?: boolean;
   onOpenReadFile?: (path: string) => void | Promise<void>;

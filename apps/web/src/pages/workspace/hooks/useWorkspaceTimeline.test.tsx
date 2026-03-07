@@ -455,7 +455,7 @@ describe("useWorkspaceTimeline", () => {
     expect(firstExploreIndex).toBeGreaterThan(-1);
   });
 
-  it("gates boundary assistant text until semantic hydration completes", () => {
+  it("preserves boundary assistant text while semantic hydration is in progress", () => {
     const messages = [
       makeMessage("m1", 1, "user", "inspect"),
       makeMessage("m2", 2, "assistant", "assistant text before semantic context"),
@@ -464,13 +464,72 @@ describe("useWorkspaceTimeline", () => {
       makeEvent(1, "chat.completed", { messageId: "other-message", source: "chat.thread.metadata" }, "other-message"),
     ];
 
-    const gatedItems = getTimelineItems(messages, events, { semanticHydrationInProgress: true });
-    const releasedItems = getTimelineItems(messages, events, { semanticHydrationInProgress: false });
+    act(() => {
+      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} options={{ semanticHydrationInProgress: true }} />);
+    });
+    const gatedAssistant = hookResult.items.find((item) => item.kind === "message" && item.message.id === "m2");
+    expect(gatedAssistant).toBeDefined();
+    expect(hookResult.hasIncompleteCoverage).toBe(true);
+    expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
+    expect(hookResult.summary.oldestRenderableHydrationPending).toBe(false);
+    expect(hookResult.summary.headIdentityStable).toBe(true);
 
-    const gatedAssistant = gatedItems.find((item) => item.kind === "message" && item.message.id === "m2");
-    const releasedAssistant = releasedItems.find((item) => item.kind === "message" && item.message.id === "m2");
-
-    expect(gatedAssistant).toBeUndefined();
+    act(() => {
+      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} options={{ semanticHydrationInProgress: false }} />);
+    });
+    const releasedAssistant = hookResult.items.find((item) => item.kind === "message" && item.message.id === "m2");
     expect(releasedAssistant).toBeDefined();
+    expect(hookResult.hasIncompleteCoverage).toBe(true);
+    expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
+    expect(hookResult.summary.oldestRenderableHydrationPending).toBe(false);
+  });
+
+  it("marks coverage incomplete when the oldest loaded assistant is missing rich context on refresh", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect"),
+      makeMessage("m2", 2, "assistant", "assistant text before semantic context"),
+    ];
+    const events = [
+      makeEvent(10, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} options={{ semanticHydrationInProgress: false }} />);
+    });
+
+    const assistantItem = hookResult.items.find((item) => item.kind === "message" && item.message.id === "m2");
+    expect(assistantItem).toBeDefined();
+    expect(hookResult.hasIncompleteCoverage).toBe(true);
+    expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
+  });
+
+  it("reuses the previous timeline result for prepend-only hydration changes when the head is stable", () => {
+    const refs = makeRefs();
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect"),
+      makeMessage("m2", 2, "assistant", "assistant text before semantic context"),
+    ];
+    const initialEvents = [
+      makeEvent(10, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+    const prependedEvents = [
+      makeEvent(5, "tool.finished", { toolName: "Read", summary: "Read /src/a.ts" }, "m2"),
+      ...initialEvents,
+    ];
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={initialEvents} threadId="t1" refs={refs} options={{ semanticHydrationInProgress: true }} />);
+    });
+    const previousResult = hookResult;
+    const previousSummary = hookResult.summary;
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={prependedEvents} threadId="t1" refs={refs} options={{ semanticHydrationInProgress: true }} />);
+    });
+
+    expect(previousSummary.headIdentityStable).toBe(true);
+    expect(hookResult).toBe(previousResult);
+    expect(hookResult.summary).toBe(previousSummary);
+    expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
   });
 });

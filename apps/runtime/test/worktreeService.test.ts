@@ -8,7 +8,9 @@ import { createWorktreeService, isDefaultBranchName, TeardownError } from "../sr
 
 let prisma: PrismaClient;
 let repoDir: string;
+let worktreeRootDir: string;
 let repositoryId: string;
+const previousWorktreeRoot = process.env.WORKTREE_ROOT;
 
 function git(args: string, cwd = repoDir) {
   execSync(`git ${args}`, { cwd, encoding: "utf8", stdio: "pipe" });
@@ -19,6 +21,8 @@ beforeAll(async () => {
   await prisma.$connect();
 
   repoDir = await mkdtemp(join(tmpdir(), "cs-wt-svc-test-"));
+  worktreeRootDir = await mkdtemp(join(tmpdir(), "cs-worktrees-root-"));
+  process.env.WORKTREE_ROOT = worktreeRootDir;
   git("init --initial-branch=main");
   git('config user.email "test@test.com"');
   git('config user.name "Test"');
@@ -54,6 +58,12 @@ afterAll(async () => {
   await prisma.repository.deleteMany({});
   await prisma.$disconnect();
   await rm(repoDir, { recursive: true, force: true });
+  await rm(worktreeRootDir, { recursive: true, force: true });
+  if (previousWorktreeRoot === undefined) {
+    delete process.env.WORKTREE_ROOT;
+  } else {
+    process.env.WORKTREE_ROOT = previousWorktreeRoot;
+  }
 });
 
 describe("isDefaultBranchName", () => {

@@ -9,7 +9,7 @@ import type {
   ChatThread,
   ChatThreadSnapshot,
 } from "@codesymphony/shared-types";
-import type { ThreadMetadataSnapshot } from "./useChatSession.types";
+import type { SnapshotSeedMode, ThreadMetadataSnapshot } from "./useChatSession.types";
 import { mergeEventsWithCurrent } from "./messageEventMerge";
 import { areMessageArraysEqual, mergeThreadMessages } from "../messageMerge";
 import { payloadStringOrNull } from "../../eventUtils";
@@ -29,6 +29,7 @@ export function applySnapshotSeed(params: {
   lastEventIdxByThreadRef: MutableRefObject<Map<string, number>>;
   activeThreadIdRef: MutableRefObject<string | null>;
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void;
+  mode?: SnapshotSeedMode;
 }) {
   const {
     snapshot,
@@ -45,12 +46,21 @@ export function applySnapshotSeed(params: {
     lastEventIdxByThreadRef,
     activeThreadIdRef,
     onBranchRenamed,
+    mode = "merge",
   } = params;
 
   const queriedMessages = snapshot.messages.data;
   const queriedEvents = snapshot.events.data;
 
   setMessages((current) => {
+    if (mode === "replace") {
+      const replacement = [...queriedMessages].sort((a, b) => a.seq - b.seq);
+      if (areMessageArraysEqual(replacement, current)) {
+        return current;
+      }
+      return replacement;
+    }
+
     if (current.length === 0) {
       return [...queriedMessages].sort((a, b) => a.seq - b.seq);
     }
@@ -62,6 +72,13 @@ export function applySnapshotSeed(params: {
   });
 
   setEvents((current) => {
+    if (mode === "replace") {
+      const replacement = [...queriedEvents].sort((a, b) => a.idx - b.idx);
+      const hasSameLength = replacement.length === current.length;
+      const hasSameIds = hasSameLength && replacement.every((event, index) => current[index]?.id === event.id);
+      return hasSameIds ? current : replacement;
+    }
+
     if (current.length === 0) {
       return [...queriedEvents].sort((a, b) => a.idx - b.idx);
     }

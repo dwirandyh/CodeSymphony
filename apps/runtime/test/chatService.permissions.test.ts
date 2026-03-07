@@ -1076,4 +1076,60 @@ describe("chatService permission flow", () => {
 
     expect(staleDismissed.payload.resolver).toBe("system");
   });
+
+  it("stores image attachments outside the worktree", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Image attachment");
+        return {
+          output: "Image attachment",
+          sessionId: null,
+        };
+      }
+
+      await onText("Noted.");
+      return {
+        output: "Noted.",
+        sessionId: "session-image-attachment",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId, worktreePath } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "",
+      attachments: [
+        {
+          filename: "Home.png",
+          mimeType: "image/png",
+          content: Buffer.from("fake-image").toString("base64"),
+          source: "clipboard_image",
+        },
+      ],
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+
+    const attachment = await prisma.chatAttachment.findFirst({
+      where: {
+        message: {
+          threadId,
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    expect(attachment?.storagePath).toBeTruthy();
+    expect(attachment?.storagePath?.startsWith(worktreePath)).toBe(false);
+    expect(attachment?.storagePath?.includes("/.codesymphony/attachments/")).toBe(true);
+    expect(existsSync(attachment!.storagePath!)).toBe(true);
+    expect(existsSync(join(worktreePath, ".codesymphony"))).toBe(false);
+  });
+
 });

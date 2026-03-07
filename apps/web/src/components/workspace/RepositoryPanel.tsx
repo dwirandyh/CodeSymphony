@@ -161,7 +161,6 @@ export function RepositoryPanel({
                     ) : (
                       <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                     )}
-                    <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                     <span className="truncate text-left text-xs font-medium">{repository.name}</span>
                     <span className="ml-auto text-[11px] text-muted-foreground">{branchWorktrees.length} worktrees</span>
                   </Button>
@@ -204,7 +203,9 @@ export function RepositoryPanel({
                           >
                             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                               <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-                                <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                                  <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                                </span>
                                 <span className="truncate text-xs">{rootWorkspace.branch}</span>
                                 <span className="shrink-0 rounded border border-border/60 px-1 py-0 text-[10px] uppercase tracking-wide text-muted-foreground">
                                   root
@@ -244,7 +245,9 @@ export function RepositoryPanel({
                               >
                                 <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                                   <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-                                    <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                    <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                                      <GitBranch className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                                    </span>
                                     {editingWorktreeId === worktree.id ? (
                                       <input
                                         type="text"

@@ -69,18 +69,33 @@ export function useWorkspaceTimeline(
     messageCount: number;
     eventCount: number;
     lastEventIdx: number;
+    firstEventIdx: number;
     threadId: string | null;
     semanticHydrationInProgress: boolean;
   } | null>(null);
-  const prevResultRef = useRef<WorkspaceTimelineResult>({ items: [], hasIncompleteCoverage: false });
+  const prevInputCountsRef = useRef<{ messageCount: number; eventCount: number } | null>(null);
+  const prevResultRef = useRef<WorkspaceTimelineResult>({
+    items: [],
+    hasIncompleteCoverage: false,
+    summary: {
+      oldestRenderableKey: null,
+      oldestRenderableKind: null,
+      oldestRenderableMessageId: null,
+      oldestRenderableHydrationPending: false,
+      headIdentityStable: true,
+    },
+  });
 
   return useMemo<WorkspaceTimelineResult>(() => {
     const semanticHydrationInProgress = options?.semanticHydrationInProgress === true;
+    const disabled = options?.disabled === true;
     const lastEventIdx = events.length > 0 ? events[events.length - 1].idx : -1;
+    const firstEventIdx = events.length > 0 ? events[0].idx : -1;
     const fingerprint = {
       messageCount: messages.length,
       eventCount: events.length,
       lastEventIdx,
+      firstEventIdx,
       threadId: selectedThreadId,
       semanticHydrationInProgress,
     };
@@ -90,12 +105,58 @@ export function useWorkspaceTimeline(
       prev.messageCount === fingerprint.messageCount &&
       prev.eventCount === fingerprint.eventCount &&
       prev.lastEventIdx === fingerprint.lastEventIdx &&
+      prev.firstEventIdx === fingerprint.firstEventIdx &&
       prev.threadId === fingerprint.threadId &&
       prev.semanticHydrationInProgress === fingerprint.semanticHydrationInProgress &&
       prevResultRef.current.items.length > 0
     ) {
       return prevResultRef.current;
     }
+
+    const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
+    const oldestMessageId = sortedMessages[0]?.id ?? null;
+    const canReusePrependOnlyHydrationResult =
+      prev !== null
+      && semanticHydrationInProgress
+      && prev.semanticHydrationInProgress
+      && prev.threadId === selectedThreadId
+      && prev.messageCount === messages.length
+      && prev.eventCount < events.length
+      && prev.lastEventIdx === lastEventIdx
+      && prevResultRef.current.summary.headIdentityStable
+      && prevResultRef.current.summary.oldestRenderableKind === "message"
+      && prevResultRef.current.summary.oldestRenderableMessageId != null
+      && prevResultRef.current.summary.oldestRenderableMessageId === oldestMessageId;
+    if (canReusePrependOnlyHydrationResult) {
+      prevFingerprintRef.current = fingerprint;
+      prevInputCountsRef.current = {
+        messageCount: messages.length,
+        eventCount: events.length,
+      };
+      return prevResultRef.current;
+    }
+
+    if (disabled) {
+      const disabledResult: WorkspaceTimelineResult = {
+        items: [],
+        hasIncompleteCoverage: false,
+        summary: {
+          oldestRenderableKey: null,
+          oldestRenderableKind: null,
+          oldestRenderableMessageId: null,
+          oldestRenderableHydrationPending: false,
+          headIdentityStable: true,
+        },
+      };
+      prevFingerprintRef.current = fingerprint;
+      prevInputCountsRef.current = {
+        messageCount: messages.length,
+        eventCount: events.length,
+      };
+      prevResultRef.current = disabledResult;
+      return disabledResult;
+    }
+
     const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
 
     const localStickyIds = new Set(refs.stickyRawFallbackMessageIds);
@@ -189,7 +250,6 @@ export function useWorkspaceTimeline(
       });
     }
 
-    const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
     const messageAnchorIdxById = computeMessageAnchorIdxById(
       sortedMessages,
       firstMessageEventIdxById,
@@ -337,28 +397,16 @@ export function useWorkspaceTimeline(
         && (assistantContextById.get(message.id)?.length ?? 0) > 0;
 
       const hasThinkingRounds = (thinkingRoundsByMessageId.get(message.id)?.length ?? 0) > 0;
-      const shouldGateBoundaryAssistantText =
-        semanticHydrationInProgress
-        && message.role === "assistant"
+      const oldestAssistantMissingRichContext =
+        message.role === "assistant"
         && oldestAssistantMessageId != null
         && message.id === oldestAssistantMessageId
         && message.content.trim().length > 0
         && !hasToolEventsInContext
         && !hasThinkingRounds
         && !hasMessageDelta;
-      if (shouldGateBoundaryAssistantText) {
-        debugLog("useWorkspaceTimeline", "assistant-text-gated", {
-          threadId: selectedThreadId,
-          messageId: message.id,
-          oldestAssistantMessageId,
-          semanticHydrationInProgress,
-          hasToolEventsInContext,
-          hasThinkingRounds,
-          hasMessageDelta,
-          contentLength: message.content.length,
-        });
+      if (oldestAssistantMissingRichContext) {
         hasIncompleteCoverage = true;
-        continue;
       }
 
       if (
@@ -785,12 +833,98 @@ export function useWorkspaceTimeline(
     }
 
     const result = sortable.map((entry) => entry.item);
+    const oldestRenderable = result[0] ?? null;
+    const oldestRenderableKey = oldestRenderable != null
+      ? `kind:${oldestRenderable.kind}:${JSON.stringify(oldestRenderable)}`
+      : null;
+    const oldestRenderableKind = oldestRenderable?.kind ?? null;
+    const oldestRenderableMessageId = oldestRenderable?.kind === "message"
+      ? oldestRenderable.message.id
+      : oldestRenderable?.kind === "thinking"
+        ? oldestRenderable.messageId
+        : oldestRenderable?.kind === "plan-file-output"
+          ? oldestRenderable.messageId
+          : null;
+    const oldestRenderableHydrationPending = semanticHydrationInProgress
+      && oldestRenderableMessageId != null
+      && oldestRenderableMessageId === oldestAssistantMessageId
+      && hasIncompleteCoverage;
+    const headIdentityStable = prevResultRef.current.summary.oldestRenderableKey == null
+      || prevResultRef.current.summary.oldestRenderableKey === oldestRenderableKey
+      || prevResultRef.current.summary.oldestRenderableMessageId === oldestRenderableMessageId;
     const timelineResult: WorkspaceTimelineResult = {
       items: result,
       hasIncompleteCoverage,
+      summary: {
+        oldestRenderableKey,
+        oldestRenderableKind,
+        oldestRenderableMessageId,
+        oldestRenderableHydrationPending,
+        headIdentityStable,
+      },
     };
+    const prevResult = prevResultRef.current;
+    const prevInputCounts = prevInputCountsRef.current;
+    const messagesAdded = messages.length - (prevInputCounts?.messageCount ?? 0);
+    const eventsAdded = events.length - (prevInputCounts?.eventCount ?? 0);
+    debugLog("useWorkspaceTimeline", "chat.timeline.recomputed", {
+      threadId: selectedThreadId,
+      messageCount: messages.length,
+      eventCount: events.length,
+      itemCount: result.length,
+      hasIncompleteCoverage,
+      semanticHydrationInProgress,
+      messagesAdded,
+      eventsAdded,
+    });
+    if (prevResult.hasIncompleteCoverage !== hasIncompleteCoverage) {
+      debugLog("useWorkspaceTimeline", "chat.timeline.coverageChanged", {
+        threadId: selectedThreadId,
+        previousHasIncompleteCoverage: prevResult.hasIncompleteCoverage,
+        hasIncompleteCoverage,
+        messageCount: messages.length,
+        eventCount: events.length,
+        itemCount: result.length,
+        semanticHydrationInProgress,
+      });
+    }
+    if (prevResult.summary.oldestRenderableKey !== oldestRenderableKey) {
+      debugLog("useWorkspaceTimeline", "chat.timeline.oldestRenderableChanged", {
+        threadId: selectedThreadId,
+        previousOldestRenderableKey: prevResult.summary.oldestRenderableKey,
+        previousOldestRenderableKind: prevResult.summary.oldestRenderableKind,
+        previousOldestRenderableMessageId: prevResult.summary.oldestRenderableMessageId,
+        oldestRenderableKey,
+        oldestRenderableKind,
+        oldestRenderableMessageId,
+        oldestRenderableHydrationPending,
+        headIdentityStable,
+        messageCount: messages.length,
+        eventCount: events.length,
+        itemCount: result.length,
+      });
+    }
+    if (messagesAdded === 0 && result.length > prevResult.items.length) {
+      debugLog("useWorkspaceTimeline", "chat.timeline.eventsOnlyRenderableGrowth", {
+        threadId: selectedThreadId,
+        eventCount: events.length,
+        itemCount: result.length,
+        previousItemCount: prevResult.items.length,
+        eventsAdded,
+        hasIncompleteCoverage,
+        oldestRenderableKey,
+        oldestRenderableKind,
+        oldestRenderableMessageId,
+        oldestRenderableHydrationPending,
+        headIdentityStable,
+      });
+    }
     prevFingerprintRef.current = fingerprint;
+    prevInputCountsRef.current = {
+      messageCount: messages.length,
+      eventCount: events.length,
+    };
     prevResultRef.current = timelineResult;
     return timelineResult;
-  }, [messages, events, options?.semanticHydrationInProgress, selectedThreadId]);
+  }, [messages, events, options?.disabled, options?.semanticHydrationInProgress, selectedThreadId]);
 }

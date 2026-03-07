@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import path from "node:path";
 import { z } from "zod";
+import { appendRuntimeDebugLog } from "./debug.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
@@ -75,6 +76,32 @@ function areLikelySameFsPath(a: string, b: string): boolean {
   if (stripPrivatePrefix(normalizedA) === normalizedB) return true;
   if (normalizedA === stripPrivatePrefix(normalizedB)) return true;
   return false;
+}
+
+function summarizeMessagePage(page: {
+  data: Array<{ seq: number }>;
+  pageInfo: { nextBeforeSeq: number | null; hasMoreOlder: boolean; oldestSeq: number | null; newestSeq: number | null };
+}) {
+  return {
+    count: page.data.length,
+    oldestSeq: page.pageInfo.oldestSeq,
+    newestSeq: page.pageInfo.newestSeq,
+    nextBeforeSeq: page.pageInfo.nextBeforeSeq,
+    hasMoreOlder: page.pageInfo.hasMoreOlder,
+  };
+}
+
+function summarizeEventPage(page: {
+  data: Array<{ idx: number }>;
+  pageInfo: { nextBeforeIdx: number | null; hasMoreOlder: boolean; oldestIdx: number | null; newestIdx: number | null };
+}) {
+  return {
+    count: page.data.length,
+    oldestIdx: page.pageInfo.oldestIdx,
+    newestIdx: page.pageInfo.newestIdx,
+    nextBeforeIdx: page.pageInfo.nextBeforeIdx,
+    hasMoreOlder: page.pageInfo.hasMoreOlder,
+  };
 }
 
 export async function registerChatRoutes(app: FastifyInstance) {
@@ -192,9 +219,31 @@ export async function registerChatRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid limit query value" });
       }
 
+      const requestId = `messages-page-${params.id}-${Date.now()}`;
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.messagesPage.requested",
+        data: {
+          requestId,
+          threadId: params.id,
+          beforeSeq: beforeSeq ?? null,
+          limit: limit ?? null,
+        },
+      });
       const page = await app.chatService.listMessagesPage(params.id, {
         beforeSeq: beforeSeq ?? undefined,
         limit: limit ?? undefined,
+      });
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.messagesPage.response",
+        data: {
+          requestId,
+          threadId: params.id,
+          beforeSeq: beforeSeq ?? null,
+          limit: limit ?? null,
+          ...summarizeMessagePage(page),
+        },
       });
       return {
         data: page.data,
@@ -220,9 +269,32 @@ export async function registerChatRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid eventLimit query value" });
       }
 
+      const requestId = `snapshot-${params.id}-${Date.now()}`;
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.snapshot.requested",
+        data: {
+          requestId,
+          threadId: params.id,
+          messageLimit: messageLimit ?? null,
+          eventLimit: eventLimit ?? null,
+        },
+      });
       const snapshot = await app.chatService.listThreadSnapshot(params.id, {
         messageLimit: messageLimit ?? undefined,
         eventLimit: eventLimit ?? undefined,
+      });
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.snapshot.response",
+        data: {
+          requestId,
+          threadId: params.id,
+          messageLimit: messageLimit ?? null,
+          eventLimit: eventLimit ?? null,
+          messages: summarizeMessagePage(snapshot.messages),
+          events: summarizeEventPage(snapshot.events),
+        },
       });
 
       return { data: snapshot };
@@ -330,9 +402,31 @@ export async function registerChatRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid limit query value" });
       }
 
+      const requestId = `events-page-${params.id}-${Date.now()}`;
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.eventsPage.requested",
+        data: {
+          requestId,
+          threadId: params.id,
+          beforeIdx: beforeIdx ?? null,
+          limit: limit ?? null,
+        },
+      });
       const page = await app.chatService.listEventsPage(params.id, {
         beforeIdx: beforeIdx ?? undefined,
         limit: limit ?? undefined,
+      });
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.eventsPage.response",
+        data: {
+          requestId,
+          threadId: params.id,
+          beforeIdx: beforeIdx ?? null,
+          limit: limit ?? null,
+          ...summarizeEventPage(page),
+        },
       });
       return {
         data: page.data,
@@ -349,6 +443,19 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const params = threadParams.parse(request.params);
       const query = streamEventQuery.parse(request.query);
       const startCursor = parseStreamStartCursor(query.afterIdx, request.headers["last-event-id"]);
+      const streamRequestId = `sse-${params.id}-${Date.now()}`;
+
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.sse.started",
+        data: {
+          requestId: streamRequestId,
+          threadId: params.id,
+          afterIdxQuery: query.afterIdx ?? null,
+          lastEventIdHeader: request.headers["last-event-id"] ?? null,
+          startCursor: startCursor ?? null,
+        },
+      });
 
       const requestOrigin = request.headers.origin;
 
@@ -377,25 +484,58 @@ export async function registerChatRoutes(app: FastifyInstance) {
       });
 
       const history = await app.chatService.listEvents(params.id, startCursor);
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.sse.historyFlushed",
+        data: {
+          requestId: streamRequestId,
+          threadId: params.id,
+          startCursor: startCursor ?? null,
+          historyCount: history.length,
+          oldestHistoryIdx: history[0]?.idx ?? null,
+          newestHistoryIdx: history[history.length - 1]?.idx ?? null,
+          bufferedCountBeforeFlush: buffer.length,
+        },
+      });
       const seenIdx = new Set<number>();
       for (const event of history) {
         seenIdx.add(event.idx);
         reply.raw.write(formatSseEvent(event));
       }
 
-      // Flush buffered events, skipping duplicates
+      let bufferedDeliveredCount = 0;
       for (const event of buffer) {
         if (!seenIdx.has(event.idx)) {
           reply.raw.write(formatSseEvent(event));
+          bufferedDeliveredCount += 1;
         }
       }
       flushed = true;
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.sse.bufferFlushed",
+        data: {
+          requestId: streamRequestId,
+          threadId: params.id,
+          bufferedCountBeforeFlush: buffer.length,
+          bufferedDeliveredCount,
+        },
+      });
 
       const heartbeat = setInterval(() => {
         reply.raw.write(": ping\n\n");
       }, 15000);
 
       request.raw.on("close", () => {
+        appendRuntimeDebugLog({
+          source: "runtime.chats",
+          message: "chat.backend.sse.closed",
+          data: {
+            requestId: streamRequestId,
+            threadId: params.id,
+            bufferedCountAtClose: buffer.length,
+          },
+        });
         clearInterval(heartbeat);
         unsubscribe();
       });
