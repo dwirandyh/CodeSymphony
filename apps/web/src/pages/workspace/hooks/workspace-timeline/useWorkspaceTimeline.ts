@@ -849,19 +849,26 @@ export function useWorkspaceTimeline(
       && oldestRenderableMessageId != null
       && oldestRenderableMessageId === oldestAssistantMessageId
       && hasIncompleteCoverage;
-    const headIdentityStable = prevResultRef.current.summary.oldestRenderableKey == null
-      || prevResultRef.current.summary.oldestRenderableKey === oldestRenderableKey
-      || prevResultRef.current.summary.oldestRenderableMessageId === oldestRenderableMessageId;
+    const previousSummary = prevResultRef.current.summary;
+    const headIdentityStable = previousSummary.oldestRenderableKey == null
+      || previousSummary.oldestRenderableKey === oldestRenderableKey
+      || previousSummary.oldestRenderableMessageId === oldestRenderableMessageId;
+    const nextSummary = {
+      oldestRenderableKey,
+      oldestRenderableKind,
+      oldestRenderableMessageId,
+      oldestRenderableHydrationPending,
+      headIdentityStable,
+    };
+    const summaryUnchanged = previousSummary.oldestRenderableKey === nextSummary.oldestRenderableKey
+      && previousSummary.oldestRenderableKind === nextSummary.oldestRenderableKind
+      && previousSummary.oldestRenderableMessageId === nextSummary.oldestRenderableMessageId
+      && previousSummary.oldestRenderableHydrationPending === nextSummary.oldestRenderableHydrationPending
+      && previousSummary.headIdentityStable === nextSummary.headIdentityStable;
     const timelineResult: WorkspaceTimelineResult = {
       items: result,
       hasIncompleteCoverage,
-      summary: {
-        oldestRenderableKey,
-        oldestRenderableKind,
-        oldestRenderableMessageId,
-        oldestRenderableHydrationPending,
-        headIdentityStable,
-      },
+      summary: summaryUnchanged ? previousSummary : nextSummary,
     };
     const prevResult = prevResultRef.current;
     const prevInputCounts = prevInputCountsRef.current;

@@ -20,6 +20,8 @@ const TOP_LOAD_EVENTS_ONLY_LATE_DRIFT_GUARD_MS = 2800;
 const TOP_LOAD_EVENTS_ONLY_LATE_DRIFT_MIN_PREV_OFFSET_PX = 16;
 const TOP_LOAD_EVENTS_ONLY_LATE_DRIFT_USER_INPUT_GRACE_MS = 140;
 const TOP_LOAD_EVENTS_ONLY_LATE_DRIFT_RESTORE_COOLDOWN_MS = 240;
+const PROGRAMMATIC_SCROLL_TARGET_TOLERANCE_PX = 2;
+const PROGRAMMATIC_SCROLL_FRAME_WINDOW_MS = 24;
 
 export function ChatMessageList({
   items,
@@ -100,6 +102,11 @@ export function ChatMessageList({
   const scrollFreezeCleanupRef = useRef<(() => void) | null>(null);
   const remeasureSettledCountRef = useRef(0);
   const remeasureSettledTimerRef = useRef<number | null>(null);
+  const programmaticScrollRef = useRef<{
+    targetOffset: number;
+    issuedAt: number;
+    reason: string;
+  } | null>(null);
 
   const freezeScrollInertia = useCallback(() => {
     if (scrollFreezeActiveRef.current) return;
@@ -114,6 +121,40 @@ export function ChatMessageList({
     if (!scrollFreezeActiveRef.current) return;
     scrollFreezeCleanupRef.current?.();
   }, []);
+
+  const clearProgrammaticScrollGuard = useCallback(() => {
+    programmaticScrollRef.current = null;
+  }, []);
+
+  const performProgrammaticScroll = useCallback((
+    handle: VListHandle,
+    targetOffset: number,
+    reason: string,
+  ) => {
+    const now = Date.now();
+    const currentOffset = handle.scrollOffset;
+    const currentDelta = Math.abs(currentOffset - targetOffset);
+    if (currentDelta <= PROGRAMMATIC_SCROLL_TARGET_TOLERANCE_PX) {
+      clearProgrammaticScrollGuard();
+      return false;
+    }
+
+    const previous = programmaticScrollRef.current;
+    if (
+      previous
+      && now - previous.issuedAt <= PROGRAMMATIC_SCROLL_FRAME_WINDOW_MS
+      && Math.abs(previous.targetOffset - targetOffset) <= PROGRAMMATIC_SCROLL_TARGET_TOLERANCE_PX
+    ) {
+      return false;
+    }
+    programmaticScrollRef.current = {
+      targetOffset,
+      issuedAt: now,
+      reason,
+    };
+    handle.scrollTo(targetOffset);
+    return true;
+  }, [clearProgrammaticScrollGuard]);
 
   const topLoadTransactionActiveRef = useRef(false);
   const hasOlderHistoryRef = useRef(hasOlderHistory);
@@ -273,7 +314,7 @@ export function ChatMessageList({
               releaseAnchorDistanceFromTop: pendingRestore.releaseAnchorDistanceFromTop,
               ...readTopLoadState(),
             });
-            handle.scrollTo(pendingRestore.targetOffset);
+            performProgrammaticScroll(handle, pendingRestore.targetOffset, "top-load-anchor-restore-raf");
           }
         }
         shiftReleaseAnchorWatchRafRef.current = window.requestAnimationFrame(tickAnchorWatch);
@@ -548,8 +589,9 @@ export function ChatMessageList({
                 stickyBottom: stickyBottomRef.current,
                 topLoadTransactionActive: topLoadTransactionActiveRef.current,
               });
-              handle.scrollTo(pendingAnchorRestore.targetOffset);
-              return;
+              if (performProgrammaticScroll(handle, pendingAnchorRestore.targetOffset, "top-load-anchor-restore-layout")) {
+                return;
+              }
             }
           }
         }
@@ -638,6 +680,7 @@ export function ChatMessageList({
     displayItems.length,
     headIdentityStable,
     oldestRenderableHydrationPending,
+    performProgrammaticScroll,
     readScrollSnapshot,
     releaseShift,
     renderableItems.length,
@@ -648,6 +691,16 @@ export function ChatMessageList({
   const handleScroll = useCallback((offset: number) => {
     const handle = vlistRef.current;
     if (!handle) return;
+
+    const pendingProgrammaticScroll = programmaticScrollRef.current;
+    if (pendingProgrammaticScroll) {
+      const now = Date.now();
+      const settledAtTarget = Math.abs(offset - pendingProgrammaticScroll.targetOffset) <= PROGRAMMATIC_SCROLL_TARGET_TOLERANCE_PX;
+      const expired = now - pendingProgrammaticScroll.issuedAt > PROGRAMMATIC_SCROLL_FRAME_WINDOW_MS;
+      if (settledAtTarget || expired) {
+        clearProgrammaticScrollGuard();
+      }
+    }
 
     const { scrollSize, viewportSize } = handle;
     const maxScroll = scrollSize - viewportSize;
@@ -824,8 +877,9 @@ export function ChatMessageList({
                     stickyBottom: stickyBottomRef.current,
                     topLoadTransactionActive: topLoadTransactionActiveRef.current,
                   });
-                  handle.scrollTo(pendingAnchorRestore.targetOffset);
-                  return;
+                  if (performProgrammaticScroll(handle, pendingAnchorRestore.targetOffset, "top-load-anchor-restore-scroll")) {
+                    return;
+                  }
                 }
               }
             }
@@ -874,8 +928,9 @@ export function ChatMessageList({
           stickyBottom: stickyBottomRef.current,
           topLoadTransactionActive: topLoadTransactionActiveRef.current,
         });
-        handle.scrollTo(prevGeometry.offset);
-        return;
+        if (performProgrammaticScroll(handle, prevGeometry.offset, "events-only-late-drift-restore")) {
+          return;
+        }
       }
     }
 
@@ -953,7 +1008,7 @@ export function ChatMessageList({
           targetScrollOffset: maxScroll,
           ...readTopLoadState(),
         });
-        handle.scrollTo(maxScroll);
+        performProgrammaticScroll(handle, maxScroll, "sticky-bottom-correction-scroll");
       }
     }
 
@@ -988,7 +1043,7 @@ export function ChatMessageList({
       atTopRef.current = isAtTop;
       setAtTop(isAtTop);
     }
-  }, []);
+  }, [clearPendingShiftAnchorRestore, clearProgrammaticScrollGuard, performProgrammaticScroll, readScrollSnapshot, readTopLoadState]);
 
   useEffect(() => {
     atTopRef.current = atTop;
@@ -1035,7 +1090,7 @@ export function ChatMessageList({
         const correction = targetOff - curOff;
         shiftBaselineDfbRef.current = null;
         if (Math.abs(correction) > 3 && targetOff >= 0 && targetOff <= curMax) {
-          h.scrollTo(targetOff);
+          performProgrammaticScroll(h, targetOff, "scroll-end-baseline-restore");
         }
       }
     }
@@ -1062,7 +1117,7 @@ export function ChatMessageList({
         targetScrollOffset: maxScroll,
         ...readTopLoadState(),
       });
-      h.scrollTo(maxScroll);
+      performProgrammaticScroll(h, maxScroll, "scroll-end-sticky-bottom-correction");
     }
   }, [readScrollSnapshot]);
 
@@ -1115,39 +1170,6 @@ export function ChatMessageList({
       }
     };
   }, [atTop]);
-
-  useEffect(() => {
-    debugLog("ChatMessageList", "list-state", {
-      itemCount: displayItems.length,
-      loadingOlderHistory,
-      hasOlderHistory,
-      topPaginationInteractionReady,
-      effectiveShiftActive: topLoadTransactionActiveRef.current
-        || (shiftActive
-          && !shiftForceDisabledRef.current
-          && pendingShiftAnchorRestoreRef.current != null),
-      leftTopZone: leftTopZoneRef.current,
-      topLoadArmed: topLoadArmedRef.current,
-      topLoadCooldownUntil: topLoadCooldownUntilRef.current,
-      pendingShiftRestoreFrame: pendingShiftRestoreFrameRef.current,
-      shiftForceDisabled: shiftForceDisabledRef.current,
-      topLoadPostReleaseCooldownUntil: topLoadPostReleaseCooldownUntilRef.current,
-      eventsOnlyLateDriftGuardUntil: eventsOnlyLateDriftGuardUntilRef.current,
-      ...readTopLoadState(),
-    });
-  }, [
-    atBottom,
-    atTop,
-    hasOlderHistory,
-    topPaginationInteractionReady,
-    displayItems.length,
-    firstRenderableKey,
-    loadingOlderHistory,
-    oldestRenderableHydrationPending,
-    renderableItems,
-    shiftActive,
-    stableHeadKey,
-  ]);
 
   const loadOlder = useCallback(async () => {
     const hasOlderHistoryCurrent = hasOlderHistoryRef.current;

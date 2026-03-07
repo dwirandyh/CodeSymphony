@@ -664,6 +664,71 @@ describe("ChatMessageList pagination with virtua", () => {
     ))).toBe(true);
   });
 
+  it("suppresses duplicate equivalent anchor restore corrections in the same reconciliation window", async () => {
+    let resolveLoad: ((result: LoadOlderResult) => void) | null = null;
+    const loadPromise = new Promise<LoadOlderResult>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const onLoadOlderHistory = vi.fn<
+      (metadata?: LoadOlderMetadata) => Promise<LoadOlderResult>
+    >(() => loadPromise);
+
+    const initialItems = [
+      makeMessageItem("m-10", 10),
+      makeMessageItem("m-11", 11),
+      makeMessageItem("m-12", 12),
+      makeMessageItem("m-13", 13),
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          items={initialItems}
+          timelineSummary={stableTimelineSummary}
+          hasOlderHistory
+          loadingOlderHistory={false}
+          topPaginationInteractionReady
+          onLoadOlderHistory={onLoadOlderHistory}
+        />,
+      );
+    });
+
+    act(() => {
+      vlistMock.setScrollOffset(170);
+      vlistMock.emitScroll(170);
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      resolveLoad?.({
+        completionReason: "applied",
+        estimatedRenderableGrowth: true,
+        messagesAdded: 0,
+        eventsAdded: 207,
+      });
+      await loadPromise;
+    });
+
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    });
+
+    const scrollToSpy = vi.mocked(vlistMock.scrollTo);
+    scrollToSpy.mockClear();
+
+    act(() => {
+      vlistMock.setScrollSize(1200);
+      vlistMock.emitScroll(120);
+      vlistMock.emitScroll(120);
+    });
+    await flushMicrotasks();
+
+    expect(scrollToSpy).toHaveBeenCalledTimes(1);
+    expect((scrollToSpy.mock.calls[0]?.[0] as number) > 120).toBe(true);
+  });
+
   it("restores late drift when events-only growth collapses to absolute top", async () => {
     vi.useFakeTimers();
 

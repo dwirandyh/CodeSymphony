@@ -23,6 +23,7 @@ let counter = 0;
 const BEACON_URL = `${resolveRuntimeApiBase()}/debug/log`;
 const RUNTIME_INFO_URL = `${resolveRuntimeApiBase()}/debug/runtime-info`;
 let runtimeInfoProbeStarted = false;
+let browserErrorCaptureInstalled = false;
 
 if (typeof window !== "undefined" && !window.__CS_DEBUG_LOG__) {
   window.__CS_DEBUG_LOG__ = [];
@@ -100,4 +101,52 @@ export function debugLog(source: string, message: string, data?: unknown): void 
   console.warn("[CS-DEBUG]", `#${entry.seq}`, source, message, data);
 }
 
+function serializeErrorLike(value: unknown) {
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+    };
+  }
+
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    return {
+      name: typeof record.name === "string" ? record.name : undefined,
+      message: typeof record.message === "string" ? record.message : undefined,
+      stack: typeof record.stack === "string" ? record.stack : undefined,
+      ...record,
+    };
+  }
+
+  return {
+    value: String(value),
+  };
+}
+
+export function installBrowserErrorCapture(): void {
+  if (browserErrorCaptureInstalled || typeof window === "undefined") {
+    return;
+  }
+  browserErrorCaptureInstalled = true;
+
+  window.addEventListener("error", (event) => {
+    debugLog("browser-error", "window.error", {
+      message: event.message,
+      filename: event.filename,
+      lineno: event.lineno,
+      colno: event.colno,
+      error: serializeErrorLike(event.error),
+    });
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    debugLog("browser-error", "window.unhandledrejection", {
+      reason: serializeErrorLike(event.reason),
+    });
+  });
+}
+
 probeRuntimeInfoOnce();
+installBrowserErrorCapture();

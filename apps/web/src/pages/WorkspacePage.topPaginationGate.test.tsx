@@ -66,6 +66,24 @@ describe("resolveChatMessageListKey", () => {
     ).toBe("thread-a");
   });
 
+  it("repairs a stale key when the selected thread differs", () => {
+    expect(
+      resolveChatMessageListKey({
+        previousKey: "thread-a",
+        previousThreadId: "thread-a",
+        nextThreadId: "thread-b",
+      }),
+    ).toBe("thread-b");
+
+    expect(
+      resolveChatMessageListKey({
+        previousKey: "thread-old",
+        previousThreadId: null,
+        nextThreadId: "thread-new",
+      }),
+    ).toBe("thread-new");
+  });
+
   it("keeps key stable when the same thread reappears after temporary null churn", () => {
     const preservedKey = resolveChatMessageListKey({
       previousKey: "thread-a",

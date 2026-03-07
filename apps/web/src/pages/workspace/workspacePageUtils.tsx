@@ -13,15 +13,11 @@ export function resolveChatMessageListKey(params: {
     return previousKey;
   }
 
-  if (previousKey === "empty") {
+  if (previousKey !== nextThreadId) {
     return nextThreadId;
   }
 
   if (shouldResetTopPaginationInteraction(previousThreadId, nextThreadId)) {
-    return nextThreadId;
-  }
-
-  if (previousThreadId == null && previousKey !== nextThreadId) {
     return nextThreadId;
   }
 

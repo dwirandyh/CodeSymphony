@@ -30,6 +30,7 @@ import { useChatSession } from "./workspace/hooks/chat-session";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
+import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { useQueryClient } from "@tanstack/react-query";
@@ -231,6 +232,7 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
+  useBackgroundWorktreeStatusStream(repos.repositories, repos.selectedWorktreeId, chat.selectedThreadId);
   const loadOlderHistoryRef = useRef(chat.loadOlderHistory);
   useEffect(() => {
     loadOlderHistoryRef.current = chat.loadOlderHistory;
@@ -238,26 +240,16 @@ export function WorkspacePage() {
 
   const [topPaginationInteractionReady, setTopPaginationInteractionReady] = useState(false);
   const prevSelectedThreadIdRef = useRef<string | null>(chat.selectedThreadId);
-  const [chatMessageListKey, setChatMessageListKey] = useState<string>(chat.selectedThreadId ?? "empty");
+  const chatMessageListKeyRef = useRef<string>(chat.selectedThreadId ?? "empty");
+  const chatMessageListKey = resolveChatMessageListKey({
+    previousKey: chatMessageListKeyRef.current,
+    previousThreadId: prevSelectedThreadIdRef.current,
+    nextThreadId: chat.selectedThreadId,
+  });
 
-  useEffect(() => {
-    setChatMessageListKey((current) => {
-      const next = resolveChatMessageListKey({
-        previousKey: current,
-        previousThreadId: prevSelectedThreadIdRef.current,
-        nextThreadId: chat.selectedThreadId,
-      });
-      if (next !== current) {
-        debugLog("WorkspacePage", "chat-message-list-key-update", {
-          previousKey: current,
-          nextKey: next,
-          previousThreadId: prevSelectedThreadIdRef.current,
-          nextThreadId: chat.selectedThreadId,
-        });
-      }
-      return next;
-    });
-  }, [chat.selectedThreadId]);
+  if (chatMessageListKey !== chatMessageListKeyRef.current) {
+    chatMessageListKeyRef.current = chatMessageListKey;
+  }
 
   useEffect(() => {
     const prevThreadId = prevSelectedThreadIdRef.current;
@@ -342,6 +334,7 @@ export function WorkspacePage() {
     "chat.messages": chat.messages,
     "chat.events": chat.events,
     "chat.timelineItems": chat.timelineItems,
+    "chat.timelineSummary": chat.timelineSummary,
     "chat.sendingMessage": chat.sendingMessage,
     "chat.waitingAssistant": chat.waitingAssistant,
     "chat.showStopAction": chat.showStopAction,
@@ -360,6 +353,8 @@ export function WorkspacePage() {
     "gitChanges.entries": gitChanges.entries,
     "gitChanges.branch": gitChanges.branch,
     "gitChanges.loading": gitChanges.loading,
+    topPaginationInteractionReady,
+    chatMessageListKey,
     mobilePanelOpen,
   };
 
@@ -382,6 +377,8 @@ export function WorkspacePage() {
     sendingMessage: chat.sendingMessage,
     waitingAssistant: chat.waitingAssistant,
     isWaitingForUserGate: gates.isWaitingForUserGate,
+    topPaginationInteractionReady,
+    chatMessageListKey,
     hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
   });
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
