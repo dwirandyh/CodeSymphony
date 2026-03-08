@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatThread } from "@codesymphony/shared-types";
 import {
+  applySnapshotSeed,
   applyThreadTitleUpdate,
   buildAutoBackfillLaunchKey,
   buildAutoBackfillSnapshotKey,
@@ -493,8 +494,179 @@ describe("snapshot seed decision helpers", () => {
     expect(decision.snapshotKey).toBe(buildAutoBackfillSnapshotKey(snapshotB));
   });
 
+  it("skips reseed when local event state is ahead of the snapshot", () => {
+    const snapshot = makeSnapshot({
+      watermarks: {
+        newestSeq: 1,
+        newestIdx: 10,
+      },
+    });
+
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: "thread-1",
+      queriedThreadSnapshot: snapshot,
+      threadChanged: false,
+      lastAppliedSnapshotKey: null,
+      localLatestEventIdx: 15,
+    });
+
+    expect(decision).toEqual({
+      shouldApply: false,
+      reason: "local-state-ahead",
+      snapshotKey: buildAutoBackfillSnapshotKey(snapshot),
+    });
+  });
+
+  it("skips reseed when a pending user gate is open on the active thread", () => {
+    const snapshot = makeSnapshot();
+
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: "thread-1",
+      queriedThreadSnapshot: snapshot,
+      threadChanged: false,
+      lastAppliedSnapshotKey: null,
+      hasPendingUserGate: true,
+    });
+
+    expect(decision).toEqual({
+      shouldApply: false,
+      reason: "pending-user-gate",
+      snapshotKey: buildAutoBackfillSnapshotKey(snapshot),
+    });
+  });
+
+  it("prefers local-state-ahead over pending-user-gate for stale active snapshots", () => {
+    const snapshot = makeSnapshot({
+      watermarks: {
+        newestSeq: 1,
+        newestIdx: 10,
+      },
+    });
+
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: "thread-1",
+      queriedThreadSnapshot: snapshot,
+      threadChanged: false,
+      lastAppliedSnapshotKey: null,
+      localLatestEventIdx: 15,
+      hasPendingUserGate: true,
+    });
+
+    expect(decision).toEqual({
+      shouldApply: false,
+      reason: "local-state-ahead",
+      snapshotKey: buildAutoBackfillSnapshotKey(snapshot),
+    });
+  });
+
   it("submit_message_does_not_force_immediate_snapshot_invalidation", () => {
     expect(shouldInvalidateSnapshotImmediatelyAfterSubmit()).toBe(false);
+  });
+});
+
+function createStateSetter<T>(state: { current: T }) {
+  return (value: T | ((current: T) => T)) => {
+    state.current = typeof value === "function"
+      ? (value as (current: T) => T)(state.current)
+      : value;
+  };
+}
+
+function createRef<T>(value: T) {
+  return { current: value };
+}
+
+describe("applySnapshotSeed", () => {
+  it("keeps active-thread cursors monotonic when snapshot is older than local state", () => {
+    const snapshot = makeSnapshot({
+      watermarks: { newestSeq: 1, newestIdx: 10 },
+      coverage: {
+        eventsStatus: "needs_backfill",
+        recommendedBackfill: true,
+        nextBeforeIdx: 3,
+      },
+    });
+    const messagesState = { current: [makeMessage("local-message", 2)] };
+    const eventsState = { current: [makeEvent(12, "chat.completed", { messageId: "local" })] };
+    const threadsState = { current: [makeThread("Original title")] };
+    const hasMoreOlderMessagesState = { current: true };
+    const hasMoreOlderEventsState = { current: true };
+    const seenEventIdsByThreadRef = createRef(new Map([["thread-1", new Set(["event-12"])]]));
+    const lastEventIdxByThreadRef = createRef(new Map([["thread-1", 12]]));
+    const nextBeforeSeqByThreadRef = createRef(new Map([["thread-1", 99]]));
+    const nextBeforeIdxByThreadRef = createRef(new Map([["thread-1", 77]]));
+    const onBranchRenamed = expect.unreachable;
+
+    applySnapshotSeed({
+      snapshot,
+      selectedThreadId: "thread-1",
+      selectedWorktreeId: null,
+      setMessages: createStateSetter(messagesState),
+      setEvents: createStateSetter(eventsState),
+      setThreads: createStateSetter(threadsState),
+      setHasMoreOlderMessages: createStateSetter(hasMoreOlderMessagesState),
+      setHasMoreOlderEvents: createStateSetter(hasMoreOlderEventsState),
+      nextBeforeSeqByThreadRef,
+      nextBeforeIdxByThreadRef,
+      seenEventIdsByThreadRef,
+      lastEventIdxByThreadRef,
+      activeThreadIdRef: createRef("thread-1"),
+      onBranchRenamed,
+      mode: "merge",
+    });
+
+    expect(lastEventIdxByThreadRef.current.get("thread-1")).toBe(12);
+    expect(nextBeforeSeqByThreadRef.current.get("thread-1")).toBe(99);
+    expect(nextBeforeIdxByThreadRef.current.get("thread-1")).toBe(77);
+    expect(seenEventIdsByThreadRef.current.get("thread-1")).toEqual(new Set(["event-12"]));
+    expect(hasMoreOlderMessagesState.current).toBe(true);
+    expect(hasMoreOlderEventsState.current).toBe(true);
+    expect(threadsState.current[0]?.title).toBe("Original title");
+  });
+
+  it("still applies metadata updates from an older snapshot", () => {
+    const metadataEvent = makeEvent(8, "chat.completed", {
+      messageId: "m-1",
+      threadTitle: "Updated title",
+      worktreeBranch: "feat/branch",
+    });
+    const snapshot = {
+      ...makeSnapshot({
+        watermarks: { newestSeq: 1, newestIdx: 8 },
+      }),
+      events: {
+        data: [metadataEvent],
+        pageInfo: {
+          hasMoreOlder: false,
+          nextBeforeIdx: null,
+          oldestIdx: 8,
+          newestIdx: 8,
+        },
+      },
+    };
+    const threadsState = { current: [makeThread("Original title")] };
+    const branchUpdates: string[] = [];
+
+    applySnapshotSeed({
+      snapshot,
+      selectedThreadId: "thread-1",
+      selectedWorktreeId: "wt-1",
+      setMessages: createStateSetter({ current: [] }),
+      setEvents: createStateSetter({ current: [] }),
+      setThreads: createStateSetter(threadsState),
+      setHasMoreOlderMessages: createStateSetter({ current: false }),
+      setHasMoreOlderEvents: createStateSetter({ current: false }),
+      nextBeforeSeqByThreadRef: createRef(new Map([["thread-1", 5]])),
+      nextBeforeIdxByThreadRef: createRef(new Map([["thread-1", 5]])),
+      seenEventIdsByThreadRef: createRef(new Map([["thread-1", new Set(["event-9"])]])),
+      lastEventIdxByThreadRef: createRef(new Map([["thread-1", 9]])),
+      activeThreadIdRef: createRef("thread-1"),
+      onBranchRenamed: (_worktreeId, branch) => branchUpdates.push(branch),
+      mode: "merge",
+    });
+
+    expect(threadsState.current[0]?.title).toBe("Updated title");
+    expect(branchUpdates).toEqual(["feat/branch"]);
   });
 });
 

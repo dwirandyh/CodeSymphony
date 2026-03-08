@@ -48,8 +48,17 @@ export function resolveSnapshotSeedDecision(params: {
   queriedThreadSnapshot: ChatThreadSnapshot | undefined;
   threadChanged: boolean;
   lastAppliedSnapshotKey: string | null;
+  localLatestEventIdx?: number | null;
+  hasPendingUserGate?: boolean;
 }): SnapshotSeedDecision {
-  const { selectedThreadId, queriedThreadSnapshot, threadChanged, lastAppliedSnapshotKey } = params;
+  const {
+    selectedThreadId,
+    queriedThreadSnapshot,
+    threadChanged,
+    lastAppliedSnapshotKey,
+    localLatestEventIdx = null,
+    hasPendingUserGate = false,
+  } = params;
   if (!selectedThreadId || !queriedThreadSnapshot) {
     return { shouldApply: false, reason: "no-thread-or-snapshot", snapshotKey: null };
   }
@@ -57,6 +66,19 @@ export function resolveSnapshotSeedDecision(params: {
   const snapshotKey = buildAutoBackfillSnapshotKey(queriedThreadSnapshot);
   if (threadChanged) {
     return { shouldApply: true, reason: "thread-changed", snapshotKey };
+  }
+
+  const snapshotNewestIdx = queriedThreadSnapshot.watermarks.newestIdx ?? null;
+  if (
+    localLatestEventIdx != null
+    && snapshotNewestIdx != null
+    && localLatestEventIdx > snapshotNewestIdx
+  ) {
+    return { shouldApply: false, reason: "local-state-ahead", snapshotKey };
+  }
+
+  if (hasPendingUserGate) {
+    return { shouldApply: false, reason: "pending-user-gate", snapshotKey };
   }
 
   if (lastAppliedSnapshotKey === snapshotKey) {

@@ -5,26 +5,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { usePendingGates, type PendingGatesDeps } from "./usePendingGates";
 
-const mockResolvePermissionMutateAsync = vi.fn().mockResolvedValue(undefined);
-const mockAnswerQuestionMutateAsync = vi.fn().mockResolvedValue(undefined);
-const mockApprovePlanMutateAsync = vi.fn().mockResolvedValue(undefined);
-const mockRevisePlanMutateAsync = vi.fn().mockResolvedValue(undefined);
-const mockDismissQuestionMutateAsync = vi.fn().mockResolvedValue(undefined);
+const {
+  mockResolvePermission,
+  mockAnswerQuestion,
+  mockApprovePlan,
+  mockRevisePlan,
+  mockDismissQuestion,
+} = vi.hoisted(() => ({
+  mockResolvePermission: vi.fn().mockResolvedValue(undefined),
+  mockAnswerQuestion: vi.fn().mockResolvedValue(undefined),
+  mockApprovePlan: vi.fn().mockResolvedValue(undefined),
+  mockRevisePlan: vi.fn().mockResolvedValue(undefined),
+  mockDismissQuestion: vi.fn().mockResolvedValue(undefined),
+}));
 
-vi.mock("../../../hooks/mutations/useResolvePermission", () => ({
-  useResolvePermission: () => ({ mutateAsync: mockResolvePermissionMutateAsync }),
-}));
-vi.mock("../../../hooks/mutations/useAnswerQuestion", () => ({
-  useAnswerQuestion: () => ({ mutateAsync: mockAnswerQuestionMutateAsync }),
-}));
-vi.mock("../../../hooks/mutations/useApprovePlan", () => ({
-  useApprovePlan: () => ({ mutateAsync: mockApprovePlanMutateAsync }),
-}));
-vi.mock("../../../hooks/mutations/useRevisePlan", () => ({
-  useRevisePlan: () => ({ mutateAsync: mockRevisePlanMutateAsync }),
-}));
-vi.mock("../../../hooks/mutations/useDismissQuestion", () => ({
-  useDismissQuestion: () => ({ mutateAsync: mockDismissQuestionMutateAsync }),
+vi.mock("../../../lib/api", () => ({
+  api: {
+    resolvePermission: mockResolvePermission,
+    answerQuestion: mockAnswerQuestion,
+    approvePlan: mockApprovePlan,
+    revisePlan: mockRevisePlan,
+    dismissQuestion: mockDismissQuestion,
+  },
 }));
 
 vi.mock("../../../lib/debugLog", () => ({
@@ -317,9 +319,9 @@ describe("usePendingGates", () => {
         await hookResult.resolvePermission("req-1", "allow");
       });
 
-      expect(mockResolvePermissionMutateAsync).toHaveBeenCalledWith({
-        threadId: "t1",
-        input: { requestId: "req-1", decision: "allow" },
+      expect(mockResolvePermission).toHaveBeenCalledWith("t1", {
+        requestId: "req-1",
+        decision: "allow",
       });
       expect(mockDeps.startWaitingAssistant).toHaveBeenCalledWith("t1");
     });
@@ -332,7 +334,7 @@ describe("usePendingGates", () => {
       });
 
       expect(mockDeps.startWaitingAssistant).not.toHaveBeenCalled();
-      expect(mockResolvePermissionMutateAsync).toHaveBeenCalled();
+      expect(mockResolvePermission).toHaveBeenCalled();
     });
 
     it("does nothing when no thread is selected", async () => {
@@ -340,11 +342,11 @@ describe("usePendingGates", () => {
       await act(async () => {
         await hookResult.resolvePermission("req-1", "allow");
       });
-      expect(mockResolvePermissionMutateAsync).not.toHaveBeenCalled();
+      expect(mockResolvePermission).not.toHaveBeenCalled();
     });
 
     it("handles errors and clears waiting assistant", async () => {
-      mockResolvePermissionMutateAsync.mockRejectedValueOnce(new Error("Network error"));
+      mockResolvePermission.mockRejectedValueOnce(new Error("Network error"));
       render([makeEvent(0, "permission.requested", { requestId: "req-1", toolName: "Bash" })]);
 
       await act(async () => {
@@ -356,7 +358,7 @@ describe("usePendingGates", () => {
     });
 
     it("does not clear waiting assistant on deny error", async () => {
-      mockResolvePermissionMutateAsync.mockRejectedValueOnce(new Error("fail"));
+      mockResolvePermission.mockRejectedValueOnce(new Error("fail"));
       render([makeEvent(0, "permission.requested", { requestId: "req-1", toolName: "Bash" })]);
 
       await act(async () => {
@@ -375,10 +377,30 @@ describe("usePendingGates", () => {
       });
 
       expect(mockDeps.startWaitingAssistant).toHaveBeenCalledWith("t1");
-      expect(mockResolvePermissionMutateAsync).toHaveBeenCalledWith({
-        threadId: "t1",
-        input: { requestId: "req-1", decision: "allow_always" },
+      expect(mockResolvePermission).toHaveBeenCalledWith("t1", {
+        requestId: "req-1",
+        decision: "allow_always",
       });
+    });
+
+    it("dedupes repeated permission resolution while request is in flight", async () => {
+      let release: (() => void) | null = null;
+      mockResolvePermission.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        release = resolve;
+      }));
+      render([makeEvent(0, "permission.requested", { requestId: "req-1", toolName: "Bash" })]);
+
+      const firstCall = hookResult.resolvePermission("req-1", "deny");
+      const secondCall = hookResult.resolvePermission("req-1", "deny");
+
+      expect(mockResolvePermission).toHaveBeenCalledTimes(1);
+      release?.();
+
+      await act(async () => {
+        await Promise.all([firstCall, secondCall]);
+      });
+
+      expect(mockResolvePermission).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -390,9 +412,9 @@ describe("usePendingGates", () => {
         await hookResult.answerQuestion("q-1", { "0": "My answer" });
       });
 
-      expect(mockAnswerQuestionMutateAsync).toHaveBeenCalledWith({
-        threadId: "t1",
-        input: { requestId: "q-1", answers: { "0": "My answer" } },
+      expect(mockAnswerQuestion).toHaveBeenCalledWith("t1", {
+        requestId: "q-1",
+        answers: { "0": "My answer" },
       });
       expect(mockDeps.startWaitingAssistant).toHaveBeenCalledWith("t1");
     });
@@ -402,11 +424,11 @@ describe("usePendingGates", () => {
       await act(async () => {
         await hookResult.answerQuestion("q-1", { "0": "answer" });
       });
-      expect(mockAnswerQuestionMutateAsync).not.toHaveBeenCalled();
+      expect(mockAnswerQuestion).not.toHaveBeenCalled();
     });
 
     it("handles errors and clears waiting assistant", async () => {
-      mockAnswerQuestionMutateAsync.mockRejectedValueOnce(new Error("Bad answer"));
+      mockAnswerQuestion.mockRejectedValueOnce(new Error("Bad answer"));
       render([makeEvent(0, "question.requested", { requestId: "q-1", questions: [{ question: "Q?" }] })]);
 
       await act(async () => {
@@ -426,10 +448,7 @@ describe("usePendingGates", () => {
         await hookResult.dismissQuestion("q-1");
       });
 
-      expect(mockDismissQuestionMutateAsync).toHaveBeenCalledWith({
-        threadId: "t1",
-        input: { requestId: "q-1" },
-      });
+      expect(mockDismissQuestion).toHaveBeenCalledWith("t1", { requestId: "q-1" });
       expect(mockDeps.startWaitingAssistant).toHaveBeenCalledWith("t1");
     });
 
@@ -438,11 +457,11 @@ describe("usePendingGates", () => {
       await act(async () => {
         await hookResult.dismissQuestion("q-1");
       });
-      expect(mockDismissQuestionMutateAsync).not.toHaveBeenCalled();
+      expect(mockDismissQuestion).not.toHaveBeenCalled();
     });
 
     it("handles errors and restores closed question", async () => {
-      mockDismissQuestionMutateAsync.mockRejectedValueOnce(new Error("Dismiss failed"));
+      mockDismissQuestion.mockRejectedValueOnce(new Error("Dismiss failed"));
       render([makeEvent(0, "question.requested", { requestId: "q-1", questions: [{ question: "Q?" }] })]);
 
       await act(async () => {
@@ -467,7 +486,7 @@ describe("usePendingGates", () => {
         await hookResult.handleApprovePlan();
       });
 
-      expect(mockApprovePlanMutateAsync).toHaveBeenCalledWith("t1");
+      expect(mockApprovePlan).toHaveBeenCalledWith("t1");
       expect(mockDeps.startWaitingAssistant).toHaveBeenCalledWith("t1");
       expect(hookResult.showPlanDecisionComposer).toBe(false);
     });
@@ -477,11 +496,11 @@ describe("usePendingGates", () => {
       await act(async () => {
         await hookResult.handleApprovePlan();
       });
-      expect(mockApprovePlanMutateAsync).not.toHaveBeenCalled();
+      expect(mockApprovePlan).not.toHaveBeenCalled();
     });
 
     it("handles errors", async () => {
-      mockApprovePlanMutateAsync.mockRejectedValueOnce(new Error("Approve failed"));
+      mockApprovePlan.mockRejectedValueOnce(new Error("Approve failed"));
       const events = [
         makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
         makeEvent(1, "chat.completed", {}),
@@ -509,10 +528,7 @@ describe("usePendingGates", () => {
         await hookResult.handleRevisePlan("Please add error handling");
       });
 
-      expect(mockRevisePlanMutateAsync).toHaveBeenCalledWith({
-        threadId: "t1",
-        input: { feedback: "Please add error handling" },
-      });
+      expect(mockRevisePlan).toHaveBeenCalledWith("t1", { feedback: "Please add error handling" });
       expect(mockDeps.startWaitingAssistant).toHaveBeenCalledWith("t1");
       expect(hookResult.showPlanDecisionComposer).toBe(false);
     });
@@ -522,11 +538,11 @@ describe("usePendingGates", () => {
       await act(async () => {
         await hookResult.handleRevisePlan("feedback");
       });
-      expect(mockRevisePlanMutateAsync).not.toHaveBeenCalled();
+      expect(mockRevisePlan).not.toHaveBeenCalled();
     });
 
     it("handles errors", async () => {
-      mockRevisePlanMutateAsync.mockRejectedValueOnce(new Error("Revise failed"));
+      mockRevisePlan.mockRejectedValueOnce(new Error("Revise failed"));
       const events = [
         makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
         makeEvent(1, "chat.completed", {}),

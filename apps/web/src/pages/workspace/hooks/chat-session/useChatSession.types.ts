@@ -68,7 +68,13 @@ export type HydrationBackfillPolicy = "manual" | "auto";
 
 export type SnapshotSeedDecision = {
   shouldApply: boolean;
-  reason: "thread-changed" | "no-thread-or-snapshot" | "same-snapshot-key" | "snapshot-key-changed";
+  reason:
+    | "thread-changed"
+    | "no-thread-or-snapshot"
+    | "same-snapshot-key"
+    | "snapshot-key-changed"
+    | "local-state-ahead"
+    | "pending-user-gate";
   snapshotKey: string | null;
 };
 

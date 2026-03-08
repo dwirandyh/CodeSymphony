@@ -51,6 +51,23 @@ export function applySnapshotSeed(params: {
 
   const queriedMessages = snapshot.messages.data;
   const queriedEvents = snapshot.events.data;
+  const localLatestEventIdx = lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null;
+  const snapshotNewestIdx = snapshot.watermarks.newestIdx ?? null;
+  const activeThreadSnapshotIsNotOlder =
+    activeThreadIdRef.current !== selectedThreadId
+    || localLatestEventIdx == null
+    || snapshotNewestIdx == null
+    || snapshotNewestIdx >= localLatestEventIdx;
+
+  if (import.meta.env.DEV) {
+    console.debug("[snapshotSeed] apply", {
+      selectedThreadId,
+      mode,
+      queriedMessagesLength: queriedMessages.length,
+      queriedEventsLength: queriedEvents.length,
+      newestIdx: snapshot.watermarks.newestIdx,
+    });
+  }
 
   setMessages((current) => {
     if (mode === "replace") {
@@ -85,24 +102,26 @@ export function applySnapshotSeed(params: {
     return mergeEventsWithCurrent(queriedEvents, current);
   });
 
-  nextBeforeSeqByThreadRef.current.set(selectedThreadId, snapshot.messages.pageInfo.nextBeforeSeq);
-  nextBeforeIdxByThreadRef.current.set(selectedThreadId, snapshot.events.pageInfo.nextBeforeIdx);
+  if (activeThreadSnapshotIsNotOlder) {
+    nextBeforeSeqByThreadRef.current.set(selectedThreadId, snapshot.messages.pageInfo.nextBeforeSeq);
+    nextBeforeIdxByThreadRef.current.set(selectedThreadId, snapshot.events.pageInfo.nextBeforeIdx);
 
-  if (activeThreadIdRef.current === selectedThreadId) {
-    setHasMoreOlderMessages(snapshot.messages.pageInfo.hasMoreOlder);
-    setHasMoreOlderEvents(snapshot.events.pageInfo.hasMoreOlder);
-  }
+    if (activeThreadIdRef.current === selectedThreadId) {
+      setHasMoreOlderMessages(snapshot.messages.pageInfo.hasMoreOlder);
+      setHasMoreOlderEvents(snapshot.events.pageInfo.hasMoreOlder);
+    }
 
-  const seenEventIds = new Set<string>();
-  for (const event of queriedEvents) {
-    seenEventIds.add(event.id);
-  }
-  seenEventIdsByThreadRef.current.set(selectedThreadId, seenEventIds);
+    const seenEventIds = new Set<string>();
+    for (const event of queriedEvents) {
+      seenEventIds.add(event.id);
+    }
+    seenEventIdsByThreadRef.current.set(selectedThreadId, seenEventIds);
 
-  if (snapshot.watermarks.newestIdx == null) {
-    lastEventIdxByThreadRef.current.delete(selectedThreadId);
-  } else {
-    lastEventIdxByThreadRef.current.set(selectedThreadId, snapshot.watermarks.newestIdx);
+    if (snapshot.watermarks.newestIdx == null) {
+      lastEventIdxByThreadRef.current.delete(selectedThreadId);
+    } else {
+      lastEventIdxByThreadRef.current.set(selectedThreadId, snapshot.watermarks.newestIdx);
+    }
   }
 
   const latestMetadata = extractLatestThreadMetadata(queriedEvents);

@@ -13,7 +13,6 @@ import type {
   ChatThread,
   AttachmentInput,
 } from "@codesymphony/shared-types";
-import type { PendingAttachment } from "../../../../lib/attachments";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { debugLog } from "../../../../lib/debugLog";
@@ -25,6 +24,12 @@ import {
   shouldClearWaitingAssistantOnEvent,
 } from "../../eventUtils";
 import { useWorkspaceTimeline, type TimelineRefs } from "../workspace-timeline";
+import {
+  derivePendingPermissionRequests,
+  derivePendingPlan,
+  derivePendingQuestionRequests,
+  isRunCompletedAfterPlan,
+} from "../worktreeThreadStatus";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
 import type {
   LoadOlderHistoryRequestMetadata,
@@ -58,10 +63,6 @@ export function useChatSession(
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<ChatEvent[]>([]);
-
-  const [chatInput, setChatInput] = useState("");
-  const [chatMode, setChatMode] = useState<ChatMode>("default");
-  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
 
   const [sendingMessage, setSendingMessage] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
@@ -313,6 +314,12 @@ export function useChatSession(
     }
   }, [selectedThreadId, threads]);
 
+  const hasPendingPermissionRequests = derivePendingPermissionRequests(events).length > 0;
+  const hasPendingQuestionRequests = derivePendingQuestionRequests(events).length > 0;
+  const pendingPlan = derivePendingPlan(events);
+  const hasPendingPlan = pendingPlan?.status === "pending" && isRunCompletedAfterPlan(events, pendingPlan);
+  const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
+
   // ── TanStack Query: thread snapshot (initial seed) ──
   const { data: queriedThreadSnapshot } = useThreadSnapshot(selectedThreadId);
   const prevQueriedSnapshotRef = useRef(queriedThreadSnapshot);
@@ -334,11 +341,16 @@ export function useChatSession(
     const previousSeededSnapshotKey = selectedThreadId
       ? seededSnapshotKeyByThreadRef.current.get(selectedThreadId) ?? null
       : null;
+    const localLatestEventIdx = selectedThreadId
+      ? lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null
+      : null;
     const seedDecision = resolveSnapshotSeedDecision({
       selectedThreadId,
       queriedThreadSnapshot,
       threadChanged,
       lastAppliedSnapshotKey,
+      localLatestEventIdx,
+      hasPendingUserGate: !threadChanged && activeThreadIdRef.current === selectedThreadId && hasPendingUserGate,
     });
     debugLog("useChatSession", "seed snapshot effect", {
       selectedThreadId,
@@ -352,6 +364,10 @@ export function useChatSession(
       shouldApplySnapshot: seedDecision.shouldApply,
       newestEventIdx: queriedThreadSnapshot?.watermarks.newestIdx ?? null,
       newestMessageSeq: queriedThreadSnapshot?.watermarks.newestSeq ?? null,
+      currentLocalMessagesLength: messages.length,
+      currentLocalEventsLength: events.length,
+      localLatestEventIdx,
+      hasPendingUserGate,
     });
 
     if (threadChanged) {
@@ -364,8 +380,12 @@ export function useChatSession(
         reason: "no-thread-or-snapshot",
         snapshotKey: seedDecision.snapshotKey,
       });
-      setMessages([]);
-      setEvents([]);
+      if (messages.length > 0) {
+        setMessages([]);
+      }
+      if (events.length > 0) {
+        setEvents([]);
+      }
       return;
     }
 
@@ -396,6 +416,15 @@ export function useChatSession(
         selectedThreadId,
         reason: seedDecision.reason,
         snapshotKey: seedDecision.snapshotKey,
+        localLastEventIdxAfterDecision: selectedThreadId
+          ? lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null
+          : null,
+        localSeenEventCount: selectedThreadId
+          ? seenEventIdsByThreadRef.current.get(selectedThreadId)?.size ?? 0
+          : 0,
+        nextBeforeIdxLocal: selectedThreadId
+          ? nextBeforeIdxByThreadRef.current.get(selectedThreadId) ?? null
+          : null,
       });
       return;
     }
@@ -428,7 +457,7 @@ export function useChatSession(
       appliedMessagesLength: queriedThreadSnapshot.messages.data.length,
       appliedEventsLength: queriedThreadSnapshot.events.data.length,
     });
-  }, [onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId]);
+  }, [hasPendingUserGate, messages.length, onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId]);
 
   useEffect(() => {
     if (!selectedThreadId) {
@@ -603,7 +632,7 @@ export function useChatSession(
     }
   }
 
-  async function createThreadAndSendMessage(title: string, content: string) {
+  async function createThreadAndSendMessage(title: string, content: string, mode: ChatMode = "default") {
     onError(null);
 
     try {
@@ -620,8 +649,7 @@ export function useChatSession(
       startWaitingAssistant(created.id);
       setSendingMessage(true);
       try {
-        await api.sendMessage(created.id, { content, mode: chatMode, attachments: [] });
-        setChatInput("");
+        await api.sendMessage(created.id, { content, mode, attachments: [] });
       } catch (e) {
         setWaitingAssistant(null);
         throw e;
@@ -702,10 +730,13 @@ export function useChatSession(
 
   // ── Chat actions ──
 
-  async function submitMessage(content?: string, messageAttachments?: PendingAttachment[]) {
+  async function submitMessage(
+    content: string,
+    mode: ChatMode,
+    messageAttachments: Array<AttachmentInput & { sizeBytes?: number; isInline?: boolean }>,
+  ) {
     const shouldInvalidateSnapshot = shouldInvalidateSnapshotImmediatelyAfterSubmit();
-    const messageContent = content ?? chatInput;
-    const attachmentsToSend: AttachmentInput[] = (messageAttachments ?? pendingAttachments).map((att) => ({
+    const attachmentsToSend: AttachmentInput[] = messageAttachments.map((att) => ({
       id: att.id,
       filename: att.filename,
       mimeType: att.mimeType,
@@ -713,28 +744,28 @@ export function useChatSession(
       source: att.source,
     }));
 
-    if (!selectedThreadId || (!messageContent.trim() && attachmentsToSend.length === 0)) return;
+    if (!selectedThreadId || (!content.trim() && attachmentsToSend.length === 0)) return false;
 
     debugLog("useChatSession", "submitMessage start", {
       selectedThreadId,
-      contentLength: messageContent.length,
+      contentLength: content.length,
       attachmentsCount: attachmentsToSend.length,
+      mode,
     });
     startWaitingAssistant(selectedThreadId);
     setSendingMessage(true);
     onError(null);
 
     try {
-      await api.sendMessage(selectedThreadId, { content: messageContent, mode: chatMode, attachments: attachmentsToSend });
+      await api.sendMessage(selectedThreadId, { content, mode, attachments: attachmentsToSend });
       debugLog("useChatSession", "submitMessage ack", {
         selectedThreadId,
         shouldInvalidateSnapshot,
       });
-      setChatInput("");
-      setPendingAttachments([]);
       if (shouldInvalidateSnapshot) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(selectedThreadId) });
       }
+      return true;
     } catch (e) {
       debugLog("useChatSession", "submitMessage failed", {
         selectedThreadId,
@@ -742,6 +773,7 @@ export function useChatSession(
       });
       setWaitingAssistant(null);
       onError(e instanceof Error ? e.message : "Failed to send message");
+      return false;
     } finally {
       debugLog("useChatSession", "submitMessage end", { selectedThreadId });
       setSendingMessage(false);
@@ -1106,6 +1138,7 @@ export function useChatSession(
     queriedThreadSnapshot,
     hydrationBackfillPolicy,
     timelineHasIncompleteCoverage,
+    hasPendingUserGate,
     loadingOlderHistoryRef,
     activeThreadIdRef,
     nextBeforeIdxByThreadRef,
@@ -1132,13 +1165,6 @@ export function useChatSession(
     messages,
     events,
     closingThreadId,
-
-    chatInput,
-    setChatInput,
-    chatMode,
-    setChatMode,
-    pendingAttachments,
-    setPendingAttachments,
 
     sendingMessage,
     waitingAssistant,

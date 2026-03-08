@@ -90,6 +90,7 @@ export interface UseAutoBackfillParams {
   queriedThreadSnapshot: ChatThreadSnapshot | undefined;
   hydrationBackfillPolicy: HydrationBackfillPolicy;
   timelineHasIncompleteCoverage: boolean;
+  hasPendingUserGate: boolean;
   loadingOlderHistoryRef: MutableRefObject<boolean>;
   activeThreadIdRef: MutableRefObject<string | null>;
   nextBeforeIdxByThreadRef: MutableRefObject<Map<string, number | null>>;
@@ -119,6 +120,7 @@ export function useAutoBackfill(params: UseAutoBackfillParams) {
     queriedThreadSnapshot,
     hydrationBackfillPolicy,
     timelineHasIncompleteCoverage,
+    hasPendingUserGate,
     loadingOlderHistoryRef,
     activeThreadIdRef,
     nextBeforeIdxByThreadRef,
@@ -144,8 +146,11 @@ export function useAutoBackfill(params: UseAutoBackfillParams) {
     if (hydrationBackfillPolicy !== "auto") {
       return false;
     }
+    if (hasPendingUserGate) {
+      return false;
+    }
     return shouldAutoBackfillOnHydration(queriedThreadSnapshot, timelineIncompleteCoverageRef.current);
-  }, [hydrationBackfillPolicy, queriedThreadSnapshot, selectedThreadId]);
+  }, [hasPendingUserGate, hydrationBackfillPolicy, queriedThreadSnapshot, selectedThreadId]);
 
   useEffect(() => {
     if (!selectedThreadId || !queriedThreadSnapshot) {
@@ -180,6 +185,7 @@ export function useAutoBackfill(params: UseAutoBackfillParams) {
       launchKey,
       coverageNextBeforeIdx: coverage.nextBeforeIdx,
       timelineIncompleteCoverage: timelineHasIncompleteCoverage,
+      hasPendingUserGate,
       loadingOlderHistoryRef: loadingOlderHistoryRef.current,
       inFlightLaunchKey,
       lastLaunchKey,
@@ -192,6 +198,15 @@ export function useAutoBackfill(params: UseAutoBackfillParams) {
       queriedThreadSnapshot,
       timelineHasIncompleteCoverage,
     );
+
+    if (hasPendingUserGate) {
+      debugLog("useChatSession", "autoBackfill launch skipped", {
+        threadId: selectedThreadId,
+        reason: "pending-user-gate",
+        hydrationBackfillPolicy,
+      });
+      return;
+    }
 
     if (!shouldAutoBackfill) {
       debugLog("useChatSession", "autoBackfill launch skipped", {
@@ -429,6 +444,7 @@ export function useAutoBackfill(params: UseAutoBackfillParams) {
     };
   }, [
     closeSemanticHydrationGate,
+    hasPendingUserGate,
     hydrationBackfillPolicy,
     openSemanticHydrationGate,
     queriedThreadSnapshot,

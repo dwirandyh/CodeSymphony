@@ -25,6 +25,14 @@ import {
 import type { PendingMessageMutation } from "./useChatSession.types";
 import { insertAllEvents, applyMessageMutations } from "./messageEventMerge";
 import { applyThreadTitleUpdate } from "./snapshotSeed";
+import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
+
+const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["type"]>([
+  "permission.requested",
+  "question.requested",
+  "plan.created",
+  "chat.completed",
+]);
 
 export interface UseThreadEventStreamParams {
   selectedThreadId: string | null;
@@ -295,6 +303,30 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         });
       }
 
+      if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
+        const skipInvalidation = ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES.has(payload.type);
+        const snapshotState = queryClient.getQueryState(queryKeys.threads.snapshot(selectedThreadId));
+        const snapshotData = queryClient.getQueryData<ChatThreadSnapshot>(queryKeys.threads.snapshot(selectedThreadId));
+        const localEventCount = pendingEventsRef.current.length;
+        debugLog("useChatSession", "chat.sse.invalidateSnapshot", {
+          threadId: selectedThreadId,
+          reason: payload.type,
+          eventId: payload.id,
+          idx: payload.idx,
+          skipped: skipInvalidation,
+          localLastEventIdx: lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null,
+          localKnownEventIds: seenEventIds.size,
+          localPendingEventBufferCount: localEventCount,
+          snapshotFetchStatus: snapshotState?.fetchStatus ?? null,
+          snapshotStatus: snapshotState?.status ?? null,
+          cachedSnapshotNewestIdx: snapshotData?.watermarks.newestIdx ?? null,
+          cachedSnapshotEventCount: snapshotData?.events.data.length ?? null,
+        });
+        if (!skipInvalidation) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(selectedThreadId) });
+        }
+      }
+
       if (payload.type === "chat.completed") {
         const completedMessageId = String(payload.payload.messageId ?? "");
         const completedThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
@@ -323,13 +355,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           messageId: completedMessageId,
           details: { idx: payload.idx },
         });
-        debugLog("useChatSession", "chat.sse.invalidateSnapshot", {
-          threadId: selectedThreadId,
-          reason: "chat.completed",
-          eventId: payload.id,
-          idx: payload.idx,
-        });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(selectedThreadId) });
       }
 
       if (payload.type === "tool.finished") {

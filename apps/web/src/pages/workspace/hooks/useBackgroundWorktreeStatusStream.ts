@@ -8,6 +8,7 @@ import { debugLog } from "../../../lib/debugLog";
 import { EVENT_TYPES } from "../constants";
 import { payloadStringOrNull } from "../eventUtils";
 import { applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
+import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "./snapshotInvalidationEventTypes";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
@@ -21,19 +22,6 @@ const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
 ]);
 
 const TERMINAL_EVENT_TYPES = new Set<ChatEvent["type"]>(["chat.completed", "chat.failed"]);
-
-const SNAPSHOT_INVALIDATION_EVENT_TYPES = new Set<ChatEvent["type"]>([
-  "permission.requested",
-  "permission.resolved",
-  "question.requested",
-  "question.answered",
-  "question.dismissed",
-  "plan.created",
-  "plan.approved",
-  "plan.revision_requested",
-  "chat.completed",
-  "chat.failed",
-]);
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const BASE_RECONNECT_DELAY_MS = 1000;

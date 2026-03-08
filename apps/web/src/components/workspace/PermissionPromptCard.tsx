@@ -1,3 +1,4 @@
+import { debugLog } from "../../lib/debugLog";
 import { Button } from "../ui/button";
 
 const EDIT_TOOL_REGEX = /^(edit|multiedit|write)$/i;
@@ -75,7 +76,17 @@ export function PermissionPromptCard({
           variant="outline"
           disabled={busy}
           className="h-7 rounded-md border-border/55 bg-transparent px-2.5 text-[11px] text-muted-foreground hover:text-foreground"
-          onClick={() => onDeny(requestId)}
+          onClick={() => {
+            debugLog("PermissionPromptCard", "deny-click", {
+              requestId,
+              toolName,
+              busy,
+              command,
+              editTarget,
+              blockedPath,
+            });
+            onDeny(requestId);
+          }}
           aria-label={`Deny ${requestId}`}
         >
           {denyLabel}

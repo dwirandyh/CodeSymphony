@@ -7,15 +7,12 @@ import {
 } from "../../../lib/attachments";
 
 export function useComposerAttachments({
-  attachments,
-  onAttachmentsChange,
   editorRef,
 }: {
-  attachments: PendingAttachment[];
-  onAttachmentsChange: (attachments: PendingAttachment[] | ((prev: PendingAttachment[]) => PendingAttachment[])) => void;
   editorRef: React.RefObject<HTMLDivElement | null>;
 }) {
-  const attachmentsRef = useRef<PendingAttachment[]>(attachments);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const attachmentsRef = useRef<PendingAttachment[]>([]);
   const [pendingAttachmentReads, setPendingAttachmentReads] = useState(0);
   const pendingAttachmentReadsRef = useRef(0);
 
@@ -35,13 +32,15 @@ export function useComposerAttachments({
 
   const applyAttachmentsChange = useCallback(
     (next: PendingAttachment[] | ((prev: PendingAttachment[]) => PendingAttachment[])) => {
-      const resolved = typeof next === "function"
-        ? next(attachmentsRef.current)
-        : next;
-      attachmentsRef.current = resolved;
-      onAttachmentsChange(resolved);
+      setAttachments((current) => {
+        const resolved = typeof next === "function"
+          ? next(current)
+          : next;
+        attachmentsRef.current = resolved;
+        return resolved;
+      });
     },
-    [onAttachmentsChange],
+    [],
   );
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -161,6 +160,7 @@ export function useComposerAttachments({
   const barAttachments = attachments.filter((a) => !a.isInline);
 
   return {
+    attachments,
     attachmentsRef,
     pendingAttachmentReads,
     pendingAttachmentReadsRef,

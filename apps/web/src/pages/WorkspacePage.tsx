@@ -47,9 +47,33 @@ import {
 
 export { shouldResetTopPaginationInteraction, resolveChatMessageListKey } from "./workspace/workspacePageUtils";
 
+function BackgroundWorktreeStatusStreamBridge({
+  repositories,
+  selectedWorktreeId,
+  selectedThreadId,
+}: {
+  repositories: ReturnType<typeof useRepositoryManager>["repositories"];
+  selectedWorktreeId: string | null;
+  selectedThreadId: string | null;
+}) {
+  useBackgroundWorktreeStatusStream(repositories, selectedWorktreeId, selectedThreadId);
+  return null;
+}
+
 export function WorkspacePage() {
   const renderCountRef = useRef(0);
   renderCountRef.current++;
+  const renderBurstRef = useRef<{
+    startedAt: number;
+    count: number;
+    changedKeyCounts: Map<string, number>;
+    lastLoggedAt: number;
+  }>({
+    startedAt: 0,
+    count: 0,
+    changedKeyCounts: new Map(),
+    lastLoggedAt: 0,
+  });
 
   const [error, setError] = useState<string | null>(null);
   const { search, updateSearch } = useWorkspaceSearchParams();
@@ -232,7 +256,6 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
-  useBackgroundWorktreeStatusStream(repos.repositories, repos.selectedWorktreeId, chat.selectedThreadId);
   const loadOlderHistoryRef = useRef(chat.loadOlderHistory);
   useEffect(() => {
     loadOlderHistoryRef.current = chat.loadOlderHistory;
@@ -248,6 +271,12 @@ export function WorkspacePage() {
   });
 
   if (chatMessageListKey !== chatMessageListKeyRef.current) {
+    debugLog("WorkspacePage", "chat-message-list-key-changed", {
+      previousKey: chatMessageListKeyRef.current,
+      nextKey: chatMessageListKey,
+      selectedThreadId: chat.selectedThreadId,
+      activeView,
+    });
     chatMessageListKeyRef.current = chatMessageListKey;
   }
 
@@ -341,8 +370,6 @@ export function WorkspacePage() {
     "chat.stoppingRun": chat.stoppingRun,
     "chat.hasOlderHistory": chat.hasOlderHistory,
     "chat.loadingOlderHistory": chat.loadingOlderHistory,
-    "chat.chatInput": chat.chatInput,
-    "chat.chatMode": chat.chatMode,
     "gates.pendingPermissionRequests": gates.pendingPermissionRequests,
     "gates.pendingQuestionRequests": gates.pendingQuestionRequests,
     "gates.isWaitingForUserGate": gates.isWaitingForUserGate,
@@ -381,6 +408,36 @@ export function WorkspacePage() {
     chatMessageListKey,
     hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
   });
+  const now = performance.now();
+  const renderBurst = renderBurstRef.current;
+  if (now - renderBurst.startedAt > 1000) {
+    renderBurst.startedAt = now;
+    renderBurst.count = 0;
+    renderBurst.changedKeyCounts = new Map();
+  }
+  renderBurst.count += 1;
+  for (const key of changed) {
+    renderBurst.changedKeyCounts.set(key, (renderBurst.changedKeyCounts.get(key) ?? 0) + 1);
+  }
+  if (renderBurst.count >= 20 && now - renderBurst.lastLoggedAt > 1000) {
+    const topChangedKeys = [...renderBurst.changedKeyCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([key, count]) => ({ key, count }));
+    renderBurst.lastLoggedAt = now;
+    debugLog("WorkspacePage", "render-burst", {
+      selectedThreadId: chat.selectedThreadId,
+      chatMessageListKey,
+      activeView,
+      countInWindow: renderBurst.count,
+      windowMs: Math.round(now - renderBurst.startedAt),
+      topChangedKeys,
+      permissionRequestCount: gates.pendingPermissionRequests.length,
+      questionRequestCount: gates.pendingQuestionRequests.length,
+      showPlanDecisionComposer: gates.showPlanDecisionComposer,
+      isWaitingForUserGate: gates.isWaitingForUserGate,
+    });
+  }
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
 
   // Close mobile drawer on Escape key
@@ -759,7 +816,15 @@ export function WorkspacePage() {
                           canAlwaysAllow={Boolean(request.command)}
                           onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
                           onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
-                          onDeny={(requestId) => void gates.resolvePermission(requestId, "deny")}
+                          onDeny={(requestId) => {
+                            debugLog("WorkspacePage", "permission-deny-requested", {
+                              requestId,
+                              selectedThreadId: chat.selectedThreadId,
+                              resolving: gates.resolvingPermissionIds.has(requestId),
+                              pendingPermissionIds: gates.pendingPermissionRequests.map((entry) => entry.requestId),
+                            });
+                            void gates.resolvePermission(requestId, "deny");
+                          }}
                         />
                       ))}
                     </div>
@@ -792,22 +857,17 @@ export function WorkspacePage() {
                   />
                 ) : !gates.isWaitingForUserGate ? (
                   <Composer
-                    value={chat.chatInput}
                     disabled={!chat.selectedThreadId || chat.sendingMessage || gates.planActionBusy}
                     sending={chat.sendingMessage}
                     showStop={chat.showStopAction}
                     stopping={chat.stoppingRun}
-                    mode={chat.chatMode}
+                    threadId={chat.selectedThreadId}
                     worktreeId={repos.selectedWorktreeId}
                     fileIndex={fileIndex.entries}
                     fileIndexLoading={fileIndex.loading}
                     providers={modelProviders}
                     hasMessages={chat.messages.length > 0}
-                    attachments={chat.pendingAttachments}
-                    onAttachmentsChange={chat.setPendingAttachments}
-                    onChange={chat.setChatInput}
-                    onModeChange={chat.setChatMode}
-                    onSubmitMessage={(content, attachments) => void chat.submitMessage(content, attachments)}
+                    onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
                     onStop={() => void chat.stopAssistantRun()}
                     onSelectProvider={(id) => void handleSelectProvider(id)}
                   />
@@ -966,6 +1026,12 @@ export function WorkspacePage() {
         output={teardownError?.output ?? ""}
         onForceDelete={(id) => void handleForceDelete(id)}
         onClose={() => setTeardownError(null)}
+      />
+
+      <BackgroundWorktreeStatusStreamBridge
+        repositories={repos.repositories}
+        selectedWorktreeId={repos.selectedWorktreeId}
+        selectedThreadId={chat.selectedThreadId}
       />
 
       <Dialog

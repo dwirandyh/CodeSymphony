@@ -107,6 +107,52 @@ export function ChatMessageList({
     issuedAt: number;
     reason: string;
   } | null>(null);
+  const mountedAtRef = useRef<number>(performance.now());
+  const stateFlipWindowRef = useRef<{
+    startedAt: number;
+    lastLoggedAt: number;
+    atTopFlips: number;
+    atBottomFlips: number;
+  }>({
+    startedAt: 0,
+    lastLoggedAt: 0,
+    atTopFlips: 0,
+    atBottomFlips: 0,
+  });
+  const programmaticScrollBurstRef = useRef<{
+    startedAt: number;
+    count: number;
+    lastLoggedAt: number;
+    reasons: Map<string, number>;
+  }>({
+    startedAt: 0,
+    count: 0,
+    lastLoggedAt: 0,
+    reasons: new Map(),
+  });
+  const renderBurstRef = useRef<{
+    startedAt: number;
+    count: number;
+    lastLoggedAt: number;
+    changedKeys: Map<string, number>;
+  }>({
+    startedAt: 0,
+    count: 0,
+    lastLoggedAt: 0,
+    changedKeys: new Map(),
+  });
+  const prevDebugStateRef = useRef<{
+    itemCount: number;
+    renderableCount: number;
+    shiftActive: boolean;
+    atTop: boolean;
+    atBottom: boolean;
+    loadingOlderHistory: boolean;
+    hasOlderHistory: boolean;
+    topPaginationInteractionReady: boolean;
+    showThinkingPlaceholder: boolean;
+    sendingMessage: boolean;
+  } | null>(null);
 
   const freezeScrollInertia = useCallback(() => {
     if (scrollFreezeActiveRef.current) return;
@@ -147,6 +193,34 @@ export function ChatMessageList({
     ) {
       return false;
     }
+
+    const burst = programmaticScrollBurstRef.current;
+    if (now - burst.startedAt > 1000) {
+      burst.startedAt = now;
+      burst.count = 0;
+      burst.reasons = new Map();
+    }
+    burst.count += 1;
+    burst.reasons.set(reason, (burst.reasons.get(reason) ?? 0) + 1);
+    if (burst.count >= 4 && now - burst.lastLoggedAt > 1000) {
+      burst.lastLoggedAt = now;
+      debugLog("ChatMessageList", "loop-suspect", {
+        kind: "programmatic-scroll-burst",
+        countInWindow: burst.count,
+        windowMs: now - burst.startedAt,
+        reasons: [...burst.reasons.entries()].map(([loggedReason, count]) => ({ reason: loggedReason, count })),
+        targetOffset,
+        currentOffset,
+        currentDelta,
+        atTop: atTopRef.current,
+        atBottom: atBottomRef.current,
+        shiftActive,
+        topLoadTransactionActive: topLoadTransactionActiveRef.current,
+        timeSinceUserIntentMs: now - lastUserScrollIntentAtRef.current,
+        itemCount: items.length,
+      });
+    }
+
     programmaticScrollRef.current = {
       targetOffset,
       issuedAt: now,
@@ -154,7 +228,7 @@ export function ChatMessageList({
     };
     handle.scrollTo(targetOffset);
     return true;
-  }, [clearProgrammaticScrollGuard]);
+  }, [clearProgrammaticScrollGuard, items.length, shiftActive]);
 
   const topLoadTransactionActiveRef = useRef(false);
   const hasOlderHistoryRef = useRef(hasOlderHistory);
@@ -194,6 +268,32 @@ export function ChatMessageList({
     };
   }, []);
 
+  useEffect(() => {
+    mountedAtRef.current = performance.now();
+    debugLog("ChatMessageList", "lifecycle.mount", {
+      itemCount: items.length,
+      showThinkingPlaceholder,
+      sendingMessage,
+      hasOlderHistory,
+      loadingOlderHistory,
+      oldestRenderableKey: timelineSummary?.oldestRenderableKey ?? null,
+      oldestRenderableMessageId: timelineSummary?.oldestRenderableMessageId ?? null,
+      headIdentityStable: timelineSummary?.headIdentityStable ?? null,
+    });
+    return () => {
+      debugLog("ChatMessageList", "lifecycle.unmount", {
+        lifetimeMs: Math.round(performance.now() - mountedAtRef.current),
+        itemCount: items.length,
+        showThinkingPlaceholder,
+        sendingMessage,
+        hasOlderHistory,
+        loadingOlderHistory,
+        oldestRenderableKey: timelineSummary?.oldestRenderableKey ?? null,
+      oldestRenderableMessageId: timelineSummary?.oldestRenderableMessageId ?? null,
+      headIdentityStable: timelineSummary?.headIdentityStable ?? null,
+      });
+    };
+  }, []);
 
   const clearPendingShiftAnchorRestore = useCallback(() => {
     pendingShiftAnchorRestoreRef.current = null;
@@ -382,6 +482,69 @@ export function ChatMessageList({
     () => items.filter((item) => item.kind !== "activity"),
     [items],
   );
+
+  const debugState = {
+    itemCount: items.length,
+    renderableCount: renderableItems.length,
+    shiftActive,
+    atTop,
+    atBottom,
+    loadingOlderHistory,
+    hasOlderHistory,
+    topPaginationInteractionReady,
+    showThinkingPlaceholder,
+    sendingMessage,
+  };
+  const changedDebugKeys = prevDebugStateRef.current == null
+    ? Object.keys(debugState)
+    : Object.entries(debugState)
+      .filter(([key, value]) => prevDebugStateRef.current?.[key as keyof typeof debugState] !== value)
+      .map(([key]) => key);
+  prevDebugStateRef.current = debugState;
+
+  const renderBurst = renderBurstRef.current;
+  const renderNow = Date.now();
+  if (renderNow - renderBurst.startedAt > 1000) {
+    renderBurst.startedAt = renderNow;
+    renderBurst.count = 0;
+    renderBurst.changedKeys = new Map();
+  }
+  renderBurst.count += 1;
+  for (const key of changedDebugKeys) {
+    renderBurst.changedKeys.set(key, (renderBurst.changedKeys.get(key) ?? 0) + 1);
+  }
+  if (renderBurst.count >= 12 && renderNow - renderBurst.lastLoggedAt > 1000) {
+    renderBurst.lastLoggedAt = renderNow;
+    debugLog("ChatMessageList", "render-burst", {
+      countInWindow: renderBurst.count,
+      windowMs: renderNow - renderBurst.startedAt,
+      changedKeys: [...renderBurst.changedKeys.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([key, count]) => ({ key, count })),
+      ...debugState,
+      scrollSnapshot: readScrollSnapshot(),
+      topLoadTransactionActive: topLoadTransactionActiveRef.current,
+      programmaticScroll: programmaticScrollRef.current,
+      pendingShiftRelease: pendingShiftReleaseRef.current == null
+        ? null
+        : {
+          cycleId: pendingShiftReleaseRef.current.cycleId,
+          requestId: pendingShiftReleaseRef.current.requestId,
+          releaseQueued: pendingShiftReleaseRef.current.releaseQueued,
+          completionReason: pendingShiftReleaseRef.current.completionReason,
+          releaseAnchorOffset: pendingShiftReleaseRef.current.releaseAnchorOffset,
+          releaseAnchorDistanceFromTop: pendingShiftReleaseRef.current.releaseAnchorDistanceFromTop,
+        },
+      pendingShiftRestore: pendingShiftAnchorRestoreRef.current == null
+        ? null
+        : {
+          reason: pendingShiftAnchorRestoreRef.current.reason,
+          targetOffset: pendingShiftAnchorRestoreRef.current.targetOffset,
+          releaseAnchorDistanceFromTop: pendingShiftAnchorRestoreRef.current.releaseAnchorDistanceFromTop,
+        },
+    });
+  }
   const firstRenderableKey = useMemo(
     () => (renderableItems.length > 0 ? getTimelineItemKey(renderableItems[0]) : null),
     [renderableItems],
@@ -1031,12 +1194,59 @@ export function ChatMessageList({
       if (!isAtBottom) userScrolledAwayRef.current = true;
       if (isAtBottom) userScrolledAwayRef.current = false;
       if (atBottomRef.current !== isAtBottom) {
+        const flipWindow = stateFlipWindowRef.current;
+        const nowForFlip = Date.now();
+        if (nowForFlip - flipWindow.startedAt > 1000) {
+          flipWindow.startedAt = nowForFlip;
+          flipWindow.atTopFlips = 0;
+          flipWindow.atBottomFlips = 0;
+        }
+        flipWindow.atBottomFlips += 1;
+        if (flipWindow.atBottomFlips >= 4 && nowForFlip - flipWindow.lastLoggedAt > 1000) {
+          flipWindow.lastLoggedAt = nowForFlip;
+          debugLog("ChatMessageList", "state-flip", {
+            state: "atBottom",
+            from: atBottomRef.current,
+            to: isAtBottom,
+            countInWindow: flipWindow.atBottomFlips,
+            windowMs: nowForFlip - flipWindow.startedAt,
+            suppressBottom,
+            shiftActive,
+            topLoadTransactionActive: topLoadTransactionActiveRef.current,
+            timeSinceUserIntentMs: nowForFlip - lastUserScrollIntentAtRef.current,
+            itemCount: items.length,
+            ...readScrollSnapshot(),
+          });
+        }
         atBottomRef.current = isAtBottom;
         setAtBottom(isAtBottom);
       }
     }
 
     if (atTopRef.current !== isAtTop) {
+      const flipWindow = stateFlipWindowRef.current;
+      const nowForFlip = Date.now();
+      if (nowForFlip - flipWindow.startedAt > 1000) {
+        flipWindow.startedAt = nowForFlip;
+        flipWindow.atTopFlips = 0;
+        flipWindow.atBottomFlips = 0;
+      }
+      flipWindow.atTopFlips += 1;
+      if (flipWindow.atTopFlips >= 4 && nowForFlip - flipWindow.lastLoggedAt > 1000) {
+        flipWindow.lastLoggedAt = nowForFlip;
+        debugLog("ChatMessageList", "state-flip", {
+          state: "atTop",
+          from: atTopRef.current,
+          to: isAtTop,
+          countInWindow: flipWindow.atTopFlips,
+          windowMs: nowForFlip - flipWindow.startedAt,
+          shiftActive,
+          topLoadTransactionActive: topLoadTransactionActiveRef.current,
+          timeSinceUserIntentMs: nowForFlip - lastUserScrollIntentAtRef.current,
+          itemCount: items.length,
+          ...readScrollSnapshot(),
+        });
+      }
       if (!isAtTop) {
         leftTopZoneRef.current = true;
       }
