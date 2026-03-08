@@ -1,4 +1,5 @@
-import { act } from "react";
+import { act, createElement } from "react";
+import { debugLog } from "../../lib/debugLog";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
@@ -15,8 +16,8 @@ vi.mock("@pierre/diffs/react", () => ({
 }));
 
 vi.mock("virtua", () => ({
-  VList: vi.fn(({ children, ...props }: any) => {
-    return <div data-testid="vlist" {...props}>{typeof children === "function" ? null : children}</div>;
+  VList: vi.fn(({ children }: any) => {
+    return <div data-testid="vlist">{typeof children === "function" ? null : children}</div>;
   }),
 }));
 
@@ -30,6 +31,8 @@ vi.mock("../../lib/debugLog", () => ({
   debugLog: vi.fn(),
 }));
 
+const timelineItemRenderSpy = vi.fn();
+
 vi.mock("react-markdown", () => ({
   default: ({ children }: any) => <div data-testid="markdown">{children}</div>,
 }));
@@ -41,6 +44,17 @@ vi.mock("rehype-sanitize", () => ({
 vi.mock("remark-gfm", () => ({
   default: {},
 }));
+
+vi.mock("./chat-message-list/TimelineItem", async () => {
+  const actual = await vi.importActual<typeof import("./chat-message-list/TimelineItem")>("./chat-message-list/TimelineItem");
+  return {
+    ...actual,
+    TimelineItem: (props: any) => {
+      timelineItemRenderSpy(props.item);
+      return createElement(actual.TimelineItem, props);
+    },
+  };
+});
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -69,6 +83,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  timelineItemRenderSpy.mockClear();
+  vi.mocked(debugLog).mockClear();
 });
 
 function makeMessage(id: string, role: "user" | "assistant", content: string, seq: number): ChatMessage {
@@ -102,13 +118,14 @@ describe("MarkdownBody", () => {
 describe("ChatMessageList", () => {
   const baseProps = {
     items: [] as ChatTimelineItem[],
-    isStreaming: false,
-    isWaitingAssistant: false,
+    timelineSummary: undefined,
+    showThinkingPlaceholder: false,
+    sendingMessage: false,
     hasOlderHistory: false,
-    hasIncompleteCoverage: false,
-    onOpenFile: vi.fn(),
-    loadOlderHistory: vi.fn(),
-    setLoadOlderHistoryResult: vi.fn(),
+    loadingOlderHistory: false,
+    topPaginationInteractionReady: false,
+    onOpenReadFile: vi.fn(),
+    onLoadOlderHistory: vi.fn(),
   };
 
   it("renders without crash for empty items", () => {
@@ -276,10 +293,76 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Plan");
   });
 
-  it("shows streaming indicator when isStreaming", () => {
+  it("renders thinking placeholder when requested", () => {
     act(() => {
-      root.render(<ChatMessageList {...baseProps} isStreaming={true} />);
+      root.render(<ChatMessageList {...baseProps} showThinkingPlaceholder={true} />);
     });
+    expect(container.textContent).toContain("Thinking...");
+  });
+
+  it("skips rerender when props stay referentially stable", () => {
+    const items: ChatTimelineItem[] = [
+      { kind: "message", message: makeMessage("m2", "assistant", "Stable", 2), renderHint: "markdown" },
+    ];
+    const timelineSummary = {
+      oldestRenderableKey: "stable-key",
+      oldestRenderableKind: "message" as const,
+      oldestRenderableMessageId: "m2",
+      oldestRenderableHydrationPending: false,
+      headIdentityStable: true,
+    };
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} timelineSummary={timelineSummary} />);
+    });
+    expect(timelineItemRenderSpy).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} timelineSummary={timelineSummary} />);
+    });
+
+    expect(timelineItemRenderSpy).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(debugLog).mock.calls.filter(([, event]) => event === "lifecycle.mount")).toHaveLength(1);
+  });
+
+  it("keeps timeline rows stable across shell-only rerenders", () => {
+    const items: ChatTimelineItem[] = [
+      { kind: "message", message: makeMessage("m2", "assistant", "Stable", 2), renderHint: "markdown" },
+    ];
+    const timelineSummary = {
+      oldestRenderableKey: "stable-key",
+      oldestRenderableKind: "message" as const,
+      oldestRenderableMessageId: "m2",
+      oldestRenderableHydrationPending: false,
+      headIdentityStable: true,
+    };
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          {...baseProps}
+          items={items}
+          timelineSummary={timelineSummary}
+          hasOlderHistory={true}
+          loadingOlderHistory={false}
+        />,
+      );
+    });
+    expect(timelineItemRenderSpy).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          {...baseProps}
+          items={items}
+          timelineSummary={timelineSummary}
+          hasOlderHistory={true}
+          loadingOlderHistory={true}
+        />,
+      );
+    });
+
+    expect(timelineItemRenderSpy).toHaveBeenCalledTimes(1);
   });
 
   it("handles multiple mixed items", () => {
