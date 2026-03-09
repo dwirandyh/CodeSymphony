@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { isRenderDebugEnabled, copyRenderDebugLog, pushRenderDebug } from "../../../lib/renderDebug";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { isRenderDebugEnabled, copyRenderDebugLog } from "../../../lib/renderDebug";
 import { debugLog } from "../../../lib/debugLog";
 import { VList, type VListHandle } from "virtua";
 import type { ChatMessageListProps, ChatTimelineItem, TimelineCtx } from "./ChatMessageList.types";
@@ -7,65 +7,6 @@ import { getTimelineItemKey, isExplicitNoGrowthResult } from "./toolEventUtils";
 import { TimelineItem, ThinkingPlaceholder } from "./TimelineItem";
 
 const TOP_LOAD_REARM_COOLDOWN_MS = 180;
-const CHAT_MESSAGE_LIST_DEBUG_WINDOW_MS = 1000;
-
-type DisplayItem = ChatTimelineItem | "thinking-placeholder";
-
-type ChatMessageListBodyProps = {
-  displayItems: DisplayItem[];
-  timelineCtx: TimelineCtx;
-  renderDebugEnabled: boolean;
-};
-
-const ChatMessageListBody = memo(function ChatMessageListBody({
-  displayItems,
-  timelineCtx,
-  renderDebugEnabled,
-}: ChatMessageListBodyProps) {
-  const renderCountRef = useRef(0);
-  renderCountRef.current += 1;
-
-  useEffect(() => {
-    if (!renderDebugEnabled) {
-      return;
-    }
-
-    pushRenderDebug({
-      source: "ChatMessageListBody",
-      event: "render",
-      details: {
-        renderCount: renderCountRef.current,
-        displayCount: displayItems.length,
-      },
-    });
-  });
-
-  return (
-    <>
-      {displayItems.map((item) => {
-        if (item === "thinking-placeholder") {
-          return (
-            <div key="thinking-placeholder" className="mx-auto max-w-3xl px-3 pb-4">
-              <ThinkingPlaceholder />
-            </div>
-          );
-        }
-        return (
-          <div key={getTimelineItemKey(item)} className="mx-auto max-w-3xl px-3 pb-4">
-            <TimelineItem item={item} ctx={timelineCtx} />
-          </div>
-        );
-      })}
-    </>
-  );
-}, (prevProps, nextProps) => (
-  prevProps.displayItems === nextProps.displayItems
-  && prevProps.timelineCtx === nextProps.timelineCtx
-  && prevProps.renderDebugEnabled === nextProps.renderDebugEnabled
-));
-
-ChatMessageListBody.displayName = "ChatMessageListBody";
-
 const AT_BOTTOM_THRESHOLD = 48;
 const TOP_LOAD_ENTER_THRESHOLD = 180;
 const TOP_LOAD_LEAVE_THRESHOLD = 280;
@@ -82,7 +23,7 @@ const TOP_LOAD_EVENTS_ONLY_LATE_DRIFT_RESTORE_COOLDOWN_MS = 240;
 const PROGRAMMATIC_SCROLL_TARGET_TOLERANCE_PX = 2;
 const PROGRAMMATIC_SCROLL_FRAME_WINDOW_MS = 24;
 
-function ChatMessageListInner({
+export function ChatMessageList({
   items,
   timelineSummary,
   showThinkingPlaceholder = false,
@@ -189,8 +130,29 @@ function ChatMessageListInner({
     lastLoggedAt: 0,
     reasons: new Map(),
   });
-  const shellRenderCountRef = useRef(0);
-  shellRenderCountRef.current += 1;
+  const renderBurstRef = useRef<{
+    startedAt: number;
+    count: number;
+    lastLoggedAt: number;
+    changedKeys: Map<string, number>;
+  }>({
+    startedAt: 0,
+    count: 0,
+    lastLoggedAt: 0,
+    changedKeys: new Map(),
+  });
+  const prevDebugStateRef = useRef<{
+    itemCount: number;
+    renderableCount: number;
+    shiftActive: boolean;
+    atTop: boolean;
+    atBottom: boolean;
+    loadingOlderHistory: boolean;
+    hasOlderHistory: boolean;
+    topPaginationInteractionReady: boolean;
+    showThinkingPlaceholder: boolean;
+    sendingMessage: boolean;
+  } | null>(null);
 
   const freezeScrollInertia = useCallback(() => {
     if (scrollFreezeActiveRef.current) return;
@@ -521,6 +483,68 @@ function ChatMessageListInner({
     [items],
   );
 
+  const debugState = {
+    itemCount: items.length,
+    renderableCount: renderableItems.length,
+    shiftActive,
+    atTop,
+    atBottom,
+    loadingOlderHistory,
+    hasOlderHistory,
+    topPaginationInteractionReady,
+    showThinkingPlaceholder,
+    sendingMessage,
+  };
+  const changedDebugKeys = prevDebugStateRef.current == null
+    ? Object.keys(debugState)
+    : Object.entries(debugState)
+      .filter(([key, value]) => prevDebugStateRef.current?.[key as keyof typeof debugState] !== value)
+      .map(([key]) => key);
+  prevDebugStateRef.current = debugState;
+
+  const renderBurst = renderBurstRef.current;
+  const renderNow = Date.now();
+  if (renderNow - renderBurst.startedAt > 1000) {
+    renderBurst.startedAt = renderNow;
+    renderBurst.count = 0;
+    renderBurst.changedKeys = new Map();
+  }
+  renderBurst.count += 1;
+  for (const key of changedDebugKeys) {
+    renderBurst.changedKeys.set(key, (renderBurst.changedKeys.get(key) ?? 0) + 1);
+  }
+  if (renderBurst.count >= 12 && renderNow - renderBurst.lastLoggedAt > 1000) {
+    renderBurst.lastLoggedAt = renderNow;
+    debugLog("ChatMessageList", "render-burst", {
+      countInWindow: renderBurst.count,
+      windowMs: renderNow - renderBurst.startedAt,
+      changedKeys: [...renderBurst.changedKeys.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([key, count]) => ({ key, count })),
+      ...debugState,
+      scrollSnapshot: readScrollSnapshot(),
+      topLoadTransactionActive: topLoadTransactionActiveRef.current,
+      programmaticScroll: programmaticScrollRef.current,
+      pendingShiftRelease: pendingShiftReleaseRef.current == null
+        ? null
+        : {
+          cycleId: pendingShiftReleaseRef.current.cycleId,
+          requestId: pendingShiftReleaseRef.current.requestId,
+          releaseQueued: pendingShiftReleaseRef.current.releaseQueued,
+          completionReason: pendingShiftReleaseRef.current.completionReason,
+          releaseAnchorOffset: pendingShiftReleaseRef.current.releaseAnchorOffset,
+          releaseAnchorDistanceFromTop: pendingShiftReleaseRef.current.releaseAnchorDistanceFromTop,
+        },
+      pendingShiftRestore: pendingShiftAnchorRestoreRef.current == null
+        ? null
+        : {
+          reason: pendingShiftAnchorRestoreRef.current.reason,
+          targetOffset: pendingShiftAnchorRestoreRef.current.targetOffset,
+          releaseAnchorDistanceFromTop: pendingShiftAnchorRestoreRef.current.releaseAnchorDistanceFromTop,
+        },
+    });
+  }
   const firstRenderableKey = useMemo(
     () => (renderableItems.length > 0 ? getTimelineItemKey(renderableItems[0]) : null),
     [renderableItems],
@@ -774,6 +798,8 @@ function ChatMessageListInner({
         prependCommitted,
         nonPrependGrowth,
         noGrowthFinal,
+        headIdentityStable,
+        oldestRenderableHydrationPending,
         completionReason: pending.completionReason,
         messagesAdded: pending.messagesAdded,
         eventsAdded: pending.eventsAdded,
@@ -1463,6 +1489,8 @@ function ChatMessageListInner({
               eventsAdded: pending.eventsAdded,
               estimatedRenderableGrowth: pending.estimatedRenderableGrowth,
               releaseAnchorOffset,
+              headIdentityStable,
+              oldestRenderableHydrationPending,
               ...readTopLoadState(),
             });
             releaseShift("events-only-growth");
@@ -1652,26 +1680,6 @@ function ChatMessageListInner({
     ],
   );
 
-  useEffect(() => {
-    if (!renderDebugEnabled) {
-      return;
-    }
-
-    pushRenderDebug({
-      source: "ChatMessageListShell",
-      event: "render",
-      details: {
-        renderCount: shellRenderCountRef.current,
-        itemCount: items.length,
-        renderableCount: renderableItems.length,
-        displayCount: displayItems.length,
-        atTop,
-        atBottom,
-        shiftActive,
-      },
-    });
-  });
-
   const effectiveShiftActive = topLoadTransactionActiveRef.current
     || (shiftActive
       && !shiftForceDisabledRef.current
@@ -1698,17 +1706,22 @@ function ChatMessageListInner({
           onScroll={handleScroll}
           onScrollEnd={handleScrollEnd}
         >
-          <ChatMessageListBody
-            displayItems={displayItems}
-            timelineCtx={timelineCtx}
-            renderDebugEnabled={renderDebugEnabled}
-          />
+          {displayItems.map((item) => {
+            if (item === "thinking-placeholder") {
+              return (
+                <div key="thinking-placeholder" className="mx-auto max-w-3xl px-3 pb-4">
+                  <ThinkingPlaceholder />
+                </div>
+              );
+            }
+            return (
+              <div key={getTimelineItemKey(item)} className="mx-auto max-w-3xl px-3 pb-4">
+                <TimelineItem item={item} ctx={timelineCtx} />
+              </div>
+            );
+          })}
         </VList>
       )}
     </div>
   );
 }
-
-export const ChatMessageList = memo(ChatMessageListInner);
-
-ChatMessageList.displayName = "ChatMessageList";
