@@ -324,7 +324,87 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).not.toHaveBeenCalled();
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.snapshot(threadId) });
+  });
+
+  it("patches selected thread as inactive on chat.completed", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.snapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Thread",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: true,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      } satisfies ChatThread,
+    ]);
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "chat.completed",
+        makeEvent({
+          id: "e-complete-2",
+          threadId,
+          idx: 5,
+          type: "chat.completed",
+          payload: { messageId: "msg-2", threadTitle: "Done" },
+        }),
+      );
+    });
+
+    const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
+    expect(updated?.[0]?.active).toBe(false);
+  });
+
+  it("patches selected thread as inactive on chat.failed", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.snapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Thread",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: true,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      } satisfies ChatThread,
+    ]);
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "chat.failed",
+        makeEvent({
+          id: "e-failed-1",
+          threadId,
+          idx: 6,
+          type: "chat.failed",
+          payload: { error: "boom" },
+        }),
+      );
+    });
+
+    const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
+    expect(updated?.[0]?.active).toBe(false);
   });
 
   it("still invalidates the selected thread snapshot on gate resolution events", async () => {

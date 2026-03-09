@@ -332,6 +332,28 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(selectedWorktreeId) });
       }
 
+      if (payload.type === "chat.completed" || payload.type === "chat.failed") {
+        if (selectedWorktreeId) {
+          queryClient.setQueryData<ChatThread[] | undefined>(
+            queryKeys.threads.list(selectedWorktreeId),
+            (current) => {
+              if (!current) {
+                return current;
+              }
+
+              const index = current.findIndex((thread) => thread.id === selectedThreadId);
+              if (index === -1 || !current[index]?.active) {
+                return current;
+              }
+
+              const updated = [...current];
+              updated[index] = { ...updated[index]!, active: false };
+              return updated;
+            },
+          );
+        }
+      }
+
       if (payload.type === "chat.completed") {
         const completedMessageId = String(payload.payload.messageId ?? "");
         const completedThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
