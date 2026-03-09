@@ -26,10 +26,24 @@ export function useWorktreeStatuses(repositories: Repository[]) {
     [activeWorktreeIds, threadListQueries],
   );
 
-  const threadIds = useMemo(
-    () => activeWorktreeIds.flatMap((worktreeId) => (threadsByWorktreeId[worktreeId] ?? []).map((thread) => thread.id)),
-    [activeWorktreeIds, threadsByWorktreeId],
-  );
+  const threadIds = useMemo(() => {
+    const candidateThreadIds = new Set<string>();
+
+    for (const worktreeId of activeWorktreeIds) {
+      const threads = threadsByWorktreeId[worktreeId] ?? [];
+      const latestThread = threads[0] ?? null;
+      if (latestThread) {
+        candidateThreadIds.add(latestThread.id);
+      }
+      for (const thread of threads) {
+        if (thread.active) {
+          candidateThreadIds.add(thread.id);
+        }
+      }
+    }
+
+    return Array.from(candidateThreadIds);
+  }, [activeWorktreeIds, threadsByWorktreeId]);
 
   const snapshotQueries = useQueries({
     queries: threadIds.map((threadId) => ({
@@ -39,7 +53,7 @@ export function useWorktreeStatuses(repositories: Repository[]) {
         eventLimit: INITIAL_EVENTS_PAGE_LIMIT,
       }),
       enabled: threadId.length > 0,
-      staleTime: 5_000,
+      staleTime: 15_000,
     })),
   });
 

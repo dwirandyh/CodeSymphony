@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQueries } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, FolderGit2, GitBranch, Pencil, Plus, Trash2 } from "lucide-react";
-import type { Repository } from "@codesymphony/shared-types";
+import type { GitStatus, Repository } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
 import { cn } from "../../lib/utils";
-import { api } from "../../lib/api";
 import { isRootWorktree } from "../../lib/worktree";
+import { gitStatusQueryOptions } from "../../hooks/queries/useGitStatus";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import type { WorktreeThreadUiStatus } from "../../pages/workspace/hooks/worktreeThreadStatus";
 
@@ -63,44 +64,32 @@ export function RepositoryPanel({
   const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>({});
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(null);
   const [editingBranchValue, setEditingBranchValue] = useState("");
-  const [worktreeStats, setWorktreeStats] = useState<Record<string, { insertions: number; deletions: number; fileCount: number }>>({});
-  const mountedRef = useRef(true);
 
   const activeWorktreeIds = useMemo(
     () => repositories.flatMap((r) => r.worktrees.filter((w) => w.status === "active").map((w) => w.id)),
     [repositories],
   );
   const worktreeStatuses = useWorktreeStatuses(repositories);
+  const gitStatusQueries = useQueries({
+    queries: activeWorktreeIds.map((worktreeId) => gitStatusQueryOptions(worktreeId)),
+  });
+  const worktreeStats = useMemo(() => {
+    return activeWorktreeIds.reduce<Record<string, { insertions: number; deletions: number; fileCount: number }>>((acc, worktreeId, index) => {
+      const status = gitStatusQueries[index]?.data as GitStatus | undefined;
+      if (!status) {
+        return acc;
+      }
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  useEffect(() => {
-    if (activeWorktreeIds.length === 0) return;
-
-    const fetchStats = async () => {
-      const results: Record<string, { insertions: number; deletions: number; fileCount: number }> = {};
-      await Promise.allSettled(
-        activeWorktreeIds.map(async (id) => {
-          try {
-            const status = await api.getGitStatus(id);
-            const insertions = status.entries.reduce((sum, e) => sum + e.insertions, 0);
-            const deletions = status.entries.reduce((sum, e) => sum + e.deletions, 0);
-            results[id] = { insertions, deletions, fileCount: status.entries.length };
-          } catch {
-            // ignore — stale data is acceptable
-          }
-        }),
-      );
-      if (mountedRef.current) setWorktreeStats(results);
-    };
-
-    void fetchStats();
-    const interval = setInterval(() => void fetchStats(), 5_000);
-    return () => clearInterval(interval);
-  }, [activeWorktreeIds]);
+      const insertions = status.entries.reduce((sum, entry) => sum + entry.insertions, 0);
+      const deletions = status.entries.reduce((sum, entry) => sum + entry.deletions, 0);
+      acc[worktreeId] = {
+        insertions,
+        deletions,
+        fileCount: status.entries.length,
+      };
+      return acc;
+    }, {});
+  }, [activeWorktreeIds, gitStatusQueries]);
 
   useEffect(() => {
     if (!selectedRepositoryId) {

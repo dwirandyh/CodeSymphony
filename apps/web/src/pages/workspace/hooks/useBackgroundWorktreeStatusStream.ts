@@ -6,7 +6,7 @@ import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { debugLog } from "../../../lib/debugLog";
 import { EVENT_TYPES } from "../constants";
-import { payloadStringOrNull } from "../eventUtils";
+import { GIT_STATUS_INVALIDATION_EVENT_TYPES, payloadStringOrNull } from "../eventUtils";
 import { applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "./snapshotInvalidationEventTypes";
 
@@ -165,7 +165,7 @@ export function useBackgroundWorktreeStatusStream(
   const threadIds = useMemo(() => threadEntries.map(({ thread }) => thread.id), [threadEntries]);
 
   const subscribedThreads = useMemo(
-    () => threadEntries.filter(({ thread }) => thread.id !== selectedThreadId),
+    () => threadEntries.filter(({ thread }) => thread.active && thread.id !== selectedThreadId),
     [selectedThreadId, threadEntries],
   );
 
@@ -258,6 +258,10 @@ export function useBackgroundWorktreeStatusStream(
               threadId: thread.id,
               threadTitle: nextTitle,
             });
+          }
+
+          if (GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(worktreeId) });
           }
 
           if (TERMINAL_EVENT_TYPES.has(payload.type)) {

@@ -19,6 +19,7 @@ import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { debugLog } from "../../../../lib/debugLog";
 import { EVENT_TYPES, INITIAL_EVENTS_PAGE_LIMIT, INITIAL_MESSAGES_PAGE_LIMIT } from "../../constants";
 import {
+  GIT_STATUS_INVALIDATION_EVENT_TYPES,
   payloadStringOrNull,
   shouldClearWaitingAssistantOnEvent,
 } from "../../eventUtils";
@@ -325,6 +326,10 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         if (!skipInvalidation) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(selectedThreadId) });
         }
+      }
+
+      if (selectedWorktreeId && GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(selectedWorktreeId) });
       }
 
       if (payload.type === "chat.completed") {

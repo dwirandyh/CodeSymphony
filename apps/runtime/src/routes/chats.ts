@@ -22,6 +22,8 @@ const threadSnapshotQuery = z.object({
   eventLimit: z.string().optional(),
 }).strict();
 
+const inFlightSnapshotRequests = new Map<string, Promise<unknown>>();
+
 function parseNonNegativeInt(input: unknown): number | null {
   const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
   if (typeof rawValue !== "string" && typeof rawValue !== "number") {
@@ -270,6 +272,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
       }
 
       const requestId = `snapshot-${params.id}-${Date.now()}`;
+      const snapshotKey = [params.id, messageLimit ?? "default", eventLimit ?? "default"].join(":");
+      const existingRequest = inFlightSnapshotRequests.get(snapshotKey);
       appendRuntimeDebugLog({
         source: "runtime.chats",
         message: "chat.backend.snapshot.requested",
@@ -278,26 +282,41 @@ export async function registerChatRoutes(app: FastifyInstance) {
           threadId: params.id,
           messageLimit: messageLimit ?? null,
           eventLimit: eventLimit ?? null,
-        },
-      });
-      const snapshot = await app.chatService.listThreadSnapshot(params.id, {
-        messageLimit: messageLimit ?? undefined,
-        eventLimit: eventLimit ?? undefined,
-      });
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.snapshot.response",
-        data: {
-          requestId,
-          threadId: params.id,
-          messageLimit: messageLimit ?? null,
-          eventLimit: eventLimit ?? null,
-          messages: summarizeMessagePage(snapshot.messages),
-          events: summarizeEventPage(snapshot.events),
+          coalesced: Boolean(existingRequest),
         },
       });
 
-      return { data: snapshot };
+      const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id, {
+        messageLimit: messageLimit ?? undefined,
+        eventLimit: eventLimit ?? undefined,
+      });
+
+      if (!existingRequest) {
+        inFlightSnapshotRequests.set(snapshotKey, snapshotPromise);
+      }
+
+      try {
+        const snapshot = await snapshotPromise;
+        appendRuntimeDebugLog({
+          source: "runtime.chats",
+          message: "chat.backend.snapshot.response",
+          data: {
+            requestId,
+            threadId: params.id,
+            messageLimit: messageLimit ?? null,
+            eventLimit: eventLimit ?? null,
+            coalesced: Boolean(existingRequest),
+            messages: summarizeMessagePage(snapshot.messages),
+            events: summarizeEventPage(snapshot.events),
+          },
+        });
+
+        return { data: snapshot };
+      } finally {
+        if (!existingRequest) {
+          inFlightSnapshotRequests.delete(snapshotKey);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to load thread snapshot";
       return reply.code(400).send({ error: message });

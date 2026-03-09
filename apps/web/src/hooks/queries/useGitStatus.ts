@@ -1,13 +1,23 @@
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 
+export const GIT_STATUS_REFETCH_MS = 30_000;
+
+export function gitStatusQueryOptions(worktreeId: string) {
+  return queryOptions({
+    queryKey: queryKeys.worktrees.gitStatus(worktreeId),
+    queryFn: () => api.getGitStatus(worktreeId),
+    enabled: worktreeId.length > 0,
+    refetchInterval: (query) => query.state.fetchStatus === "fetching" ? false : GIT_STATUS_REFETCH_MS,
+    staleTime: GIT_STATUS_REFETCH_MS - 1_000,
+    retry: false,
+  });
+}
+
 export function useGitStatus(worktreeId: string | null) {
   return useQuery({
-    queryKey: queryKeys.worktrees.gitStatus(worktreeId!),
-    queryFn: () => api.getGitStatus(worktreeId!),
+    ...gitStatusQueryOptions(worktreeId ?? ""),
     enabled: !!worktreeId,
-    refetchInterval: 5_000,
-    staleTime: 4_000,
   });
 }

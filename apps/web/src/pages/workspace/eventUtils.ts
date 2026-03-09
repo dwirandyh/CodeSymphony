@@ -101,6 +101,12 @@ export function isExploreLikeBashEvent(event: ChatEvent): boolean {
   return isExploreLikeBashCommand(command);
 }
 
+export const GIT_STATUS_INVALIDATION_EVENT_TYPES = new Set<ChatEvent["type"]>([
+  "tool.finished",
+  "chat.completed",
+  "chat.failed",
+]);
+
 export function isWorktreeDiffEvent(event: ChatEvent): boolean {
   return event.type === "tool.finished" && event.payload.source === "worktree.diff";
 }

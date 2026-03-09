@@ -40,6 +40,9 @@ export function useRepositoryManager(
   options?: UseRepositoryManagerOptions,
 ) {
   const queryClient = useQueryClient();
+  const invalidateGitStatus = (worktreeId: string) => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(worktreeId) });
+  };
   const {
     data: repositories = [],
     isLoading: loadingRepos,
@@ -74,6 +77,7 @@ export function useRepositoryManager(
     es.addEventListener("done", (e) => {
       const { success } = JSON.parse(e.data);
       options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result: { success, output: "" } });
+      invalidateGitStatus(worktreeId);
       es.close();
       activeStreamRef.current = null;
       setSetupRunning(false);
@@ -81,6 +85,7 @@ export function useRepositoryManager(
 
     es.onerror = () => {
       options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "completed", result: { success: false, output: "Connection lost" } });
+      invalidateGitStatus(worktreeId);
       es.close();
       activeStreamRef.current = null;
       setSetupRunning(false);
@@ -91,6 +96,7 @@ export function useRepositoryManager(
     const stream = activeStreamRef.current;
     if (stream) {
       await api.stopSetupScript(stream.worktreeId);
+      invalidateGitStatus(stream.worktreeId);
       stream.eventSource.close();
       activeStreamRef.current = null;
       setSetupRunning(false);
@@ -125,6 +131,7 @@ export function useRepositoryManager(
     es.addEventListener("done", (e) => {
       const { success } = JSON.parse(e.data);
       options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "completed", result: { success, output: "" } });
+      invalidateGitStatus(worktreeId);
       es.close();
       runScriptRef.current = null;
       setRunScriptRunning(false);
@@ -132,6 +139,7 @@ export function useRepositoryManager(
 
     es.onerror = () => {
       options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "Connection lost" } });
+      invalidateGitStatus(worktreeId);
       es.close();
       runScriptRef.current = null;
       setRunScriptRunning(false);
@@ -157,6 +165,7 @@ export function useRepositoryManager(
         if (wt) { worktreeName = wt.branch; break; }
       }
       options?.onScriptUpdate?.({ worktreeId: stream.worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "" } });
+      invalidateGitStatus(stream.worktreeId);
       stream.eventSource.close();
       runScriptRef.current = null;
       setRunScriptRunning(false);
