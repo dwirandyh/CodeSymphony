@@ -32,32 +32,21 @@ function makeEvent(overrides: Partial<ChatEvent> & Pick<ChatEvent, "id" | "threa
 
 function makeSnapshot(events: ChatEvent[] = []): ChatThreadSnapshot {
   return {
-    messages: {
-      data: [],
-      pageInfo: {
-        hasMoreOlder: false,
-        nextBeforeSeq: null,
-        oldestSeq: null,
-        newestSeq: null,
+    messages: [],
+    events,
+    timeline: {
+      timelineItems: [],
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
       },
-    },
-    events: {
-      data: events,
-      pageInfo: {
-        hasMoreOlder: false,
-        nextBeforeIdx: null,
-        oldestIdx: null,
-        newestIdx: events.length ? events[events.length - 1]!.idx : null,
-      },
-    },
-    watermarks: {
       newestSeq: null,
       newestIdx: events.length ? events[events.length - 1]!.idx : null,
-    },
-    coverage: {
-      eventsStatus: "complete",
-      recommendedBackfill: false,
-      nextBeforeIdx: null,
+      messages: [],
+      events,
     },
   };
 }

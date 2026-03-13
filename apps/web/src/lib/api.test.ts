@@ -12,14 +12,6 @@ function mockOk(data: unknown) {
   } as Response);
 }
 
-function mockPagedOk(data: unknown, pageInfo: unknown) {
-  return Promise.resolve({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ data, pageInfo }),
-  } as Response);
-}
-
 function mockError(status: number, error: string) {
   return Promise.resolve({
     ok: false,
@@ -228,25 +220,17 @@ describe("api", () => {
   });
 
   describe("messages", () => {
-    it("lists messages page", async () => {
-      const page = { data: [], pageInfo: { hasMoreOlder: false } };
-      mockFetch.mockReturnValueOnce(
-        Promise.resolve({
-          ok: true, status: 200,
-          json: () => Promise.resolve(page),
-        }),
-      );
-      const result = await api.listMessagesPage("t1", { beforeSeq: 10, limit: 5 });
-      expect(result.data).toEqual([]);
-      expect(mockFetch.mock.calls[0][0]).toContain("beforeSeq=10");
-      expect(mockFetch.mock.calls[0][0]).toContain("limit=5");
+    it("lists messages", async () => {
+      mockFetch.mockReturnValueOnce(mockOk([]));
+      const result = await api.listMessages("t1");
+      expect(result).toEqual([]);
+      expect(mockFetch.mock.calls[0][0]).toContain("/threads/t1/messages");
     });
 
     it("gets thread snapshot", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ thread: {}, messages: [] }));
-      const result = await api.getThreadSnapshot("t1", { messageLimit: 10, eventLimit: 50 });
+      mockFetch.mockReturnValueOnce(mockOk({ messages: [], events: [], timeline: {} }));
+      const result = await api.getThreadSnapshot("t1");
       expect(result).toBeTruthy();
-      expect(mockFetch.mock.calls[0][0]).toContain("messageLimit=10");
     });
 
     it("sends message", async () => {
@@ -321,16 +305,10 @@ describe("api", () => {
   });
 
   describe("events", () => {
-    it("lists events page", async () => {
-      const page = { data: [], pageInfo: { hasMoreOlder: false } };
-      mockFetch.mockReturnValueOnce(
-        Promise.resolve({
-          ok: true, status: 200,
-          json: () => Promise.resolve(page),
-        }),
-      );
-      const result = await api.listEventsPage("t1", { beforeIdx: 100, limit: 50 });
-      expect(result.data).toEqual([]);
+    it("gets timeline snapshot", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ timelineItems: [], events: [], messages: [] }));
+      const result = await api.getTimelineSnapshot("t1");
+      expect(result).toBeTruthy();
     });
   });
 
@@ -498,11 +476,17 @@ describe("api", () => {
     it("throws on unexpected response shape", async () => {
       mockFetch.mockReturnValueOnce(
         Promise.resolve({
-          ok: true, status: 200,
+          ok: true,
+          status: 200,
+          url: "http://localhost:5173/api/repositories",
+          headers: new Headers({ "content-type": "text/html" }),
           json: () => Promise.resolve({ unexpected: true }),
+          clone: () => ({ text: () => Promise.resolve("<html><body>oops</body></html>") }),
         }),
       );
-      await expect(api.listRepositories()).rejects.toThrow("unexpected response");
+      const result = api.listRepositories();
+      await expect(result).rejects.toThrow("unexpected response shape");
+      await expect(result).rejects.toThrow("content-type=text/html");
     });
 
     it("throws runtime unavailable when all bases fail", async () => {

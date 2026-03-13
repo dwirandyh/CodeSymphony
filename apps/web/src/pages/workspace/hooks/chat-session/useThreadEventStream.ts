@@ -10,14 +10,14 @@ import type {
   ChatEvent,
   ChatMessage,
   ChatThread,
-  ChatThreadSnapshot,
+  ChatTimelineSnapshot,
 } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { logService } from "../../../../lib/logService";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { debugLog } from "../../../../lib/debugLog";
-import { EVENT_TYPES, INITIAL_EVENTS_PAGE_LIMIT, INITIAL_MESSAGES_PAGE_LIMIT } from "../../constants";
+import { EVENT_TYPES } from "../../constants";
 import {
   GIT_STATUS_INVALIDATION_EVENT_TYPES,
   payloadStringOrNull,
@@ -42,20 +42,14 @@ export interface UseThreadEventStreamParams {
   setEvents: Dispatch<SetStateAction<ChatEvent[]>>;
   setThreads: Dispatch<SetStateAction<ChatThread[]>>;
   setWaitingAssistant: Dispatch<SetStateAction<{ threadId: string; afterIdx: number } | null>>;
-  setHasMoreOlderMessages: Dispatch<SetStateAction<boolean>>;
-  setHasMoreOlderEvents: Dispatch<SetStateAction<boolean>>;
-  setLoadingOlderHistory: Dispatch<SetStateAction<boolean>>;
   setStoppingThreadId: Dispatch<SetStateAction<string | null>>;
   setStopRequestedThreadId: Dispatch<SetStateAction<string | null>>;
   seenEventIdsByThreadRef: MutableRefObject<Map<string, Set<string>>>;
   lastEventIdxByThreadRef: MutableRefObject<Map<string, number>>;
-  nextBeforeSeqByThreadRef: MutableRefObject<Map<string, number | null>>;
-  nextBeforeIdxByThreadRef: MutableRefObject<Map<string, number | null>>;
   streamingMessageIdsRef: MutableRefObject<Set<string>>;
   stickyRawFallbackMessageIdsRef: MutableRefObject<Set<string>>;
   renderDecisionByMessageIdRef: MutableRefObject<Map<string, string>>;
   loggedFirstInsertOrderByMessageIdRef: MutableRefObject<Set<string>>;
-  loadingOlderHistoryRef: MutableRefObject<boolean>;
   pendingEventsRef: MutableRefObject<ChatEvent[]>;
   pendingMessageMutationsRef: MutableRefObject<PendingMessageMutation[]>;
   rafIdRef: MutableRefObject<number | null>;
@@ -71,20 +65,14 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     setEvents,
     setThreads,
     setWaitingAssistant,
-    setHasMoreOlderMessages,
-    setHasMoreOlderEvents,
-    setLoadingOlderHistory,
     setStoppingThreadId,
     setStopRequestedThreadId,
     seenEventIdsByThreadRef,
     lastEventIdxByThreadRef,
-    nextBeforeSeqByThreadRef,
-    nextBeforeIdxByThreadRef,
     streamingMessageIdsRef,
     stickyRawFallbackMessageIdsRef,
     renderDecisionByMessageIdRef,
     loggedFirstInsertOrderByMessageIdRef,
-    loadingOlderHistoryRef,
     pendingEventsRef,
     pendingMessageMutationsRef,
     rafIdRef,
@@ -112,10 +100,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
   useEffect(() => {
     if (!selectedThreadId) {
       setWaitingAssistant(null);
-      setHasMoreOlderMessages(false);
-      setHasMoreOlderEvents(false);
-      loadingOlderHistoryRef.current = false;
-      setLoadingOlderHistory(false);
       setStoppingThreadId(null);
       setStopRequestedThreadId(null);
       streamingMessageIdsRef.current = new Set();
@@ -131,10 +115,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     renderDecisionByMessageIdRef.current = new Map();
     loggedFirstInsertOrderByMessageIdRef.current = new Set();
     setWaitingAssistant(null);
-    setHasMoreOlderMessages(nextBeforeSeqByThreadRef.current.get(selectedThreadId) != null);
-    setHasMoreOlderEvents(nextBeforeIdxByThreadRef.current.get(selectedThreadId) != null);
-    loadingOlderHistoryRef.current = false;
-    setLoadingOlderHistory(false);
     setStoppingThreadId(null);
     setStopRequestedThreadId(null);
 
@@ -147,18 +127,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       const payload = JSON.parse(rawEvent.data) as ChatEvent;
       const seenEventIds = ensureSeenEventIds(selectedThreadId);
       if (seenEventIds.has(payload.id)) {
-        debugLog("useChatSession", "SSE event SKIPPED (dup)", { type: payload.type, idx: payload.idx });
         return;
       }
 
-      debugLog("useChatSession", "chat.sse.eventAccepted", {
-        threadId: selectedThreadId,
-        eventId: payload.id,
-        idx: payload.idx,
-        type: payload.type,
-        messageId: typeof payload.payload.messageId === "string" ? payload.payload.messageId : null,
-        duringOlderPagination: loadingOlderHistoryRef.current,
-      });
       seenEventIds.add(payload.id);
       updateLastEventIdx(selectedThreadId, payload.idx);
       pushRenderDebug({
@@ -183,19 +154,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       setWaitingAssistant((current) => {
         if (!current || current.threadId !== selectedThreadId || payload.idx <= current.afterIdx) return current;
         const shouldClear = shouldClearWaitingAssistantOnEvent(payload);
-        debugLog("useChatSession", "waitingAssistant event check", {
-          eventType: payload.type,
-          eventIdx: payload.idx,
-          afterIdx: current.afterIdx,
-          selectedThreadId,
-          shouldClear,
-        });
         if (shouldClear) {
-          debugLog("useChatSession", "waitingAssistant cleared by SSE event", {
-            eventType: payload.type,
-            eventIdx: payload.idx,
-            selectedThreadId,
-          });
           return null;
         }
         return current;
@@ -222,22 +181,10 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             ? payload.payload.role
             : "assistant";
         const delta = String(payload.payload.delta ?? "");
-        pushRenderDebug({
-          source: "WorkspacePage",
-          event: "messageDelta",
-          messageId,
-          details: { role, deltaLength: delta.length, idx: payload.idx },
-        });
 
         if (messageId.length > 0) {
           if (role === "assistant") {
             streamingMessageIdsRef.current.add(messageId);
-            debugLog("useChatSession", "streaming message tracked", {
-              selectedThreadId,
-              messageId,
-              reason: "message.delta.assistant",
-              trackedCount: streamingMessageIdsRef.current.size,
-            });
           }
           pendingMessageMutationsRef.current.push({
             kind: "message-delta",
@@ -257,21 +204,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           pendingEventsRef.current = [];
           pendingMessageMutationsRef.current = [];
 
-          debugLog("useChatSession", "chat.sse.flush", {
-            threadId: selectedThreadId,
-            duringOlderPagination: loadingOlderHistoryRef.current,
-            pendingEventsCount: pendingEvents.length,
-            pendingMutationsCount: pendingMutations.length,
-            mutationCount: pendingMutations.length,
-            eventTypes: pendingEvents.map((e) => e.type),
-            eventIdxRange: pendingEvents.length > 0
-              ? {
-                min: pendingEvents[0]?.idx ?? null,
-                max: pendingEvents[pendingEvents.length - 1]?.idx ?? null,
-              }
-              : null,
-          });
-
           if (pendingEvents.length > 0 || pendingMutations.length > 0) {
             startTransition(() => {
               if (pendingEvents.length > 0) {
@@ -285,46 +217,10 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         });
       }
 
-      if (
-        payload.type === "permission.requested" ||
-        payload.type === "permission.resolved" ||
-        payload.type === "question.requested" ||
-        payload.type === "question.answered" ||
-        payload.type === "question.dismissed" ||
-        payload.type === "plan.created" ||
-        payload.type === "plan.approved" ||
-        payload.type === "plan.revision_requested"
-      ) {
-        debugLog("useChatSession", "chat.sse.gate-event", {
-          threadId: selectedThreadId,
-          eventId: payload.id,
-          idx: payload.idx,
-          type: payload.type,
-          requestId: typeof payload.payload.requestId === "string" ? payload.payload.requestId : null,
-        });
-      }
-
       if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
         const skipInvalidation = ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES.has(payload.type);
-        const snapshotState = queryClient.getQueryState(queryKeys.threads.snapshot(selectedThreadId));
-        const snapshotData = queryClient.getQueryData<ChatThreadSnapshot>(queryKeys.threads.snapshot(selectedThreadId));
-        const localEventCount = pendingEventsRef.current.length;
-        debugLog("useChatSession", "chat.sse.invalidateSnapshot", {
-          threadId: selectedThreadId,
-          reason: payload.type,
-          eventId: payload.id,
-          idx: payload.idx,
-          skipped: skipInvalidation,
-          localLastEventIdx: lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null,
-          localKnownEventIds: seenEventIds.size,
-          localPendingEventBufferCount: localEventCount,
-          snapshotFetchStatus: snapshotState?.fetchStatus ?? null,
-          snapshotStatus: snapshotState?.status ?? null,
-          cachedSnapshotNewestIdx: snapshotData?.watermarks.newestIdx ?? null,
-          cachedSnapshotEventCount: snapshotData?.events.data.length ?? null,
-        });
         if (!skipInvalidation) {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(selectedThreadId) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
         }
       }
 
@@ -337,15 +233,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           queryClient.setQueryData<ChatThread[] | undefined>(
             queryKeys.threads.list(selectedWorktreeId),
             (current) => {
-              if (!current) {
-                return current;
-              }
-
+              if (!current) return current;
               const index = current.findIndex((thread) => thread.id === selectedThreadId);
-              if (index === -1 || !current[index]?.active) {
-                return current;
-              }
-
+              if (index === -1 || !current[index]?.active) return current;
               const updated = [...current];
               updated[index] = { ...updated[index]!, active: false };
               return updated;
@@ -359,29 +249,14 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         const completedThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
         const completedBranch = payloadStringOrNull(payload.payload.worktreeBranch);
         if (completedMessageId.length > 0) {
-          const deleted = streamingMessageIdsRef.current.delete(completedMessageId);
-          debugLog("useChatSession", "streaming message untracked", {
-            selectedThreadId,
-            messageId: completedMessageId,
-            reason: "chat.completed",
-            deleted,
-            trackedCount: streamingMessageIdsRef.current.size,
-          });
+          streamingMessageIdsRef.current.delete(completedMessageId);
         }
         if (completedThreadTitle) {
-          setThreads((current) => {
-            return applyThreadTitleUpdate(current, selectedThreadId, completedThreadTitle);
-          });
+          setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, completedThreadTitle));
         }
         if (completedBranch && selectedWorktreeId) {
           onBranchRenamed?.(selectedWorktreeId, completedBranch);
         }
-        pushRenderDebug({
-          source: "WorkspacePage",
-          event: "chatCompleted",
-          messageId: completedMessageId,
-          details: { idx: payload.idx },
-        });
       }
 
       if (payload.type === "tool.finished") {
@@ -389,13 +264,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         if (source === "chat.thread.metadata") {
           const metadataThreadTitle = payloadStringOrNull(payload.payload.threadTitle);
           const metadataBranch = payloadStringOrNull(payload.payload.worktreeBranch);
-
           if (metadataThreadTitle) {
-            setThreads((current) => {
-              return applyThreadTitleUpdate(current, selectedThreadId, metadataThreadTitle);
-            });
+            setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, metadataThreadTitle));
           }
-
           if (metadataBranch && selectedWorktreeId) {
             onBranchRenamed?.(selectedWorktreeId, metadataBranch);
           }
@@ -411,19 +282,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     const startStream = () => {
       if (disposed) return;
 
-      const cachedSnapshot = queryClient.getQueryData<ChatThreadSnapshot>(
-        queryKeys.threads.snapshot(selectedThreadId),
+      const cachedSnapshot = queryClient.getQueryData<ChatTimelineSnapshot>(
+        queryKeys.threads.timelineSnapshot(selectedThreadId),
       );
-      const cachedEvents = cachedSnapshot?.events;
-      debugLog("useChatSession", "chat.sse.startStream", {
-        threadId: selectedThreadId,
-        cachedEventCount: cachedEvents?.data.length ?? 0,
-        cachedNewestIdx: cachedSnapshot?.watermarks.newestIdx ?? null,
-        lastEventIdxBeforeSeed: lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null,
-      });
-      if (cachedEvents && cachedEvents.data.length > 0) {
+      if (cachedSnapshot && cachedSnapshot.events.length > 0) {
         const seenEventIds = ensureSeenEventIds(selectedThreadId);
-        for (const e of cachedEvents.data) {
+        for (const e of cachedSnapshot.events) {
           seenEventIds.add(e.id);
           updateLastEventIdx(selectedThreadId, e.idx);
         }
@@ -443,10 +307,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       stream.onopen = () => {
         reconnectAttempts = 0;
-        debugLog("useChatSession", "chat.sse.connected", {
-          threadId: selectedThreadId,
-          afterIdx: typeof lastEventIdx === "number" ? lastEventIdx : null,
-        });
         onError(null);
       };
 
@@ -462,12 +322,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             const delay = BASE_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttempts);
             reconnectAttempts++;
-            debugLog("useChatSession", "chat.sse.reconnect", {
-              threadId: selectedThreadId,
-              reconnectAttempts,
-              delay,
-              afterIdx: lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null,
-            });
             reconnectTimer = setTimeout(() => {
               reconnectTimer = null;
               startStream();
@@ -479,8 +333,8 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       };
     };
 
-    const cachedSnapshot = queryClient.getQueryData<ChatThreadSnapshot>(
-      queryKeys.threads.snapshot(selectedThreadId),
+    const cachedSnapshot = queryClient.getQueryData<ChatTimelineSnapshot>(
+      queryKeys.threads.timelineSnapshot(selectedThreadId),
     );
 
     if (cachedSnapshot) {
@@ -508,27 +362,14 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
     void (async () => {
       try {
-        debugLog("useChatSession", "chat.sse.prefetchSnapshot:start", {
-          threadId: selectedThreadId,
-        });
         const snapshot = await queryClient.fetchQuery({
-          queryKey: queryKeys.threads.snapshot(selectedThreadId),
-          queryFn: () => api.getThreadSnapshot(selectedThreadId, {
-            messageLimit: INITIAL_MESSAGES_PAGE_LIMIT,
-            eventLimit: INITIAL_EVENTS_PAGE_LIMIT,
-          }),
+          queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId),
+          queryFn: () => api.getTimelineSnapshot(selectedThreadId),
         });
         if (disposed) return;
-        debugLog("useChatSession", "chat.sse.prefetchSnapshot:success", {
-          threadId: selectedThreadId,
-          messagesCount: snapshot.messages.data.length,
-          eventsCount: snapshot.events.data.length,
-          newestIdx: snapshot.watermarks.newestIdx ?? null,
-        });
-        const snapshotEvents = snapshot.events;
-        if (snapshotEvents.data.length > 0) {
+        if (snapshot.events.length > 0) {
           const seenEventIds = ensureSeenEventIds(selectedThreadId);
-          for (const e of snapshotEvents.data) {
+          for (const e of snapshot.events) {
             seenEventIds.add(e.id);
             updateLastEventIdx(selectedThreadId, e.idx);
           }

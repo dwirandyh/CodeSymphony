@@ -1,10 +1,9 @@
 import type {
   AnswerQuestionInput,
-  ChatEventsPage,
   ChatMessage,
-  ChatMessagesPage,
   ChatThread,
   ChatThreadSnapshot,
+  ChatTimelineSnapshot,
   CreateChatThreadInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
@@ -80,11 +79,65 @@ function createEventSource(path: string): EventSource {
   return new EventSource(toApiUrl(activeApiBase, path));
 }
 
-function extractDataEnvelope<T>(payload: unknown): T {
+async function readResponseDebugInfo(response: Response): Promise<{
+  url: string;
+  status: number;
+  contentType: string | null;
+  bodyPreview: string | null;
+}> {
+  const headers = response.headers as { get?: (name: string) => string | null } | undefined;
+  const contentType = typeof headers?.get === "function" ? headers.get("content-type") : null;
+  let bodyPreview: string | null = null;
+
+  try {
+    const clone = response.clone as (() => { text: () => Promise<string> }) | undefined;
+    if (typeof clone === "function") {
+      bodyPreview = (await clone.call(response).text()).slice(0, 400);
+    }
+  } catch {
+    bodyPreview = null;
+  }
+
+  return {
+    url: typeof response.url === "string" ? response.url : "unknown",
+    status: typeof response.status === "number" ? response.status : 0,
+    contentType,
+    bodyPreview,
+  };
+}
+
+function formatUnexpectedResponseShapeError(debug: {
+  url: string;
+  status: number;
+  contentType: string | null;
+  bodyPreview: string | null;
+}): Error {
+  const details = [
+    `url=${debug.url || "unknown"}`,
+    `status=${debug.status}`,
+    `content-type=${debug.contentType ?? "unknown"}`,
+  ];
+  if (debug.bodyPreview && debug.bodyPreview.length > 0) {
+    details.push(`body=${JSON.stringify(debug.bodyPreview)}`);
+  }
+  return new Error(`Runtime returned an unexpected response shape (${details.join(", ")})`);
+}
+
+function extractDataEnvelope<T>(payload: unknown, debug?: {
+  url: string;
+  status: number;
+  contentType: string | null;
+  bodyPreview: string | null;
+}): T {
   if (payload != null && typeof payload === "object" && "data" in payload) {
     return (payload as { data: T }).data;
   }
-  throw new Error("Runtime returned an unexpected response shape");
+  throw formatUnexpectedResponseShapeError(debug ?? {
+    url: "unknown",
+    status: 200,
+    contentType: null,
+    bodyPreview: null,
+  });
 }
 
 export class TeardownFailedError extends Error {
@@ -109,38 +162,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   const payload = await response.json().catch(() => null);
+  const debug = await readResponseDebugInfo(response);
 
   if (!response.ok) {
     throw new Error(payload?.error ?? "Request failed");
   }
 
-  return extractDataEnvelope<T>(payload);
+  return extractDataEnvelope<T>(payload, debug);
 }
 
-async function requestPaged<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-
-  if (init?.body != null && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const response = await runtimeFetch(path, {
-    headers,
-    ...init,
-  });
-
-  const payload = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    throw new Error(payload?.error ?? "Request failed");
-  }
-
-  if (payload != null && typeof payload === "object" && "data" in payload && "pageInfo" in payload) {
-    return payload as T;
-  }
-
-  throw new Error("Runtime returned an unexpected paged response shape");
-}
 
 export const api = {
   pickDirectory: () => request<{ path: string }>("/system/pick-directory", { method: "POST" }),
@@ -278,30 +308,14 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to delete thread");
     }
   },
-  listMessagesPage: (threadId: string, opts?: { beforeSeq?: number; limit?: number }) => {
-    const params = new URLSearchParams();
-    if (typeof opts?.beforeSeq === "number") {
-      params.set("beforeSeq", String(opts.beforeSeq));
-    }
-    if (typeof opts?.limit === "number") {
-      params.set("limit", String(opts.limit));
-    }
-    const query = params.toString();
-    const path = `/threads/${threadId}/messages${query.length > 0 ? `?${query}` : ""}`;
-    return requestPaged<ChatMessagesPage>(path);
-  },
-  getThreadSnapshot: (threadId: string, opts?: { messageLimit?: number; eventLimit?: number }) => {
-    const params = new URLSearchParams();
-    if (typeof opts?.messageLimit === "number") {
-      params.set("messageLimit", String(opts.messageLimit));
-    }
-    if (typeof opts?.eventLimit === "number") {
-      params.set("eventLimit", String(opts.eventLimit));
-    }
-    const query = params.toString();
-    const path = `/threads/${threadId}/snapshot${query.length > 0 ? `?${query}` : ""}`;
-    return request<ChatThreadSnapshot>(path);
-  },
+  listMessages: (threadId: string) =>
+    request<ChatMessage[]>(`/threads/${threadId}/messages`),
+  listEvents: (threadId: string) =>
+    request<ChatEvent[]>(`/threads/${threadId}/events`),
+  getThreadSnapshot: (threadId: string) =>
+    request<ChatThreadSnapshot>(`/threads/${threadId}/snapshot`),
+  getTimelineSnapshot: (threadId: string) =>
+    request<ChatTimelineSnapshot>(`/threads/${threadId}/timeline`),
   sendMessage: (threadId: string, input: SendChatMessageInput) =>
     request<ChatMessage>(`/threads/${threadId}/messages`, {
       method: "POST",
@@ -380,18 +394,6 @@ export const api = {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to revise plan");
     }
-  },
-  listEventsPage: (threadId: string, opts?: { beforeIdx?: number; limit?: number }) => {
-    const params = new URLSearchParams();
-    if (typeof opts?.beforeIdx === "number") {
-      params.set("beforeIdx", String(opts.beforeIdx));
-    }
-    if (typeof opts?.limit === "number") {
-      params.set("limit", String(opts.limit));
-    }
-    const query = params.toString();
-    const path = `/threads/${threadId}/events${query.length > 0 ? `?${query}` : ""}`;
-    return requestPaged<ChatEventsPage>(path);
   },
   getGitStatus: (worktreeId: string) =>
     request<GitStatus>(`/worktrees/${worktreeId}/git/status`),

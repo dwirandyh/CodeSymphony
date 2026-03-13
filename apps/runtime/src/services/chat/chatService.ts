@@ -15,8 +15,6 @@ import {
   type ChatMessage,
   type ChatMode,
   type ChatThread,
-  type ChatEventsPageInfo,
-  type ChatMessagesPageInfo,
   type ChatThreadSnapshot,
   type CreateChatThreadInput,
   type DismissQuestionInput,
@@ -37,15 +35,9 @@ import type {
 } from "./chatService.types.js";
 import { captureWorktreeState, buildDiffDelta } from "./gitDiffUtils.js";
 import {
-  normalizePageLimit,
-  buildMessagesPage,
-  buildEventsPage,
-  eventCarriesTimelineContext,
-  DEFAULT_MESSAGES_PAGE_LIMIT,
-  MAX_MESSAGES_PAGE_LIMIT,
-  DEFAULT_EVENTS_PAGE_LIMIT,
-  MAX_EVENTS_PAGE_LIMIT,
-  SNAPSHOT_EVENT_BUDGET_MAX,
+  mapMessages,
+  mapEvents,
+  buildTimelineSnapshot,
 } from "./chatPaginationUtils.js";
 import {
   isImageMimeType,
@@ -509,7 +501,7 @@ export function createChatService(deps: RuntimeDeps) {
     async listThreads(worktreeId: string): Promise<ChatThread[]> {
       const threads = await deps.prisma.chatThread.findMany({
         where: { worktreeId },
-        orderBy: { updatedAt: "desc" },
+        orderBy: { createdAt: "asc" },
       });
 
       return threads.map((t) => mapChatThread(t, activeThreads.has(t.id)));
@@ -588,144 +580,36 @@ export function createChatService(deps: RuntimeDeps) {
       return messages.map(mapChatMessage);
     },
 
-    async listMessagesPage(
-      threadId: string,
-      options?: { beforeSeq?: number; limit?: number },
-    ): Promise<{ data: ChatMessage[]; pageInfo: ChatMessagesPageInfo }> {
-      const limit = normalizePageLimit(options?.limit, {
-        fallback: DEFAULT_MESSAGES_PAGE_LIMIT,
-        max: MAX_MESSAGES_PAGE_LIMIT,
-      });
-      const rows = await deps.prisma.chatMessage.findMany({
-        where: {
-          threadId,
-          ...(typeof options?.beforeSeq === "number" ? { seq: { lt: options.beforeSeq } } : {}),
-        },
-        orderBy: { seq: "desc" },
-        take: limit + 1,
-        include: { attachments: true },
-      });
-
-      return buildMessagesPage(rows, limit);
-    },
-
     async listEvents(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
       return deps.eventHub.list(threadId, afterIdx);
     },
 
-    async listEventsPage(
-      threadId: string,
-      options?: { beforeIdx?: number; limit?: number },
-    ): Promise<{ data: ChatEvent[]; pageInfo: ChatEventsPageInfo }> {
-      const limit = normalizePageLimit(options?.limit, {
-        fallback: DEFAULT_EVENTS_PAGE_LIMIT,
-        max: MAX_EVENTS_PAGE_LIMIT,
-      });
-      const rows = await deps.prisma.chatEvent.findMany({
-        where: {
-          threadId,
-          ...(typeof options?.beforeIdx === "number" ? { idx: { lt: options.beforeIdx } } : {}),
-        },
-        orderBy: { idx: "desc" },
-        take: limit + 1,
-      });
-
-      return buildEventsPage(rows, limit);
-    },
-
-    async listThreadSnapshot(
-      threadId: string,
-      options?: { messageLimit?: number; eventLimit?: number },
-    ): Promise<ChatThreadSnapshot> {
-      const messageLimit = normalizePageLimit(options?.messageLimit, {
-        fallback: DEFAULT_MESSAGES_PAGE_LIMIT,
-        max: MAX_MESSAGES_PAGE_LIMIT,
-      });
-      const requestedEventLimit = options?.eventLimit;
-      const eventLimit = normalizePageLimit(requestedEventLimit, {
-        fallback: DEFAULT_EVENTS_PAGE_LIMIT,
-        max: MAX_EVENTS_PAGE_LIMIT,
-      });
-      const cappedEventLimit = Math.min(eventLimit, SNAPSHOT_EVENT_BUDGET_MAX);
-      const requestedBeyondSnapshotBudget =
-        typeof requestedEventLimit === "number" && requestedEventLimit > SNAPSHOT_EVENT_BUDGET_MAX;
-
+    async listThreadSnapshot(threadId: string): Promise<ChatThreadSnapshot> {
       const [messageRows, eventRows] = await deps.prisma.$transaction([
         deps.prisma.chatMessage.findMany({
           where: { threadId },
-          orderBy: { seq: "desc" },
-          take: messageLimit + 1,
+          orderBy: { seq: "asc" },
           include: { attachments: true },
         }),
         deps.prisma.chatEvent.findMany({
           where: { threadId },
-          orderBy: { idx: "desc" },
-          take: cappedEventLimit + 1,
+          orderBy: { idx: "asc" },
         }),
       ]);
 
-      const messages = buildMessagesPage(messageRows, messageLimit);
-      const events = buildEventsPage(eventRows, cappedEventLimit);
+      const messages = mapMessages(messageRows);
+      const events = mapEvents(eventRows);
 
-      const oldestLoadedMessageSeq = messages.pageInfo.oldestSeq;
-      const loadedMessageIds = new Set(messages.data.map((message) => message.id));
-      const messageIdsWithoutAnyLoadedContext = new Set(loadedMessageIds);
-      const coveredMessageIds = new Set<string>();
-      const loadedContextfulEventCount = events.data.reduce((count, event) =>
-        count + (eventCarriesTimelineContext(event.payload) ? 1 : 0), 0,
-      );
-
-      for (const event of events.data) {
-        if (!eventCarriesTimelineContext(event.payload)) {
-          continue;
-        }
-
-        const payload = event.payload as Record<string, unknown>;
-        const messageId = typeof payload.messageId === "string" && payload.messageId.length > 0
-          ? payload.messageId
-          : null;
-        if (messageId && loadedMessageIds.has(messageId)) {
-          messageIdsWithoutAnyLoadedContext.delete(messageId);
-          coveredMessageIds.add(messageId);
-        }
-      }
-
-      let boundaryMessageHasContext = true;
-      if (oldestLoadedMessageSeq != null) {
-        const oldestLoadedMessage = messages.data.find((message) => message.seq === oldestLoadedMessageSeq) ?? null;
-        if (oldestLoadedMessage) {
-          boundaryMessageHasContext = coveredMessageIds.has(oldestLoadedMessage.id);
-        }
-      }
-
-      let eventsStatus: ChatThreadSnapshot["coverage"]["eventsStatus"] = "complete";
-
-      if (requestedBeyondSnapshotBudget && events.pageInfo.hasMoreOlder) {
-        eventsStatus = "capped";
-      } else if (
-        messages.data.length > 0
-        && events.pageInfo.hasMoreOlder
-        && (
-          messageIdsWithoutAnyLoadedContext.size > 0
-          || !boundaryMessageHasContext
-          || loadedContextfulEventCount === 0
-        )
-      ) {
-        eventsStatus = "needs_backfill";
-      }
+      const timeline = buildTimelineSnapshot({
+        messages,
+        events,
+        threadId,
+      });
 
       return {
         messages,
         events,
-        watermarks: {
-          newestSeq: messages.pageInfo.newestSeq,
-          newestIdx: events.pageInfo.newestIdx,
-        },
-        coverage: {
-          eventsStatus,
-          recommendedBackfill: eventsStatus !== "complete",
-          nextBeforeIdx: events.pageInfo.nextBeforeIdx,
-        },
+        timeline,
       };
     },
 

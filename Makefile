@@ -85,12 +85,11 @@ endif
 	echo "Setting up worktree ports..."; \
 	echo "  Runtime : $$RUNTIME_PORT"; \
 	echo "  Web     : $$WEB_PORT"; \
-	echo "  API URL : http://127.0.0.1:$$RUNTIME_PORT/api"; \
+	echo "  API URL : auto-detected from browser hostname (override with VITE_RUNTIME_URL if needed)"; \
 	echo ""; \
 	cp -n apps/runtime/.env.example apps/runtime/.env 2>/dev/null || true; \
 	sed -i '' "s/^RUNTIME_PORT=.*/RUNTIME_PORT=$$RUNTIME_PORT/" apps/runtime/.env; \
-	printf "VITE_RUNTIME_URL=http://127.0.0.1:%s/api\nVITE_DEV_PORT=%s\n" \
-	    "$$RUNTIME_PORT" "$$WEB_PORT" > apps/web/.env; \
+	printf "VITE_DEV_PORT=%s\n" "$$WEB_PORT" > apps/web/.env; \
 	echo "Generating route tree..."; \
 	npx --prefix apps/web @tanstack/router-cli generate; \
 	echo "Done! Run 'make dev' to start."

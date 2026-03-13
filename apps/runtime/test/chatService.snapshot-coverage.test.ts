@@ -10,7 +10,7 @@ const stubModelProviderService = {
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
     ? process.env.DATABASE_URL
-    : "file:./test.db";
+    : "file:./prisma/test.db";
 
 const prisma = new PrismaClient({
   datasources: {
@@ -94,7 +94,7 @@ async function insertEvents(
   });
 }
 
-describe("chatService snapshot coverage", () => {
+describe("chatService snapshot", () => {
   beforeEach(async () => {
     await resetDatabase();
   });
@@ -103,7 +103,7 @@ describe("chatService snapshot coverage", () => {
     await prisma.$disconnect();
   });
 
-  it("marks snapshot as complete when loaded message window has contextual events", async () => {
+  it("returns all messages and events in a snapshot", async () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
@@ -118,46 +118,14 @@ describe("chatService snapshot coverage", () => {
       { idx: 3, type: "chat_completed", payload: { messageId: messageIdBySeq.get(3) } },
     ]);
 
-    const snapshot = await chatService.listThreadSnapshot(threadId, {
-      messageLimit: 3,
-      eventLimit: 3,
-    });
+    const snapshot = await chatService.listThreadSnapshot(threadId);
 
-    expect(snapshot.coverage).toEqual({
-      eventsStatus: "complete",
-      recommendedBackfill: false,
-      nextBeforeIdx: null,
-    });
+    expect(snapshot.messages).toHaveLength(3);
+    expect(snapshot.events).toHaveLength(3);
+    expect(snapshot.timeline.newestIdx).toBe(3);
   });
 
-  it("marks snapshot as needs_backfill when there are older events and loaded messages lack context", async () => {
-    const chatService = createChatService({
-      prisma,
-      eventHub: createEventHub(prisma),
-      claudeRunner: vi.fn(),
-      modelProviderService: stubModelProviderService,
-    });
-
-    const { threadId } = await seedThreadWithMessages(5);
-    const events = Array.from({ length: 50 }, (_, index) => ({
-      idx: index + 1,
-      type: "tool_output" as const,
-      payload: { text: `event-${index + 1}` },
-    }));
-    await insertEvents(threadId, events);
-
-    const snapshot = await chatService.listThreadSnapshot(threadId, {
-      messageLimit: 5,
-      eventLimit: 5,
-    });
-
-    expect(snapshot.coverage.eventsStatus).toBe("needs_backfill");
-    expect(snapshot.coverage.recommendedBackfill).toBe(true);
-    expect(snapshot.coverage.nextBeforeIdx).toBe(snapshot.events.pageInfo.nextBeforeIdx);
-    expect(snapshot.events.pageInfo.hasMoreOlder).toBe(true);
-  });
-
-  it("marks snapshot as capped when event limit exceeds server budget and older events remain", async () => {
+  it("returns all events even with many events", async () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
@@ -166,22 +134,34 @@ describe("chatService snapshot coverage", () => {
     });
 
     const { threadId } = await seedThreadWithMessages(1);
-    const events = Array.from({ length: 2105 }, (_, index) => ({
+    const events = Array.from({ length: 100 }, (_, index) => ({
       idx: index + 1,
       type: "tool_output" as const,
-      payload: { text: `bulk-${index + 1}` },
+      payload: { text: `event-${index + 1}` },
     }));
     await insertEvents(threadId, events);
 
-    const snapshot = await chatService.listThreadSnapshot(threadId, {
-      messageLimit: 1,
-      eventLimit: 5000,
+    const snapshot = await chatService.listThreadSnapshot(threadId);
+
+    expect(snapshot.events).toHaveLength(100);
+    expect(snapshot.timeline.newestIdx).toBe(100);
+  });
+
+  it("returns empty snapshot for thread with no data", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
     });
 
-    expect(snapshot.coverage.eventsStatus).toBe("capped");
-    expect(snapshot.coverage.recommendedBackfill).toBe(true);
-    expect(snapshot.events.data).toHaveLength(2000);
-    expect(snapshot.events.pageInfo.hasMoreOlder).toBe(true);
-    expect(snapshot.coverage.nextBeforeIdx).toBe(snapshot.events.pageInfo.nextBeforeIdx);
+    const { threadId } = await seedThreadWithMessages(0);
+
+    const snapshot = await chatService.listThreadSnapshot(threadId);
+
+    expect(snapshot.messages).toHaveLength(0);
+    expect(snapshot.events).toHaveLength(0);
+    expect(snapshot.timeline.newestIdx).toBeNull();
+    expect(snapshot.timeline.newestSeq).toBeNull();
   });
 });

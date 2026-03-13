@@ -1,23 +1,15 @@
-export function shouldResetTopPaginationInteraction(prevThreadId: string | null, nextThreadId: string | null): boolean {
-  return prevThreadId != null && nextThreadId != null && prevThreadId !== nextThreadId;
-}
-
 export function resolveChatMessageListKey(params: {
   previousKey: string;
   previousThreadId: string | null;
   nextThreadId: string | null;
 }): string {
-  const { previousKey, previousThreadId, nextThreadId } = params;
+  const { previousKey, nextThreadId } = params;
 
   if (nextThreadId == null) {
     return previousKey;
   }
 
   if (previousKey !== nextThreadId) {
-    return nextThreadId;
-  }
-
-  if (shouldResetTopPaginationInteraction(previousThreadId, nextThreadId)) {
     return nextThreadId;
   }
 

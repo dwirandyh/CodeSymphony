@@ -114,20 +114,6 @@ export type ChatTimelineItem =
     createdAt: string;
   };
 
-export type LoadOlderRequestMetadata = {
-  cycleId: number;
-  requestId: string;
-};
-
-export type LoadOlderRequestResult = {
-  cycleId?: number | null;
-  requestId?: string;
-  completionReason?: string;
-  messagesAdded?: number;
-  eventsAdded?: number;
-  estimatedRenderableGrowth?: boolean;
-};
-
 export type ChatTimelineSummary = {
   oldestRenderableKey: string | null;
   oldestRenderableKind: ChatTimelineItem["kind"] | null;
@@ -138,14 +124,8 @@ export type ChatTimelineSummary = {
 
 export type ChatMessageListProps = {
   items: ChatTimelineItem[];
-  timelineSummary?: ChatTimelineSummary;
   showThinkingPlaceholder?: boolean;
-  sendingMessage?: boolean;
   onOpenReadFile?: (path: string) => void | Promise<void>;
-  hasOlderHistory?: boolean;
-  loadingOlderHistory?: boolean;
-  topPaginationInteractionReady?: boolean;
-  onLoadOlderHistory?: (metadata?: LoadOlderRequestMetadata) => Promise<LoadOlderRequestResult | void> | LoadOlderRequestResult | void;
 };
 
 export type AnsiSegment = {

@@ -423,7 +423,7 @@ export function createWorktreeService(prisma: PrismaClient) {
     async listThreads(worktreeId: string) {
       return prisma.chatThread.findMany({
         where: { worktreeId },
-        orderBy: { updatedAt: "desc" },
+        orderBy: { createdAt: "asc" },
       });
     },
   };

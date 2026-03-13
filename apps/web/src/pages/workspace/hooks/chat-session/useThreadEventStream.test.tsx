@@ -7,7 +7,7 @@ import type {
   ChatEvent,
   ChatMessage,
   ChatThread,
-  ChatThreadSnapshot,
+  ChatTimelineSnapshot,
 } from "@codesymphony/shared-types";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreadEventStream } from "./useThreadEventStream";
@@ -67,14 +67,14 @@ class MockEventSource {
   }
 }
 
-const { runtimeBaseUrlMock, getThreadSnapshotMock } = vi.hoisted(() => ({
+const { runtimeBaseUrlMock, getTimelineSnapshotMock } = vi.hoisted(() => ({
   runtimeBaseUrlMock: "http://127.0.0.1:4331",
-  getThreadSnapshotMock: vi.fn(),
+  getTimelineSnapshotMock: vi.fn(),
 }));
 
 vi.mock("../../../../lib/api", () => ({
   api: {
-    getThreadSnapshot: getThreadSnapshotMock,
+    getTimelineSnapshot: getTimelineSnapshotMock,
     get runtimeBaseUrl() {
       return runtimeBaseUrlMock;
     },
@@ -88,35 +88,20 @@ let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
 
-function makeSnapshot(events: ChatEvent[] = []): ChatThreadSnapshot {
+function makeSnapshot(events: ChatEvent[] = []): ChatTimelineSnapshot {
   return {
-    messages: {
-      data: [],
-      pageInfo: {
-        hasMoreOlder: false,
-        nextBeforeSeq: null,
-        oldestSeq: null,
-        newestSeq: null,
-      },
+    timelineItems: [],
+    summary: {
+      oldestRenderableKey: null,
+      oldestRenderableKind: null,
+      oldestRenderableMessageId: null,
+      oldestRenderableHydrationPending: false,
+      headIdentityStable: true,
     },
-    events: {
-      data: events,
-      pageInfo: {
-        hasMoreOlder: false,
-        nextBeforeIdx: null,
-        oldestIdx: null,
-        newestIdx: events.length ? events[events.length - 1]!.idx : null,
-      },
-    },
-    watermarks: {
-      newestSeq: null,
-      newestIdx: events.length ? events[events.length - 1]!.idx : null,
-    },
-    coverage: {
-      eventsStatus: "complete",
-      recommendedBackfill: false,
-      nextBeforeIdx: null,
-    },
+    newestSeq: null,
+    newestIdx: events.length ? events[events.length - 1]!.idx : null,
+    messages: [],
+    events,
   };
 }
 
@@ -136,9 +121,6 @@ function HookHarness({ selectedThreadId }: { selectedThreadId: string | null }) 
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
-  const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(false);
-  const [hasMoreOlderEvents, setHasMoreOlderEvents] = useState(false);
-  const [loadingOlderHistory, setLoadingOlderHistory] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
   const [stopRequestedThreadId, setStopRequestedThreadId] = useState<string | null>(null);
 
@@ -146,21 +128,15 @@ function HookHarness({ selectedThreadId }: { selectedThreadId: string | null }) 
   void events;
   void threads;
   void waitingAssistant;
-  void hasMoreOlderMessages;
-  void hasMoreOlderEvents;
-  void loadingOlderHistory;
   void stoppingThreadId;
   void stopRequestedThreadId;
 
   const seenEventIdsByThreadRef = useRef(new Map<string, Set<string>>());
   const lastEventIdxByThreadRef = useRef(new Map<string, number>());
-  const nextBeforeSeqByThreadRef = useRef(new Map<string, number | null>());
-  const nextBeforeIdxByThreadRef = useRef(new Map<string, number | null>());
   const streamingMessageIdsRef = useRef(new Set<string>());
   const stickyRawFallbackMessageIdsRef = useRef(new Set<string>());
   const renderDecisionByMessageIdRef = useRef(new Map<string, string>());
   const loggedFirstInsertOrderByMessageIdRef = useRef(new Set<string>());
-  const loadingOlderHistoryRef = useRef(false);
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef([]);
   const rafIdRef = useRef<number | null>(null);
@@ -172,20 +148,14 @@ function HookHarness({ selectedThreadId }: { selectedThreadId: string | null }) 
     setEvents,
     setThreads,
     setWaitingAssistant,
-    setHasMoreOlderMessages,
-    setHasMoreOlderEvents,
-    setLoadingOlderHistory,
     setStoppingThreadId,
     setStopRequestedThreadId,
     seenEventIdsByThreadRef,
     lastEventIdxByThreadRef,
-    nextBeforeSeqByThreadRef,
-    nextBeforeIdxByThreadRef,
     streamingMessageIdsRef,
     stickyRawFallbackMessageIdsRef,
     renderDecisionByMessageIdRef,
     loggedFirstInsertOrderByMessageIdRef,
-    loadingOlderHistoryRef,
     pendingEventsRef,
     pendingMessageMutationsRef,
     rafIdRef,
@@ -213,8 +183,8 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false } },
   });
   invalidateQueriesMock.mockReset();
-  getThreadSnapshotMock.mockReset();
-  getThreadSnapshotMock.mockResolvedValue(makeSnapshot());
+  getTimelineSnapshotMock.mockReset();
+  getTimelineSnapshotMock.mockResolvedValue(makeSnapshot());
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
 
   originalEventSource = globalThis.EventSource;
@@ -248,7 +218,7 @@ afterEach(() => {
 describe("useThreadEventStream", () => {
   it("does not invalidate the selected thread snapshot on active-thread permission requests", async () => {
     const threadId = "selected-thread";
-    queryClient.setQueryData(queryKeys.threads.snapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
     renderHook(threadId);
 
@@ -275,7 +245,7 @@ describe("useThreadEventStream", () => {
 
   it("does not invalidate the selected thread snapshot on active-thread plan.created events", async () => {
     const threadId = "selected-thread";
-    queryClient.setQueryData(queryKeys.threads.snapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
     renderHook(threadId);
 
@@ -302,7 +272,7 @@ describe("useThreadEventStream", () => {
 
   it("does not invalidate the selected thread snapshot on active-thread chat.completed events", async () => {
     const threadId = "selected-thread";
-    queryClient.setQueryData(queryKeys.threads.snapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
     renderHook(threadId);
 
@@ -324,12 +294,12 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.snapshot(threadId) });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
   it("patches selected thread as inactive on chat.completed", async () => {
     const threadId = "selected-thread";
-    queryClient.setQueryData(queryKeys.threads.snapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
       {
         id: threadId,
@@ -369,7 +339,7 @@ describe("useThreadEventStream", () => {
 
   it("patches selected thread as inactive on chat.failed", async () => {
     const threadId = "selected-thread";
-    queryClient.setQueryData(queryKeys.threads.snapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
       {
         id: threadId,
@@ -409,7 +379,7 @@ describe("useThreadEventStream", () => {
 
   it("still invalidates the selected thread snapshot on gate resolution events", async () => {
     const threadId = "selected-thread";
-    queryClient.setQueryData(queryKeys.threads.snapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
     renderHook(threadId);
 
@@ -431,6 +401,6 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.snapshot(threadId) });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 });

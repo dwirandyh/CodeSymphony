@@ -503,7 +503,7 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
   });
 
-  it("reuses the previous timeline result for prepend-only hydration changes when the head is stable", () => {
+  it("recomputes prepend-only hydration changes so newly prepended items can render during hydration", () => {
     const refs = makeRefs();
     const messages = [
       makeMessage("m1", 1, "user", "inspect"),
@@ -528,8 +528,14 @@ describe("useWorkspaceTimeline", () => {
     });
 
     expect(previousSummary.headIdentityStable).toBe(true);
-    expect(hookResult).toBe(previousResult);
-    expect(hookResult.summary).toBe(previousSummary);
-    expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
+    expect(hookResult).not.toBe(previousResult);
+    expect(hookResult.summary).not.toBe(previousSummary);
+    expect(hookResult.summary.headIdentityStable).toBe(false);
+    expect(hookResult.summary.oldestRenderableKind).not.toBe("message");
+    expect(hookResult.summary.oldestRenderableMessageId).toBeNull();
+    expect(
+      hookResult.items.some((item) => item.kind === "tool" || item.kind === "explore-activity"),
+    ).toBe(true);
+    expect(hookResult.items.some((item) => item.kind === "message" && item.message.id === "m1")).toBe(true);
   });
 });

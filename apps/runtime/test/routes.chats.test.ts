@@ -60,10 +60,9 @@ describe("chat routes", () => {
     approvePlan: vi.fn(),
     revisePlan: vi.fn(),
     stopRun: vi.fn(),
-    listMessagesPage: vi.fn(),
-    listEventsPage: vi.fn(),
-    listThreadSnapshot: vi.fn(),
+    listMessages: vi.fn(),
     listEvents: vi.fn(),
+    listThreadSnapshot: vi.fn(),
   };
 
   const mockEventHub = {
@@ -249,81 +248,44 @@ describe("chat routes", () => {
     });
   });
 
-  describe("GET /api/threads/:id/messages (paginated)", () => {
-    it("returns paginated messages", async () => {
-      mockChatService.listMessagesPage.mockResolvedValue({
-        data: [],
-        pageInfo: { hasMore: false },
-      });
+  describe("GET /api/threads/:id/messages", () => {
+    it("returns all messages", async () => {
+      mockChatService.listMessages.mockResolvedValue([]);
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/messages" });
       expect(res.statusCode).toBe(200);
     });
-
-    it("passes limit and beforeSeq", async () => {
-      mockChatService.listMessagesPage.mockResolvedValue({
-        data: [],
-        pageInfo: { hasMore: false },
-      });
-      const res = await app.inject({
-        method: "GET",
-        url: "/api/threads/t1/messages?limit=10&beforeSeq=50",
-      });
-      expect(res.statusCode).toBe(200);
-    });
-
-    it("returns 400 for invalid beforeSeq", async () => {
-      const res = await app.inject({
-        method: "GET",
-        url: "/api/threads/t1/messages?beforeSeq=abc",
-      });
-      expect(res.statusCode).toBe(400);
-    });
-
-    it("returns 400 for invalid limit", async () => {
-      const res = await app.inject({
-        method: "GET",
-        url: "/api/threads/t1/messages?limit=-1",
-      });
-      expect(res.statusCode).toBe(400);
-    });
   });
 
-  describe("GET /api/threads/:id/events (paginated)", () => {
-    it("returns paginated events", async () => {
-      mockChatService.listEventsPage.mockResolvedValue({
-        data: [],
-        pageInfo: { hasMore: false },
-      });
+  describe("GET /api/threads/:id/events", () => {
+    it("returns all events", async () => {
+      mockChatService.listEvents.mockResolvedValue([]);
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/events" });
       expect(res.statusCode).toBe(200);
-    });
-
-    it("returns 400 for invalid beforeIdx", async () => {
-      const res = await app.inject({
-        method: "GET",
-        url: "/api/threads/t1/events?beforeIdx=abc",
-      });
-      expect(res.statusCode).toBe(400);
     });
   });
 
   describe("GET /api/threads/:id/snapshot", () => {
     it("returns thread snapshot", async () => {
       mockChatService.listThreadSnapshot.mockResolvedValue({
-        thread: { id: "t1" },
         messages: [],
         events: [],
+        timeline: {
+          timelineItems: [],
+          summary: {
+            oldestRenderableKey: null,
+            oldestRenderableKind: null,
+            oldestRenderableMessageId: null,
+            oldestRenderableHydrationPending: false,
+            headIdentityStable: true,
+          },
+          newestSeq: null,
+          newestIdx: null,
+          messages: [],
+          events: [],
+        },
       });
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/snapshot" });
       expect(res.statusCode).toBe(200);
-    });
-
-    it("returns 400 for invalid messageLimit", async () => {
-      const res = await app.inject({
-        method: "GET",
-        url: "/api/threads/t1/snapshot?messageLimit=abc",
-      });
-      expect(res.statusCode).toBe(400);
     });
   });
 

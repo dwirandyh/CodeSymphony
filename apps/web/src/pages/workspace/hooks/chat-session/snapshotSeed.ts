@@ -7,7 +7,7 @@ import type {
   ChatEvent,
   ChatMessage,
   ChatThread,
-  ChatThreadSnapshot,
+  ChatTimelineSnapshot,
 } from "@codesymphony/shared-types";
 import type { SnapshotSeedMode, ThreadMetadataSnapshot } from "./useChatSession.types";
 import { mergeEventsWithCurrent } from "./messageEventMerge";
@@ -15,16 +15,12 @@ import { areMessageArraysEqual, mergeThreadMessages } from "../messageMerge";
 import { payloadStringOrNull } from "../../eventUtils";
 
 export function applySnapshotSeed(params: {
-  snapshot: ChatThreadSnapshot;
+  snapshot: ChatTimelineSnapshot;
   selectedThreadId: string;
   selectedWorktreeId: string | null;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setEvents: Dispatch<SetStateAction<ChatEvent[]>>;
   setThreads: Dispatch<SetStateAction<ChatThread[]>>;
-  setHasMoreOlderMessages: Dispatch<SetStateAction<boolean>>;
-  setHasMoreOlderEvents: Dispatch<SetStateAction<boolean>>;
-  nextBeforeSeqByThreadRef: MutableRefObject<Map<string, number | null>>;
-  nextBeforeIdxByThreadRef: MutableRefObject<Map<string, number | null>>;
   seenEventIdsByThreadRef: MutableRefObject<Map<string, Set<string>>>;
   lastEventIdxByThreadRef: MutableRefObject<Map<string, number>>;
   activeThreadIdRef: MutableRefObject<string | null>;
@@ -38,10 +34,6 @@ export function applySnapshotSeed(params: {
     setMessages,
     setEvents,
     setThreads,
-    setHasMoreOlderMessages,
-    setHasMoreOlderEvents,
-    nextBeforeSeqByThreadRef,
-    nextBeforeIdxByThreadRef,
     seenEventIdsByThreadRef,
     lastEventIdxByThreadRef,
     activeThreadIdRef,
@@ -49,25 +41,15 @@ export function applySnapshotSeed(params: {
     mode = "merge",
   } = params;
 
-  const queriedMessages = snapshot.messages.data;
-  const queriedEvents = snapshot.events.data;
+  const queriedMessages = snapshot.messages;
+  const queriedEvents = snapshot.events;
   const localLatestEventIdx = lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null;
-  const snapshotNewestIdx = snapshot.watermarks.newestIdx ?? null;
+  const snapshotNewestIdx = snapshot.newestIdx ?? null;
   const activeThreadSnapshotIsNotOlder =
     activeThreadIdRef.current !== selectedThreadId
     || localLatestEventIdx == null
     || snapshotNewestIdx == null
     || snapshotNewestIdx >= localLatestEventIdx;
-
-  if (import.meta.env.DEV) {
-    console.debug("[snapshotSeed] apply", {
-      selectedThreadId,
-      mode,
-      queriedMessagesLength: queriedMessages.length,
-      queriedEventsLength: queriedEvents.length,
-      newestIdx: snapshot.watermarks.newestIdx,
-    });
-  }
 
   setMessages((current) => {
     if (mode === "replace") {
@@ -103,24 +85,16 @@ export function applySnapshotSeed(params: {
   });
 
   if (activeThreadSnapshotIsNotOlder) {
-    nextBeforeSeqByThreadRef.current.set(selectedThreadId, snapshot.messages.pageInfo.nextBeforeSeq);
-    nextBeforeIdxByThreadRef.current.set(selectedThreadId, snapshot.events.pageInfo.nextBeforeIdx);
-
-    if (activeThreadIdRef.current === selectedThreadId) {
-      setHasMoreOlderMessages(snapshot.messages.pageInfo.hasMoreOlder);
-      setHasMoreOlderEvents(snapshot.events.pageInfo.hasMoreOlder);
-    }
-
     const seenEventIds = new Set<string>();
     for (const event of queriedEvents) {
       seenEventIds.add(event.id);
     }
     seenEventIdsByThreadRef.current.set(selectedThreadId, seenEventIds);
 
-    if (snapshot.watermarks.newestIdx == null) {
+    if (snapshot.newestIdx == null) {
       lastEventIdxByThreadRef.current.delete(selectedThreadId);
     } else {
-      lastEventIdxByThreadRef.current.set(selectedThreadId, snapshot.watermarks.newestIdx);
+      lastEventIdxByThreadRef.current.set(selectedThreadId, snapshot.newestIdx);
     }
   }
 

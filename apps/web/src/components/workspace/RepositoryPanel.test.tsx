@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "./RepositoryPanel";
 
 const { listThreadsMock, getThreadSnapshotMock, getGitStatusMock } = vi.hoisted(() => ({
@@ -96,34 +96,23 @@ function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
   };
 }
 
-function makeSnapshot(events: ChatThreadSnapshot["events"]["data"] = []): ChatThreadSnapshot {
+function makeSnapshot(events: ChatEvent[] = []): ChatThreadSnapshot {
   return {
-    messages: {
-      data: [],
-      pageInfo: {
-        hasMoreOlder: false,
-        nextBeforeSeq: null,
-        oldestSeq: null,
-        newestSeq: null,
+    messages: [],
+    events,
+    timeline: {
+      timelineItems: [],
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
       },
-    },
-    events: {
-      data: events,
-      pageInfo: {
-        hasMoreOlder: false,
-        nextBeforeIdx: null,
-        oldestIdx: null,
-        newestIdx: events.length ? events[events.length - 1]!.idx : null,
-      },
-    },
-    watermarks: {
       newestSeq: null,
       newestIdx: events.length ? events[events.length - 1]!.idx : null,
-    },
-    coverage: {
-      eventsStatus: "complete",
-      recommendedBackfill: false,
-      nextBeforeIdx: null,
+      messages: [],
+      events,
     },
   };
 }

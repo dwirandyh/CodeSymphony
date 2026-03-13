@@ -196,7 +196,7 @@ export function isRunCompletedAfterPlan(events: ChatEvent[], pendingPlan: Pendin
 }
 
 export function deriveThreadUiStatus(thread: ChatThread, snapshot: ChatThreadSnapshot | null | undefined): WorktreeThreadUiStatus {
-  const events = snapshot?.events.data ?? [];
+  const events = snapshot?.events ?? [];
   const hasPendingPermissionRequests = derivePendingPermissionRequests(events).length > 0;
   const hasPendingQuestionRequests = derivePendingQuestionRequests(events).length > 0;
 

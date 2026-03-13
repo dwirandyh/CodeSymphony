@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Repository } from "@codesymphony/shared-types";
+import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositoryManager } from "./useRepositoryManager";
 
 const mockCreateRepoMutateAsync = vi.fn();
@@ -11,47 +12,53 @@ const mockDeleteWorktreeMutateAsync = vi.fn();
 const mockDeleteRepoMutateAsync = vi.fn();
 const mockRenameBranchMutateAsync = vi.fn();
 
+function makeRepositories(): Repository[] {
+  return [
+    {
+      id: "r1",
+      name: "test-repo",
+      rootPath: "/home/user/test-repo",
+      defaultBranch: "main",
+      setupScript: null,
+      teardownScript: null,
+      runScript: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      worktrees: [
+        {
+          id: "wt-root",
+          repositoryId: "r1",
+          branch: "main",
+          path: "/home/user/test-repo",
+          baseBranch: "main",
+          status: "active",
+          isRoot: true,
+          branchRenamed: false,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "wt-feat",
+          repositoryId: "r1",
+          branch: "feature",
+          path: "/home/user/.codesymphony/worktrees/test-repo/feature",
+          baseBranch: "main",
+          status: "active",
+          isRoot: false,
+          branchRenamed: false,
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    },
+  ];
+}
+
+const repositoriesState = vi.hoisted(() => ({
+  data: makeRepositories(),
+  isLoading: false,
+  error: null,
+}));
+
 vi.mock("../../../hooks/queries/useRepositories", () => ({
-  useRepositories: vi.fn().mockReturnValue({
-    data: [
-      {
-        id: "r1",
-        name: "test-repo",
-        rootPath: "/home/user/test-repo",
-        defaultBranch: "main",
-        setupScript: null,
-        teardownScript: null,
-        runScript: null,
-        createdAt: "2026-01-01T00:00:00Z",
-        worktrees: [
-          {
-            id: "wt-root",
-            repositoryId: "r1",
-            branch: "main",
-            path: "/home/user/test-repo",
-            baseBranch: "main",
-            status: "active",
-            isRoot: true,
-            branchRenamed: false,
-            createdAt: "2026-01-01T00:00:00Z",
-          },
-          {
-            id: "wt-feat",
-            repositoryId: "r1",
-            branch: "feature",
-            path: "/home/user/.codesymphony/worktrees/test-repo/feature",
-            baseBranch: "main",
-            status: "active",
-            isRoot: false,
-            branchRenamed: false,
-            createdAt: "2026-01-01T00:00:00Z",
-          },
-        ],
-      },
-    ],
-    isLoading: false,
-    error: null,
-  }),
+  useRepositories: vi.fn(() => repositoriesState),
 }));
 
 vi.mock("../../../hooks/mutations/useCreateRepository", () => ({
@@ -131,6 +138,9 @@ function TestComponent({ initialRepoId, initialWorktreeId }: { initialRepoId?: s
 let queryClient: QueryClient;
 
 beforeEach(() => {
+  repositoriesState.data = makeRepositories();
+  repositoriesState.isLoading = false;
+  repositoriesState.error = null;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -171,6 +181,31 @@ describe("useRepositoryManager", () => {
     render();
     expect(hookResult.selectedRepositoryId).toBe("r1");
     expect(hookResult.selectedWorktreeId).toBeTruthy();
+  });
+
+  it("clears stale selection and cached thread data when repositories disappear", () => {
+    render({ initialWorktreeId: "wt-feat" });
+    queryClient.setQueryData(queryKeys.threads.list("wt-feat"), [{ id: "t1" }]);
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot("t1"), { seed: { messages: { data: [] }, events: { data: [] } } });
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot("t1"), { messages: { data: [] }, events: { data: [] } });
+    queryClient.setQueryData(queryKeys.worktrees.gitStatus("wt-feat"), { files: [] });
+
+    act(() => {
+      repositoriesState.data = [];
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TestComponent initialWorktreeId="wt-feat" />
+        </QueryClientProvider>
+      );
+    });
+
+    expect(hookResult.selectedRepositoryId).toBeNull();
+    expect(hookResult.selectedWorktreeId).toBeNull();
+    expect(queryClient.getQueryData(queryKeys.threads.list("wt-feat"))).toBeUndefined();
+    expect(queryClient.getQueryData(queryKeys.threads.timelineSnapshot("t1"))).toBeUndefined();
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot("t1"))).toBeUndefined();
+    expect(queryClient.getQueryData(queryKeys.worktrees.gitStatus("wt-feat"))).toBeUndefined();
+    expect(mockOnError).toHaveBeenCalledWith(null);
   });
 
   it("respects initialWorktreeId", () => {

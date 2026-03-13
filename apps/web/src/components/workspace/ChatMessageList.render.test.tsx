@@ -1,6 +1,7 @@
-import { act } from "react";
+import { act, forwardRef, useImperativeHandle, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushSync } from "react-dom";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { ChatTimelineItem } from "./chat-message-list";
 import { MarkdownBody, ChatMessageList } from "./chat-message-list";
@@ -14,9 +15,18 @@ vi.mock("@pierre/diffs/react", () => ({
   FileDiff: () => <div data-testid="file-diff">FileDiff</div>,
 }));
 
+const { scrollToIndexMock, latestVListPropsRef } = vi.hoisted(() => ({
+  scrollToIndexMock: vi.fn(),
+  latestVListPropsRef: { current: null as Record<string, any> | null },
+}));
+
 vi.mock("virtua", () => ({
-  VList: vi.fn(({ children, ...props }: any) => {
-    return <div data-testid="vlist" {...props}>{typeof children === "function" ? null : children}</div>;
+  VList: forwardRef(({ children, ...props }: any, ref) => {
+    latestVListPropsRef.current = props;
+    useImperativeHandle(ref, () => ({
+      scrollToIndex: scrollToIndexMock,
+    }));
+    return <div data-testid="vlist">{typeof children === "function" ? null : children}</div>;
   }),
 }));
 
@@ -64,11 +74,18 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   Element.prototype.scrollIntoView = vi.fn();
+  scrollToIndexMock.mockReset();
+  latestVListPropsRef.current = null;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    callback(0);
+    return 1;
+  });
 });
 
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.unstubAllGlobals();
 });
 
 function makeMessage(id: string, role: "user" | "assistant", content: string, seq: number): ChatMessage {
@@ -81,6 +98,59 @@ function makeMessage(id: string, role: "user" | "assistant", content: string, se
     attachments: [],
     createdAt: "2026-01-01T00:00:00Z",
   };
+}
+
+function makeMessageItem(id: string, seq: number, content = `message-${id}`): ChatTimelineItem {
+  return {
+    kind: "message",
+    message: makeMessage(id, seq % 2 === 0 ? "assistant" : "user", content, seq),
+  };
+}
+
+function mountChatMessageList(
+  props: Partial<ComponentProps<typeof ChatMessageList>> = {},
+): void {
+  flushSync(() => {
+    root.render(
+      <ChatMessageList
+        items={[]}
+        {...props}
+      />,
+    );
+  });
+}
+
+function setScrollMetrics({ scrollHeight = 1000, clientHeight = 400 }: { scrollHeight?: number; clientHeight?: number } = {}) {
+  const wrapper = container.querySelector("[data-testid='chat-scroll']") as HTMLDivElement | null;
+  if (!wrapper) {
+    throw new Error("chat-scroll wrapper not found");
+  }
+  Object.defineProperty(wrapper, "scrollHeight", {
+    configurable: true,
+    value: scrollHeight,
+  });
+  Object.defineProperty(wrapper, "clientHeight", {
+    configurable: true,
+    value: clientHeight,
+  });
+}
+
+function triggerScroll(offset: number) {
+  if (!latestVListPropsRef.current?.onScroll) {
+    throw new Error("VList onScroll handler not captured");
+  }
+  act(() => {
+    latestVListPropsRef.current?.onScroll(offset);
+  });
+}
+
+function triggerScrollEnd() {
+  if (!latestVListPropsRef.current?.onScrollEnd) {
+    throw new Error("VList onScrollEnd handler not captured");
+  }
+  act(() => {
+    latestVListPropsRef.current?.onScrollEnd();
+  });
 }
 
 describe("MarkdownBody", () => {
@@ -102,13 +172,6 @@ describe("MarkdownBody", () => {
 describe("ChatMessageList", () => {
   const baseProps = {
     items: [] as ChatTimelineItem[],
-    isStreaming: false,
-    isWaitingAssistant: false,
-    hasOlderHistory: false,
-    hasIncompleteCoverage: false,
-    onOpenFile: vi.fn(),
-    loadOlderHistory: vi.fn(),
-    setLoadOlderHistoryResult: vi.fn(),
   };
 
   it("renders without crash for empty items", () => {
@@ -294,5 +357,58 @@ describe("ChatMessageList", () => {
     });
     expect(container.textContent).toContain("Hi");
     expect(container.textContent).toContain("Hello!");
+  });
+
+  it("does not force-scroll when new items arrive after user scrolls up", () => {
+    mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)] });
+    setScrollMetrics();
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+
+    triggerScroll(560);
+    triggerScroll(520);
+    scrollToIndexMock.mockClear();
+
+    mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)] });
+
+    expect(scrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("auto-follows when user remains at bottom and new items arrive", () => {
+    mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)] });
+    setScrollMetrics();
+    scrollToIndexMock.mockClear();
+
+    triggerScroll(560);
+    mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)] });
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("does not snap to bottom on scroll end after user scrolls up", () => {
+    mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)] });
+    setScrollMetrics();
+    scrollToIndexMock.mockClear();
+
+    triggerScroll(560);
+    triggerScroll(520);
+    triggerScrollEnd();
+
+    expect(scrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-follow when thinking placeholder toggles while user is away from bottom", () => {
+    mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)] });
+    setScrollMetrics();
+    triggerScroll(560);
+    triggerScroll(520);
+    scrollToIndexMock.mockClear();
+
+    mountChatMessageList({
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      showThinkingPlaceholder: true,
+    });
+
+    expect(scrollToIndexMock).not.toHaveBeenCalled();
   });
 });

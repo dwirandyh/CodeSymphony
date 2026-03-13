@@ -3,7 +3,6 @@ import { useQueries } from "@tanstack/react-query";
 import type { ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
-import { INITIAL_EVENTS_PAGE_LIMIT, INITIAL_MESSAGES_PAGE_LIMIT } from "../../pages/workspace/constants";
 import { aggregateWorktreeStatus, type WorktreeStatusSummary } from "../../pages/workspace/hooks/worktreeThreadStatus";
 
 export function useWorktreeStatuses(repositories: Repository[]) {
@@ -31,7 +30,7 @@ export function useWorktreeStatuses(repositories: Repository[]) {
 
     for (const worktreeId of activeWorktreeIds) {
       const threads = threadsByWorktreeId[worktreeId] ?? [];
-      const latestThread = threads[0] ?? null;
+      const latestThread = threads[threads.length - 1] ?? null;
       if (latestThread) {
         candidateThreadIds.add(latestThread.id);
       }
@@ -47,11 +46,8 @@ export function useWorktreeStatuses(repositories: Repository[]) {
 
   const snapshotQueries = useQueries({
     queries: threadIds.map((threadId) => ({
-      queryKey: queryKeys.threads.snapshot(threadId),
-      queryFn: () => api.getThreadSnapshot(threadId, {
-        messageLimit: INITIAL_MESSAGES_PAGE_LIMIT,
-        eventLimit: INITIAL_EVENTS_PAGE_LIMIT,
-      }),
+      queryKey: queryKeys.threads.statusSnapshot(threadId),
+      queryFn: () => api.getThreadSnapshot(threadId),
       enabled: threadId.length > 0,
       staleTime: 15_000,
     })),

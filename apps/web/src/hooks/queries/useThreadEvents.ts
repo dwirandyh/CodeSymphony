@@ -1,12 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
-import { INITIAL_EVENTS_PAGE_LIMIT } from "../../pages/workspace/constants";
 
 export function useThreadEvents(threadId: string | null) {
   return useQuery({
     queryKey: queryKeys.threads.events(threadId!),
-    queryFn: () => api.listEventsPage(threadId!, { limit: INITIAL_EVENTS_PAGE_LIMIT }),
+    queryFn: () => api.listEvents(threadId!),
     enabled: !!threadId,
   });
 }

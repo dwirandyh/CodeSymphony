@@ -53,6 +53,33 @@ import {
   processFailedEvents,
 } from "./timelineOrphans";
 
+function getTimelineItemStableKey(item: { kind: string;[key: string]: unknown }): string {
+  switch (item.kind) {
+    case "message":
+      return `message:${(item as unknown as { message: { id: string } }).message.id}`;
+    case "plan-file-output":
+      return `plan-file-output:${item.id}`;
+    case "activity":
+      return `activity:${item.messageId}`;
+    case "tool":
+      return `tool:${(item as unknown as { event: { id: string } }).event.id}`;
+    case "bash-command":
+      return `bash-command:${item.id}`;
+    case "edited-diff":
+      return `edited-diff:${item.id}`;
+    case "explore-activity":
+      return `explore-activity:${item.id}`;
+    case "subagent-activity":
+      return `subagent-activity:${item.id}`;
+    case "thinking":
+      return `thinking:${item.id}`;
+    case "error":
+      return `error:${item.id}`;
+    default:
+      return "unknown";
+  }
+}
+
 const SUBAGENT_SUMMARY_REGEX = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
 const MAIN_SUMMARY_REGEX = /###main(?:\s+agent)? summary(?:\s+start)?\n?[\s\S]*?###main(?:\s+agent)? summary end\n?/g;
 const MAIN_SUMMARY_START_MARKER = /###main(?:\s+agent)? summary(?:\s+start)?\n?/g;
@@ -114,27 +141,6 @@ export function useWorkspaceTimeline(
     }
 
     const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
-    const oldestMessageId = sortedMessages[0]?.id ?? null;
-    const canReusePrependOnlyHydrationResult =
-      prev !== null
-      && semanticHydrationInProgress
-      && prev.semanticHydrationInProgress
-      && prev.threadId === selectedThreadId
-      && prev.messageCount === messages.length
-      && prev.eventCount < events.length
-      && prev.lastEventIdx === lastEventIdx
-      && prevResultRef.current.summary.headIdentityStable
-      && prevResultRef.current.summary.oldestRenderableKind === "message"
-      && prevResultRef.current.summary.oldestRenderableMessageId != null
-      && prevResultRef.current.summary.oldestRenderableMessageId === oldestMessageId;
-    if (canReusePrependOnlyHydrationResult) {
-      prevFingerprintRef.current = fingerprint;
-      prevInputCountsRef.current = {
-        messageCount: messages.length,
-        eventCount: events.length,
-      };
-      return prevResultRef.current;
-    }
 
     if (disabled) {
       const disabledResult: WorkspaceTimelineResult = {
@@ -212,8 +218,8 @@ export function useWorkspaceTimeline(
           && e.type === "tool.finished"
           && isPlanFilePath(
             payloadStringOrNull(e.payload.editTarget)
-              ?? payloadStringOrNull(e.payload.file_path)
-              ?? "",
+            ?? payloadStringOrNull(e.payload.file_path)
+            ?? "",
           )
         );
         if (realWrite) {
@@ -605,7 +611,7 @@ export function useWorkspaceTimeline(
       }
       const editedRuns = message.role === "assistant"
         ? extractEditedRuns(nonBashContext, context)
-            .filter((run) => !run.changedFiles.every((f) => isPlanFilePath(f)))
+          .filter((run) => !run.changedFiles.every((f) => isPlanFilePath(f)))
         : [];
       if (message.role === "assistant") {
         for (const run of editedRuns) {
@@ -835,7 +841,7 @@ export function useWorkspaceTimeline(
     const result = sortable.map((entry) => entry.item);
     const oldestRenderable = result[0] ?? null;
     const oldestRenderableKey = oldestRenderable != null
-      ? `kind:${oldestRenderable.kind}:${JSON.stringify(oldestRenderable)}`
+      ? getTimelineItemStableKey(oldestRenderable)
       : null;
     const oldestRenderableKind = oldestRenderable?.kind ?? null;
     const oldestRenderableMessageId = oldestRenderable?.kind === "message"
@@ -924,6 +930,9 @@ export function useWorkspaceTimeline(
         oldestRenderableMessageId,
         oldestRenderableHydrationPending,
         headIdentityStable,
+        previousOldestRenderableKey: prevResult.summary.oldestRenderableKey,
+        previousOldestRenderableKind: prevResult.summary.oldestRenderableKind,
+        previousOldestRenderableMessageId: prevResult.summary.oldestRenderableMessageId,
       });
     }
     prevFingerprintRef.current = fingerprint;

@@ -111,10 +111,7 @@ export function processOrphanToolEvents(
     )
     .sort((a, b) => a.idx - b.idx);
 
-  let hasIncompleteCoverage = false;
-  if (messages.length > 0 && orphanToolEvents.length > 0) {
-    hasIncompleteCoverage = true;
-  }
+  const hasIncompleteCoverage = false;
 
   pushRenderDebug({
     source: "WorkspacePage",

@@ -38,14 +38,13 @@ import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import {
-  shouldResetTopPaginationInteraction,
   resolveChatMessageListKey,
   createRunScriptToken,
   FilledPlayIcon,
   FilledPauseIcon,
 } from "./workspace/workspacePageUtils";
 
-export { shouldResetTopPaginationInteraction, resolveChatMessageListKey } from "./workspace/workspacePageUtils";
+export { resolveChatMessageListKey } from "./workspace/workspacePageUtils";
 
 function BackgroundWorktreeStatusStreamBridge({
   repositories,
@@ -243,7 +242,6 @@ export function WorkspacePage() {
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     initialThreadId: search.threadId,
     selectedRepositoryId: repos.selectedRepositoryId,
-    hydrationBackfillPolicy: reviewTabOpen ? "manual" : "auto",
     timelineEnabled: !reviewTabOpen,
     onWorktreeResolved: (worktreeId) => {
       repos.setSelectedWorktreeId(worktreeId);
@@ -256,12 +254,6 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
-  const loadOlderHistoryRef = useRef(chat.loadOlderHistory);
-  useEffect(() => {
-    loadOlderHistoryRef.current = chat.loadOlderHistory;
-  }, [chat.loadOlderHistory]);
-
-  const [topPaginationInteractionReady, setTopPaginationInteractionReady] = useState(false);
   const prevSelectedThreadIdRef = useRef<string | null>(chat.selectedThreadId);
   const chatMessageListKeyRef = useRef<string>(chat.selectedThreadId ?? "empty");
   const chatMessageListKey = resolveChatMessageListKey({
@@ -281,59 +273,8 @@ export function WorkspacePage() {
   }
 
   useEffect(() => {
-    const prevThreadId = prevSelectedThreadIdRef.current;
-    const nextThreadId = chat.selectedThreadId;
-    const shouldReset = shouldResetTopPaginationInteraction(prevThreadId, nextThreadId);
-
-    if (shouldReset) {
-      setTopPaginationInteractionReady(false);
-      debugLog("WorkspacePage", "top-pagination-interaction-reset", {
-        reason: "thread-switched",
-        prevThreadId,
-        threadId: nextThreadId,
-      });
-    } else {
-      debugLog("WorkspacePage", "top-pagination-interaction-reset-skipped", {
-        reason: "thread-churn",
-        prevThreadId,
-        threadId: nextThreadId,
-      });
-    }
-
-    prevSelectedThreadIdRef.current = nextThreadId;
+    prevSelectedThreadIdRef.current = chat.selectedThreadId;
   }, [chat.selectedThreadId]);
-
-  useEffect(() => {
-    const markTopPaginationInteractionReady = (source: "wheel" | "touchstart") => {
-      setTopPaginationInteractionReady((current) => {
-        if (current) {
-          return current;
-        }
-        debugLog("WorkspacePage", "top-pagination-interaction-ready", { source });
-        return true;
-      });
-    };
-
-    const onWheel = () => {
-      markTopPaginationInteractionReady("wheel");
-    };
-    const onTouchStart = () => {
-      markTopPaginationInteractionReady("touchstart");
-    };
-
-    window.addEventListener("wheel", onWheel, { passive: true });
-    window.addEventListener("touchstart", onTouchStart, { passive: true });
-
-    return () => {
-      window.removeEventListener("wheel", onWheel);
-      window.removeEventListener("touchstart", onTouchStart);
-    };
-  }, []);
-
-  const handleLoadOlderHistory = useCallback(
-    (metadata?: Parameters<typeof chat.loadOlderHistory>[0]) => loadOlderHistoryRef.current(metadata),
-    [],
-  );
 
   const gates = usePendingGates(chat.events, chat.selectedThreadId, {
     onError: setError,
@@ -368,8 +309,6 @@ export function WorkspacePage() {
     "chat.waitingAssistant": chat.waitingAssistant,
     "chat.showStopAction": chat.showStopAction,
     "chat.stoppingRun": chat.stoppingRun,
-    "chat.hasOlderHistory": chat.hasOlderHistory,
-    "chat.loadingOlderHistory": chat.loadingOlderHistory,
     "gates.pendingPermissionRequests": gates.pendingPermissionRequests,
     "gates.pendingQuestionRequests": gates.pendingQuestionRequests,
     "gates.isWaitingForUserGate": gates.isWaitingForUserGate,
@@ -380,7 +319,6 @@ export function WorkspacePage() {
     "gitChanges.entries": gitChanges.entries,
     "gitChanges.branch": gitChanges.branch,
     "gitChanges.loading": gitChanges.loading,
-    topPaginationInteractionReady,
     chatMessageListKey,
     mobilePanelOpen,
   };
@@ -404,7 +342,6 @@ export function WorkspacePage() {
     sendingMessage: chat.sendingMessage,
     waitingAssistant: chat.waitingAssistant,
     isWaitingForUserGate: gates.isWaitingForUserGate,
-    topPaginationInteractionReady,
     chatMessageListKey,
     hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
   });
@@ -789,13 +726,7 @@ export function WorkspacePage() {
                     <ChatMessageList
                       key={chatMessageListKey}
                       items={chat.timelineItems}
-                      timelineSummary={chat.timelineSummary}
                       showThinkingPlaceholder={showThinkingPlaceholder}
-                      sendingMessage={chat.sendingMessage}
-                      hasOlderHistory={chat.hasOlderHistory}
-                      loadingOlderHistory={chat.loadingOlderHistory}
-                      topPaginationInteractionReady={topPaginationInteractionReady}
-                      onLoadOlderHistory={handleLoadOlderHistory}
                       onOpenReadFile={openReadFile}
                     />
                   </div>

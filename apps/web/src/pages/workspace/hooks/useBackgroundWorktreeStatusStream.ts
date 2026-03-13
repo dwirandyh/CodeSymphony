@@ -191,7 +191,7 @@ export function useBackgroundWorktreeStatusStream(
       }
 
       seedThreadEventCache({
-        snapshot: queryClient.getQueryData<ChatThreadSnapshot>(queryKeys.threads.snapshot(thread.id)) ?? null,
+        snapshot: queryClient.getQueryData<ChatThreadSnapshot>(queryKeys.threads.statusSnapshot(thread.id)) ?? null,
         threadId: thread.id,
         seenEventIdsByThreadRef,
         lastEventIdxByThreadRef,
@@ -273,13 +273,13 @@ export function useBackgroundWorktreeStatusStream(
               threadTitle: nextTitle,
             });
             recentlyRelevantThreadIdsRef.current.delete(thread.id);
-            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(thread.id) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(thread.id) });
             stopThreadStream(streamsRef, thread.id);
             return;
           }
 
           if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
-            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(thread.id) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(thread.id) });
           }
         };
 
@@ -309,7 +309,7 @@ export function useBackgroundWorktreeStatusStream(
 
           if (currentState.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
-            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(thread.id) });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(thread.id) });
             streamsRef.current.delete(thread.id);
             return;
           }

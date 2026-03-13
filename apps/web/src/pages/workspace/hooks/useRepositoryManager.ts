@@ -110,12 +110,7 @@ export function useRepositoryManager(
       runScriptRef.current = null;
     }
 
-    // Look up worktree name
-    let worktreeName = worktreeId;
-    for (const repo of repositories) {
-      const wt = repo.worktrees.find((w) => w.id === worktreeId);
-      if (wt) { worktreeName = wt.branch; break; }
-    }
+    const worktreeName = findWorktreeName(worktreeId);
 
     options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "running" });
 
@@ -158,12 +153,7 @@ export function useRepositoryManager(
     const stream = runScriptRef.current;
     if (stream) {
       await api.stopRunScript(stream.worktreeId);
-      // Look up worktree name for the update
-      let worktreeName = stream.worktreeId;
-      for (const repo of repositories) {
-        const wt = repo.worktrees.find((w) => w.id === stream.worktreeId);
-        if (wt) { worktreeName = wt.branch; break; }
-      }
+      const worktreeName = findWorktreeName(stream.worktreeId);
       options?.onScriptUpdate?.({ worktreeId: stream.worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "" } });
       invalidateGitStatus(stream.worktreeId);
       stream.eventSource.close();
@@ -177,6 +167,8 @@ export function useRepositoryManager(
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
 
   const initialAppliedRef = useRef(false);
+  const previousRepositoryCountRef = useRef(0);
+  const previousRepositoriesRef = useRef(repositories);
   const prevSelectionRef = useRef<{ repoId: string | null; worktreeId: string | null }>({
     repoId: null,
     worktreeId: null,
@@ -198,6 +190,16 @@ export function useRepositoryManager(
     return null;
   }, [repositories, selectedWorktreeId]);
 
+  function findWorktreeName(worktreeId: string): string {
+    for (const repo of repositories) {
+      const worktree = repo.worktrees.find((candidate) => candidate.id === worktreeId);
+      if (worktree) {
+        return worktree.branch;
+      }
+    }
+    return worktreeId;
+  }
+
   function findPrimaryWorktreeId(repository: Repository): string | null {
     const primary = findRootWorktree(repository);
     return primary?.id ?? null;
@@ -205,7 +207,26 @@ export function useRepositoryManager(
 
   // Auto-select first repo/worktree when data arrives, respecting initial URL IDs
   useEffect(() => {
-    if (repositories.length === 0) return;
+    if (repositories.length === 0) {
+      const hadRepositories = previousRepositoryCountRef.current > 0;
+      previousRepositoryCountRef.current = 0;
+      if (hadRepositories) {
+        queryClient.removeQueries({ queryKey: ["threads"] });
+        queryClient.removeQueries({ queryKey: ["worktrees"] });
+        onError(null);
+      }
+      if (selectedRepositoryId !== null) {
+        setSelectedRepositoryId(null);
+      }
+      if (selectedWorktreeId !== null) {
+        setSelectedWorktreeId(null);
+      }
+      return;
+    }
+
+    const previousRepositories = previousRepositoriesRef.current;
+    previousRepositoryCountRef.current = repositories.length;
+    previousRepositoriesRef.current = repositories;
 
     if (!initialAppliedRef.current && (options?.initialWorktreeId || options?.initialRepoId)) {
       initialAppliedRef.current = true;
@@ -248,6 +269,24 @@ export function useRepositoryManager(
       initialAppliedRef.current = true;
     }
 
+    const selectedRepositoryStillExists =
+      selectedRepositoryId == null || repositories.some((repository) => repository.id === selectedRepositoryId);
+    const selectedWorktreeStillExists =
+      selectedWorktreeId == null || repositories.some((repository) => repository.worktrees.some((worktree) => worktree.id === selectedWorktreeId));
+    const selectedRepositoryExistedPreviously =
+      selectedRepositoryId != null && previousRepositories.some((repository) => repository.id === selectedRepositoryId);
+    const selectedWorktreeExistedPreviously =
+      selectedWorktreeId != null && previousRepositories.some((repository) => repository.worktrees.some((worktree) => worktree.id === selectedWorktreeId));
+
+    if (!selectedRepositoryStillExists && selectedRepositoryExistedPreviously) {
+      setSelectedRepositoryId(null);
+      return;
+    }
+    if (!selectedWorktreeStillExists && selectedWorktreeExistedPreviously) {
+      setSelectedWorktreeId(null);
+      return;
+    }
+
     if (!selectedRepositoryId && repositories[0]) {
       setSelectedRepositoryId(repositories[0].id);
     }
@@ -263,7 +302,7 @@ export function useRepositoryManager(
         }
       }
     }
-  }, [repositories, selectedRepositoryId, selectedWorktreeId]);
+  }, [onError, queryClient, repositories, selectedRepositoryId, selectedWorktreeId]);
 
   // Notify parent when selection changes
   useEffect(() => {
@@ -324,12 +363,7 @@ export function useRepositoryManager(
 
   async function removeWorktree(worktreeId: string) {
     onError(null);
-    // Find the worktree name before deletion for error UI
-    let worktreeName = worktreeId;
-    for (const repo of repositories) {
-      const wt = repo.worktrees.find((w) => w.id === worktreeId);
-      if (wt) { worktreeName = wt.branch; break; }
-    }
+    const worktreeName = findWorktreeName(worktreeId);
     try {
       await deleteWorktreeMutation.mutateAsync(worktreeId);
       if (selectedWorktreeId === worktreeId) {
@@ -369,12 +403,7 @@ export function useRepositoryManager(
 
   async function rerunSetup(worktreeId: string) {
     onError(null);
-    let worktreeName = worktreeId;
-    for (const repo of repositories) {
-      const wt = repo.worktrees.find((w) => w.id === worktreeId);
-      if (wt) { worktreeName = wt.branch; break; }
-    }
-    runSetupStreaming(worktreeId, worktreeName);
+    runSetupStreaming(worktreeId, findWorktreeName(worktreeId));
   }
 
   const updateWorktreeBranch = useCallback((worktreeId: string, newBranch: string) => {

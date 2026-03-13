@@ -5,7 +5,7 @@ import { createModelProviderService } from "../src/services/modelProviderService
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
     ? process.env.DATABASE_URL
-    : "file:./test.db";
+    : "file:./prisma/test.db";
 
 const prisma = new PrismaClient({
   datasources: { db: { url: TEST_DATABASE_URL } },
