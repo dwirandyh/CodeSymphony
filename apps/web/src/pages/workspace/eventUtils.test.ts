@@ -362,6 +362,14 @@ describe("shouldClearWaitingAssistantOnEvent", () => {
     expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "question.requested" }))).toBe(true);
   });
 
+  it("returns false for plan.created", () => {
+    expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "plan.created" }))).toBe(false);
+  });
+
+  it("returns false for question.dismissed", () => {
+    expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "question.dismissed" }))).toBe(false);
+  });
+
   it("returns false for tool events", () => {
     expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "tool.started" }))).toBe(false);
   });

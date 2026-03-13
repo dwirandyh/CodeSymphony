@@ -325,6 +325,7 @@ export function WorkspacePage() {
     "chat.timelineSummary": chat.timelineSummary,
     "chat.sendingMessage": chat.sendingMessage,
     "chat.waitingAssistant": chat.waitingAssistant,
+    "chat.selectedThreadUiStatus": chat.selectedThreadUiStatus,
     "chat.showStopAction": chat.showStopAction,
     "chat.stoppingRun": chat.stoppingRun,
     "gates.pendingPermissionRequests": gates.pendingPermissionRequests,
@@ -343,7 +344,7 @@ export function WorkspacePage() {
 
   const canSendNow =
     !!chat.selectedThreadId &&
-    !chat.sendingMessage &&
+    !chat.composerDisabled &&
     !gates.planActionBusy &&
     !gates.isWaitingForUserGate;
   const changed: string[] = [];
@@ -357,6 +358,7 @@ export function WorkspacePage() {
     selectedThreadId: chat.selectedThreadId,
     canSendNow,
     showStopAction: chat.showStopAction,
+    selectedThreadUiStatus: chat.selectedThreadUiStatus,
     sendingMessage: chat.sendingMessage,
     waitingAssistant: chat.waitingAssistant,
     isWaitingForUserGate: gates.isWaitingForUserGate,
@@ -882,7 +884,7 @@ export function WorkspacePage() {
                   />
                 ) : !gates.isWaitingForUserGate ? (
                   <Composer
-                    disabled={!chat.selectedThreadId || chat.sendingMessage || gates.planActionBusy}
+                    disabled={chat.composerDisabled || gates.planActionBusy}
                     sending={chat.sendingMessage}
                     showStop={chat.showStopAction}
                     stopping={chat.stoppingRun}

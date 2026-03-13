@@ -114,7 +114,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     stickyRawFallbackMessageIdsRef.current = new Set();
     renderDecisionByMessageIdRef.current = new Map();
     loggedFirstInsertOrderByMessageIdRef.current = new Set();
-    setWaitingAssistant(null);
     setStoppingThreadId(null);
     setStopRequestedThreadId(null);
 

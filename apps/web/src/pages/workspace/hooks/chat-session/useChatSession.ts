@@ -27,7 +27,9 @@ import {
   derivePendingPermissionRequests,
   derivePendingPlan,
   derivePendingQuestionRequests,
+  deriveThreadUiStatusFromEvents,
   isRunCompletedAfterPlan,
+  type WorktreeThreadUiStatus,
 } from "../worktreeThreadStatus";
 import type {
   PendingMessageMutation,
@@ -50,6 +52,31 @@ function resolvePreferredThreadId(threads: ChatThread[]): string | null {
   }
 
   return threads[threads.length - 1]?.id ?? null;
+}
+
+export function deriveSelectedThreadUiState(params: {
+  selectedThreadId: string | null;
+  threads: ChatThread[];
+  events: ChatEvent[];
+  sendingMessage: boolean;
+  waitingAssistant: { threadId: string; afterIdx: number } | null;
+}): { selectedThreadUiStatus: WorktreeThreadUiStatus; composerDisabled: boolean } {
+  const { selectedThreadId, threads, events, sendingMessage, waitingAssistant } = params;
+  const selectedThread = selectedThreadId
+    ? threads.find((thread) => thread.id === selectedThreadId) ?? null
+    : null;
+  const optimisticThreadRunning =
+    selectedThreadId != null
+    && (sendingMessage || waitingAssistant?.threadId === selectedThreadId);
+  const selectedThreadUiStatus = deriveThreadUiStatusFromEvents(
+    events,
+    Boolean(selectedThread?.active) || optimisticThreadRunning,
+  );
+
+  return {
+    selectedThreadUiStatus,
+    composerDisabled: !selectedThreadId || sendingMessage,
+  };
 }
 
 export function useChatSession(
@@ -187,6 +214,14 @@ export function useChatSession(
   const pendingPlan = derivePendingPlan(events);
   const hasPendingPlan = pendingPlan?.status === "pending" && isRunCompletedAfterPlan(events, pendingPlan);
   const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
+  const { selectedThreadUiStatus, composerDisabled } = deriveSelectedThreadUiState({
+    selectedThreadId,
+    threads,
+    events,
+    sendingMessage,
+    waitingAssistant,
+  });
+  const selectedThreadIsRunning = selectedThreadUiStatus === "running";
 
   const { data: queriedThreadSnapshot } = useThreadSnapshot(selectedThreadId);
 
@@ -501,9 +536,7 @@ export function useChatSession(
         streamingMessageIdsRef.current.has(m.id),
     );
 
-  const showStopAction =
-    selectedThreadId != null &&
-    (sendingMessage || waitingAssistant?.threadId === selectedThreadId || hasStreamingAssistantMessage);
+  const showStopAction = selectedThreadId != null && (selectedThreadIsRunning || hasStreamingAssistantMessage);
 
   const stopRequestedForActiveThread = selectedThreadId != null && stopRequestedThreadId === selectedThreadId;
   const stoppingRun =
@@ -560,6 +593,8 @@ export function useChatSession(
 
     sendingMessage,
     waitingAssistant,
+    selectedThreadUiStatus,
+    composerDisabled,
     showStopAction,
     stoppingRun,
     hasOlderHistory: false,

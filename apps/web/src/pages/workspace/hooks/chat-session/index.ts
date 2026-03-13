@@ -1,10 +1,11 @@
-export { useChatSession } from "./useChatSession";
+export { deriveSelectedThreadUiState, useChatSession } from "./useChatSession";
 
 export type {
   PendingMessageMutation,
   SnapshotSeedDecision,
   ThreadMetadataSnapshot,
   UseChatSessionOptions,
+  SelectedThreadUiState,
 } from "./useChatSession.types";
 
 export {

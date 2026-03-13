@@ -195,7 +195,7 @@ export function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
     return true;
   }
 
-  return event.type === "permission.requested" || event.type === "question.requested" || event.type === "question.dismissed" || event.type === "plan.created";
+  return event.type === "permission.requested" || event.type === "question.requested";
 }
 
 // ── Content helpers ──

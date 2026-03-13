@@ -195,8 +195,10 @@ export function isRunCompletedAfterPlan(events: ChatEvent[], pendingPlan: Pendin
     && (event.type === "chat.completed" || event.type === "chat.failed"));
 }
 
-export function deriveThreadUiStatus(thread: ChatThread, snapshot: ChatThreadSnapshot | null | undefined): WorktreeThreadUiStatus {
-  const events = snapshot?.events ?? [];
+export function deriveThreadUiStatusFromEvents(
+  events: ChatEvent[],
+  isActive: boolean,
+): WorktreeThreadUiStatus {
   const hasPendingPermissionRequests = derivePendingPermissionRequests(events).length > 0;
   const hasPendingQuestionRequests = derivePendingQuestionRequests(events).length > 0;
 
@@ -209,11 +211,15 @@ export function deriveThreadUiStatus(thread: ChatThread, snapshot: ChatThreadSna
     return "review_plan";
   }
 
-  if (thread.active) {
+  if (isActive) {
     return "running";
   }
 
   return "idle";
+}
+
+export function deriveThreadUiStatus(thread: ChatThread, snapshot: ChatThreadSnapshot | null | undefined): WorktreeThreadUiStatus {
+  return deriveThreadUiStatusFromEvents(snapshot?.events ?? [], thread.active);
 }
 
 const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [

@@ -4,6 +4,7 @@ import {
   applySnapshotSeed,
   applyThreadTitleUpdate,
   buildSnapshotKey,
+  deriveSelectedThreadUiState,
   extractLatestThreadMetadata,
   mergeEventsWithCurrent,
   prependUniqueEvents,
@@ -371,6 +372,63 @@ describe("mergeEventsWithCurrent", () => {
 
     const result = mergeEventsWithCurrent(queried, current);
     expect(result.map((e) => e.idx)).toEqual([1, 2, 3, 4, 5]);
+  });
+});
+
+describe("deriveSelectedThreadUiState", () => {
+  it("returns running and keeps composer enabled after refresh for an active selected thread", () => {
+    const state = deriveSelectedThreadUiState({
+      selectedThreadId: "thread-1",
+      threads: [{ ...makeThread("Main Thread"), active: true }],
+      events: [],
+      sendingMessage: false,
+      waitingAssistant: { threadId: "thread-1", afterIdx: 10 },
+    });
+
+    expect(state.selectedThreadUiStatus).toBe("running");
+    expect(state.composerDisabled).toBe(false);
+  });
+
+  it("returns waiting_approval over running when a permission gate is pending", () => {
+    const state = deriveSelectedThreadUiState({
+      selectedThreadId: "thread-1",
+      threads: [{ ...makeThread("Main Thread"), active: true }],
+      events: [makeEvent(1, "permission.requested", { requestId: "perm-1", toolName: "Bash" })],
+      sendingMessage: false,
+      waitingAssistant: { threadId: "thread-1", afterIdx: 0 },
+    });
+
+    expect(state.selectedThreadUiStatus).toBe("waiting_approval");
+    expect(state.composerDisabled).toBe(false);
+  });
+
+  it("returns review_plan over running once a pending plan run has completed", () => {
+    const state = deriveSelectedThreadUiState({
+      selectedThreadId: "thread-1",
+      threads: [{ ...makeThread("Main Thread"), active: true }],
+      events: [
+        makeEvent(1, "plan.created", { content: "Plan body", filePath: "/tmp/plan.md" }),
+        makeEvent(2, "chat.completed", {}),
+      ],
+      sendingMessage: false,
+      waitingAssistant: { threadId: "thread-1", afterIdx: 0 },
+    });
+
+    expect(state.selectedThreadUiStatus).toBe("review_plan");
+    expect(state.composerDisabled).toBe(false);
+  });
+
+  it("disables the composer only while a send request is in flight", () => {
+    const state = deriveSelectedThreadUiState({
+      selectedThreadId: "thread-1",
+      threads: [{ ...makeThread("Main Thread"), active: true }],
+      events: [],
+      sendingMessage: true,
+      waitingAssistant: { threadId: "thread-1", afterIdx: 0 },
+    });
+
+    expect(state.selectedThreadUiStatus).toBe("running");
+    expect(state.composerDisabled).toBe(true);
   });
 });
 

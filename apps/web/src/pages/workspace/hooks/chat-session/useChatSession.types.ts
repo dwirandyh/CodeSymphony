@@ -1,4 +1,5 @@
 import type { ChatMode } from "@codesymphony/shared-types";
+import type { WorktreeThreadUiStatus } from "../worktreeThreadStatus";
 
 export type PendingMessageMutation =
   | { kind: "ensure-placeholder"; id: string; threadId: string }
@@ -30,3 +31,8 @@ export interface UseChatSessionOptions {
   onWorktreeResolved?: (worktreeId: string) => void;
   timelineEnabled?: boolean;
 }
+
+export type SelectedThreadUiState = {
+  selectedThreadUiStatus: WorktreeThreadUiStatus;
+  composerDisabled: boolean;
+};

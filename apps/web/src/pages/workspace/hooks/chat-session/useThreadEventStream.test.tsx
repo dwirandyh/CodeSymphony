@@ -116,18 +116,27 @@ function makeEvent(overrides: Partial<ChatEvent> & Pick<ChatEvent, "id" | "threa
   };
 }
 
-function HookHarness({ selectedThreadId }: { selectedThreadId: string | null }) {
+let latestWaitingAssistant: { threadId: string; afterIdx: number } | null = null;
+
+function HookHarness({
+  selectedThreadId,
+  initialWaitingAssistant = null,
+}: {
+  selectedThreadId: string | null;
+  initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
+}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<ChatEvent[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
+  const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(initialWaitingAssistant);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
   const [stopRequestedThreadId, setStopRequestedThreadId] = useState<string | null>(null);
+
+  latestWaitingAssistant = waitingAssistant;
 
   void messages;
   void events;
   void threads;
-  void waitingAssistant;
   void stoppingThreadId;
   void stopRequestedThreadId;
 
@@ -165,11 +174,17 @@ function HookHarness({ selectedThreadId }: { selectedThreadId: string | null }) 
   return null;
 }
 
-function renderHook(selectedThreadId: string | null) {
+function renderHook(
+  selectedThreadId: string | null,
+  options?: { initialWaitingAssistant?: { threadId: string; afterIdx: number } | null },
+) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <HookHarness selectedThreadId={selectedThreadId} />
+        <HookHarness
+          selectedThreadId={selectedThreadId}
+          initialWaitingAssistant={options?.initialWaitingAssistant}
+        />
       </QueryClientProvider>,
     );
   });
@@ -182,6 +197,7 @@ beforeEach(() => {
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  latestWaitingAssistant = null;
   invalidateQueriesMock.mockReset();
   getTimelineSnapshotMock.mockReset();
   getTimelineSnapshotMock.mockResolvedValue(makeSnapshot());
@@ -216,6 +232,21 @@ afterEach(() => {
 });
 
 describe("useThreadEventStream", () => {
+  it("preserves restored waiting state when the selected thread stream initializes", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+    renderHook(threadId, {
+      initialWaitingAssistant: { threadId, afterIdx: 12 },
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(latestWaitingAssistant).toEqual({ threadId, afterIdx: 12 });
+  });
+
   it("does not invalidate the selected thread snapshot on active-thread permission requests", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
