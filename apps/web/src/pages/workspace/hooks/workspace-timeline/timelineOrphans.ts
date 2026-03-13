@@ -4,6 +4,7 @@ import { extractSubagentGroups } from "../../subagentUtils";
 import {
   countDiffStats,
   getEventMessageId,
+  isBashToolEvent,
   isMetadataToolEvent,
   isPlanModeToolEvent,
   isWorktreeDiffEvent,
@@ -11,6 +12,7 @@ import {
   payloadStringArray,
   payloadStringOrNull,
 } from "../../eventUtils";
+import { extractBashRuns } from "../../bashUtils";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { debugLog } from "../../../../lib/debugLog";
 import { logService } from "../../../../lib/logService";
@@ -151,7 +153,40 @@ export function processOrphanToolEvents(
     }
   }
 
+  const orphanBashRuns = extractBashRuns(orphanToolEvents.filter((event) => isBashToolEvent(event) || event.type === "permission.requested" || event.type === "permission.resolved"));
+  for (const run of orphanBashRuns) {
+    run.eventIds.forEach((id) => assignedToolEventIds.add(id));
+    const sourceEvents = orphanToolEvents.filter((event) => run.eventIds.has(event.id));
+    sortable.push({
+      item: {
+        kind: "tool",
+        id: `orphan:${run.id}`,
+        event: sourceEvents[sourceEvents.length - 1] ?? null,
+        sourceEvents,
+        toolUseId: run.toolUseId,
+        toolName: "Bash",
+        shell: "bash",
+        command: run.command,
+        summary: run.summary,
+        output: run.output,
+        error: run.error,
+        truncated: run.truncated,
+        durationSeconds: run.durationSeconds,
+        status: run.status,
+        rejectedByUser: run.rejectedByUser,
+      },
+      anchorIdx: run.anchorIdx,
+      timestamp: parseTimestamp(run.createdAt),
+      rank: 0,
+      stableOrder: run.startIdx,
+    });
+  }
+
   for (const event of orphanToolEvents) {
+    if (assignedToolEventIds.has(event.id)) {
+      continue;
+    }
+
     if (isWorktreeDiffEvent(event)) {
       const hasRunsWithDiffs = hasEditedRunsWithDiffs;
       if (hasRunsWithDiffs) {
@@ -185,7 +220,17 @@ export function processOrphanToolEvents(
     sortable.push({
       item: {
         kind: "tool",
+        id: `orphan:${event.id}`,
         event,
+        sourceEvents: [event],
+        toolUseId: typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : undefined,
+        toolName: typeof event.payload.toolName === "string" ? event.payload.toolName : null,
+        summary: typeof event.payload.summary === "string" ? event.payload.summary : null,
+        output: typeof event.payload.output === "string" ? event.payload.output : null,
+        error: typeof event.payload.error === "string" ? event.payload.error : null,
+        truncated: event.payload.truncated === true,
+        durationSeconds: typeof event.payload.elapsedTimeSeconds === "number" ? event.payload.elapsedTimeSeconds : null,
+        status: event.type === "tool.started" ? "running" : typeof event.payload.error === "string" && event.payload.error.length > 0 ? "failed" : "success",
       },
       anchorIdx: event.idx,
       timestamp: parseTimestamp(event.createdAt),

@@ -134,29 +134,36 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("processes tool events into bash-command items", () => {
-    const messages = [makeMessage("m1", 1, "user", "Hi"), makeMessage("m2", 2, "assistant", "Running...")];
+  it("processes orphan bash tool events into unified tool items", () => {
+    const messages = [makeMessage("m1", 1, "user", "Hi")];
     const events = [
       makeEvent(0, "tool.started", {
         toolName: "Bash",
         toolUseId: "tu-1",
-        toolInput: { command: "ls -la" },
-      }, "m2"),
+        toolInput: { command: "pwd" },
+      }, null),
       makeEvent(1, "tool.output", {
+        toolName: "Bash",
         toolUseId: "tu-1",
         output: "file1.ts\nfile2.ts",
-      }, "m2"),
+        elapsedTimeSeconds: 0.5,
+      }, null),
       makeEvent(2, "tool.finished", {
+        toolName: "Bash",
         toolUseId: "tu-1",
-        duration_seconds: 0.5,
+        summary: "Ran pwd",
+        output: "file1.ts\nfile2.ts",
         error: null,
-      }, "m2"),
+      }, null),
     ];
     act(() => {
       root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
     });
-    const bashItems = hookResult.items.filter((i) => i.kind === "bash-command");
-    expect(bashItems.length).toBeGreaterThanOrEqual(0);
+    const toolItems = hookResult.items.filter((i) => i.kind === "tool");
+    expect(toolItems.length).toBeGreaterThan(0);
+    const bashItems = toolItems.filter((item) => item.kind === "tool" && item.shell === "bash");
+    expect(bashItems.length).toBeGreaterThan(0);
+    expect(bashItems.some((item) => item.command === "pwd")).toBe(true);
   });
 
   it("processes Edit tool events", () => {

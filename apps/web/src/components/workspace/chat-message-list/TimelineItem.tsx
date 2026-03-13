@@ -54,84 +54,56 @@ export const TimelineItem = memo(function TimelineItem({
   }
 
   if (item.kind === "tool") {
-    const changedFiles = getChangedFiles(item.event);
-    const diffPreview = getDiffPreview(item.event);
-
-    return (
-      <article
-        className="rounded-md border border-border/30 bg-background/20 px-3 py-2 text-xs"
-        data-testid={`timeline-${item.event.type}`}
-      >
-        <div className="flex items-center gap-1.5 text-muted-foreground min-w-0">
-          <span className="shrink-0 font-semibold text-foreground">{toolTitle(item.event)}</span>
-          <span className="shrink-0">·</span>
-          <span className="min-w-0 truncate">{toolSubtitle(item.event)}</span>
-        </div>
-
-        {changedFiles.length > 0 ? (
-          <div className="mt-2">
-            <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Files</div>
-            <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-foreground/90">
-              {changedFiles.map((file) => (
-                <li key={file} className="break-all">{file}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-
-        {diffPreview ? (
-          <details
-            className="mt-2 rounded-md border border-border/40 bg-secondary/20 p-2.5"
-            data-testid="timeline-tool-diff-preview"
-          >
-            <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-              Diff Preview
-            </summary>
-            <div className="mt-1.5">
-              <SafePatchDiff
-                patch={diffPreview}
-                options={{
-                  diffStyle: "unified",
-                  overflow: "wrap",
-                  theme: "pierre-dark",
-                  themeType: "dark",
-                  expandUnchanged: false,
-                  expansionLineCount: 20,
-                }}
-              />
-            </div>
-          </details>
-        ) : null}
-      </article>
-    );
-  }
-
-  if (item.kind === "bash-command") {
-    const commandText = item.command ?? item.summary ?? "command";
+    const primaryEvent = item.event;
+    const sourceEvents = item.sourceEvents ?? (primaryEvent ? [primaryEvent] : []);
+    const changedFiles = primaryEvent ? getChangedFiles(primaryEvent) : [];
+    const diffPreview = primaryEvent ? getDiffPreview(primaryEvent) : null;
+    const expanded = ctx.toolExpandedById.get(item.id) ?? false;
+    const shortCommandLabel = shortenCommandForSummary(item.command ?? null);
+    const durationLabel = formatCompactDurationSeconds(item.durationSeconds ?? null);
+    const status = item.status
+      ?? (item.rejectedByUser ? "failed" : primaryEvent?.type === "tool.started" ? "running" : "success");
+    const isFailed = status === "failed" || item.rejectedByUser === true;
     const statusLabel = item.rejectedByUser
       ? "Rejected by user"
-      : item.status === "failed"
+      : status === "failed"
         ? "Failed"
-        : item.status === "running"
+        : status === "running"
           ? "Running"
           : "Success";
-    const expanded = ctx.bashExpandedById.get(item.id) ?? false;
-    const isFailed = item.status === "failed" || item.rejectedByUser === true;
-    const durationLabel = formatCompactDurationSeconds(item.durationSeconds);
-    const shortCommandLabel = shortenCommandForSummary(item.command);
-    const summaryPrefix = expanded ? "Ran commands" : shortCommandLabel ? `Ran ${shortCommandLabel}` : "Ran command";
-    const summaryLabel = durationLabel ? `${summaryPrefix} for ${durationLabel}` : summaryPrefix;
+    const isBashTool = item.shell === "bash" || item.toolName?.toLowerCase() === "bash";
+    const title = isBashTool
+      ? "Bash"
+      : primaryEvent
+        ? toolTitle(primaryEvent)
+        : item.toolName ?? "Tool";
+    const subtitle = isBashTool
+      ? item.summary
+        ?? shortCommandLabel
+        ?? item.command
+        ?? "Command activity"
+      : primaryEvent
+        ? toolSubtitle(primaryEvent)
+        : item.summary
+          ?? shortCommandLabel
+          ?? item.command
+          ?? "Tool activity";
+    const summaryPrefix = item.command
+      ? expanded
+        ? "Ran commands"
+        : shortCommandLabel
+          ? `Ran ${shortCommandLabel}`
+          : "Ran command"
+      : `${title} · ${subtitle}`;
+    const summaryLabel = item.command && durationLabel ? `${summaryPrefix} for ${durationLabel}` : summaryPrefix;
 
     return (
-      <article
-        className="px-1 text-xs"
-        data-testid="timeline-bash-command"
-      >
+      <article className="px-1 text-xs" data-testid="timeline-tool">
         <details
           open={expanded}
           onToggle={(event) => {
             const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setBashExpandedById((current) => {
+            ctx.setToolExpandedById((current) => {
               const next = new Map(current);
               next.set(item.id, nextOpen);
               return next;
@@ -140,7 +112,7 @@ export const TimelineItem = memo(function TimelineItem({
         >
           <summary
             className={cn(
-              "group/bash-summary inline-flex list-none cursor-pointer items-center gap-1 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
+              "group/tool-summary inline-flex list-none cursor-pointer items-center gap-1 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
               isFailed && !expanded
                 ? "text-destructive"
                 : expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
@@ -150,10 +122,10 @@ export const TimelineItem = memo(function TimelineItem({
             <span className="font-medium">{summaryLabel}</span>
             <span
               className={cn(
-                "inline-flex shrink-0 text-[11px] leading-none opacity-0 transition-[opacity,transform,color] group-hover/bash-summary:opacity-100",
+                "inline-flex shrink-0 text-[11px] leading-none opacity-0 transition-[opacity,transform,color] group-hover/tool-summary:opacity-100",
                 expanded
                   ? "rotate-90 text-muted-foreground"
-                  : "text-muted-foreground group-hover/bash-summary:text-foreground",
+                  : "text-muted-foreground group-hover/tool-summary:text-foreground",
               )}
             >
               <ChevronRight className="h-3.5 w-3.5" />
@@ -161,15 +133,38 @@ export const TimelineItem = memo(function TimelineItem({
           </summary>
 
           <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
-            <div className="px-3 pt-2 pb-1 text-xs font-semibold lowercase tracking-wide text-muted-foreground">
-              {item.shell}
+            <div className="flex items-center justify-between gap-2 border-b border-border/25 px-3 py-2 text-xs text-muted-foreground">
+              <div className="min-w-0">
+                <div className="font-semibold text-foreground">{title}</div>
+                <div className="truncate">{subtitle}</div>
+              </div>
+              <span
+                className={cn(
+                  "shrink-0 font-medium",
+                  status === "failed"
+                    ? "text-destructive"
+                    : status === "running"
+                      ? "text-muted-foreground"
+                      : "text-foreground",
+                )}
+              >
+                {statusLabel}
+              </span>
             </div>
 
-            <pre className="px-4 py-2.5 font-mono text-sm leading-relaxed text-foreground overflow-x-auto whitespace-pre-wrap break-words">
-              <span style={{ color: "#98c379" }}>$</span>
-              <span> </span>
-              <span style={{ color: "#61afef" }}>{commandText}</span>
-            </pre>
+            {item.shell ? (
+              <div className="px-3 pt-2 pb-1 text-xs font-semibold lowercase tracking-wide text-muted-foreground">
+                {item.shell}
+              </div>
+            ) : null}
+
+            {item.command ? (
+              <pre className="px-4 py-2.5 overflow-x-auto whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
+                <span style={{ color: "#98c379" }}>$</span>
+                <span> </span>
+                <span style={{ color: "#61afef" }}>{item.command}</span>
+              </pre>
+            ) : null}
 
             {item.output ? (
               <TerminalOutputPre
@@ -185,7 +180,7 @@ export const TimelineItem = memo(function TimelineItem({
               />
             ) : null}
 
-            {!item.output && !item.error && item.summary ? (
+            {!item.command && !item.output && !item.error && item.summary ? (
               <div className="px-4 py-3 text-sm text-muted-foreground">{item.summary}</div>
             ) : null}
 
@@ -193,20 +188,58 @@ export const TimelineItem = memo(function TimelineItem({
               <div className="mt-1 px-3 py-2 text-[11px] text-muted-foreground">... [output truncated]</div>
             ) : null}
 
-            <div className="px-3 pt-1.5 pb-2 text-right text-xs">
-              <span
-                className={cn(
-                  "font-medium",
-                  item.status === "failed"
-                    ? "text-destructive"
-                    : item.status === "running"
-                      ? "text-muted-foreground"
-                      : "text-foreground",
-                )}
-              >
-                {statusLabel}
-              </span>
-            </div>
+            {changedFiles.length > 0 ? (
+              <div className="border-t border-border/25 px-4 py-3">
+                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Files</div>
+                <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-foreground/90">
+                  {changedFiles.map((file) => (
+                    <li key={file} className="break-all">{file}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {diffPreview ? (
+              <details className="border-t border-border/25 px-4 py-3" data-testid="timeline-tool-diff-preview">
+                <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Diff Preview
+                </summary>
+                <div className="mt-1.5">
+                  <SafePatchDiff
+                    patch={diffPreview}
+                    options={{
+                      diffStyle: "unified",
+                      overflow: "wrap",
+                      theme: "pierre-dark",
+                      themeType: "dark",
+                      expandUnchanged: false,
+                      expansionLineCount: 20,
+                    }}
+                  />
+                </div>
+              </details>
+            ) : null}
+
+            {sourceEvents.length > 0 ? (
+              <details className="border-t border-border/25 px-4 py-3" data-testid="timeline-tool-payload-details">
+                <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                  Raw payload
+                </summary>
+                <div className="mt-2 space-y-2">
+                  {sourceEvents.map((sourceEvent) => (
+                    <details key={sourceEvent.id} className="border-l border-border/50 pl-2 text-xs" open={sourceEvent.type === "chat.failed"}>
+                      <summary className="flex cursor-pointer items-center gap-1.5 font-medium text-foreground">
+                        <span className="text-[10px] text-muted-foreground">#{sourceEvent.idx}</span>
+                        <span>{isBashTool ? "Bash" : sourceEvent.type}</span>
+                      </summary>
+                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                        {JSON.stringify(sourceEvent.payload, null, 2)}
+                      </pre>
+                    </details>
+                  ))}
+                </div>
+              </details>
+            ) : null}
           </div>
         </details>
       </article>
@@ -226,7 +259,6 @@ export const TimelineItem = memo(function TimelineItem({
       additions: item.additions,
       deletions: item.deletions,
       rejectedByUser: item.rejectedByUser,
-      expanded,
     });
 
     const isDiffFailed = item.status === "failed" || item.rejectedByUser === true;

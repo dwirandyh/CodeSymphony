@@ -252,7 +252,6 @@ export function editedSummaryLabel({
   additions,
   deletions,
   rejectedByUser,
-  expanded,
 }: {
   status: "running" | "success" | "failed";
   diffKind: "proposed" | "actual" | "none";
@@ -260,7 +259,6 @@ export function editedSummaryLabel({
   additions: number;
   deletions: number;
   rejectedByUser?: boolean;
-  expanded?: boolean;
 }): React.ReactNode {
   const firstFile = basenameFromTokenPath(changedFiles[0] ?? "file");
   const fileCount = changedFiles.length > 1 ? ` (${changedFiles.length} files)` : "";
@@ -302,9 +300,7 @@ export function getTimelineItemKey(item: ChatTimelineItem): string {
     case "activity":
       return `activity:${item.messageId}`;
     case "tool":
-      return `tool:${item.event.id}`;
-    case "bash-command":
-      return `bash-command:${item.id}`;
+      return `tool:${item.id}`;
     case "edited-diff":
       return `edited-diff:${item.id}`;
     case "explore-activity":

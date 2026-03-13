@@ -50,20 +50,19 @@ export type ChatTimelineItem =
   }
   | {
     kind: "tool";
-    event: ChatEvent;
-  }
-  | {
-    kind: "bash-command";
     id: string;
-    toolUseId: string;
-    shell: "bash";
-    command: string | null;
-    summary: string | null;
-    output: string | null;
-    error: string | null;
-    truncated: boolean;
-    durationSeconds: number | null;
-    status: "running" | "success" | "failed";
+    event: ChatEvent | null;
+    sourceEvents?: ChatEvent[];
+    toolUseId?: string;
+    toolName?: string | null;
+    shell?: "bash";
+    command?: string | null;
+    summary?: string | null;
+    output?: string | null;
+    error?: string | null;
+    truncated?: boolean;
+    durationSeconds?: number | null;
+    status?: "running" | "success" | "failed";
     rejectedByUser?: boolean;
   }
   | {
@@ -150,8 +149,8 @@ export type TimelineCtx = {
   copyOutput: (id: string, content: string) => void;
   copyDebugLog: () => void;
   onOpenReadFile?: (path: string) => void | Promise<void>;
-  bashExpandedById: Map<string, boolean>;
-  setBashExpandedById: Dispatch<SetStateAction<Map<string, boolean>>>;
+  toolExpandedById: Map<string, boolean>;
+  setToolExpandedById: Dispatch<SetStateAction<Map<string, boolean>>>;
   editedExpandedById: Map<string, boolean>;
   setEditedExpandedById: Dispatch<SetStateAction<Map<string, boolean>>>;
   exploreActivityExpandedById: Map<string, boolean>;

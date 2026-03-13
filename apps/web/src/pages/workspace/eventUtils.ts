@@ -12,7 +12,7 @@ import {
 } from "./constants";
 import type { StepCandidate } from "./types";
 
-export type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "bash-command" | "edited-diff" | "explore-activity" | "fallback-tool";
+export type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "edited-diff" | "explore-activity" | "fallback-tool";
 
 export type SemanticBoundary = {
   kind: SemanticBoundaryKind;
@@ -595,7 +595,7 @@ export function detectSemanticBoundaryFromEvents(events: ChatEvent[]): SemanticB
 
     if (isBashToolEvent(event)) {
       return {
-        kind: "bash-command",
+        kind: "fallback-tool",
         eventId: event.id,
         eventIdx: event.idx,
         eventType: event.type,

@@ -322,9 +322,12 @@ export function pushInlineInsert(
     const status = run.status === "running" && isCompleted ? "success" : run.status;
     sortable.push({
       item: {
-        kind: "bash-command",
+        kind: "tool",
         id: `${message.id}:${run.toolUseId}:${insert.id}`,
+        event: null,
+        sourceEvents: [],
         toolUseId: run.toolUseId,
+        toolName: "Bash",
         shell: "bash",
         command: run.command,
         summary: run.summary,

@@ -221,17 +221,32 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Thought process");
   });
 
-  it("renders bash-command item", () => {
+  it("renders unified collapsible tool item for bash output", () => {
+    const event: ChatEvent = {
+      id: "ev-bash",
+      threadId: "t1",
+      messageId: "m2",
+      idx: 1,
+      type: "tool.finished",
+      payload: {
+        toolName: "Bash",
+        toolUseId: "tu-1",
+        summary: "Ran ls -la",
+        output: "total 0\ndrwxr-xr-x",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
     const items: ChatTimelineItem[] = [
       {
-        kind: "bash-command",
-        id: "bash-1",
+        kind: "tool",
+        id: "tool-1",
+        event,
+        sourceEvents: [event],
         toolUseId: "tu-1",
+        toolName: "Bash",
         shell: "bash",
         command: "ls -la",
-        summary: null,
         output: "total 0\ndrwxr-xr-x",
-        error: null,
         truncated: false,
         durationSeconds: 0.5,
         status: "success",
@@ -240,7 +255,11 @@ describe("ChatMessageList", () => {
     act(() => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
-    expect(container.textContent).toContain("ls");
+    expect(container.textContent).toContain("Ran ls -la");
+    expect(container.textContent).toContain("Bash");
+    expect(container.textContent).not.toContain("tool.finished");
+    expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
+    expect(container.querySelector("details")).toBeTruthy();
   });
 
   it("renders edited-diff item", () => {
@@ -407,6 +426,57 @@ describe("ChatMessageList", () => {
     mountChatMessageList({
       items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
       showThinkingPlaceholder: true,
+    });
+
+    expect(scrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("auto-follows when the last message content grows without adding items", () => {
+    mountChatMessageList({
+      items: [
+        makeMessageItem("m1", 1),
+        { kind: "message", message: makeMessage("m2", "assistant", "Start", 2), renderHint: "markdown" },
+      ],
+    });
+    setScrollMetrics();
+    scrollToIndexMock.mockClear();
+
+    mountChatMessageList({
+      items: [
+        makeMessageItem("m1", 1),
+        {
+          kind: "message",
+          message: makeMessage("m2", "assistant", "Start\n\n> quote\n\n```ts\nconst x = 1;\n```", 2),
+          renderHint: "markdown",
+        },
+      ],
+    });
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(1, { align: "end" });
+  });
+
+  it("does not auto-follow same-item markdown growth after user scrolls up", () => {
+    mountChatMessageList({
+      items: [
+        makeMessageItem("m1", 1),
+        { kind: "message", message: makeMessage("m2", "assistant", "Start", 2), renderHint: "markdown" },
+      ],
+    });
+    setScrollMetrics();
+    triggerScroll(560);
+    triggerScroll(520);
+    scrollToIndexMock.mockClear();
+
+    mountChatMessageList({
+      items: [
+        makeMessageItem("m1", 1),
+        {
+          kind: "message",
+          message: makeMessage("m2", "assistant", "Start\n\n> quote\n\n```ts\nconst x = 1;\n```", 2),
+          renderHint: "markdown",
+        },
+      ],
     });
 
     expect(scrollToIndexMock).not.toHaveBeenCalled();

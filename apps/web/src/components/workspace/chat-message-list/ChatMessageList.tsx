@@ -17,7 +17,7 @@ export function ChatMessageList({
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(() => new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
-  const [bashExpandedById, setBashExpandedById] = useState<Map<string, boolean>>(() => new Map());
+  const [toolExpandedById, setToolExpandedById] = useState<Map<string, boolean>>(() => new Map());
   const [editedExpandedById, setEditedExpandedById] = useState<Map<string, boolean>>(() => new Map());
   const [exploreActivityExpandedById, setExploreActivityExpandedById] = useState<Map<string, boolean>>(() => new Map());
   const [subagentExpandedById, setSubagentExpandedById] = useState<Map<string, boolean>>(() => new Map());
@@ -79,7 +79,7 @@ export function ChatMessageList({
     requestAnimationFrame(() => {
       scrollToBottom();
     });
-  }, [displayItems.length, scrollToBottom]);
+  }, [displayItems, scrollToBottom]);
 
   const handleScroll = useCallback((offset: number) => {
     const previousOffset = lastScrollOffsetRef.current;
@@ -109,8 +109,8 @@ export function ChatMessageList({
       copyOutput,
       copyDebugLog,
       onOpenReadFile,
-      bashExpandedById,
-      setBashExpandedById,
+      toolExpandedById,
+      setToolExpandedById,
       editedExpandedById,
       setEditedExpandedById,
       exploreActivityExpandedById,
@@ -132,7 +132,7 @@ export function ChatMessageList({
       copyOutput,
       copyDebugLog,
       onOpenReadFile,
-      bashExpandedById,
+      toolExpandedById,
       editedExpandedById,
       exploreActivityExpandedById,
       subagentExpandedById,

@@ -62,9 +62,7 @@ function getTimelineItemStableKey(item: { kind: string;[key: string]: unknown })
     case "activity":
       return `activity:${item.messageId}`;
     case "tool":
-      return `tool:${(item as unknown as { event: { id: string } }).event.id}`;
-    case "bash-command":
-      return `bash-command:${item.id}`;
+      return `tool:${item.id}`;
     case "edited-diff":
       return `edited-diff:${item.id}`;
     case "explore-activity":
