@@ -43,12 +43,11 @@ function makeEvent(idx: number, type: ChatEvent["type"], payload: Record<string,
   return {
     id: `e-${idx}`,
     threadId: "t1",
-    messageId: null,
     idx,
     type,
     payload,
     createdAt: "2026-01-01T00:00:00Z",
-  } as ChatEvent;
+  };
 }
 
 function TestComponent({
@@ -394,7 +393,8 @@ describe("usePendingGates", () => {
       const secondCall = hookResult.resolvePermission("req-1", "deny");
 
       expect(mockResolvePermission).toHaveBeenCalledTimes(1);
-      release?.();
+      const resolvePending = release as (() => void) | null;
+      resolvePending?.();
 
       await act(async () => {
         await Promise.all([firstCall, secondCall]);

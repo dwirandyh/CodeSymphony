@@ -73,7 +73,7 @@ describe("useWorkspaceSearchParams", () => {
     });
     act(() => {
       hookResult.updateSearch({ repoId: "r2" });
-      hookResult.updateSearch({ view: "diff" });
+      hookResult.updateSearch({ view: "review" });
     });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));

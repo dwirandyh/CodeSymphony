@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitBranch, Menu, Settings, X } from "lucide-react";
 import type { ModelProvider } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
@@ -281,6 +281,24 @@ export function WorkspacePage() {
     startWaitingAssistant: chat.startWaitingAssistant,
     clearWaitingAssistantForThread: chat.clearWaitingAssistantForThread,
   });
+  const [activePermissionRequestId, setActivePermissionRequestId] = useState<string | null>(null);
+
+  const activePermissionIndex = useMemo(() => {
+    if (gates.pendingPermissionRequests.length === 0) {
+      return -1;
+    }
+
+    if (!activePermissionRequestId) {
+      return 0;
+    }
+
+    return gates.pendingPermissionRequests.findIndex((request) => request.requestId === activePermissionRequestId);
+  }, [activePermissionRequestId, gates.pendingPermissionRequests]);
+
+  const activePermissionRequest = activePermissionIndex >= 0
+    ? gates.pendingPermissionRequests[activePermissionIndex] ?? null
+    : null;
+  const hasMultiplePendingPermissions = gates.pendingPermissionRequests.length > 1;
   const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -390,6 +408,26 @@ export function WorkspacePage() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [mobilePanelOpen]);
+
+  useEffect(() => {
+    if (gates.pendingPermissionRequests.length === 0) {
+      setActivePermissionRequestId(null);
+      return;
+    }
+
+    if (
+      activePermissionRequestId
+      && gates.pendingPermissionRequests.some((request) => request.requestId === activePermissionRequestId)
+    ) {
+      return;
+    }
+
+    const fallbackIndex = activePermissionIndex >= 0
+      ? Math.min(activePermissionIndex, gates.pendingPermissionRequests.length - 1)
+      : 0;
+    const fallbackRequest = gates.pendingPermissionRequests[fallbackIndex] ?? gates.pendingPermissionRequests[0];
+    setActivePermissionRequestId(fallbackRequest?.requestId ?? null);
+  }, [activePermissionIndex, activePermissionRequestId, gates.pendingPermissionRequests]);
 
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
@@ -571,6 +609,28 @@ export function WorkspacePage() {
     void handleRunScript();
   }, [handleRunScript, handleStopRunScript, runScriptActive]);
 
+  const handleShowPreviousPermission = useCallback(() => {
+    if (activePermissionIndex <= 0) {
+      return;
+    }
+
+    const previousRequest = gates.pendingPermissionRequests[activePermissionIndex - 1];
+    if (previousRequest) {
+      setActivePermissionRequestId(previousRequest.requestId);
+    }
+  }, [activePermissionIndex, gates.pendingPermissionRequests]);
+
+  const handleShowNextPermission = useCallback(() => {
+    if (activePermissionIndex < 0 || activePermissionIndex >= gates.pendingPermissionRequests.length - 1) {
+      return;
+    }
+
+    const nextRequest = gates.pendingPermissionRequests[activePermissionIndex + 1];
+    if (nextRequest) {
+      setActivePermissionRequestId(nextRequest.requestId);
+    }
+  }, [activePermissionIndex, gates.pendingPermissionRequests]);
+
   const handleSelectDiffFile = useCallback((filePath: string) => {
     updateSearch({ file: filePath, view: "review" });
   }, [updateSearch]);
@@ -734,30 +794,64 @@ export function WorkspacePage() {
                 {gates.pendingPermissionRequests.length > 0 ? (
                   <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
                     <div className="space-y-2">
-                      {gates.pendingPermissionRequests.map((request) => (
-                        <PermissionPromptCard
-                          key={request.requestId}
-                          requestId={request.requestId}
-                          toolName={request.toolName}
-                          command={request.command}
-                          editTarget={request.editTarget}
-                          blockedPath={request.blockedPath}
-                          decisionReason={request.decisionReason}
-                          busy={gates.resolvingPermissionIds.has(request.requestId)}
-                          canAlwaysAllow={Boolean(request.command)}
-                          onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
-                          onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
-                          onDeny={(requestId) => {
-                            debugLog("WorkspacePage", "permission-deny-requested", {
-                              requestId,
-                              selectedThreadId: chat.selectedThreadId,
-                              resolving: gates.resolvingPermissionIds.has(requestId),
-                              pendingPermissionIds: gates.pendingPermissionRequests.map((entry) => entry.requestId),
-                            });
-                            void gates.resolvePermission(requestId, "deny");
-                          }}
-                        />
-                      ))}
+                      {hasMultiplePendingPermissions ? (
+                        activePermissionRequest ? (
+                          <PermissionPromptCard
+                            key={activePermissionRequest.requestId}
+                            requestId={activePermissionRequest.requestId}
+                            toolName={activePermissionRequest.toolName}
+                            command={activePermissionRequest.command}
+                            editTarget={activePermissionRequest.editTarget}
+                            blockedPath={activePermissionRequest.blockedPath}
+                            decisionReason={activePermissionRequest.decisionReason}
+                            busy={gates.resolvingPermissionIds.has(activePermissionRequest.requestId)}
+                            canAlwaysAllow={Boolean(activePermissionRequest.command)}
+                            position={{
+                              current: activePermissionIndex + 1,
+                              total: gates.pendingPermissionRequests.length,
+                            }}
+                            onPrevious={handleShowPreviousPermission}
+                            onNext={handleShowNextPermission}
+                            onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
+                            onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
+                            onDeny={(requestId) => {
+                              debugLog("WorkspacePage", "permission-deny-requested", {
+                                requestId,
+                                selectedThreadId: chat.selectedThreadId,
+                                resolving: gates.resolvingPermissionIds.has(requestId),
+                                pendingPermissionIds: gates.pendingPermissionRequests.map((entry) => entry.requestId),
+                                activePermissionIndex,
+                              });
+                              void gates.resolvePermission(requestId, "deny");
+                            }}
+                          />
+                        ) : null
+                      ) : (
+                        gates.pendingPermissionRequests.map((request) => (
+                          <PermissionPromptCard
+                            key={request.requestId}
+                            requestId={request.requestId}
+                            toolName={request.toolName}
+                            command={request.command}
+                            editTarget={request.editTarget}
+                            blockedPath={request.blockedPath}
+                            decisionReason={request.decisionReason}
+                            busy={gates.resolvingPermissionIds.has(request.requestId)}
+                            canAlwaysAllow={Boolean(request.command)}
+                            onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
+                            onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
+                            onDeny={(requestId) => {
+                              debugLog("WorkspacePage", "permission-deny-requested", {
+                                requestId,
+                                selectedThreadId: chat.selectedThreadId,
+                                resolving: gates.resolvingPermissionIds.has(requestId),
+                                pendingPermissionIds: gates.pendingPermissionRequests.map((entry) => entry.requestId),
+                              });
+                              void gates.resolvePermission(requestId, "deny");
+                            }}
+                          />
+                        ))
+                      )}
                     </div>
                   </section>
                 ) : null}

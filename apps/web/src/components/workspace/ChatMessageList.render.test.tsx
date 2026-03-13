@@ -225,7 +225,6 @@ describe("ChatMessageList", () => {
     const event: ChatEvent = {
       id: "ev-bash",
       threadId: "t1",
-      messageId: "m2",
       idx: 1,
       type: "tool.finished",
       payload: {
@@ -358,9 +357,9 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Plan");
   });
 
-  it("shows streaming indicator when isStreaming", () => {
+  it("shows streaming indicator when thinking placeholder is enabled", () => {
     act(() => {
-      root.render(<ChatMessageList {...baseProps} isStreaming={true} />);
+      root.render(<ChatMessageList {...baseProps} showThinkingPlaceholder={true} />);
     });
   });
 

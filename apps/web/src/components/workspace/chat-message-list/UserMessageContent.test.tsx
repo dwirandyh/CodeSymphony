@@ -29,8 +29,8 @@ vi.stubGlobal("ResizeObserver", vi.fn().mockImplementation((callback: ResizeObse
 
 let container: HTMLDivElement;
 let root: Root;
-let requestAnimationFrameSpy: ReturnType<typeof vi.spyOn>;
-let cancelAnimationFrameSpy: ReturnType<typeof vi.spyOn>;
+let requestAnimationFrameSpy: ReturnType<typeof vi.spyOn<any, any>>;
+let cancelAnimationFrameSpy: ReturnType<typeof vi.spyOn<any, any>>;
 
 function flushAnimationFrame(frameId: number) {
   const callback = rafQueue.get(frameId);

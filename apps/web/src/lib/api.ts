@@ -1,5 +1,6 @@
 import type {
   AnswerQuestionInput,
+  ChatEvent,
   ChatMessage,
   ChatThread,
   ChatThreadSnapshot,

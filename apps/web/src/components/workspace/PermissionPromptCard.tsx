@@ -1,3 +1,4 @@
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { debugLog } from "../../lib/debugLog";
 import { Button } from "../ui/button";
 
@@ -12,6 +13,12 @@ type PermissionPromptCardProps = {
   decisionReason: string | null;
   busy: boolean;
   canAlwaysAllow: boolean;
+  position?: {
+    current: number;
+    total: number;
+  };
+  onPrevious?: () => void;
+  onNext?: () => void;
   onAllowOnce: (requestId: string) => void;
   onAllowAlways: (requestId: string) => void;
   onDeny: (requestId: string) => void;
@@ -26,6 +33,9 @@ export function PermissionPromptCard({
   decisionReason,
   busy,
   canAlwaysAllow,
+  position,
+  onPrevious,
+  onNext,
   onAllowOnce,
   onAllowAlways,
   onDeny,
@@ -39,6 +49,7 @@ export function PermissionPromptCard({
   const allowOnceLabel = isEditPermission ? "Apply edit" : "Allow once";
   const denyLabel = isEditPermission ? "Keep file" : "Deny";
   const hasDetails = hasMetadata || canAlwaysAllow;
+  const hasPosition = Boolean(position && position.total > 1);
 
   return (
     <section
@@ -50,47 +61,84 @@ export function PermissionPromptCard({
           <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Permission</p>
           <p className="mt-0.5 text-sm font-medium text-foreground/95">{promptTitle}</p>
         </div>
-        <span className="rounded-md border border-border/40 bg-background/45 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
-          Pending
-        </span>
+        {hasPosition ? (
+          <span className="rounded-md border border-border/40 bg-background/45 px-2 py-0.5 text-[10px] tabular-nums tracking-wide text-muted-foreground">
+            {position!.current} / {position!.total}
+          </span>
+        ) : (
+          <span className="rounded-md border border-border/40 bg-background/45 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+            Pending
+          </span>
+        )}
       </div>
 
       <pre className="mt-2 overflow-x-auto rounded-lg border border-border/35 bg-background/45 px-2.5 py-2 text-xs text-foreground/90 whitespace-pre-wrap break-words">
         {promptDetail}
       </pre>
 
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Button
-          type="button"
-          size="sm"
-          disabled={busy}
-          className="h-7 rounded-md px-2.5 text-[11px]"
-          onClick={() => onAllowOnce(requestId)}
-          aria-label={`Allow once ${requestId}`}
-        >
-          {allowOnceLabel}
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          className="h-7 rounded-md border-border/55 bg-transparent px-2.5 text-[11px] text-muted-foreground hover:text-foreground"
-          onClick={() => {
-            debugLog("PermissionPromptCard", "deny-click", {
-              requestId,
-              toolName,
-              busy,
-              command,
-              editTarget,
-              blockedPath,
-            });
-            onDeny(requestId);
-          }}
-          aria-label={`Deny ${requestId}`}
-        >
-          {denyLabel}
-        </Button>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          {hasPosition ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={busy || !onPrevious || position!.current === 1}
+                className="h-7 w-7 p-0"
+                onClick={onPrevious}
+                aria-label="Previous permission"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={busy || !onNext || position!.current === position!.total}
+                className="h-7 w-7 p-0"
+                onClick={onNext}
+                aria-label="Next permission"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy}
+            className="h-7 rounded-md px-2.5 text-[11px]"
+            onClick={() => onAllowOnce(requestId)}
+            aria-label={`Allow once ${requestId}`}
+          >
+            {allowOnceLabel}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            className="h-7 rounded-md border-border/55 bg-transparent px-2.5 text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={() => {
+              debugLog("PermissionPromptCard", "deny-click", {
+                requestId,
+                toolName,
+                busy,
+                command,
+                editTarget,
+                blockedPath,
+              });
+              onDeny(requestId);
+            }}
+            aria-label={`Deny ${requestId}`}
+          >
+            {denyLabel}
+          </Button>
+        </div>
       </div>
 
       {hasDetails ? (

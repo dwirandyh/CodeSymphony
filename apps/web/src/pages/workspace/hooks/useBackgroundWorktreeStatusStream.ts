@@ -66,7 +66,7 @@ function seedThreadEventCache(params: {
   lastEventIdxByThreadRef: MutableRefObject<Map<string, number>>;
 }) {
   const { snapshot, threadId, seenEventIdsByThreadRef, lastEventIdxByThreadRef } = params;
-  const cachedEvents = snapshot?.events.data;
+  const cachedEvents = snapshot?.events;
   if (!cachedEvents || cachedEvents.length === 0) {
     return;
   }

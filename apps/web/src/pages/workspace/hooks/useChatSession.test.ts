@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatEvent, ChatThread } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatThread } from "@codesymphony/shared-types";
 import {
   applySnapshotSeed,
   applyThreadTitleUpdate,
@@ -40,7 +40,7 @@ function makeThread(title: string, id = "thread-1"): ChatThread {
   };
 }
 
-function makeMessage(id: string, seq: number) {
+function makeMessage(id: string, seq: number): ChatMessage {
   return {
     id,
     threadId: "thread-1",
@@ -459,7 +459,7 @@ function createRef<T>(value: T) {
 describe("applySnapshotSeed", () => {
   it("applies snapshot events and messages to state setters", () => {
     const snapshot = makeSnapshot({ newestSeq: 1, newestIdx: 10 });
-    const messagesState = { current: [] as ReturnType<typeof makeMessage>[] };
+    const messagesState = { current: [] as ChatMessage[] };
     const eventsState = { current: [] as ChatEvent[] };
     const threadsState = { current: [makeThread("Original title")] };
     const seenEventIdsByThreadRef = createRef(new Map<string, Set<string>>());
@@ -499,8 +499,8 @@ describe("applySnapshotSeed", () => {
       snapshot,
       selectedThreadId: "thread-1",
       selectedWorktreeId: "wt-1",
-      setMessages: createStateSetter({ current: [] }),
-      setEvents: createStateSetter({ current: [] }),
+      setMessages: createStateSetter({ current: [] as ChatMessage[] }),
+      setEvents: createStateSetter({ current: [] as ChatEvent[] }),
       setThreads: createStateSetter(threadsState),
       seenEventIdsByThreadRef: createRef(new Map()),
       lastEventIdxByThreadRef: createRef(new Map()),

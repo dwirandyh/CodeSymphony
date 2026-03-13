@@ -77,7 +77,7 @@ describe("resolveRuntimeApiBase", () => {
       },
     } as Window);
 
-    vi.stubEnv("DEV", "true");
+    vi.stubEnv("VITE_DEV_PORT", "5173");
 
     const mod = await import("./runtimeUrl");
     expect(mod.resolveRuntimeApiBase()).toBe("http://localhost:4331/api");

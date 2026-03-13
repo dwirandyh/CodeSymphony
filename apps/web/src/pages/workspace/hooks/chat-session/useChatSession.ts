@@ -11,10 +11,9 @@ import type {
   ChatMessage,
   ChatMode,
   ChatThread,
-  ChatTimelineItem,
-  ChatTimelineSummary,
   AttachmentInput,
 } from "@codesymphony/shared-types";
+import type { ChatTimelineItem, ChatTimelineSummary } from "../../../../components/workspace/chat-message-list";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { debugLog } from "../../../../lib/debugLog";
@@ -514,8 +513,8 @@ export function useChatSession(
     if (!showStopAction) setStopRequestedThreadId(null);
   }, [showStopAction]);
 
-  const serverTimelineItems = queriedThreadSnapshot?.timelineItems ?? [];
-  const serverTimelineSummary = queriedThreadSnapshot?.summary;
+  const serverTimelineItems = (queriedThreadSnapshot?.timelineItems ?? []) as unknown as ChatTimelineItem[];
+  const serverTimelineSummary = queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined;
   const timelineSeedMatchesLiveState =
     selectedThreadId != null
     && queriedThreadSnapshot != null

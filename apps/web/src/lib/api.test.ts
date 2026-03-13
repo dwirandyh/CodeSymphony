@@ -121,7 +121,7 @@ describe("api", () => {
 
     it("includes script result if present", async () => {
       const worktree = { id: "w1" };
-      const scriptResult = { exitCode: 0, output: "ok" };
+      const scriptResult = { success: true, output: "ok" };
       mockFetch.mockReturnValueOnce(
         Promise.resolve({
           ok: true, status: 200,
@@ -172,7 +172,7 @@ describe("api", () => {
   describe("renameWorktreeBranch", () => {
     it("renames branch", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "w1", branch: "new-name" }));
-      await api.renameWorktreeBranch("w1", { newBranch: "new-name" });
+      await api.renameWorktreeBranch("w1", { branch: "new-name" });
       const [, init] = mockFetch.mock.calls[0];
       expect(init.method).toBe("PATCH");
     });
@@ -235,7 +235,7 @@ describe("api", () => {
 
     it("sends message", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "m1" }));
-      await api.sendMessage("t1", { content: "hello" });
+      await api.sendMessage("t1", { content: "hello", mode: "default", attachments: [] });
       const [, init] = mockFetch.mock.calls[0];
       expect(init.method).toBe("POST");
     });
@@ -314,7 +314,7 @@ describe("api", () => {
 
   describe("git operations", () => {
     it("gets git status", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ files: [] }));
+      mockFetch.mockReturnValueOnce(mockOk({ branch: "main", entries: [] }));
       await api.getGitStatus("w1");
     });
 
@@ -358,12 +358,12 @@ describe("api", () => {
 
     it("opens worktree file", async () => {
       mockFetch.mockReturnValueOnce(mock204());
-      await api.openWorktreeFile("w1", { filePath: "src/a.ts" });
+      await api.openWorktreeFile("w1", { path: "src/a.ts" });
     });
 
     it("open file throws on error", async () => {
       mockFetch.mockReturnValueOnce(mockError(500, "fail"));
-      await expect(api.openWorktreeFile("w1", { filePath: "src/a.ts" })).rejects.toThrow("fail");
+      await expect(api.openWorktreeFile("w1", { path: "src/a.ts" })).rejects.toThrow("fail");
     });
   });
 
@@ -387,12 +387,12 @@ describe("api", () => {
 
     it("opens in app", async () => {
       mockFetch.mockReturnValueOnce(mock204());
-      await api.openInApp({ appId: "1", path: "/home" });
+      await api.openInApp({ appId: "1", targetPath: "/home" });
     });
 
     it("open in app throws on error", async () => {
       mockFetch.mockReturnValueOnce(mockError(500, "fail"));
-      await expect(api.openInApp({ appId: "1", path: "/" })).rejects.toThrow("fail");
+      await expect(api.openInApp({ appId: "1", targetPath: "/" })).rejects.toThrow("fail");
     });
   });
 

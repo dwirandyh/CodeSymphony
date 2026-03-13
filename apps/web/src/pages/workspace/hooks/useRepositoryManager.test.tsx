@@ -23,6 +23,7 @@ function makeRepositories(): Repository[] {
       teardownScript: null,
       runScript: null,
       createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
       worktrees: [
         {
           id: "wt-root",
@@ -31,9 +32,9 @@ function makeRepositories(): Repository[] {
           path: "/home/user/test-repo",
           baseBranch: "main",
           status: "active",
-          isRoot: true,
           branchRenamed: false,
           createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
         },
         {
           id: "wt-feat",
@@ -42,9 +43,9 @@ function makeRepositories(): Repository[] {
           path: "/home/user/.codesymphony/worktrees/test-repo/feature",
           baseBranch: "main",
           status: "active",
-          isRoot: false,
           branchRenamed: false,
           createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
         },
       ],
     },
@@ -99,8 +100,8 @@ vi.mock("../../../lib/api", () => ({
   },
   TeardownFailedError: class extends Error {
     output: string;
-    constructor(msg: string, output: string) {
-      super(msg);
+    constructor(output: string) {
+      super("Teardown scripts failed");
       this.output = output;
     }
   },
@@ -188,7 +189,7 @@ describe("useRepositoryManager", () => {
     queryClient.setQueryData(queryKeys.threads.list("wt-feat"), [{ id: "t1" }]);
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot("t1"), { seed: { messages: { data: [] }, events: { data: [] } } });
     queryClient.setQueryData(queryKeys.threads.statusSnapshot("t1"), { messages: { data: [] }, events: { data: [] } });
-    queryClient.setQueryData(queryKeys.worktrees.gitStatus("wt-feat"), { files: [] });
+    queryClient.setQueryData(queryKeys.worktrees.gitStatus("wt-feat"), { branch: "feature", entries: [] });
 
     act(() => {
       repositoriesState.data = [];
@@ -291,7 +292,7 @@ describe("useRepositoryManager", () => {
 
     it("handles teardown error", async () => {
       const { TeardownFailedError } = await import("../../../lib/api");
-      const teardownErr = new TeardownFailedError("Teardown failed", "script output");
+      const teardownErr = new TeardownFailedError("script output");
       mockDeleteWorktreeMutateAsync.mockRejectedValueOnce(teardownErr);
       render();
       await act(async () => {
