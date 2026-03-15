@@ -8,8 +8,8 @@ coverage
 .env
 .env.*
 !.env.example
-apps/runtime/prisma/*.db
-apps/runtime/prisma/*.db-journal
+apps/runtime/prisma/**/*.db
+apps/runtime/prisma/**/*.db-journal
 apps/runtime/.tmp
 apps/runtime/debug.log
 apps/web/src/routeTree.gen.ts
