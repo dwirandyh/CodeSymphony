@@ -427,7 +427,7 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Explored 1 search");
   });
 
-  it("renders activity item", () => {
+  it("filters legacy activity items from the rendered list", () => {
     const items: ChatTimelineItem[] = [
       {
         kind: "activity",
@@ -437,11 +437,15 @@ describe("ChatMessageList", () => {
         steps: [{ id: "s1", label: "Step 1", detail: "Reading file" }],
         defaultExpanded: false,
       },
+      { kind: "thinking", id: "th-activity-gap", messageId: "m2", content: "Thinking", isStreaming: false },
     ];
     act(() => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
-    expect(container).toBeTruthy();
+
+    const rows = getTimelineRowWrappers();
+    expect(rows).toHaveLength(1);
+    expect(container.querySelector("[data-testid='timeline-thinking']")).toBeTruthy();
   });
 
   it("renders plan-file-output item", () => {

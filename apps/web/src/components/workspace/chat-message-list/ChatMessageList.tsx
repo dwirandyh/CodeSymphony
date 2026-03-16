@@ -65,7 +65,7 @@ export function ChatMessageList({
   }, []);
 
   const displayItems = useMemo(() => {
-    const result: Array<ChatTimelineItem | "thinking-placeholder"> = [...items];
+    const result: Array<ChatTimelineItem | "thinking-placeholder"> = items.filter((item) => item.kind !== "activity");
     if (showThinkingPlaceholder) {
       result.push("thinking-placeholder");
     }

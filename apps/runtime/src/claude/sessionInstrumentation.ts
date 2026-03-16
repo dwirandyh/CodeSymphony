@@ -31,6 +31,8 @@ export type SessionMaps = {
   progressByToolUseId: Map<string, { count: number; maxElapsedTimeSeconds: number }>;
   summaryUnknownToolUseIds: Set<string>;
   subagentToolInputByUseId: Map<string, Record<string, unknown>>;
+  pendingSubagentTaskToolUseIds: string[];
+  subagentTaskToolUseIdBySubagentToolUseId: Map<string, string>;
   subagentResponseByUseId: Map<string, string>;
   sessionPersistedPlanFiles: Set<string>;
 };

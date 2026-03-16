@@ -131,6 +131,9 @@ export function createCanUseTool(
       isBash,
     });
     maps.subagentToolInputByUseId.set(toolUseId, input);
+    if (toolName.toLowerCase() === "task") {
+      maps.pendingSubagentTaskToolUseIds.push(toolUseId);
+    }
     maps.requestedToolByUseId.set(toolUseId, {
       toolName,
       parentToolUseId: null,
@@ -479,15 +482,66 @@ export function createSubagentStartHook(
       return { continue: true };
     }
 
+    const isKnownTaskToolUseId = (candidateToolUseId: string): boolean => {
+      const metadata = maps.toolMetadataByUseId.get(candidateToolUseId);
+      if (metadata?.toolName && metadata.toolName.toLowerCase() === "task") {
+        return true;
+      }
+      const requested = maps.requestedToolByUseId.get(candidateToolUseId);
+      return (requested?.toolName ?? "").toLowerCase() === "task";
+    };
+
     const agentId = String(hookInput.agent_id ?? "");
     const agentType = String(hookInput.agent_type ?? "unknown");
-    const resolvedToolUseId = String(hookInput.tool_use_id || toolUseID || "");
+    const subagentToolUseId = String(hookInput.tool_use_id || toolUseID || "");
+    const parentToolUseId = String(hookInput.parent_tool_use_id ?? "");
 
-    if (agentId && resolvedToolUseId) {
-      maps.agentIdToToolUseId.set(agentId, resolvedToolUseId);
+    let taskToolUseId = "";
+
+    if (subagentToolUseId) {
+      taskToolUseId = maps.subagentTaskToolUseIdBySubagentToolUseId.get(subagentToolUseId) ?? "";
+      if (!taskToolUseId && maps.subagentToolInputByUseId.has(subagentToolUseId) && isKnownTaskToolUseId(subagentToolUseId)) {
+        taskToolUseId = subagentToolUseId;
+      }
     }
 
-    const toolInput = maps.subagentToolInputByUseId.get(resolvedToolUseId);
+    if (!taskToolUseId && parentToolUseId && maps.subagentToolInputByUseId.has(parentToolUseId) && isKnownTaskToolUseId(parentToolUseId)) {
+      taskToolUseId = parentToolUseId;
+    }
+
+    if (!taskToolUseId) {
+      const assignedTaskToolUseIds = new Set(maps.subagentTaskToolUseIdBySubagentToolUseId.values());
+      while (maps.pendingSubagentTaskToolUseIds.length > 0) {
+        const candidateTaskToolUseId = maps.pendingSubagentTaskToolUseIds.shift();
+        if (!candidateTaskToolUseId) {
+          break;
+        }
+        if (!maps.subagentToolInputByUseId.has(candidateTaskToolUseId)) {
+          continue;
+        }
+        if (assignedTaskToolUseIds.has(candidateTaskToolUseId)) {
+          continue;
+        }
+        const candidateDecision = maps.decisionByToolUseId.get(candidateTaskToolUseId);
+        if (candidateDecision === "deny" || candidateDecision === "plan_deny") {
+          continue;
+        }
+        taskToolUseId = candidateTaskToolUseId;
+        break;
+      }
+    }
+
+    if (subagentToolUseId && taskToolUseId) {
+      maps.subagentTaskToolUseIdBySubagentToolUseId.set(subagentToolUseId, taskToolUseId);
+    }
+
+    if (agentId && subagentToolUseId) {
+      maps.agentIdToToolUseId.set(agentId, subagentToolUseId);
+    }
+
+    const toolInput = taskToolUseId
+      ? maps.subagentToolInputByUseId.get(taskToolUseId)
+      : undefined;
     const description = toolInput
       ? String((toolInput as Record<string, unknown>).description
         ?? (toolInput as Record<string, unknown>).prompt
@@ -499,7 +553,7 @@ export function createSubagentStartHook(
     await callbacks.onSubagentStarted({
       agentId,
       agentType,
-      toolUseId: resolvedToolUseId,
+      toolUseId: subagentToolUseId,
       description,
     });
 
@@ -518,8 +572,15 @@ export function createSubagentStopHook(
 
     const agentId = String(hookInput.agent_id ?? "");
     const agentType = String(hookInput.agent_type ?? "unknown");
-    const resolvedToolUseId = maps.agentIdToToolUseId.get(agentId)
+    const subagentToolUseId = maps.agentIdToToolUseId.get(agentId)
       ?? String(hookInput.tool_use_id || toolUseID || "");
+    const bridgedTaskToolUseId = subagentToolUseId
+      ? maps.subagentTaskToolUseIdBySubagentToolUseId.get(subagentToolUseId) ?? ""
+      : "";
+    const taskToolUseId = bridgedTaskToolUseId
+      || (subagentToolUseId && maps.subagentToolInputByUseId.has(subagentToolUseId)
+        ? subagentToolUseId
+        : "");
 
     let description = "";
     let lastMessage = "";
@@ -535,12 +596,19 @@ export function createSubagentStopHook(
       }
     }
 
-    maps.subagentToolInputByUseId.delete(resolvedToolUseId);
+    if (subagentToolUseId) {
+      maps.subagentTaskToolUseIdBySubagentToolUseId.delete(subagentToolUseId);
+    }
+
+    if (taskToolUseId) {
+      maps.subagentToolInputByUseId.delete(taskToolUseId);
+      maps.pendingSubagentTaskToolUseIds = maps.pendingSubagentTaskToolUseIds.filter((id) => id !== taskToolUseId);
+    }
 
     await callbacks.onSubagentStopped({
       agentId,
       agentType,
-      toolUseId: resolvedToolUseId,
+      toolUseId: subagentToolUseId,
       description,
       lastMessage,
     });

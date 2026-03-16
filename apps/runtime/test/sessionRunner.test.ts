@@ -738,6 +738,286 @@ describe("tool instrumentation", () => {
       requestId: "tool-question-plan",
     }));
   });
+
+  it("bridges mismatched task and subagent IDs at start while keeping subagent UUID", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+        await canUseTool("Task", {
+          description: "Inspect repository structure",
+          prompt: "Inspect repository structure",
+        }, {
+          toolUseID: "call-task-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-1",
+            agent_type: "Explore",
+            tool_use_id: "subagent-uuid-1",
+          },
+          "subagent-uuid-1",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-1" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    const onSubagentStarted = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run task",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted,
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onSubagentStarted).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: "agent-1",
+      agentType: "Explore",
+      toolUseId: "subagent-uuid-1",
+      description: "Inspect repository structure",
+    }));
+  });
+
+  it("maps overlapping subagents to queued task prompts deterministically", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "First prompt" }, {
+          toolUseID: "call-task-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+        await canUseTool("Task", { description: "Second prompt" }, {
+          toolUseID: "call-task-2",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+          SubagentStop: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+        const subagentStopHook = hooks.SubagentStop[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-a",
+            agent_type: "Explore",
+            tool_use_id: "subagent-a",
+          },
+          "subagent-a",
+        );
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-b",
+            agent_type: "Explore",
+            tool_use_id: "subagent-b",
+          },
+          "subagent-b",
+        );
+
+        await subagentStopHook?.(
+          {
+            hook_event_name: "SubagentStop",
+            agent_id: "agent-b",
+            agent_type: "Explore",
+            tool_use_id: "subagent-b",
+          },
+          "subagent-b",
+        );
+        await subagentStopHook?.(
+          {
+            hook_event_name: "SubagentStop",
+            agent_id: "agent-a",
+            agent_type: "Explore",
+            tool_use_id: "subagent-a",
+          },
+          "subagent-a",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-2" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    const onSubagentStarted = vi.fn();
+    const onSubagentStopped = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run overlapping tasks",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted,
+      onSubagentStopped,
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onSubagentStarted).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      agentId: "agent-a",
+      toolUseId: "subagent-a",
+      description: "First prompt",
+    }));
+    expect(onSubagentStarted).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      agentId: "agent-b",
+      toolUseId: "subagent-b",
+      description: "Second prompt",
+    }));
+
+    expect(onSubagentStopped).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      agentId: "agent-b",
+      toolUseId: "subagent-b",
+    }));
+    expect(onSubagentStopped).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      agentId: "agent-a",
+      toolUseId: "subagent-a",
+    }));
+  });
+
+  it("cleans bridged task IDs on stop to prevent stale prompt reuse", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Stale prompt" }, {
+          toolUseID: "call-task-stale",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+          SubagentStop: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+        const subagentStopHook = hooks.SubagentStop[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-stale-1",
+            agent_type: "Explore",
+            tool_use_id: "subagent-stale-1",
+            parent_tool_use_id: "call-task-stale",
+          },
+          "subagent-stale-1",
+        );
+
+        await subagentStopHook?.(
+          {
+            hook_event_name: "SubagentStop",
+            agent_id: "agent-stale-1",
+            agent_type: "Explore",
+            tool_use_id: "subagent-stale-1",
+          },
+          "subagent-stale-1",
+        );
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-stale-2",
+            agent_type: "Explore",
+            tool_use_id: "subagent-stale-2",
+          },
+          "subagent-stale-2",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-stale" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    const onSubagentStarted = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run cleanup test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted,
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onSubagentStarted).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      agentId: "agent-stale-1",
+      toolUseId: "subagent-stale-1",
+      description: "Stale prompt",
+    }));
+    expect(onSubagentStarted).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      agentId: "agent-stale-2",
+      toolUseId: "subagent-stale-2",
+      description: "",
+    }));
+  });
 });
 
 describe("thinking_delta", () => {
