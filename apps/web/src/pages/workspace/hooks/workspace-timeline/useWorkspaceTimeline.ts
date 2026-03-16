@@ -65,10 +65,10 @@ function getTimelineItemStableKey(item: { kind: string;[key: string]: unknown })
       return `tool:${item.id}`;
     case "edited-diff":
       return `edited-diff:${item.id}`;
-    case "explore-activity":
-      return `explore-activity:${item.id}`;
     case "subagent-activity":
       return `subagent-activity:${item.id}`;
+    case "explore-activity":
+      return `explore-activity:${item.id}`;
     case "thinking":
       return `thinking:${item.id}`;
     case "error":
@@ -476,10 +476,33 @@ export function useWorkspaceTimeline(
           })()
           : undefined;
 
-      const subagentGroups = message.role === "assistant" ? extractSubagentGroups(context) : [];
+      const deltaEventsForAgent = message.role === "assistant"
+        ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
+        : [];
+      const thinkingEventsForAgent = message.role === "assistant"
+        ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
+        : [];
+      const contextWithAgentBoundaries = (deltaEventsForAgent.length > 0 || thinkingEventsForAgent.length > 0)
+        ? [...context, ...thinkingEventsForAgent, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
+        : context;
+      const subagentGroups = message.role === "assistant"
+        ? extractSubagentGroups(contextWithAgentBoundaries)
+        : [];
       const subagentEventIds = new Set<string>();
       for (const group of subagentGroups) {
         group.eventIds.forEach((id) => subagentEventIds.add(id));
+      }
+      const exploreActivityGroups = message.role === "assistant"
+        ? extractExploreActivityGroups(
+          contextWithAgentBoundaries.filter((event) => !subagentEventIds.has(event.id)),
+        )
+        : [];
+      const agentEventIds = new Set<string>();
+      for (const group of subagentGroups) {
+        group.eventIds.forEach((id) => agentEventIds.add(id));
+      }
+      for (const group of exploreActivityGroups) {
+        group.eventIds.forEach((id) => agentEventIds.add(id));
       }
       const subagentSummaryRegex = SUBAGENT_SUMMARY_REGEX;
       const mainSummaryStartMarker = MAIN_SUMMARY_START_MARKER;
@@ -519,7 +542,7 @@ export function useWorkspaceTimeline(
           .trim();
       }
       const nonSubagentContext = message.role === "assistant"
-        ? context.filter((event) => !subagentEventIds.has(event.id))
+        ? context.filter((event) => !agentEventIds.has(event.id))
         : context;
 
       const allBashRuns = message.role === "assistant" ? extractBashRuns(nonSubagentContext) : [];
@@ -583,24 +606,8 @@ export function useWorkspaceTimeline(
           return true;
         })
         : nonSubagentContext;
-      const exploreContext = nonBashContext.filter((event) => !isWorktreeDiffEvent(event));
-      const deltaEventsForExplore = message.role === "assistant"
-        ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
-        : [];
-      const thinkingEventsForExplore = message.role === "assistant"
-        ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
-        : [];
-      const exploreContextWithDeltas = (deltaEventsForExplore.length > 0 || thinkingEventsForExplore.length > 0)
-        ? [...exploreContext, ...thinkingEventsForExplore, ...deltaEventsForExplore].sort((a, b) => a.idx - b.idx)
-        : exploreContext;
-      const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(exploreContextWithDeltas) : [];
-
-      const exploreEventIds = new Set<string>();
-      for (const group of exploreActivityGroups) {
-        group.eventIds.forEach((id) => exploreEventIds.add(id));
-      }
       const activityContext = message.role === "assistant"
-        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event) && !exploreEventIds.has(event.id))
+        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event))
         : nonBashContext;
       if (message.role === "assistant") {
         for (const run of bashRuns) {
@@ -618,10 +625,10 @@ export function useWorkspaceTimeline(
         if (editedRuns.some((r) => r.diffKind !== "none")) {
           hasEditedRunsWithDiffs = true;
         }
-        for (const group of exploreActivityGroups) {
+        for (const group of subagentGroups) {
           group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
-        for (const group of subagentGroups) {
+        for (const group of exploreActivityGroups) {
           group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
         }
       }
@@ -664,7 +671,14 @@ export function useWorkspaceTimeline(
 
       if (message.role === "assistant") {
         const rawRounds = thinkingRoundsByMessageId.get(message.id) ?? [];
-        const mergedRounds = mergeThinkingRounds(rawRounds, bashRuns, editedRuns, exploreActivityGroups, subagentGroups, planFileOutput);
+        const mergedRounds = mergeThinkingRounds(
+          rawRounds,
+          bashRuns,
+          editedRuns,
+          subagentGroups,
+          exploreActivityGroups,
+          planFileOutput,
+        );
         insertThinkingItems(
           mergedRounds,
           message.id,
@@ -679,10 +693,19 @@ export function useWorkspaceTimeline(
         );
       }
 
-      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
+      if (
+        message.role === "assistant"
+        && (bashRuns.length > 0 || editedRuns.length > 0 || subagentGroups.length > 0 || exploreActivityGroups.length > 0 || !!planFileOutput)
+      ) {
         const hasInlineSubagentRuns = subagentGroups.length > 0;
 
-        const inlineInserts = buildInlineInserts(bashRuns, editedRuns, exploreActivityGroups, subagentGroups, planFileOutput);
+        const inlineInserts = buildInlineInserts(
+          bashRuns,
+          editedRuns,
+          subagentGroups,
+          exploreActivityGroups,
+          planFileOutput,
+        );
 
         const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
 
@@ -779,8 +802,8 @@ export function useWorkspaceTimeline(
       (event) => event.type === "chat.completed" || event.type === "chat.failed",
     );
 
-    processOrphanSubagentGroups(inlineToolEvents, assignedToolEventIds, chatTerminated, sortable);
-    processOrphanExploreGroups(inlineToolEvents, assignedToolEventIds, chatTerminated, sortable);
+    processOrphanSubagentGroups(semanticContextEvents, assignedToolEventIds, chatTerminated, sortable);
+    processOrphanExploreGroups(semanticContextEvents, assignedToolEventIds, chatTerminated, sortable);
 
     const orphanResult = processOrphanToolEvents(
       inlineToolEvents,

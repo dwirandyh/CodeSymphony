@@ -627,8 +627,8 @@ export function buildTimelineFromSeed(params: {
     });
   }
 
-  processOrphanSubagentGroups(inlineToolEvents, assignedToolEventIds, chatTerminated, sortable);
-  processOrphanExploreGroups(inlineToolEvents, assignedToolEventIds, chatTerminated, sortable);
+  processOrphanSubagentGroups(semanticContextEvents, assignedToolEventIds, chatTerminated, sortable);
+  processOrphanExploreGroups(semanticContextEvents, assignedToolEventIds, chatTerminated, sortable);
 
   const orphanResult = processOrphanToolEvents(
     inlineToolEvents,

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { extractSubagentGroups } from "./subagentUtils";
+import { extractExploreActivityGroups } from "./exploreUtils";
 
 function makeEvent(overrides: Partial<ChatEvent> & { type: ChatEvent["type"] }): ChatEvent {
   return {
@@ -188,5 +189,147 @@ describe("extractSubagentGroups", () => {
     expect(groups[0].steps.length).toBe(1);
     expect(groups[0].eventIds.has("e2")).toBe(true);
     expect(groups[0].eventIds.has("e3")).toBe(true);
+  });
+
+  it("keeps overlap with explicit parentToolUseId separated", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "tool.started", idx: 5, payload: { toolName: "Read", toolUseId: "child-a", parentToolUseId: "sa-1" } }),
+      makeEvent({ id: "e6", type: "tool.started", idx: 6, payload: { toolName: "Read", toolUseId: "child-b", parentToolUseId: "sa-2" } }),
+      makeEvent({ id: "e7", type: "tool.finished", idx: 7, payload: { toolName: "Read", toolUseId: "child-a-done", precedingToolUseIds: ["child-a"], summary: "Read a.ts" } }),
+      makeEvent({ id: "e8", type: "tool.finished", idx: 8, payload: { toolName: "Read", toolUseId: "child-b-done", precedingToolUseIds: ["child-b"], summary: "Read b.ts" } }),
+      makeEvent({ id: "e9", type: "subagent.finished", idx: 9, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e10", type: "subagent.finished", idx: 10, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    const first = byToolUseId.get("sa-1");
+    const second = byToolUseId.get("sa-2");
+    expect(first?.steps.some((step) => step.label.includes("a.ts"))).toBe(true);
+    expect(first?.steps.some((step) => step.label.includes("b.ts"))).toBe(false);
+    expect(second?.steps.some((step) => step.label.includes("b.ts"))).toBe(true);
+    expect(second?.steps.some((step) => step.label.includes("a.ts"))).toBe(false);
+  });
+
+  it("uses precedingToolUseIds lineage during overlap when finish events have no parent", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "tool.started", idx: 5, payload: { toolName: "Read", toolUseId: "child-a", parentToolUseId: "sa-1" } }),
+      makeEvent({ id: "e6", type: "tool.started", idx: 6, payload: { toolName: "Read", toolUseId: "child-b", parentToolUseId: "sa-2" } }),
+      makeEvent({ id: "e7", type: "tool.finished", idx: 7, payload: { toolName: "Read", toolUseId: "child-a-done", precedingToolUseIds: ["child-a"], summary: "Read app/a.ts" } }),
+      makeEvent({ id: "e8", type: "tool.finished", idx: 8, payload: { toolName: "Read", toolUseId: "child-b-done", precedingToolUseIds: ["child-b"], summary: "Read app/b.ts" } }),
+      makeEvent({ id: "e9", type: "subagent.finished", idx: 9, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e10", type: "subagent.finished", idx: 10, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    const first = byToolUseId.get("sa-1");
+    const second = byToolUseId.get("sa-2");
+    expect(first?.steps.some((step) => step.label.includes("a.ts"))).toBe(true);
+    expect(second?.steps.some((step) => step.label.includes("b.ts"))).toBe(true);
+    expect(first?.eventIds.has("e8")).toBe(false);
+    expect(second?.eventIds.has("e7")).toBe(false);
+  });
+
+  it("does not claim ambiguous overlap events without lineage", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "tool.started", idx: 5, payload: { toolName: "Read", toolUseId: "ambiguous-1" } }),
+      makeEvent({ id: "e6", type: "tool.finished", idx: 6, payload: { toolName: "Read", toolUseId: "ambiguous-1-done", summary: "Read maybe" } }),
+      makeEvent({ id: "e7", type: "subagent.finished", idx: 7, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e8", type: "subagent.finished", idx: 8, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const claimedEventIds = new Set(groups.flatMap((group) => [...group.eventIds]));
+    expect(claimedEventIds.has("e5")).toBe(false);
+    expect(claimedEventIds.has("e6")).toBe(false);
+    expect(groups.every((group) => group.steps.length === 0)).toBe(true);
+  });
+
+  it("pairs multiple pending Task starts in FIFO order", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "tool.started", idx: 2, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e3", type: "subagent.started", idx: 3, payload: { agentId: "a1", agentType: "generalPurpose", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "generalPurpose", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "tool.finished", idx: 5, payload: { toolName: "Task", toolUseId: "call_1", subagentResponse: "first response" } }),
+      makeEvent({ id: "e6", type: "tool.finished", idx: 6, payload: { toolName: "Task", toolUseId: "call_2", subagentResponse: "second response" } }),
+      makeEvent({ id: "e7", type: "subagent.finished", idx: 7, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e8", type: "subagent.finished", idx: 8, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    const first = byToolUseId.get("sa-1");
+    const second = byToolUseId.get("sa-2");
+    expect(first?.eventIds.has("e1")).toBe(true);
+    expect(first?.eventIds.has("e5")).toBe(true);
+    expect(first?.eventIds.has("e2")).toBe(false);
+    expect(first?.eventIds.has("e6")).toBe(false);
+
+    expect(second?.eventIds.has("e2")).toBe(true);
+    expect(second?.eventIds.has("e6")).toBe(true);
+    expect(second?.eventIds.has("e1")).toBe(false);
+    expect(second?.eventIds.has("e5")).toBe(false);
+  });
+});
+
+describe("extractExploreActivityGroups", () => {
+  it("builds standalone explore groups from main-agent explore events", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: { toolName: "Read", toolUseId: "r1" },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "tool.finished",
+        idx: 2,
+        payload: { toolName: "Read", summary: "Read /src/a.ts", precedingToolUseIds: ["r1"] },
+      }),
+      makeEvent({
+        id: "e3",
+        type: "tool.started",
+        idx: 3,
+        payload: { toolName: "Glob", toolUseId: "g1", searchParams: "src/**/*.ts" },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "tool.finished",
+        idx: 4,
+        payload: { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] },
+      }),
+    ];
+
+    const groups = extractExploreActivityGroups(events);
+    expect(groups).toHaveLength(1);
+
+    const group = groups[0];
+    expect(group.fileCount).toBe(1);
+    expect(group.searchCount).toBe(1);
+    expect(group.entries).toHaveLength(2);
+
+    const claimedEventIds = new Set<string>([...group.eventIds]);
+    expect(claimedEventIds.has("e1")).toBe(true);
+    expect(claimedEventIds.has("e2")).toBe(true);
+    expect(claimedEventIds.has("e3")).toBe(true);
+    expect(claimedEventIds.has("e4")).toBe(true);
   });
 });

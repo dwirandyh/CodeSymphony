@@ -1,11 +1,11 @@
 import { memo } from "react";
 import { Bot, Brain, CheckCircle2, ChevronRight, Loader2, XCircle } from "lucide-react";
 import { cn } from "../../../lib/utils";
-import { EXPLORE_BASH_COMMAND_PATTERN } from "../../../pages/workspace/constants";
+import { isExploreLikeBashCommand } from "../../../pages/workspace/eventUtils";
 import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { pushRenderDebug } from "../../../lib/renderDebug";
-import type { ChatTimelineItem, ExploreActivityEntry, TimelineCtx } from "./ChatMessageList.types";
+import type { ChatTimelineItem, TimelineCtx } from "./ChatMessageList.types";
 import { TerminalOutputPre } from "./ansiUtils";
 import { SafePatchDiff } from "./diffUtils";
 import {
@@ -347,41 +347,23 @@ export const TimelineItem = memo(function TimelineItem({
   }
 
   if (item.kind === "explore-activity") {
-    const renderReadLabel = (entry: ExploreActivityEntry, key: string) => (
-      <span key={key}>
-        Read{" "}
-        {entry.openPath && ctx.onOpenReadFile ? (
-          <button
-            type="button"
-            className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
-            onClick={() => {
-              const openPath = entry.openPath;
-              if (!openPath || !ctx.onOpenReadFile) {
-                return;
-              }
-              void ctx.onOpenReadFile(openPath);
-            }}
-          >
-            {entry.label}
-          </button>
-        ) : (
-          <span>{entry.label}</span>
-        )}
-      </span>
-    );
     const expanded = ctx.exploreActivityExpandedById.get(item.id) === true;
-    const summaryPrefix = item.status === "running" ? "Exploring" : "Explored";
+    const isRunning = item.status === "running";
+
     const summaryParts: string[] = [];
     if (item.fileCount > 0) {
-      summaryParts.push(`${item.fileCount} files`);
+      summaryParts.push(`${item.fileCount} file${item.fileCount !== 1 ? "s" : ""}`);
     }
     if (item.searchCount > 0) {
-      summaryParts.push(`${item.searchCount} searches`);
+      summaryParts.push(`${item.searchCount} search${item.searchCount !== 1 ? "es" : ""}`);
     }
-    const summaryText = summaryParts.length > 0 ? `${summaryPrefix} ${summaryParts.join(", ")}` : `${summaryPrefix}`;
+
+    const summaryPrefix = isRunning ? "Exploring" : "Explored";
+    const summaryText = summaryParts.length > 0 ? `${summaryPrefix} ${summaryParts.join(", ")}` : summaryPrefix;
+
     return (
       <article
-        className="px-1 text-xs"
+        className="px-1"
         data-testid="timeline-explore-activity"
       >
         <details
@@ -395,23 +377,47 @@ export const TimelineItem = memo(function TimelineItem({
             });
           }}
         >
-          <summary className="group/read-summary cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
-            <span className={item.status === "running" ? "thinking-shimmer" : ""}>{summaryText}</span>
-            <span
-              data-testid="timeline-explore-activity-chevron"
-              className={cn("inline-flex transition-transform duration-150", expanded ? "rotate-90" : "")}
-            >
+          <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
+            <span>{summaryText}</span>
+            <span className={cn("inline-flex shrink-0 transition-transform duration-150", expanded ? "rotate-90" : "")}>
               <ChevronRight className="h-3 w-3" />
             </span>
           </summary>
-          <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
+
+          <div
+            className="mt-1 flex flex-col gap-0.5 text-xs text-muted-foreground"
+            data-testid="timeline-explore-activity-entries"
+          >
             {item.entries.map((entry, idx) => (
-              entry.pending
-                ? <span key={`pending:${idx}`}>{entry.label}</span>
-                : entry.kind === "read"
-                  ? renderReadLabel(entry, `read:${idx}`)
-                  : <span key={`entry:${idx}`}>{entry.label}</span>
+              <span key={`${entry.kind}:${entry.orderIdx}:${idx}`}>
+                {entry.kind === "read" ? (
+                  <>
+                    Read{" "}
+                    {entry.openPath && ctx.onOpenReadFile ? (
+                      <button
+                        type="button"
+                        className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
+                        onClick={() => {
+                          if (entry.openPath && ctx.onOpenReadFile) {
+                            void ctx.onOpenReadFile(entry.openPath);
+                          }
+                        }}
+                      >
+                        {entry.label}
+                      </button>
+                    ) : (
+                      <span>{entry.label}</span>
+                    )}
+                  </>
+                ) : (
+                  entry.label
+                )}
+              </span>
             ))}
+
+            {item.entries.length === 0 ? (
+              <span>{isRunning ? "Exploring…" : "No explore activity"}</span>
+            ) : null}
           </div>
         </details>
       </article>
@@ -421,6 +427,32 @@ export const TimelineItem = memo(function TimelineItem({
   if (item.kind === "subagent-activity") {
     const expanded = ctx.subagentExpandedById.get(item.id) === true;
     const isRunning = item.status === "running";
+
+    const EXPLORE_TOOL_NAMES = new Set(["Read", "Grep", "Search", "Glob", "ListDir"]);
+    const isExploreStep = (s: { toolName: string; label?: string }) => {
+      if (EXPLORE_TOOL_NAMES.has(s.toolName)) return true;
+      if (s.toolName === "Bash" && s.label) {
+        const cmd = s.label.replace(/^Ran\s+/i, "").trim();
+        return isExploreLikeBashCommand(cmd);
+      }
+      return false;
+    };
+    const readSteps = item.steps.filter(isExploreStep);
+    const otherSteps = item.steps.filter((s) => !isExploreStep(s));
+    const readCount = readSteps.filter((s) => s.toolName === "Read").length;
+    const searchCount = readSteps.filter((s) => s.toolName !== "Read").length;
+    const hasExploreSteps = readSteps.length > 0;
+
+    const stepCount = item.steps.length;
+    const durationText = item.durationSeconds != null ? `${item.durationSeconds}s` : "";
+    const statusParts = [
+      stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? "s" : ""}` : "",
+      durationText,
+    ].filter(Boolean).join(" · ");
+    const statusText = isRunning
+      ? `Running${statusParts ? ` · ${statusParts}` : ""}`
+      : `Done${statusParts ? ` · ${statusParts}` : ""}`;
+
     const agentLabel = item.agentType !== "unknown" ? item.agentType : "Task";
     const descSnippet = item.description || "";
     const truncateDescription = (desc: string, maxLen = 80): string => {
@@ -431,36 +463,13 @@ export const TimelineItem = memo(function TimelineItem({
       }
       const truncated = desc.slice(0, maxLen);
       const lastSpace = truncated.lastIndexOf(" ");
-      return (lastSpace > maxLen * 0.5 ? truncated.slice(0, lastSpace) : truncated) + "\u2026";
+      return (lastSpace > maxLen * 0.5 ? truncated.slice(0, lastSpace) : truncated) + "…";
     };
     const headerSnippet = truncateDescription(descSnippet);
     const headerText = headerSnippet
       ? `${agentLabel}(${headerSnippet})`
       : agentLabel;
-    const stepCount = item.steps.length;
-    const durationText = item.durationSeconds != null ? `${item.durationSeconds}s` : "";
-    const statusParts = [
-      stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? "s" : ""}` : "",
-      durationText,
-    ].filter(Boolean).join(" \u00B7 ");
-    const statusText = isRunning
-      ? `Running${statusParts ? ` \u00B7 ${statusParts}` : ""}`
-      : `Done${statusParts ? ` \u00B7 ${statusParts}` : ""}`;
 
-    const EXPLORE_TOOL_NAMES = new Set(["Read", "Grep", "Search", "Glob", "ListDir"]);
-    const isExploreStep = (s: { toolName: string; label?: string }) => {
-      if (EXPLORE_TOOL_NAMES.has(s.toolName)) return true;
-      if (s.toolName === "Bash" && s.label) {
-        const cmd = s.label.replace(/^Ran\s+/i, "").trim();
-        return EXPLORE_BASH_COMMAND_PATTERN.test(cmd);
-      }
-      return false;
-    };
-    const readSteps = item.steps.filter(isExploreStep);
-    const otherSteps = item.steps.filter((s) => !isExploreStep(s));
-    const readCount = readSteps.filter((s) => s.toolName === "Read").length;
-    const searchCount = readSteps.filter((s) => s.toolName !== "Read").length;
-    const hasExploreSteps = readSteps.length > 0;
     const allExploreComplete = readSteps.every((s) => s.status === "success");
     const exploreSummaryPrefix = allExploreComplete && !isRunning ? "Explored" : "Exploring";
     const exploreSummaryParts: string[] = [];
@@ -604,7 +613,7 @@ export const TimelineItem = memo(function TimelineItem({
 
               {!item.lastMessage && isRunning && (
                 <div className="px-1 text-sm text-muted-foreground">
-                  <span>Thinking\u2026</span>
+                  <span>Thinking…</span>
                 </div>
               )}
             </div>

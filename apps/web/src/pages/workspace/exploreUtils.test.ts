@@ -208,6 +208,16 @@ describe("extractExploreRunKind", () => {
     expect(extractExploreRunKind(event)).toBe("search");
   });
 
+  it("returns search for pure explore bash chains", () => {
+    const event = makeEvent({ type: "tool.started", payload: { toolName: "bash", isBash: true, command: "ls && find . -name '*.ts'" } });
+    expect(extractExploreRunKind(event)).toBe("search");
+  });
+
+  it("returns null for mixed bash chains", () => {
+    const event = makeEvent({ type: "tool.started", payload: { toolName: "bash", isBash: true, command: "ls && git status" } });
+    expect(extractExploreRunKind(event)).toBeNull();
+  });
+
   it("returns null for non-explore events", () => {
     const event = makeEvent({ type: "tool.started", payload: { toolName: "edit" } });
     expect(extractExploreRunKind(event)).toBeNull();

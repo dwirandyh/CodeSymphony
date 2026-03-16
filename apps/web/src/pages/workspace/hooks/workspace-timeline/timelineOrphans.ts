@@ -24,10 +24,10 @@ export function processOrphanSubagentGroups(
   chatTerminated: boolean,
   sortable: SortableEntry[],
 ): void {
-  const unassignedInlineForSubagent = inlineToolEvents.filter(
+  const unassignedInlineEvents = inlineToolEvents.filter(
     (event) => !assignedToolEventIds.has(event.id),
   );
-  const orphanSubagentGroups = extractSubagentGroups(unassignedInlineForSubagent);
+  const orphanSubagentGroups = extractSubagentGroups(unassignedInlineEvents);
   for (const group of orphanSubagentGroups) {
     group.eventIds.forEach((id) => assignedToolEventIds.add(id));
     const resolvedStatus = group.status === "running" && chatTerminated ? "success" : group.status;
@@ -61,20 +61,20 @@ export function processOrphanExploreGroups(
   chatTerminated: boolean,
   sortable: SortableEntry[],
 ): void {
-  const unassignedForExplore = inlineToolEvents.filter(
+  const unassignedInlineEvents = inlineToolEvents.filter(
     (event) => !assignedToolEventIds.has(event.id),
   );
-  const orphanExploreGroups = extractExploreActivityGroups(unassignedForExplore);
+  const orphanExploreGroups = extractExploreActivityGroups(unassignedInlineEvents);
   for (const group of orphanExploreGroups) {
     group.eventIds.forEach((id) => assignedToolEventIds.add(id));
     const resolvedStatus = group.status === "running" && chatTerminated ? "success" : group.status;
     const resolvedEntries = chatTerminated
-      ? group.entries.map((e) => e.pending ? { ...e, pending: false } : e)
+      ? group.entries.map((entry) => entry.pending ? { ...entry, pending: false } : entry)
       : group.entries;
     sortable.push({
       item: {
         kind: "explore-activity",
-        id: group.id,
+        id: `orphan:${group.id}`,
         status: resolvedStatus,
         fileCount: group.fileCount,
         searchCount: group.searchCount,

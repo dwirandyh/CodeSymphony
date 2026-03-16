@@ -80,14 +80,6 @@ export type ChatTimelineItem =
     createdAt: string;
   }
   | {
-    kind: "explore-activity";
-    id: string;
-    status: "running" | "success";
-    fileCount: number;
-    searchCount: number;
-    entries: ExploreActivityEntry[];
-  }
-  | {
     kind: "subagent-activity";
     id: string;
     agentId: string;
@@ -98,6 +90,14 @@ export type ChatTimelineItem =
     lastMessage: string | null;
     steps: SubagentStep[];
     durationSeconds: number | null;
+  }
+  | {
+    kind: "explore-activity";
+    id: string;
+    status: "running" | "success";
+    fileCount: number;
+    searchCount: number;
+    entries: ExploreActivityEntry[];
   }
   | {
     kind: "thinking";

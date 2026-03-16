@@ -33,6 +33,7 @@ import {
   computeDurationSecondsFromEvents,
   buildActivityIntroText,
   finishedToolUseIds,
+  detectSemanticBoundaryFromEvents,
 } from "./eventUtils";
 
 function makeEvent(overrides: Partial<ChatEvent> & { type: ChatEvent["type"] }): ChatEvent {
@@ -191,6 +192,22 @@ describe("isExploreLikeBashCommand", () => {
     expect(isExploreLikeBashCommand("rg pattern")).toBe(true);
   });
 
+  it("returns true for pure explore chains", () => {
+    expect(isExploreLikeBashCommand("ls && find . -name '*.ts'")).toBe(true);
+    expect(isExploreLikeBashCommand("ls | grep src")).toBe(true);
+  });
+
+  it("returns false for mixed chains", () => {
+    expect(isExploreLikeBashCommand("ls && rm -rf tmp")).toBe(false);
+    expect(isExploreLikeBashCommand("ls && git status")).toBe(false);
+    expect(isExploreLikeBashCommand("echo hi && ls")).toBe(false);
+  });
+
+  it("returns false for ambiguous or invalid chain parsing", () => {
+    expect(isExploreLikeBashCommand("ls &&")).toBe(false);
+    expect(isExploreLikeBashCommand("grep \"unterminated")).toBe(false);
+  });
+
   it("returns false for non-explore commands", () => {
     expect(isExploreLikeBashCommand("npm install")).toBe(false);
   });
@@ -206,6 +223,16 @@ describe("isExploreLikeBashEvent", () => {
   it("returns true for bash event with explore command", () => {
     const event = makeEvent({ type: "tool.started", payload: { toolName: "bash", command: "ls -la" } });
     expect(isExploreLikeBashEvent(event)).toBe(true);
+  });
+
+  it("returns true for bash event with pure explore chain", () => {
+    const event = makeEvent({ type: "tool.started", payload: { toolName: "bash", command: "ls | grep src" } });
+    expect(isExploreLikeBashEvent(event)).toBe(true);
+  });
+
+  it("returns false for bash event with mixed chain", () => {
+    const event = makeEvent({ type: "tool.started", payload: { toolName: "bash", command: "ls && rm -rf tmp && ls" } });
+    expect(isExploreLikeBashEvent(event)).toBe(false);
   });
 
   it("returns false for non-bash event", () => {
@@ -370,8 +397,16 @@ describe("shouldClearWaitingAssistantOnEvent", () => {
     expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "question.dismissed" }))).toBe(false);
   });
 
-  it("returns false for tool events", () => {
-    expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "tool.started" }))).toBe(false);
+  it("returns true for tool.started", () => {
+    expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "tool.started" }))).toBe(true);
+  });
+
+  it("returns true for tool.output", () => {
+    expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "tool.output" }))).toBe(true);
+  });
+
+  it("returns true for tool.finished", () => {
+    expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "tool.finished" }))).toBe(true);
   });
 });
 
@@ -669,5 +704,79 @@ describe("finishedToolUseIds", () => {
   it("filters empty strings from precedingToolUseIds", () => {
     const event = makeEvent({ type: "tool.finished", payload: { precedingToolUseIds: ["t1", "", "t2"] } });
     expect(finishedToolUseIds(event)).toEqual(["t1", "t2"]);
+  });
+});
+
+describe("detectSemanticBoundaryFromEvents", () => {
+  it("classifies read tool events as explore-activity", () => {
+    const boundary = detectSemanticBoundaryFromEvents([
+      makeEvent({
+        id: "e-read",
+        idx: 1,
+        type: "tool.finished",
+        payload: { toolName: "Read", summary: "Read src/app.ts" },
+      }),
+    ]);
+
+    expect(boundary).toEqual({
+      kind: "explore-activity",
+      eventId: "e-read",
+      eventIdx: 1,
+      eventType: "tool.finished",
+    });
+  });
+
+  it("classifies search tool events as subagent-activity", () => {
+    const boundary = detectSemanticBoundaryFromEvents([
+      makeEvent({
+        id: "e-search",
+        idx: 2,
+        type: "tool.finished",
+        payload: { toolName: "Glob", summary: "Completed Glob" },
+      }),
+    ]);
+
+    expect(boundary).toEqual({
+      kind: "explore-activity",
+      eventId: "e-search",
+      eventIdx: 2,
+      eventType: "tool.finished",
+    });
+  });
+
+  it("classifies explore-like bash as subagent-activity before fallback-tool", () => {
+    const boundary = detectSemanticBoundaryFromEvents([
+      makeEvent({
+        id: "e-bash-explore",
+        idx: 3,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "t-1", command: "ls && find . -name '*.ts'" },
+      }),
+    ]);
+
+    expect(boundary).toEqual({
+      kind: "explore-activity",
+      eventId: "e-bash-explore",
+      eventIdx: 3,
+      eventType: "tool.started",
+    });
+  });
+
+  it("keeps mixed bash chains as fallback-tool", () => {
+    const boundary = detectSemanticBoundaryFromEvents([
+      makeEvent({
+        id: "e-bash-mixed",
+        idx: 4,
+        type: "tool.started",
+        payload: { toolName: "Bash", toolUseId: "t-2", command: "echo hi && ls" },
+      }),
+    ]);
+
+    expect(boundary).toEqual({
+      kind: "fallback-tool",
+      eventId: "e-bash-mixed",
+      eventIdx: 4,
+      eventType: "tool.started",
+    });
   });
 });

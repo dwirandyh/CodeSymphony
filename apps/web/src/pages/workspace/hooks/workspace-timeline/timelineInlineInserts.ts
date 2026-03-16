@@ -15,11 +15,10 @@ import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "..
 export function buildInlineInserts(
   bashRuns: BashRun[],
   editedRuns: EditedRun[],
-  exploreActivityGroups: ExploreActivityGroup[],
   subagentGroups: SubagentGroup[],
+  exploreActivityGroups: ExploreActivityGroup[],
   planFileOutput: PlanFileOutput | undefined,
 ): InlineInsert[] {
-  const hasInlineExploreRuns = exploreActivityGroups.length > 0;
   const hasInlineSubagentRuns = subagentGroups.length > 0;
 
   return [
@@ -41,14 +40,6 @@ export function buildInlineInserts(
         createdAt: run.createdAt,
         run,
       })),
-    ...(hasInlineExploreRuns ? exploreActivityGroups.map((group) => ({
-      kind: "explore-activity" as const,
-      id: group.id,
-      startIdx: group.startIdx,
-      anchorIdx: group.anchorIdx,
-      createdAt: group.createdAt,
-      group,
-    })) : []),
     ...(hasInlineSubagentRuns ? subagentGroups.map((group, index) => ({
       kind: "subagent-activity" as const,
       id: `subagent:${group.id}:${index}`,
@@ -57,6 +48,14 @@ export function buildInlineInserts(
       createdAt: group.createdAt,
       group,
     })) : []),
+    ...exploreActivityGroups.map((group, index) => ({
+      kind: "explore-activity" as const,
+      id: `explore:${group.id}:${index}`,
+      startIdx: group.startIdx,
+      anchorIdx: group.anchorIdx,
+      createdAt: group.createdAt,
+      group,
+    })),
     ...(planFileOutput ? [{
       kind: "plan-file-output" as const,
       id: `plan:${planFileOutput.id}`,
@@ -401,26 +400,29 @@ export function pushInlineInsert(
     return;
   }
 
-  const group = insert.group;
-  const resolvedExploreStatus = group.status === "running" && isCompleted ? "success" : group.status;
-  const resolvedEntries = isCompleted
-    ? group.entries.map((e) => e.pending ? { ...e, pending: false } : e)
-    : group.entries;
-  sortable.push({
-    item: {
-      kind: "explore-activity",
-      id: group.id,
-      status: resolvedExploreStatus,
-      fileCount: group.fileCount,
-      searchCount: group.searchCount,
-      entries: resolvedEntries,
-    },
-    anchorIdx: bucketAnchorIdx ?? group.anchorIdx,
-    timestamp: bucketTimestamp ?? timestamp,
-    rank: 3,
-    stableOrder: message.seq + stableOffset.value,
-  });
-  stableOffset.value += 0.001;
+  if (insert.kind === "explore-activity") {
+    const group = insert.group;
+    const resolvedStatus = group.status === "running" && isCompleted ? "success" : group.status;
+    const resolvedEntries = isCompleted
+      ? group.entries.map((entry) => entry.pending ? { ...entry, pending: false } : entry)
+      : group.entries;
+    sortable.push({
+      item: {
+        kind: "explore-activity",
+        id: `${message.id}:${group.id}:${insert.id}`,
+        status: resolvedStatus,
+        fileCount: group.fileCount,
+        searchCount: group.searchCount,
+        entries: resolvedEntries,
+      },
+      anchorIdx: bucketAnchorIdx ?? group.anchorIdx,
+      timestamp: bucketTimestamp ?? timestamp,
+      rank: 3,
+      stableOrder: message.seq + stableOffset.value,
+    });
+    stableOffset.value += 0.001;
+    return;
+  }
 }
 
 export function pushMessageSegment(
@@ -713,6 +715,7 @@ export function processInlineInsertLoop(
         nextInsertIndex === 0
         && isSentenceAwareInlineInsertKind(firstInsertKind)
         && firstInsertKind !== "subagent-activity"
+        && firstInsertKind !== "explore-activity"
         && hasAnyTrailingText
         && bucketIndex === 0;
       if (shouldHoldLeadingSentenceAwareInsert) {

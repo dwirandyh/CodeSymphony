@@ -7,6 +7,16 @@ import { TimelineItem, ThinkingPlaceholder } from "./TimelineItem";
 
 const AT_BOTTOM_THRESHOLD = 48;
 
+function getTimelineRowClassName(item: ChatTimelineItem): string {
+  const isCompactRunningRow =
+    (item.kind === "thinking" && item.isStreaming) ||
+    (item.kind === "subagent-activity" && item.status === "running") ||
+    (item.kind === "explore-activity" && item.status === "running") ||
+    (item.kind === "tool" && item.status === "running");
+
+  return `mx-auto max-w-3xl px-3 ${isCompactRunningRow ? "pb-2" : "pb-4"}`;
+}
+
 export function ChatMessageList({
   items,
   showThinkingPlaceholder = false,
@@ -166,7 +176,7 @@ export function ChatMessageList({
               );
             }
             return (
-              <div key={getTimelineItemKey(item)} className="mx-auto max-w-3xl px-3 pb-4">
+              <div key={getTimelineItemKey(item)} className={getTimelineRowClassName(item)}>
                 <TimelineItem item={item} ctx={timelineCtx} />
               </div>
             );

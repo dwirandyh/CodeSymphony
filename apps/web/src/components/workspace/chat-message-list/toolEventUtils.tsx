@@ -303,10 +303,10 @@ export function getTimelineItemKey(item: ChatTimelineItem): string {
       return `tool:${item.id}`;
     case "edited-diff":
       return `edited-diff:${item.id}`;
-    case "explore-activity":
-      return `explore-activity:${item.id}`;
     case "subagent-activity":
       return `subagent-activity:${item.id}`;
+    case "explore-activity":
+      return `explore-activity:${item.id}`;
     case "thinking":
       return `thinking:${item.id}`;
     case "error":

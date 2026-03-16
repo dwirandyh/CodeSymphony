@@ -1,5 +1,5 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import type { ChatTimelineItem } from "../../../../components/workspace/chat-message-list";
+import type { ChatTimelineItem } from "../../../../components/workspace/chat-message-list/ChatMessageList.types";
 import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../../types";
 
 export type TimelineRefs = {
@@ -59,20 +59,20 @@ export type InlineInsert =
     run: EditedRun;
   }
   | {
-    kind: "explore-activity";
-    id: string;
-    startIdx: number;
-    anchorIdx: number;
-    createdAt: string;
-    group: ExploreActivityGroup;
-  }
-  | {
     kind: "subagent-activity";
     id: string;
     startIdx: number;
     anchorIdx: number;
     createdAt: string;
     group: SubagentGroup;
+  }
+  | {
+    kind: "explore-activity";
+    id: string;
+    startIdx: number;
+    anchorIdx: number;
+    createdAt: string;
+    group: ExploreActivityGroup;
   }
   | {
     kind: "plan-file-output";

@@ -408,6 +408,67 @@ describe("useThreadEventStream", () => {
     expect(updated?.[0]?.active).toBe(false);
   });
 
+  it.each(["tool.started", "tool.output", "tool.finished"] as const)(
+    "clears waiting assistant on %s when idx advances",
+    async (type) => {
+      const threadId = "selected-thread";
+      queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+      renderHook(threadId, {
+        initialWaitingAssistant: { threadId, afterIdx: 12 },
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const stream = MockEventSource.instances[0]!;
+      act(() => {
+        stream.emit(
+          type,
+          makeEvent({
+            id: `e-${type}`,
+            threadId,
+            idx: 13,
+            type,
+            payload: { toolUseId: "tu-1", toolName: "Bash" },
+          }),
+        );
+      });
+
+      expect(latestWaitingAssistant).toBeNull();
+    },
+  );
+
+  it("keeps waiting assistant when tool event idx does not advance", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+    renderHook(threadId, {
+      initialWaitingAssistant: { threadId, afterIdx: 12 },
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "tool.started",
+        makeEvent({
+          id: "e-tool-no-advance",
+          threadId,
+          idx: 12,
+          type: "tool.started",
+          payload: { toolUseId: "tu-1", toolName: "Bash" },
+        }),
+      );
+    });
+
+    expect(latestWaitingAssistant).toEqual({ threadId, afterIdx: 12 });
+  });
+
   it("still invalidates the selected thread snapshot on gate resolution events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());

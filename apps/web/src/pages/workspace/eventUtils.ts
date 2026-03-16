@@ -12,7 +12,7 @@ import {
 } from "./constants";
 import type { StepCandidate } from "./types";
 
-export type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "edited-diff" | "explore-activity" | "fallback-tool";
+export type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "explore-activity" | "edited-diff" | "fallback-tool";
 
 export type SemanticBoundary = {
   kind: SemanticBoundaryKind;
@@ -86,18 +86,157 @@ export function isBashToolEvent(event: ChatEvent): boolean {
   return isBashPayload(event.payload);
 }
 
+function splitTopLevelShellCommandSegments(command: string): string[] | null {
+  const segments: string[] = [];
+  let current = "";
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inBacktickQuote = false;
+  let escaped = false;
+
+  const pushSegment = (): boolean => {
+    const trimmed = current.trim();
+    if (trimmed.length === 0) {
+      return false;
+    }
+
+    segments.push(trimmed);
+    current = "";
+    return true;
+  };
+
+  for (let idx = 0; idx < command.length; idx += 1) {
+    const char = command[idx];
+    const next = idx + 1 < command.length ? command[idx + 1] : "";
+
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\" && !inSingleQuote) {
+      current += char;
+      escaped = true;
+      continue;
+    }
+
+    if (inSingleQuote) {
+      current += char;
+      if (char === "'") {
+        inSingleQuote = false;
+      }
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      current += char;
+      if (char === "\"") {
+        inDoubleQuote = false;
+      }
+      continue;
+    }
+
+    if (inBacktickQuote) {
+      current += char;
+      if (char === "`") {
+        inBacktickQuote = false;
+      }
+      continue;
+    }
+
+    if (char === "'") {
+      inSingleQuote = true;
+      current += char;
+      continue;
+    }
+
+    if (char === "\"") {
+      inDoubleQuote = true;
+      current += char;
+      continue;
+    }
+
+    if (char === "`") {
+      inBacktickQuote = true;
+      current += char;
+      continue;
+    }
+
+    if ((char === "&" && next === "&") || (char === "|" && next === "|")) {
+      if (!pushSegment()) {
+        return null;
+      }
+      idx += 1;
+      continue;
+    }
+
+    if (char === ";" || char === "|") {
+      if (!pushSegment()) {
+        return null;
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (escaped || inSingleQuote || inDoubleQuote || inBacktickQuote) {
+    return null;
+  }
+
+  if (!pushSegment()) {
+    return null;
+  }
+
+  return segments;
+}
+
+function extractShellCommandHead(segment: string): string | null {
+  const trimmed = segment.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const [head] = trimmed.split(/\s+/, 1);
+  return head && head.length > 0 ? head : null;
+}
+
 export function isExploreLikeBashCommand(command: string | null | undefined): boolean {
   if (!command || command.trim().length === 0) {
     return false;
   }
-  return EXPLORE_BASH_COMMAND_PATTERN.test(command.trim());
+
+  const segments = splitTopLevelShellCommandSegments(command);
+  if (!segments || segments.length === 0) {
+    return false;
+  }
+
+  for (const segment of segments) {
+    const head = extractShellCommandHead(segment);
+    if (!head || !EXPLORE_BASH_COMMAND_PATTERN.test(head)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function extractBashCommandFromPayload(payload: Record<string, unknown>): string | null {
+  const directCommand = payloadStringOrNull(payload.command);
+  if (directCommand) {
+    return directCommand;
+  }
+
+  const toolInput = isRecord(payload.toolInput) ? payload.toolInput : null;
+  return toolInput ? payloadStringOrNull(toolInput.command) : null;
 }
 
 export function isExploreLikeBashEvent(event: ChatEvent): boolean {
   if (!isBashToolEvent(event)) {
     return false;
   }
-  const command = payloadStringOrNull(event.payload.command);
+  const command = extractBashCommandFromPayload(event.payload);
   return isExploreLikeBashCommand(command);
 }
 
@@ -191,7 +330,12 @@ export function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
     return event.payload.role === "assistant";
   }
 
-  if (event.type === "thinking.delta") {
+  if (
+    event.type === "thinking.delta"
+    || event.type === "tool.started"
+    || event.type === "tool.output"
+    || event.type === "tool.finished"
+  ) {
     return true;
   }
 
@@ -593,18 +737,18 @@ export function detectSemanticBoundaryFromEvents(events: ChatEvent[]): SemanticB
       };
     }
 
-    if (isBashToolEvent(event)) {
+    if (isExploreLikeBashEvent(event) || isReadToolEvent(event) || isSearchToolEvent(event)) {
       return {
-        kind: "fallback-tool",
+        kind: "explore-activity",
         eventId: event.id,
         eventIdx: event.idx,
         eventType: event.type,
       };
     }
 
-    if (isExploreLikeBashEvent(event) || isReadToolEvent(event) || isSearchToolEvent(event)) {
+    if (isBashToolEvent(event)) {
       return {
-        kind: "explore-activity",
+        kind: "fallback-tool",
         eventId: event.id,
         eventIdx: event.idx,
         eventType: event.type,

@@ -107,6 +107,16 @@ function makeMessageItem(id: string, seq: number, content = `message-${id}`): Ch
   };
 }
 
+function getTimelineRowWrappers(): HTMLDivElement[] {
+  return Array.from(container.querySelectorAll("[data-testid='vlist'] > div")) as HTMLDivElement[];
+}
+
+function expectRowSpacingClass(itemIndex: number, className: "pb-2" | "pb-4") {
+  const row = getTimelineRowWrappers()[itemIndex];
+  expect(row).toBeTruthy();
+  expect(row.className).toContain(className);
+}
+
 function mountChatMessageList(
   props: Partial<ComponentProps<typeof ChatMessageList>> = {},
 ): void {
@@ -283,23 +293,54 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("index.ts");
   });
 
-  it("renders explore-activity item", () => {
+  it("renders explore-activity summary", () => {
+    const onOpenReadFile = vi.fn();
     const items: ChatTimelineItem[] = [
       {
         kind: "explore-activity",
         id: "exp-1",
         status: "success",
-        fileCount: 3,
+        fileCount: 1,
         searchCount: 1,
         entries: [
-          { kind: "read", label: "src/index.ts", openPath: "src/index.ts", pending: false, orderIdx: 0 },
+          {
+            kind: "read",
+            label: "index.ts",
+            openPath: "src/index.ts",
+            pending: false,
+            orderIdx: 1,
+          },
+          {
+            kind: "search",
+            label: "Searched Glob (src/**/*.ts)",
+            openPath: null,
+            pending: false,
+            orderIdx: 2,
+          },
         ],
       },
     ];
     act(() => {
-      root.render(<ChatMessageList {...baseProps} items={items} />);
+      root.render(<ChatMessageList {...baseProps} items={items} onOpenReadFile={onOpenReadFile} />);
     });
-    expect(container.textContent).toContain("index.ts");
+
+    expect(container.textContent).toContain("Explored 1 file, 1 search");
+
+    const exploreRoot = container.querySelector("[data-testid='timeline-explore-activity']") as HTMLElement | null;
+    expect(exploreRoot).toBeTruthy();
+    expect(exploreRoot?.querySelector(".lucide-bot")).toBeNull();
+
+    const entries = container.querySelector("[data-testid='timeline-explore-activity-entries']") as HTMLElement | null;
+    expect(entries).toBeTruthy();
+    expect(entries?.className).not.toContain("rounded-xl");
+    expect(entries?.className).not.toContain("border");
+
+    const readButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "index.ts");
+    expect(readButton).toBeTruthy();
+    act(() => {
+      readButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onOpenReadFile).toHaveBeenCalledWith("src/index.ts");
   });
 
   it("renders subagent-activity item", () => {
@@ -321,6 +362,69 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
     expect(container.textContent).toContain("Searching codebase");
+  });
+
+  it("keeps mixed Bash subagent steps out of explore summary", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "sub-mixed-bash",
+        agentId: "agent-2",
+        agentType: "explore",
+        toolUseId: "tu-2",
+        status: "success",
+        description: "Run mixed commands",
+        lastMessage: null,
+        steps: [
+          {
+            toolUseId: "step-1",
+            toolName: "Bash",
+            label: "Ran ls && rm && ls",
+            openPath: null,
+            status: "success",
+          },
+        ],
+        durationSeconds: 1,
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Ran ls && rm && ls");
+    expect(container.textContent).not.toContain("Explored 1 search");
+  });
+
+  it("keeps pure explore Bash subagent steps in explore summary", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "sub-explore-bash",
+        agentId: "agent-3",
+        agentType: "explore",
+        toolUseId: "tu-3",
+        status: "success",
+        description: "Run explore commands",
+        lastMessage: null,
+        steps: [
+          {
+            toolUseId: "step-1",
+            toolName: "Bash",
+            label: "Ran ls | grep src",
+            openPath: null,
+            status: "success",
+          },
+        ],
+        durationSeconds: 1,
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Explored 1 search");
   });
 
   it("renders activity item", () => {
@@ -361,6 +465,153 @@ describe("ChatMessageList", () => {
     act(() => {
       root.render(<ChatMessageList {...baseProps} showThinkingPlaceholder={true} />);
     });
+  });
+
+  it("uses denser spacing for compact running timeline rows", () => {
+    const runningToolEvent: ChatEvent = {
+      id: "ev-running-tool",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.started",
+      payload: {
+        toolName: "Bash",
+        toolUseId: "tu-running",
+        summary: "Running ls",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const items: ChatTimelineItem[] = [
+      { kind: "thinking", id: "th-stream", messageId: "m1", content: "Thinking", isStreaming: true },
+      {
+        kind: "explore-activity",
+        id: "exp-running",
+        status: "running",
+        fileCount: 0,
+        searchCount: 1,
+        entries: [
+          {
+            kind: "search",
+            label: "Searching Glob (src/**/*.ts)",
+            openPath: null,
+            pending: true,
+            orderIdx: 1,
+          },
+        ],
+      },
+      {
+        kind: "subagent-activity",
+        id: "sub-running",
+        agentId: "agent-1",
+        agentType: "explore",
+        toolUseId: "tu-sub",
+        status: "running",
+        description: "Searching codebase",
+        lastMessage: "Still looking",
+        steps: [],
+        durationSeconds: null,
+      },
+      {
+        kind: "tool",
+        id: "tool-running",
+        event: runningToolEvent,
+        sourceEvents: [runningToolEvent],
+        toolUseId: "tu-running",
+        toolName: "Bash",
+        shell: "bash",
+        command: "ls",
+        summary: "Running ls",
+        output: null,
+        error: null,
+        truncated: false,
+        durationSeconds: null,
+        status: "running",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expectRowSpacingClass(0, "pb-2");
+    expectRowSpacingClass(1, "pb-2");
+    expectRowSpacingClass(2, "pb-2");
+    expectRowSpacingClass(3, "pb-2");
+  });
+
+  it("keeps default spacing for non-running timeline rows and messages", () => {
+    const finishedToolEvent: ChatEvent = {
+      id: "ev-finished-tool",
+      threadId: "t1",
+      idx: 2,
+      type: "tool.finished",
+      payload: {
+        toolName: "Bash",
+        toolUseId: "tu-finished",
+        summary: "Ran pwd",
+        output: "/tmp",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const items: ChatTimelineItem[] = [
+      makeMessageItem("m1", 1, "Hello"),
+      { kind: "thinking", id: "th-done", messageId: "m2", content: "Done thinking", isStreaming: false },
+      {
+        kind: "explore-activity",
+        id: "exp-done",
+        status: "success",
+        fileCount: 1,
+        searchCount: 0,
+        entries: [
+          {
+            kind: "read",
+            label: "index.ts",
+            openPath: "src/index.ts",
+            pending: false,
+            orderIdx: 1,
+          },
+        ],
+      },
+      {
+        kind: "subagent-activity",
+        id: "sub-done",
+        agentId: "agent-2",
+        agentType: "explore",
+        toolUseId: "tu-sub-done",
+        status: "success",
+        description: "Finished searching",
+        lastMessage: "Found results",
+        steps: [],
+        durationSeconds: 1.2,
+      },
+      {
+        kind: "tool",
+        id: "tool-done",
+        event: finishedToolEvent,
+        sourceEvents: [finishedToolEvent],
+        toolUseId: "tu-finished",
+        toolName: "Bash",
+        shell: "bash",
+        command: "pwd",
+        summary: "Ran pwd",
+        output: "/tmp",
+        error: null,
+        truncated: false,
+        durationSeconds: 0.2,
+        status: "success",
+      },
+      makeMessageItem("m2", 2, "World"),
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expectRowSpacingClass(0, "pb-4");
+    expectRowSpacingClass(1, "pb-4");
+    expectRowSpacingClass(2, "pb-4");
+    expectRowSpacingClass(3, "pb-4");
+    expectRowSpacingClass(4, "pb-4");
+    expectRowSpacingClass(5, "pb-4");
   });
 
   it("handles multiple mixed items", () => {
