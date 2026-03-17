@@ -8,9 +8,6 @@ import { useBackgroundWorktreeStatusStream } from "./useBackgroundWorktreeStatus
 
 const invalidateQueriesMock = vi.fn();
 
-vi.mock("../../../lib/debugLog", () => ({
-  debugLog: vi.fn(),
-}));
 
 class MockEventSource {
   static CONNECTING = 0;

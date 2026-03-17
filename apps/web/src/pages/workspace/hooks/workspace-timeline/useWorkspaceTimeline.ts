@@ -26,7 +26,6 @@ import {
   promptLooksLikeFileRead,
 } from "../../eventUtils";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
-import { debugLog } from "../../../../lib/debugLog";
 import type {
   TimelineRefs,
   WorkspaceTimelineResult,
@@ -98,7 +97,6 @@ export function useWorkspaceTimeline(
     threadId: string | null;
     semanticHydrationInProgress: boolean;
   } | null>(null);
-  const prevInputCountsRef = useRef<{ messageCount: number; eventCount: number } | null>(null);
   const prevResultRef = useRef<WorkspaceTimelineResult>({
     items: [],
     hasIncompleteCoverage: false,
@@ -153,10 +151,6 @@ export function useWorkspaceTimeline(
         },
       };
       prevFingerprintRef.current = fingerprint;
-      prevInputCountsRef.current = {
-        messageCount: messages.length,
-        eventCount: events.length,
-      };
       prevResultRef.current = disabledResult;
       return disabledResult;
     }
@@ -757,8 +751,6 @@ export function useWorkspaceTimeline(
           anchorIdx,
           timestamp,
           stableOffset,
-          refs,
-          selectedThreadId,
         );
 
         continue;
@@ -897,70 +889,7 @@ export function useWorkspaceTimeline(
       hasIncompleteCoverage,
       summary: summaryUnchanged ? previousSummary : nextSummary,
     };
-    const prevResult = prevResultRef.current;
-    const prevInputCounts = prevInputCountsRef.current;
-    const messagesAdded = messages.length - (prevInputCounts?.messageCount ?? 0);
-    const eventsAdded = events.length - (prevInputCounts?.eventCount ?? 0);
-    debugLog("useWorkspaceTimeline", "chat.timeline.recomputed", {
-      threadId: selectedThreadId,
-      messageCount: messages.length,
-      eventCount: events.length,
-      itemCount: result.length,
-      hasIncompleteCoverage,
-      semanticHydrationInProgress,
-      messagesAdded,
-      eventsAdded,
-    });
-    if (prevResult.hasIncompleteCoverage !== hasIncompleteCoverage) {
-      debugLog("useWorkspaceTimeline", "chat.timeline.coverageChanged", {
-        threadId: selectedThreadId,
-        previousHasIncompleteCoverage: prevResult.hasIncompleteCoverage,
-        hasIncompleteCoverage,
-        messageCount: messages.length,
-        eventCount: events.length,
-        itemCount: result.length,
-        semanticHydrationInProgress,
-      });
-    }
-    if (prevResult.summary.oldestRenderableKey !== oldestRenderableKey) {
-      debugLog("useWorkspaceTimeline", "chat.timeline.oldestRenderableChanged", {
-        threadId: selectedThreadId,
-        previousOldestRenderableKey: prevResult.summary.oldestRenderableKey,
-        previousOldestRenderableKind: prevResult.summary.oldestRenderableKind,
-        previousOldestRenderableMessageId: prevResult.summary.oldestRenderableMessageId,
-        oldestRenderableKey,
-        oldestRenderableKind,
-        oldestRenderableMessageId,
-        oldestRenderableHydrationPending,
-        headIdentityStable,
-        messageCount: messages.length,
-        eventCount: events.length,
-        itemCount: result.length,
-      });
-    }
-    if (messagesAdded === 0 && result.length > prevResult.items.length) {
-      debugLog("useWorkspaceTimeline", "chat.timeline.eventsOnlyRenderableGrowth", {
-        threadId: selectedThreadId,
-        eventCount: events.length,
-        itemCount: result.length,
-        previousItemCount: prevResult.items.length,
-        eventsAdded,
-        hasIncompleteCoverage,
-        oldestRenderableKey,
-        oldestRenderableKind,
-        oldestRenderableMessageId,
-        oldestRenderableHydrationPending,
-        headIdentityStable,
-        previousOldestRenderableKey: prevResult.summary.oldestRenderableKey,
-        previousOldestRenderableKind: prevResult.summary.oldestRenderableKind,
-        previousOldestRenderableMessageId: prevResult.summary.oldestRenderableMessageId,
-      });
-    }
     prevFingerprintRef.current = fingerprint;
-    prevInputCountsRef.current = {
-      messageCount: messages.length,
-      eventCount: events.length,
-    };
     prevResultRef.current = timelineResult;
     return timelineResult;
   }, [messages, events, options?.disabled, options?.semanticHydrationInProgress, selectedThreadId]);

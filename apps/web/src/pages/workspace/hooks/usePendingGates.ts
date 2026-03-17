@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { debugLog } from "../../../lib/debugLog";
 import { api } from "../../../lib/api";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest } from "../types";
 import {
@@ -35,35 +34,10 @@ export function usePendingGates(
     permIds: string; qIds: string;
     perms: PendingPermissionRequest[]; qs: PendingQuestionRequest[];
   }>({ permIds: "", qIds: "", perms: [], qs: [] });
-  const derivationChurnRef = useRef<{
-    signature: string;
-    windowStartedAt: number;
-    toggleCount: number;
-    lastLoggedAt: number;
-    previousFlags: {
-      hasPendingPermissionRequests: boolean;
-      hasPendingQuestionRequests: boolean;
-      showPlanDecisionComposer: boolean;
-      isWaitingForUserGate: boolean;
-    } | null;
-  }>({
-    signature: "",
-    windowStartedAt: 0,
-    toggleCount: 0,
-    lastLoggedAt: 0,
-    previousFlags: null,
-  });
 
   // Reset all gate-local state when switching threads so Thread A's
   // in-flight actions don't leak into Thread B.
   useEffect(() => {
-    debugLog("usePendingGates", "thread reset effect", {
-      selectedThreadId,
-      inFlightPermissionIds: Array.from(inFlightPermissionIdsRef.current),
-      resolvingPermissionIdsSize: resolvingPermissionIds.size,
-      answeringQuestionIdsSize: answeringQuestionIds.size,
-      dismissingQuestionIdsSize: dismissingQuestionIds.size,
-    });
     setPlanActionBusy(false);
     inFlightPermissionIdsRef.current.clear();
     setResolvingPermissionIds(new Set());
@@ -86,13 +60,6 @@ export function usePendingGates(
       return { pendingPermissionRequests: prevPendingRef.current.perms, pendingQuestionRequests: prevPendingRef.current.qs };
     }
 
-    debugLog("usePendingGates", "pending-gates-changed", {
-      selectedThreadId,
-      permissionIds: newPermRequests.map((request) => request.requestId),
-      questionIds: newQRequests.map((request) => request.requestId),
-      eventCount: events.length,
-    });
-
     prevPendingRef.current = { permIds: newPermIds, qIds: newQIds, perms: newPermRequests, qs: newQRequests };
 
     return {
@@ -104,31 +71,13 @@ export function usePendingGates(
   async function resolvePermission(requestId: string, decision: "allow" | "allow_always" | "deny") {
     if (!selectedThreadId) return;
     if (inFlightPermissionIdsRef.current.has(requestId)) {
-      debugLog("usePendingGates", "resolve-permission:deduped", {
-        selectedThreadId,
-        requestId,
-        decision,
-      });
       return;
     }
 
     inFlightPermissionIdsRef.current.add(requestId);
-    debugLog("usePendingGates", "resolve-permission:start", {
-      selectedThreadId,
-      requestId,
-      decision,
-      eventCount: events.length,
-    });
 
     if (decision !== "deny") startWaitingAssistant(selectedThreadId);
     setResolvingPermissionIds((current) => {
-      debugLog("usePendingGates", "resolve-permission:setResolvingPermissionIds:add", {
-        selectedThreadId,
-        requestId,
-        decision,
-        before: Array.from(current),
-      });
-
       const next = new Set(current);
       next.add(requestId);
       return next;
@@ -137,34 +86,12 @@ export function usePendingGates(
 
     try {
       await api.resolvePermission(selectedThreadId, { requestId, decision });
-      debugLog("usePendingGates", "resolve-permission:success", {
-        selectedThreadId,
-        requestId,
-        decision,
-      });
     } catch (e) {
-      debugLog("usePendingGates", "resolve-permission:error", {
-        selectedThreadId,
-        requestId,
-        decision,
-        error: e instanceof Error ? e.message : String(e),
-      });
       if (decision !== "deny") clearWaitingAssistantForThread(selectedThreadId);
       onError(e instanceof Error ? e.message : "Failed to resolve permission");
     } finally {
       inFlightPermissionIdsRef.current.delete(requestId);
-      debugLog("usePendingGates", "resolve-permission:finally", {
-        selectedThreadId,
-        requestId,
-        decision,
-      });
       setResolvingPermissionIds((current) => {
-        debugLog("usePendingGates", "resolve-permission:setResolvingPermissionIds:remove", {
-          selectedThreadId,
-          requestId,
-          decision,
-          before: Array.from(current),
-        });
         const next = new Set(current);
         next.delete(requestId);
         return next;
@@ -304,73 +231,6 @@ export function usePendingGates(
 
   const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
 
-  useEffect(() => {
-    debugLog("usePendingGates", "gate-flags", {
-      selectedThreadId,
-      hasPendingPermissionRequests,
-      hasPendingQuestionRequests,
-      showPlanDecisionComposer,
-      isWaitingForUserGate,
-      resolvingPermissionIds: Array.from(resolvingPermissionIds),
-      answeringQuestionIds: Array.from(answeringQuestionIds),
-      dismissingQuestionIds: Array.from(dismissingQuestionIds),
-    });
-
-    const permIds = pendingPermissionRequests.map((request) => request.requestId).join(",");
-    const questionIds = pendingQuestionRequests.map((request) => request.requestId).join(",");
-    const signature = `${selectedThreadId ?? "none"}|${permIds}|${questionIds}`;
-    const currentFlags = {
-      hasPendingPermissionRequests,
-      hasPendingQuestionRequests,
-      showPlanDecisionComposer,
-      isWaitingForUserGate,
-    };
-    const churn = derivationChurnRef.current;
-    const now = performance.now();
-
-    if (churn.signature !== signature || now - churn.windowStartedAt > 1000) {
-      churn.signature = signature;
-      churn.windowStartedAt = now;
-      churn.toggleCount = 0;
-    }
-
-    const previousFlags = churn.previousFlags;
-    if (previousFlags) {
-      const changedFlags = Object.entries(currentFlags)
-        .filter(([key, value]) => previousFlags[key as keyof typeof currentFlags] !== value)
-        .map(([key]) => key);
-      if (changedFlags.length > 0) {
-        churn.toggleCount += changedFlags.length;
-        if (churn.toggleCount >= 4 && now - churn.lastLoggedAt > 1000) {
-          churn.lastLoggedAt = now;
-          debugLog("usePendingGates", "derivation-churn", {
-            selectedThreadId,
-            permissionIds: permIds.length > 0 ? permIds.split(",") : [],
-            questionIds: questionIds.length > 0 ? questionIds.split(",") : [],
-            eventCount: events.length,
-            changedFlags,
-            toggleCount: churn.toggleCount,
-            previousFlags,
-            currentFlags,
-          });
-        }
-      }
-    }
-
-    churn.previousFlags = currentFlags;
-  }, [
-    answeringQuestionIds,
-    dismissingQuestionIds,
-    events.length,
-    hasPendingPermissionRequests,
-    hasPendingQuestionRequests,
-    isWaitingForUserGate,
-    pendingPermissionRequests,
-    pendingQuestionRequests,
-    resolvingPermissionIds,
-    selectedThreadId,
-    showPlanDecisionComposer,
-  ]);
 
   return {
     pendingPermissionRequests,

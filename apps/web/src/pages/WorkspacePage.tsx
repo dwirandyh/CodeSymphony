@@ -22,7 +22,6 @@ const DiffReviewPanel = lazy(() =>
 );
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
-import { debugLog } from "../lib/debugLog";
 import { findRootWorktree, isRootWorktree } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
 import type { TeardownErrorState, ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
@@ -39,7 +38,6 @@ import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import {
   resolveChatMessageListKey,
-  createRunScriptToken,
   FilledPlayIcon,
   FilledPauseIcon,
 } from "./workspace/workspacePageUtils";
@@ -60,20 +58,6 @@ function BackgroundWorktreeStatusStreamBridge({
 }
 
 export function WorkspacePage() {
-  const renderCountRef = useRef(0);
-  renderCountRef.current++;
-  const renderBurstRef = useRef<{
-    startedAt: number;
-    count: number;
-    changedKeyCounts: Map<string, number>;
-    lastLoggedAt: number;
-  }>({
-    startedAt: 0,
-    count: 0,
-    changedKeyCounts: new Map(),
-    lastLoggedAt: 0,
-  });
-
   const [error, setError] = useState<string | null>(null);
   const { search, updateSearch } = useWorkspaceSearchParams();
 
@@ -85,7 +69,6 @@ export function WorkspacePage() {
   const [runScriptActive, setRunScriptActive] = useState(false);
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
   const runScriptWorktreeIdRef = useRef<string | null>(null);
-  const runScriptTokenRef = useRef<string | null>(null);
 
   // ── Model/Provider state ──
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
@@ -152,22 +135,8 @@ export function WorkspacePage() {
     ));
   }, []);
 
-  const handleRunScriptTerminalExit = useCallback(({ exitCode, signal }: { exitCode: number; signal: number }) => {
+  const handleRunScriptTerminalExit = useCallback(({ exitCode }: { exitCode: number; signal: number }) => {
     const targetWorktreeId = runScriptWorktreeIdRef.current;
-    const token = runScriptTokenRef.current;
-    debugLog("WorkspacePage", "run:session-exit", {
-      exitCode,
-      signal,
-      targetWorktreeId,
-      token,
-    });
-    debugLog("WorkspacePage", "run:state", {
-      nextActive: false,
-      reason: "session-exit",
-      exitCode,
-      signal,
-      token,
-    });
     setRunScriptActive(false);
 
     if (targetWorktreeId) {
@@ -179,7 +148,6 @@ export function WorkspacePage() {
     }
 
     runScriptWorktreeIdRef.current = null;
-    runScriptTokenRef.current = null;
   }, []);
 
   const repos = useRepositoryManager(setError, {
@@ -191,12 +159,6 @@ export function WorkspacePage() {
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
         const worktreeChanged = (selection.worktreeId ?? undefined) !== prevWorktreeIdRef.current;
-        debugLog("WorkspacePage", "onSelectionChange", {
-          repoId: selection.repoId,
-          worktreeId: selection.worktreeId,
-          prevWorktreeId: prevWorktreeIdRef.current,
-          worktreeChanged,
-        });
         prevWorktreeIdRef.current = selection.worktreeId ?? undefined;
         updateSearch({
           repoId: selection.repoId ?? undefined,
@@ -248,7 +210,6 @@ export function WorkspacePage() {
     },
     onThreadChange: useCallback(
       (threadId: string | null) => {
-        debugLog("WorkspacePage", "onThreadChange", { threadId });
         updateSearch({ threadId: threadId ?? undefined });
       },
       [updateSearch],
@@ -263,12 +224,6 @@ export function WorkspacePage() {
   });
 
   if (chatMessageListKey !== chatMessageListKeyRef.current) {
-    debugLog("WorkspacePage", "chat-message-list-key-changed", {
-      previousKey: chatMessageListKeyRef.current,
-      nextKey: chatMessageListKey,
-      selectedThreadId: chat.selectedThreadId,
-      activeView,
-    });
     chatMessageListKeyRef.current = chatMessageListKey;
   }
 
@@ -305,96 +260,6 @@ export function WorkspacePage() {
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
 
-  // ── What-changed detector ──
-  const prevRefsRef = useRef<Record<string, unknown>>({});
-  const trackables: Record<string, unknown> = {
-    error,
-    search,
-    updateSearch,
-    "repos.selectedRepositoryId": repos.selectedRepositoryId,
-    "repos.selectedWorktreeId": repos.selectedWorktreeId,
-    "repos.repositories": repos.repositories,
-    "repos.loadingRepos": repos.loadingRepos,
-    "repos.submittingRepo": repos.submittingRepo,
-    "repos.updateWorktreeBranch": repos.updateWorktreeBranch,
-    "chat.threads": chat.threads,
-    "chat.selectedThreadId": chat.selectedThreadId,
-    "chat.messages": chat.messages,
-    "chat.events": chat.events,
-    "chat.timelineItems": chat.timelineItems,
-    "chat.timelineSummary": chat.timelineSummary,
-    "chat.sendingMessage": chat.sendingMessage,
-    "chat.waitingAssistant": chat.waitingAssistant,
-    "chat.selectedThreadUiStatus": chat.selectedThreadUiStatus,
-    "chat.showStopAction": chat.showStopAction,
-    "chat.stoppingRun": chat.stoppingRun,
-    "gates.pendingPermissionRequests": gates.pendingPermissionRequests,
-    "gates.pendingQuestionRequests": gates.pendingQuestionRequests,
-    "gates.isWaitingForUserGate": gates.isWaitingForUserGate,
-    "gates.showPlanDecisionComposer": gates.showPlanDecisionComposer,
-    "gates.planActionBusy": gates.planActionBusy,
-    "gates.resolvingPermissionIds": gates.resolvingPermissionIds,
-    "gates.answeringQuestionIds": gates.answeringQuestionIds,
-    "gitChanges.entries": gitChanges.entries,
-    "gitChanges.branch": gitChanges.branch,
-    "gitChanges.loading": gitChanges.loading,
-    chatMessageListKey,
-    mobilePanelOpen,
-  };
-
-  const canSendNow =
-    !!chat.selectedThreadId &&
-    !chat.composerDisabled &&
-    !gates.planActionBusy &&
-    !gates.isWaitingForUserGate;
-  const changed: string[] = [];
-  for (const [key, val] of Object.entries(trackables)) {
-    if (prevRefsRef.current[key] !== val) changed.push(key);
-  }
-  prevRefsRef.current = { ...trackables };
-  debugLog("WorkspacePage", "render", {
-    renderCount: renderCountRef.current,
-    changed,
-    selectedThreadId: chat.selectedThreadId,
-    canSendNow,
-    showStopAction: chat.showStopAction,
-    selectedThreadUiStatus: chat.selectedThreadUiStatus,
-    sendingMessage: chat.sendingMessage,
-    waitingAssistant: chat.waitingAssistant,
-    isWaitingForUserGate: gates.isWaitingForUserGate,
-    chatMessageListKey,
-    hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
-  });
-  const now = performance.now();
-  const renderBurst = renderBurstRef.current;
-  if (now - renderBurst.startedAt > 1000) {
-    renderBurst.startedAt = now;
-    renderBurst.count = 0;
-    renderBurst.changedKeyCounts = new Map();
-  }
-  renderBurst.count += 1;
-  for (const key of changed) {
-    renderBurst.changedKeyCounts.set(key, (renderBurst.changedKeyCounts.get(key) ?? 0) + 1);
-  }
-  if (renderBurst.count >= 20 && now - renderBurst.lastLoggedAt > 1000) {
-    const topChangedKeys = [...renderBurst.changedKeyCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([key, count]) => ({ key, count }));
-    renderBurst.lastLoggedAt = now;
-    debugLog("WorkspacePage", "render-burst", {
-      selectedThreadId: chat.selectedThreadId,
-      chatMessageListKey,
-      activeView,
-      countInWindow: renderBurst.count,
-      windowMs: Math.round(now - renderBurst.startedAt),
-      topChangedKeys,
-      permissionRequestCount: gates.pendingPermissionRequests.length,
-      questionRequestCount: gates.pendingQuestionRequests.length,
-      showPlanDecisionComposer: gates.showPlanDecisionComposer,
-      isWaitingForUserGate: gates.isWaitingForUserGate,
-    });
-  }
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
 
   // Close mobile drawer on Escape key
@@ -483,23 +348,9 @@ export function WorkspacePage() {
   }, [repos.selectedWorktreeId]);
 
   useEffect(() => {
-    debugLog("WorkspacePage", "run:state", {
-      nextActive: false,
-      reason: "selected-worktree-changed",
-      selectedWorktreeId: repos.selectedWorktreeId,
-    });
     setRunScriptActive(false);
     runScriptWorktreeIdRef.current = null;
-    runScriptTokenRef.current = null;
   }, [repos.selectedWorktreeId]);
-
-  useEffect(() => {
-    debugLog("WorkspacePage", "run:active-changed", {
-      runScriptActive,
-      selectedWorktreeId: repos.selectedWorktreeId,
-      token: runScriptTokenRef.current,
-    });
-  }, [runScriptActive, repos.selectedWorktreeId]);
 
   const handleRunScript = useCallback(async () => {
     if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
@@ -517,46 +368,16 @@ export function WorkspacePage() {
     try {
       setActiveBottomTab("output");
       setBottomPanelOpenSignal((prev) => prev + 1);
-      const runToken = createRunScriptToken();
-      debugLog("WorkspacePage", "run:start", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        runToken,
-        runCommandsCount: runCommands.length,
-      });
-      debugLog("WorkspacePage", "run:state", {
-        nextActive: true,
-        reason: "run-start",
-        token: runToken,
-        sessionId,
-      });
       setRunScriptActive(true);
       runScriptWorktreeIdRef.current = repos.selectedWorktreeId;
-      runScriptTokenRef.current = runToken;
       await api.runTerminalCommand({
         sessionId,
         command: shellScript,
         cwd: repos.selectedWorktree.path,
         mode: "exec",
       });
-      debugLog("WorkspacePage", "run:command-dispatched", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        runToken,
-      });
     } catch (e) {
-      debugLog("WorkspacePage", "run:command-error", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        token: runScriptTokenRef.current,
-        error: e instanceof Error ? e.message : "unknown error",
-      });
       runScriptWorktreeIdRef.current = null;
-      runScriptTokenRef.current = null;
-      debugLog("WorkspacePage", "run:state", {
-        nextActive: false,
-        reason: "run-command-error",
-      });
       setRunScriptActive(false);
       setError(e instanceof Error ? e.message : "Failed to run script");
     }
@@ -566,44 +387,17 @@ export function WorkspacePage() {
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
     try {
-      debugLog("WorkspacePage", "run:stop-request", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        token: runScriptTokenRef.current,
-      });
       setActiveBottomTab("output");
       setBottomPanelOpenSignal((prev) => prev + 1);
       await api.interruptTerminalSession(sessionId);
-      debugLog("WorkspacePage", "run:state", {
-        nextActive: false,
-        reason: "stop-requested",
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        token: runScriptTokenRef.current,
-      });
       setRunScriptActive(false);
       runScriptWorktreeIdRef.current = null;
-      runScriptTokenRef.current = null;
-      debugLog("WorkspacePage", "run:stop-complete", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-      });
     } catch (e) {
-      debugLog("WorkspacePage", "run:stop-error", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        error: e instanceof Error ? e.message : "unknown error",
-      });
       setError(e instanceof Error ? e.message : "Failed to stop script");
     }
-  }, [repos.selectedWorktreeId, resolveRunScriptSessionId]);
+  }, [resolveRunScriptSessionId]);
 
   const handleToggleRunScript = useCallback(() => {
-    debugLog("WorkspacePage", "run:toggle", {
-      runScriptActive,
-      selectedWorktreeId: repos.selectedWorktreeId,
-      token: runScriptTokenRef.current,
-    });
     if (runScriptActive) {
       void handleStopRunScript();
       return;
@@ -650,7 +444,6 @@ export function WorkspacePage() {
   );
 
   const handleRequestCloseThread = useCallback((threadId: string) => {
-    const targetThread = chat.threads.find((thread) => thread.id === threadId) ?? null;
     const needsConfirm = shouldConfirmCloseThread({
       threadId,
       selectedThreadId: chat.selectedThreadId,
@@ -659,23 +452,13 @@ export function WorkspacePage() {
       threads: chat.threads,
     });
 
-    debugLog("WorkspacePage", "close-thread decision", {
-      threadId,
-      selectedThreadId: chat.selectedThreadId,
-      targetThreadActive: targetThread?.active ?? null,
-      showStopAction: chat.showStopAction,
-      waitingAssistantThreadId,
-      canSendNow,
-      needsConfirm,
-    });
-
     if (needsConfirm) {
       setConfirmCloseThreadId(threadId);
       return;
     }
 
     void chat.closeThread(threadId);
-  }, [canSendNow, chat.closeThread, chat.selectedThreadId, chat.showStopAction, chat.threads, waitingAssistantThreadId]);
+  }, [chat.closeThread, chat.selectedThreadId, chat.showStopAction, chat.threads, waitingAssistantThreadId]);
 
   const handleConfirmCloseThread = useCallback(async () => {
     if (!confirmCloseThreadId) return;
@@ -817,13 +600,6 @@ export function WorkspacePage() {
                             onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
                             onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
                             onDeny={(requestId) => {
-                              debugLog("WorkspacePage", "permission-deny-requested", {
-                                requestId,
-                                selectedThreadId: chat.selectedThreadId,
-                                resolving: gates.resolvingPermissionIds.has(requestId),
-                                pendingPermissionIds: gates.pendingPermissionRequests.map((entry) => entry.requestId),
-                                activePermissionIndex,
-                              });
                               void gates.resolvePermission(requestId, "deny");
                             }}
                           />
@@ -843,12 +619,6 @@ export function WorkspacePage() {
                             onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
                             onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
                             onDeny={(requestId) => {
-                              debugLog("WorkspacePage", "permission-deny-requested", {
-                                requestId,
-                                selectedThreadId: chat.selectedThreadId,
-                                resolving: gates.resolvingPermissionIds.has(requestId),
-                                pendingPermissionIds: gates.pendingPermissionRequests.map((entry) => entry.requestId),
-                              });
                               void gates.resolvePermission(requestId, "deny");
                             }}
                           />

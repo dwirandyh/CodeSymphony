@@ -4,7 +4,6 @@ import type { MutableRefObject } from "react";
 import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
-import { debugLog } from "../../../lib/debugLog";
 import { EVENT_TYPES } from "../constants";
 import { GIT_STATUS_INVALIDATION_EVENT_TYPES, payloadStringOrNull } from "../eventUtils";
 import { applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
@@ -162,21 +161,12 @@ export function useBackgroundWorktreeStatusStream(
     [activeWorktreeIds, threadListQueries],
   );
 
-  const threadIds = useMemo(() => threadEntries.map(({ thread }) => thread.id), [threadEntries]);
-
   const subscribedThreads = useMemo(
     () => threadEntries.filter(({ thread }) => thread.active && thread.id !== selectedThreadId),
     [selectedThreadId, threadEntries],
   );
 
   useEffect(() => {
-    debugLog("useBackgroundWorktreeStatusStream", "subscription-scope", {
-      selectedWorktreeId,
-      selectedThreadId,
-      activeWorktreeIds,
-      subscribedThreadIds: subscribedThreads.map(({ thread, worktreeId }) => ({ threadId: thread.id, worktreeId })),
-    });
-
     const desiredThreadIds = new Set(subscribedThreads.map(({ thread }) => thread.id));
 
     for (const threadId of streamsRef.current.keys()) {
@@ -293,10 +283,6 @@ export function useBackgroundWorktreeStatusStream(
             return;
           }
           currentState.reconnectAttempts = 0;
-          debugLog("useBackgroundWorktreeStatusStream", "chat.sse.connected", {
-            threadId: thread.id,
-            afterIdx: lastEventIdxByThreadRef.current.get(thread.id) ?? null,
-          });
         };
 
         stream.onerror = () => {

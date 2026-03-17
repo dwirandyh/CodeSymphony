@@ -16,7 +16,6 @@ import type {
 import type { ChatTimelineItem, ChatTimelineSummary } from "../../../../components/workspace/chat-message-list";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
-import { debugLog } from "../../../../lib/debugLog";
 import { useThreads } from "../../../../hooks/queries/useThreads";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
 import {
@@ -105,7 +104,6 @@ export function useChatSession(
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
-  const loggedFirstInsertOrderByMessageIdRef = useRef<Set<string>>(new Set());
   const activeThreadIdRef = useRef<string | null>(null);
   const initialThreadAppliedRef = useRef(false);
   const creatingThreadRef = useRef(false);
@@ -330,7 +328,6 @@ export function useChatSession(
     streamingMessageIdsRef,
     stickyRawFallbackMessageIdsRef,
     renderDecisionByMessageIdRef,
-    loggedFirstInsertOrderByMessageIdRef,
     pendingEventsRef,
     pendingMessageMutationsRef,
     rafIdRef,
@@ -561,7 +558,6 @@ export function useChatSession(
     stickyRawFallbackMessageIds: stickyRawFallbackMessageIdsRef.current,
     renderDecisionByMessageId: renderDecisionByMessageIdRef.current,
     loggedOrphanEventIdsByThread: loggedOrphanEventIdsByThreadRef.current,
-    loggedFirstInsertOrderByMessageId: loggedFirstInsertOrderByMessageIdRef.current,
   }, {
     semanticHydrationInProgress: false,
     disabled: !timelineEnabled,

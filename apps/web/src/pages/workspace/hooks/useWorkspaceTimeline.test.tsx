@@ -9,9 +9,6 @@ vi.mock("../../../lib/renderDebug", () => ({
   isRenderDebugEnabled: () => false,
 }));
 
-vi.mock("../../../lib/debugLog", () => ({
-  debugLog: vi.fn(),
-}));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -58,7 +55,6 @@ function makeRefs(): TimelineRefs {
     stickyRawFallbackMessageIds: new Set(),
     renderDecisionByMessageId: new Map(),
     loggedOrphanEventIdsByThread: new Map(),
-    loggedFirstInsertOrderByMessageId: new Set(),
   };
 }
 

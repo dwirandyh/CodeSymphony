@@ -189,14 +189,10 @@ describe("RepositoryPanel", () => {
       selectedRepositoryId: "r1",
       onSelectWorktree,
     });
-    const items = container.querySelectorAll("[role='button'], [data-worktree-id]");
-    if (items.length === 0) {
-      const buttons = Array.from(container.querySelectorAll("button"));
-      const featureBtn = buttons.find((b) => b.textContent?.includes("feature-x"));
-      if (featureBtn) {
-        act(() => featureBtn.click());
-      }
-    }
+    const featureRow = container.querySelector("[data-worktree-id='wt-feat']") as HTMLElement | null;
+    expect(featureRow).toBeTruthy();
+    act(() => featureRow?.click());
+    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "wt-feat");
   });
 
   it("shows loading state", () => {

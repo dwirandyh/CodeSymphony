@@ -349,6 +349,7 @@ export const TimelineItem = memo(function TimelineItem({
   if (item.kind === "explore-activity") {
     const expanded = ctx.exploreActivityExpandedById.get(item.id) === true;
     const isRunning = item.status === "running";
+    const entries = item.entries ?? [];
 
     const summaryParts: string[] = [];
     if (item.fileCount > 0) {
@@ -388,7 +389,7 @@ export const TimelineItem = memo(function TimelineItem({
             className="mt-1 flex flex-col gap-0.5 text-xs text-muted-foreground"
             data-testid="timeline-explore-activity-entries"
           >
-            {item.entries.map((entry, idx) => (
+            {entries.map((entry, idx) => (
               <span key={`${entry.kind}:${entry.orderIdx}:${idx}`}>
                 {entry.kind === "read" ? (
                   <>
@@ -415,7 +416,7 @@ export const TimelineItem = memo(function TimelineItem({
               </span>
             ))}
 
-            {item.entries.length === 0 ? (
+            {entries.length === 0 ? (
               <span>{isRunning ? "Exploring…" : "No explore activity"}</span>
             ) : null}
           </div>
@@ -427,6 +428,7 @@ export const TimelineItem = memo(function TimelineItem({
   if (item.kind === "subagent-activity") {
     const expanded = ctx.subagentExpandedById.get(item.id) === true;
     const isRunning = item.status === "running";
+    const steps = item.steps ?? [];
 
     const EXPLORE_TOOL_NAMES = new Set(["Read", "Grep", "Search", "Glob", "ListDir"]);
     const isExploreStep = (s: { toolName: string; label?: string }) => {
@@ -437,13 +439,13 @@ export const TimelineItem = memo(function TimelineItem({
       }
       return false;
     };
-    const readSteps = item.steps.filter(isExploreStep);
-    const otherSteps = item.steps.filter((s) => !isExploreStep(s));
+    const readSteps = steps.filter(isExploreStep);
+    const otherSteps = steps.filter((s) => !isExploreStep(s));
     const readCount = readSteps.filter((s) => s.toolName === "Read").length;
     const searchCount = readSteps.filter((s) => s.toolName !== "Read").length;
     const hasExploreSteps = readSteps.length > 0;
 
-    const stepCount = item.steps.length;
+    const stepCount = steps.length;
     const durationText = item.durationSeconds != null ? `${item.durationSeconds}s` : "";
     const statusParts = [
       stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? "s" : ""}` : "",

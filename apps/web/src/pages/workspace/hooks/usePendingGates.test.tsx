@@ -29,9 +29,6 @@ vi.mock("../../../lib/api", () => ({
   },
 }));
 
-vi.mock("../../../lib/debugLog", () => ({
-  debugLog: vi.fn(),
-}));
 
 let container: HTMLDivElement;
 let root: Root;

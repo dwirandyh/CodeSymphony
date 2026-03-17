@@ -8,7 +8,6 @@ import {
   splitAtFirstSentenceBoundary,
 } from "../../textUtils";
 import { parseTimestamp } from "../../eventUtils";
-import { debugLog } from "../../../../lib/debugLog";
 import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types";
 import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../../types";
 
@@ -476,12 +475,8 @@ export function processInlineInsertLoop(
   anchorIdx: number,
   timestamp: number | null,
   stableOffset: { value: number },
-  refs: TimelineRefs,
-  selectedThreadId: string | null,
 ): void {
   const firstInlineInsert = inlineInserts[0] ?? null;
-  const firstInsertLogKey = `${selectedThreadId ?? "no-thread"}:${message.id}`;
-  let firstInsertOrderingLogged = false;
 
   const hasLeadingText = segmentBuckets[0].content.length > 0;
   const hasAnyTrailingText = segmentBuckets.slice(1).some((bucket) => bucket.content.length > 0);
@@ -502,52 +497,6 @@ export function processInlineInsertLoop(
   let delayedFirstSegmentContent = "";
   let delayedFirstSegmentAnchorIdx: number | null = null;
   let delayedFirstSegmentTimestamp: number | null = null;
-
-  const logFirstInsertOrdering = (
-    decision: "tool-before-text" | "text-before-tool" | "delay-first-insert",
-    options?: {
-      bucketIndex?: number;
-      bucketAnchorIdx?: number | null;
-      splitHeadLength?: number;
-      splitTailLength?: number;
-    },
-  ) => {
-    if (!firstInlineInsert || firstInsertOrderingLogged) {
-      return;
-    }
-    if (refs.loggedFirstInsertOrderByMessageId.has(firstInsertLogKey)) {
-      firstInsertOrderingLogged = true;
-      return;
-    }
-
-    refs.loggedFirstInsertOrderByMessageId.add(firstInsertLogKey);
-    firstInsertOrderingLogged = true;
-
-    const firstNonEmptyBucketIndex = segmentBuckets.findIndex((bucket) => bucket.content.length > 0);
-    const firstNonEmptyBucket = firstNonEmptyBucketIndex >= 0
-      ? segmentBuckets[firstNonEmptyBucketIndex]
-      : null;
-
-    debugLog("useWorkspaceTimeline", "first-insert-ordering", {
-      threadId: selectedThreadId,
-      messageId: message.id,
-      decision,
-      firstInsertKind: firstInlineInsert.kind,
-      firstInsertId: firstInlineInsert.id,
-      firstInsertStartIdx: firstInlineInsert.startIdx,
-      firstInsertAnchorIdx: firstInlineInsert.anchorIdx,
-      firstNonEmptyBucketIndex,
-      firstNonEmptyBucketAnchorIdx: firstNonEmptyBucket?.anchorIdx ?? null,
-      firstNonEmptyBucketLength: firstNonEmptyBucket?.content.length ?? 0,
-      firstBucketAnchorIdx: segmentBuckets[0]?.anchorIdx ?? null,
-      hasAnyTrailingText,
-      firstInsertHasTrailingTextScenario: hasAnyTrailingText && segmentBuckets[0].content.length === 0,
-      bucketIndex: options?.bucketIndex ?? null,
-      bucketAnchorIdx: options?.bucketAnchorIdx ?? null,
-      splitHeadLength: options?.splitHeadLength ?? null,
-      splitTailLength: options?.splitTailLength ?? null,
-    });
-  };
 
   const doPushInlineInsert = (insert: InlineInsert, bTimestamp?: number | null, bAnchorIdx?: number | null) => {
     pushInlineInsert(insert, sortable, message, isCompleted, timestamp, stableOffset, bTimestamp, bAnchorIdx);
@@ -590,10 +539,6 @@ export function processInlineInsertLoop(
         && nextInsertIndex === 0
         && isSentenceAwareInlineInsertKind(firstInsertKind)
       ) {
-        logFirstInsertOrdering("delay-first-insert", {
-          bucketIndex,
-          bucketAnchorIdx: bucket.anchorIdx,
-        });
         delayedFirstSegmentContent += bucket.content;
         delayedFirstSegmentAnchorIdx = delayedFirstSegmentAnchorIdx == null
           ? bucket.anchorIdx
@@ -669,10 +614,6 @@ export function processInlineInsertLoop(
       ) {
         const textIsAfterInsert = (bucket.anchorIdx ?? 0) > inlineInserts[0].startIdx;
         if (textIsAfterInsert) {
-          logFirstInsertOrdering("tool-before-text", {
-            bucketIndex,
-            bucketAnchorIdx: bucket.anchorIdx,
-          });
           doPushInlineInsert(inlineInserts[0], bucket.timestamp);
           doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
           nextInsertIndex = 1;
@@ -681,12 +622,6 @@ export function processInlineInsertLoop(
         } else {
           const splitSegment = hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null;
           if (splitSegment) {
-            logFirstInsertOrdering("text-before-tool", {
-              bucketIndex,
-              bucketAnchorIdx: bucket.anchorIdx,
-              splitHeadLength: splitSegment.head.length,
-              splitTailLength: splitSegment.tail.length,
-            });
             doPushMessageSegment(splitSegment.head, `${bucketIndex}:head`, bucket.anchorIdx, bucket.timestamp);
             doPushInlineInsert(inlineInserts[0], bucket.timestamp);
             if (splitSegment.tail.length > 0) {

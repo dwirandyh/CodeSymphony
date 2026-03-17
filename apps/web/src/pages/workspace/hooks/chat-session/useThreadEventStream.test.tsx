@@ -14,9 +14,6 @@ import { useThreadEventStream } from "./useThreadEventStream";
 
 const invalidateQueriesMock = vi.fn();
 
-vi.mock("../../../../lib/debugLog", () => ({
-  debugLog: vi.fn(),
-}));
 
 vi.mock("../../../../lib/logService", () => ({
   logService: {
@@ -145,7 +142,6 @@ function HookHarness({
   const streamingMessageIdsRef = useRef(new Set<string>());
   const stickyRawFallbackMessageIdsRef = useRef(new Set<string>());
   const renderDecisionByMessageIdRef = useRef(new Map<string, string>());
-  const loggedFirstInsertOrderByMessageIdRef = useRef(new Set<string>());
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef([]);
   const rafIdRef = useRef<number | null>(null);
@@ -164,7 +160,6 @@ function HookHarness({
     streamingMessageIdsRef,
     stickyRawFallbackMessageIdsRef,
     renderDecisionByMessageIdRef,
-    loggedFirstInsertOrderByMessageIdRef,
     pendingEventsRef,
     pendingMessageMutationsRef,
     rafIdRef,

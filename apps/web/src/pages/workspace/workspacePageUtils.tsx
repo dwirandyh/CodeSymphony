@@ -16,9 +16,6 @@ export function resolveChatMessageListKey(params: {
   return previousKey;
 }
 
-export function createRunScriptToken(): string {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-}
 
 export function FilledPlayIcon({ className }: { className?: string }) {
   return (

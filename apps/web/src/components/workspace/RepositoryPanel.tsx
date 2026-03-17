@@ -249,13 +249,24 @@ export function RepositoryPanel({
 
                           return (
                             <div key={worktree.id} className="group/wt relative">
-                              <button
-                                type="button"
+                              <div
+                                role="button"
+                                tabIndex={0}
+                                data-worktree-id={worktree.id}
                                 className={cn(
-                                  "flex w-full min-w-0 items-start gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40",
+                                  "flex w-full min-w-0 cursor-pointer items-start gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                                   isWorktreeSelected && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
                                 )}
                                 onClick={() => onSelectWorktree(repository.id, worktree.id)}
+                                onKeyDown={(e) => {
+                                  if (e.target !== e.currentTarget) {
+                                    return;
+                                  }
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    onSelectWorktree(repository.id, worktree.id);
+                                  }
+                                }}
                               >
                                 <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                                   <div className="flex min-w-0 items-center gap-1.5 overflow-hidden pr-20">
@@ -314,40 +325,40 @@ export function RepositoryPanel({
                                   </div>
                                 </div>
 
-                                <div className="absolute top-1.5 right-2 flex items-center justify-end transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0">
+                                <div className="absolute top-1.5 right-2 flex items-center justify-end transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0 group-focus-within/wt:pointer-events-none group-focus-within/wt:opacity-0">
                                   <WorktreeStatusBadge status={worktreeStatuses[worktree.id]?.kind} />
                                 </div>
+                              </div>
 
-                                <div className="absolute top-0 right-2 bottom-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:opacity-100">
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setEditingWorktreeId(worktree.id);
-                                      setEditingBranchValue(worktree.branch);
-                                    }}
-                                    title="Rename branch"
-                                  >
-                                    <Pencil className="h-3.5 w-3.5" />
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onDeleteWorktree(worktree.id);
-                                    }}
-                                    title="Delete worktree"
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </Button>
-                                </div>
-                              </button>
+                              <div className="pointer-events-none absolute top-0 right-2 bottom-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:pointer-events-auto group-hover/wt:opacity-100 group-focus-within/wt:pointer-events-auto group-focus-within/wt:opacity-100">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingWorktreeId(worktree.id);
+                                    setEditingBranchValue(worktree.branch);
+                                  }}
+                                  title="Rename branch"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDeleteWorktree(worktree.id);
+                                  }}
+                                  title="Delete worktree"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
                             </div>
                           );
                         })}

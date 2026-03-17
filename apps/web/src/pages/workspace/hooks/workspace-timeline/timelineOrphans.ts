@@ -14,7 +14,6 @@ import {
 } from "../../eventUtils";
 import { extractBashRuns } from "../../bashUtils";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
-import { debugLog } from "../../../../lib/debugLog";
 import { logService } from "../../../../lib/logService";
 import type { SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types";
 
@@ -305,11 +304,6 @@ export function processUnassignedSemanticEvents(
 
     if (unresolvedAssistantMessageIds.size > 0) {
       if (semanticHydrationInProgress) {
-        debugLog("useWorkspaceTimeline", "hydration-fallback-suppressed", {
-          threadId: selectedThreadId,
-          unresolvedMessageIds: Array.from(unresolvedAssistantMessageIds).sort(),
-          unresolvedMessageCount: unresolvedAssistantMessageIds.size,
-        });
         localHasIncompleteCoverage = true;
       } else {
         const firstAssistantMessage = sortedMessages.find((message) => message.role === "assistant") ?? null;

@@ -36,9 +36,6 @@ vi.mock("../../lib/renderDebug", () => ({
   copyRenderDebugLog: vi.fn(),
 }));
 
-vi.mock("../../lib/debugLog", () => ({
-  debugLog: vi.fn(),
-}));
 
 vi.mock("react-markdown", () => ({
   default: ({ children }: any) => <div data-testid="markdown">{children}</div>,
@@ -343,6 +340,25 @@ describe("ChatMessageList", () => {
     expect(onOpenReadFile).toHaveBeenCalledWith("src/index.ts");
   });
 
+  it("handles explore-activity items without entries", () => {
+    const items = [
+      {
+        kind: "explore-activity",
+        id: "exp-missing-entries",
+        status: "success",
+        fileCount: 0,
+        searchCount: 0,
+      },
+    ] as unknown as ChatTimelineItem[];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Explored");
+    expect(container.textContent).toContain("No explore activity");
+  });
+
   it("renders subagent-activity item", () => {
     const items: ChatTimelineItem[] = [
       {
@@ -362,6 +378,29 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
     expect(container.textContent).toContain("Searching codebase");
+  });
+
+  it("handles subagent-activity items without steps", () => {
+    const items = [
+      {
+        kind: "subagent-activity",
+        id: "sub-missing-steps",
+        agentId: "agent-missing",
+        agentType: "explore",
+        toolUseId: "tu-missing",
+        status: "success",
+        description: "Searching codebase",
+        lastMessage: "Found something",
+        durationSeconds: 1.2,
+      },
+    ] as unknown as ChatTimelineItem[];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Searching codebase");
+    expect(container.textContent).toContain("Found something");
   });
 
   it("keeps mixed Bash subagent steps out of explore summary", () => {

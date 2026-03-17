@@ -16,7 +16,6 @@ import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { logService } from "../../../../lib/logService";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
-import { debugLog } from "../../../../lib/debugLog";
 import { EVENT_TYPES } from "../../constants";
 import {
   GIT_STATUS_INVALIDATION_EVENT_TYPES,
@@ -49,7 +48,6 @@ export interface UseThreadEventStreamParams {
   streamingMessageIdsRef: MutableRefObject<Set<string>>;
   stickyRawFallbackMessageIdsRef: MutableRefObject<Set<string>>;
   renderDecisionByMessageIdRef: MutableRefObject<Map<string, string>>;
-  loggedFirstInsertOrderByMessageIdRef: MutableRefObject<Set<string>>;
   pendingEventsRef: MutableRefObject<ChatEvent[]>;
   pendingMessageMutationsRef: MutableRefObject<PendingMessageMutation[]>;
   rafIdRef: MutableRefObject<number | null>;
@@ -72,7 +70,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     streamingMessageIdsRef,
     stickyRawFallbackMessageIdsRef,
     renderDecisionByMessageIdRef,
-    loggedFirstInsertOrderByMessageIdRef,
     pendingEventsRef,
     pendingMessageMutationsRef,
     rafIdRef,
@@ -104,7 +101,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       setStopRequestedThreadId(null);
       streamingMessageIdsRef.current = new Set();
       stickyRawFallbackMessageIdsRef.current = new Set();
-      loggedFirstInsertOrderByMessageIdRef.current = new Set();
       setMessages([]);
       setEvents([]);
       return;
@@ -113,7 +109,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     streamingMessageIdsRef.current = new Set();
     stickyRawFallbackMessageIdsRef.current = new Set();
     renderDecisionByMessageIdRef.current = new Map();
-    loggedFirstInsertOrderByMessageIdRef.current = new Set();
     setStoppingThreadId(null);
     setStopRequestedThreadId(null);
 
@@ -373,12 +368,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             updateLastEventIdx(selectedThreadId, e.idx);
           }
         }
-      } catch (error) {
-        debugLog("useChatSession", "chat.sse.prefetchSnapshot:error", {
-          threadId: selectedThreadId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      } catch {}
       if (!disposed) startStream();
     })();
 
