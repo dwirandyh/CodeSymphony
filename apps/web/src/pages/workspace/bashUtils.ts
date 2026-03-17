@@ -19,7 +19,13 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
   const hasBashToolLifecycleEvents = ordered.some((event) => isBashToolEvent(event));
   const permissionRequestById = new Map<
     string,
-    { idx: number; createdAt: string; command: string | null; eventId: string }
+    {
+      idx: number;
+      createdAt: string;
+      command: string | null;
+      eventId: string;
+      subagentOwnerToolUseId: string | null;
+    }
   >();
 
   function ensureRun(toolUseId: string, event: ChatEvent): BashRun {
@@ -111,14 +117,16 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
       }
 
       const command = getBashCommand(event);
+      const subagentOwnerToolUseId = payloadStringOrNull(event.payload.subagentOwnerToolUseId);
       permissionRequestById.set(requestId, {
         idx: event.idx,
         createdAt: event.createdAt,
         command,
         eventId: event.id,
+        subagentOwnerToolUseId,
       });
 
-      if (!hasBashToolLifecycleEvents) {
+      if (!hasBashToolLifecycleEvents && !subagentOwnerToolUseId) {
         const run = ensureRun(`permission:${requestId}`, event);
         run.summary = "Awaiting approval";
         run.command = run.command ?? command;
@@ -140,7 +148,7 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
     const key = `permission:${requestId}`;
     const requestMeta = permissionRequestById.get(requestId);
     let run = byToolUseId.get(key);
-    if (!run && decision === "deny" && requestMeta) {
+    if (!run && decision === "deny" && requestMeta && !requestMeta.subagentOwnerToolUseId) {
       run = ensureRun(key, event);
       run.startIdx = Math.min(run.startIdx, requestMeta.idx);
       run.anchorIdx = Math.min(run.anchorIdx, requestMeta.idx);

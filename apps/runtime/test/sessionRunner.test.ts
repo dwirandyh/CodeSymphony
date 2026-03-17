@@ -1018,6 +1018,142 @@ describe("tool instrumentation", () => {
       description: "",
     }));
   });
+
+  it("backfills subagent description from transcript when start mapping is empty", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+          SubagentStop: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+        const subagentStopHook = hooks.SubagentStop[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-transcript",
+            agent_type: "Explore",
+            tool_use_id: "subagent-transcript",
+          },
+          "subagent-transcript",
+        );
+
+        const transcriptPath = `${process.cwd()}/.tmp-subagent-transcript.jsonl`;
+        await import("node:fs/promises").then(({ writeFile }) =>
+          writeFile(
+            transcriptPath,
+            [
+              JSON.stringify({ type: "user", message: { role: "user", content: "Recovered prompt from transcript" } }),
+              JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Recovered answer" }] } }),
+            ].join("\n"),
+            "utf-8",
+          ),
+        );
+
+        await subagentStopHook?.(
+          {
+            hook_event_name: "SubagentStop",
+            agent_id: "agent-transcript",
+            agent_type: "Explore",
+            tool_use_id: "subagent-transcript",
+            agent_transcript_path: transcriptPath,
+          },
+          "subagent-transcript",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-transcript" };
+      })();
+    });
+
+    const onSubagentStarted = vi.fn();
+    const onSubagentStopped = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run transcript test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted,
+      onSubagentStopped,
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onSubagentStarted).toHaveBeenCalledWith(expect.objectContaining({
+      toolUseId: "subagent-transcript",
+      description: "",
+    }));
+    expect(onSubagentStopped).toHaveBeenCalledWith(expect.objectContaining({
+      toolUseId: "subagent-transcript",
+      description: "Recovered prompt from transcript",
+      lastMessage: "Recovered answer",
+    }));
+  });
+
+  it("maps Agent launcher prompts to subagent starts", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Agent", { prompt: "Explore from another angle" }, {
+          toolUseID: "call-agent-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-agent-launcher",
+            agent_type: "Explore",
+            tool_use_id: "subagent-agent-launcher",
+          },
+          "subagent-agent-launcher",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-agent-launcher" };
+      })();
+    });
+
+    const onSubagentStarted = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run agent launcher test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted,
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onSubagentStarted).toHaveBeenCalledWith(expect.objectContaining({
+      toolUseId: "subagent-agent-launcher",
+      description: "Explore from another angle",
+    }));
+  });
 });
 
 describe("thinking_delta", () => {

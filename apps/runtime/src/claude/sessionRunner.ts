@@ -76,8 +76,11 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     subagentToolInputByUseId: new Map(),
     pendingSubagentTaskToolUseIds: [],
     subagentTaskToolUseIdBySubagentToolUseId: new Map(),
+    subagentToolUseIdByTaskToolUseId: new Map(),
+    subagentOwnerToolUseIdByToolUseId: new Map(),
     subagentResponseByUseId: new Map(),
     sessionPersistedPlanFiles: new Set<string>(),
+    activeSubagentToolUseIds: [],
   };
 
   const instrumentContext = {

@@ -82,6 +82,31 @@ const MAIN_SUMMARY_REGEX = /###main(?:\s+agent)? summary(?:\s+start)?\n?[\s\S]*?
 const MAIN_SUMMARY_START_MARKER = /###main(?:\s+agent)? summary(?:\s+start)?\n?/g;
 const MAIN_SUMMARY_END_MARKER = /###main(?:\s+agent)? summary end\n?/g;
 
+function compactTimelineSignatureItem(item: SortableEntry["item"]): string {
+  switch (item.kind) {
+    case "message":
+      return `message:${item.message.id}:${item.message.role}:${item.message.content.length}`;
+    case "thinking":
+      return `thinking:${item.id}:${item.content.length}`;
+    case "tool":
+      return `tool:${item.id}:${item.toolName ?? ""}:${item.status ?? ""}`;
+    case "edited-diff":
+      return `edited:${item.id}:${item.status}:${item.changedFiles.length}`;
+    case "subagent-activity":
+      return `subagent:${item.id}:${item.status}:${item.steps.length}:${item.description.trim().length}`;
+    case "explore-activity":
+      return `explore:${item.id}:${item.status}:${item.entries.length}`;
+    case "plan-file-output":
+      return `plan:${item.id}`;
+    case "activity":
+      return `activity:${item.messageId}:${item.steps.length}`;
+    case "error":
+      return `error:${item.id}`;
+    default:
+      return item.kind;
+  }
+}
+
 export function useWorkspaceTimeline(
   messages: ChatMessage[],
   events: ChatEvent[],
@@ -491,6 +516,29 @@ export function useWorkspaceTimeline(
           contextWithAgentBoundaries.filter((event) => !subagentEventIds.has(event.id)),
         )
         : [];
+      if (message.role === "assistant" && (subagentGroups.length > 0 || exploreActivityGroups.length > 0)) {
+        pushRenderDebug({
+          source: "useWorkspaceTimeline",
+          event: "subagentExploreExtraction",
+          messageId: message.id,
+          details: {
+            subagentGroups: subagentGroups.map((group) => ({
+              id: group.id,
+              toolUseId: group.toolUseId,
+              descriptionLen: group.description.trim().length,
+              steps: group.steps.length,
+              eventIds: [...group.eventIds],
+            })),
+            exploreActivityGroups: exploreActivityGroups.map((group) => ({
+              id: group.id,
+              status: group.status,
+              entries: group.entries.length,
+              eventIds: [...group.eventIds],
+            })),
+            claimedEventIds: [...subagentEventIds],
+          },
+        });
+      }
       const agentEventIds = new Set<string>();
       for (const group of subagentGroups) {
         group.eventIds.forEach((id) => agentEventIds.add(id));
@@ -624,6 +672,18 @@ export function useWorkspaceTimeline(
         }
         for (const group of exploreActivityGroups) {
           group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+          if (group.entries.length === 0) {
+            pushRenderDebug({
+              source: "useWorkspaceTimeline",
+              event: "emptyExploreGroup",
+              messageId: message.id,
+              details: {
+                groupId: group.id,
+                eventIds: [...group.eventIds],
+                status: group.status,
+              },
+            });
+          }
         }
       }
 
@@ -700,6 +760,19 @@ export function useWorkspaceTimeline(
           exploreActivityGroups,
           planFileOutput,
         );
+        pushRenderDebug({
+          source: "useWorkspaceTimeline",
+          event: "inlineInsertsBuilt",
+          messageId: message.id,
+          details: {
+            inserts: inlineInserts.map((insert) => ({
+              kind: insert.kind,
+              id: insert.id,
+              startIdx: insert.startIdx,
+              anchorIdx: insert.anchorIdx,
+            })),
+          },
+        });
 
         const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
 
@@ -852,6 +925,15 @@ export function useWorkspaceTimeline(
     }
 
     const result = sortable.map((entry) => entry.item);
+    pushRenderDebug({
+      source: "useWorkspaceTimeline",
+      event: "finalTimelineItems",
+      messageId: selectedThreadId ?? undefined,
+      details: {
+        count: result.length,
+        signatures: result.map(compactTimelineSignatureItem),
+      },
+    });
     const oldestRenderable = result[0] ?? null;
     const oldestRenderableKey = oldestRenderable != null
       ? getTimelineItemStableKey(oldestRenderable)

@@ -2,6 +2,7 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -15,6 +16,7 @@ import type {
 } from "@codesymphony/shared-types";
 import type { ChatTimelineItem, ChatTimelineSummary } from "../../../../components/workspace/chat-message-list";
 import { api } from "../../../../lib/api";
+import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreads } from "../../../../hooks/queries/useThreads";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
@@ -51,6 +53,74 @@ function resolvePreferredThreadId(threads: ChatThread[]): string | null {
   }
 
   return threads[threads.length - 1]?.id ?? null;
+}
+
+function summarizeTimelineItems(items: ChatTimelineItem[]): {
+  total: number;
+  signatures: string[];
+  kinds: Record<string, number>;
+  exploreCards: number;
+  emptyExploreCards: number;
+  subagentCards: number;
+  subagentsMissingDescription: number;
+} {
+  const kinds: Record<string, number> = {};
+  const signatures: string[] = [];
+  let exploreCards = 0;
+  let emptyExploreCards = 0;
+  let subagentCards = 0;
+  let subagentsMissingDescription = 0;
+
+  for (const item of items) {
+    kinds[item.kind] = (kinds[item.kind] ?? 0) + 1;
+
+    if (item.kind === "explore-activity") {
+      exploreCards += 1;
+      if ((item.entries?.length ?? 0) === 0) {
+        emptyExploreCards += 1;
+      }
+      signatures.push(`explore:${item.id}:${item.status}:${item.entries?.length ?? 0}`);
+      continue;
+    }
+
+    if (item.kind === "subagent-activity") {
+      subagentCards += 1;
+      if (item.description.trim().length === 0) {
+        subagentsMissingDescription += 1;
+      }
+      signatures.push(
+        `subagent:${item.id}:${item.status}:${item.steps.length}:${item.description.trim().length}:${item.lastMessage?.length ?? 0}`,
+      );
+      continue;
+    }
+
+    if (item.kind === "message") {
+      signatures.push(`message:${item.message.id}:${item.message.role}:${item.message.content.length}`);
+      continue;
+    }
+
+    if (item.kind === "thinking") {
+      signatures.push(`thinking:${item.id}:${item.content.length}:${item.isStreaming ? 1 : 0}`);
+      continue;
+    }
+
+    if (item.kind === "tool") {
+      signatures.push(`tool:${item.id}:${item.toolName ?? ""}:${item.status ?? ""}`);
+      continue;
+    }
+
+    signatures.push(`${item.kind}:${"id" in item ? String(item.id) : ""}`);
+  }
+
+  return {
+    total: items.length,
+    signatures,
+    kinds,
+    exploreCards,
+    emptyExploreCards,
+    subagentCards,
+    subagentsMissingDescription,
+  };
 }
 
 export function deriveSelectedThreadUiState(params: {
@@ -563,10 +633,12 @@ export function useChatSession(
     disabled: !timelineEnabled,
   });
 
+  const useServerTimeline = timelineEnabled && timelineSeedMatchesLiveState && serverTimelineSummary != null;
+
   const timelineData: {
     items: ChatTimelineItem[];
     summary: ChatTimelineSummary;
-  } = timelineEnabled && timelineSeedMatchesLiveState && serverTimelineSummary
+  } = useServerTimeline
     ? {
         items: serverTimelineItems,
         summary: serverTimelineSummary,
@@ -575,6 +647,51 @@ export function useChatSession(
         items: derivedTimeline.items,
         summary: derivedTimeline.summary,
       };
+
+  const timelineComparison = useMemo(() => {
+    const server = summarizeTimelineItems(serverTimelineItems);
+    const derived = summarizeTimelineItems(derivedTimeline.items);
+    const hasSuspiciousSubagentOrExploreState =
+      server.exploreCards > 0
+      || derived.exploreCards > 0
+      || server.subagentCards > 0
+      || derived.subagentCards > 0;
+    const signaturesMatch = JSON.stringify(server.signatures) === JSON.stringify(derived.signatures);
+
+    return {
+      server,
+      derived,
+      hasSuspiciousSubagentOrExploreState,
+      signaturesMatch,
+    };
+  }, [derivedTimeline.items, serverTimelineItems]);
+
+  useEffect(() => {
+    if (!timelineComparison.hasSuspiciousSubagentOrExploreState) {
+      return;
+    }
+
+    pushRenderDebug({
+      source: "useChatSession",
+      event: "timelineSourceDecision",
+      messageId: selectedThreadId ?? undefined,
+      details: {
+        selectedThreadId,
+        timelineEnabled,
+        timelineSeedMatchesLiveState,
+        useServerTimeline,
+        signaturesMatch: timelineComparison.signaturesMatch,
+        server: timelineComparison.server,
+        derived: timelineComparison.derived,
+      },
+    });
+  }, [
+    selectedThreadId,
+    timelineComparison,
+    timelineEnabled,
+    timelineSeedMatchesLiveState,
+    useServerTimeline,
+  ]);
 
   const timelineItems = timelineData.items;
   const timelineSummary = timelineData.summary;

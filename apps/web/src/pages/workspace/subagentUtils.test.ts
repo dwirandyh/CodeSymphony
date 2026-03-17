@@ -287,6 +287,77 @@ describe("extractSubagentGroups", () => {
     expect(second?.eventIds.has("e1")).toBe(false);
     expect(second?.eventIds.has("e5")).toBe(false);
   });
+
+  it("treats Agent launcher events like Task for subagent ownership", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Agent", toolUseId: "call_agent_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "Explore", toolUseId: "sa-1", description: "" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Read", toolUseId: "child-1" } }),
+      makeEvent({ id: "e4", type: "tool.finished", idx: 4, payload: { toolName: "Read", toolUseId: "child-1-done", precedingToolUseIds: ["child-1"], summary: "Read app/README.md" } }),
+      makeEvent({ id: "e5", type: "tool.finished", idx: 5, payload: { toolName: "Agent", toolUseId: "call_agent_1", subagentResponse: "agent response" } }),
+      makeEvent({ id: "e6", type: "subagent.finished", idx: 6, payload: { toolUseId: "sa-1", description: "Recovered prompt", lastMessage: "done" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].eventIds.has("e1")).toBe(true);
+    expect(groups[0].eventIds.has("e5")).toBe(true);
+  });
+
+  it("claims permission events via explicit canonical subagent owner", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({
+        id: "e3",
+        type: "permission.requested",
+        idx: 3,
+        payload: {
+          requestId: "req-1",
+          toolName: "Bash",
+          command: "ls",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+        },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "permission.resolved",
+        idx: 4,
+        payload: {
+          requestId: "req-1",
+          decision: "deny",
+          message: "Rejected",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+        },
+      }),
+      makeEvent({ id: "e5", type: "subagent.finished", idx: 5, payload: { toolUseId: "sa-1", lastMessage: "done" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].eventIds.has("e3")).toBe(true);
+    expect(groups[0].eventIds.has("e4")).toBe(true);
+  });
+
+  it("does not claim ambiguous permission events during overlap without ownership metadata", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "permission.requested", idx: 5, payload: { requestId: "req-amb", toolName: "Bash", command: "pwd" } }),
+      makeEvent({ id: "e6", type: "permission.resolved", idx: 6, payload: { requestId: "req-amb", decision: "deny", message: "Rejected" } }),
+      makeEvent({ id: "e7", type: "subagent.finished", idx: 7, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e8", type: "subagent.finished", idx: 8, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const claimedEventIds = new Set(groups.flatMap((group) => [...group.eventIds]));
+    expect(claimedEventIds.has("e5")).toBe(false);
+    expect(claimedEventIds.has("e6")).toBe(false);
+  });
 });
 
 describe("extractExploreActivityGroups", () => {

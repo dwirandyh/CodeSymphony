@@ -33,8 +33,11 @@ export type SessionMaps = {
   subagentToolInputByUseId: Map<string, Record<string, unknown>>;
   pendingSubagentTaskToolUseIds: string[];
   subagentTaskToolUseIdBySubagentToolUseId: Map<string, string>;
+  subagentToolUseIdByTaskToolUseId: Map<string, string>;
+  subagentOwnerToolUseIdByToolUseId: Map<string, string>;
   subagentResponseByUseId: Map<string, string>;
   sessionPersistedPlanFiles: Set<string>;
+  activeSubagentToolUseIds: string[];
 };
 
 export function createEmitInstrumentation(

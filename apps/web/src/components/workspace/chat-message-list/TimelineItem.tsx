@@ -351,6 +351,19 @@ export const TimelineItem = memo(function TimelineItem({
     const isRunning = item.status === "running";
     const entries = item.entries ?? [];
 
+    if (entries.length === 0) {
+      pushRenderDebug({
+        source: "TimelineItem",
+        event: "emptyExploreCardRendered",
+        details: {
+          id: item.id,
+          status: item.status,
+          fileCount: item.fileCount,
+          searchCount: item.searchCount,
+        },
+      });
+    }
+
     const summaryParts: string[] = [];
     if (item.fileCount > 0) {
       summaryParts.push(`${item.fileCount} file${item.fileCount !== 1 ? "s" : ""}`);
@@ -416,9 +429,7 @@ export const TimelineItem = memo(function TimelineItem({
               </span>
             ))}
 
-            {entries.length === 0 ? (
-              <span>{isRunning ? "Exploring…" : "No explore activity"}</span>
-            ) : null}
+            {entries.length === 0 ? null : null}
           </div>
         </details>
       </article>
@@ -429,6 +440,19 @@ export const TimelineItem = memo(function TimelineItem({
     const expanded = ctx.subagentExpandedById.get(item.id) === true;
     const isRunning = item.status === "running";
     const steps = item.steps ?? [];
+
+    if (steps.length > 0 && item.description.trim().length === 0) {
+      pushRenderDebug({
+        source: "TimelineItem",
+        event: "subagentPromptMissingAtRender",
+        details: {
+          id: item.id,
+          toolUseId: item.toolUseId,
+          stepCount: steps.length,
+          lastMessageLen: item.lastMessage?.length ?? 0,
+        },
+      });
+    }
 
     const EXPLORE_TOOL_NAMES = new Set(["Read", "Grep", "Search", "Glob", "ListDir"]);
     const isExploreStep = (s: { toolName: string; label?: string }) => {

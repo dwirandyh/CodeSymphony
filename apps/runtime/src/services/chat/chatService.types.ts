@@ -32,6 +32,8 @@ export type PendingPermissionEntry = {
   result?: PermissionDecisionResult;
   toolName: string;
   command: string | null;
+  subagentOwnerToolUseId: string | null;
+  launcherToolUseId: string | null;
 };
 
 export type QuestionAnswerResult = { answers: Record<string, string> };

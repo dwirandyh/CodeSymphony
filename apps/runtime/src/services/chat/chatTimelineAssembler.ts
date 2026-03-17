@@ -1,4 +1,5 @@
 import type { ChatEvent, ChatMessage, ChatTimelineItem, ChatTimelineSummary } from "@codesymphony/shared-types";
+import { appendRuntimeDebugLog } from "../../routes/debug.js";
 import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "../../../../web/src/pages/workspace/constants.ts";
 import { extractBashRuns } from "../../../../web/src/pages/workspace/bashUtils.ts";
 import { extractEditedRuns } from "../../../../web/src/pages/workspace/editUtils.ts";
@@ -72,6 +73,14 @@ type PlanFileOutput = {
   createdAt: string;
 };
 
+function logTimelineAssembly(message: string, data: Record<string, unknown>): void {
+  appendRuntimeDebugLog({
+    source: "chatTimelineAssembler",
+    message,
+    data,
+  });
+}
+
 export type TimelineAssemblyResult = {
   items: ChatTimelineItem[];
   summary: ChatTimelineSummary;
@@ -95,7 +104,6 @@ export function buildTimelineFromSeed(params: {
 
   const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
   const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
-  const oldestMessageId = sortedMessages[0]?.id ?? null;
 
   const firstMessageEventIdxById = new Map<string, number>();
   const completedMessageIds = new Set<string>();
@@ -360,7 +368,18 @@ export function buildTimelineFromSeed(params: {
       }
     }
 
-    const subagentGroups = message.role === "assistant" ? extractSubagentGroups(context) : [];
+    const deltaEventsForAgent = message.role === "assistant"
+      ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
+      : [];
+    const thinkingEventsForAgent = message.role === "assistant"
+      ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
+      : [];
+    const contextWithAgentBoundaries = (deltaEventsForAgent.length > 0 || thinkingEventsForAgent.length > 0)
+      ? [...context, ...thinkingEventsForAgent, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
+      : context;
+    const subagentGroups = message.role === "assistant"
+      ? extractSubagentGroups(contextWithAgentBoundaries)
+      : [];
     const subagentEventIds = new Set<string>();
     for (const group of subagentGroups) {
       group.eventIds.forEach((id) => subagentEventIds.add(id));
@@ -442,25 +461,21 @@ export function buildTimelineFromSeed(params: {
       })
       : nonSubagentContext;
 
-    const exploreContext = nonBashContext.filter((event) => !isWorktreeDiffEvent(event));
-    const deltaEventsForExplore = message.role === "assistant"
-      ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
+    const exploreActivityGroups = message.role === "assistant"
+      ? extractExploreActivityGroups(
+        contextWithAgentBoundaries.filter((event) => !subagentEventIds.has(event.id)),
+      )
       : [];
-    const thinkingEventsForExplore = message.role === "assistant"
-      ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
-      : [];
-    const exploreContextWithDeltas = (deltaEventsForExplore.length > 0 || thinkingEventsForExplore.length > 0)
-      ? [...exploreContext, ...thinkingEventsForExplore, ...deltaEventsForExplore].sort((a, b) => a.idx - b.idx)
-      : exploreContext;
-    const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(exploreContextWithDeltas) : [];
-
-    const exploreEventIds = new Set<string>();
+    const agentEventIds = new Set<string>();
+    for (const group of subagentGroups) {
+      group.eventIds.forEach((id) => agentEventIds.add(id));
+    }
     for (const group of exploreActivityGroups) {
-      group.eventIds.forEach((id) => exploreEventIds.add(id));
+      group.eventIds.forEach((id) => agentEventIds.add(id));
     }
     const activityContext = message.role === "assistant"
-      ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event) && !exploreEventIds.has(event.id))
-      : nonBashContext;
+      ? context.filter((event) => !agentEventIds.has(event.id))
+      : context;
 
     if (message.role === "assistant") {
       for (const run of bashRuns) {
@@ -480,11 +495,30 @@ export function buildTimelineFromSeed(params: {
       if (editedRuns.some((run) => run.diffKind !== "none")) {
         hasEditedRunsWithDiffs = true;
       }
+      for (const group of subagentGroups) {
+        group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+      }
       for (const group of exploreActivityGroups) {
         group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
       }
-      for (const group of subagentGroups) {
-        group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+      if (subagentGroups.length > 0 || exploreActivityGroups.length > 0) {
+        logTimelineAssembly("subagentExploreExtraction", {
+          messageId: message.id,
+          subagentGroups: subagentGroups.map((group) => ({
+            id: group.id,
+            toolUseId: group.toolUseId,
+            descriptionLen: group.description.trim().length,
+            steps: group.steps.length,
+            eventIds: [...group.eventIds],
+          })),
+          exploreActivityGroups: exploreActivityGroups.map((group) => ({
+            id: group.id,
+            status: group.status,
+            entries: group.entries.length,
+            eventIds: [...group.eventIds],
+          })),
+          claimedEventIds: [...subagentEventIds],
+        });
       }
     }
 
@@ -519,8 +553,8 @@ export function buildTimelineFromSeed(params: {
         rawRounds,
         bashRuns,
         editedRuns,
-        exploreActivityGroups,
         subagentGroups,
+        exploreActivityGroups,
         planFileOutput,
       );
       insertThinkingItems(
@@ -539,7 +573,16 @@ export function buildTimelineFromSeed(params: {
 
     if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
       const hasInlineSubagentRuns = subagentGroups.length > 0;
-      const inlineInserts = buildInlineInserts(bashRuns, editedRuns, exploreActivityGroups, subagentGroups, planFileOutput);
+      const inlineInserts = buildInlineInserts(bashRuns, editedRuns, subagentGroups, exploreActivityGroups, planFileOutput);
+      logTimelineAssembly("inlineInsertsBuilt", {
+        messageId: message.id,
+        inserts: inlineInserts.map((insert) => ({
+          kind: insert.kind,
+          id: insert.id,
+          startIdx: insert.startIdx,
+          anchorIdx: insert.anchorIdx,
+        })),
+      });
       const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
       const planResult = filterPostPlanDeltaEvents(messageDeltaEvents, inlineInserts, cleanedContent);
       const effectiveDeltaEvents = planResult.effectiveDeltaEvents;
@@ -587,8 +630,6 @@ export function buildTimelineFromSeed(params: {
         anchorIdx,
         timestamp,
         stableOffset,
-        refs,
-        selectedThreadId,
       );
 
       continue;
@@ -678,14 +719,31 @@ export function buildTimelineFromSeed(params: {
     })
     .map((entry) => entry.item);
 
+  logTimelineAssembly("finalTimelineItems", {
+    count: items.length,
+    signatures: items.map(getTimelineItemKey),
+  });
+
   const oldestRenderable = items[0] ?? null;
+  const oldestRenderableKey = oldestRenderable ? getTimelineItemKey(oldestRenderable) : null;
+  const oldestRenderableKind = oldestRenderable?.kind ?? null;
+  const oldestRenderableMessageId = oldestRenderable?.kind === "message"
+    ? oldestRenderable.message.id
+    : oldestRenderable?.kind === "thinking"
+      ? oldestRenderable.messageId
+      : oldestRenderable?.kind === "plan-file-output"
+        ? oldestRenderable.messageId
+        : null;
+  const oldestRenderableHydrationPending = semanticHydrationInProgress
+    && oldestRenderableMessageId != null
+    && oldestRenderableMessageId === oldestAssistantMessageId
+    && hasIncompleteCoverage;
+
   const summary: ChatTimelineSummary = {
-    oldestRenderableKey: oldestRenderable ? getTimelineItemKey(oldestRenderable) : null,
-    oldestRenderableKind: oldestRenderable?.kind ?? null,
-    oldestRenderableMessageId: oldestRenderable && oldestRenderable.kind === "message"
-      ? oldestRenderable.message.id
-      : oldestMessageId,
-    oldestRenderableHydrationPending: hasIncompleteCoverage,
+    oldestRenderableKey,
+    oldestRenderableKind,
+    oldestRenderableMessageId,
+    oldestRenderableHydrationPending,
     headIdentityStable: true,
   };
 

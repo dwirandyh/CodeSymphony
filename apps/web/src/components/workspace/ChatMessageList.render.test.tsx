@@ -356,7 +356,7 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Explored");
-    expect(container.textContent).toContain("No explore activity");
+    expect(container.textContent).not.toContain("No explore activity");
   });
 
   it("renders subagent-activity item", () => {
@@ -401,6 +401,39 @@ describe("ChatMessageList", () => {
 
     expect(container.textContent).toContain("Searching codebase");
     expect(container.textContent).toContain("Found something");
+  });
+
+  it("renders subagent explore steps even when prompt text is missing", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "sub-no-prompt",
+        agentId: "agent-no-prompt",
+        agentType: "explore",
+        toolUseId: "tu-no-prompt",
+        status: "success",
+        description: "",
+        lastMessage: "Recovered from transcript",
+        steps: [
+          {
+            toolUseId: "read-step",
+            toolName: "Read",
+            label: "app.ts",
+            openPath: "src/app.ts",
+            status: "success",
+          },
+        ],
+        durationSeconds: 1,
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Explored 1 file");
+    expect(container.textContent).toContain("Recovered from transcript");
+    expect(container.textContent).not.toContain("Prompt");
   });
 
   it("keeps mixed Bash subagent steps out of explore summary", () => {

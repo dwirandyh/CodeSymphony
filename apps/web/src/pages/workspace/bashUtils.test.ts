@@ -96,6 +96,34 @@ describe("extractBashRuns", () => {
     expect(runs[0].command).toBe("rm -rf /");
   });
 
+  it("skips permission-only bash runs for subagent-owned permissions", () => {
+    const events = [
+      makeEvent({
+        id: "e1", type: "permission.requested", idx: 1,
+        payload: {
+          toolName: "Bash",
+          requestId: "req-subagent-1",
+          command: "ls",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+        },
+      }),
+      makeEvent({
+        id: "e2", type: "permission.resolved", idx: 2,
+        payload: {
+          requestId: "req-subagent-1",
+          decision: "deny",
+          message: "Rejected by user",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+        },
+      }),
+    ];
+
+    const runs = extractBashRuns(events);
+    expect(runs).toHaveLength(0);
+  });
+
   it("handles permission allow flow", () => {
     const events = [
       makeEvent({

@@ -123,6 +123,8 @@ export type ClaudeRunner = (args: {
     blockedPath: string | null;
     decisionReason: string | null;
     suggestions: unknown[] | null;
+    subagentOwnerToolUseId: string | null;
+    launcherToolUseId: string | null;
   }) => Promise<{ decision: PermissionDecision; message?: string }> | { decision: PermissionDecision; message?: string };
   onPlanFileDetected: (payload: {
     filePath: string;

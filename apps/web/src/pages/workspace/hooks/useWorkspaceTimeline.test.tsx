@@ -328,6 +328,66 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items.length).toBeGreaterThan(0);
   });
 
+  it("keeps subagent-owned explore work out of top-level explore cards and backfills prompt from finish", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "Inspect the codebase"),
+      makeMessage("m2", 2, "assistant", "Working on it"),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Task",
+        toolUseId: "call-task-1",
+      }, "m2"),
+      makeEvent(1, "subagent.started", {
+        toolUseId: "subagent-1",
+        agentId: "agent-1",
+        agentType: "Explore",
+        description: "",
+      }, "m2"),
+      makeEvent(2, "tool.started", {
+        toolName: "Read",
+        toolUseId: "read-1",
+        parentToolUseId: "subagent-1",
+        toolInput: { file_path: "src/app.ts" },
+      }, "m2"),
+      makeEvent(3, "tool.finished", {
+        toolName: "Read",
+        toolUseId: "read-1-finished",
+        precedingToolUseIds: ["read-1"],
+        summary: "Read src/app.ts",
+      }, "m2"),
+      makeEvent(4, "tool.started", {
+        toolName: "Glob",
+        toolUseId: "glob-1",
+        parentToolUseId: "subagent-1",
+        searchParams: "src/**/*.ts",
+      }, "m2"),
+      makeEvent(5, "tool.finished", {
+        toolName: "Glob",
+        toolUseId: "glob-1-finished",
+        precedingToolUseIds: ["glob-1"],
+        summary: "Completed Glob",
+      }, "m2"),
+      makeEvent(6, "subagent.finished", {
+        toolUseId: "subagent-1",
+        description: "Inspect the codebase and report what you found",
+        lastMessage: "Found the relevant files.",
+      }, "m2"),
+      makeEvent(7, "message.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const topLevelExplore = items.filter((item) => item.kind === "explore-activity");
+    const subagentItems = items.filter((item) => item.kind === "subagent-activity");
+
+    expect(topLevelExplore).toHaveLength(0);
+    expect(subagentItems).toHaveLength(1);
+    expect(subagentItems[0].kind === "subagent-activity" ? subagentItems[0].description : "").toBe(
+      "Inspect the codebase and report what you found",
+    );
+    expect(subagentItems[0].kind === "subagent-activity" ? subagentItems[0].steps.length : 0).toBe(2);
+  });
+
   it("processes chat.completed event", () => {
     const messages = [makeMessage("m1", 1, "user", "Hi"), makeMessage("m2", 2, "assistant", "Done")];
     const events = [
@@ -694,5 +754,61 @@ describe("useWorkspaceTimeline", () => {
         ? exploreItem.entries.some((entry) => entry.label.toLowerCase().includes("maybe"))
         : false,
     ).toBe(true);
+  });
+
+  it("keeps concurrent subagent permission events inside subagent cards without top-level leaked bash cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "run overlapping tasks"),
+      makeMessage("m2", 2, "assistant", "running"),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Task", toolUseId: "call_1" }, "m2"),
+      makeEvent(2, "subagent.started", { toolUseId: "sa-1", agentId: "agent-1", agentType: "explore", description: "First" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "Task", toolUseId: "call_2" }, "m2"),
+      makeEvent(4, "subagent.started", { toolUseId: "sa-2", agentId: "agent-2", agentType: "explore", description: "Second" }, "m2"),
+      makeEvent(5, "permission.requested", {
+        requestId: "req-1",
+        toolName: "Bash",
+        command: "ls",
+        subagentOwnerToolUseId: "sa-1",
+        launcherToolUseId: "call_1",
+      }, "m2"),
+      makeEvent(6, "permission.resolved", {
+        requestId: "req-1",
+        decision: "deny",
+        message: "Rejected 1",
+        subagentOwnerToolUseId: "sa-1",
+        launcherToolUseId: "call_1",
+      }, "m2"),
+      makeEvent(7, "permission.requested", {
+        requestId: "req-2",
+        toolName: "Bash",
+        command: "pwd",
+        subagentOwnerToolUseId: "sa-2",
+        launcherToolUseId: "call_2",
+      }, "m2"),
+      makeEvent(8, "permission.resolved", {
+        requestId: "req-2",
+        decision: "deny",
+        message: "Rejected 2",
+        subagentOwnerToolUseId: "sa-2",
+        launcherToolUseId: "call_2",
+      }, "m2"),
+      makeEvent(9, "subagent.finished", { toolUseId: "sa-1", lastMessage: "done 1" }, "m2"),
+      makeEvent(10, "subagent.finished", { toolUseId: "sa-2", lastMessage: "done 2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const subagentItems = items.filter((item) => item.kind === "subagent-activity");
+    const topLevelBash = items.filter((item) => item.kind === "tool" && item.shell === "bash");
+
+    expect(subagentItems).toHaveLength(2);
+    expect(topLevelBash).toHaveLength(0);
+
+    const first = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-1");
+    const second = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-2");
+
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
   });
 });

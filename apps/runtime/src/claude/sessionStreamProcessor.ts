@@ -9,7 +9,12 @@ import { findLatestPlanFile } from "./planFile.js";
 
 import type { InstrumentContext, SessionMaps } from "./sessionInstrumentation.js";
 import { buildFinishedTimingPreview, buildToolFinishedPayload } from "./sessionInstrumentation.js";
-import type { HookCallbacks, SessionState } from "./sessionHooks.js";
+import {
+  resolveSubagentIdentity,
+  rememberSubagentOwner,
+  type HookCallbacks,
+  type SessionState,
+} from "./sessionHooks.js";
 
 export type StreamProcessorDeps = {
   callbacks: HookCallbacks;
@@ -167,11 +172,23 @@ export async function processStreamMessages(
         for (const toolUseId of summaryToolUseIds) {
           const metadata = maps.toolMetadataByUseId.get(toolUseId);
           if (metadata?.toolName?.toLowerCase() === "task" && !maps.subagentResponseByUseId.has(toolUseId)) {
+            const subagentIdentity = resolveSubagentIdentity(maps, {
+              toolUseId,
+              parentToolUseId: null,
+              agentId: null,
+            });
+            const responseOwnerToolUseId = subagentIdentity.subagentToolUseId ?? toolUseId;
+            if (subagentIdentity.subagentToolUseId) {
+              rememberSubagentOwner(maps, toolUseId, subagentIdentity.subagentToolUseId);
+            }
             maps.subagentResponseByUseId.set(toolUseId, summaryText);
+            if (responseOwnerToolUseId !== toolUseId) {
+              maps.subagentResponseByUseId.set(responseOwnerToolUseId, summaryText);
+            }
             await callbacks.onSubagentStopped({
               agentId: "",
               agentType: "",
-              toolUseId,
+              toolUseId: responseOwnerToolUseId,
               description: "",
               lastMessage: summaryText,
               isResponseUpdate: true,
@@ -197,13 +214,24 @@ export async function processStreamMessages(
         return typeof editTarget === "string" && editTarget.length > 0;
       });
       const editTarget = editToolUseId ? maps.toolMetadataByUseId.get(editToolUseId)?.editTarget : undefined;
-      let subagentTaskToolUseId: string | null = null;
+      let subagentSummaryOwnerToolUseId: string | null = null;
       if (summaryText) {
         for (const toolUseId of pendingToolUseIds) {
           const metadata = maps.toolMetadataByUseId.get(toolUseId);
           if (metadata?.toolName?.toLowerCase() === "task") {
+            const subagentIdentity = resolveSubagentIdentity(maps, {
+              toolUseId,
+              parentToolUseId: null,
+              agentId: null,
+            });
+            subagentSummaryOwnerToolUseId = subagentIdentity.subagentToolUseId ?? toolUseId;
+            if (subagentIdentity.subagentToolUseId) {
+              rememberSubagentOwner(maps, toolUseId, subagentIdentity.subagentToolUseId);
+            }
             maps.subagentResponseByUseId.set(toolUseId, summaryText);
-            subagentTaskToolUseId = toolUseId;
+            if (subagentSummaryOwnerToolUseId !== toolUseId) {
+              maps.subagentResponseByUseId.set(subagentSummaryOwnerToolUseId, summaryText);
+            }
             break;
           }
         }
@@ -238,11 +266,11 @@ export async function processStreamMessages(
           : {}),
       });
 
-      if (subagentTaskToolUseId && summaryText) {
+      if (subagentSummaryOwnerToolUseId && summaryText) {
         await callbacks.onSubagentStopped({
           agentId: "",
           agentType: "",
-          toolUseId: subagentTaskToolUseId,
+          toolUseId: subagentSummaryOwnerToolUseId,
           description: "",
           lastMessage: summaryText,
           isResponseUpdate: true,

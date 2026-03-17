@@ -1,4 +1,5 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
+import { pushRenderDebug } from "../../lib/renderDebug";
 import { isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
 import {
   extractReadFileEntry,
@@ -57,6 +58,11 @@ function buildStepInfo(event: ChatEvent): { label: string; openPath: string | nu
  * tool_progress (emitted as tool.output) which carries the correct value.
  * We scan every event to discover the relationship, then use it to group events.
  */
+function isSubagentLauncherToolName(toolName: string | null): boolean {
+  const normalized = (toolName ?? "").trim().toLowerCase();
+  return normalized === "task" || normalized === "agent";
+}
+
 function buildParentLookup(events: ChatEvent[]): Map<string, string> {
   const parentByToolUseId = new Map<string, string>();
   for (const event of events) {
@@ -86,6 +92,7 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
   const taskToolToSubagent = new Map<string, string>();
   // Queue Task tool.starts so overlaps map deterministically to the next subagent.started.
   const pendingTaskStarts: Array<{ taskToolUseId: string; event: ChatEvent }> = [];
+  const permissionOwnerByRequestId = new Map<string, string>();
 
   const activeSubagents = new Map<
     string,
@@ -125,14 +132,30 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
     return null;
   };
 
-  const resolveOwnerToolUseId = (event: ChatEvent, toolUseId: string): string | null => {
-    // 1) direct owner
+  const resolveOwnerToolUseId = (
+    event: ChatEvent,
+    toolUseId: string,
+    options?: { allowSingleActiveFallback?: boolean },
+  ): string | null => {
+    // 1) explicit canonical owner from runtime payload
+    const explicitOwner = normalizeOwnerCandidate(payloadStringOrNull(event.payload.subagentOwnerToolUseId));
+    if (explicitOwner) {
+      return explicitOwner;
+    }
+
+    // 2) explicit launcher id that may bridge to canonical subagent
+    const launcherOwner = normalizeOwnerCandidate(payloadStringOrNull(event.payload.launcherToolUseId));
+    if (launcherOwner) {
+      return launcherOwner;
+    }
+
+    // 3) direct owner
     const directOwner = normalizeOwnerCandidate(toolUseId);
     if (directOwner) {
       return directOwner;
     }
 
-    // 2) parent lineage: parentToolUseId + parent cache
+    // 4) parent lineage: parentToolUseId + parent cache
     const parentCandidates = new Set<string>();
     const directParent = payloadStringOrNull(event.payload.parentToolUseId);
     const parentFromLookup = parentByToolUseId.get(toolUseId) ?? null;
@@ -148,6 +171,17 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
     }
 
     if (parentCandidates.size > 1) {
+      pushRenderDebug({
+        source: "subagentUtils",
+        event: "ambiguousOwner",
+        details: {
+          phase: "parentCandidates",
+          toolUseId,
+          candidates: [...parentCandidates],
+          eventId: event.id,
+          idx: event.idx,
+        },
+      });
       return null;
     }
 
@@ -159,7 +193,7 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
       return resolvedParent ?? null;
     }
 
-    // 3) precedingToolUseIds lineage
+    // 5) precedingToolUseIds lineage
     const precedingIds = Array.isArray(event.payload.precedingToolUseIds)
       ? event.payload.precedingToolUseIds.filter((id: unknown): id is string => typeof id === "string")
       : [];
@@ -179,6 +213,17 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
     }
 
     if (precedingCandidates.size > 1) {
+      pushRenderDebug({
+        source: "subagentUtils",
+        event: "ambiguousOwner",
+        details: {
+          phase: "precedingCandidates",
+          toolUseId,
+          candidates: [...precedingCandidates],
+          eventId: event.id,
+          idx: event.idx,
+        },
+      });
       return null;
     }
 
@@ -190,8 +235,8 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
       return resolvedFromPreceding ?? null;
     }
 
-    // 4) index fallback only when exactly one active subagent exists
-    if (activeSubagents.size === 1) {
+    // 6) index fallback only when exactly one active subagent exists and explicitly allowed
+    if (options?.allowSingleActiveFallback === true && activeSubagents.size === 1) {
       const onlyActiveToolUseId = activeSubagents.keys().next().value;
       if (typeof onlyActiveToolUseId === "string" && onlyActiveToolUseId !== toolUseId) {
         parentByToolUseId.set(toolUseId, onlyActiveToolUseId);
@@ -199,7 +244,7 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
       }
     }
 
-    // 5) ambiguous/no lineage -> do not claim
+    // 7) ambiguous/no lineage -> do not claim
     return null;
   };
 
@@ -207,7 +252,7 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
 
     if (event.type === "tool.started") {
       const toolName = payloadStringOrNull(event.payload.toolName) ?? "";
-      if (toolName.toLowerCase() === "task") {
+      if (isSubagentLauncherToolName(toolName)) {
         const tid = payloadStringOrNull(event.payload.toolUseId) ?? "";
         if (tid) {
           pendingTaskStarts.push({ taskToolUseId: tid, event });
@@ -274,6 +319,17 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         // The toolUseId may be either the subagent's UUID or the Task tool's call_* ID.
         const resolvedId = finishedSubagentData.has(toolUseId) ? toolUseId : taskToolToSubagent.get(toolUseId);
         debugLog.push({ phase: "subagent.finished.lateUpdate", toolUseId, resolvedId, lastMessageLen: lastMessage.length });
+        pushRenderDebug({
+          source: "subagentUtils",
+          event: "lateSubagentUpdate",
+          details: {
+            toolUseId,
+            resolvedId,
+            lastMessageLen: lastMessage.length,
+            eventId: event.id,
+            idx: event.idx,
+          },
+        });
         if (lastMessage && resolvedId && finishedSubagentData.has(resolvedId)) {
           const group = [...groups].reverse().find((g) => g.toolUseId === resolvedId);
           if (group) {
@@ -296,6 +352,21 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
           ? Math.max(1, Math.round((endMs - startMs) / 1000))
           : null;
+
+      if (subagent.steps.length > 0 && resolvedDescription.trim().length === 0) {
+        pushRenderDebug({
+          source: "subagentUtils",
+          event: "subagentMissingDescription",
+          details: {
+            toolUseId,
+            stepCount: subagent.steps.length,
+            finishDescriptionLen: finishDescription.length,
+            lastMessageLen: lastMessage.length,
+            eventId: event.id,
+            idx: event.idx,
+          },
+        });
+      }
 
       groups.push({
         id: `subagent:${subagent.startEventId}`,
@@ -326,7 +397,7 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
     ) {
       const toolUseId = payloadStringOrNull(event.payload.toolUseId) ?? event.id;
 
-      const ownerToolUseId = resolveOwnerToolUseId(event, toolUseId);
+      const ownerToolUseId = resolveOwnerToolUseId(event, toolUseId, { allowSingleActiveFallback: true });
       if (!ownerToolUseId) {
         continue;
       }
@@ -355,7 +426,7 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         toolUseId === ownerToolUseId
         || taskMappedOwner === ownerToolUseId
         || hasMappedPrecedingOwner
-        || toolName.toLowerCase() === "task"
+        || isSubagentLauncherToolName(toolName)
         || !!subagentResponse;
 
       if (isTaskLauncherEvent) {
@@ -402,6 +473,74 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
           status: event.type === "tool.finished" ? "success" : "running",
         });
       }
+      continue;
+    }
+
+    if (event.type === "permission.requested" || event.type === "permission.resolved") {
+      const requestId = payloadStringOrNull(event.payload.requestId);
+      let ownerToolUseId: string | null = null;
+
+      if (event.type === "permission.requested") {
+        const explicitOwner = payloadStringOrNull(event.payload.subagentOwnerToolUseId);
+        if (explicitOwner) {
+          ownerToolUseId = resolveOwnerToolUseId(event, explicitOwner);
+        }
+
+        if (!ownerToolUseId) {
+          const launcherToolUseId = payloadStringOrNull(event.payload.launcherToolUseId);
+          if (launcherToolUseId) {
+            ownerToolUseId = resolveOwnerToolUseId(event, launcherToolUseId);
+          }
+        }
+
+        if (!ownerToolUseId && requestId) {
+          ownerToolUseId = permissionOwnerByRequestId.get(requestId) ?? null;
+        }
+
+        if (!ownerToolUseId) {
+          const toolUseId = payloadStringOrNull(event.payload.toolUseId) ?? requestId ?? event.id;
+          ownerToolUseId = resolveOwnerToolUseId(event, toolUseId);
+        }
+
+        if (requestId && ownerToolUseId) {
+          permissionOwnerByRequestId.set(requestId, ownerToolUseId);
+        }
+      } else {
+        if (requestId) {
+          ownerToolUseId = permissionOwnerByRequestId.get(requestId) ?? null;
+        }
+
+        if (!ownerToolUseId) {
+          const explicitOwner = payloadStringOrNull(event.payload.subagentOwnerToolUseId);
+          if (explicitOwner) {
+            ownerToolUseId = resolveOwnerToolUseId(event, explicitOwner);
+          }
+        }
+
+        if (!ownerToolUseId) {
+          const launcherToolUseId = payloadStringOrNull(event.payload.launcherToolUseId);
+          if (launcherToolUseId) {
+            ownerToolUseId = resolveOwnerToolUseId(event, launcherToolUseId);
+          }
+        }
+
+        if (!ownerToolUseId) {
+          const toolUseId = payloadStringOrNull(event.payload.toolUseId) ?? requestId ?? event.id;
+          ownerToolUseId = resolveOwnerToolUseId(event, toolUseId);
+        }
+      }
+
+      if (!ownerToolUseId) {
+        continue;
+      }
+
+      const subagent = activeSubagents.get(ownerToolUseId) ?? finishedSubagentData.get(ownerToolUseId);
+      if (!subagent) {
+        continue;
+      }
+
+      subagent.eventIds.add(event.id);
+      continue;
     }
   }
 

@@ -8,7 +8,8 @@ import {
   splitAtFirstSentenceBoundary,
 } from "../../textUtils";
 import { parseTimestamp } from "../../eventUtils";
-import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types";
+import { pushRenderDebug } from "../../../../lib/renderDebug";
+import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry } from "./useWorkspaceTimeline.types";
 import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../../types";
 
 export function buildInlineInserts(
@@ -476,6 +477,25 @@ export function processInlineInsertLoop(
   timestamp: number | null,
   stableOffset: { value: number },
 ): void {
+  pushRenderDebug({
+    source: "timelineInlineInserts",
+    event: "processInlineInsertLoop",
+    messageId: message.id,
+    details: {
+      segmentBuckets: segmentBuckets.map((bucket, index) => ({
+        index,
+        anchorIdx: bucket.anchorIdx,
+        contentLength: bucket.content.length,
+      })),
+      inlineInserts: inlineInserts.map((insert) => ({
+        kind: insert.kind,
+        id: insert.id,
+        startIdx: insert.startIdx,
+        anchorIdx: insert.anchorIdx,
+      })),
+    },
+  });
+
   const firstInlineInsert = inlineInserts[0] ?? null;
 
   const hasLeadingText = segmentBuckets[0].content.length > 0;

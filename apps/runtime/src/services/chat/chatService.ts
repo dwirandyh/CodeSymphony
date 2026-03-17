@@ -281,6 +281,8 @@ export function createChatService(deps: RuntimeDeps) {
           entry.toolName = payload.toolName;
           const command = payload.toolInput.command;
           entry.command = typeof command === "string" && command.trim().length > 0 ? command.trim() : null;
+          entry.subagentOwnerToolUseId = payload.subagentOwnerToolUseId;
+          entry.launcherToolUseId = payload.launcherToolUseId;
           entry.promise = new Promise<PermissionDecisionResult>((resolve, reject) => {
             entry.resolve = resolve;
             entry.reject = reject;
@@ -296,6 +298,8 @@ export function createChatService(deps: RuntimeDeps) {
               blockedPath: payload.blockedPath,
               decisionReason: payload.decisionReason,
               suggestions: payload.suggestions ?? [],
+              subagentOwnerToolUseId: entry.subagentOwnerToolUseId,
+              launcherToolUseId: entry.launcherToolUseId,
             });
           } catch (error) {
             pendingMap.delete(payload.requestId);
@@ -670,6 +674,8 @@ export function createChatService(deps: RuntimeDeps) {
           persisted: false,
           settingsPath: null,
           permissionRule: null,
+          subagentOwnerToolUseId: null,
+          launcherToolUseId: null,
         });
         return;
       }
@@ -706,6 +712,8 @@ export function createChatService(deps: RuntimeDeps) {
           persisted,
           settingsPath,
           permissionRule,
+          subagentOwnerToolUseId: entry.subagentOwnerToolUseId,
+          launcherToolUseId: entry.launcherToolUseId,
         });
       } finally {
         const result: PermissionDecisionResult = isAllow
