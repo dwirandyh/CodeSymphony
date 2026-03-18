@@ -50,20 +50,19 @@ export type ChatTimelineItem =
   }
   | {
     kind: "tool";
-    event: ChatEvent;
-  }
-  | {
-    kind: "bash-command";
     id: string;
-    toolUseId: string;
-    shell: "bash";
-    command: string | null;
-    summary: string | null;
-    output: string | null;
-    error: string | null;
-    truncated: boolean;
-    durationSeconds: number | null;
-    status: "running" | "success" | "failed";
+    event: ChatEvent | null;
+    sourceEvents?: ChatEvent[];
+    toolUseId?: string;
+    toolName?: string | null;
+    shell?: "bash";
+    command?: string | null;
+    summary?: string | null;
+    output?: string | null;
+    error?: string | null;
+    truncated?: boolean;
+    durationSeconds?: number | null;
+    status?: "running" | "success" | "failed";
     rejectedByUser?: boolean;
   }
   | {
@@ -81,14 +80,6 @@ export type ChatTimelineItem =
     createdAt: string;
   }
   | {
-    kind: "explore-activity";
-    id: string;
-    status: "running" | "success";
-    fileCount: number;
-    searchCount: number;
-    entries: ExploreActivityEntry[];
-  }
-  | {
     kind: "subagent-activity";
     id: string;
     agentId: string;
@@ -99,6 +90,14 @@ export type ChatTimelineItem =
     lastMessage: string | null;
     steps: SubagentStep[];
     durationSeconds: number | null;
+  }
+  | {
+    kind: "explore-activity";
+    id: string;
+    status: "running" | "success";
+    fileCount: number;
+    searchCount: number;
+    entries: ExploreActivityEntry[];
   }
   | {
     kind: "thinking";
@@ -114,20 +113,6 @@ export type ChatTimelineItem =
     createdAt: string;
   };
 
-export type LoadOlderRequestMetadata = {
-  cycleId: number;
-  requestId: string;
-};
-
-export type LoadOlderRequestResult = {
-  cycleId?: number | null;
-  requestId?: string;
-  completionReason?: string;
-  messagesAdded?: number;
-  eventsAdded?: number;
-  estimatedRenderableGrowth?: boolean;
-};
-
 export type ChatTimelineSummary = {
   oldestRenderableKey: string | null;
   oldestRenderableKind: ChatTimelineItem["kind"] | null;
@@ -138,14 +123,8 @@ export type ChatTimelineSummary = {
 
 export type ChatMessageListProps = {
   items: ChatTimelineItem[];
-  timelineSummary?: ChatTimelineSummary;
   showThinkingPlaceholder?: boolean;
-  sendingMessage?: boolean;
   onOpenReadFile?: (path: string) => void | Promise<void>;
-  hasOlderHistory?: boolean;
-  loadingOlderHistory?: boolean;
-  topPaginationInteractionReady?: boolean;
-  onLoadOlderHistory?: (metadata?: LoadOlderRequestMetadata) => Promise<LoadOlderRequestResult | void> | LoadOlderRequestResult | void;
 };
 
 export type AnsiSegment = {
@@ -170,8 +149,8 @@ export type TimelineCtx = {
   copyOutput: (id: string, content: string) => void;
   copyDebugLog: () => void;
   onOpenReadFile?: (path: string) => void | Promise<void>;
-  bashExpandedById: Map<string, boolean>;
-  setBashExpandedById: Dispatch<SetStateAction<Map<string, boolean>>>;
+  toolExpandedById: Map<string, boolean>;
+  setToolExpandedById: Dispatch<SetStateAction<Map<string, boolean>>>;
   editedExpandedById: Map<string, boolean>;
   setEditedExpandedById: Dispatch<SetStateAction<Map<string, boolean>>>;
   exploreActivityExpandedById: Map<string, boolean>;

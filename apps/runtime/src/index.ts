@@ -24,7 +24,7 @@ import { registerSystemRoutes } from "./routes/system.js";
 import { registerTerminalRoutes } from "./routes/terminal.js";
 import { registerLogRoutes } from "./routes/logs.js";
 import { registerFilesystemRoutes } from "./routes/filesystem.js";
-import { registerDebugRoutes } from "./routes/debug.js";
+import { registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
 import { registerModelRoutes } from "./routes/models.js";
 
 declare module "fastify" {
@@ -174,10 +174,15 @@ async function main() {
 
   const app = createApp();
 
+  const database = resolveDatabaseInfo(process.env.DATABASE_URL);
+
   app
     .listen({ host, port })
     .then(() => {
-      app.log.info(`Runtime listening on http://${host}:${port}`);
+      app.log.info({
+        databaseUrl: database.urlPreview,
+        databasePath: database.resolvedPath,
+      }, `Runtime listening on http://${host}:${port}`);
       void app.chatService.recoverStuckThreads().then((count) => {
         if (count > 0) app.logService.log("info", "runtime", `Recovered ${count} stuck thread(s)`);
       });

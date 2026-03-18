@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitBranch, Menu, Settings, X } from "lucide-react";
 import type { ModelProvider } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
@@ -22,7 +22,6 @@ const DiffReviewPanel = lazy(() =>
 );
 import { api } from "../lib/api";
 import { cn } from "../lib/utils";
-import { debugLog } from "../lib/debugLog";
 import { findRootWorktree, isRootWorktree } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
 import type { TeardownErrorState, ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
@@ -30,6 +29,7 @@ import { useChatSession } from "./workspace/hooks/chat-session";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
+import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { useQueryClient } from "@tanstack/react-query";
@@ -37,19 +37,27 @@ import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import {
-  shouldResetTopPaginationInteraction,
   resolveChatMessageListKey,
-  createRunScriptToken,
   FilledPlayIcon,
   FilledPauseIcon,
 } from "./workspace/workspacePageUtils";
 
-export { shouldResetTopPaginationInteraction, resolveChatMessageListKey } from "./workspace/workspacePageUtils";
+export { resolveChatMessageListKey } from "./workspace/workspacePageUtils";
+
+function BackgroundWorktreeStatusStreamBridge({
+  repositories,
+  selectedWorktreeId,
+  selectedThreadId,
+}: {
+  repositories: ReturnType<typeof useRepositoryManager>["repositories"];
+  selectedWorktreeId: string | null;
+  selectedThreadId: string | null;
+}) {
+  useBackgroundWorktreeStatusStream(repositories, selectedWorktreeId, selectedThreadId);
+  return null;
+}
 
 export function WorkspacePage() {
-  const renderCountRef = useRef(0);
-  renderCountRef.current++;
-
   const [error, setError] = useState<string | null>(null);
   const { search, updateSearch } = useWorkspaceSearchParams();
 
@@ -61,7 +69,6 @@ export function WorkspacePage() {
   const [runScriptActive, setRunScriptActive] = useState(false);
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
   const runScriptWorktreeIdRef = useRef<string | null>(null);
-  const runScriptTokenRef = useRef<string | null>(null);
 
   // ── Model/Provider state ──
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
@@ -128,22 +135,8 @@ export function WorkspacePage() {
     ));
   }, []);
 
-  const handleRunScriptTerminalExit = useCallback(({ exitCode, signal }: { exitCode: number; signal: number }) => {
+  const handleRunScriptTerminalExit = useCallback(({ exitCode }: { exitCode: number; signal: number }) => {
     const targetWorktreeId = runScriptWorktreeIdRef.current;
-    const token = runScriptTokenRef.current;
-    debugLog("WorkspacePage", "run:session-exit", {
-      exitCode,
-      signal,
-      targetWorktreeId,
-      token,
-    });
-    debugLog("WorkspacePage", "run:state", {
-      nextActive: false,
-      reason: "session-exit",
-      exitCode,
-      signal,
-      token,
-    });
     setRunScriptActive(false);
 
     if (targetWorktreeId) {
@@ -155,7 +148,6 @@ export function WorkspacePage() {
     }
 
     runScriptWorktreeIdRef.current = null;
-    runScriptTokenRef.current = null;
   }, []);
 
   const repos = useRepositoryManager(setError, {
@@ -167,12 +159,6 @@ export function WorkspacePage() {
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
         const worktreeChanged = (selection.worktreeId ?? undefined) !== prevWorktreeIdRef.current;
-        debugLog("WorkspacePage", "onSelectionChange", {
-          repoId: selection.repoId,
-          worktreeId: selection.worktreeId,
-          prevWorktreeId: prevWorktreeIdRef.current,
-          worktreeChanged,
-        });
         prevWorktreeIdRef.current = selection.worktreeId ?? undefined;
         updateSearch({
           repoId: selection.repoId ?? undefined,
@@ -218,172 +204,62 @@ export function WorkspacePage() {
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     initialThreadId: search.threadId,
     selectedRepositoryId: repos.selectedRepositoryId,
-    hydrationBackfillPolicy: reviewTabOpen ? "manual" : "auto",
     timelineEnabled: !reviewTabOpen,
     onWorktreeResolved: (worktreeId) => {
       repos.setSelectedWorktreeId(worktreeId);
     },
     onThreadChange: useCallback(
       (threadId: string | null) => {
-        debugLog("WorkspacePage", "onThreadChange", { threadId });
         updateSearch({ threadId: threadId ?? undefined });
       },
       [updateSearch],
     ),
   });
-  const loadOlderHistoryRef = useRef(chat.loadOlderHistory);
-  useEffect(() => {
-    loadOlderHistoryRef.current = chat.loadOlderHistory;
-  }, [chat.loadOlderHistory]);
-
-  const [topPaginationInteractionReady, setTopPaginationInteractionReady] = useState(false);
   const prevSelectedThreadIdRef = useRef<string | null>(chat.selectedThreadId);
-  const [chatMessageListKey, setChatMessageListKey] = useState<string>(chat.selectedThreadId ?? "empty");
+  const chatMessageListKeyRef = useRef<string>(chat.selectedThreadId ?? "empty");
+  const chatMessageListKey = resolveChatMessageListKey({
+    previousKey: chatMessageListKeyRef.current,
+    previousThreadId: prevSelectedThreadIdRef.current,
+    nextThreadId: chat.selectedThreadId,
+  });
+
+  if (chatMessageListKey !== chatMessageListKeyRef.current) {
+    chatMessageListKeyRef.current = chatMessageListKey;
+  }
 
   useEffect(() => {
-    setChatMessageListKey((current) => {
-      const next = resolveChatMessageListKey({
-        previousKey: current,
-        previousThreadId: prevSelectedThreadIdRef.current,
-        nextThreadId: chat.selectedThreadId,
-      });
-      if (next !== current) {
-        debugLog("WorkspacePage", "chat-message-list-key-update", {
-          previousKey: current,
-          nextKey: next,
-          previousThreadId: prevSelectedThreadIdRef.current,
-          nextThreadId: chat.selectedThreadId,
-        });
-      }
-      return next;
-    });
+    prevSelectedThreadIdRef.current = chat.selectedThreadId;
   }, [chat.selectedThreadId]);
-
-  useEffect(() => {
-    const prevThreadId = prevSelectedThreadIdRef.current;
-    const nextThreadId = chat.selectedThreadId;
-    const shouldReset = shouldResetTopPaginationInteraction(prevThreadId, nextThreadId);
-
-    if (shouldReset) {
-      setTopPaginationInteractionReady(false);
-      debugLog("WorkspacePage", "top-pagination-interaction-reset", {
-        reason: "thread-switched",
-        prevThreadId,
-        threadId: nextThreadId,
-      });
-    } else {
-      debugLog("WorkspacePage", "top-pagination-interaction-reset-skipped", {
-        reason: "thread-churn",
-        prevThreadId,
-        threadId: nextThreadId,
-      });
-    }
-
-    prevSelectedThreadIdRef.current = nextThreadId;
-  }, [chat.selectedThreadId]);
-
-  useEffect(() => {
-    const markTopPaginationInteractionReady = (source: "wheel" | "touchstart") => {
-      setTopPaginationInteractionReady((current) => {
-        if (current) {
-          return current;
-        }
-        debugLog("WorkspacePage", "top-pagination-interaction-ready", { source });
-        return true;
-      });
-    };
-
-    const onWheel = () => {
-      markTopPaginationInteractionReady("wheel");
-    };
-    const onTouchStart = () => {
-      markTopPaginationInteractionReady("touchstart");
-    };
-
-    window.addEventListener("wheel", onWheel, { passive: true });
-    window.addEventListener("touchstart", onTouchStart, { passive: true });
-
-    return () => {
-      window.removeEventListener("wheel", onWheel);
-      window.removeEventListener("touchstart", onTouchStart);
-    };
-  }, []);
-
-  const handleLoadOlderHistory = useCallback(
-    (metadata?: Parameters<typeof chat.loadOlderHistory>[0]) => loadOlderHistoryRef.current(metadata),
-    [],
-  );
 
   const gates = usePendingGates(chat.events, chat.selectedThreadId, {
     onError: setError,
     startWaitingAssistant: chat.startWaitingAssistant,
     clearWaitingAssistantForThread: chat.clearWaitingAssistantForThread,
   });
+  const [activePermissionRequestId, setActivePermissionRequestId] = useState<string | null>(null);
+
+  const activePermissionIndex = useMemo(() => {
+    if (gates.pendingPermissionRequests.length === 0) {
+      return -1;
+    }
+
+    if (!activePermissionRequestId) {
+      return 0;
+    }
+
+    return gates.pendingPermissionRequests.findIndex((request) => request.requestId === activePermissionRequestId);
+  }, [activePermissionRequestId, gates.pendingPermissionRequests]);
+
+  const activePermissionRequest = activePermissionIndex >= 0
+    ? gates.pendingPermissionRequests[activePermissionIndex] ?? null
+    : null;
+  const hasMultiplePendingPermissions = gates.pendingPermissionRequests.length > 1;
   const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
 
-  // ── What-changed detector ──
-  const prevRefsRef = useRef<Record<string, unknown>>({});
-  const trackables: Record<string, unknown> = {
-    error,
-    search,
-    updateSearch,
-    "repos.selectedRepositoryId": repos.selectedRepositoryId,
-    "repos.selectedWorktreeId": repos.selectedWorktreeId,
-    "repos.repositories": repos.repositories,
-    "repos.loadingRepos": repos.loadingRepos,
-    "repos.submittingRepo": repos.submittingRepo,
-    "repos.updateWorktreeBranch": repos.updateWorktreeBranch,
-    "chat.threads": chat.threads,
-    "chat.selectedThreadId": chat.selectedThreadId,
-    "chat.messages": chat.messages,
-    "chat.events": chat.events,
-    "chat.timelineItems": chat.timelineItems,
-    "chat.sendingMessage": chat.sendingMessage,
-    "chat.waitingAssistant": chat.waitingAssistant,
-    "chat.showStopAction": chat.showStopAction,
-    "chat.stoppingRun": chat.stoppingRun,
-    "chat.hasOlderHistory": chat.hasOlderHistory,
-    "chat.loadingOlderHistory": chat.loadingOlderHistory,
-    "chat.chatInput": chat.chatInput,
-    "chat.chatMode": chat.chatMode,
-    "gates.pendingPermissionRequests": gates.pendingPermissionRequests,
-    "gates.pendingQuestionRequests": gates.pendingQuestionRequests,
-    "gates.isWaitingForUserGate": gates.isWaitingForUserGate,
-    "gates.showPlanDecisionComposer": gates.showPlanDecisionComposer,
-    "gates.planActionBusy": gates.planActionBusy,
-    "gates.resolvingPermissionIds": gates.resolvingPermissionIds,
-    "gates.answeringQuestionIds": gates.answeringQuestionIds,
-    "gitChanges.entries": gitChanges.entries,
-    "gitChanges.branch": gitChanges.branch,
-    "gitChanges.loading": gitChanges.loading,
-    mobilePanelOpen,
-  };
-
-  const canSendNow =
-    !!chat.selectedThreadId &&
-    !chat.sendingMessage &&
-    !gates.planActionBusy &&
-    !gates.isWaitingForUserGate;
-  const changed: string[] = [];
-  for (const [key, val] of Object.entries(trackables)) {
-    if (prevRefsRef.current[key] !== val) changed.push(key);
-  }
-  prevRefsRef.current = { ...trackables };
-  debugLog("WorkspacePage", "render", {
-    renderCount: renderCountRef.current,
-    changed,
-    selectedThreadId: chat.selectedThreadId,
-    canSendNow,
-    showStopAction: chat.showStopAction,
-    sendingMessage: chat.sendingMessage,
-    waitingAssistant: chat.waitingAssistant,
-    isWaitingForUserGate: gates.isWaitingForUserGate,
-    hasSelectedThreadActiveFlag: !!chat.selectedThreadId && chat.threads.some((t) => t.id === chat.selectedThreadId && t.active),
-  });
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
 
   // Close mobile drawer on Escape key
@@ -399,6 +275,26 @@ export function WorkspacePage() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [mobilePanelOpen]);
+
+  useEffect(() => {
+    if (gates.pendingPermissionRequests.length === 0) {
+      setActivePermissionRequestId(null);
+      return;
+    }
+
+    if (
+      activePermissionRequestId
+      && gates.pendingPermissionRequests.some((request) => request.requestId === activePermissionRequestId)
+    ) {
+      return;
+    }
+
+    const fallbackIndex = activePermissionIndex >= 0
+      ? Math.min(activePermissionIndex, gates.pendingPermissionRequests.length - 1)
+      : 0;
+    const fallbackRequest = gates.pendingPermissionRequests[fallbackIndex] ?? gates.pendingPermissionRequests[0];
+    setActivePermissionRequestId(fallbackRequest?.requestId ?? null);
+  }, [activePermissionIndex, activePermissionRequestId, gates.pendingPermissionRequests]);
 
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
@@ -452,23 +348,9 @@ export function WorkspacePage() {
   }, [repos.selectedWorktreeId]);
 
   useEffect(() => {
-    debugLog("WorkspacePage", "run:state", {
-      nextActive: false,
-      reason: "selected-worktree-changed",
-      selectedWorktreeId: repos.selectedWorktreeId,
-    });
     setRunScriptActive(false);
     runScriptWorktreeIdRef.current = null;
-    runScriptTokenRef.current = null;
   }, [repos.selectedWorktreeId]);
-
-  useEffect(() => {
-    debugLog("WorkspacePage", "run:active-changed", {
-      runScriptActive,
-      selectedWorktreeId: repos.selectedWorktreeId,
-      token: runScriptTokenRef.current,
-    });
-  }, [runScriptActive, repos.selectedWorktreeId]);
 
   const handleRunScript = useCallback(async () => {
     if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
@@ -486,46 +368,16 @@ export function WorkspacePage() {
     try {
       setActiveBottomTab("output");
       setBottomPanelOpenSignal((prev) => prev + 1);
-      const runToken = createRunScriptToken();
-      debugLog("WorkspacePage", "run:start", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        runToken,
-        runCommandsCount: runCommands.length,
-      });
-      debugLog("WorkspacePage", "run:state", {
-        nextActive: true,
-        reason: "run-start",
-        token: runToken,
-        sessionId,
-      });
       setRunScriptActive(true);
       runScriptWorktreeIdRef.current = repos.selectedWorktreeId;
-      runScriptTokenRef.current = runToken;
       await api.runTerminalCommand({
         sessionId,
         command: shellScript,
         cwd: repos.selectedWorktree.path,
         mode: "exec",
       });
-      debugLog("WorkspacePage", "run:command-dispatched", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        runToken,
-      });
     } catch (e) {
-      debugLog("WorkspacePage", "run:command-error", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        token: runScriptTokenRef.current,
-        error: e instanceof Error ? e.message : "unknown error",
-      });
       runScriptWorktreeIdRef.current = null;
-      runScriptTokenRef.current = null;
-      debugLog("WorkspacePage", "run:state", {
-        nextActive: false,
-        reason: "run-command-error",
-      });
       setRunScriptActive(false);
       setError(e instanceof Error ? e.message : "Failed to run script");
     }
@@ -535,50 +387,45 @@ export function WorkspacePage() {
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
     try {
-      debugLog("WorkspacePage", "run:stop-request", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        token: runScriptTokenRef.current,
-      });
       setActiveBottomTab("output");
       setBottomPanelOpenSignal((prev) => prev + 1);
       await api.interruptTerminalSession(sessionId);
-      debugLog("WorkspacePage", "run:state", {
-        nextActive: false,
-        reason: "stop-requested",
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        token: runScriptTokenRef.current,
-      });
       setRunScriptActive(false);
       runScriptWorktreeIdRef.current = null;
-      runScriptTokenRef.current = null;
-      debugLog("WorkspacePage", "run:stop-complete", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-      });
     } catch (e) {
-      debugLog("WorkspacePage", "run:stop-error", {
-        selectedWorktreeId: repos.selectedWorktreeId,
-        sessionId,
-        error: e instanceof Error ? e.message : "unknown error",
-      });
       setError(e instanceof Error ? e.message : "Failed to stop script");
     }
-  }, [repos.selectedWorktreeId, resolveRunScriptSessionId]);
+  }, [resolveRunScriptSessionId]);
 
   const handleToggleRunScript = useCallback(() => {
-    debugLog("WorkspacePage", "run:toggle", {
-      runScriptActive,
-      selectedWorktreeId: repos.selectedWorktreeId,
-      token: runScriptTokenRef.current,
-    });
     if (runScriptActive) {
       void handleStopRunScript();
       return;
     }
     void handleRunScript();
   }, [handleRunScript, handleStopRunScript, runScriptActive]);
+
+  const handleShowPreviousPermission = useCallback(() => {
+    if (activePermissionIndex <= 0) {
+      return;
+    }
+
+    const previousRequest = gates.pendingPermissionRequests[activePermissionIndex - 1];
+    if (previousRequest) {
+      setActivePermissionRequestId(previousRequest.requestId);
+    }
+  }, [activePermissionIndex, gates.pendingPermissionRequests]);
+
+  const handleShowNextPermission = useCallback(() => {
+    if (activePermissionIndex < 0 || activePermissionIndex >= gates.pendingPermissionRequests.length - 1) {
+      return;
+    }
+
+    const nextRequest = gates.pendingPermissionRequests[activePermissionIndex + 1];
+    if (nextRequest) {
+      setActivePermissionRequestId(nextRequest.requestId);
+    }
+  }, [activePermissionIndex, gates.pendingPermissionRequests]);
 
   const handleSelectDiffFile = useCallback((filePath: string) => {
     updateSearch({ file: filePath, view: "review" });
@@ -597,7 +444,6 @@ export function WorkspacePage() {
   );
 
   const handleRequestCloseThread = useCallback((threadId: string) => {
-    const targetThread = chat.threads.find((thread) => thread.id === threadId) ?? null;
     const needsConfirm = shouldConfirmCloseThread({
       threadId,
       selectedThreadId: chat.selectedThreadId,
@@ -606,23 +452,13 @@ export function WorkspacePage() {
       threads: chat.threads,
     });
 
-    debugLog("WorkspacePage", "close-thread decision", {
-      threadId,
-      selectedThreadId: chat.selectedThreadId,
-      targetThreadActive: targetThread?.active ?? null,
-      showStopAction: chat.showStopAction,
-      waitingAssistantThreadId,
-      canSendNow,
-      needsConfirm,
-    });
-
     if (needsConfirm) {
       setConfirmCloseThreadId(threadId);
       return;
     }
 
     void chat.closeThread(threadId);
-  }, [canSendNow, chat.closeThread, chat.selectedThreadId, chat.showStopAction, chat.threads, waitingAssistantThreadId]);
+  }, [chat.closeThread, chat.selectedThreadId, chat.showStopAction, chat.threads, waitingAssistantThreadId]);
 
   const handleConfirmCloseThread = useCallback(async () => {
     if (!confirmCloseThreadId) return;
@@ -735,13 +571,7 @@ export function WorkspacePage() {
                     <ChatMessageList
                       key={chatMessageListKey}
                       items={chat.timelineItems}
-                      timelineSummary={chat.timelineSummary}
                       showThinkingPlaceholder={showThinkingPlaceholder}
-                      sendingMessage={chat.sendingMessage}
-                      hasOlderHistory={chat.hasOlderHistory}
-                      loadingOlderHistory={chat.loadingOlderHistory}
-                      topPaginationInteractionReady={topPaginationInteractionReady}
-                      onLoadOlderHistory={handleLoadOlderHistory}
                       onOpenReadFile={openReadFile}
                     />
                   </div>
@@ -749,22 +579,51 @@ export function WorkspacePage() {
                 {gates.pendingPermissionRequests.length > 0 ? (
                   <section className="mx-auto w-full max-w-3xl px-3" data-testid="permission-prompts-container">
                     <div className="space-y-2">
-                      {gates.pendingPermissionRequests.map((request) => (
-                        <PermissionPromptCard
-                          key={request.requestId}
-                          requestId={request.requestId}
-                          toolName={request.toolName}
-                          command={request.command}
-                          editTarget={request.editTarget}
-                          blockedPath={request.blockedPath}
-                          decisionReason={request.decisionReason}
-                          busy={gates.resolvingPermissionIds.has(request.requestId)}
-                          canAlwaysAllow={Boolean(request.command)}
-                          onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
-                          onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
-                          onDeny={(requestId) => void gates.resolvePermission(requestId, "deny")}
-                        />
-                      ))}
+                      {hasMultiplePendingPermissions ? (
+                        activePermissionRequest ? (
+                          <PermissionPromptCard
+                            key={activePermissionRequest.requestId}
+                            requestId={activePermissionRequest.requestId}
+                            toolName={activePermissionRequest.toolName}
+                            command={activePermissionRequest.command}
+                            editTarget={activePermissionRequest.editTarget}
+                            blockedPath={activePermissionRequest.blockedPath}
+                            decisionReason={activePermissionRequest.decisionReason}
+                            busy={gates.resolvingPermissionIds.has(activePermissionRequest.requestId)}
+                            canAlwaysAllow={Boolean(activePermissionRequest.command)}
+                            position={{
+                              current: activePermissionIndex + 1,
+                              total: gates.pendingPermissionRequests.length,
+                            }}
+                            onPrevious={handleShowPreviousPermission}
+                            onNext={handleShowNextPermission}
+                            onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
+                            onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
+                            onDeny={(requestId) => {
+                              void gates.resolvePermission(requestId, "deny");
+                            }}
+                          />
+                        ) : null
+                      ) : (
+                        gates.pendingPermissionRequests.map((request) => (
+                          <PermissionPromptCard
+                            key={request.requestId}
+                            requestId={request.requestId}
+                            toolName={request.toolName}
+                            command={request.command}
+                            editTarget={request.editTarget}
+                            blockedPath={request.blockedPath}
+                            decisionReason={request.decisionReason}
+                            busy={gates.resolvingPermissionIds.has(request.requestId)}
+                            canAlwaysAllow={Boolean(request.command)}
+                            onAllowOnce={(requestId) => void gates.resolvePermission(requestId, "allow")}
+                            onAllowAlways={(requestId) => void gates.resolvePermission(requestId, "allow_always")}
+                            onDeny={(requestId) => {
+                              void gates.resolvePermission(requestId, "deny");
+                            }}
+                          />
+                        ))
+                      )}
                     </div>
                   </section>
                 ) : null}
@@ -795,22 +654,17 @@ export function WorkspacePage() {
                   />
                 ) : !gates.isWaitingForUserGate ? (
                   <Composer
-                    value={chat.chatInput}
-                    disabled={!chat.selectedThreadId || chat.sendingMessage || gates.planActionBusy}
+                    disabled={chat.composerDisabled || gates.planActionBusy}
                     sending={chat.sendingMessage}
                     showStop={chat.showStopAction}
                     stopping={chat.stoppingRun}
-                    mode={chat.chatMode}
+                    threadId={chat.selectedThreadId}
                     worktreeId={repos.selectedWorktreeId}
                     fileIndex={fileIndex.entries}
                     fileIndexLoading={fileIndex.loading}
                     providers={modelProviders}
                     hasMessages={chat.messages.length > 0}
-                    attachments={chat.pendingAttachments}
-                    onAttachmentsChange={chat.setPendingAttachments}
-                    onChange={chat.setChatInput}
-                    onModeChange={chat.setChatMode}
-                    onSubmitMessage={(content, attachments) => void chat.submitMessage(content, attachments)}
+                    onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
                     onStop={() => void chat.stopAssistantRun()}
                     onSelectProvider={(id) => void handleSelectProvider(id)}
                   />
@@ -969,6 +823,12 @@ export function WorkspacePage() {
         output={teardownError?.output ?? ""}
         onForceDelete={(id) => void handleForceDelete(id)}
         onClose={() => setTeardownError(null)}
+      />
+
+      <BackgroundWorktreeStatusStreamBridge
+        repositories={repos.repositories}
+        selectedWorktreeId={repos.selectedWorktreeId}
+        selectedThreadId={chat.selectedThreadId}
       />
 
       <Dialog

@@ -26,9 +26,10 @@ function makeAttachment(overrides: Partial<ChatAttachment> = {}): ChatAttachment
     filename: "file.txt",
     mimeType: "text/plain",
     sizeBytes: 100,
-    source: "upload",
+    source: "file_picker",
     storagePath: "/uploads/file.txt",
     content: "file content",
+    createdAt: "2026-01-01T00:00:00Z",
     ...overrides,
   };
 }

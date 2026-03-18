@@ -177,31 +177,56 @@ export const PlanInlineMessage = memo(function PlanInlineMessage({
   const [expanded, setExpanded] = useState(false);
   const [canExpand, setCanExpand] = useState(content.length > 900);
   const contentRef = useRef<HTMLDivElement>(null);
+  const evaluateRafRef = useRef<number | null>(null);
 
   useEffect(() => {
     const contentEl = contentRef.current;
     const fallbackCanExpand = content.length > 900;
     if (!contentEl) {
-      setCanExpand(fallbackCanExpand);
+      setCanExpand((current) => (current === fallbackCanExpand ? current : fallbackCanExpand));
       return;
     }
 
     const evaluate = () => {
       const hasOverflow = contentEl.scrollHeight > contentEl.clientHeight + 4;
-      setCanExpand(hasOverflow || fallbackCanExpand);
+      const nextCanExpand = hasOverflow || fallbackCanExpand;
+      setCanExpand((current) => (current === nextCanExpand ? current : nextCanExpand));
+    };
+
+    const scheduleEvaluate = () => {
+      if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+        evaluate();
+        return;
+      }
+      if (evaluateRafRef.current != null) {
+        window.cancelAnimationFrame(evaluateRafRef.current);
+      }
+      evaluateRafRef.current = window.requestAnimationFrame(() => {
+        evaluateRafRef.current = null;
+        evaluate();
+      });
     };
 
     evaluate();
     if (typeof ResizeObserver === "undefined") {
-      return;
+      return () => {
+        if (evaluateRafRef.current != null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+          window.cancelAnimationFrame(evaluateRafRef.current);
+          evaluateRafRef.current = null;
+        }
+      };
     }
 
     const observer = new ResizeObserver(() => {
-      evaluate();
+      scheduleEvaluate();
     });
     observer.observe(contentEl);
 
     return () => {
+      if (evaluateRafRef.current != null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(evaluateRafRef.current);
+        evaluateRafRef.current = null;
+      }
       observer.disconnect();
     };
   }, [content, expanded]);

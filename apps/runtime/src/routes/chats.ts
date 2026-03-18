@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ChatEvent } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatThreadSnapshot, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import path from "node:path";
 import { z } from "zod";
 import { appendRuntimeDebugLog } from "./debug.js";
@@ -9,18 +9,9 @@ const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
 const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
 const STREAM_PREFLUSH_BUFFER_LIMIT = 1000;
-const messagesPageQuery = z.object({
-  beforeSeq: z.string().optional(),
-  limit: z.string().optional(),
-}).strict();
-const eventsPageQuery = z.object({
-  beforeIdx: z.string().optional(),
-  limit: z.string().optional(),
-}).strict();
-const threadSnapshotQuery = z.object({
-  messageLimit: z.string().optional(),
-  eventLimit: z.string().optional(),
-}).strict();
+
+const inFlightSnapshotRequests = new Map<string, Promise<ChatThreadSnapshot>>();
+const inFlightTimelineSnapshotRequests = new Map<string, Promise<ChatTimelineSnapshot>>();
 
 function parseNonNegativeInt(input: unknown): number | null {
   const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
@@ -33,18 +24,6 @@ function parseNonNegativeInt(input: unknown): number | null {
     return null;
   }
 
-  return parsed;
-}
-
-function parsePositiveInt(input: unknown): number | null {
-  const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
-  if (typeof rawValue !== "string" && typeof rawValue !== "number") {
-    return null;
-  }
-  const parsed = Number(rawValue);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    return null;
-  }
   return parsed;
 }
 
@@ -78,29 +57,13 @@ function areLikelySameFsPath(a: string, b: string): boolean {
   return false;
 }
 
-function summarizeMessagePage(page: {
-  data: Array<{ seq: number }>;
-  pageInfo: { nextBeforeSeq: number | null; hasMoreOlder: boolean; oldestSeq: number | null; newestSeq: number | null };
-}) {
+function summarizeTimelineEnvelope(snapshot: ChatTimelineSnapshot) {
   return {
-    count: page.data.length,
-    oldestSeq: page.pageInfo.oldestSeq,
-    newestSeq: page.pageInfo.newestSeq,
-    nextBeforeSeq: page.pageInfo.nextBeforeSeq,
-    hasMoreOlder: page.pageInfo.hasMoreOlder,
-  };
-}
-
-function summarizeEventPage(page: {
-  data: Array<{ idx: number }>;
-  pageInfo: { nextBeforeIdx: number | null; hasMoreOlder: boolean; oldestIdx: number | null; newestIdx: number | null };
-}) {
-  return {
-    count: page.data.length,
-    oldestIdx: page.pageInfo.oldestIdx,
-    newestIdx: page.pageInfo.newestIdx,
-    nextBeforeIdx: page.pageInfo.nextBeforeIdx,
-    hasMoreOlder: page.pageInfo.hasMoreOlder,
+    timelineItemsCount: snapshot.timelineItems.length,
+    newestSeq: snapshot.newestSeq,
+    newestIdx: snapshot.newestIdx,
+    messagesCount: snapshot.messages.length,
+    eventsCount: snapshot.events.length,
   };
 }
 
@@ -208,47 +171,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/threads/:id/messages", async (request, reply) => {
     try {
       const params = threadParams.parse(request.params);
-      const query = messagesPageQuery.parse(request.query);
-      const beforeSeq = query.beforeSeq == null ? undefined : parseNonNegativeInt(query.beforeSeq);
-      const limit = query.limit == null ? undefined : parsePositiveInt(query.limit);
-
-      if (query.beforeSeq != null && beforeSeq == null) {
-        return reply.code(400).send({ error: "Invalid beforeSeq query value" });
-      }
-      if (query.limit != null && limit == null) {
-        return reply.code(400).send({ error: "Invalid limit query value" });
-      }
-
-      const requestId = `messages-page-${params.id}-${Date.now()}`;
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.messagesPage.requested",
-        data: {
-          requestId,
-          threadId: params.id,
-          beforeSeq: beforeSeq ?? null,
-          limit: limit ?? null,
-        },
-      });
-      const page = await app.chatService.listMessagesPage(params.id, {
-        beforeSeq: beforeSeq ?? undefined,
-        limit: limit ?? undefined,
-      });
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.messagesPage.response",
-        data: {
-          requestId,
-          threadId: params.id,
-          beforeSeq: beforeSeq ?? null,
-          limit: limit ?? null,
-          ...summarizeMessagePage(page),
-        },
-      });
-      return {
-        data: page.data,
-        pageInfo: page.pageInfo,
-      };
+      const messages = await app.chatService.listMessages(params.id);
+      return { data: messages };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list messages";
       return reply.code(400).send({ error: message });
@@ -258,48 +182,59 @@ export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/threads/:id/snapshot", async (request, reply) => {
     try {
       const params = threadParams.parse(request.params);
-      const query = threadSnapshotQuery.parse(request.query);
-      const messageLimit = query.messageLimit == null ? undefined : parsePositiveInt(query.messageLimit);
-      const eventLimit = query.eventLimit == null ? undefined : parsePositiveInt(query.eventLimit);
+      const snapshotKey = params.id;
+      const existingRequest = inFlightSnapshotRequests.get(snapshotKey);
 
-      if (query.messageLimit != null && messageLimit == null) {
-        return reply.code(400).send({ error: "Invalid messageLimit query value" });
-      }
-      if (query.eventLimit != null && eventLimit == null) {
-        return reply.code(400).send({ error: "Invalid eventLimit query value" });
+      const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id);
+
+      if (!existingRequest) {
+        inFlightSnapshotRequests.set(snapshotKey, snapshotPromise);
       }
 
-      const requestId = `snapshot-${params.id}-${Date.now()}`;
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.snapshot.requested",
-        data: {
-          requestId,
-          threadId: params.id,
-          messageLimit: messageLimit ?? null,
-          eventLimit: eventLimit ?? null,
-        },
-      });
-      const snapshot = await app.chatService.listThreadSnapshot(params.id, {
-        messageLimit: messageLimit ?? undefined,
-        eventLimit: eventLimit ?? undefined,
-      });
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.snapshot.response",
-        data: {
-          requestId,
-          threadId: params.id,
-          messageLimit: messageLimit ?? null,
-          eventLimit: eventLimit ?? null,
-          messages: summarizeMessagePage(snapshot.messages),
-          events: summarizeEventPage(snapshot.events),
-        },
-      });
-
-      return { data: snapshot };
+      try {
+        const snapshot = await snapshotPromise;
+        return { data: snapshot };
+      } finally {
+        if (!existingRequest) {
+          inFlightSnapshotRequests.delete(snapshotKey);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to load thread snapshot";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.get("/threads/:id/timeline", async (request, reply) => {
+    try {
+      const params = threadParams.parse(request.params);
+      const timelineKey = params.id;
+      const existingRequest = inFlightTimelineSnapshotRequests.get(timelineKey);
+
+      const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id).then((s) => s.timeline);
+
+      if (!existingRequest) {
+        inFlightTimelineSnapshotRequests.set(timelineKey, snapshotPromise);
+      }
+
+      try {
+        const snapshot = await snapshotPromise;
+        appendRuntimeDebugLog({
+          source: "runtime.chats",
+          message: "chat.backend.timelineSnapshot.response",
+          data: {
+            threadId: params.id,
+            ...summarizeTimelineEnvelope(snapshot),
+          },
+        });
+        return { data: snapshot };
+      } finally {
+        if (!existingRequest) {
+          inFlightTimelineSnapshotRequests.delete(timelineKey);
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to load timeline";
       return reply.code(400).send({ error: message });
     }
   });
@@ -391,47 +326,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/threads/:id/events", async (request, reply) => {
     try {
       const params = threadParams.parse(request.params);
-      const query = eventsPageQuery.parse(request.query);
-      const beforeIdx = query.beforeIdx == null ? undefined : parseNonNegativeInt(query.beforeIdx);
-      const limit = query.limit == null ? undefined : parsePositiveInt(query.limit);
-
-      if (query.beforeIdx != null && beforeIdx == null) {
-        return reply.code(400).send({ error: "Invalid beforeIdx query value" });
-      }
-      if (query.limit != null && limit == null) {
-        return reply.code(400).send({ error: "Invalid limit query value" });
-      }
-
-      const requestId = `events-page-${params.id}-${Date.now()}`;
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.eventsPage.requested",
-        data: {
-          requestId,
-          threadId: params.id,
-          beforeIdx: beforeIdx ?? null,
-          limit: limit ?? null,
-        },
-      });
-      const page = await app.chatService.listEventsPage(params.id, {
-        beforeIdx: beforeIdx ?? undefined,
-        limit: limit ?? undefined,
-      });
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.eventsPage.response",
-        data: {
-          requestId,
-          threadId: params.id,
-          beforeIdx: beforeIdx ?? null,
-          limit: limit ?? null,
-          ...summarizeEventPage(page),
-        },
-      });
-      return {
-        data: page.data,
-        pageInfo: page.pageInfo,
-      };
+      const events = await app.chatService.listEvents(params.id);
+      return { data: events };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list events";
       return reply.code(400).send({ error: message });

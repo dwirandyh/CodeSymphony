@@ -12,14 +12,6 @@ function mockOk(data: unknown) {
   } as Response);
 }
 
-function mockPagedOk(data: unknown, pageInfo: unknown) {
-  return Promise.resolve({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ data, pageInfo }),
-  } as Response);
-}
-
 function mockError(status: number, error: string) {
   return Promise.resolve({
     ok: false,
@@ -129,7 +121,7 @@ describe("api", () => {
 
     it("includes script result if present", async () => {
       const worktree = { id: "w1" };
-      const scriptResult = { exitCode: 0, output: "ok" };
+      const scriptResult = { success: true, output: "ok" };
       mockFetch.mockReturnValueOnce(
         Promise.resolve({
           ok: true, status: 200,
@@ -180,7 +172,7 @@ describe("api", () => {
   describe("renameWorktreeBranch", () => {
     it("renames branch", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "w1", branch: "new-name" }));
-      await api.renameWorktreeBranch("w1", { newBranch: "new-name" });
+      await api.renameWorktreeBranch("w1", { branch: "new-name" });
       const [, init] = mockFetch.mock.calls[0];
       expect(init.method).toBe("PATCH");
     });
@@ -228,30 +220,22 @@ describe("api", () => {
   });
 
   describe("messages", () => {
-    it("lists messages page", async () => {
-      const page = { data: [], pageInfo: { hasMoreOlder: false } };
-      mockFetch.mockReturnValueOnce(
-        Promise.resolve({
-          ok: true, status: 200,
-          json: () => Promise.resolve(page),
-        }),
-      );
-      const result = await api.listMessagesPage("t1", { beforeSeq: 10, limit: 5 });
-      expect(result.data).toEqual([]);
-      expect(mockFetch.mock.calls[0][0]).toContain("beforeSeq=10");
-      expect(mockFetch.mock.calls[0][0]).toContain("limit=5");
+    it("lists messages", async () => {
+      mockFetch.mockReturnValueOnce(mockOk([]));
+      const result = await api.listMessages("t1");
+      expect(result).toEqual([]);
+      expect(mockFetch.mock.calls[0][0]).toContain("/threads/t1/messages");
     });
 
     it("gets thread snapshot", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ thread: {}, messages: [] }));
-      const result = await api.getThreadSnapshot("t1", { messageLimit: 10, eventLimit: 50 });
+      mockFetch.mockReturnValueOnce(mockOk({ messages: [], events: [], timeline: {} }));
+      const result = await api.getThreadSnapshot("t1");
       expect(result).toBeTruthy();
-      expect(mockFetch.mock.calls[0][0]).toContain("messageLimit=10");
     });
 
     it("sends message", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "m1" }));
-      await api.sendMessage("t1", { content: "hello" });
+      await api.sendMessage("t1", { content: "hello", mode: "default", attachments: [] });
       const [, init] = mockFetch.mock.calls[0];
       expect(init.method).toBe("POST");
     });
@@ -321,22 +305,16 @@ describe("api", () => {
   });
 
   describe("events", () => {
-    it("lists events page", async () => {
-      const page = { data: [], pageInfo: { hasMoreOlder: false } };
-      mockFetch.mockReturnValueOnce(
-        Promise.resolve({
-          ok: true, status: 200,
-          json: () => Promise.resolve(page),
-        }),
-      );
-      const result = await api.listEventsPage("t1", { beforeIdx: 100, limit: 50 });
-      expect(result.data).toEqual([]);
+    it("gets timeline snapshot", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ timelineItems: [], events: [], messages: [] }));
+      const result = await api.getTimelineSnapshot("t1");
+      expect(result).toBeTruthy();
     });
   });
 
   describe("git operations", () => {
     it("gets git status", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ files: [] }));
+      mockFetch.mockReturnValueOnce(mockOk({ branch: "main", entries: [] }));
       await api.getGitStatus("w1");
     });
 
@@ -380,12 +358,12 @@ describe("api", () => {
 
     it("opens worktree file", async () => {
       mockFetch.mockReturnValueOnce(mock204());
-      await api.openWorktreeFile("w1", { filePath: "src/a.ts" });
+      await api.openWorktreeFile("w1", { path: "src/a.ts" });
     });
 
     it("open file throws on error", async () => {
       mockFetch.mockReturnValueOnce(mockError(500, "fail"));
-      await expect(api.openWorktreeFile("w1", { filePath: "src/a.ts" })).rejects.toThrow("fail");
+      await expect(api.openWorktreeFile("w1", { path: "src/a.ts" })).rejects.toThrow("fail");
     });
   });
 
@@ -409,12 +387,12 @@ describe("api", () => {
 
     it("opens in app", async () => {
       mockFetch.mockReturnValueOnce(mock204());
-      await api.openInApp({ appId: "1", path: "/home" });
+      await api.openInApp({ appId: "1", targetPath: "/home" });
     });
 
     it("open in app throws on error", async () => {
       mockFetch.mockReturnValueOnce(mockError(500, "fail"));
-      await expect(api.openInApp({ appId: "1", path: "/" })).rejects.toThrow("fail");
+      await expect(api.openInApp({ appId: "1", targetPath: "/" })).rejects.toThrow("fail");
     });
   });
 
@@ -498,11 +476,17 @@ describe("api", () => {
     it("throws on unexpected response shape", async () => {
       mockFetch.mockReturnValueOnce(
         Promise.resolve({
-          ok: true, status: 200,
+          ok: true,
+          status: 200,
+          url: "http://localhost:5173/api/repositories",
+          headers: new Headers({ "content-type": "text/html" }),
           json: () => Promise.resolve({ unexpected: true }),
+          clone: () => ({ text: () => Promise.resolve("<html><body>oops</body></html>") }),
         }),
       );
-      await expect(api.listRepositories()).rejects.toThrow("unexpected response");
+      const result = api.listRepositories();
+      await expect(result).rejects.toThrow("unexpected response shape");
+      await expect(result).rejects.toThrow("content-type=text/html");
     });
 
     it("throws runtime unavailable when all bases fail", async () => {

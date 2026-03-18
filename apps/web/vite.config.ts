@@ -13,6 +13,12 @@ export default defineConfig({
   ],
   server: {
     port: parseInt(process.env.VITE_DEV_PORT ?? "5173"),
-    host: "0.0.0.0",
+    host: true,
+    proxy: {
+      "/api": {
+        target: process.env.VITE_RUNTIME_PROXY_TARGET ?? "http://127.0.0.1:4331",
+        changeOrigin: true,
+      },
+    },
   },
 });

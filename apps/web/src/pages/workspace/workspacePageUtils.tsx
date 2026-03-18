@@ -1,36 +1,21 @@
-export function shouldResetTopPaginationInteraction(prevThreadId: string | null, nextThreadId: string | null): boolean {
-  return prevThreadId != null && nextThreadId != null && prevThreadId !== nextThreadId;
-}
-
 export function resolveChatMessageListKey(params: {
   previousKey: string;
   previousThreadId: string | null;
   nextThreadId: string | null;
 }): string {
-  const { previousKey, previousThreadId, nextThreadId } = params;
+  const { previousKey, nextThreadId } = params;
 
   if (nextThreadId == null) {
     return previousKey;
   }
 
-  if (previousKey === "empty") {
-    return nextThreadId;
-  }
-
-  if (shouldResetTopPaginationInteraction(previousThreadId, nextThreadId)) {
-    return nextThreadId;
-  }
-
-  if (previousThreadId == null && previousKey !== nextThreadId) {
+  if (previousKey !== nextThreadId) {
     return nextThreadId;
   }
 
   return previousKey;
 }
 
-export function createRunScriptToken(): string {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-}
 
 export function FilledPlayIcon({ className }: { className?: string }) {
   return (

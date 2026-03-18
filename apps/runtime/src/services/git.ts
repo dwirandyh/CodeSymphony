@@ -2,12 +2,20 @@ import { promisify } from "node:util";
 import { execFile as execFileRaw } from "node:child_process";
 
 const execFile = promisify(execFileRaw);
+const DEFAULT_GIT_TIMEOUT_MS = 15_000;
+const STATUS_GIT_TIMEOUT_MS = 4_000;
 
-async function runGit(args: string[], cwd?: string): Promise<string> {
+type RunGitOptions = {
+  timeoutMs?: number;
+};
+
+async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
   try {
     const { stdout } = await execFile("git", args, {
       cwd,
       encoding: "utf8",
+      timeout: options?.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
     });
 
     return stdout.trimEnd();
@@ -106,10 +114,10 @@ export async function renameBranch(args: { cwd: string; oldBranch: string; newBr
 }
 
 export async function getGitStatus(cwd: string): Promise<{ branch: string; entries: Array<{ path: string; status: string; insertions: number; deletions: number }> }> {
-  const branch = await runGit(["branch", "--show-current"], cwd).catch(() => "HEAD");
+  const branch = await runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD");
   let porcelain = "";
   try {
-    porcelain = await runGit(["status", "--porcelain"], cwd);
+    porcelain = await runGit(["status", "--porcelain"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS });
   } catch {
     return { branch, entries: [] };
   }
@@ -118,8 +126,8 @@ export async function getGitStatus(cwd: string): Promise<{ branch: string; entri
 
   // Fetch numstat for staged and unstaged changes
   const [stagedNumstat, unstagedNumstat] = await Promise.all([
-    runGit(["diff", "--cached", "--numstat"], cwd).catch(() => ""),
-    runGit(["diff", "--numstat"], cwd).catch(() => ""),
+    runGit(["diff", "--cached", "--numstat"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => ""),
+    runGit(["diff", "--numstat"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => ""),
   ]);
 
   const statsMap = new Map<string, { insertions: number; deletions: number }>();

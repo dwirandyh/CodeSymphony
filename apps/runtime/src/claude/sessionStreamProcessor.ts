@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
-import type { ClaudeToolInstrumentationEvent } from "../types.js";
+import type { ClaudeOwnershipDiagnostics, ClaudeToolInstrumentationEvent } from "../types.js";
+import { appendRuntimeDebugLog } from "../routes/debug.js";
 
 import { isBashTool } from "./toolClassification.js";
 import type { ToolMetadata } from "./toolClassification.js";
@@ -9,7 +10,13 @@ import { findLatestPlanFile } from "./planFile.js";
 
 import type { InstrumentContext, SessionMaps } from "./sessionInstrumentation.js";
 import { buildFinishedTimingPreview, buildToolFinishedPayload } from "./sessionInstrumentation.js";
-import type { HookCallbacks, SessionState } from "./sessionHooks.js";
+import {
+  resolveCanonicalSubagentOwner,
+  resolveSubagentIdentity,
+  rememberSubagentOwner,
+  type HookCallbacks,
+  type SessionState,
+} from "./sessionHooks.js";
 
 export type StreamProcessorDeps = {
   callbacks: HookCallbacks;
@@ -18,6 +25,7 @@ export type StreamProcessorDeps = {
     toolUseId: string,
     toolName: string,
     parentToolUseId: string | null,
+    ownership: ClaudeOwnershipDiagnostics,
     startSource: "sdk.hook.pre_tool_use" | "sdk.stream.tool_progress",
     metadata?: ToolMetadata,
   ) => Promise<void>;
@@ -31,9 +39,238 @@ export type StreamProcessorDeps = {
     toolName: string;
     toolUseId: string;
     parentToolUseId: string | null;
+    subagentOwnerToolUseId?: string | null;
+    launcherToolUseId?: string | null;
+    ownershipReason?: ClaudeOwnershipDiagnostics["ownershipReason"];
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
     elapsedTimeSeconds: number;
   }) => Promise<void> | void;
 };
+
+function ownershipFromToolUseId(maps: SessionMaps, toolUseId: string): ClaudeOwnershipDiagnostics {
+  const requested = maps.requestedToolByUseId.get(toolUseId);
+  return resolveCanonicalSubagentOwner(
+    maps,
+    {
+      toolUseId,
+      parentToolUseId: requested?.parentToolUseId ?? null,
+      agentId: null,
+    },
+    { allowSingleActiveFallback: false },
+  );
+}
+
+function logSummaryFallbackDecision(data: Record<string, unknown>): void {
+  appendRuntimeDebugLog({
+    source: "sessionStreamProcessor",
+    message: "tool.summary.fallbackDecision",
+    data,
+  });
+}
+
+function buildSummaryToolUseIds(
+  maps: SessionMaps,
+  precedingToolUseIds: string[],
+): {
+  summaryToolUseIds: string[];
+  skippedAmbiguousFallback: boolean;
+  debug: Record<string, unknown>;
+} {
+  if (precedingToolUseIds.length > 0) {
+    return {
+      summaryToolUseIds: precedingToolUseIds,
+      skippedAmbiguousFallback: false,
+      debug: {
+        decision: "sdk_preceding_ids",
+        selectedToolUseIds: precedingToolUseIds,
+      },
+    };
+  }
+
+  const unresolvedStartedToolUseIds = Array.from(maps.startedToolUseIds)
+    .filter((toolUseId) => !maps.finishedToolUseIds.has(toolUseId))
+    .sort((left, right) => {
+      const leftTimestamp = maps.startedAtMsByToolUseId.get(left)
+        ?? maps.requestedToolByUseId.get(left)?.requestedAtMs
+        ?? 0;
+      const rightTimestamp = maps.startedAtMsByToolUseId.get(right)
+        ?? maps.requestedToolByUseId.get(right)?.requestedAtMs
+        ?? 0;
+      return rightTimestamp - leftTimestamp;
+    });
+
+  if (unresolvedStartedToolUseIds.length <= 1) {
+    return {
+      summaryToolUseIds: unresolvedStartedToolUseIds,
+      skippedAmbiguousFallback: false,
+      debug: {
+        decision: unresolvedStartedToolUseIds.length === 1 ? "single_unresolved_fallback" : "no_unresolved_tools",
+        unresolvedStartedToolUseIds,
+        selectedToolUseIds: unresolvedStartedToolUseIds,
+      },
+    };
+  }
+
+  const ownershipBuckets = new Map<string, string[]>();
+  const unresolvedOwnership = unresolvedStartedToolUseIds.map((toolUseId) => {
+    const ownership = ownershipFromToolUseId(maps, toolUseId);
+    const bucketKey = ownership.subagentOwnerToolUseId
+      ?? (ownership.ownershipReason === "unresolved_overlap_no_lineage"
+        ? `overlap:${(ownership.activeSubagentToolUseIds ?? []).sort().join(",")}`
+        : ownership.ownershipReason);
+    const bucket = ownershipBuckets.get(bucketKey) ?? [];
+    bucket.push(toolUseId);
+    ownershipBuckets.set(bucketKey, bucket);
+    return {
+      toolUseId,
+      ownershipReason: ownership.ownershipReason,
+      subagentOwnerToolUseId: ownership.subagentOwnerToolUseId,
+      ownershipCandidates: ownership.ownershipCandidates ?? [],
+      activeSubagentToolUseIds: ownership.activeSubagentToolUseIds ?? [],
+      bucketKey,
+    };
+  });
+
+  const hasOverlapAmbiguity = unresolvedOwnership.some((entry) =>
+    entry.ownershipReason === "unresolved_overlap_no_lineage"
+    || entry.ownershipReason === "unresolved_ambiguous_candidates",
+  );
+
+  if (hasOverlapAmbiguity) {
+    return {
+      summaryToolUseIds: [],
+      skippedAmbiguousFallback: true,
+      debug: {
+        decision: "skipped_overlap_ambiguous_fallback",
+        unresolvedStartedToolUseIds,
+        unresolvedOwnership,
+        ownershipBuckets: [...ownershipBuckets.entries()].map(([bucketKey, toolUseIds]) => ({ bucketKey, toolUseIds })),
+        selectedToolUseIds: [],
+      },
+    };
+  }
+
+  if (ownershipBuckets.size === 1) {
+    return {
+      summaryToolUseIds: unresolvedStartedToolUseIds,
+      skippedAmbiguousFallback: false,
+      debug: {
+        decision: "single_bucket_fallback",
+        unresolvedStartedToolUseIds,
+        unresolvedOwnership,
+        ownershipBuckets: [...ownershipBuckets.entries()].map(([bucketKey, toolUseIds]) => ({ bucketKey, toolUseIds })),
+        selectedToolUseIds: unresolvedStartedToolUseIds,
+      },
+    };
+  }
+
+  return {
+    summaryToolUseIds: [],
+    skippedAmbiguousFallback: true,
+    debug: {
+      decision: "skipped_overlap_ambiguous_fallback",
+      unresolvedStartedToolUseIds,
+      unresolvedOwnership,
+      ownershipBuckets: [...ownershipBuckets.entries()].map(([bucketKey, toolUseIds]) => ({ bucketKey, toolUseIds })),
+      selectedToolUseIds: [],
+    },
+  };
+}
+
+function combineOwnership(maps: SessionMaps, toolUseIds: string[]): ClaudeOwnershipDiagnostics {
+  const perToolOwnership = toolUseIds.map((toolUseId) => ownershipFromToolUseId(maps, toolUseId));
+  if (perToolOwnership.length === 0) {
+    return {
+      subagentOwnerToolUseId: null,
+      launcherToolUseId: null,
+      ownershipReason: "unresolved_no_lineage",
+    };
+  }
+
+  if (perToolOwnership.length === 1) {
+    return perToolOwnership[0] as ClaudeOwnershipDiagnostics;
+  }
+
+  const ownerCandidates = new Set<string>();
+  for (const ownership of perToolOwnership) {
+    if (ownership.subagentOwnerToolUseId) {
+      ownerCandidates.add(ownership.subagentOwnerToolUseId);
+    }
+    for (const candidate of ownership.ownershipCandidates ?? []) {
+      ownerCandidates.add(candidate);
+    }
+  }
+
+  if (ownerCandidates.size > 1) {
+    return {
+      subagentOwnerToolUseId: null,
+      launcherToolUseId: null,
+      ownershipReason: "unresolved_ambiguous_candidates",
+      ownershipCandidates: [...ownerCandidates],
+    };
+  }
+
+  const firstResolved = perToolOwnership.find((ownership) => ownership.subagentOwnerToolUseId);
+  if (firstResolved?.subagentOwnerToolUseId) {
+    return {
+      subagentOwnerToolUseId: firstResolved.subagentOwnerToolUseId,
+      launcherToolUseId: firstResolved.launcherToolUseId,
+      ownershipReason: firstResolved.ownershipReason,
+      ...(ownerCandidates.size > 0 ? { ownershipCandidates: [...ownerCandidates] } : {}),
+    };
+  }
+
+  const ambiguous = perToolOwnership.find((ownership) => ownership.ownershipReason === "unresolved_ambiguous_candidates");
+  if (ambiguous) {
+    return {
+      subagentOwnerToolUseId: null,
+      launcherToolUseId: null,
+      ownershipReason: "unresolved_ambiguous_candidates",
+      ...(ambiguous.ownershipCandidates && ambiguous.ownershipCandidates.length > 0
+        ? { ownershipCandidates: ambiguous.ownershipCandidates }
+        : {}),
+    };
+  }
+
+  return {
+    subagentOwnerToolUseId: null,
+    launcherToolUseId: null,
+    ownershipReason: "unresolved_no_lineage",
+  };
+}
+
+function ownershipPayload(ownership: ClaudeOwnershipDiagnostics): {
+  subagentOwnerToolUseId?: string | null;
+  launcherToolUseId?: string | null;
+  ownershipReason?: ClaudeOwnershipDiagnostics["ownershipReason"];
+  ownershipCandidates?: string[];
+} {
+  return {
+    ...(ownership.subagentOwnerToolUseId !== null ? { subagentOwnerToolUseId: ownership.subagentOwnerToolUseId } : {}),
+    ...(ownership.launcherToolUseId !== null ? { launcherToolUseId: ownership.launcherToolUseId } : {}),
+    ...(ownership.ownershipReason !== "unresolved_no_lineage" ? { ownershipReason: ownership.ownershipReason } : {}),
+    ...(ownership.ownershipCandidates && ownership.ownershipCandidates.length > 0
+      ? { ownershipCandidates: ownership.ownershipCandidates }
+      : {}),
+    ...(ownership.activeSubagentToolUseIds && ownership.activeSubagentToolUseIds.length > 0
+      ? { activeSubagentToolUseIds: ownership.activeSubagentToolUseIds }
+      : {}),
+  };
+}
+
+function extractSubagentResponse(
+  maps: SessionMaps,
+  toolUseIds: string[],
+): string | undefined {
+  for (const toolUseId of toolUseIds) {
+    const response = maps.subagentResponseByUseId.get(toolUseId);
+    if (response) {
+      return response;
+    }
+  }
+  return undefined;
+}
 
 export async function processStreamMessages(
   stream: AsyncIterable<Record<string, unknown>>,
@@ -114,10 +351,25 @@ export async function processStreamMessages(
       );
       maps.progressByToolUseId.set(msg.tool_use_id, currentProgress);
 
+      const ownership = resolveCanonicalSubagentOwner(
+        maps,
+        {
+          toolUseId: msg.tool_use_id,
+          parentToolUseId: msg.parent_tool_use_id,
+          agentId: null,
+        },
+        { allowSingleActiveFallback: false },
+      );
+      const resolvedParentToolUseId = ownership.subagentOwnerToolUseId ?? msg.parent_tool_use_id;
+      if (ownership.subagentOwnerToolUseId) {
+        rememberSubagentOwner(maps, msg.tool_use_id, ownership.subagentOwnerToolUseId);
+      }
+
       await markStarted(
         msg.tool_use_id,
         msg.tool_name,
-        msg.parent_tool_use_id,
+        resolvedParentToolUseId,
+        ownership,
         "sdk.stream.tool_progress",
         maps.toolMetadataByUseId.get(msg.tool_use_id),
       );
@@ -125,7 +377,16 @@ export async function processStreamMessages(
       await onToolOutput({
         toolName: msg.tool_name,
         toolUseId: msg.tool_use_id,
-        parentToolUseId: msg.parent_tool_use_id,
+        parentToolUseId: resolvedParentToolUseId,
+        subagentOwnerToolUseId: ownership.subagentOwnerToolUseId,
+        launcherToolUseId: ownership.launcherToolUseId,
+        ownershipReason: ownership.ownershipReason,
+        ...(ownership.ownershipCandidates && ownership.ownershipCandidates.length > 0
+          ? { ownershipCandidates: ownership.ownershipCandidates }
+          : {}),
+        ...(ownership.activeSubagentToolUseIds && ownership.activeSubagentToolUseIds.length > 0
+          ? { activeSubagentToolUseIds: ownership.activeSubagentToolUseIds }
+          : {}),
         elapsedTimeSeconds: msg.elapsed_time_seconds,
       });
       continue;
@@ -137,20 +398,31 @@ export async function processStreamMessages(
         preceding_tool_use_ids: string[];
         summary: string;
       };
-      const unresolvedStartedToolUseIds = Array.from(maps.startedToolUseIds).filter((toolUseId) => !maps.finishedToolUseIds.has(toolUseId));
-      const summaryToolUseIds = msg.preceding_tool_use_ids.length > 0
-        ? msg.preceding_tool_use_ids
-        : unresolvedStartedToolUseIds
-          .sort((left, right) => {
-            const leftTimestamp = maps.startedAtMsByToolUseId.get(left)
-              ?? maps.requestedToolByUseId.get(left)?.requestedAtMs
-              ?? 0;
-            const rightTimestamp = maps.startedAtMsByToolUseId.get(right)
-              ?? maps.requestedToolByUseId.get(right)?.requestedAtMs
-              ?? 0;
-            return rightTimestamp - leftTimestamp;
-          })
-          .slice(0, 1);
+      const { summaryToolUseIds, skippedAmbiguousFallback, debug: summaryFallbackDebug } = buildSummaryToolUseIds(
+        maps,
+        msg.preceding_tool_use_ids,
+      );
+      logSummaryFallbackDecision({
+        summary: typeof msg.summary === "string" ? msg.summary : "",
+        ...summaryFallbackDebug,
+      });
+
+      if (skippedAmbiguousFallback) {
+        await emitInstrumentation({
+          stage: "anomaly",
+          toolUseId: "tool_use_summary",
+          toolName: "tool_use_summary",
+          parentToolUseId: null,
+          threadContext: instrumentContext,
+          anomaly: {
+            code: "summary_fallback_skipped_overlap",
+            message: "Skipped tool_use_summary fallback because unresolved tools belonged to overlapping ownership buckets.",
+            relatedToolUseIds: Array.isArray(summaryFallbackDebug.unresolvedStartedToolUseIds)
+              ? summaryFallbackDebug.unresolvedStartedToolUseIds as string[]
+              : [],
+          },
+        });
+      }
 
       const pendingToolUseIds = summaryToolUseIds.filter((toolUseId) => !maps.finishedToolUseIds.has(toolUseId));
       for (const toolUseId of summaryToolUseIds) {
@@ -167,11 +439,26 @@ export async function processStreamMessages(
         for (const toolUseId of summaryToolUseIds) {
           const metadata = maps.toolMetadataByUseId.get(toolUseId);
           if (metadata?.toolName?.toLowerCase() === "task" && !maps.subagentResponseByUseId.has(toolUseId)) {
+            const subagentIdentity = resolveSubagentIdentity(
+              maps,
+              {
+                toolUseId,
+                parentToolUseId: null,
+                agentId: null,
+              },
+              { allowSingleActiveFallback: false },
+            );
+            const responseOwnerToolUseId = subagentIdentity.subagentToolUseId;
+            if (!responseOwnerToolUseId) {
+              continue;
+            }
+            rememberSubagentOwner(maps, toolUseId, responseOwnerToolUseId);
             maps.subagentResponseByUseId.set(toolUseId, summaryText);
+            maps.subagentResponseByUseId.set(responseOwnerToolUseId, summaryText);
             await callbacks.onSubagentStopped({
               agentId: "",
               agentType: "",
-              toolUseId,
+              toolUseId: responseOwnerToolUseId,
               description: "",
               lastMessage: summaryText,
               isResponseUpdate: true,
@@ -197,17 +484,46 @@ export async function processStreamMessages(
         return typeof editTarget === "string" && editTarget.length > 0;
       });
       const editTarget = editToolUseId ? maps.toolMetadataByUseId.get(editToolUseId)?.editTarget : undefined;
-      let subagentTaskToolUseId: string | null = null;
+      let subagentSummaryOwnerToolUseId: string | null = null;
+      const summaryOwnership = combineOwnership(maps, pendingToolUseIds);
+      if (summaryOwnership.subagentOwnerToolUseId) {
+        for (const toolUseId of pendingToolUseIds) {
+          rememberSubagentOwner(maps, toolUseId, summaryOwnership.subagentOwnerToolUseId);
+        }
+      }
+      logSummaryFallbackDecision({
+        summary: summaryText,
+        decision: "emit_summary_finish",
+        pendingToolUseIds,
+        ownershipReason: summaryOwnership.ownershipReason,
+        ownershipCandidates: summaryOwnership.ownershipCandidates ?? [],
+        activeSubagentToolUseIds: summaryOwnership.activeSubagentToolUseIds ?? [],
+      });
       if (summaryText) {
         for (const toolUseId of pendingToolUseIds) {
           const metadata = maps.toolMetadataByUseId.get(toolUseId);
           if (metadata?.toolName?.toLowerCase() === "task") {
+            const subagentIdentity = resolveSubagentIdentity(
+              maps,
+              {
+                toolUseId,
+                parentToolUseId: null,
+                agentId: null,
+              },
+              { allowSingleActiveFallback: false },
+            );
+            subagentSummaryOwnerToolUseId = subagentIdentity.subagentToolUseId;
+            if (!subagentSummaryOwnerToolUseId) {
+              continue;
+            }
+            rememberSubagentOwner(maps, toolUseId, subagentSummaryOwnerToolUseId);
             maps.subagentResponseByUseId.set(toolUseId, summaryText);
-            subagentTaskToolUseId = toolUseId;
+            maps.subagentResponseByUseId.set(subagentSummaryOwnerToolUseId, summaryText);
             break;
           }
         }
       }
+      const summarySubagentResponse = extractSubagentResponse(maps, pendingToolUseIds);
 
       for (const toolUseId of pendingToolUseIds) {
         maps.finishedToolUseIds.add(toolUseId);
@@ -215,13 +531,10 @@ export async function processStreamMessages(
       await callbacks.onToolFinished({
         summary: msg.summary,
         precedingToolUseIds: pendingToolUseIds,
-        ...(() => {
-          for (const toolUseId of pendingToolUseIds) {
-            const resp = maps.subagentResponseByUseId.get(toolUseId);
-            if (resp) return { subagentResponse: resp };
-          }
-          return {};
-        })(),
+        ...(summarySubagentResponse
+          ? { subagentResponse: summarySubagentResponse }
+          : {}),
+        ...ownershipPayload(summaryOwnership),
         ...(editTarget
           ? { editTarget }
           : {}),
@@ -238,11 +551,11 @@ export async function processStreamMessages(
           : {}),
       });
 
-      if (subagentTaskToolUseId && summaryText) {
+      if (subagentSummaryOwnerToolUseId && summaryText) {
         await callbacks.onSubagentStopped({
           agentId: "",
           agentType: "",
-          toolUseId: subagentTaskToolUseId,
+          toolUseId: subagentSummaryOwnerToolUseId,
           description: "",
           lastMessage: summaryText,
           isResponseUpdate: true,
@@ -259,11 +572,14 @@ export async function processStreamMessages(
           maps,
           bashToolMetadata?.isBash ? bashToolResult : undefined,
         );
+        const ownership = ownershipFromToolUseId(maps, toolUseId);
         await emitInstrumentation({
           stage: "finished",
           toolUseId,
           toolName: metadata?.toolName ?? "unknown",
-          parentToolUseId: null,
+          parentToolUseId: ownership.subagentOwnerToolUseId
+            ?? maps.requestedToolByUseId.get(toolUseId)?.parentToolUseId
+            ?? null,
           summary: msg.summary,
           threadContext: instrumentContext,
           timing,
@@ -373,16 +689,25 @@ export async function runSyntheticToolFinish(
       toolName: maps.requestedToolByUseId.get(toolUseId)?.toolName ?? "unknown",
       isBash: false,
     };
+    const ownership = ownershipFromToolUseId(maps, toolUseId);
+    if (ownership.subagentOwnerToolUseId) {
+      rememberSubagentOwner(maps, toolUseId, ownership.subagentOwnerToolUseId);
+    }
     const bashResult = maps.bashResultByToolUseId.get(toolUseId);
     const finishedAtMs = Date.now();
     const completionSummary = completionSummaryFromMetadata(metadata);
-    await callbacks.onToolFinished(buildToolFinishedPayload(metadata, completionSummary, [toolUseId], bashResult));
+    await callbacks.onToolFinished({
+      ...buildToolFinishedPayload(metadata, completionSummary, [toolUseId], bashResult),
+      ...ownershipPayload(ownership),
+    });
     const { timing, preview } = buildFinishedTimingPreview(toolUseId, metadata, finishedAtMs, maps, bashResult);
     await emitInstrumentation({
       stage: "finished",
       toolUseId,
       toolName: metadata.toolName,
-      parentToolUseId: maps.requestedToolByUseId.get(toolUseId)?.parentToolUseId ?? null,
+      parentToolUseId: ownership.subagentOwnerToolUseId
+        ?? maps.requestedToolByUseId.get(toolUseId)?.parentToolUseId
+        ?? null,
       summary: completionSummary,
       threadContext: instrumentContext,
       timing,

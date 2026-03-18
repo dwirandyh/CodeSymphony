@@ -17,11 +17,36 @@ declare module "@tanstack/react-router" {
   }
 }
 
+class RootErrorBoundary extends React.Component<React.PropsWithChildren, { hasError: boolean }> {
+  constructor(props: React.PropsWithChildren) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex min-h-screen items-center justify-center px-4 text-center text-sm text-destructive">
+          The app hit an unexpected rendering error.
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-      <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
-    </QueryClientProvider>
+    <RootErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+        <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
+      </QueryClientProvider>
+    </RootErrorBoundary>
   </React.StrictMode>,
 );

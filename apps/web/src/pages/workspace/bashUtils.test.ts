@@ -25,6 +25,22 @@ describe("extractBashRuns", () => {
     expect(extractBashRuns(events)).toEqual([]);
   });
 
+  it("reads bash command from toolInput.command", () => {
+    const events = [
+      makeEvent({
+        id: "e-tool-input", type: "tool.started", idx: 1,
+        payload: { toolName: "bash", isBash: true, toolUseId: "t-tool-input", toolInput: { command: "git status -sb" } },
+      }),
+      makeEvent({
+        id: "e-tool-input-finished", type: "tool.finished", idx: 2,
+        payload: { toolName: "bash", isBash: true, summary: "Ran git status", precedingToolUseIds: ["t-tool-input"] },
+      }),
+    ];
+    const runs = extractBashRuns(events);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].command).toBe("git status -sb");
+  });
+
   it("creates run from bash tool.started + tool.finished", () => {
     const events = [
       makeEvent({
@@ -78,6 +94,34 @@ describe("extractBashRuns", () => {
     expect(runs[0].status).toBe("failed");
     expect(runs[0].rejectedByUser).toBe(true);
     expect(runs[0].command).toBe("rm -rf /");
+  });
+
+  it("skips permission-only bash runs for subagent-owned permissions", () => {
+    const events = [
+      makeEvent({
+        id: "e1", type: "permission.requested", idx: 1,
+        payload: {
+          toolName: "Bash",
+          requestId: "req-subagent-1",
+          command: "ls",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+        },
+      }),
+      makeEvent({
+        id: "e2", type: "permission.resolved", idx: 2,
+        payload: {
+          requestId: "req-subagent-1",
+          decision: "deny",
+          message: "Rejected by user",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+        },
+      }),
+    ];
+
+    const runs = extractBashRuns(events);
+    expect(runs).toHaveLength(0);
   });
 
   it("handles permission allow flow", () => {

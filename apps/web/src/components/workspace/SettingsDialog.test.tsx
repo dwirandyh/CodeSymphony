@@ -14,7 +14,7 @@ vi.mock("../../lib/api", () => ({
     updateModelProvider: vi.fn().mockResolvedValue({}),
     deleteModelProvider: vi.fn().mockResolvedValue(undefined),
     activateModelProvider: vi.fn().mockResolvedValue({}),
-    deactivateAllModelProviders: vi.fn().mockResolvedValue(undefined),
+    deactivateAllProviders: vi.fn().mockResolvedValue(undefined),
     testModelProvider: vi.fn().mockResolvedValue({ success: true }),
   },
 }));
@@ -45,6 +45,7 @@ function makeRepo(): Repository {
     teardownScript: null,
     runScript: null,
     createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
     worktrees: [],
   };
 }

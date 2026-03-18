@@ -11,7 +11,7 @@ import { createWorktreeService } from "../src/services/worktreeService";
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
     ? process.env.DATABASE_URL
-    : "file:./test.db";
+    : "file:./prisma/test.db";
 
 const prisma = new PrismaClient({
   datasources: {
@@ -173,5 +173,29 @@ describe("repositoryService primary root workspace", () => {
 
     const nonRoot = listedRepository!.worktrees.find((worktree) => worktree.path !== canonicalRepositoryPath);
     expect(nonRoot).toBeDefined();
+  });
+
+  it("does not create a duplicate main thread when the root thread was renamed", async () => {
+    const repositoryPath = createGitRepository();
+    const canonicalRepositoryPath = realpathSync(repositoryPath);
+    const repositoryService = createRepositoryService(prisma);
+
+    const created = await repositoryService.create({ path: repositoryPath });
+    const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
+    expect(rootWorktree).toBeDefined();
+
+    await prisma.chatThread.updateMany({
+      where: { worktreeId: rootWorktree!.id, title: "Main Thread" },
+      data: { title: "Renamed Root Thread", titleEditedManually: true },
+    });
+
+    await repositoryService.list();
+
+    const threads = await prisma.chatThread.findMany({
+      where: { worktreeId: rootWorktree!.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(threads).toHaveLength(1);
+    expect(threads[0]?.title).toBe("Renamed Root Thread");
   });
 });

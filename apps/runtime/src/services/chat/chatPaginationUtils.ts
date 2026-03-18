@@ -1,16 +1,7 @@
 import type { ChatEventType as DbChatEventType } from "@prisma/client";
-import type {
-  ChatEvent,
-  ChatEventsPage,
-  ChatMessagesPage,
-} from "@codesymphony/shared-types";
+import type { ChatEvent } from "@codesymphony/shared-types";
 import { mapChatMessage } from "../mappers.js";
-
-export const DEFAULT_MESSAGES_PAGE_LIMIT = 50;
-export const MAX_MESSAGES_PAGE_LIMIT = 200;
-export const DEFAULT_EVENTS_PAGE_LIMIT = 400;
-export const MAX_EVENTS_PAGE_LIMIT = 2000;
-export const SNAPSHOT_EVENT_BUDGET_MAX = 2000;
+import { buildTimelineFromSeed } from "./chatTimelineAssembler.js";
 
 export const chatEventTypeFromDb: Record<DbChatEventType, ChatEvent["type"]> = {
   message_delta: "message.delta",
@@ -32,42 +23,14 @@ export const chatEventTypeFromDb: Record<DbChatEventType, ChatEvent["type"]> = {
   chat_failed: "chat.failed",
 };
 
-export function normalizePageLimit(rawLimit: number | undefined, defaults: { fallback: number; max: number }): number {
-  if (typeof rawLimit !== "number" || !Number.isFinite(rawLimit)) {
-    return defaults.fallback;
-  }
-  const integer = Math.trunc(rawLimit);
-  if (integer <= 0) {
-    return defaults.fallback;
-  }
-  return Math.min(integer, defaults.max);
+export function mapMessages(rows: Array<Parameters<typeof mapChatMessage>[0]>) {
+  return rows.map(mapChatMessage);
 }
 
-export function buildMessagesPage(rows: Array<Parameters<typeof mapChatMessage>[0]>, limit: number): ChatMessagesPage {
-  const hasMoreOlder = rows.length > limit;
-  const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
-  const ordered = pageRows.reverse().map(mapChatMessage);
-  const oldestSeq = ordered.length > 0 ? ordered[0].seq : null;
-  const newestSeq = ordered.length > 0 ? ordered[ordered.length - 1].seq : null;
-
-  return {
-    data: ordered,
-    pageInfo: {
-      hasMoreOlder,
-      nextBeforeSeq: hasMoreOlder ? oldestSeq : null,
-      oldestSeq,
-      newestSeq,
-    },
-  };
-}
-
-export function buildEventsPage(
+export function mapEvents(
   rows: Array<{ id: string; threadId: string; idx: number; type: DbChatEventType; payload: unknown; createdAt: Date }>,
-  limit: number,
-): ChatEventsPage {
-  const hasMoreOlder = rows.length > limit;
-  const pageRows = hasMoreOlder ? rows.slice(0, limit) : rows;
-  const ordered = pageRows.reverse().map((row) => ({
+): ChatEvent[] {
+  return rows.map((row) => ({
     id: row.id,
     threadId: row.threadId,
     idx: row.idx,
@@ -75,36 +38,31 @@ export function buildEventsPage(
     payload: row.payload as Record<string, unknown>,
     createdAt: row.createdAt.toISOString(),
   }));
-  const oldestIdx = ordered.length > 0 ? ordered[0].idx : null;
-  const newestIdx = ordered.length > 0 ? ordered[ordered.length - 1].idx : null;
-
-  return {
-    data: ordered,
-    pageInfo: {
-      hasMoreOlder,
-      nextBeforeIdx: hasMoreOlder ? oldestIdx : null,
-      oldestIdx,
-      newestIdx,
-    },
-  };
 }
 
-export function eventCarriesTimelineContext(payload: unknown): boolean {
-  if (payload == null || typeof payload !== "object" || Array.isArray(payload)) {
-    return false;
-  }
-  const record = payload as Record<string, unknown>;
+export function buildTimelineSnapshot(params: {
+  messages: ReturnType<typeof mapChatMessage>[];
+  events: ChatEvent[];
+  threadId: string | null;
+}) {
+  const { messages, events, threadId } = params;
 
-  const toolUseId = record.toolUseId;
-  if (typeof toolUseId === "string" && toolUseId.length > 0) {
-    return true;
-  }
+  const assembly = buildTimelineFromSeed({
+    messages,
+    events,
+    selectedThreadId: threadId,
+    semanticHydrationInProgress: false,
+  });
 
-  const precedingToolUseIds = record.precedingToolUseIds;
-  if (Array.isArray(precedingToolUseIds) && precedingToolUseIds.some((entry) => typeof entry === "string" && entry.length > 0)) {
-    return true;
-  }
+  const newestSeq = messages.length > 0 ? messages[messages.length - 1].seq : null;
+  const newestIdx = events.length > 0 ? events[events.length - 1].idx : null;
 
-  const messageId = record.messageId;
-  return typeof messageId === "string" && messageId.length > 0;
+  return {
+    timelineItems: assembly.items,
+    summary: assembly.summary,
+    newestSeq,
+    newestIdx,
+    messages,
+    events,
+  };
 }

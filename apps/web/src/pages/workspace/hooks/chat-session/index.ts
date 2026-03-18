@@ -1,25 +1,16 @@
-export { useChatSession } from "./useChatSession";
+export { deriveSelectedThreadUiState, useChatSession } from "./useChatSession";
 
 export type {
   PendingMessageMutation,
-  LoadOlderHistoryRequestMetadata,
-  LoadOlderHistoryResult,
-  SemanticHydrationGateMetadata,
-  AutoBackfillStopReason,
-  AutoBackfillLoopOutcome,
-  AutoBackfillLoopInput,
-  HydrationBackfillPolicy,
   SnapshotSeedDecision,
   ThreadMetadataSnapshot,
   UseChatSessionOptions,
+  SelectedThreadUiState,
 } from "./useChatSession.types";
 
 export {
-  resolveHydrationBackfillPolicy,
-  shouldAutoBackfillOnHydration,
-  buildAutoBackfillSnapshotKey,
+  buildSnapshotKey,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
-  buildAutoBackfillLaunchKey,
   resolveSnapshotSeedDecision,
 } from "./hydrationUtils";
 
@@ -36,5 +27,3 @@ export {
   extractLatestThreadMetadata,
   applyThreadTitleUpdate,
 } from "./snapshotSeed";
-
-export { runAutoBackfillLoop } from "./useAutoBackfill";

@@ -14,7 +14,10 @@
       "WebSearch",
       "Bash(gh search repos:*)",
       "Bash(gh api:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(git:*)",
+      "Bash(rtk pnpm:*)"
     ]
   }
 }

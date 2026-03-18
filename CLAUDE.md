@@ -90,7 +90,7 @@ Local-first monorepo (pnpm workspaces + Turbo) for a conductor.build-style AI co
 - Node.js 22+, pnpm 10+, Git in PATH, Claude Code CLI authenticated (`claude login`)
 - Copy `apps/runtime/.env.example` to `apps/runtime/.env` before first run
 - Runtime scripts use `tsx --env-file .env` so `DATABASE_URL` is always loaded
-- Runtime tests use a separate `test.db` (set via `DATABASE_URL="file:./test.db"` in the test script)
+- Runtime tests use a separate `prisma/test.db` (set via `DATABASE_URL="file:./prisma/test.db"` in the test script)
 - Sanitize env before `query()`: unset `CLAUDECODE` and remove empty `ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL` to avoid CLI errors
 
 ## React Best Practices

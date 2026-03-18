@@ -1,8 +1,17 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
+import type { GitChangeStatus } from "@codesymphony/shared-types";
 import { useGitStatus } from "../../../hooks/queries/useGitStatus";
 import { useGitCommit } from "../../../hooks/mutations/useGitCommit";
 import { useDiscardGitChange } from "../../../hooks/mutations/useDiscardGitChange";
 import { api } from "../../../lib/api";
+
+const STATUS_PRIORITY: Record<GitChangeStatus, number> = {
+  modified: 0,
+  added: 1,
+  renamed: 2,
+  deleted: 3,
+  untracked: 4,
+};
 
 export function useGitChanges(worktreeId: string | null, enabled: boolean) {
   const { data, isLoading, refetch } = useGitStatus(enabled ? worktreeId : null);
@@ -30,8 +39,21 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     return api.getGitDiff(worktreeId);
   }, [worktreeId]);
 
+  const entries = useMemo(
+    () => (data?.entries ?? [])
+      .filter((entry) => !entry.path.endsWith("/"))
+      .toSorted((left, right) => {
+        const statusDiff = STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status];
+        if (statusDiff !== 0) {
+          return statusDiff;
+        }
+        return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: "base" });
+      }),
+    [data?.entries],
+  );
+
   return {
-    entries: data?.entries ?? [],
+    entries,
     branch: data?.branch ?? "",
     loading: isLoading,
     committing: commitMutation.isPending,

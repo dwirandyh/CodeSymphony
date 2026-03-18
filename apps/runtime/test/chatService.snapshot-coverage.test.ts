@@ -2,6 +2,7 @@ import { PrismaClient, type ChatEventType } from "@prisma/client";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
+import { buildTimelineFromSeed } from "../src/services/chat/chatTimelineAssembler";
 
 const stubModelProviderService = {
   getActiveProvider: async () => null,
@@ -10,7 +11,7 @@ const stubModelProviderService = {
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
     ? process.env.DATABASE_URL
-    : "file:./test.db";
+    : "file:./prisma/test.db";
 
 const prisma = new PrismaClient({
   datasources: {
@@ -94,7 +95,7 @@ async function insertEvents(
   });
 }
 
-describe("chatService snapshot coverage", () => {
+describe("chatService snapshot", () => {
   beforeEach(async () => {
     await resetDatabase();
   });
@@ -103,7 +104,7 @@ describe("chatService snapshot coverage", () => {
     await prisma.$disconnect();
   });
 
-  it("marks snapshot as complete when loaded message window has contextual events", async () => {
+  it("returns all messages and events in a snapshot", async () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
@@ -118,46 +119,14 @@ describe("chatService snapshot coverage", () => {
       { idx: 3, type: "chat_completed", payload: { messageId: messageIdBySeq.get(3) } },
     ]);
 
-    const snapshot = await chatService.listThreadSnapshot(threadId, {
-      messageLimit: 3,
-      eventLimit: 3,
-    });
+    const snapshot = await chatService.listThreadSnapshot(threadId);
 
-    expect(snapshot.coverage).toEqual({
-      eventsStatus: "complete",
-      recommendedBackfill: false,
-      nextBeforeIdx: null,
-    });
+    expect(snapshot.messages).toHaveLength(3);
+    expect(snapshot.events).toHaveLength(3);
+    expect(snapshot.timeline.newestIdx).toBe(3);
   });
 
-  it("marks snapshot as needs_backfill when there are older events and loaded messages lack context", async () => {
-    const chatService = createChatService({
-      prisma,
-      eventHub: createEventHub(prisma),
-      claudeRunner: vi.fn(),
-      modelProviderService: stubModelProviderService,
-    });
-
-    const { threadId } = await seedThreadWithMessages(5);
-    const events = Array.from({ length: 50 }, (_, index) => ({
-      idx: index + 1,
-      type: "tool_output" as const,
-      payload: { text: `event-${index + 1}` },
-    }));
-    await insertEvents(threadId, events);
-
-    const snapshot = await chatService.listThreadSnapshot(threadId, {
-      messageLimit: 5,
-      eventLimit: 5,
-    });
-
-    expect(snapshot.coverage.eventsStatus).toBe("needs_backfill");
-    expect(snapshot.coverage.recommendedBackfill).toBe(true);
-    expect(snapshot.coverage.nextBeforeIdx).toBe(snapshot.events.pageInfo.nextBeforeIdx);
-    expect(snapshot.events.pageInfo.hasMoreOlder).toBe(true);
-  });
-
-  it("marks snapshot as capped when event limit exceeds server budget and older events remain", async () => {
+  it("returns all events even with many events", async () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
@@ -166,22 +135,262 @@ describe("chatService snapshot coverage", () => {
     });
 
     const { threadId } = await seedThreadWithMessages(1);
-    const events = Array.from({ length: 2105 }, (_, index) => ({
+    const events = Array.from({ length: 100 }, (_, index) => ({
       idx: index + 1,
       type: "tool_output" as const,
-      payload: { text: `bulk-${index + 1}` },
+      payload: { text: `event-${index + 1}` },
     }));
     await insertEvents(threadId, events);
 
-    const snapshot = await chatService.listThreadSnapshot(threadId, {
-      messageLimit: 1,
-      eventLimit: 5000,
+    const snapshot = await chatService.listThreadSnapshot(threadId);
+
+    expect(snapshot.events).toHaveLength(100);
+    expect(snapshot.timeline.newestIdx).toBe(100);
+  });
+
+  it("returns empty snapshot for thread with no data", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
     });
 
-    expect(snapshot.coverage.eventsStatus).toBe("capped");
-    expect(snapshot.coverage.recommendedBackfill).toBe(true);
-    expect(snapshot.events.data).toHaveLength(2000);
-    expect(snapshot.events.pageInfo.hasMoreOlder).toBe(true);
-    expect(snapshot.coverage.nextBeforeIdx).toBe(snapshot.events.pageInfo.nextBeforeIdx);
+    const { threadId } = await seedThreadWithMessages(0);
+
+    const snapshot = await chatService.listThreadSnapshot(threadId);
+
+    expect(snapshot.messages).toHaveLength(0);
+    expect(snapshot.events).toHaveLength(0);
+    expect(snapshot.timeline.newestIdx).toBeNull();
+    expect(snapshot.timeline.newestSeq).toBeNull();
+  });
+
+  it("matches runtime snapshot assembly for subagent-owned explore activity", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "Inspect the codebase",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "Working on it",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "tool.started" as const,
+        payload: { toolName: "Task", toolUseId: "call-task-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "subagent.started" as const,
+        payload: { toolUseId: "subagent-1", agentId: "agent-1", agentType: "Explore", description: "" },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "e3",
+        threadId: "t1",
+        idx: 3,
+        type: "tool.started" as const,
+        payload: { toolName: "Read", toolUseId: "read-1", parentToolUseId: "subagent-1", toolInput: { file_path: "src/app.ts" } },
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+      {
+        id: "e4",
+        threadId: "t1",
+        idx: 4,
+        type: "tool.finished" as const,
+        payload: { toolName: "Read", toolUseId: "read-1-finished", precedingToolUseIds: ["read-1"], summary: "Read src/app.ts" },
+        createdAt: "2026-01-01T00:00:04Z",
+      },
+      {
+        id: "e5",
+        threadId: "t1",
+        idx: 5,
+        type: "tool.started" as const,
+        payload: { toolName: "Glob", toolUseId: "glob-1", parentToolUseId: "subagent-1", searchParams: "src/**/*.ts" },
+        createdAt: "2026-01-01T00:00:05Z",
+      },
+      {
+        id: "e6",
+        threadId: "t1",
+        idx: 6,
+        type: "tool.finished" as const,
+        payload: { toolName: "Glob", toolUseId: "glob-1-finished", precedingToolUseIds: ["glob-1"], summary: "Completed Glob" },
+        createdAt: "2026-01-01T00:00:06Z",
+      },
+      {
+        id: "e7",
+        threadId: "t1",
+        idx: 7,
+        type: "subagent.finished" as const,
+        payload: { toolUseId: "subagent-1", description: "Inspect the codebase and report what you found", lastMessage: "Found the relevant files." },
+        createdAt: "2026-01-01T00:00:07Z",
+      },
+      {
+        id: "e8",
+        threadId: "t1",
+        idx: 8,
+        type: "message.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:08Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(assembly.items.filter((item) => item.kind === "explore-activity")).toHaveLength(0);
+    const subagentItems = assembly.items.filter((item) => item.kind === "subagent-activity");
+    expect(subagentItems).toHaveLength(1);
+    expect(subagentItems[0].kind === "subagent-activity" ? subagentItems[0].description : "").toBe(
+      "Inspect the codebase and report what you found",
+    );
+  });
+
+  it("quarantines overlap-unresolved subagent explore events in runtime snapshot assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "run overlapping tasks",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "running",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "tool.started" as const,
+        payload: { toolName: "Task", toolUseId: "call-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "subagent.started" as const,
+        payload: { toolUseId: "sa-1", agentId: "agent-1", agentType: "Explore", description: "First" },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "e3",
+        threadId: "t1",
+        idx: 3,
+        type: "tool.started" as const,
+        payload: { toolName: "Task", toolUseId: "call-2" },
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+      {
+        id: "e4",
+        threadId: "t1",
+        idx: 4,
+        type: "subagent.started" as const,
+        payload: { toolUseId: "sa-2", agentId: "agent-2", agentType: "Explore", description: "Second" },
+        createdAt: "2026-01-01T00:00:04Z",
+      },
+      {
+        id: "e5",
+        threadId: "t1",
+        idx: 5,
+        type: "tool.started" as const,
+        payload: {
+          toolName: "Read",
+          toolUseId: "ambiguous-read",
+          ownershipReason: "unresolved_overlap_no_lineage",
+          activeSubagentToolUseIds: ["sa-1", "sa-2"],
+        },
+        createdAt: "2026-01-01T00:00:05Z",
+      },
+      {
+        id: "e6",
+        threadId: "t1",
+        idx: 6,
+        type: "tool.finished" as const,
+        payload: {
+          toolName: "Read",
+          toolUseId: "ambiguous-read-finished",
+          precedingToolUseIds: ["ambiguous-read"],
+          summary: "Read maybe",
+          ownershipReason: "unresolved_overlap_no_lineage",
+          activeSubagentToolUseIds: ["sa-1", "sa-2"],
+        },
+        createdAt: "2026-01-01T00:00:06Z",
+      },
+      {
+        id: "e7",
+        threadId: "t1",
+        idx: 7,
+        type: "subagent.finished" as const,
+        payload: { toolUseId: "sa-1", lastMessage: "done 1" },
+        createdAt: "2026-01-01T00:00:07Z",
+      },
+      {
+        id: "e8",
+        threadId: "t1",
+        idx: 8,
+        type: "subagent.finished" as const,
+        payload: { toolUseId: "sa-2", lastMessage: "done 2" },
+        createdAt: "2026-01-01T00:00:08Z",
+      },
+      {
+        id: "e9",
+        threadId: "t1",
+        idx: 9,
+        type: "message.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:09Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(assembly.items.filter((item) => item.kind === "explore-activity")).toHaveLength(0);
+    expect(assembly.items.filter((item) => item.kind === "activity")).toHaveLength(0);
+    const subagentItems = assembly.items.filter((item) => item.kind === "subagent-activity");
+    expect(subagentItems).toHaveLength(2);
+    for (const item of subagentItems) {
+      if (item.kind !== "subagent-activity") continue;
+      expect(item.steps.some((step) => step.toolUseId.includes("ambiguous-read"))).toBe(false);
+    }
   });
 });
