@@ -1,5 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PrismaClient } from "@prisma/client";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createEventHub } from "../src/events/eventHub";
+import { createChatService } from "../src/services/chat";
 import { registerChatRoutes, parseStreamStartCursor, formatSseEvent } from "../src/routes/chats";
 
 describe("parseStreamStartCursor", () => {
@@ -44,6 +47,31 @@ describe("formatSseEvent", () => {
   });
 });
 
+const TEST_DATABASE_URL =
+  process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
+    ? process.env.DATABASE_URL
+    : "file:./prisma/test.db";
+
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: TEST_DATABASE_URL,
+    },
+  },
+});
+
+async function resetDatabase(): Promise<void> {
+  await prisma.chatEvent.deleteMany();
+  await prisma.chatMessage.deleteMany();
+  await prisma.chatThread.deleteMany();
+  await prisma.worktree.deleteMany();
+  await prisma.repository.deleteMany();
+}
+
+function uniqueSuffix(): string {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 describe("chat routes", () => {
   let app: FastifyInstance;
 
@@ -76,6 +104,7 @@ describe("chat routes", () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
+    await resetDatabase();
     app = Fastify({ logger: false });
     app.decorate("chatService", mockChatService as never);
     app.decorate("eventHub", mockEventHub as never);
@@ -86,6 +115,10 @@ describe("chat routes", () => {
 
   afterEach(async () => {
     await app.close();
+  });
+
+  afterAll(async () => {
+    await prisma.$disconnect();
   });
 
   describe("GET /api/worktrees/:id/threads", () => {
@@ -286,6 +319,85 @@ describe("chat routes", () => {
       });
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/snapshot" });
       expect(res.statusCode).toBe(200);
+    });
+  });
+
+  describe("GET /api/threads/:id/timeline", () => {
+    it("does not leak overlap-unresolved subagent explore events into top-level explore cards", async () => {
+      const suffix = uniqueSuffix();
+      const repository = await prisma.repository.create({
+        data: {
+          name: `repo-${suffix}`,
+          rootPath: `/tmp/routes-chat-${suffix}`,
+          defaultBranch: "main",
+        },
+      });
+      const worktree = await prisma.worktree.create({
+        data: {
+          repositoryId: repository.id,
+          branch: "main",
+          baseBranch: "main",
+          path: repository.rootPath,
+          status: "active",
+        },
+      });
+      const thread = await prisma.chatThread.create({
+        data: {
+          worktreeId: worktree.id,
+          title: "Main Thread",
+        },
+      });
+      const assistantMessage = await prisma.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          seq: 1,
+          role: "assistant",
+          content: "running",
+        },
+      });
+
+      const hub = createEventHub(prisma);
+      await hub.emit(thread.id, "tool.started", { toolName: "Task", toolUseId: "call-1" });
+      await hub.emit(thread.id, "subagent.started", { toolUseId: "sa-1", agentId: "agent-1", agentType: "Explore", description: "First" });
+      await hub.emit(thread.id, "tool.started", { toolName: "Task", toolUseId: "call-2" });
+      await hub.emit(thread.id, "subagent.started", { toolUseId: "sa-2", agentId: "agent-2", agentType: "Explore", description: "Second" });
+      await hub.emit(thread.id, "tool.started", {
+        toolName: "Read",
+        toolUseId: "ambiguous-read",
+        ownershipReason: "unresolved_overlap_no_lineage",
+        activeSubagentToolUseIds: ["sa-1", "sa-2"],
+      });
+      await hub.emit(thread.id, "tool.finished", {
+        toolName: "Read",
+        toolUseId: "ambiguous-read-finished",
+        precedingToolUseIds: ["ambiguous-read"],
+        summary: "Read maybe",
+        ownershipReason: "unresolved_overlap_no_lineage",
+        activeSubagentToolUseIds: ["sa-1", "sa-2"],
+      });
+      await hub.emit(thread.id, "subagent.finished", { toolUseId: "sa-1", lastMessage: "done 1" });
+      await hub.emit(thread.id, "subagent.finished", { toolUseId: "sa-2", lastMessage: "done 2" });
+      await hub.emit(thread.id, "chat.completed", { messageId: assistantMessage.id });
+
+      const realChatService = createChatService({
+        prisma,
+        eventHub: hub,
+        claudeRunner: vi.fn(),
+        modelProviderService: { getActiveProvider: async () => null },
+      });
+      app.chatService = realChatService as never;
+
+      const res = await app.inject({ method: "GET", url: `/api/threads/${thread.id}/timeline` });
+      expect(res.statusCode).toBe(200);
+
+      const timelineItems = res.json().data.timelineItems as Array<Record<string, unknown>>;
+      const exploreItems = timelineItems.filter((item) => item.kind === "explore-activity");
+      const activityItems = timelineItems.filter((item) => item.kind === "activity");
+      const subagentItems = timelineItems.filter((item) => item.kind === "subagent-activity");
+
+      expect(exploreItems).toHaveLength(0);
+      expect(activityItems).toHaveLength(0);
+      expect(subagentItems).toHaveLength(2);
     });
   });
 
