@@ -1,6 +1,6 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { extractExploreActivityGroups } from "../../exploreUtils";
-import { extractSubagentGroups } from "../../subagentUtils";
+import { extractSubagentGroups, getSubagentAttributionReason, isOverlapUnclaimedSubagentEvent } from "../../subagentUtils";
 import {
   countDiffStats,
   getEventMessageId,
@@ -63,8 +63,36 @@ export function processOrphanExploreGroups(
   const unassignedInlineEvents = inlineToolEvents.filter(
     (event) => !assignedToolEventIds.has(event.id),
   );
-  const orphanExploreGroups = extractExploreActivityGroups(unassignedInlineEvents);
+  const quarantinedExploreEvents = unassignedInlineEvents.filter((event) => isOverlapUnclaimedSubagentEvent(event.id));
+  if (quarantinedExploreEvents.length > 0) {
+    pushRenderDebug({
+      source: "timelineOrphans",
+      event: "quarantinedOverlapSubagentExploreEvents",
+      details: {
+        eventIds: quarantinedExploreEvents.map((event) => event.id),
+        reasonCodes: quarantinedExploreEvents.map((event) => ({
+          eventId: event.id,
+          reasonCode: getSubagentAttributionReason(event.id),
+        })),
+      },
+    });
+  }
+  const orphanExploreGroups = extractExploreActivityGroups(
+    unassignedInlineEvents.filter((event) => !isOverlapUnclaimedSubagentEvent(event.id)),
+  );
   for (const group of orphanExploreGroups) {
+    pushRenderDebug({
+      source: "timelineOrphans",
+      event: "orphanExploreGroup",
+      details: {
+        groupId: group.id,
+        status: group.status,
+        eventIds: [...group.eventIds],
+        reasonCodes: [...group.eventIds]
+          .map((eventId) => ({ eventId, reasonCode: getSubagentAttributionReason(eventId) }))
+          .filter((entry) => entry.reasonCode !== null),
+      },
+    });
     group.eventIds.forEach((id) => assignedToolEventIds.add(id));
     const resolvedStatus = group.status === "running" && chatTerminated ? "success" : group.status;
     const resolvedEntries = chatTerminated
@@ -98,6 +126,7 @@ export function processOrphanToolEvents(
 ): { orphanToolEvents: ChatEvent[]; hasIncompleteCoverage: boolean } {
   const orphanToolEvents = inlineToolEvents
     .filter((event) => !assignedToolEventIds.has(event.id))
+    .filter((event) => !isOverlapUnclaimedSubagentEvent(event.id))
     .filter((event) =>
       event.type !== "permission.requested"
       && event.type !== "permission.resolved"
@@ -125,6 +154,7 @@ export function processOrphanToolEvents(
         id: event.id,
         idx: event.idx,
         type: event.type,
+        reasonCode: getSubagentAttributionReason(event.id),
       })),
     },
   });

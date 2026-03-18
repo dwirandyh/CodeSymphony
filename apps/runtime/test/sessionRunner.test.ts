@@ -636,6 +636,9 @@ describe("tool instrumentation", () => {
     expect(onPermissionRequest).toHaveBeenCalledWith(expect.objectContaining({
       requestId: "tool-bash-perm",
       toolName: "Bash",
+      subagentOwnerToolUseId: null,
+      launcherToolUseId: null,
+      ownershipReason: "unresolved_no_lineage",
     }));
   });
 
@@ -1153,6 +1156,1040 @@ describe("tool instrumentation", () => {
       toolUseId: "subagent-agent-launcher",
       description: "Explore from another angle",
     }));
+  });
+
+  it("maps launcher prompts through PreToolUse when canUseTool bridge is absent", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const hooks = options.hooks as {
+          PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const preToolUseHook = hooks.PreToolUse[0]?.hooks[0];
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "call-agent-pretool",
+            tool_name: "Agent",
+            tool_input: { prompt: "PreToolUse launcher prompt" },
+          },
+          "call-agent-pretool",
+        );
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-pretool",
+            agent_type: "Explore",
+            tool_use_id: "subagent-pretool",
+          },
+          "subagent-pretool",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-pretool" };
+      })();
+    });
+
+    const onSubagentStarted = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run pretool bridge test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted,
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onSubagentStarted).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: "agent-pretool",
+      toolUseId: "subagent-pretool",
+      description: "PreToolUse launcher prompt",
+    }));
+  });
+
+  it("does not cross-attribute ambiguous child tool to last active subagent", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Overlap prompt A" }, {
+          toolUseID: "call-task-overlap-a",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+        await canUseTool("Task", { description: "Overlap prompt B" }, {
+          toolUseID: "call-task-overlap-b",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+        };
+        const preToolUseHook = hooks.PreToolUse[0]?.hooks[0];
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-overlap-a",
+            agent_type: "Explore",
+            tool_use_id: "subagent-overlap-a",
+          },
+          "subagent-overlap-a",
+        );
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-overlap-b",
+            agent_type: "Explore",
+            tool_use_id: "subagent-overlap-b",
+          },
+          "subagent-overlap-b",
+        );
+
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-child-ambiguous",
+            tool_name: "Read",
+            tool_input: { file_path: "README.md" },
+          },
+          "tool-child-ambiguous",
+        );
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-child-ambiguous",
+            tool_name: "Read",
+            tool_input: { file_path: "README.md" },
+            tool_response: "README content",
+          },
+          "tool-child-ambiguous",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-overlap-ambiguous" };
+      })();
+    });
+
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run overlap attribution test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted,
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    const startedPayload = onToolStarted.mock.calls
+      .map(([payload]) => payload as {
+        toolUseId: string;
+        parentToolUseId: string | null;
+        subagentOwnerToolUseId?: string | null;
+        launcherToolUseId?: string | null;
+        ownershipReason?: string;
+        ownershipCandidates?: string[];
+      })
+      .find((payload) => payload.toolUseId === "tool-child-ambiguous");
+    expect(startedPayload).toBeDefined();
+    expect(startedPayload?.parentToolUseId).toBeNull();
+    expect(startedPayload?.subagentOwnerToolUseId ?? null).toBeNull();
+    expect(startedPayload?.launcherToolUseId ?? null).toBeNull();
+    expect(startedPayload?.ownershipReason).toBe("unresolved_overlap_no_lineage");
+    expect(startedPayload?.activeSubagentToolUseIds).toEqual(["subagent-overlap-a", "subagent-overlap-b"]);
+
+    const finishedPayload = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        precedingToolUseIds: string[];
+        subagentOwnerToolUseId?: string | null;
+        launcherToolUseId?: string | null;
+        ownershipReason?: string;
+      })
+      .find((payload) => payload.precedingToolUseIds.includes("tool-child-ambiguous"));
+    expect(finishedPayload).toBeDefined();
+    expect(finishedPayload?.subagentOwnerToolUseId ?? null).toBeNull();
+    expect(finishedPayload?.launcherToolUseId ?? null).toBeNull();
+    expect(finishedPayload?.ownershipReason).toBe("unresolved_overlap_no_lineage");
+    expect(finishedPayload?.activeSubagentToolUseIds).toEqual(["subagent-overlap-a", "subagent-overlap-b"]);
+    expect(onToolStarted).not.toHaveBeenCalledWith(expect.objectContaining({
+      toolUseId: "tool-child-ambiguous",
+      parentToolUseId: "subagent-overlap-b",
+    }));
+  });
+
+  it("uses skill-name description hints to resolve ownership under overlap", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Agent", { description: "Explore .vscode directory" }, {
+          toolUseID: "call-agent-vscode",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+        await canUseTool("Agent", { description: "Explore finly-architecture skill" }, {
+          toolUseID: "call-agent-skill",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const preToolUseHook = hooks.PreToolUse[0]?.hooks[0];
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-vscode",
+            agent_type: "Explore",
+            tool_use_id: "subagent-vscode",
+          },
+          "subagent-vscode",
+        );
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-skill",
+            agent_type: "Explore",
+            tool_use_id: "subagent-skill",
+          },
+          "subagent-skill",
+        );
+
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-read-skill-hinted",
+            tool_name: "Read",
+            tool_input: { file_path: "/tmp/worktree/.claude/skills/finly-architecture/SKILL.md" },
+          },
+          "tool-read-skill-hinted",
+        );
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-read-skill-hinted",
+            tool_name: "Read",
+            tool_input: { file_path: "/tmp/worktree/.claude/skills/finly-architecture/SKILL.md" },
+            tool_response: "skill content",
+          },
+          "tool-read-skill-hinted",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-overlap-skill-hinted" };
+      })();
+    });
+
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run overlap skill hint resolution test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted,
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    const startedPayload = onToolStarted.mock.calls
+      .map(([payload]) => payload as {
+        toolUseId: string;
+        parentToolUseId: string | null;
+        subagentOwnerToolUseId?: string | null;
+        launcherToolUseId?: string | null;
+        ownershipReason?: string;
+      })
+      .find((payload) => payload.toolUseId === "tool-read-skill-hinted");
+    expect(startedPayload).toBeDefined();
+    expect(startedPayload?.subagentOwnerToolUseId).toBe("subagent-skill");
+    expect(startedPayload?.launcherToolUseId).toBe("call-agent-skill");
+    expect(startedPayload?.parentToolUseId).toBe("subagent-skill");
+    expect(startedPayload?.ownershipReason).toBe("resolved_subagent_path_hint");
+
+    const finishedPayload = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        precedingToolUseIds: string[];
+        subagentOwnerToolUseId?: string | null;
+        ownershipReason?: string;
+      })
+      .find((payload) => payload.precedingToolUseIds.includes("tool-read-skill-hinted"));
+    expect(finishedPayload).toBeDefined();
+    expect(finishedPayload?.subagentOwnerToolUseId).toBe("subagent-skill");
+    expect(finishedPayload?.ownershipReason).toBe("resolved_tool_use_id");
+  });
+
+  it("uses subagent description hints to resolve ownership under overlap", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Explore .vscode directory contents" }, {
+          toolUseID: "call-task-vscode",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+        await canUseTool("Task", { description: "Explore .claude/skills directory contents" }, {
+          toolUseID: "call-task-skills",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const preToolUseHook = hooks.PreToolUse[0]?.hooks[0];
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-vscode",
+            agent_type: "Explore",
+            tool_use_id: "subagent-vscode",
+          },
+          "subagent-vscode",
+        );
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-skills",
+            agent_type: "Explore",
+            tool_use_id: "subagent-skills",
+          },
+          "subagent-skills",
+        );
+
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-read-vscode-hinted",
+            tool_name: "Read",
+            tool_input: { file_path: "/tmp/worktree/.vscode/settings.json" },
+          },
+          "tool-read-vscode-hinted",
+        );
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-read-vscode-hinted",
+            tool_name: "Read",
+            tool_input: { file_path: "/tmp/worktree/.vscode/settings.json" },
+            tool_response: "settings content",
+          },
+          "tool-read-vscode-hinted",
+        );
+
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-bash-skills-hinted",
+            tool_name: "Bash",
+            tool_input: { command: "ls -la /tmp/worktree/.claude/skills" },
+          },
+          "tool-bash-skills-hinted",
+        );
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-bash-skills-hinted",
+            tool_name: "Bash",
+            tool_input: { command: "ls -la /tmp/worktree/.claude/skills" },
+            tool_response: "skills listing",
+          },
+          "tool-bash-skills-hinted",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-overlap-hinted" };
+      })();
+    });
+
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run overlap hint resolution test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted,
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    const startedPayloads = onToolStarted.mock.calls
+      .map(([payload]) => payload as {
+        toolUseId: string;
+        parentToolUseId: string | null;
+        subagentOwnerToolUseId?: string | null;
+        launcherToolUseId?: string | null;
+        ownershipReason?: string;
+      });
+
+    const readHinted = startedPayloads.find((payload) => payload.toolUseId === "tool-read-vscode-hinted");
+    expect(readHinted).toBeDefined();
+    expect(readHinted?.subagentOwnerToolUseId).toBe("subagent-vscode");
+    expect(readHinted?.launcherToolUseId).toBe("call-task-vscode");
+    expect(readHinted?.parentToolUseId).toBe("subagent-vscode");
+    expect(readHinted?.ownershipReason).toBe("resolved_subagent_path_hint");
+
+    const bashHinted = startedPayloads.find((payload) => payload.toolUseId === "tool-bash-skills-hinted");
+    expect(bashHinted).toBeDefined();
+    expect(bashHinted?.subagentOwnerToolUseId).toBe("subagent-skills");
+    expect(bashHinted?.launcherToolUseId).toBe("call-task-skills");
+    expect(bashHinted?.parentToolUseId).toBe("subagent-skills");
+    expect(bashHinted?.ownershipReason).toBe("resolved_subagent_path_hint");
+
+    const finishedPayloads = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        precedingToolUseIds: string[];
+        subagentOwnerToolUseId?: string | null;
+        launcherToolUseId?: string | null;
+        ownershipReason?: string;
+      });
+
+    const finishedReadHinted = finishedPayloads.find((payload) => payload.precedingToolUseIds.includes("tool-read-vscode-hinted"));
+    expect(finishedReadHinted).toBeDefined();
+    expect(finishedReadHinted?.subagentOwnerToolUseId).toBe("subagent-vscode");
+    expect(finishedReadHinted?.ownershipReason).toBe("resolved_tool_use_id");
+
+    const finishedBashHinted = finishedPayloads.find((payload) => payload.precedingToolUseIds.includes("tool-bash-skills-hinted"));
+    expect(finishedBashHinted).toBeDefined();
+    expect(finishedBashHinted?.subagentOwnerToolUseId).toBe("subagent-skills");
+    expect(finishedBashHinted?.ownershipReason).toBe("resolved_tool_use_id");
+  });
+
+  it("skips empty summary fallback when unresolved tools span overlapping ownership buckets", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Overlap prompt A" }, {
+          toolUseID: "call-task-fallback-a",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+        await canUseTool("Task", { description: "Overlap prompt B" }, {
+          toolUseID: "call-task-fallback-b",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-fallback-a",
+            agent_type: "Explore",
+            tool_use_id: "subagent-fallback-a",
+          },
+          "subagent-fallback-a",
+        );
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-fallback-b",
+            agent_type: "Explore",
+            tool_use_id: "subagent-fallback-b",
+          },
+          "subagent-fallback-b",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-overlap-summary-fallback-skip" };
+        yield {
+          type: "tool_progress",
+          tool_use_id: "tool-unresolved-a",
+          tool_name: "Read",
+          parent_tool_use_id: null,
+          elapsed_time_seconds: 0.2,
+        };
+        yield {
+          type: "tool_progress",
+          tool_use_id: "tool-unresolved-b",
+          tool_name: "Glob",
+          parent_tool_use_id: null,
+          elapsed_time_seconds: 0.3,
+        };
+        yield {
+          type: "tool_use_summary",
+          summary: "Overlap summary with no preceding ids",
+          preceding_tool_use_ids: [],
+        };
+      })();
+    });
+
+    const onToolFinished = vi.fn();
+    const instrumentationEvents: Array<Record<string, unknown>> = [];
+    await runClaudeWithStreaming({
+      prompt: "run overlap summary fallback skip test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: (event) => {
+        instrumentationEvents.push(event as unknown as Record<string, unknown>);
+      },
+    });
+
+    expect(onToolFinished).not.toHaveBeenCalledWith(expect.objectContaining({
+      summary: "Overlap summary with no preceding ids",
+    }));
+
+    const skippedFallback = instrumentationEvents.find(
+      (event) =>
+        event.stage === "anomaly"
+        && typeof event.anomaly === "object"
+        && event.anomaly != null
+        && (event.anomaly as Record<string, unknown>).code === "summary_fallback_skipped_overlap",
+    );
+    expect(skippedFallback).toBeDefined();
+    expect(
+      [...(((skippedFallback?.anomaly as Record<string, unknown>).relatedToolUseIds as string[]) ?? [])].sort(),
+    ).toEqual([
+      "tool-unresolved-a",
+      "tool-unresolved-b",
+    ]);
+  });
+
+  it("uses empty summary fallback when only one unresolved tool remains", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+        await canUseTool("Read", { path: "README.md" }, {
+          toolUseID: "tool-fallback-single",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        yield { type: "system", subtype: "init", session_id: "session-single-summary-fallback" };
+        yield {
+          type: "tool_progress",
+          tool_use_id: "tool-fallback-single",
+          tool_name: "Read",
+          parent_tool_use_id: null,
+          elapsed_time_seconds: 0.2,
+        };
+        yield {
+          type: "tool_use_summary",
+          summary: "Read README.md",
+          preceding_tool_use_ids: [],
+        };
+      })();
+    });
+
+    const onToolFinished = vi.fn();
+    const instrumentationEvents: Array<Record<string, unknown>> = [];
+    await runClaudeWithStreaming({
+      prompt: "run single summary fallback test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: (event) => {
+        instrumentationEvents.push(event as unknown as Record<string, unknown>);
+      },
+    });
+
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      summary: "Read README.md",
+      precedingToolUseIds: ["tool-fallback-single"],
+    }));
+    expect(
+      instrumentationEvents.some(
+        (event) =>
+          event.stage === "anomaly"
+          && typeof event.anomaly === "object"
+          && event.anomaly != null
+          && (event.anomaly as Record<string, unknown>).code === "summary_fallback_skipped_overlap",
+      ),
+    ).toBe(false);
+  });
+
+  it("propagates ownership metadata for summary-finished child tools", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Owned summary prompt" }, {
+          toolUseID: "call-task-owned",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-owned",
+            agent_type: "Explore",
+            tool_use_id: "subagent-owned",
+          },
+          "subagent-owned",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-owned-summary" };
+        yield {
+          type: "tool_progress",
+          tool_use_id: "tool-read-owned",
+          tool_name: "Read",
+          parent_tool_use_id: "call-task-owned",
+          elapsed_time_seconds: 0.2,
+        };
+        yield {
+          type: "tool_use_summary",
+          summary: "Read README.md",
+          preceding_tool_use_ids: ["tool-read-owned"],
+        };
+      })();
+    });
+
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run owned summary test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    const finishedPayload = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        precedingToolUseIds: string[];
+        subagentOwnerToolUseId?: string | null;
+        launcherToolUseId?: string | null;
+        ownershipReason?: string;
+      })
+      .find((payload) => payload.precedingToolUseIds.includes("tool-read-owned"));
+
+    expect(finishedPayload).toBeDefined();
+    expect(finishedPayload?.subagentOwnerToolUseId).toBe("subagent-owned");
+    expect(finishedPayload?.launcherToolUseId).toBe("call-task-owned");
+    expect(finishedPayload?.ownershipReason?.startsWith("resolved_")).toBe(true);
+  });
+
+  it("propagates ownership metadata for synthetic finish path", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Owned synthetic prompt" }, {
+          toolUseID: "call-task-synth",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-synth",
+            agent_type: "Explore",
+            tool_use_id: "subagent-synth",
+          },
+          "subagent-synth",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-owned-synth" };
+        yield {
+          type: "tool_progress",
+          tool_use_id: "tool-read-synth",
+          tool_name: "Read",
+          parent_tool_use_id: "call-task-synth",
+          elapsed_time_seconds: 0.2,
+        };
+      })();
+    });
+
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run owned synthetic test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    const finishedPayload = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        precedingToolUseIds: string[];
+        subagentOwnerToolUseId?: string | null;
+        launcherToolUseId?: string | null;
+        ownershipReason?: string;
+      })
+      .find((payload) => payload.precedingToolUseIds.includes("tool-read-synth"));
+
+    expect(finishedPayload).toBeDefined();
+    expect(finishedPayload?.subagentOwnerToolUseId).toBe("subagent-synth");
+    expect(finishedPayload?.launcherToolUseId).toBe("call-task-synth");
+    expect(finishedPayload?.ownershipReason?.startsWith("resolved_")).toBe(true);
+  });
+
+  it("propagates ownership metadata for failure hook path", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Owned failure prompt" }, {
+          toolUseID: "call-task-failure",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+          PostToolUseFailure: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+        const postToolUseFailureHook = hooks.PostToolUseFailure[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-failure-owned",
+            agent_type: "Explore",
+            tool_use_id: "subagent-failure-owned",
+          },
+          "subagent-failure-owned",
+        );
+
+        await canUseTool("Read", { file_path: "README.md" }, {
+          toolUseID: "tool-read-failure-owned",
+          agentID: "agent-failure-owned",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        await postToolUseFailureHook?.(
+          {
+            hook_event_name: "PostToolUseFailure",
+            tool_use_id: "tool-read-failure-owned",
+            tool_name: "Read",
+            tool_input: { file_path: "README.md" },
+            error: "Read failed",
+          },
+          "tool-read-failure-owned",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-owned-failure" };
+      })();
+    });
+
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run owned failure test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    const finishedPayload = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        precedingToolUseIds: string[];
+        subagentOwnerToolUseId?: string | null;
+        launcherToolUseId?: string | null;
+        ownershipReason?: string;
+      })
+      .find((payload) => payload.precedingToolUseIds.includes("tool-read-failure-owned"));
+
+    expect(finishedPayload).toBeDefined();
+    expect(finishedPayload?.subagentOwnerToolUseId).toBe("subagent-failure-owned");
+    expect(finishedPayload?.launcherToolUseId).toBe("call-task-failure");
+    expect(finishedPayload?.ownershipReason?.startsWith("resolved_")).toBe(true);
+  });
+
+  it("emits response updates with canonical subagent UUID across post-hook and summary paths", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Canonical response prompt" }, {
+          toolUseID: "call-task-canonical",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+        };
+        const subagentStartHook = hooks.SubagentStart[0]?.hooks[0];
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+
+        await subagentStartHook?.(
+          {
+            hook_event_name: "SubagentStart",
+            agent_id: "agent-canonical",
+            agent_type: "Explore",
+            tool_use_id: "subagent-canonical",
+          },
+          "subagent-canonical",
+        );
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "call-task-canonical",
+            tool_name: "Task",
+            tool_input: { description: "Canonical response prompt" },
+            tool_response: "PostToolUse late response",
+          },
+          "call-task-canonical",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-canonical-response" };
+        yield {
+          type: "tool_use_summary",
+          summary: "tool_use_summary late response",
+          preceding_tool_use_ids: ["call-task-canonical"],
+        };
+      })();
+    });
+
+    const onSubagentStopped = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run canonical response update test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped,
+      onToolInstrumentation: () => { },
+    });
+
+    const responseUpdates = onSubagentStopped.mock.calls
+      .map(([payload]) => payload as { toolUseId: string; isResponseUpdate?: boolean })
+      .filter((payload) => payload.isResponseUpdate === true);
+
+    expect(responseUpdates.length).toBeGreaterThan(0);
+    expect(responseUpdates.every((payload) => payload.toolUseId === "subagent-canonical")).toBe(true);
+    expect(responseUpdates.some((payload) => payload.toolUseId === "call-task-canonical")).toBe(false);
+  });
+
+  it("skips unresolved response updates instead of emitting call_* fallback owners", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("Task", { description: "Orphan task response" }, {
+          toolUseID: "call-task-orphan",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+        };
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "call-task-orphan",
+            tool_name: "Task",
+            tool_input: { description: "Orphan task response" },
+            tool_response: "orphan post response",
+          },
+          "call-task-orphan",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-subagent-orphan-response" };
+        yield {
+          type: "tool_use_summary",
+          summary: "orphan summary response",
+          preceding_tool_use_ids: ["call-task-orphan"],
+        };
+      })();
+    });
+
+    const onSubagentStopped = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "run unresolved response update test",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped,
+      onToolInstrumentation: () => { },
+    });
+
+    const responseUpdates = onSubagentStopped.mock.calls
+      .map(([payload]) => payload as { toolUseId: string; isResponseUpdate?: boolean })
+      .filter((payload) => payload.isResponseUpdate === true);
+
+    expect(responseUpdates).toEqual([]);
   });
 });
 

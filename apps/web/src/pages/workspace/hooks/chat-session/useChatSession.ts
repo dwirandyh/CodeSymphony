@@ -174,6 +174,7 @@ export function useChatSession(
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
   const renderDecisionByMessageIdRef = useRef<Map<string, string>>(new Map());
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
+  const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
   const initialThreadAppliedRef = useRef(false);
   const creatingThreadRef = useRef(false);
@@ -364,6 +365,12 @@ export function useChatSession(
     seenEventIdsByThreadRef.current.delete(threadId);
     lastEventIdxByThreadRef.current.delete(threadId);
     loggedOrphanEventIdsByThreadRef.current.delete(threadId);
+    const claimedKeyPrefix = `${threadId}:`;
+    for (const key of claimedContextEventIdsByThreadMessageRef.current.keys()) {
+      if (key.startsWith(claimedKeyPrefix)) {
+        claimedContextEventIdsByThreadMessageRef.current.delete(key);
+      }
+    }
     lastAppliedSnapshotKeyByThreadRef.current.delete(threadId);
   }
 
@@ -628,6 +635,7 @@ export function useChatSession(
     stickyRawFallbackMessageIds: stickyRawFallbackMessageIdsRef.current,
     renderDecisionByMessageId: renderDecisionByMessageIdRef.current,
     loggedOrphanEventIdsByThread: loggedOrphanEventIdsByThreadRef.current,
+    claimedContextEventIdsByThreadMessage: claimedContextEventIdsByThreadMessageRef.current,
   }, {
     semanticHydrationInProgress: false,
     disabled: !timelineEnabled,

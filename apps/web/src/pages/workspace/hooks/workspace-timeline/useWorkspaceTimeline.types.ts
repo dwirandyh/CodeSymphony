@@ -7,6 +7,7 @@ export type TimelineRefs = {
   stickyRawFallbackMessageIds: Set<string>;
   renderDecisionByMessageId: Map<string, string>;
   loggedOrphanEventIdsByThread: Map<string, Set<string>>;
+  claimedContextEventIdsByThreadMessage?: Map<string, Set<string>>;
 };
 
 export type WorkspaceTimelineResult = {

@@ -16,6 +16,24 @@ export type ClaudeRunnerResult = {
 
 export type PlanDetectionSource = "claude_plan_file" | "streaming_fallback";
 
+export type ClaudeOwnershipReason =
+  | "resolved_tool_use_id"
+  | "resolved_parent_tool_use_id"
+  | "resolved_agent_id"
+  | "resolved_single_active_fallback"
+  | "resolved_subagent_path_hint"
+  | "unresolved_ambiguous_candidates"
+  | "unresolved_overlap_no_lineage"
+  | "unresolved_no_lineage";
+
+export type ClaudeOwnershipDiagnostics = {
+  subagentOwnerToolUseId: string | null;
+  launcherToolUseId: string | null;
+  ownershipReason: ClaudeOwnershipReason;
+  ownershipCandidates?: string[];
+  activeSubagentToolUseIds?: string[];
+};
+
 export type ClaudeToolInstrumentationStage = "requested" | "decision" | "started" | "finished" | "failed" | "anomaly";
 
 export type ClaudeToolInstrumentationDecision = "allow" | "deny" | "auto_allow" | "plan_deny";
@@ -23,7 +41,8 @@ export type ClaudeToolInstrumentationDecision = "allow" | "deny" | "auto_allow" 
 export type ClaudeToolInstrumentationAnomalyCode =
   | "requested_not_started"
   | "started_not_finished"
-  | "summary_unknown_tool";
+  | "summary_unknown_tool"
+  | "summary_fallback_skipped_overlap";
 
 export type ClaudeToolInstrumentationEvent = {
   stage: ClaudeToolInstrumentationStage;
@@ -81,6 +100,11 @@ export type ClaudeRunner = (args: {
     toolName: string;
     toolUseId: string;
     parentToolUseId: string | null;
+    subagentOwnerToolUseId?: string | null;
+    launcherToolUseId?: string | null;
+    ownershipReason?: ClaudeOwnershipReason;
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
     command?: string;
     searchParams?: string;
     editTarget?: string;
@@ -91,11 +115,21 @@ export type ClaudeRunner = (args: {
     toolName: string;
     toolUseId: string;
     parentToolUseId: string | null;
+    subagentOwnerToolUseId?: string | null;
+    launcherToolUseId?: string | null;
+    ownershipReason?: ClaudeOwnershipReason;
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
     elapsedTimeSeconds: number;
   }) => Promise<void> | void;
   onToolFinished: (payload: {
     summary: string;
     precedingToolUseIds: string[];
+    subagentOwnerToolUseId?: string | null;
+    launcherToolUseId?: string | null;
+    ownershipReason?: ClaudeOwnershipReason;
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
     command?: string;
     searchParams?: string;
     editTarget?: string;
@@ -125,6 +159,9 @@ export type ClaudeRunner = (args: {
     suggestions: unknown[] | null;
     subagentOwnerToolUseId: string | null;
     launcherToolUseId: string | null;
+    ownershipReason?: ClaudeOwnershipReason;
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
   }) => Promise<{ decision: PermissionDecision; message?: string }> | { decision: PermissionDecision; message?: string };
   onPlanFileDetected: (payload: {
     filePath: string;

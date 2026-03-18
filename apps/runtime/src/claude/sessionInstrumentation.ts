@@ -1,5 +1,9 @@
 import type { ChatMode } from "@codesymphony/shared-types";
-import type { ClaudeToolInstrumentationDecision, ClaudeToolInstrumentationEvent } from "../types.js";
+import type {
+  ClaudeOwnershipDiagnostics,
+  ClaudeToolInstrumentationDecision,
+  ClaudeToolInstrumentationEvent,
+} from "../types.js";
 
 import { sanitizeForLog, truncateForPreview, toIso } from "./sanitize.js";
 import {
@@ -38,6 +42,7 @@ export type SessionMaps = {
   subagentResponseByUseId: Map<string, string>;
   sessionPersistedPlanFiles: Set<string>;
   activeSubagentToolUseIds: string[];
+  ownershipDebugLogCache: Set<string>;
 };
 
 export function createEmitInstrumentation(
@@ -86,6 +91,11 @@ export function createMarkStarted(
     toolName: string;
     toolUseId: string;
     parentToolUseId: string | null;
+    subagentOwnerToolUseId?: string | null;
+    launcherToolUseId?: string | null;
+    ownershipReason?: ClaudeOwnershipDiagnostics["ownershipReason"];
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
     command?: string;
     searchParams?: string;
     editTarget?: string;
@@ -100,6 +110,7 @@ export function createMarkStarted(
     toolUseId: string,
     toolName: string,
     parentToolUseId: string | null,
+    ownership: ClaudeOwnershipDiagnostics,
     startSource: "sdk.hook.pre_tool_use" | "sdk.stream.tool_progress",
     metadata?: ToolMetadata,
   ): Promise<void> {
@@ -114,6 +125,15 @@ export function createMarkStarted(
       toolName,
       toolUseId,
       parentToolUseId,
+      subagentOwnerToolUseId: ownership.subagentOwnerToolUseId,
+      launcherToolUseId: ownership.launcherToolUseId,
+      ownershipReason: ownership.ownershipReason,
+      ...(ownership.ownershipCandidates && ownership.ownershipCandidates.length > 0
+        ? { ownershipCandidates: ownership.ownershipCandidates }
+        : {}),
+      ...(ownership.activeSubagentToolUseIds && ownership.activeSubagentToolUseIds.length > 0
+        ? { activeSubagentToolUseIds: ownership.activeSubagentToolUseIds }
+        : {}),
       ...(metadata?.editTarget
         ? {
           editTarget: metadata.editTarget,

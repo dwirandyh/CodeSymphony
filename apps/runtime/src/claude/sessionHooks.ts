@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 
-import type { ClaudeToolInstrumentationDecision, ClaudeToolInstrumentationEvent } from "../types.js";
+import type {
+  ClaudeOwnershipDiagnostics,
+  ClaudeOwnershipReason,
+  ClaudeToolInstrumentationDecision,
+  ClaudeToolInstrumentationEvent,
+} from "../types.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 
 import { sanitizeForLog } from "./sanitize.js";
@@ -35,15 +40,279 @@ function isSubagentLauncherToolName(toolName: string | undefined | null): boolea
   return normalized === "task" || normalized === "agent";
 }
 
-type SubagentOwnerResolution = {
-  subagentOwnerToolUseId: string | null;
-  launcherToolUseId: string | null;
-};
+type SubagentOwnerResolution = ClaudeOwnershipDiagnostics;
 
 type SubagentIdentity = {
   subagentToolUseId: string | null;
   taskToolUseId: string | null;
 };
+
+type SubagentOwnerResolveOptions = {
+  allowSingleActiveFallback?: boolean;
+};
+
+function ownershipReasonFromSource(source: string): ClaudeOwnershipReason {
+  if (source === "toolUseId") {
+    return "resolved_tool_use_id";
+  }
+  if (source === "parentToolUseId") {
+    return "resolved_parent_tool_use_id";
+  }
+  if (source === "agentId") {
+    return "resolved_agent_id";
+  }
+  if (source === "singleActiveFallback") {
+    return "resolved_single_active_fallback";
+  }
+  if (source === "subagentPathHint") {
+    return "resolved_subagent_path_hint";
+  }
+  return "unresolved_no_lineage";
+}
+
+function withoutDuplicateStrings(values: Array<string | null | undefined>): string[] {
+  const set = new Set<string>();
+  for (const value of values) {
+    if (!value) {
+      continue;
+    }
+    set.add(value);
+  }
+  return [...set];
+}
+
+export function isReadOrSearchToolName(toolName: string): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  if (normalized === "read") {
+    return true;
+  }
+
+  return /^(glob|grep|search|find|list|scan|ls)$/.test(normalized);
+}
+
+function extractSubagentPathHintSourceFromInput(input: Record<string, unknown> | undefined): string {
+  if (!input) {
+    return "";
+  }
+
+  return String(
+    input.description
+    ?? input.prompt
+    ?? input.task
+    ?? input.Task
+    ?? "",
+  );
+}
+
+function normalizeOwnershipHintText(value: string): string {
+  return value.trim().replace(/[\\]+/g, "/").toLowerCase();
+}
+
+function extractDerivedSkillPathHints(source: string): string[] {
+  const hints = new Set<string>();
+  const normalizedSource = normalizeOwnershipHintText(source);
+  const skillSlugPattern = /\b([a-z0-9][a-z0-9-]{1,})\s+skill\b/g;
+
+  for (const match of normalizedSource.matchAll(skillSlugPattern)) {
+    const slug = match[1]?.trim();
+    if (!slug) {
+      continue;
+    }
+
+    hints.add(`.claude/skills/${slug}`);
+    hints.add(`claude/skills/${slug}`);
+    hints.add(`skills/${slug}`);
+    hints.add(`${slug}/skill.md`);
+  }
+
+  return [...hints];
+}
+
+function extractOwnershipPathHints(source: string): string[] {
+  const normalizedSource = source.trim();
+  if (normalizedSource.length === 0) {
+    return [];
+  }
+
+  const hints = new Set<string>();
+  for (const rawToken of normalizedSource.split(/\s+/)) {
+    const token = rawToken
+      .replace(/^[\("'`]+/, "")
+      .replace(/[\)\]"'`.,:;!?]+$/g, "")
+      .trim();
+    if (token.length < 2 || token === "." || token === "..") {
+      continue;
+    }
+
+    if (!token.includes("/") && !token.startsWith(".")) {
+      continue;
+    }
+
+    hints.add(normalizeOwnershipHintText(token));
+  }
+
+  for (const derivedHint of extractDerivedSkillPathHints(normalizedSource)) {
+    hints.add(derivedHint);
+  }
+
+  return [...hints];
+}
+
+function isPathHintEligibleToolName(toolName: string): boolean {
+  if (isReadOrSearchToolName(toolName)) {
+    return true;
+  }
+
+  return isBashTool(toolName);
+}
+
+function resolveOwnerCandidatesFromPathHint(
+  maps: SessionMaps,
+  toolUseId: string | null,
+): string[] {
+  if (!toolUseId) {
+    return [];
+  }
+
+  const metadata = maps.toolMetadataByUseId.get(toolUseId);
+  const requestedToolName = maps.requestedToolByUseId.get(toolUseId)?.toolName;
+  const toolName = metadata?.toolName ?? requestedToolName ?? "";
+  if (!toolName || !isPathHintEligibleToolName(toolName)) {
+    return [];
+  }
+
+  const hintTarget = normalizeOwnershipHintText(
+    [metadata?.command, metadata?.readTarget, metadata?.searchParams]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join(" "),
+  );
+  if (hintTarget.length === 0) {
+    return [];
+  }
+
+  const candidates: string[] = [];
+  for (const subagentToolUseId of maps.activeSubagentToolUseIds) {
+    const subagentInput = maps.subagentToolInputByUseId.get(subagentToolUseId);
+    const description = extractSubagentPathHintSourceFromInput(subagentInput);
+    const hints = extractOwnershipPathHints(description);
+    if (hints.length === 0) {
+      continue;
+    }
+
+    if (hints.some((hint) => hintTarget.includes(hint))) {
+      candidates.push(subagentToolUseId);
+    }
+  }
+
+  return withoutDuplicateStrings(candidates);
+}
+
+function maybeLogOwnershipDiagnostics(
+  maps: SessionMaps,
+  params: { toolUseId?: string | null; parentToolUseId?: string | null; agentId?: string | null },
+  resolution: SubagentOwnerResolution,
+): void {
+  const normalizedToolUseId = normalizeToolUseId(params.toolUseId);
+  const normalizedParentToolUseId = normalizeToolUseId(params.parentToolUseId);
+  const normalizedAgentId = normalizeToolUseId(params.agentId);
+  const requested = normalizedToolUseId ? maps.requestedToolByUseId.get(normalizedToolUseId) : undefined;
+  const requestedToolName = requested?.toolName ?? maps.toolMetadataByUseId.get(normalizedToolUseId ?? "")?.toolName;
+  const targetToolName = typeof requestedToolName === "string" ? requestedToolName : "";
+
+  const cacheKey = JSON.stringify({
+    reason: resolution.ownershipReason,
+    toolUseId: normalizedToolUseId,
+    parentToolUseId: normalizedParentToolUseId,
+    agentId: normalizedAgentId,
+    toolName: targetToolName,
+    candidates: resolution.ownershipCandidates ?? [],
+  });
+  if (maps.ownershipDebugLogCache.has(cacheKey)) {
+    return;
+  }
+  maps.ownershipDebugLogCache.add(cacheKey);
+
+  if (resolution.ownershipReason === "unresolved_ambiguous_candidates") {
+    logSubagentDebug("subagent.ownerResolution.ambiguousRuntime", {
+      toolUseId: normalizedToolUseId,
+      parentToolUseId: normalizedParentToolUseId,
+      agentId: normalizedAgentId,
+      toolName: targetToolName || null,
+      ownershipCandidates: resolution.ownershipCandidates ?? [],
+      activeSubagentToolUseIds: resolution.activeSubagentToolUseIds ?? [],
+    });
+    return;
+  }
+
+  if (
+    (resolution.ownershipReason === "unresolved_no_lineage"
+      || resolution.ownershipReason === "unresolved_overlap_no_lineage")
+    && targetToolName
+    && isReadOrSearchToolName(targetToolName)
+  ) {
+    const subagentHintDiagnostics = (resolution.activeSubagentToolUseIds ?? []).map((subagentToolUseId) => {
+      const subagentInput = maps.subagentToolInputByUseId.get(subagentToolUseId);
+      const description = extractSubagentPathHintSourceFromInput(subagentInput);
+      return {
+        subagentToolUseId,
+        launcherToolUseId: resolveLauncherForSubagentOwner(maps, subagentToolUseId),
+        description,
+        extractedHints: extractOwnershipPathHints(description),
+      };
+    });
+    logSubagentDebug("subagent.ownerResolution.unresolvedReadSearch", {
+      toolUseId: normalizedToolUseId,
+      parentToolUseId: normalizedParentToolUseId,
+      agentId: normalizedAgentId,
+      toolName: targetToolName,
+      ownershipCandidates: resolution.ownershipCandidates ?? [],
+      ownershipReason: resolution.ownershipReason,
+      activeSubagentToolUseIds: resolution.activeSubagentToolUseIds ?? [],
+      activeLauncherToolUseIds: (resolution.activeSubagentToolUseIds ?? [])
+        .map((subagentToolUseId) => resolveLauncherForSubagentOwner(maps, subagentToolUseId))
+        .filter((launcherToolUseId): launcherToolUseId is string => typeof launcherToolUseId === "string" && launcherToolUseId.length > 0),
+      pathHintCandidates: normalizedToolUseId
+        ? resolveOwnerCandidatesFromPathHint(maps, normalizedToolUseId)
+        : [],
+      subagentHintDiagnostics,
+    });
+  }
+}
+
+function maybeLogOwnershipTransition(
+  maps: SessionMaps,
+  toolUseId: string | null | undefined,
+  resolution: SubagentOwnerResolution,
+  context: string,
+): void {
+  const normalizedToolUseId = normalizeToolUseId(toolUseId);
+  if (!normalizedToolUseId || !resolution.subagentOwnerToolUseId) {
+    return;
+  }
+
+  const previous = maps.requestedToolByUseId.get(normalizedToolUseId)?.parentToolUseId
+    ?? maps.subagentOwnerToolUseIdByToolUseId.get(normalizedToolUseId)
+    ?? null;
+  if (previous === resolution.subagentOwnerToolUseId) {
+    return;
+  }
+
+  const cacheKey = `transition:${context}:${normalizedToolUseId}:${previous ?? "null"}:${resolution.subagentOwnerToolUseId}`;
+  if (maps.ownershipDebugLogCache.has(cacheKey)) {
+    return;
+  }
+  maps.ownershipDebugLogCache.add(cacheKey);
+
+  logSubagentDebug("subagent.ownerResolution.transition", {
+    context,
+    toolUseId: normalizedToolUseId,
+    previousSubagentOwnerToolUseId: previous,
+    nextSubagentOwnerToolUseId: resolution.subagentOwnerToolUseId,
+    launcherToolUseId: resolution.launcherToolUseId,
+    ownershipReason: resolution.ownershipReason,
+    ownershipCandidates: resolution.ownershipCandidates ?? [],
+  });
+}
 
 function normalizeToolUseId(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
@@ -107,6 +376,7 @@ export function resolveCanonicalSubagentOwner(
     parentToolUseId?: string | null;
     agentId?: string | null;
   },
+  options: SubagentOwnerResolveOptions = {},
 ): SubagentOwnerResolution {
   const rawToolUseId = normalizeToolUseId(params.toolUseId);
   const rawParentToolUseId = normalizeToolUseId(params.parentToolUseId);
@@ -134,45 +404,80 @@ export function resolveCanonicalSubagentOwner(
     addOwnerCandidate(resolveSubagentOwnerFromCandidate(maps, mappedSubagentToolUseId), "agentId");
   }
 
-  if (candidates.length === 0 && maps.activeSubagentToolUseIds.length === 1) {
+  const allowSingleActiveFallback = options.allowSingleActiveFallback ?? true;
+  if (allowSingleActiveFallback && candidates.length === 0 && maps.activeSubagentToolUseIds.length === 1) {
     const onlyActiveOwner = maps.activeSubagentToolUseIds[0] ?? null;
-    addOwnerCandidate(onlyActiveOwner, "singleActiveFallback");
+    addOwnerCandidate(resolveSubagentOwnerFromCandidate(maps, onlyActiveOwner), "singleActiveFallback");
   }
 
+  if (candidates.length === 0 && maps.activeSubagentToolUseIds.length > 1) {
+    const hintedOwners = resolveOwnerCandidatesFromPathHint(maps, rawToolUseId);
+    for (const hintedOwner of hintedOwners) {
+      addOwnerCandidate(resolveSubagentOwnerFromCandidate(maps, hintedOwner), "subagentPathHint");
+    }
+  }
+
+  const ownershipCandidates = withoutDuplicateStrings(candidates.map((candidate) => candidate.owner));
+
   if (candidates.length === 0) {
-    return {
+    const unresolvedNoLineage: SubagentOwnerResolution = {
       subagentOwnerToolUseId: null,
       launcherToolUseId: null,
+      ownershipReason: maps.activeSubagentToolUseIds.length > 1
+        ? "unresolved_overlap_no_lineage"
+        : "unresolved_no_lineage",
+      ...(maps.activeSubagentToolUseIds.length > 1
+        ? { activeSubagentToolUseIds: [...maps.activeSubagentToolUseIds] }
+        : {}),
     };
+    maybeLogOwnershipDiagnostics(maps, params, unresolvedNoLineage);
+    return unresolvedNoLineage;
   }
 
   const uniqueOwners = new Set(candidates.map((candidate) => candidate.owner));
   if (uniqueOwners.size > 1) {
+    const ambiguousResolution: SubagentOwnerResolution = {
+      subagentOwnerToolUseId: null,
+      launcherToolUseId: null,
+      ownershipReason: "unresolved_ambiguous_candidates",
+      ownershipCandidates,
+      activeSubagentToolUseIds: [...maps.activeSubagentToolUseIds],
+    };
     logSubagentDebug("subagent.ownerResolution.ambiguous", {
       toolUseId: rawToolUseId,
       parentToolUseId: rawParentToolUseId,
       agentId: rawAgentId,
       candidates,
       activeSubagentToolUseIds: [...maps.activeSubagentToolUseIds],
+      activeLauncherToolUseIds: maps.activeSubagentToolUseIds
+        .map((subagentToolUseId) => resolveLauncherForSubagentOwner(maps, subagentToolUseId))
+        .filter((launcherToolUseId): launcherToolUseId is string => typeof launcherToolUseId === "string" && launcherToolUseId.length > 0),
+      ownershipReason: ambiguousResolution.ownershipReason,
+      ownershipCandidates: ambiguousResolution.ownershipCandidates,
     });
-    return {
-      subagentOwnerToolUseId: null,
-      launcherToolUseId: null,
-    };
+    maybeLogOwnershipDiagnostics(maps, params, ambiguousResolution);
+    return ambiguousResolution;
   }
 
   const resolved = candidates[0];
   if (!resolved) {
-    return {
+    const unresolvedNoLineage: SubagentOwnerResolution = {
       subagentOwnerToolUseId: null,
       launcherToolUseId: null,
+      ownershipReason: "unresolved_no_lineage",
     };
+    maybeLogOwnershipDiagnostics(maps, params, unresolvedNoLineage);
+    return unresolvedNoLineage;
   }
 
-  return {
+  const resolvedOwner: SubagentOwnerResolution = {
     subagentOwnerToolUseId: resolved.owner,
     launcherToolUseId: resolved.launcher,
+    ownershipReason: ownershipReasonFromSource(resolved.source),
+    ...(ownershipCandidates.length > 1 ? { ownershipCandidates } : {}),
   };
+  maybeLogOwnershipDiagnostics(maps, params, resolvedOwner);
+  return resolvedOwner;
 }
 
 export function resolveSubagentIdentity(
@@ -182,8 +487,9 @@ export function resolveSubagentIdentity(
     parentToolUseId?: string | null;
     agentId?: string | null;
   },
+  options: SubagentOwnerResolveOptions = {},
 ): SubagentIdentity {
-  const owner = resolveCanonicalSubagentOwner(maps, params);
+  const owner = resolveCanonicalSubagentOwner(maps, params, options);
   if (!owner.subagentOwnerToolUseId) {
     return {
       subagentToolUseId: null,
@@ -253,6 +559,11 @@ export type HookCallbacks = {
     toolName: string;
     toolUseId: string;
     parentToolUseId: string | null;
+    subagentOwnerToolUseId?: string | null;
+    launcherToolUseId?: string | null;
+    ownershipReason?: ClaudeOwnershipReason;
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
     command?: string;
     searchParams?: string;
     editTarget?: string;
@@ -263,6 +574,11 @@ export type HookCallbacks = {
     summary: string;
     precedingToolUseIds: string[];
     subagentResponse?: string;
+    subagentOwnerToolUseId?: string | null;
+    launcherToolUseId?: string | null;
+    ownershipReason?: ClaudeOwnershipReason;
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
     command?: string;
     searchParams?: string;
     editTarget?: string;
@@ -292,6 +608,9 @@ export type HookCallbacks = {
     suggestions: unknown[] | null;
     subagentOwnerToolUseId: string | null;
     launcherToolUseId: string | null;
+    ownershipReason?: ClaudeOwnershipReason;
+    ownershipCandidates?: string[];
+    activeSubagentToolUseIds?: string[];
   }) => Promise<{ decision: string; message?: string }> | { decision: string; message?: string };
   onPlanFileDetected: (payload: {
     filePath: string;
@@ -361,16 +680,21 @@ export function createCanUseTool(
       isBash,
     });
     maps.subagentToolInputByUseId.set(toolUseId, input);
-    if (isSubagentLauncherToolName(toolName)) {
+    if (isSubagentLauncherToolName(toolName) && !maps.pendingSubagentTaskToolUseIds.includes(toolUseId)) {
       maps.pendingSubagentTaskToolUseIds.push(toolUseId);
     }
 
-    const canonicalRequestOwner = resolveCanonicalSubagentOwner(maps, {
-      toolUseId,
-      parentToolUseId: null,
-      agentId: options.agentID ?? null,
-    });
+    const canonicalRequestOwner = resolveCanonicalSubagentOwner(
+      maps,
+      {
+        toolUseId,
+        parentToolUseId: null,
+        agentId: options.agentID ?? null,
+      },
+      { allowSingleActiveFallback: false },
+    );
     if (canonicalRequestOwner.subagentOwnerToolUseId) {
+      maybeLogOwnershipTransition(maps, toolUseId, canonicalRequestOwner, "canUseTool.requested");
       rememberSubagentOwner(maps, toolUseId, canonicalRequestOwner.subagentOwnerToolUseId);
       if (canonicalRequestOwner.launcherToolUseId) {
         rememberSubagentTaskBridge(
@@ -381,8 +705,7 @@ export function createCanUseTool(
       }
     }
 
-    const activeSubagentToolUseId = maps.activeSubagentToolUseIds[maps.activeSubagentToolUseIds.length - 1] ?? null;
-    const permissionParentToolUseId = canonicalRequestOwner.subagentOwnerToolUseId ?? activeSubagentToolUseId;
+    const permissionParentToolUseId = canonicalRequestOwner.subagentOwnerToolUseId ?? null;
     maps.requestedToolByUseId.set(toolUseId, {
       toolName,
       parentToolUseId: permissionParentToolUseId,
@@ -499,13 +822,18 @@ export function createCanUseTool(
       };
     }
 
-    const permissionOwner = resolveCanonicalSubagentOwner(maps, {
-      toolUseId,
-      parentToolUseId: permissionParentToolUseId,
-      agentId: options.agentID ?? null,
-    });
+    const permissionOwner = resolveCanonicalSubagentOwner(
+      maps,
+      {
+        toolUseId,
+        parentToolUseId: permissionParentToolUseId,
+        agentId: options.agentID ?? null,
+      },
+      { allowSingleActiveFallback: false },
+    );
     const resolvedPermissionParentToolUseId = permissionOwner.subagentOwnerToolUseId ?? permissionParentToolUseId;
     if (permissionOwner.subagentOwnerToolUseId) {
+      maybeLogOwnershipTransition(maps, toolUseId, permissionOwner, "canUseTool.permissionRequest");
       rememberSubagentOwner(maps, toolUseId, permissionOwner.subagentOwnerToolUseId);
       if (permissionOwner.launcherToolUseId) {
         rememberSubagentTaskBridge(
@@ -525,6 +853,13 @@ export function createCanUseTool(
       suggestions: options.suggestions ?? null,
       subagentOwnerToolUseId: permissionOwner.subagentOwnerToolUseId,
       launcherToolUseId: permissionOwner.launcherToolUseId,
+      ownershipReason: permissionOwner.ownershipReason,
+      ...(permissionOwner.ownershipCandidates && permissionOwner.ownershipCandidates.length > 0
+        ? { ownershipCandidates: permissionOwner.ownershipCandidates }
+        : {}),
+      ...(permissionOwner.activeSubagentToolUseIds && permissionOwner.activeSubagentToolUseIds.length > 0
+        ? { activeSubagentToolUseIds: permissionOwner.activeSubagentToolUseIds }
+        : {}),
     });
 
     if (decision.decision === "allow") {
@@ -561,6 +896,7 @@ export function createPreToolUseHook(
     toolUseId: string,
     toolName: string,
     parentToolUseId: string | null,
+    ownership: ClaudeOwnershipDiagnostics,
     startSource: "sdk.hook.pre_tool_use" | "sdk.stream.tool_progress",
     metadata?: ToolMetadata,
   ) => Promise<void>,
@@ -577,34 +913,50 @@ export function createPreToolUseHook(
     }
 
     const command = commandFromUnknownToolInput(hookInput.tool_input);
-    const resolvedIdentity = resolveSubagentIdentity(maps, {
-      toolUseId: hookToolUseId,
-      parentToolUseId: null,
-      agentId: null,
-    });
-    const inferredParentToolUseId = resolvedIdentity.subagentToolUseId
-      ?? maps.activeSubagentToolUseIds[maps.activeSubagentToolUseIds.length - 1]
-      ?? null;
-    if (resolvedIdentity.subagentToolUseId) {
-      rememberSubagentOwner(maps, hookToolUseId, resolvedIdentity.subagentToolUseId);
-    }
+    const hookToolName = hookInput.tool_name as string;
     maps.toolMetadataByUseId.set(hookToolUseId, {
-      toolName: hookInput.tool_name as string,
+      toolName: hookToolName,
       command,
-      readTarget: readTargetFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
-      searchParams: searchParamsFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
-      isBash: isBashTool(hookInput.tool_name as string),
+      readTarget: readTargetFromUnknownToolInput(hookToolName, hookInput.tool_input),
+      searchParams: searchParamsFromUnknownToolInput(hookToolName, hookInput.tool_input),
+      isBash: isBashTool(hookToolName),
     });
+
+    const ownership = resolveCanonicalSubagentOwner(
+      maps,
+      {
+        toolUseId: hookToolUseId,
+        parentToolUseId: null,
+        agentId: null,
+      },
+      { allowSingleActiveFallback: false },
+    );
+    const inferredParentToolUseId = ownership.subagentOwnerToolUseId ?? null;
+    if (ownership.subagentOwnerToolUseId) {
+      maybeLogOwnershipTransition(maps, hookToolUseId, ownership, "preToolUse");
+      rememberSubagentOwner(maps, hookToolUseId, ownership.subagentOwnerToolUseId);
+    }
     maps.requestedToolByUseId.set(hookToolUseId, {
-      toolName: hookInput.tool_name as string,
+      toolName: hookToolName,
       parentToolUseId: inferredParentToolUseId,
       requestedAtMs: Date.now(),
     });
 
+    if (isSubagentLauncherToolName(hookToolName)) {
+      const hookToolInput = hookInput.tool_input as Record<string, unknown>;
+      if (hookToolInput && !maps.subagentToolInputByUseId.has(hookToolUseId)) {
+        maps.subagentToolInputByUseId.set(hookToolUseId, hookToolInput);
+      }
+      if (!maps.pendingSubagentTaskToolUseIds.includes(hookToolUseId)) {
+        maps.pendingSubagentTaskToolUseIds.push(hookToolUseId);
+      }
+    }
+
     await markStarted(
       hookToolUseId,
-      hookInput.tool_name as string,
+      hookToolName,
       inferredParentToolUseId,
+      ownership,
       "sdk.hook.pre_tool_use",
       maps.toolMetadataByUseId.get(hookToolUseId),
     );
@@ -642,6 +994,24 @@ export function createPostToolUseHook(
       }
     }
 
+    const owner = resolveCanonicalSubagentOwner(
+      maps,
+      {
+        toolUseId: hookToolUseId,
+        parentToolUseId: null,
+        agentId: null,
+      },
+      { allowSingleActiveFallback: false },
+    );
+    const ownerParentToolUseId = owner.subagentOwnerToolUseId ?? null;
+    if (owner.subagentOwnerToolUseId) {
+      maybeLogOwnershipTransition(maps, hookToolUseId, owner, "postToolUse");
+      rememberSubagentOwner(maps, hookToolUseId, owner.subagentOwnerToolUseId);
+      if (owner.launcherToolUseId) {
+        rememberSubagentTaskBridge(maps, owner.launcherToolUseId, owner.subagentOwnerToolUseId);
+      }
+    }
+
     if (!maps.finishedToolUseIds.has(hookToolUseId)) {
       const finishedAtMs = Date.now();
       const completionSummary = completionSummaryFromMetadata(metadata, hookInput.tool_input);
@@ -653,6 +1023,15 @@ export function createPostToolUseHook(
           bashResult ?? undefined,
           maps.subagentResponseByUseId.get(hookToolUseId),
         ),
+        subagentOwnerToolUseId: owner.subagentOwnerToolUseId,
+        launcherToolUseId: owner.launcherToolUseId,
+        ownershipReason: owner.ownershipReason,
+        ...(owner.ownershipCandidates && owner.ownershipCandidates.length > 0
+          ? { ownershipCandidates: owner.ownershipCandidates }
+          : {}),
+        ...(owner.activeSubagentToolUseIds && owner.activeSubagentToolUseIds.length > 0
+          ? { activeSubagentToolUseIds: owner.activeSubagentToolUseIds }
+          : {}),
         ...(metadata.editTarget ? { toolInput: hookInput.tool_input as Record<string, unknown> } : {}),
       });
       const { timing, preview } = buildFinishedTimingPreview(
@@ -662,7 +1041,7 @@ export function createPostToolUseHook(
         stage: "finished",
         toolUseId: hookToolUseId,
         toolName: metadata.toolName,
-        parentToolUseId: null,
+        parentToolUseId: ownerParentToolUseId,
         summary: completionSummary,
         threadContext: instrumentContext,
         timing,
@@ -673,28 +1052,51 @@ export function createPostToolUseHook(
 
     const capturedResponse = maps.subagentResponseByUseId.get(hookToolUseId);
     if (capturedResponse) {
-      const subagentIdentity = resolveSubagentIdentity(maps, {
-        toolUseId: hookToolUseId,
-        parentToolUseId: null,
-        agentId: null,
-      });
-      const responseOwnerToolUseId = subagentIdentity.subagentToolUseId ?? hookToolUseId;
-      if (subagentIdentity.subagentToolUseId) {
-        rememberSubagentOwner(maps, hookToolUseId, subagentIdentity.subagentToolUseId);
+      const subagentIdentity = resolveSubagentIdentity(
+        maps,
+        {
+          toolUseId: hookToolUseId,
+          parentToolUseId: null,
+          agentId: null,
+        },
+        { allowSingleActiveFallback: false },
+      );
+      const responseOwnerToolUseId = subagentIdentity.subagentToolUseId;
+      if (responseOwnerToolUseId) {
+        maybeLogOwnershipTransition(
+          maps,
+          hookToolUseId,
+          {
+            subagentOwnerToolUseId: responseOwnerToolUseId,
+            launcherToolUseId: resolveLauncherForSubagentOwner(maps, responseOwnerToolUseId),
+            ownershipReason: "resolved_tool_use_id",
+          },
+          "postToolUse.lateResponseUpdate",
+        );
+        rememberSubagentOwner(maps, hookToolUseId, responseOwnerToolUseId);
+        logSubagentDebug("subagent.postToolUse.lateResponseUpdate", {
+          toolUseId: hookToolUseId,
+          responseOwnerToolUseId,
+          responseLength: capturedResponse.length,
+          emitted: true,
+        });
+        await callbacks.onSubagentStopped({
+          agentId: "",
+          agentType: "",
+          toolUseId: responseOwnerToolUseId,
+          description: "",
+          lastMessage: capturedResponse,
+          isResponseUpdate: true,
+        });
+      } else {
+        logSubagentDebug("subagent.postToolUse.lateResponseUpdate", {
+          toolUseId: hookToolUseId,
+          responseOwnerToolUseId: null,
+          responseLength: capturedResponse.length,
+          emitted: false,
+          reason: "owner_unresolved",
+        });
       }
-      logSubagentDebug("subagent.postToolUse.lateResponseUpdate", {
-        toolUseId: hookToolUseId,
-        responseOwnerToolUseId,
-        responseLength: capturedResponse.length,
-      });
-      await callbacks.onSubagentStopped({
-        agentId: "",
-        agentType: "",
-        toolUseId: responseOwnerToolUseId,
-        description: "",
-        lastMessage: capturedResponse,
-        isResponseUpdate: true,
-      });
       maps.subagentResponseByUseId.delete(hookToolUseId);
     }
 
@@ -724,11 +1126,38 @@ export function createPostToolUseFailureHook(
       return { continue: true };
     }
 
+    const owner = resolveCanonicalSubagentOwner(
+      maps,
+      {
+        toolUseId: hookToolUseId,
+        parentToolUseId: null,
+        agentId: null,
+      },
+      { allowSingleActiveFallback: false },
+    );
+    const ownerParentToolUseId = owner.subagentOwnerToolUseId ?? null;
+    if (owner.subagentOwnerToolUseId) {
+      maybeLogOwnershipTransition(maps, hookToolUseId, owner, "postToolUseFailure");
+      rememberSubagentOwner(maps, hookToolUseId, owner.subagentOwnerToolUseId);
+      if (owner.launcherToolUseId) {
+        rememberSubagentTaskBridge(maps, owner.launcherToolUseId, owner.subagentOwnerToolUseId);
+      }
+    }
+
     const finishedAtMs = Date.now();
     const failureSummary = failureSummaryFromMetadata(metadata, hookInput.tool_input, command);
     await callbacks.onToolFinished({
       summary: failureSummary,
       precedingToolUseIds: [hookToolUseId],
+      subagentOwnerToolUseId: owner.subagentOwnerToolUseId,
+      launcherToolUseId: owner.launcherToolUseId,
+      ownershipReason: owner.ownershipReason,
+      ...(owner.ownershipCandidates && owner.ownershipCandidates.length > 0
+        ? { ownershipCandidates: owner.ownershipCandidates }
+        : {}),
+      ...(owner.activeSubagentToolUseIds && owner.activeSubagentToolUseIds.length > 0
+        ? { activeSubagentToolUseIds: owner.activeSubagentToolUseIds }
+        : {}),
       ...(metadata.editTarget
         ? { editTarget: metadata.editTarget }
         : {}),
@@ -750,7 +1179,7 @@ export function createPostToolUseFailureHook(
       stage: "failed",
       toolUseId: hookToolUseId,
       toolName: metadata?.toolName ?? (hookInput.tool_name as string),
-      parentToolUseId: null,
+      parentToolUseId: ownerParentToolUseId,
       summary: failureSummary,
       threadContext: instrumentContext,
       timing,

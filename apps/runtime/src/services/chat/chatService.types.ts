@@ -1,3 +1,5 @@
+import type { ClaudeOwnershipReason } from "../../types.js";
+
 export type WorktreeStateSnapshot = {
   statusOutput: string;
   unstagedDiff: string;
@@ -34,6 +36,9 @@ export type PendingPermissionEntry = {
   command: string | null;
   subagentOwnerToolUseId: string | null;
   launcherToolUseId: string | null;
+  ownershipReason: ClaudeOwnershipReason | null;
+  ownershipCandidates: string[];
+  activeSubagentToolUseIds: string[];
 };
 
 export type QuestionAnswerResult = { answers: Record<string, string> };

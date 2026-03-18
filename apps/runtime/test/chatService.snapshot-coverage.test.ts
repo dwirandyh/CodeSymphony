@@ -268,4 +268,129 @@ describe("chatService snapshot", () => {
       "Inspect the codebase and report what you found",
     );
   });
+
+  it("quarantines overlap-unresolved subagent explore events in runtime snapshot assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "run overlapping tasks",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "running",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "tool.started" as const,
+        payload: { toolName: "Task", toolUseId: "call-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "subagent.started" as const,
+        payload: { toolUseId: "sa-1", agentId: "agent-1", agentType: "Explore", description: "First" },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "e3",
+        threadId: "t1",
+        idx: 3,
+        type: "tool.started" as const,
+        payload: { toolName: "Task", toolUseId: "call-2" },
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+      {
+        id: "e4",
+        threadId: "t1",
+        idx: 4,
+        type: "subagent.started" as const,
+        payload: { toolUseId: "sa-2", agentId: "agent-2", agentType: "Explore", description: "Second" },
+        createdAt: "2026-01-01T00:00:04Z",
+      },
+      {
+        id: "e5",
+        threadId: "t1",
+        idx: 5,
+        type: "tool.started" as const,
+        payload: {
+          toolName: "Read",
+          toolUseId: "ambiguous-read",
+          ownershipReason: "unresolved_overlap_no_lineage",
+          activeSubagentToolUseIds: ["sa-1", "sa-2"],
+        },
+        createdAt: "2026-01-01T00:00:05Z",
+      },
+      {
+        id: "e6",
+        threadId: "t1",
+        idx: 6,
+        type: "tool.finished" as const,
+        payload: {
+          toolName: "Read",
+          toolUseId: "ambiguous-read-finished",
+          precedingToolUseIds: ["ambiguous-read"],
+          summary: "Read maybe",
+          ownershipReason: "unresolved_overlap_no_lineage",
+          activeSubagentToolUseIds: ["sa-1", "sa-2"],
+        },
+        createdAt: "2026-01-01T00:00:06Z",
+      },
+      {
+        id: "e7",
+        threadId: "t1",
+        idx: 7,
+        type: "subagent.finished" as const,
+        payload: { toolUseId: "sa-1", lastMessage: "done 1" },
+        createdAt: "2026-01-01T00:00:07Z",
+      },
+      {
+        id: "e8",
+        threadId: "t1",
+        idx: 8,
+        type: "subagent.finished" as const,
+        payload: { toolUseId: "sa-2", lastMessage: "done 2" },
+        createdAt: "2026-01-01T00:00:08Z",
+      },
+      {
+        id: "e9",
+        threadId: "t1",
+        idx: 9,
+        type: "message.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:09Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(assembly.items.filter((item) => item.kind === "explore-activity")).toHaveLength(0);
+    expect(assembly.items.filter((item) => item.kind === "activity")).toHaveLength(0);
+    const subagentItems = assembly.items.filter((item) => item.kind === "subagent-activity");
+    expect(subagentItems).toHaveLength(2);
+    for (const item of subagentItems) {
+      if (item.kind !== "subagent-activity") continue;
+      expect(item.steps.some((step) => step.toolUseId.includes("ambiguous-read"))).toBe(false);
+    }
+  });
 });

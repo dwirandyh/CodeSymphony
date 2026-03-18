@@ -3,8 +3,7 @@ import { appendRuntimeDebugLog } from "../../routes/debug.js";
 import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "../../../../web/src/pages/workspace/constants.ts";
 import { extractBashRuns } from "../../../../web/src/pages/workspace/bashUtils.ts";
 import { extractEditedRuns } from "../../../../web/src/pages/workspace/editUtils.ts";
-import { extractExploreActivityGroups } from "../../../../web/src/pages/workspace/exploreUtils.ts";
-import { extractSubagentGroups } from "../../../../web/src/pages/workspace/subagentUtils.ts";
+import { extractSubagentExploreGroups } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/subagentExploreExtraction.ts";
 import {
   buildActivityIntroText,
   buildActivitySteps,
@@ -377,13 +376,11 @@ export function buildTimelineFromSeed(params: {
     const contextWithAgentBoundaries = (deltaEventsForAgent.length > 0 || thinkingEventsForAgent.length > 0)
       ? [...context, ...thinkingEventsForAgent, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
       : context;
-    const subagentGroups = message.role === "assistant"
-      ? extractSubagentGroups(contextWithAgentBoundaries)
-      : [];
-    const subagentEventIds = new Set<string>();
-    for (const group of subagentGroups) {
-      group.eventIds.forEach((id) => subagentEventIds.add(id));
-    }
+    const subagentExploreExtraction = message.role === "assistant"
+      ? extractSubagentExploreGroups(contextWithAgentBoundaries)
+      : null;
+    const subagentGroups = subagentExploreExtraction?.subagentGroups ?? [];
+    const subagentEventIds = subagentExploreExtraction?.subagentEventIds ?? new Set<string>();
 
     let cleanedContent = message.content;
     if (message.role === "assistant" && message.content.length > 0) {
@@ -461,21 +458,14 @@ export function buildTimelineFromSeed(params: {
       })
       : nonSubagentContext;
 
-    const exploreActivityGroups = message.role === "assistant"
-      ? extractExploreActivityGroups(
-        contextWithAgentBoundaries.filter((event) => !subagentEventIds.has(event.id)),
-      )
-      : [];
-    const agentEventIds = new Set<string>();
-    for (const group of subagentGroups) {
-      group.eventIds.forEach((id) => agentEventIds.add(id));
-    }
-    for (const group of exploreActivityGroups) {
-      group.eventIds.forEach((id) => agentEventIds.add(id));
-    }
+    const exploreActivityGroups = subagentExploreExtraction?.exploreActivityGroups ?? [];
+    const claimedContextEventIds = subagentExploreExtraction?.claimedContextEventIds ?? new Set<string>();
+    const exploreEventIds = subagentExploreExtraction?.exploreEventIds ?? new Set<string>();
+    const overlapUnclaimedEventIds = subagentExploreExtraction?.overlapUnclaimedEventIds ?? new Set<string>();
     const activityContext = message.role === "assistant"
-      ? context.filter((event) => !agentEventIds.has(event.id))
+      ? context.filter((event) => !claimedContextEventIds.has(event.id))
       : context;
+    overlapUnclaimedEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
 
     if (message.role === "assistant") {
       for (const run of bashRuns) {
@@ -501,7 +491,7 @@ export function buildTimelineFromSeed(params: {
       for (const group of exploreActivityGroups) {
         group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
       }
-      if (subagentGroups.length > 0 || exploreActivityGroups.length > 0) {
+      if (subagentGroups.length > 0 || exploreActivityGroups.length > 0 || claimedContextEventIds.size > 0) {
         logTimelineAssembly("subagentExploreExtraction", {
           messageId: message.id,
           subagentGroups: subagentGroups.map((group) => ({
@@ -518,6 +508,9 @@ export function buildTimelineFromSeed(params: {
             eventIds: [...group.eventIds],
           })),
           claimedEventIds: [...subagentEventIds],
+          exploreEventIds: [...exploreEventIds],
+          claimedContextEventIds: [...claimedContextEventIds],
+          unclaimedEventIds: subagentExploreExtraction?.unclaimedContextEventIds ?? [],
         });
       }
     }

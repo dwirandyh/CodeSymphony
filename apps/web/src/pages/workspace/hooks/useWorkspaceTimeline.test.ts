@@ -52,6 +52,7 @@ function createTimelineRefs(): TimelineRefs {
     stickyRawFallbackMessageIds: new Set<string>(),
     renderDecisionByMessageId: new Map<string, string>(),
     loggedOrphanEventIdsByThread: new Map<string, Set<string>>(),
+    claimedContextEventIdsByThreadMessage: new Map<string, Set<string>>(),
   };
 }
 

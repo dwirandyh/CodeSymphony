@@ -283,6 +283,9 @@ export function createChatService(deps: RuntimeDeps) {
           entry.command = typeof command === "string" && command.trim().length > 0 ? command.trim() : null;
           entry.subagentOwnerToolUseId = payload.subagentOwnerToolUseId;
           entry.launcherToolUseId = payload.launcherToolUseId;
+          entry.ownershipReason = payload.ownershipReason ?? null;
+          entry.ownershipCandidates = payload.ownershipCandidates ?? [];
+          entry.activeSubagentToolUseIds = payload.activeSubagentToolUseIds ?? [];
           entry.promise = new Promise<PermissionDecisionResult>((resolve, reject) => {
             entry.resolve = resolve;
             entry.reject = reject;
@@ -300,6 +303,9 @@ export function createChatService(deps: RuntimeDeps) {
               suggestions: payload.suggestions ?? [],
               subagentOwnerToolUseId: entry.subagentOwnerToolUseId,
               launcherToolUseId: entry.launcherToolUseId,
+              ownershipReason: entry.ownershipReason,
+              ownershipCandidates: entry.ownershipCandidates,
+              activeSubagentToolUseIds: entry.activeSubagentToolUseIds,
             });
           } catch (error) {
             pendingMap.delete(payload.requestId);
@@ -676,6 +682,9 @@ export function createChatService(deps: RuntimeDeps) {
           permissionRule: null,
           subagentOwnerToolUseId: null,
           launcherToolUseId: null,
+          ownershipReason: null,
+          ownershipCandidates: [],
+          activeSubagentToolUseIds: [],
         });
         return;
       }
@@ -714,6 +723,9 @@ export function createChatService(deps: RuntimeDeps) {
           permissionRule,
           subagentOwnerToolUseId: entry.subagentOwnerToolUseId,
           launcherToolUseId: entry.launcherToolUseId,
+          ownershipReason: entry.ownershipReason,
+          ownershipCandidates: entry.ownershipCandidates,
+          activeSubagentToolUseIds: entry.activeSubagentToolUseIds,
         });
       } finally {
         const result: PermissionDecisionResult = isAllow

@@ -5,7 +5,8 @@ import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX, SENTENCE_BOUNDARY_PATTERN } f
 import { extractBashRuns } from "../../bashUtils";
 import { extractEditedRuns } from "../../editUtils";
 import { extractExploreActivityGroups } from "../../exploreUtils";
-import { extractSubagentGroups } from "../../subagentUtils";
+import { getSubagentAttributionReason } from "../../subagentUtils";
+import { extractSubagentExploreGroups } from "./subagentExploreExtraction";
 import {
   buildActivityIntroText,
   buildActivitySteps,
@@ -504,19 +505,28 @@ export function useWorkspaceTimeline(
       const contextWithAgentBoundaries = (deltaEventsForAgent.length > 0 || thinkingEventsForAgent.length > 0)
         ? [...context, ...thinkingEventsForAgent, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
         : context;
-      const subagentGroups = message.role === "assistant"
-        ? extractSubagentGroups(contextWithAgentBoundaries)
-        : [];
-      const subagentEventIds = new Set<string>();
-      for (const group of subagentGroups) {
-        group.eventIds.forEach((id) => subagentEventIds.add(id));
+      const claimedContextCacheKey = selectedThreadId && message.role === "assistant"
+        ? `${selectedThreadId}:${message.id}`
+        : null;
+      const previousClaimedContextEventIds = claimedContextCacheKey && refs.claimedContextEventIdsByThreadMessage
+        ? refs.claimedContextEventIdsByThreadMessage.get(claimedContextCacheKey)
+        : undefined;
+      const subagentExploreExtraction = message.role === "assistant"
+        ? extractSubagentExploreGroups(contextWithAgentBoundaries, {
+          previousClaimedContextEventIds,
+        })
+        : null;
+      const subagentGroups = subagentExploreExtraction?.subagentGroups ?? [];
+      const subagentEventIds = subagentExploreExtraction?.subagentEventIds ?? new Set<string>();
+      const exploreActivityGroups = subagentExploreExtraction?.exploreActivityGroups ?? [];
+      const exploreEventIds = subagentExploreExtraction?.exploreEventIds ?? new Set<string>();
+      const overlapUnclaimedEventIds = subagentExploreExtraction?.overlapUnclaimedEventIds ?? new Set<string>();
+      const claimedContextEventIds = subagentExploreExtraction?.claimedContextEventIds ?? new Set<string>();
+      if (claimedContextCacheKey && refs.claimedContextEventIdsByThreadMessage) {
+        refs.claimedContextEventIdsByThreadMessage.set(claimedContextCacheKey, new Set(claimedContextEventIds));
       }
-      const exploreActivityGroups = message.role === "assistant"
-        ? extractExploreActivityGroups(
-          contextWithAgentBoundaries.filter((event) => !subagentEventIds.has(event.id)),
-        )
-        : [];
-      if (message.role === "assistant" && (subagentGroups.length > 0 || exploreActivityGroups.length > 0)) {
+
+      if (message.role === "assistant" && (subagentGroups.length > 0 || exploreActivityGroups.length > 0 || claimedContextEventIds.size > 0)) {
         pushRenderDebug({
           source: "useWorkspaceTimeline",
           event: "subagentExploreExtraction",
@@ -536,10 +546,20 @@ export function useWorkspaceTimeline(
               eventIds: [...group.eventIds],
             })),
             claimedEventIds: [...subagentEventIds],
+            exploreEventIds: [...exploreEventIds],
+            claimedContextEventIds: [...claimedContextEventIds],
+            unclaimedEventIds: subagentExploreExtraction?.unclaimedContextEventIds ?? [],
+            unclaimedReasons: (subagentExploreExtraction?.unclaimedContextEventIds ?? [])
+              .map((eventId) => ({
+                eventId,
+                reasonCode: getSubagentAttributionReason(eventId),
+              }))
+              .filter((entry) => entry.reasonCode !== null),
           },
         });
       }
-      const agentEventIds = new Set<string>();
+      const agentEventIds = new Set<string>(claimedContextEventIds);
+      overlapUnclaimedEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
       for (const group of subagentGroups) {
         group.eventIds.forEach((id) => agentEventIds.add(id));
       }
