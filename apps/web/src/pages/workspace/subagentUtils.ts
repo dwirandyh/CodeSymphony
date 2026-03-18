@@ -1,7 +1,35 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
+import { pushRenderDebug } from "../../lib/renderDebug";
 import { isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
-import { extractReadFileEntry, extractSearchEntryLabel, searchContextFromEvent, shortenReadTargetForDisplay } from "./exploreUtils";
+import {
+  extractReadFileEntry,
+  extractSearchEntryLabel,
+  searchContextFromEvent,
+  shortenReadTargetForDisplay,
+} from "./exploreUtils";
 import type { SubagentGroup, SubagentStep } from "./types";
+
+export type SubagentAttributionReasonCode =
+  | "claimed_explicit_owner"
+  | "claimed_parent_lineage"
+  | "claimed_preceding_lineage"
+  | "claimed_single_active_fallback"
+  | "claimed_runtime_description_hint"
+  | "unclaimed_ambiguous_parent_candidates"
+  | "unclaimed_ambiguous_preceding_candidates"
+  | "unclaimed_overlap_no_lineage"
+  | "unclaimed_no_lineage";
+
+const attributionReasonByEventId = new Map<string, SubagentAttributionReasonCode>();
+const overlapCandidateEventIds = new Set<string>();
+
+export function getSubagentAttributionReason(eventId: string): SubagentAttributionReasonCode | null {
+  return attributionReasonByEventId.get(eventId) ?? null;
+}
+
+export function isOverlapUnclaimedSubagentEvent(eventId: string): boolean {
+  return overlapCandidateEventIds.has(eventId);
+}
 
 function buildStepInfo(event: ChatEvent): { label: string; openPath: string | null } {
   const toolName = payloadStringOrNull(event.payload.toolName);
@@ -52,6 +80,11 @@ function buildStepInfo(event: ChatEvent): { label: string; openPath: string | nu
  * tool_progress (emitted as tool.output) which carries the correct value.
  * We scan every event to discover the relationship, then use it to group events.
  */
+function isSubagentLauncherToolName(toolName: string | null): boolean {
+  const normalized = (toolName ?? "").trim().toLowerCase();
+  return normalized === "task" || normalized === "agent";
+}
+
 function buildParentLookup(events: ChatEvent[]): Map<string, string> {
   const parentByToolUseId = new Map<string, string>();
   for (const event of events) {
@@ -67,22 +100,146 @@ function buildParentLookup(events: ChatEvent[]): Map<string, string> {
   return parentByToolUseId;
 }
 
+function buildExplicitOwnerHintLookup(events: ChatEvent[]): Map<string, string[]> {
+  const ownerHintsByToolUseId = new Map<string, Set<string>>();
+
+  const rememberHint = (toolUseId: string | null, ownerCandidate: string | null): void => {
+    if (!toolUseId || !ownerCandidate) {
+      return;
+    }
+    const existing = ownerHintsByToolUseId.get(toolUseId) ?? new Set<string>();
+    existing.add(ownerCandidate);
+    ownerHintsByToolUseId.set(toolUseId, existing);
+  };
+
+  const resolveSkillPathHints = (description: string): string[] => {
+    const normalized = description.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return [];
+    }
+
+    const hints = new Set<string>();
+    for (const match of normalized.matchAll(/\b([a-z0-9][a-z0-9-]{1,})\s+skill\b/g)) {
+      const slug = match[1]?.trim();
+      if (!slug) {
+        continue;
+      }
+      hints.add(`.claude/skills/${slug}`);
+      hints.add(`claude/skills/${slug}`);
+      hints.add(`skills/${slug}`);
+      hints.add(`${slug}/skill.md`);
+    }
+    return [...hints];
+  };
+
+  const buildSubagentDescriptionHintLookup = () => {
+    const descriptionHintsBySubagentId = new Map<string, string[]>();
+    for (const event of events) {
+      if (event.type !== "subagent.started" && event.type !== "subagent.finished") {
+        continue;
+      }
+      const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+      const description = payloadStringOrNull(event.payload.description);
+      if (!toolUseId || !description) {
+        continue;
+      }
+      const hints = resolveSkillPathHints(description);
+      if (hints.length > 0) {
+        descriptionHintsBySubagentId.set(toolUseId, hints);
+      }
+    }
+    return descriptionHintsBySubagentId;
+  };
+
+  const subagentDescriptionHintsById = buildSubagentDescriptionHintLookup();
+
+  for (const event of events) {
+    if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
+      continue;
+    }
+
+    const ownerCandidate = payloadStringOrNull(event.payload.subagentOwnerToolUseId)
+      ?? payloadStringOrNull(event.payload.launcherToolUseId);
+    if (!ownerCandidate) {
+      continue;
+    }
+
+    const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+    rememberHint(toolUseId, ownerCandidate);
+
+    if (event.type === "tool.finished" && Array.isArray(event.payload.precedingToolUseIds)) {
+      for (const precedingId of event.payload.precedingToolUseIds) {
+        if (typeof precedingId !== "string") {
+          continue;
+        }
+        rememberHint(precedingId, ownerCandidate);
+      }
+    }
+
+    if (!ownerCandidate) {
+      continue;
+    }
+
+    const commandOrSearchTarget = [
+      payloadStringOrNull(event.payload.command),
+      payloadStringOrNull(event.payload.searchParams),
+      payloadStringOrNull(event.payload.summary),
+    ]
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+      .join(" ")
+      .toLowerCase();
+
+    if (commandOrSearchTarget.length === 0) {
+      continue;
+    }
+
+    for (const [subagentToolUseId, hints] of subagentDescriptionHintsById.entries()) {
+      if (!hints.some((hint) => commandOrSearchTarget.includes(hint))) {
+        continue;
+      }
+      const normalizedOwner = ownerCandidate === subagentToolUseId ? ownerCandidate : subagentToolUseId;
+      const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+      rememberHint(toolUseId, normalizedOwner);
+      if (event.type === "tool.finished" && Array.isArray(event.payload.precedingToolUseIds)) {
+        for (const precedingId of event.payload.precedingToolUseIds) {
+          if (typeof precedingId !== "string") {
+            continue;
+          }
+          rememberHint(precedingId, normalizedOwner);
+        }
+      }
+    }
+  }
+
+  const lookup = new Map<string, string[]>();
+  for (const [toolUseId, ownerCandidates] of ownerHintsByToolUseId.entries()) {
+    lookup.set(toolUseId, [...ownerCandidates]);
+  }
+
+  return lookup;
+}
+
 export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
   const ordered = [...events].sort((a, b) => a.idx - b.idx);
   const groups: SubagentGroup[] = [];
   const debugLog: Record<string, unknown>[] = [];
 
+  for (const event of ordered) {
+    attributionReasonByEventId.delete(event.id);
+    overlapCandidateEventIds.delete(event.id);
+  }
+
   const parentByToolUseId = buildParentLookup(ordered);
-  debugLog.push({ phase: "init", totalEvents: ordered.length, parentLookupSize: parentByToolUseId.size });
+  const explicitOwnerHintByToolUseId = buildExplicitOwnerHintLookup(ordered);
+  debugLog.push({ phase: "init", totalEvents: ordered.length, parentLookupSize: parentByToolUseId.size, explicitOwnerHintSize: explicitOwnerHintByToolUseId.size });
 
   // Map from Task tool toolUseId (e.g. call_9p7...) to subagent toolUseId (e.g. dd4ac7b3-...)
   // The PreToolUse hook stores the tool input keyed by the Task tool's call_* ID.
   // SubagentStart provides a different agent-level UUID. We need to bridge these.
   const taskToolToSubagent = new Map<string, string>();
-  // Track the most recent "Task" tool.started toolUseId so we can link it when subagent.started arrives
-  let lastTaskToolUseId: string | null = null;
-  // Also track the event reference so we can retroactively claim it when subagent.started creates the link
-  let lastTaskToolStartEvent: ChatEvent | null = null;
+  // Queue Task tool.starts so overlaps map deterministically to the next subagent.started.
+  const pendingTaskStarts: Array<{ taskToolUseId: string; event: ChatEvent }> = [];
+  const permissionOwnerByRequestId = new Map<string, string>();
 
   const activeSubagents = new Map<
     string,
@@ -103,15 +260,200 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
   // (from tool_use_summary) can still be claimed and not leak into the main timeline
   const finishedSubagentData = new Map<string, { steps: SubagentStep[]; eventIds: Set<string> }>();
 
+  const hasSubagent = (id: string) => activeSubagents.has(id) || finishedSubagentData.has(id);
+
+  const normalizeOwnerCandidate = (candidate: string | null | undefined): string | null => {
+    if (!candidate) {
+      return null;
+    }
+
+    if (hasSubagent(candidate)) {
+      return candidate;
+    }
+
+    const mapped = taskToolToSubagent.get(candidate);
+    if (mapped && hasSubagent(mapped)) {
+      return mapped;
+    }
+
+    return null;
+  };
+
+  const markReason = (eventId: string, reason: SubagentAttributionReasonCode): void => {
+    attributionReasonByEventId.set(eventId, reason);
+  };
+
+  const resolveOwnerToolUseId = (
+    event: ChatEvent,
+    toolUseId: string,
+    options?: { allowSingleActiveFallback?: boolean },
+  ): string | null => {
+    // 1) explicit canonical owner from runtime payload
+    const explicitOwner = normalizeOwnerCandidate(payloadStringOrNull(event.payload.subagentOwnerToolUseId));
+    if (explicitOwner) {
+      markReason(event.id, "claimed_explicit_owner");
+      return explicitOwner;
+    }
+
+    // 2) explicit launcher id that may bridge to canonical subagent
+    const launcherOwner = normalizeOwnerCandidate(payloadStringOrNull(event.payload.launcherToolUseId));
+    if (launcherOwner) {
+      markReason(event.id, "claimed_explicit_owner");
+      return launcherOwner;
+    }
+
+    // 3) direct owner
+    const directOwner = normalizeOwnerCandidate(toolUseId);
+    if (directOwner) {
+      markReason(event.id, "claimed_explicit_owner");
+      return directOwner;
+    }
+
+    // 4) explicit owner hint cache (including preceding tool-use IDs from finished events)
+    const explicitOwnerCandidates = new Set<string>();
+    const hintedOwners = explicitOwnerHintByToolUseId.get(toolUseId) ?? [];
+    for (const hintedOwner of hintedOwners) {
+      const normalizedHintedOwner = normalizeOwnerCandidate(hintedOwner);
+      if (normalizedHintedOwner) {
+        explicitOwnerCandidates.add(normalizedHintedOwner);
+      }
+    }
+
+    if (explicitOwnerCandidates.size > 1) {
+      markReason(event.id, "unclaimed_ambiguous_parent_candidates");
+      pushRenderDebug({
+        source: "subagentUtils",
+        event: "ambiguousOwner",
+        details: {
+          phase: "explicitOwnerHints",
+          toolUseId,
+          candidates: [...explicitOwnerCandidates],
+          eventId: event.id,
+          idx: event.idx,
+          reasonCode: "unclaimed_ambiguous_parent_candidates",
+        },
+      });
+      return null;
+    }
+
+    if (explicitOwnerCandidates.size === 1) {
+      const [resolvedExplicitHintOwner] = [...explicitOwnerCandidates];
+      if (resolvedExplicitHintOwner && resolvedExplicitHintOwner !== toolUseId) {
+        parentByToolUseId.set(toolUseId, resolvedExplicitHintOwner);
+      }
+      markReason(event.id, "claimed_explicit_owner");
+      return resolvedExplicitHintOwner ?? null;
+    }
+
+    // 5) parent lineage: parentToolUseId + parent cache
+    const parentCandidates = new Set<string>();
+    const directParent = payloadStringOrNull(event.payload.parentToolUseId);
+    const parentFromLookup = parentByToolUseId.get(toolUseId) ?? null;
+
+    const normalizedDirectParent = normalizeOwnerCandidate(directParent);
+    if (normalizedDirectParent) {
+      parentCandidates.add(normalizedDirectParent);
+    }
+
+    const normalizedLookupParent = normalizeOwnerCandidate(parentFromLookup);
+    if (normalizedLookupParent) {
+      parentCandidates.add(normalizedLookupParent);
+    }
+
+    if (parentCandidates.size > 1) {
+      markReason(event.id, "unclaimed_ambiguous_parent_candidates");
+      pushRenderDebug({
+        source: "subagentUtils",
+        event: "ambiguousOwner",
+        details: {
+          phase: "parentCandidates",
+          toolUseId,
+          candidates: [...parentCandidates],
+          eventId: event.id,
+          idx: event.idx,
+          reasonCode: "unclaimed_ambiguous_parent_candidates",
+        },
+      });
+      return null;
+    }
+
+    if (parentCandidates.size === 1) {
+      markReason(event.id, "claimed_parent_lineage");
+      const [resolvedParent] = [...parentCandidates];
+      if (resolvedParent && resolvedParent !== toolUseId) {
+        parentByToolUseId.set(toolUseId, resolvedParent);
+      }
+      return resolvedParent ?? null;
+    }
+
+    // 6) precedingToolUseIds lineage
+    const precedingIds = Array.isArray(event.payload.precedingToolUseIds)
+      ? event.payload.precedingToolUseIds.filter((id: unknown): id is string => typeof id === "string")
+      : [];
+
+    const precedingCandidates = new Set<string>();
+    for (const precedingId of precedingIds) {
+      const normalizedPreceding = normalizeOwnerCandidate(precedingId);
+      if (normalizedPreceding) {
+        precedingCandidates.add(normalizedPreceding);
+      }
+
+      const parentFromPreceding = parentByToolUseId.get(precedingId);
+      const normalizedParentFromPreceding = normalizeOwnerCandidate(parentFromPreceding);
+      if (normalizedParentFromPreceding) {
+        precedingCandidates.add(normalizedParentFromPreceding);
+      }
+    }
+
+    if (precedingCandidates.size > 1) {
+      markReason(event.id, "unclaimed_ambiguous_preceding_candidates");
+      pushRenderDebug({
+        source: "subagentUtils",
+        event: "ambiguousOwner",
+        details: {
+          phase: "precedingCandidates",
+          toolUseId,
+          candidates: [...precedingCandidates],
+          eventId: event.id,
+          idx: event.idx,
+          reasonCode: "unclaimed_ambiguous_preceding_candidates",
+        },
+      });
+      return null;
+    }
+
+    if (precedingCandidates.size === 1) {
+      markReason(event.id, "claimed_preceding_lineage");
+      const [resolvedFromPreceding] = [...precedingCandidates];
+      if (resolvedFromPreceding && resolvedFromPreceding !== toolUseId) {
+        parentByToolUseId.set(toolUseId, resolvedFromPreceding);
+      }
+      return resolvedFromPreceding ?? null;
+    }
+
+    // 7) index fallback only when exactly one active subagent exists and explicitly allowed
+    if (options?.allowSingleActiveFallback === true && activeSubagents.size === 1) {
+      const onlyActiveToolUseId = activeSubagents.keys().next().value;
+      if (typeof onlyActiveToolUseId === "string" && onlyActiveToolUseId !== toolUseId) {
+        markReason(event.id, "claimed_single_active_fallback");
+        parentByToolUseId.set(toolUseId, onlyActiveToolUseId);
+        return onlyActiveToolUseId;
+      }
+    }
+
+    // 8) ambiguous/no lineage -> do not claim
+    markReason(event.id, "unclaimed_no_lineage");
+    return null;
+  };
+
   for (const event of ordered) {
 
     if (event.type === "tool.started") {
       const toolName = payloadStringOrNull(event.payload.toolName) ?? "";
-      if (toolName.toLowerCase() === "task") {
+      if (isSubagentLauncherToolName(toolName)) {
         const tid = payloadStringOrNull(event.payload.toolUseId) ?? "";
         if (tid) {
-          lastTaskToolUseId = tid;
-          lastTaskToolStartEvent = event;
+          pendingTaskStarts.push({ taskToolUseId: tid, event });
         }
       }
     }
@@ -140,16 +482,12 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         eventIds: new Set([event.id]),
       });
 
-      // Link the most recent Task tool_started to this subagent
-      if (lastTaskToolUseId) {
-        taskToolToSubagent.set(lastTaskToolUseId, toolUseId);
-        debugLog.push({ phase: "taskToolLink", taskToolId: lastTaskToolUseId, subagentId: toolUseId });
-        // Retroactively claim the Task tool.started event that arrived before subagent.started
-        if (lastTaskToolStartEvent) {
-          activeSubagents.get(toolUseId)?.eventIds.add(lastTaskToolStartEvent.id);
-          lastTaskToolStartEvent = null;
-        }
-        lastTaskToolUseId = null;
+      // Link the next pending Task tool.started to this subagent (FIFO for overlap safety)
+      const pendingTaskStart = pendingTaskStarts.shift();
+      if (pendingTaskStart) {
+        taskToolToSubagent.set(pendingTaskStart.taskToolUseId, toolUseId);
+        debugLog.push({ phase: "taskToolLink", taskToolId: pendingTaskStart.taskToolUseId, subagentId: toolUseId });
+        activeSubagents.get(toolUseId)?.eventIds.add(pendingTaskStart.event.id);
       }
       continue;
     }
@@ -179,6 +517,17 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         // The toolUseId may be either the subagent's UUID or the Task tool's call_* ID.
         const resolvedId = finishedSubagentData.has(toolUseId) ? toolUseId : taskToolToSubagent.get(toolUseId);
         debugLog.push({ phase: "subagent.finished.lateUpdate", toolUseId, resolvedId, lastMessageLen: lastMessage.length });
+        pushRenderDebug({
+          source: "subagentUtils",
+          event: "lateSubagentUpdate",
+          details: {
+            toolUseId,
+            resolvedId,
+            lastMessageLen: lastMessage.length,
+            eventId: event.id,
+            idx: event.idx,
+          },
+        });
         if (lastMessage && resolvedId && finishedSubagentData.has(resolvedId)) {
           const group = [...groups].reverse().find((g) => g.toolUseId === resolvedId);
           if (group) {
@@ -201,6 +550,21 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
           ? Math.max(1, Math.round((endMs - startMs) / 1000))
           : null;
+
+      if (subagent.steps.length > 0 && resolvedDescription.trim().length === 0) {
+        pushRenderDebug({
+          source: "subagentUtils",
+          event: "subagentMissingDescription",
+          details: {
+            toolUseId,
+            stepCount: subagent.steps.length,
+            finishDescriptionLen: finishDescription.length,
+            lastMessageLen: lastMessage.length,
+            eventId: event.id,
+            idx: event.idx,
+          },
+        });
+      }
 
       groups.push({
         id: `subagent:${subagent.startEventId}`,
@@ -231,140 +595,77 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
     ) {
       const toolUseId = payloadStringOrNull(event.payload.toolUseId) ?? event.id;
 
-      // Check if this event IS the Task tool itself (toolUseId matches a sub-agent's toolUseId).
-      // These events represent the sub-agent launcher and should be claimed but not shown as steps.
-      const ownerSubagent = activeSubagents.get(toolUseId);
-      if (ownerSubagent) {
-        ownerSubagent.eventIds.add(event.id);
-        continue;
-      }
-      // Also check finished subagents — the Task tool's tool.finished arrives after subagent.finished
-      const finishedOwner = finishedSubagentData.get(toolUseId);
-      if (finishedOwner) {
-        finishedOwner.eventIds.add(event.id);
-        // The Task tool's tool.finished event (from PostToolUse) carries subagentResponse
-        // which is the REAL final response — SubagentStop fires before the transcript is complete
-        if (event.type === "tool.finished") {
-          const subagentResponse = payloadStringOrNull(event.payload.subagentResponse);
-          debugLog.push({ phase: "tool.finished.directOwner", toolUseId, hasSubagentResponse: !!subagentResponse, subagentResponseLen: subagentResponse?.length ?? 0, subagentResponsePreview: subagentResponse?.slice(0, 200) });
-          if (subagentResponse) {
-            const group = groups.find((g) => g.toolUseId === toolUseId);
-            if (group) {
-              group.lastMessage = subagentResponse;
-            }
+      const ownerToolUseId = resolveOwnerToolUseId(event, toolUseId, { allowSingleActiveFallback: true });
+      if (!ownerToolUseId) {
+        const existingReasonCode = getSubagentAttributionReason(event.id);
+        if (!existingReasonCode || existingReasonCode === "unclaimed_no_lineage") {
+          const runtimeOwnershipReason = payloadStringOrNull(event.payload.ownershipReason);
+          if (runtimeOwnershipReason === "unresolved_ambiguous_candidates") {
+            markReason(event.id, "unclaimed_ambiguous_parent_candidates");
+            overlapCandidateEventIds.add(event.id);
+          } else if (runtimeOwnershipReason === "unresolved_overlap_no_lineage") {
+            markReason(event.id, "unclaimed_overlap_no_lineage");
+            overlapCandidateEventIds.add(event.id);
+          } else if (runtimeOwnershipReason === "resolved_subagent_description_hint" || runtimeOwnershipReason === "resolved_subagent_path_hint") {
+            markReason(event.id, "claimed_runtime_description_hint");
           }
+        }
+        const reasonCode = getSubagentAttributionReason(event.id);
+        if (reasonCode) {
+          pushRenderDebug({
+            source: "subagentUtils",
+            event: "unclaimedToolEvent",
+            details: {
+              eventId: event.id,
+              idx: event.idx,
+              toolUseId,
+              reasonCode,
+            },
+          });
         }
         continue;
       }
 
-      // Check if this is a Task tool event whose call_* ID maps to a subagent UUID
-      const mappedSubagentId = taskToolToSubagent.get(toolUseId);
-      if (mappedSubagentId) {
-        const mappedActive = activeSubagents.get(mappedSubagentId);
-        if (mappedActive) {
-          mappedActive.eventIds.add(event.id);
-          continue;
-        }
-        const mappedFinished = finishedSubagentData.get(mappedSubagentId);
-        if (mappedFinished) {
-          mappedFinished.eventIds.add(event.id);
-          if (event.type === "tool.finished") {
-            const subagentResponse = payloadStringOrNull(event.payload.subagentResponse);
-            debugLog.push({ phase: "tool.finished.mappedOwner", toolUseId, mappedSubagentId, hasSubagentResponse: !!subagentResponse, subagentResponseLen: subagentResponse?.length ?? 0 });
-            if (subagentResponse) {
-              const group = groups.find((g) => g.toolUseId === mappedSubagentId);
-              if (group) {
-                group.lastMessage = subagentResponse;
-              }
-            }
-          }
-          continue;
-        }
+      if (ownerToolUseId !== toolUseId) {
+        parentByToolUseId.set(toolUseId, ownerToolUseId);
       }
 
-      // Also check precedingToolUseIds for the Task tool ID mapping
-      if (event.type === "tool.finished" && !mappedSubagentId) {
-        const precedingIds = Array.isArray(event.payload.precedingToolUseIds)
-          ? event.payload.precedingToolUseIds.filter((id: unknown): id is string => typeof id === "string")
-          : [];
-        for (const pid of precedingIds) {
-          const mapped = taskToolToSubagent.get(pid);
-          if (mapped) {
-            const finished = finishedSubagentData.get(mapped);
-            if (finished) {
-              finished.eventIds.add(event.id);
-              const subagentResponse = payloadStringOrNull(event.payload.subagentResponse);
-              if (subagentResponse) {
-                const group = groups.find((g) => g.toolUseId === mapped);
-                if (group) {
-                  group.lastMessage = subagentResponse;
-                }
-              }
-              break;
-            }
-          }
-        }
-      }
-
-      // Try explicit parent resolution first (parentToolUseId or buildParentLookup)
-      const directParent = payloadStringOrNull(event.payload.parentToolUseId);
-      let resolvedParent = directParent ?? parentByToolUseId.get(toolUseId) ?? null;
-
-      // Helper: check if a toolUseId belongs to any subagent (active or finished)
-      const hasSubagent = (id: string) => activeSubagents.has(id) || finishedSubagentData.has(id);
-
-      // Fallback: Check if precedingToolUseIds contains an already-claimed child tool.
-      if (!resolvedParent) {
-        const precedingIds = Array.isArray(event.payload.precedingToolUseIds)
-          ? event.payload.precedingToolUseIds.filter((id: unknown): id is string => typeof id === "string")
-          : [];
-        for (const pid of precedingIds) {
-          if (hasSubagent(pid)) {
-            resolvedParent = pid;
-            parentByToolUseId.set(toolUseId, pid);
-            break;
-          }
-          const parentFromPreceding = parentByToolUseId.get(pid);
-          if (parentFromPreceding && hasSubagent(parentFromPreceding)) {
-            resolvedParent = parentFromPreceding;
-            parentByToolUseId.set(toolUseId, parentFromPreceding);
-            break;
-          }
-        }
-      }
-
-      // Index-range fallback: if no explicit parent is found, check if this event falls
-      // within any active subagent's index range. In real data, child tool events often
-      // lack parentToolUseId entirely — the only signal is that they appear between
-      // subagent.started and subagent.finished in the event stream.
-      if (!resolvedParent) {
-        for (const [saToolUseId, sa] of activeSubagents) {
-          if (event.idx > sa.startIdx) {
-            resolvedParent = saToolUseId;
-            parentByToolUseId.set(toolUseId, saToolUseId);
-            break;
-          }
-        }
-      }
-
-      if (!resolvedParent) {
-        continue;
-      }
-
-      // Resolve subagent data from active or finished maps
-      const subagent = activeSubagents.get(resolvedParent) ?? finishedSubagentData.get(resolvedParent);
+      const subagent = activeSubagents.get(ownerToolUseId) ?? finishedSubagentData.get(ownerToolUseId);
       if (!subagent) {
         continue;
       }
 
       subagent.eventIds.add(event.id);
 
-      // tool.finished events often use a DIFFERENT toolUseId than the corresponding
-      // tool.started event. They link back via precedingToolUseIds. We need to find
-      // the existing "running" step and update it rather than creating a duplicate.
       const precedingIds = Array.isArray(event.payload.precedingToolUseIds)
         ? event.payload.precedingToolUseIds.filter((id: unknown): id is string => typeof id === "string")
         : [];
+      const toolName = payloadStringOrNull(event.payload.toolName) ?? "";
+      const taskMappedOwner = taskToolToSubagent.get(toolUseId);
+      const hasMappedPrecedingOwner = precedingIds.some((precedingId) => taskToolToSubagent.get(precedingId) === ownerToolUseId);
+      const subagentResponse = event.type === "tool.finished"
+        ? payloadStringOrNull(event.payload.subagentResponse)
+        : null;
+      const isTaskLauncherEvent =
+        toolUseId === ownerToolUseId
+        || taskMappedOwner === ownerToolUseId
+        || hasMappedPrecedingOwner
+        || isSubagentLauncherToolName(toolName)
+        || !!subagentResponse;
+
+      if (isTaskLauncherEvent) {
+        if (subagentResponse) {
+          const group = groups.find((g) => g.toolUseId === ownerToolUseId);
+          if (group) {
+            group.lastMessage = subagentResponse;
+          }
+        }
+        continue;
+      }
+
+      // tool.finished events often use a DIFFERENT toolUseId than the corresponding
+      // tool.started event. They link back via precedingToolUseIds. We need to find
+      // the existing "running" step and update it rather than creating a duplicate.
 
       let existingStep = subagent.steps.find((s) => s.toolUseId === toolUseId);
 
@@ -396,6 +697,97 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
           status: event.type === "tool.finished" ? "success" : "running",
         });
       }
+      continue;
+    }
+
+    if (event.type === "permission.requested" || event.type === "permission.resolved") {
+      const requestId = payloadStringOrNull(event.payload.requestId);
+      let ownerToolUseId: string | null = null;
+
+      if (event.type === "permission.requested") {
+        const explicitOwner = payloadStringOrNull(event.payload.subagentOwnerToolUseId);
+        if (explicitOwner) {
+          ownerToolUseId = resolveOwnerToolUseId(event, explicitOwner);
+        }
+
+        if (!ownerToolUseId) {
+          const launcherToolUseId = payloadStringOrNull(event.payload.launcherToolUseId);
+          if (launcherToolUseId) {
+            ownerToolUseId = resolveOwnerToolUseId(event, launcherToolUseId);
+          }
+        }
+
+        if (!ownerToolUseId && requestId) {
+          ownerToolUseId = permissionOwnerByRequestId.get(requestId) ?? null;
+        }
+
+        if (!ownerToolUseId) {
+          const toolUseId = payloadStringOrNull(event.payload.toolUseId) ?? requestId ?? event.id;
+          ownerToolUseId = resolveOwnerToolUseId(event, toolUseId);
+        }
+
+        if (requestId && ownerToolUseId) {
+          permissionOwnerByRequestId.set(requestId, ownerToolUseId);
+        }
+      } else {
+        if (requestId) {
+          ownerToolUseId = permissionOwnerByRequestId.get(requestId) ?? null;
+        }
+
+        if (!ownerToolUseId) {
+          const explicitOwner = payloadStringOrNull(event.payload.subagentOwnerToolUseId);
+          if (explicitOwner) {
+            ownerToolUseId = resolveOwnerToolUseId(event, explicitOwner);
+          }
+        }
+
+        if (!ownerToolUseId) {
+          const launcherToolUseId = payloadStringOrNull(event.payload.launcherToolUseId);
+          if (launcherToolUseId) {
+            ownerToolUseId = resolveOwnerToolUseId(event, launcherToolUseId);
+          }
+        }
+
+        if (!ownerToolUseId) {
+          const toolUseId = payloadStringOrNull(event.payload.toolUseId) ?? requestId ?? event.id;
+          ownerToolUseId = resolveOwnerToolUseId(event, toolUseId);
+        }
+      }
+
+      if (!ownerToolUseId) {
+        if (event.type === "permission.requested") {
+          const ownershipReason = payloadStringOrNull(event.payload.ownershipReason);
+          if (ownershipReason === "unresolved_ambiguous_candidates") {
+            markReason(event.id, "unclaimed_ambiguous_parent_candidates");
+            overlapCandidateEventIds.add(event.id);
+          } else if (ownershipReason === "unresolved_overlap_no_lineage") {
+            markReason(event.id, "unclaimed_overlap_no_lineage");
+            overlapCandidateEventIds.add(event.id);
+          }
+        }
+        const reasonCode = getSubagentAttributionReason(event.id);
+        if (reasonCode) {
+          pushRenderDebug({
+            source: "subagentUtils",
+            event: "unclaimedPermissionEvent",
+            details: {
+              eventId: event.id,
+              idx: event.idx,
+              requestId,
+              reasonCode,
+            },
+          });
+        }
+        continue;
+      }
+
+      const subagent = activeSubagents.get(ownerToolUseId) ?? finishedSubagentData.get(ownerToolUseId);
+      if (!subagent) {
+        continue;
+      }
+
+      subagent.eventIds.add(event.id);
+      continue;
     }
   }
 
@@ -419,7 +811,6 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
 
   const sortedGroups = groups.sort((a, b) => a.startIdx - b.startIdx);
 
-
-
   return sortedGroups;
 }
+

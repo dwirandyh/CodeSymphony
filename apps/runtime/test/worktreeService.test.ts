@@ -17,7 +17,7 @@ function git(args: string, cwd = repoDir) {
 }
 
 beforeAll(async () => {
-  prisma = new PrismaClient({ datasources: { db: { url: "file:./test.db" } } });
+  prisma = new PrismaClient({ datasources: { db: { url: "file:./prisma/test.db" } } });
   await prisma.$connect();
 
   repoDir = await mkdtemp(join(tmpdir(), "cs-wt-svc-test-"));
@@ -86,7 +86,7 @@ describe("isDefaultBranchName", () => {
 });
 
 describe("worktreeService", () => {
-  const service = createWorktreeService(new PrismaClient({ datasources: { db: { url: "file:./test.db" } } }));
+  const service = createWorktreeService(new PrismaClient({ datasources: { db: { url: "file:./prisma/test.db" } } }));
   const createdWorktreeIds: string[] = [];
 
   afterEach(async () => {
@@ -256,6 +256,26 @@ describe("worktreeService", () => {
 
       const threads = await service.listThreads(created.worktree.id);
       expect(threads.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("returns threads in createdAt ascending order", async () => {
+      const created = await service.create(repositoryId, { branch: "threads-order-test" });
+      createdWorktreeIds.push(created.worktree.id);
+
+      const mainThread = await prisma.chatThread.findFirst({
+        where: { worktreeId: created.worktree.id },
+      });
+      expect(mainThread).toBeTruthy();
+
+      const newerThread = await prisma.chatThread.create({
+        data: {
+          worktreeId: created.worktree.id,
+          title: "Second Thread",
+        },
+      });
+
+      const threads = await service.listThreads(created.worktree.id);
+      expect(threads.map((thread) => thread.id)).toEqual([mainThread!.id, newerThread.id]);
     });
   });
 });

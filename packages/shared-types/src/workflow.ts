@@ -109,46 +109,176 @@ export const ChatEventSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
-export const ChatMessagesPageInfoSchema = z.object({
-  hasMoreOlder: z.boolean(),
-  nextBeforeSeq: z.number().int().nonnegative().nullable(),
-  oldestSeq: z.number().int().nonnegative().nullable(),
+
+export const AssistantRenderHintSchema = z.enum(["markdown", "raw-file", "raw-fallback", "diff"]);
+export type AssistantRenderHint = z.infer<typeof AssistantRenderHintSchema>;
+
+export const ChatTimelineMessageItemSchema = z.object({
+  kind: z.literal("message"),
+  message: ChatMessageSchema,
+  renderHint: AssistantRenderHintSchema.optional(),
+  rawFileLanguage: z.string().optional(),
+  isCompleted: z.boolean().optional(),
+  context: z.array(ChatEventSchema).optional(),
+});
+
+export const ChatTimelinePlanFileOutputItemSchema = z.object({
+  kind: z.literal("plan-file-output"),
+  id: z.string(),
+  messageId: z.string(),
+  content: z.string(),
+  filePath: z.string(),
+  createdAt: z.string().datetime(),
+});
+
+export const ChatTimelineActivityStepSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  detail: z.string(),
+});
+
+export const ChatTimelineActivityItemSchema = z.object({
+  kind: z.literal("activity"),
+  messageId: z.string(),
+  durationSeconds: z.number(),
+  introText: z.string().nullable(),
+  steps: z.array(ChatTimelineActivityStepSchema),
+  defaultExpanded: z.boolean(),
+});
+
+export const ChatTimelineToolItemSchema = z.object({
+  kind: z.literal("tool"),
+  event: ChatEventSchema,
+});
+
+export const ChatTimelineBashCommandItemSchema = z.object({
+  kind: z.literal("bash-command"),
+  id: z.string(),
+  toolUseId: z.string(),
+  shell: z.literal("bash"),
+  command: z.string().nullable(),
+  summary: z.string().nullable(),
+  output: z.string().nullable(),
+  error: z.string().nullable(),
+  truncated: z.boolean(),
+  durationSeconds: z.number().nullable(),
+  status: z.enum(["running", "success", "failed"]),
+  rejectedByUser: z.boolean().optional(),
+});
+
+export const ChatTimelineEditedDiffItemSchema = z.object({
+  kind: z.literal("edited-diff"),
+  id: z.string(),
+  eventId: z.string(),
+  status: z.enum(["running", "success", "failed"]),
+  diffKind: z.enum(["proposed", "actual", "none"]),
+  changedFiles: z.array(z.string()),
+  diff: z.string(),
+  diffTruncated: z.boolean(),
+  additions: z.number().int(),
+  deletions: z.number().int(),
+  rejectedByUser: z.boolean().optional(),
+  createdAt: z.string().datetime(),
+});
+
+export const ChatTimelineExploreActivityEntrySchema = z.object({
+  kind: z.enum(["read", "search"]),
+  label: z.string(),
+  openPath: z.string().nullable(),
+  pending: z.boolean(),
+  orderIdx: z.number().int(),
+});
+
+export const ChatTimelineExploreActivityItemSchema = z.object({
+  kind: z.literal("explore-activity"),
+  id: z.string(),
+  status: z.enum(["running", "success"]),
+  fileCount: z.number().int(),
+  searchCount: z.number().int(),
+  entries: z.array(ChatTimelineExploreActivityEntrySchema),
+});
+
+export const ChatTimelineSubagentStepSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  detail: z.string(),
+}).passthrough();
+
+export const ChatTimelineSubagentActivityItemSchema = z.object({
+  kind: z.literal("subagent-activity"),
+  id: z.string(),
+  agentId: z.string(),
+  agentType: z.string(),
+  toolUseId: z.string(),
+  status: z.enum(["running", "success", "failed"]),
+  description: z.string(),
+  lastMessage: z.string().nullable(),
+  steps: z.array(ChatTimelineSubagentStepSchema),
+  durationSeconds: z.number().nullable(),
+});
+
+export const ChatTimelineThinkingItemSchema = z.object({
+  kind: z.literal("thinking"),
+  id: z.string(),
+  messageId: z.string(),
+  content: z.string(),
+  isStreaming: z.boolean(),
+});
+
+export const ChatTimelineErrorItemSchema = z.object({
+  kind: z.literal("error"),
+  id: z.string(),
+  message: z.string(),
+  createdAt: z.string().datetime(),
+});
+
+export const ChatTimelineItemSchema = z.discriminatedUnion("kind", [
+  ChatTimelineMessageItemSchema,
+  ChatTimelinePlanFileOutputItemSchema,
+  ChatTimelineActivityItemSchema,
+  ChatTimelineToolItemSchema,
+  ChatTimelineBashCommandItemSchema,
+  ChatTimelineEditedDiffItemSchema,
+  ChatTimelineExploreActivityItemSchema,
+  ChatTimelineSubagentActivityItemSchema,
+  ChatTimelineThinkingItemSchema,
+  ChatTimelineErrorItemSchema,
+]);
+
+export const ChatTimelineItemKindSchema = z.enum([
+  "message",
+  "plan-file-output",
+  "activity",
+  "tool",
+  "bash-command",
+  "edited-diff",
+  "explore-activity",
+  "subagent-activity",
+  "thinking",
+  "error",
+]);
+
+export const ChatTimelineSummarySchema = z.object({
+  oldestRenderableKey: z.string().nullable(),
+  oldestRenderableKind: ChatTimelineItemKindSchema.nullable(),
+  oldestRenderableMessageId: z.string().nullable(),
+  oldestRenderableHydrationPending: z.boolean(),
+  headIdentityStable: z.boolean(),
+});
+
+export const ChatTimelineSnapshotSchema = z.object({
+  timelineItems: z.array(ChatTimelineItemSchema),
+  summary: ChatTimelineSummarySchema,
   newestSeq: z.number().int().nonnegative().nullable(),
-});
-
-export const ChatEventsPageInfoSchema = z.object({
-  hasMoreOlder: z.boolean(),
-  nextBeforeIdx: z.number().int().nonnegative().nullable(),
-  oldestIdx: z.number().int().nonnegative().nullable(),
   newestIdx: z.number().int().nonnegative().nullable(),
-});
-
-export const ChatMessagesPageSchema = z.object({
-  data: z.array(ChatMessageSchema),
-  pageInfo: ChatMessagesPageInfoSchema,
-});
-
-export const ChatEventsPageSchema = z.object({
-  data: z.array(ChatEventSchema),
-  pageInfo: ChatEventsPageInfoSchema,
-});
-
-export const ChatThreadSnapshotWatermarksSchema = z.object({
-  newestSeq: z.number().int().nonnegative().nullable(),
-  newestIdx: z.number().int().nonnegative().nullable(),
-});
-
-export const ChatThreadSnapshotCoverageSchema = z.object({
-  eventsStatus: z.enum(["complete", "needs_backfill", "capped"]),
-  recommendedBackfill: z.boolean(),
-  nextBeforeIdx: z.number().int().nonnegative().nullable(),
+  messages: z.array(ChatMessageSchema),
+  events: z.array(ChatEventSchema),
 });
 
 export const ChatThreadSnapshotSchema = z.object({
-  messages: ChatMessagesPageSchema,
-  events: ChatEventsPageSchema,
-  watermarks: ChatThreadSnapshotWatermarksSchema,
-  coverage: ChatThreadSnapshotCoverageSchema,
+  messages: z.array(ChatMessageSchema),
+  events: z.array(ChatEventSchema),
+  timeline: ChatTimelineSnapshotSchema,
 });
 
 export const CreateRepositoryInputSchema = z.object({
@@ -241,12 +371,23 @@ export type Worktree = z.infer<typeof WorktreeSchema>;
 export type ChatThread = z.infer<typeof ChatThreadSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type ChatEvent = z.infer<typeof ChatEventSchema>;
-export type ChatMessagesPageInfo = z.infer<typeof ChatMessagesPageInfoSchema>;
-export type ChatEventsPageInfo = z.infer<typeof ChatEventsPageInfoSchema>;
-export type ChatMessagesPage = z.infer<typeof ChatMessagesPageSchema>;
-export type ChatEventsPage = z.infer<typeof ChatEventsPageSchema>;
-export type ChatThreadSnapshotWatermarks = z.infer<typeof ChatThreadSnapshotWatermarksSchema>;
-export type ChatThreadSnapshotCoverage = z.infer<typeof ChatThreadSnapshotCoverageSchema>;
+export type ChatTimelineItemKind = z.infer<typeof ChatTimelineItemKindSchema>;
+export type ChatTimelineMessageItem = z.infer<typeof ChatTimelineMessageItemSchema>;
+export type ChatTimelinePlanFileOutputItem = z.infer<typeof ChatTimelinePlanFileOutputItemSchema>;
+export type ChatTimelineActivityStep = z.infer<typeof ChatTimelineActivityStepSchema>;
+export type ChatTimelineActivityItem = z.infer<typeof ChatTimelineActivityItemSchema>;
+export type ChatTimelineToolItem = z.infer<typeof ChatTimelineToolItemSchema>;
+export type ChatTimelineBashCommandItem = z.infer<typeof ChatTimelineBashCommandItemSchema>;
+export type ChatTimelineEditedDiffItem = z.infer<typeof ChatTimelineEditedDiffItemSchema>;
+export type ChatTimelineExploreActivityEntry = z.infer<typeof ChatTimelineExploreActivityEntrySchema>;
+export type ChatTimelineExploreActivityItem = z.infer<typeof ChatTimelineExploreActivityItemSchema>;
+export type ChatTimelineSubagentStep = z.infer<typeof ChatTimelineSubagentStepSchema>;
+export type ChatTimelineSubagentActivityItem = z.infer<typeof ChatTimelineSubagentActivityItemSchema>;
+export type ChatTimelineThinkingItem = z.infer<typeof ChatTimelineThinkingItemSchema>;
+export type ChatTimelineErrorItem = z.infer<typeof ChatTimelineErrorItemSchema>;
+export type ChatTimelineItem = z.infer<typeof ChatTimelineItemSchema>;
+export type ChatTimelineSummary = z.infer<typeof ChatTimelineSummarySchema>;
+export type ChatTimelineSnapshot = z.infer<typeof ChatTimelineSnapshotSchema>;
 export type ChatThreadSnapshot = z.infer<typeof ChatThreadSnapshotSchema>;
 export type CreateRepositoryInput = z.infer<typeof CreateRepositoryInputSchema>;
 export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInputSchema>;

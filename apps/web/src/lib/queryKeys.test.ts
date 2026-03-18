@@ -30,8 +30,12 @@ describe("queryKeys", () => {
     expect(queryKeys.threads.list("w1")).toEqual(["threads", "list", "w1"]);
   });
 
-  it("threads.snapshot includes threadId", () => {
-    expect(queryKeys.threads.snapshot("t1")).toEqual(["threads", "t1", "snapshot"]);
+  it("threads.timelineSnapshot includes threadId", () => {
+    expect(queryKeys.threads.timelineSnapshot("t1")).toEqual(["threads", "t1", "timelineSnapshot"]);
+  });
+
+  it("threads.statusSnapshot includes threadId", () => {
+    expect(queryKeys.threads.statusSnapshot("t1")).toEqual(["threads", "t1", "statusSnapshot"]);
   });
 
   it("threads.messages includes threadId", () => {

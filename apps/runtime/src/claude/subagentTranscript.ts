@@ -11,6 +11,24 @@ export type SubagentTranscriptResult = {
  * Parses a subagent transcript in JSONL format and extracts the description
  * (first user message) and lastMessage (last assistant text or result entry).
  */
+function extractTextContent(value: unknown): string {
+    if (typeof value === "string") {
+        return value.trim();
+    }
+
+    if (!Array.isArray(value)) {
+        return "";
+    }
+
+    const textParts = value
+        .filter((block: unknown): block is { type?: string; text?: string } => typeof block === "object" && block !== null)
+        .filter((block) => block.type === "text" && typeof block.text === "string")
+        .map((block) => block.text!.trim())
+        .filter((part) => part.length > 0);
+
+    return textParts.join("\n").trim();
+}
+
 export function parseSubagentTranscript(content: string): SubagentTranscriptResult {
     let description = "";
     let lastMessage = "";
@@ -19,42 +37,33 @@ export function parseSubagentTranscript(content: string): SubagentTranscriptResu
 
     for (const line of lines) {
         try {
-            const entry = JSON.parse(line);
+            const entry = JSON.parse(line) as {
+                type?: string;
+                message?: {
+                    role?: string;
+                    content?: unknown;
+                };
+                result?: unknown;
+            };
 
-            // First user message content is the prompt/description
-            if (!description && entry.type === "user" && entry.message?.content) {
-                const msgContent = entry.message.content;
-                if (typeof msgContent === "string") {
-                    description = msgContent.trim();
-                } else if (Array.isArray(msgContent)) {
-                    const textParts = msgContent
-                        .filter((b: { type: string }) => b.type === "text")
-                        .map((b: { text: string }) => b.text);
-                    if (textParts.length > 0) {
-                        description = textParts.join("\n").trim();
-                    }
+            if (!description && entry.type === "user") {
+                description = extractTextContent(entry.message?.content);
+            }
+
+            if (entry.message?.role === "assistant") {
+                const assistantText = extractTextContent(entry.message?.content);
+                if (assistantText.length > 0) {
+                    lastMessage = assistantText;
                 }
             }
 
-            // Track last assistant text as response
-            if (entry.message?.role === "assistant" && entry.message?.content) {
-                const contentArr = Array.isArray(entry.message.content)
-                    ? entry.message.content
-                    : [];
-                const textBlocks = contentArr.filter(
-                    (b: { type: string }) => b.type === "text",
-                );
-                if (textBlocks.length > 0) {
-                    lastMessage = textBlocks
-                        .map((b: { text: string }) => b.text)
-                        .join("\n")
-                        .trim();
+            if (entry.type === "result") {
+                const resultText = typeof entry.result === "string"
+                    ? entry.result.trim()
+                    : "";
+                if (resultText.length > 0) {
+                    lastMessage = resultText;
                 }
-            }
-
-            // Also check 'result' type entries
-            if (entry.type === "result" && typeof entry.result === "string" && entry.result.trim()) {
-                lastMessage = entry.result.trim();
             }
         } catch {
             // Skip malformed JSONL lines

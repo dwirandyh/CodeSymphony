@@ -14,6 +14,7 @@ import { useFilesystemBrowse } from "./useFilesystemBrowse";
 import { useInstalledApps } from "./useInstalledApps";
 import { useFileContents } from "./useFileContents";
 import { useFileIndexQuery } from "./useFileIndexQuery";
+import { useWorktreeStatuses } from "./useWorktreeStatuses";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -30,6 +31,29 @@ vi.mock("../../lib/api", () => ({
     getFileIndex: vi.fn().mockResolvedValue([]),
   },
 }));
+
+const repoFixture = [{
+  id: "r1",
+  name: "repo",
+  rootPath: "/repo",
+  defaultBranch: "main",
+  setupScript: null,
+  teardownScript: null,
+  runScript: null,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+  worktrees: [{
+    id: "wt-1",
+    repositoryId: "r1",
+    branch: "main",
+    path: "/repo",
+    baseBranch: "main",
+    status: "active",
+    branchRenamed: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  }],
+}];
 
 let container: HTMLDivElement;
 let root: Root;
@@ -122,6 +146,11 @@ describe("query hooks", () => {
 
   it("useFileIndexQuery renders", () => {
     renderHook(useFileIndexQuery as (...a: unknown[]) => unknown, ["wt-1"]);
+    expect(container.textContent).toBe("ok");
+  });
+
+  it("useWorktreeStatuses renders", () => {
+    renderHook(useWorktreeStatuses as (...a: unknown[]) => unknown, [repoFixture]);
     expect(container.textContent).toBe("ok");
   });
 });

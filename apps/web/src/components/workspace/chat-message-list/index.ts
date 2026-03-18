@@ -5,8 +5,6 @@ export type {
   ActivityTraceStep,
   ChatTimelineItem,
   ChatTimelineSummary,
-  LoadOlderRequestMetadata,
-  LoadOlderRequestResult,
   ChatMessageListProps,
   AnsiSegment,
   AnsiStyleState,

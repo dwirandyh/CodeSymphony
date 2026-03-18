@@ -3,15 +3,17 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { useWorkspaceTimeline, type TimelineRefs, type WorkspaceTimelineResult } from "./workspace-timeline";
+import { extractSubagentExploreGroups } from "./workspace-timeline/subagentExploreExtraction";
+
+const { pushRenderDebugMock } = vi.hoisted(() => ({
+  pushRenderDebugMock: vi.fn(),
+}));
 
 vi.mock("../../../lib/renderDebug", () => ({
-  pushRenderDebug: vi.fn(),
+  pushRenderDebug: pushRenderDebugMock,
   isRenderDebugEnabled: () => false,
 }));
 
-vi.mock("../../../lib/debugLog", () => ({
-  debugLog: vi.fn(),
-}));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -58,7 +60,7 @@ function makeRefs(): TimelineRefs {
     stickyRawFallbackMessageIds: new Set(),
     renderDecisionByMessageId: new Map(),
     loggedOrphanEventIdsByThread: new Map(),
-    loggedFirstInsertOrderByMessageId: new Set(),
+    claimedContextEventIdsByThreadMessage: new Map(),
   };
 }
 
@@ -88,6 +90,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  pushRenderDebugMock.mockClear();
 });
 
 describe("useWorkspaceTimeline", () => {
@@ -134,29 +137,124 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("processes tool events into bash-command items", () => {
-    const messages = [makeMessage("m1", 1, "user", "Hi"), makeMessage("m2", 2, "assistant", "Running...")];
+  it("processes orphan bash tool events into unified tool items", () => {
+    const messages = [makeMessage("m1", 1, "user", "Hi")];
     const events = [
       makeEvent(0, "tool.started", {
         toolName: "Bash",
         toolUseId: "tu-1",
-        toolInput: { command: "ls -la" },
-      }, "m2"),
+        toolInput: { command: "pwd" },
+      }, null),
       makeEvent(1, "tool.output", {
+        toolName: "Bash",
         toolUseId: "tu-1",
         output: "file1.ts\nfile2.ts",
-      }, "m2"),
+        elapsedTimeSeconds: 0.5,
+      }, null),
       makeEvent(2, "tool.finished", {
+        toolName: "Bash",
         toolUseId: "tu-1",
-        duration_seconds: 0.5,
+        summary: "Ran pwd",
+        output: "file1.ts\nfile2.ts",
         error: null,
-      }, "m2"),
+      }, null),
     ];
     act(() => {
       root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
     });
-    const bashItems = hookResult.items.filter((i) => i.kind === "bash-command");
-    expect(bashItems.length).toBeGreaterThanOrEqual(0);
+    const toolItems = hookResult.items.filter((i) => i.kind === "tool");
+    expect(toolItems.length).toBeGreaterThan(0);
+    const bashItems = toolItems.filter((item) => item.kind === "tool" && item.shell === "bash");
+    expect(bashItems.length).toBeGreaterThan(0);
+    expect(bashItems.some((item) => item.command === "pwd")).toBe(true);
+  });
+
+  it("routes mixed bash chains as normal tool items, not explore activity", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "run command"),
+      makeMessage("m2", 2, "assistant", "done"),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "tu-mixed",
+        toolInput: { command: "ls && rm -rf tmp && ls" },
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        toolName: "Bash",
+        toolUseId: "tu-mixed",
+        precedingToolUseIds: ["tu-mixed"],
+        summary: "Ran ls && rm -rf tmp && ls",
+        output: "ok",
+        error: null,
+      }, "m2"),
+      makeEvent(2, "message.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const bashTools = items.filter((item) => item.kind === "tool" && item.shell === "bash");
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+
+    expect(bashTools).toHaveLength(1);
+    expect(exploreItems).toHaveLength(0);
+    expect(bashTools[0].kind === "tool" ? bashTools[0].command : null).toBe("ls && rm -rf tmp && ls");
+  });
+
+  it("routes mixed bash chains with non-explore prefix as normal tool items", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "run command"),
+      makeMessage("m2", 2, "assistant", "done"),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "tu-mixed-prefix",
+        toolInput: { command: "echo hi && ls" },
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        toolName: "Bash",
+        toolUseId: "tu-mixed-prefix",
+        precedingToolUseIds: ["tu-mixed-prefix"],
+        summary: "Ran echo hi && ls",
+      }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const bashTools = items.filter((item) => item.kind === "tool" && item.shell === "bash");
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+
+    expect(bashTools).toHaveLength(1);
+    expect(exploreItems).toHaveLength(0);
+  });
+
+  it("keeps pure explore bash chains in subagent activity", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect files"),
+      makeMessage("m2", 2, "assistant", "checking"),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "tu-explore",
+        toolInput: { command: "ls && find . -name '*.ts'" },
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        toolName: "Bash",
+        toolUseId: "tu-explore",
+        precedingToolUseIds: ["tu-explore"],
+        summary: "Ran ls && find . -name '*.ts'",
+        output: "src/app.ts",
+        error: null,
+      }, "m2"),
+      makeEvent(2, "message.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const bashTools = items.filter((item) => item.kind === "tool" && item.shell === "bash");
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+
+    expect(exploreItems.length).toBeGreaterThan(0);
+    expect(bashTools).toHaveLength(0);
   });
 
   it("processes Edit tool events", () => {
@@ -237,6 +335,66 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items.length).toBeGreaterThan(0);
   });
 
+  it("keeps subagent-owned explore work out of top-level explore cards and backfills prompt from finish", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "Inspect the codebase"),
+      makeMessage("m2", 2, "assistant", "Working on it"),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Task",
+        toolUseId: "call-task-1",
+      }, "m2"),
+      makeEvent(1, "subagent.started", {
+        toolUseId: "subagent-1",
+        agentId: "agent-1",
+        agentType: "Explore",
+        description: "",
+      }, "m2"),
+      makeEvent(2, "tool.started", {
+        toolName: "Read",
+        toolUseId: "read-1",
+        parentToolUseId: "subagent-1",
+        toolInput: { file_path: "src/app.ts" },
+      }, "m2"),
+      makeEvent(3, "tool.finished", {
+        toolName: "Read",
+        toolUseId: "read-1-finished",
+        precedingToolUseIds: ["read-1"],
+        summary: "Read src/app.ts",
+      }, "m2"),
+      makeEvent(4, "tool.started", {
+        toolName: "Glob",
+        toolUseId: "glob-1",
+        parentToolUseId: "subagent-1",
+        searchParams: "src/**/*.ts",
+      }, "m2"),
+      makeEvent(5, "tool.finished", {
+        toolName: "Glob",
+        toolUseId: "glob-1-finished",
+        precedingToolUseIds: ["glob-1"],
+        summary: "Completed Glob",
+      }, "m2"),
+      makeEvent(6, "subagent.finished", {
+        toolUseId: "subagent-1",
+        description: "Inspect the codebase and report what you found",
+        lastMessage: "Found the relevant files.",
+      }, "m2"),
+      makeEvent(7, "message.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const topLevelExplore = items.filter((item) => item.kind === "explore-activity");
+    const subagentItems = items.filter((item) => item.kind === "subagent-activity");
+
+    expect(topLevelExplore).toHaveLength(0);
+    expect(subagentItems).toHaveLength(1);
+    expect(subagentItems[0].kind === "subagent-activity" ? subagentItems[0].description : "").toBe(
+      "Inspect the codebase and report what you found",
+    );
+    expect(subagentItems[0].kind === "subagent-activity" ? subagentItems[0].steps.length : 0).toBe(2);
+  });
+
   it("processes chat.completed event", () => {
     const messages = [makeMessage("m1", 1, "user", "Hi"), makeMessage("m2", 2, "assistant", "Done")];
     const events = [
@@ -293,7 +451,7 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.hasIncompleteCoverage).toBe(firstCoverage);
   });
 
-  it("handles Read tool events for explore activity", () => {
+  it("handles Read tool events for subagent activity", () => {
     const messages = [makeMessage("m1", 1, "user", "Read"), makeMessage("m2", 2, "assistant", "Reading...")];
     const events = [
       makeEvent(0, "tool.started", {
@@ -503,7 +661,7 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
   });
 
-  it("reuses the previous timeline result for prepend-only hydration changes when the head is stable", () => {
+  it("recomputes prepend-only hydration changes so newly prepended items can render during hydration", () => {
     const refs = makeRefs();
     const messages = [
       makeMessage("m1", 1, "user", "inspect"),
@@ -528,8 +686,241 @@ describe("useWorkspaceTimeline", () => {
     });
 
     expect(previousSummary.headIdentityStable).toBe(true);
-    expect(hookResult).toBe(previousResult);
-    expect(hookResult.summary).toBe(previousSummary);
-    expect(hookResult.summary.oldestRenderableMessageId).toBe("m1");
+    expect(hookResult).not.toBe(previousResult);
+    expect(hookResult.summary).not.toBe(previousSummary);
+    expect(hookResult.summary.headIdentityStable).toBe(false);
+    expect(hookResult.summary.oldestRenderableKind).not.toBe("message");
+    expect(hookResult.summary.oldestRenderableMessageId).toBeNull();
+    expect(
+      hookResult.items.some((item) => item.kind === "tool" || item.kind === "subagent-activity" || item.kind === "explore-activity"),
+    ).toBe(true);
+    expect(hookResult.items.some((item) => item.kind === "message" && item.message.id === "m1")).toBe(true);
+  });
+
+  it("renders overlapping subagents as separate cards without cross-claim", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "run overlapping tasks"),
+      makeMessage("m2", 2, "assistant", "running"),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Task", toolUseId: "call_1" }, "m2"),
+      makeEvent(2, "subagent.started", { toolUseId: "sa-1", agentId: "agent-1", agentType: "explore", description: "First" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "Task", toolUseId: "call_2" }, "m2"),
+      makeEvent(4, "subagent.started", { toolUseId: "sa-2", agentId: "agent-2", agentType: "explore", description: "Second" }, "m2"),
+      makeEvent(5, "tool.started", { toolName: "Read", toolUseId: "child-a", parentToolUseId: "sa-1", summary: "Read /src/a.ts" }, "m2"),
+      makeEvent(6, "tool.finished", { toolName: "Read", toolUseId: "child-a-done", precedingToolUseIds: ["child-a"], summary: "Read /src/a.ts" }, "m2"),
+      makeEvent(7, "tool.started", { toolName: "Read", toolUseId: "child-b", parentToolUseId: "sa-2", summary: "Read /src/b.ts" }, "m2"),
+      makeEvent(8, "tool.finished", { toolName: "Read", toolUseId: "child-b-done", precedingToolUseIds: ["child-b"], summary: "Read /src/b.ts" }, "m2"),
+      makeEvent(9, "subagent.finished", { toolUseId: "sa-1", lastMessage: "done 1" }, "m2"),
+      makeEvent(10, "subagent.finished", { toolUseId: "sa-2", lastMessage: "done 2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const subagentItems = items.filter((item) => item.kind === "subagent-activity");
+
+    expect(subagentItems).toHaveLength(2);
+    const first = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-1");
+    const second = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-2");
+
+    expect(first?.kind === "subagent-activity" ? first.steps.some((step) => step.label.includes("a.ts")) : false).toBe(true);
+    expect(first?.kind === "subagent-activity" ? first.steps.some((step) => step.label.includes("b.ts")) : false).toBe(false);
+    expect(second?.kind === "subagent-activity" ? second.steps.some((step) => step.label.includes("b.ts")) : false).toBe(true);
+    expect(second?.kind === "subagent-activity" ? second.steps.some((step) => step.label.includes("a.ts")) : false).toBe(false);
+  });
+
+  it("extractSubagentExploreGroups quarantines overlap-unresolved events and marks them claimed", () => {
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Task", toolUseId: "call_1" }, "m2"),
+      makeEvent(2, "subagent.started", { toolUseId: "sa-1", agentId: "agent-1", agentType: "explore", description: "First" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "Task", toolUseId: "call_2" }, "m2"),
+      makeEvent(4, "subagent.started", { toolUseId: "sa-2", agentId: "agent-2", agentType: "explore", description: "Second" }, "m2"),
+      makeEvent(5, "tool.started", {
+        toolName: "Read",
+        toolUseId: "ambiguous-read",
+        ownershipReason: "unresolved_overlap_no_lineage",
+        activeSubagentToolUseIds: ["sa-1", "sa-2"],
+      }, "m2"),
+      makeEvent(6, "tool.finished", {
+        toolName: "Read",
+        toolUseId: "ambiguous-read-done",
+        precedingToolUseIds: ["ambiguous-read"],
+        summary: "Read maybe",
+        ownershipReason: "unresolved_overlap_no_lineage",
+        activeSubagentToolUseIds: ["sa-1", "sa-2"],
+      }, "m2"),
+      makeEvent(7, "subagent.finished", { toolUseId: "sa-1", lastMessage: "done 1" }, "m2"),
+      makeEvent(8, "subagent.finished", { toolUseId: "sa-2", lastMessage: "done 2" }, "m2"),
+    ];
+
+    const extracted = extractSubagentExploreGroups(events);
+
+    expect(extracted.exploreActivityGroups).toHaveLength(0);
+    expect([...extracted.overlapUnclaimedEventIds]).toEqual(["e-5", "e-6"]);
+    expect(extracted.claimedContextEventIds.has("e-5")).toBe(true);
+    expect(extracted.claimedContextEventIds.has("e-6")).toBe(true);
+    expect(extracted.unclaimedContextEventIds).toEqual([]);
+  });
+
+  it("quarantines overlap-unresolved tool events instead of routing them to explore activity", () => {
+    pushRenderDebugMock.mockClear();
+    const messages = [
+      makeMessage("m1", 1, "user", "run overlapping tasks"),
+      makeMessage("m2", 2, "assistant", "running"),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Task", toolUseId: "call_1" }, "m2"),
+      makeEvent(2, "subagent.started", { toolUseId: "sa-1", agentId: "agent-1", agentType: "explore", description: "First" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "Task", toolUseId: "call_2" }, "m2"),
+      makeEvent(4, "subagent.started", { toolUseId: "sa-2", agentId: "agent-2", agentType: "explore", description: "Second" }, "m2"),
+      makeEvent(5, "tool.started", {
+        toolName: "Read",
+        toolUseId: "ambiguous-read",
+        ownershipReason: "unresolved_ambiguous_candidates",
+        ownershipCandidates: ["sa-1", "sa-2"],
+        activeSubagentToolUseIds: ["sa-1", "sa-2"],
+      }, "m2"),
+      makeEvent(6, "tool.finished", {
+        toolName: "Read",
+        toolUseId: "ambiguous-read-done",
+        summary: "Read maybe",
+        ownershipReason: "unresolved_ambiguous_candidates",
+        ownershipCandidates: ["sa-1", "sa-2"],
+        activeSubagentToolUseIds: ["sa-1", "sa-2"],
+      }, "m2"),
+      makeEvent(7, "subagent.finished", { toolUseId: "sa-1", lastMessage: "done 1" }, "m2"),
+      makeEvent(8, "subagent.finished", { toolUseId: "sa-2", lastMessage: "done 2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const subagentItems = items.filter((item) => item.kind === "subagent-activity");
+    const first = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-1");
+    const second = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-2");
+
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(first?.kind === "subagent-activity" ? first.steps.some((step) => step.toolUseId.includes("ambiguous-read")) : false).toBe(false);
+    expect(second?.kind === "subagent-activity" ? second.steps.some((step) => step.toolUseId.includes("ambiguous-read")) : false).toBe(false);
+
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+    expect(exploreItems).toHaveLength(0);
+    const orphanTool = items.find(
+      (item) => item.kind === "tool" && item.toolUseId === "ambiguous-read",
+    );
+    expect(orphanTool).toBeUndefined();
+
+    const debugEntries = pushRenderDebugMock.mock.calls
+      .map(([entry]) => entry as { source?: string; event?: string; details?: Record<string, unknown> });
+
+    const extractionDebugCalls = debugEntries
+      .filter((entry) => entry.source === "useWorkspaceTimeline" && entry.event === "subagentExploreExtraction");
+    expect(extractionDebugCalls.length).toBeGreaterThan(0);
+    const lastExtraction = extractionDebugCalls[extractionDebugCalls.length - 1];
+    const exploreEventIds = (lastExtraction.details?.exploreEventIds as string[] | undefined) ?? [];
+    expect(exploreEventIds).not.toContain("e-5");
+
+    const quarantinedEntries = debugEntries
+      .filter((entry) => entry.source === "timelineOrphans" && entry.event === "quarantinedOverlapSubagentExploreEvents");
+    expect(quarantinedEntries).toHaveLength(0);
+
+    const unclaimedToolEvents = debugEntries
+      .filter((entry) => entry.source === "subagentUtils" && entry.event === "unclaimedToolEvent")
+      .map((entry) => entry.details as { eventId?: string; reasonCode?: string });
+    expect(
+      unclaimedToolEvents.some((entry) => entry.eventId === "e-5" && typeof entry.reasonCode === "string" && entry.reasonCode.startsWith("unclaimed_")),
+    ).toBe(true);
+  });
+
+  it("keeps overlapping read events in subagent card when ownership arrives only on finish", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "run overlapping tasks"),
+      makeMessage("m2", 2, "assistant", "running"),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Task", toolUseId: "call_1" }, "m2"),
+      makeEvent(2, "subagent.started", { toolUseId: "sa-1", agentId: "agent-1", agentType: "explore", description: "First" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "Task", toolUseId: "call_2" }, "m2"),
+      makeEvent(4, "subagent.started", { toolUseId: "sa-2", agentId: "agent-2", agentType: "explore", description: "Second" }, "m2"),
+      makeEvent(5, "tool.started", { toolName: "Read", toolUseId: "late-owned-read" }, "m2"),
+      makeEvent(6, "tool.finished", {
+        toolName: "Read",
+        toolUseId: "late-owned-read-finished",
+        precedingToolUseIds: ["late-owned-read"],
+        summary: "Read src/a.ts",
+        subagentOwnerToolUseId: "sa-1",
+        launcherToolUseId: "call_1",
+        ownershipReason: "resolved_tool_use_id",
+      }, "m2"),
+      makeEvent(7, "subagent.finished", { toolUseId: "sa-1", lastMessage: "done 1" }, "m2"),
+      makeEvent(8, "subagent.finished", { toolUseId: "sa-2", lastMessage: "done 2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+    expect(exploreItems).toHaveLength(0);
+
+    const subagentItems = items.filter((item) => item.kind === "subagent-activity");
+    const first = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-1");
+    const second = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-2");
+
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(first?.kind === "subagent-activity" ? first.steps.some((step) => step.label.includes("a.ts")) : false).toBe(true);
+    expect(second?.kind === "subagent-activity" ? second.steps.some((step) => step.label.includes("a.ts")) : false).toBe(false);
+  });
+
+  it("keeps concurrent subagent permission events inside subagent cards without top-level leaked bash cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "run overlapping tasks"),
+      makeMessage("m2", 2, "assistant", "running"),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Task", toolUseId: "call_1" }, "m2"),
+      makeEvent(2, "subagent.started", { toolUseId: "sa-1", agentId: "agent-1", agentType: "explore", description: "First" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "Task", toolUseId: "call_2" }, "m2"),
+      makeEvent(4, "subagent.started", { toolUseId: "sa-2", agentId: "agent-2", agentType: "explore", description: "Second" }, "m2"),
+      makeEvent(5, "permission.requested", {
+        requestId: "req-1",
+        toolName: "Bash",
+        command: "ls",
+        subagentOwnerToolUseId: "sa-1",
+        launcherToolUseId: "call_1",
+      }, "m2"),
+      makeEvent(6, "permission.resolved", {
+        requestId: "req-1",
+        decision: "deny",
+        message: "Rejected 1",
+        subagentOwnerToolUseId: "sa-1",
+        launcherToolUseId: "call_1",
+      }, "m2"),
+      makeEvent(7, "permission.requested", {
+        requestId: "req-2",
+        toolName: "Bash",
+        command: "pwd",
+        subagentOwnerToolUseId: "sa-2",
+        launcherToolUseId: "call_2",
+      }, "m2"),
+      makeEvent(8, "permission.resolved", {
+        requestId: "req-2",
+        decision: "deny",
+        message: "Rejected 2",
+        subagentOwnerToolUseId: "sa-2",
+        launcherToolUseId: "call_2",
+      }, "m2"),
+      makeEvent(9, "subagent.finished", { toolUseId: "sa-1", lastMessage: "done 1" }, "m2"),
+      makeEvent(10, "subagent.finished", { toolUseId: "sa-2", lastMessage: "done 2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const subagentItems = items.filter((item) => item.kind === "subagent-activity");
+    const topLevelBash = items.filter((item) => item.kind === "tool" && item.shell === "bash");
+
+    expect(subagentItems).toHaveLength(2);
+    expect(topLevelBash).toHaveLength(0);
+
+    const first = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-1");
+    const second = subagentItems.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-2");
+
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
   });
 });

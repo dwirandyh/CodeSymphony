@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { extractSubagentGroups } from "./subagentUtils";
+import { extractSubagentGroups, getSubagentAttributionReason } from "./subagentUtils";
+import { extractExploreActivityGroups } from "./exploreUtils";
 
 function makeEvent(overrides: Partial<ChatEvent> & { type: ChatEvent["type"] }): ChatEvent {
   return {
@@ -188,5 +189,367 @@ describe("extractSubagentGroups", () => {
     expect(groups[0].steps.length).toBe(1);
     expect(groups[0].eventIds.has("e2")).toBe(true);
     expect(groups[0].eventIds.has("e3")).toBe(true);
+  });
+
+  it("keeps overlap with explicit parentToolUseId separated", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "tool.started", idx: 5, payload: { toolName: "Read", toolUseId: "child-a", parentToolUseId: "sa-1" } }),
+      makeEvent({ id: "e6", type: "tool.started", idx: 6, payload: { toolName: "Read", toolUseId: "child-b", parentToolUseId: "sa-2" } }),
+      makeEvent({ id: "e7", type: "tool.finished", idx: 7, payload: { toolName: "Read", toolUseId: "child-a-done", precedingToolUseIds: ["child-a"], summary: "Read a.ts" } }),
+      makeEvent({ id: "e8", type: "tool.finished", idx: 8, payload: { toolName: "Read", toolUseId: "child-b-done", precedingToolUseIds: ["child-b"], summary: "Read b.ts" } }),
+      makeEvent({ id: "e9", type: "subagent.finished", idx: 9, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e10", type: "subagent.finished", idx: 10, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    const first = byToolUseId.get("sa-1");
+    const second = byToolUseId.get("sa-2");
+    expect(first?.steps.some((step) => step.label.includes("a.ts"))).toBe(true);
+    expect(first?.steps.some((step) => step.label.includes("b.ts"))).toBe(false);
+    expect(second?.steps.some((step) => step.label.includes("b.ts"))).toBe(true);
+    expect(second?.steps.some((step) => step.label.includes("a.ts"))).toBe(false);
+  });
+
+  it("uses precedingToolUseIds lineage during overlap when finish events have no parent", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "tool.started", idx: 5, payload: { toolName: "Read", toolUseId: "child-a", parentToolUseId: "sa-1" } }),
+      makeEvent({ id: "e6", type: "tool.started", idx: 6, payload: { toolName: "Read", toolUseId: "child-b", parentToolUseId: "sa-2" } }),
+      makeEvent({ id: "e7", type: "tool.finished", idx: 7, payload: { toolName: "Read", toolUseId: "child-a-done", precedingToolUseIds: ["child-a"], summary: "Read app/a.ts" } }),
+      makeEvent({ id: "e8", type: "tool.finished", idx: 8, payload: { toolName: "Read", toolUseId: "child-b-done", precedingToolUseIds: ["child-b"], summary: "Read app/b.ts" } }),
+      makeEvent({ id: "e9", type: "subagent.finished", idx: 9, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e10", type: "subagent.finished", idx: 10, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    const first = byToolUseId.get("sa-1");
+    const second = byToolUseId.get("sa-2");
+    expect(first?.steps.some((step) => step.label.includes("a.ts"))).toBe(true);
+    expect(second?.steps.some((step) => step.label.includes("b.ts"))).toBe(true);
+    expect(first?.eventIds.has("e8")).toBe(false);
+    expect(second?.eventIds.has("e7")).toBe(false);
+  });
+
+  it("claims overlap events via skill path hints from runtime summaries", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Agent", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "Explore .vscode directory" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Agent", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Explore finly-architecture skill" } }),
+      makeEvent({
+        id: "e5",
+        type: "tool.finished",
+        idx: 5,
+        payload: {
+          toolName: "Glob",
+          toolUseId: "skill-glob-done",
+          precedingToolUseIds: ["skill-glob"],
+          summary: "Completed Glob",
+          ownershipReason: "unresolved_overlap_no_lineage",
+          searchParams: "pattern=.claude/skills/finly-architecture/**/*",
+          launcherToolUseId: "call_2",
+        },
+      }),
+      makeEvent({
+        id: "e6",
+        type: "tool.finished",
+        idx: 6,
+        payload: {
+          toolName: "Read",
+          toolUseId: "skill-read-done",
+          precedingToolUseIds: ["skill-read"],
+          summary: "Read /repo/.claude/skills/finly-architecture/SKILL.md",
+          ownershipReason: "unresolved_overlap_no_lineage",
+          launcherToolUseId: "call_2",
+        },
+      }),
+      makeEvent({ id: "e7", type: "tool.finished", idx: 7, payload: { toolName: "Agent", toolUseId: "call_2", subagentResponse: "skill response" } }),
+      makeEvent({ id: "e8", type: "subagent.finished", idx: 8, payload: { toolUseId: "sa-2", lastMessage: "done 2", description: "Explore the .claude/skills/finly-architecture directory" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    expect(byToolUseId.get("sa-2")?.eventIds.has("e5")).toBe(true);
+    expect(byToolUseId.get("sa-2")?.eventIds.has("e6")).toBe(true);
+    expect(getSubagentAttributionReason("e5")).toBe("claimed_explicit_owner");
+    expect(getSubagentAttributionReason("e6")).toBe("claimed_explicit_owner");
+  });
+
+  it("claims overlap events via runtime ownership metadata even when parent is missing", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({
+        id: "e5",
+        type: "tool.started",
+        idx: 5,
+        payload: {
+          toolName: "Read",
+          toolUseId: "ambiguous-1",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+          ownershipReason: "resolved_subagent_path_hint",
+        },
+      }),
+      makeEvent({
+        id: "e6",
+        type: "tool.finished",
+        idx: 6,
+        payload: {
+          toolName: "Read",
+          toolUseId: "ambiguous-1-done",
+          precedingToolUseIds: ["ambiguous-1"],
+          summary: "Read maybe",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+          ownershipReason: "resolved_tool_use_id",
+        },
+      }),
+      makeEvent({ id: "e7", type: "subagent.finished", idx: 7, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e8", type: "subagent.finished", idx: 8, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    expect(byToolUseId.get("sa-1")?.eventIds.has("e5")).toBe(true);
+    expect(byToolUseId.get("sa-1")?.eventIds.has("e6")).toBe(true);
+    expect(byToolUseId.get("sa-2")?.eventIds.has("e5")).toBe(false);
+    expect(byToolUseId.get("sa-2")?.eventIds.has("e6")).toBe(false);
+    expect(getSubagentAttributionReason("e5")).toBe("claimed_explicit_owner");
+    expect(getSubagentAttributionReason("e6")).toBe("claimed_explicit_owner");
+  });
+
+  it("claims started events from finished-event explicit owner hints", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "tool.started", idx: 5, payload: { toolName: "Read", toolUseId: "child-ambiguous" } }),
+      makeEvent({
+        id: "e6",
+        type: "tool.finished",
+        idx: 6,
+        payload: {
+          toolName: "Read",
+          toolUseId: "child-ambiguous-done",
+          precedingToolUseIds: ["child-ambiguous"],
+          summary: "Read app/a.ts",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+          ownershipReason: "resolved_tool_use_id",
+        },
+      }),
+      makeEvent({ id: "e7", type: "subagent.finished", idx: 7, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e8", type: "subagent.finished", idx: 8, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    expect(byToolUseId.get("sa-1")?.eventIds.has("e5")).toBe(true);
+    expect(byToolUseId.get("sa-1")?.eventIds.has("e6")).toBe(true);
+    expect(byToolUseId.get("sa-2")?.eventIds.has("e5")).toBe(false);
+    expect(byToolUseId.get("sa-2")?.eventIds.has("e6")).toBe(false);
+    expect(getSubagentAttributionReason("e5")).toBe("claimed_explicit_owner");
+    expect(getSubagentAttributionReason("e6")).toBe("claimed_explicit_owner");
+  });
+
+  it("pairs multiple pending Task starts in FIFO order", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "tool.started", idx: 2, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e3", type: "subagent.started", idx: 3, payload: { agentId: "a1", agentType: "generalPurpose", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "generalPurpose", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "tool.finished", idx: 5, payload: { toolName: "Task", toolUseId: "call_1", subagentResponse: "first response" } }),
+      makeEvent({ id: "e6", type: "tool.finished", idx: 6, payload: { toolName: "Task", toolUseId: "call_2", subagentResponse: "second response" } }),
+      makeEvent({ id: "e7", type: "subagent.finished", idx: 7, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e8", type: "subagent.finished", idx: 8, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const byToolUseId = new Map(groups.map((group) => [group.toolUseId, group]));
+
+    const first = byToolUseId.get("sa-1");
+    const second = byToolUseId.get("sa-2");
+    expect(first?.eventIds.has("e1")).toBe(true);
+    expect(first?.eventIds.has("e5")).toBe(true);
+    expect(first?.eventIds.has("e2")).toBe(false);
+    expect(first?.eventIds.has("e6")).toBe(false);
+
+    expect(second?.eventIds.has("e2")).toBe(true);
+    expect(second?.eventIds.has("e6")).toBe(true);
+    expect(second?.eventIds.has("e1")).toBe(false);
+    expect(second?.eventIds.has("e5")).toBe(false);
+  });
+
+  it("treats Agent launcher events like Task for subagent ownership", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Agent", toolUseId: "call_agent_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "Explore", toolUseId: "sa-1", description: "" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Read", toolUseId: "child-1" } }),
+      makeEvent({ id: "e4", type: "tool.finished", idx: 4, payload: { toolName: "Read", toolUseId: "child-1-done", precedingToolUseIds: ["child-1"], summary: "Read app/README.md" } }),
+      makeEvent({ id: "e5", type: "tool.finished", idx: 5, payload: { toolName: "Agent", toolUseId: "call_agent_1", subagentResponse: "agent response" } }),
+      makeEvent({ id: "e6", type: "subagent.finished", idx: 6, payload: { toolUseId: "sa-1", description: "Recovered prompt", lastMessage: "done" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].eventIds.has("e1")).toBe(true);
+    expect(groups[0].eventIds.has("e5")).toBe(true);
+  });
+
+  it("records claimed_parent_lineage reason when parent lineage resolves ownership", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "subagent.started", idx: 1, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e2", type: "tool.started", idx: 2, payload: { toolName: "Read", toolUseId: "child-1", parentToolUseId: "sa-1" } }),
+      makeEvent({ id: "e3", type: "subagent.finished", idx: 3, payload: { toolUseId: "sa-1", lastMessage: "done" } }),
+    ];
+
+    extractSubagentGroups(events);
+    expect(getSubagentAttributionReason("e2")).toBe("claimed_parent_lineage");
+  });
+
+  it("claims permission events via explicit canonical subagent owner", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({
+        id: "e3",
+        type: "permission.requested",
+        idx: 3,
+        payload: {
+          requestId: "req-1",
+          toolName: "Bash",
+          command: "ls",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+        },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "permission.resolved",
+        idx: 4,
+        payload: {
+          requestId: "req-1",
+          decision: "deny",
+          message: "Rejected",
+          subagentOwnerToolUseId: "sa-1",
+          launcherToolUseId: "call_1",
+        },
+      }),
+      makeEvent({ id: "e5", type: "subagent.finished", idx: 5, payload: { toolUseId: "sa-1", lastMessage: "done" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].eventIds.has("e3")).toBe(true);
+    expect(groups[0].eventIds.has("e4")).toBe(true);
+  });
+
+  it("marks overlap-unresolved runtime events as overlap leak candidates", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({
+        id: "e5",
+        type: "tool.started",
+        idx: 5,
+        payload: {
+          toolName: "Read",
+          toolUseId: "child-overlap",
+          ownershipReason: "unresolved_overlap_no_lineage",
+          activeSubagentToolUseIds: ["sa-1", "sa-2"],
+        },
+      }),
+      makeEvent({ id: "e6", type: "subagent.finished", idx: 6, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e7", type: "subagent.finished", idx: 7, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const claimedEventIds = new Set(groups.flatMap((group) => [...group.eventIds]));
+    expect(claimedEventIds.has("e5")).toBe(false);
+    expect(getSubagentAttributionReason("e5")).toBe("unclaimed_overlap_no_lineage");
+  });
+
+  it("does not claim ambiguous permission events during overlap without ownership metadata", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Task", toolUseId: "call_1" } }),
+      makeEvent({ id: "e2", type: "subagent.started", idx: 2, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),
+      makeEvent({ id: "e3", type: "tool.started", idx: 3, payload: { toolName: "Task", toolUseId: "call_2" } }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a2", agentType: "explore", toolUseId: "sa-2", description: "Second" } }),
+      makeEvent({ id: "e5", type: "permission.requested", idx: 5, payload: { requestId: "req-amb", toolName: "Bash", command: "pwd" } }),
+      makeEvent({ id: "e6", type: "permission.resolved", idx: 6, payload: { requestId: "req-amb", decision: "deny", message: "Rejected" } }),
+      makeEvent({ id: "e7", type: "subagent.finished", idx: 7, payload: { toolUseId: "sa-1", lastMessage: "done 1" } }),
+      makeEvent({ id: "e8", type: "subagent.finished", idx: 8, payload: { toolUseId: "sa-2", lastMessage: "done 2" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    const claimedEventIds = new Set(groups.flatMap((group) => [...group.eventIds]));
+    expect(claimedEventIds.has("e5")).toBe(false);
+    expect(claimedEventIds.has("e6")).toBe(false);
+    expect(getSubagentAttributionReason("e5")?.startsWith("unclaimed_")).toBe(true);
+  });
+});
+
+describe("extractExploreActivityGroups", () => {
+  it("builds standalone explore groups from main-agent explore events", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: { toolName: "Read", toolUseId: "r1" },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "tool.finished",
+        idx: 2,
+        payload: { toolName: "Read", summary: "Read /src/a.ts", precedingToolUseIds: ["r1"] },
+      }),
+      makeEvent({
+        id: "e3",
+        type: "tool.started",
+        idx: 3,
+        payload: { toolName: "Glob", toolUseId: "g1", searchParams: "src/**/*.ts" },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "tool.finished",
+        idx: 4,
+        payload: { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] },
+      }),
+    ];
+
+    const groups = extractExploreActivityGroups(events);
+    expect(groups).toHaveLength(1);
+
+    const group = groups[0];
+    expect(group.fileCount).toBe(1);
+    expect(group.searchCount).toBe(1);
+    expect(group.entries).toHaveLength(2);
+
+    const claimedEventIds = new Set<string>([...group.eventIds]);
+    expect(claimedEventIds.has("e1")).toBe(true);
+    expect(claimedEventIds.has("e2")).toBe(true);
+    expect(claimedEventIds.has("e3")).toBe(true);
+    expect(claimedEventIds.has("e4")).toBe(true);
   });
 });

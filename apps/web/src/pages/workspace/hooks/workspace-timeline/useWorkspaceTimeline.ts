@@ -5,7 +5,8 @@ import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX, SENTENCE_BOUNDARY_PATTERN } f
 import { extractBashRuns } from "../../bashUtils";
 import { extractEditedRuns } from "../../editUtils";
 import { extractExploreActivityGroups } from "../../exploreUtils";
-import { extractSubagentGroups } from "../../subagentUtils";
+import { getSubagentAttributionReason } from "../../subagentUtils";
+import { extractSubagentExploreGroups } from "./subagentExploreExtraction";
 import {
   buildActivityIntroText,
   buildActivitySteps,
@@ -26,7 +27,6 @@ import {
   promptLooksLikeFileRead,
 } from "../../eventUtils";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
-import { debugLog } from "../../../../lib/debugLog";
 import type {
   TimelineRefs,
   WorkspaceTimelineResult,
@@ -53,10 +53,60 @@ import {
   processFailedEvents,
 } from "./timelineOrphans";
 
+function getTimelineItemStableKey(item: { kind: string;[key: string]: unknown }): string {
+  switch (item.kind) {
+    case "message":
+      return `message:${(item as unknown as { message: { id: string } }).message.id}`;
+    case "plan-file-output":
+      return `plan-file-output:${item.id}`;
+    case "activity":
+      return `activity:${item.messageId}`;
+    case "tool":
+      return `tool:${item.id}`;
+    case "edited-diff":
+      return `edited-diff:${item.id}`;
+    case "subagent-activity":
+      return `subagent-activity:${item.id}`;
+    case "explore-activity":
+      return `explore-activity:${item.id}`;
+    case "thinking":
+      return `thinking:${item.id}`;
+    case "error":
+      return `error:${item.id}`;
+    default:
+      return "unknown";
+  }
+}
+
 const SUBAGENT_SUMMARY_REGEX = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
 const MAIN_SUMMARY_REGEX = /###main(?:\s+agent)? summary(?:\s+start)?\n?[\s\S]*?###main(?:\s+agent)? summary end\n?/g;
 const MAIN_SUMMARY_START_MARKER = /###main(?:\s+agent)? summary(?:\s+start)?\n?/g;
 const MAIN_SUMMARY_END_MARKER = /###main(?:\s+agent)? summary end\n?/g;
+
+function compactTimelineSignatureItem(item: SortableEntry["item"]): string {
+  switch (item.kind) {
+    case "message":
+      return `message:${item.message.id}:${item.message.role}:${item.message.content.length}`;
+    case "thinking":
+      return `thinking:${item.id}:${item.content.length}`;
+    case "tool":
+      return `tool:${item.id}:${item.toolName ?? ""}:${item.status ?? ""}`;
+    case "edited-diff":
+      return `edited:${item.id}:${item.status}:${item.changedFiles.length}`;
+    case "subagent-activity":
+      return `subagent:${item.id}:${item.status}:${item.steps.length}:${item.description.trim().length}`;
+    case "explore-activity":
+      return `explore:${item.id}:${item.status}:${item.entries.length}`;
+    case "plan-file-output":
+      return `plan:${item.id}`;
+    case "activity":
+      return `activity:${item.messageId}:${item.steps.length}`;
+    case "error":
+      return `error:${item.id}`;
+    default:
+      return item.kind;
+  }
+}
 
 export function useWorkspaceTimeline(
   messages: ChatMessage[],
@@ -73,7 +123,6 @@ export function useWorkspaceTimeline(
     threadId: string | null;
     semanticHydrationInProgress: boolean;
   } | null>(null);
-  const prevInputCountsRef = useRef<{ messageCount: number; eventCount: number } | null>(null);
   const prevResultRef = useRef<WorkspaceTimelineResult>({
     items: [],
     hasIncompleteCoverage: false,
@@ -114,27 +163,6 @@ export function useWorkspaceTimeline(
     }
 
     const sortedMessages = [...messages].sort((a, b) => a.seq - b.seq);
-    const oldestMessageId = sortedMessages[0]?.id ?? null;
-    const canReusePrependOnlyHydrationResult =
-      prev !== null
-      && semanticHydrationInProgress
-      && prev.semanticHydrationInProgress
-      && prev.threadId === selectedThreadId
-      && prev.messageCount === messages.length
-      && prev.eventCount < events.length
-      && prev.lastEventIdx === lastEventIdx
-      && prevResultRef.current.summary.headIdentityStable
-      && prevResultRef.current.summary.oldestRenderableKind === "message"
-      && prevResultRef.current.summary.oldestRenderableMessageId != null
-      && prevResultRef.current.summary.oldestRenderableMessageId === oldestMessageId;
-    if (canReusePrependOnlyHydrationResult) {
-      prevFingerprintRef.current = fingerprint;
-      prevInputCountsRef.current = {
-        messageCount: messages.length,
-        eventCount: events.length,
-      };
-      return prevResultRef.current;
-    }
 
     if (disabled) {
       const disabledResult: WorkspaceTimelineResult = {
@@ -149,10 +177,6 @@ export function useWorkspaceTimeline(
         },
       };
       prevFingerprintRef.current = fingerprint;
-      prevInputCountsRef.current = {
-        messageCount: messages.length,
-        eventCount: events.length,
-      };
       prevResultRef.current = disabledResult;
       return disabledResult;
     }
@@ -212,8 +236,8 @@ export function useWorkspaceTimeline(
           && e.type === "tool.finished"
           && isPlanFilePath(
             payloadStringOrNull(e.payload.editTarget)
-              ?? payloadStringOrNull(e.payload.file_path)
-              ?? "",
+            ?? payloadStringOrNull(e.payload.file_path)
+            ?? "",
           )
         );
         if (realWrite) {
@@ -472,10 +496,75 @@ export function useWorkspaceTimeline(
           })()
           : undefined;
 
-      const subagentGroups = message.role === "assistant" ? extractSubagentGroups(context) : [];
-      const subagentEventIds = new Set<string>();
+      const deltaEventsForAgent = message.role === "assistant"
+        ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
+        : [];
+      const thinkingEventsForAgent = message.role === "assistant"
+        ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
+        : [];
+      const contextWithAgentBoundaries = (deltaEventsForAgent.length > 0 || thinkingEventsForAgent.length > 0)
+        ? [...context, ...thinkingEventsForAgent, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
+        : context;
+      const claimedContextCacheKey = selectedThreadId && message.role === "assistant"
+        ? `${selectedThreadId}:${message.id}`
+        : null;
+      const previousClaimedContextEventIds = claimedContextCacheKey && refs.claimedContextEventIdsByThreadMessage
+        ? refs.claimedContextEventIdsByThreadMessage.get(claimedContextCacheKey)
+        : undefined;
+      const subagentExploreExtraction = message.role === "assistant"
+        ? extractSubagentExploreGroups(contextWithAgentBoundaries, {
+          previousClaimedContextEventIds,
+        })
+        : null;
+      const subagentGroups = subagentExploreExtraction?.subagentGroups ?? [];
+      const subagentEventIds = subagentExploreExtraction?.subagentEventIds ?? new Set<string>();
+      const exploreActivityGroups = subagentExploreExtraction?.exploreActivityGroups ?? [];
+      const exploreEventIds = subagentExploreExtraction?.exploreEventIds ?? new Set<string>();
+      const overlapUnclaimedEventIds = subagentExploreExtraction?.overlapUnclaimedEventIds ?? new Set<string>();
+      const claimedContextEventIds = subagentExploreExtraction?.claimedContextEventIds ?? new Set<string>();
+      if (claimedContextCacheKey && refs.claimedContextEventIdsByThreadMessage) {
+        refs.claimedContextEventIdsByThreadMessage.set(claimedContextCacheKey, new Set(claimedContextEventIds));
+      }
+
+      if (message.role === "assistant" && (subagentGroups.length > 0 || exploreActivityGroups.length > 0 || claimedContextEventIds.size > 0)) {
+        pushRenderDebug({
+          source: "useWorkspaceTimeline",
+          event: "subagentExploreExtraction",
+          messageId: message.id,
+          details: {
+            subagentGroups: subagentGroups.map((group) => ({
+              id: group.id,
+              toolUseId: group.toolUseId,
+              descriptionLen: group.description.trim().length,
+              steps: group.steps.length,
+              eventIds: [...group.eventIds],
+            })),
+            exploreActivityGroups: exploreActivityGroups.map((group) => ({
+              id: group.id,
+              status: group.status,
+              entries: group.entries.length,
+              eventIds: [...group.eventIds],
+            })),
+            claimedEventIds: [...subagentEventIds],
+            exploreEventIds: [...exploreEventIds],
+            claimedContextEventIds: [...claimedContextEventIds],
+            unclaimedEventIds: subagentExploreExtraction?.unclaimedContextEventIds ?? [],
+            unclaimedReasons: (subagentExploreExtraction?.unclaimedContextEventIds ?? [])
+              .map((eventId) => ({
+                eventId,
+                reasonCode: getSubagentAttributionReason(eventId),
+              }))
+              .filter((entry) => entry.reasonCode !== null),
+          },
+        });
+      }
+      const agentEventIds = new Set<string>(claimedContextEventIds);
+      overlapUnclaimedEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
       for (const group of subagentGroups) {
-        group.eventIds.forEach((id) => subagentEventIds.add(id));
+        group.eventIds.forEach((id) => agentEventIds.add(id));
+      }
+      for (const group of exploreActivityGroups) {
+        group.eventIds.forEach((id) => agentEventIds.add(id));
       }
       const subagentSummaryRegex = SUBAGENT_SUMMARY_REGEX;
       const mainSummaryStartMarker = MAIN_SUMMARY_START_MARKER;
@@ -515,7 +604,7 @@ export function useWorkspaceTimeline(
           .trim();
       }
       const nonSubagentContext = message.role === "assistant"
-        ? context.filter((event) => !subagentEventIds.has(event.id))
+        ? context.filter((event) => !agentEventIds.has(event.id))
         : context;
 
       const allBashRuns = message.role === "assistant" ? extractBashRuns(nonSubagentContext) : [];
@@ -579,24 +668,8 @@ export function useWorkspaceTimeline(
           return true;
         })
         : nonSubagentContext;
-      const exploreContext = nonBashContext.filter((event) => !isWorktreeDiffEvent(event));
-      const deltaEventsForExplore = message.role === "assistant"
-        ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
-        : [];
-      const thinkingEventsForExplore = message.role === "assistant"
-        ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
-        : [];
-      const exploreContextWithDeltas = (deltaEventsForExplore.length > 0 || thinkingEventsForExplore.length > 0)
-        ? [...exploreContext, ...thinkingEventsForExplore, ...deltaEventsForExplore].sort((a, b) => a.idx - b.idx)
-        : exploreContext;
-      const exploreActivityGroups = message.role === "assistant" ? extractExploreActivityGroups(exploreContextWithDeltas) : [];
-
-      const exploreEventIds = new Set<string>();
-      for (const group of exploreActivityGroups) {
-        group.eventIds.forEach((id) => exploreEventIds.add(id));
-      }
       const activityContext = message.role === "assistant"
-        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event) && !exploreEventIds.has(event.id))
+        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event))
         : nonBashContext;
       if (message.role === "assistant") {
         for (const run of bashRuns) {
@@ -605,7 +678,7 @@ export function useWorkspaceTimeline(
       }
       const editedRuns = message.role === "assistant"
         ? extractEditedRuns(nonBashContext, context)
-            .filter((run) => !run.changedFiles.every((f) => isPlanFilePath(f)))
+          .filter((run) => !run.changedFiles.every((f) => isPlanFilePath(f)))
         : [];
       if (message.role === "assistant") {
         for (const run of editedRuns) {
@@ -614,11 +687,23 @@ export function useWorkspaceTimeline(
         if (editedRuns.some((r) => r.diffKind !== "none")) {
           hasEditedRunsWithDiffs = true;
         }
-        for (const group of exploreActivityGroups) {
-          group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
-        }
         for (const group of subagentGroups) {
           group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+        }
+        for (const group of exploreActivityGroups) {
+          group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+          if (group.entries.length === 0) {
+            pushRenderDebug({
+              source: "useWorkspaceTimeline",
+              event: "emptyExploreGroup",
+              messageId: message.id,
+              details: {
+                groupId: group.id,
+                eventIds: [...group.eventIds],
+                status: group.status,
+              },
+            });
+          }
         }
       }
 
@@ -660,7 +745,14 @@ export function useWorkspaceTimeline(
 
       if (message.role === "assistant") {
         const rawRounds = thinkingRoundsByMessageId.get(message.id) ?? [];
-        const mergedRounds = mergeThinkingRounds(rawRounds, bashRuns, editedRuns, exploreActivityGroups, subagentGroups, planFileOutput);
+        const mergedRounds = mergeThinkingRounds(
+          rawRounds,
+          bashRuns,
+          editedRuns,
+          subagentGroups,
+          exploreActivityGroups,
+          planFileOutput,
+        );
         insertThinkingItems(
           mergedRounds,
           message.id,
@@ -675,10 +767,32 @@ export function useWorkspaceTimeline(
         );
       }
 
-      if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
+      if (
+        message.role === "assistant"
+        && (bashRuns.length > 0 || editedRuns.length > 0 || subagentGroups.length > 0 || exploreActivityGroups.length > 0 || !!planFileOutput)
+      ) {
         const hasInlineSubagentRuns = subagentGroups.length > 0;
 
-        const inlineInserts = buildInlineInserts(bashRuns, editedRuns, exploreActivityGroups, subagentGroups, planFileOutput);
+        const inlineInserts = buildInlineInserts(
+          bashRuns,
+          editedRuns,
+          subagentGroups,
+          exploreActivityGroups,
+          planFileOutput,
+        );
+        pushRenderDebug({
+          source: "useWorkspaceTimeline",
+          event: "inlineInsertsBuilt",
+          messageId: message.id,
+          details: {
+            inserts: inlineInserts.map((insert) => ({
+              kind: insert.kind,
+              id: insert.id,
+              startIdx: insert.startIdx,
+              anchorIdx: insert.anchorIdx,
+            })),
+          },
+        });
 
         const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
 
@@ -730,8 +844,6 @@ export function useWorkspaceTimeline(
           anchorIdx,
           timestamp,
           stableOffset,
-          refs,
-          selectedThreadId,
         );
 
         continue;
@@ -775,8 +887,8 @@ export function useWorkspaceTimeline(
       (event) => event.type === "chat.completed" || event.type === "chat.failed",
     );
 
-    processOrphanSubagentGroups(inlineToolEvents, assignedToolEventIds, chatTerminated, sortable);
-    processOrphanExploreGroups(inlineToolEvents, assignedToolEventIds, chatTerminated, sortable);
+    processOrphanSubagentGroups(semanticContextEvents, assignedToolEventIds, chatTerminated, sortable);
+    processOrphanExploreGroups(semanticContextEvents, assignedToolEventIds, chatTerminated, sortable);
 
     const orphanResult = processOrphanToolEvents(
       inlineToolEvents,
@@ -833,9 +945,18 @@ export function useWorkspaceTimeline(
     }
 
     const result = sortable.map((entry) => entry.item);
+    pushRenderDebug({
+      source: "useWorkspaceTimeline",
+      event: "finalTimelineItems",
+      messageId: selectedThreadId ?? undefined,
+      details: {
+        count: result.length,
+        signatures: result.map(compactTimelineSignatureItem),
+      },
+    });
     const oldestRenderable = result[0] ?? null;
     const oldestRenderableKey = oldestRenderable != null
-      ? `kind:${oldestRenderable.kind}:${JSON.stringify(oldestRenderable)}`
+      ? getTimelineItemStableKey(oldestRenderable)
       : null;
     const oldestRenderableKind = oldestRenderable?.kind ?? null;
     const oldestRenderableMessageId = oldestRenderable?.kind === "message"
@@ -849,81 +970,28 @@ export function useWorkspaceTimeline(
       && oldestRenderableMessageId != null
       && oldestRenderableMessageId === oldestAssistantMessageId
       && hasIncompleteCoverage;
-    const headIdentityStable = prevResultRef.current.summary.oldestRenderableKey == null
-      || prevResultRef.current.summary.oldestRenderableKey === oldestRenderableKey
-      || prevResultRef.current.summary.oldestRenderableMessageId === oldestRenderableMessageId;
+    const previousSummary = prevResultRef.current.summary;
+    const headIdentityStable = previousSummary.oldestRenderableKey == null
+      || previousSummary.oldestRenderableKey === oldestRenderableKey
+      || previousSummary.oldestRenderableMessageId === oldestRenderableMessageId;
+    const nextSummary = {
+      oldestRenderableKey,
+      oldestRenderableKind,
+      oldestRenderableMessageId,
+      oldestRenderableHydrationPending,
+      headIdentityStable,
+    };
+    const summaryUnchanged = previousSummary.oldestRenderableKey === nextSummary.oldestRenderableKey
+      && previousSummary.oldestRenderableKind === nextSummary.oldestRenderableKind
+      && previousSummary.oldestRenderableMessageId === nextSummary.oldestRenderableMessageId
+      && previousSummary.oldestRenderableHydrationPending === nextSummary.oldestRenderableHydrationPending
+      && previousSummary.headIdentityStable === nextSummary.headIdentityStable;
     const timelineResult: WorkspaceTimelineResult = {
       items: result,
       hasIncompleteCoverage,
-      summary: {
-        oldestRenderableKey,
-        oldestRenderableKind,
-        oldestRenderableMessageId,
-        oldestRenderableHydrationPending,
-        headIdentityStable,
-      },
+      summary: summaryUnchanged ? previousSummary : nextSummary,
     };
-    const prevResult = prevResultRef.current;
-    const prevInputCounts = prevInputCountsRef.current;
-    const messagesAdded = messages.length - (prevInputCounts?.messageCount ?? 0);
-    const eventsAdded = events.length - (prevInputCounts?.eventCount ?? 0);
-    debugLog("useWorkspaceTimeline", "chat.timeline.recomputed", {
-      threadId: selectedThreadId,
-      messageCount: messages.length,
-      eventCount: events.length,
-      itemCount: result.length,
-      hasIncompleteCoverage,
-      semanticHydrationInProgress,
-      messagesAdded,
-      eventsAdded,
-    });
-    if (prevResult.hasIncompleteCoverage !== hasIncompleteCoverage) {
-      debugLog("useWorkspaceTimeline", "chat.timeline.coverageChanged", {
-        threadId: selectedThreadId,
-        previousHasIncompleteCoverage: prevResult.hasIncompleteCoverage,
-        hasIncompleteCoverage,
-        messageCount: messages.length,
-        eventCount: events.length,
-        itemCount: result.length,
-        semanticHydrationInProgress,
-      });
-    }
-    if (prevResult.summary.oldestRenderableKey !== oldestRenderableKey) {
-      debugLog("useWorkspaceTimeline", "chat.timeline.oldestRenderableChanged", {
-        threadId: selectedThreadId,
-        previousOldestRenderableKey: prevResult.summary.oldestRenderableKey,
-        previousOldestRenderableKind: prevResult.summary.oldestRenderableKind,
-        previousOldestRenderableMessageId: prevResult.summary.oldestRenderableMessageId,
-        oldestRenderableKey,
-        oldestRenderableKind,
-        oldestRenderableMessageId,
-        oldestRenderableHydrationPending,
-        headIdentityStable,
-        messageCount: messages.length,
-        eventCount: events.length,
-        itemCount: result.length,
-      });
-    }
-    if (messagesAdded === 0 && result.length > prevResult.items.length) {
-      debugLog("useWorkspaceTimeline", "chat.timeline.eventsOnlyRenderableGrowth", {
-        threadId: selectedThreadId,
-        eventCount: events.length,
-        itemCount: result.length,
-        previousItemCount: prevResult.items.length,
-        eventsAdded,
-        hasIncompleteCoverage,
-        oldestRenderableKey,
-        oldestRenderableKind,
-        oldestRenderableMessageId,
-        oldestRenderableHydrationPending,
-        headIdentityStable,
-      });
-    }
     prevFingerprintRef.current = fingerprint;
-    prevInputCountsRef.current = {
-      messageCount: messages.length,
-      eventCount: events.length,
-    };
     prevResultRef.current = timelineResult;
     return timelineResult;
   }, [messages, events, options?.disabled, options?.semanticHydrationInProgress, selectedThreadId]);

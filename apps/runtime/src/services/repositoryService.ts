@@ -56,7 +56,7 @@ export function createRepositoryService(prisma: PrismaClient) {
 
   async function ensureMainThread(worktreeId: string): Promise<void> {
     const existing = await prisma.chatThread.findFirst({
-      where: { worktreeId, title: "Main Thread" },
+      where: { worktreeId },
       select: { id: true },
     });
     if (existing) return;

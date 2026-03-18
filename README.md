@@ -82,10 +82,12 @@ Recommended `.env` values:
 ```env
 RUNTIME_HOST=0.0.0.0
 RUNTIME_PORT=4331
-DATABASE_URL="file:./dev.db"
+DATABASE_URL="file:./prisma/dev.db"
 CLAUDE_CODE_EXECUTABLE=claude
 WORKTREE_ROOT="~/.codesymphony/worktrees"
 ```
+
+The default dev runtime database lives at `apps/runtime/prisma/dev.db`. Runtime tests use `apps/runtime/prisma/test.db`, and desktop dev uses `apps/runtime/prisma/desktop.db`.
 
 3. Initialize database:
 

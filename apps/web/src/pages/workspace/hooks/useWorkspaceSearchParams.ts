@@ -1,7 +1,6 @@
 import { useRef, useCallback } from "react";
 import { useSearch, useNavigate } from "@tanstack/react-router";
 import type { WorkspaceSearch } from "../../../routes/index";
-import { debugLog } from "../../../lib/debugLog";
 
 export function useWorkspaceSearchParams() {
   const search = useSearch({ from: "/" });
@@ -12,10 +11,6 @@ export function useWorkspaceSearchParams() {
 
   const updateSearch = useCallback(
     (partial: Partial<WorkspaceSearch>) => {
-      debugLog("useWorkspaceSearchParams", "updateSearch", {
-        partial,
-        alreadyScheduled: scheduledRef.current,
-      });
       pendingRef.current = { ...pendingRef.current, ...partial };
 
       if (!scheduledRef.current) {

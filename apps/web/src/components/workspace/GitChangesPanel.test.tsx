@@ -1,11 +1,23 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitChangeEntry } from "@codesymphony/shared-types";
+import { useGitStatus } from "../../hooks/queries/useGitStatus";
+import { useGitChanges } from "../../pages/workspace/hooks/useGitChanges";
 import { GitChangesPanel } from "./GitChangesPanel";
 
 vi.mock("../../lib/api", () => ({
-  api: { openFileDefaultApp: vi.fn() },
+  api: {
+    openFileDefaultApp: vi.fn(),
+    getGitDiff: vi.fn().mockResolvedValue({ diff: "", summary: "" }),
+    gitCommit: vi.fn().mockResolvedValue(undefined),
+    discardGitChange: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+vi.mock("../../hooks/queries/useGitStatus", () => ({
+  useGitStatus: vi.fn(),
 }));
 
 let container: HTMLDivElement;
@@ -30,6 +42,24 @@ function makeEntry(overrides: Partial<GitChangeEntry> = {}): GitChangeEntry {
     deletions: 0,
     ...overrides,
   } as GitChangeEntry;
+}
+
+function HookBackedPanel({ worktreeId, enabled }: { worktreeId: string | null; enabled: boolean }) {
+  const git = useGitChanges(worktreeId, enabled);
+
+  return (
+    <GitChangesPanel
+      entries={git.entries}
+      branch={git.branch}
+      loading={git.loading}
+      committing={git.committing}
+      error={git.error}
+      onCommit={() => {}}
+      onReview={() => {}}
+      onRefresh={git.refresh}
+      onClose={() => {}}
+    />
+  );
 }
 
 describe("GitChangesPanel", () => {
@@ -177,5 +207,44 @@ describe("GitChangesPanel", () => {
       root.render(<GitChangesPanel {...baseProps} committing={true} entries={[makeEntry()]} />);
     });
     expect(container.textContent).toContain("Committing");
+  });
+
+  it("hides directory-only entries and renders sorted file list from hook data", async () => {
+    vi.mocked(useGitStatus).mockReturnValue({
+      data: {
+        branch: "main",
+        entries: [
+          makeEntry({ path: "src/new-dir/", status: "untracked" }),
+          makeEntry({ path: "src/zeta.ts", status: "modified" }),
+          makeEntry({ path: "src/alpha.ts", status: "modified" }),
+          makeEntry({ path: "src/new.ts", status: "added" }),
+          makeEntry({ path: "src/new-dir/file.ts", status: "untracked" }),
+        ],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as ReturnType<typeof useGitStatus>);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <HookBackedPanel worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+      await Promise.resolve();
+    });
+
+    const options = Array.from(container.querySelectorAll('[role="option"]'));
+
+    expect(options).toHaveLength(4);
+    expect(options.map((option) => option.textContent ?? "")).toEqual([
+      expect.stringContaining("alpha.ts"),
+      expect.stringContaining("zeta.ts"),
+      expect.stringContaining("new.ts"),
+      expect.stringContaining("file.ts"),
+    ]);
+    expect(container.textContent).toContain("4");
   });
 });

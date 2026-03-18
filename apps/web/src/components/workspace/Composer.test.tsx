@@ -1,11 +1,8 @@
-import { act, useRef, useState } from "react";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry } from "@codesymphony/shared-types";
-import type { PendingAttachment } from "../../lib/attachments";
 import { Composer } from "./composer";
-
-function noop() {}
 
 const sampleFileIndex: FileEntry[] = [
   { path: "src/index.ts", type: "file" },
@@ -17,24 +14,19 @@ const sampleFileIndex: FileEntry[] = [
 ];
 
 const defaultProps = {
-  value: "",
   disabled: false,
   sending: false,
   showStop: false,
   stopping: false,
-  mode: "default" as const,
+  threadId: "thread-1",
   worktreeId: "wt-1",
   fileIndex: sampleFileIndex,
   fileIndexLoading: false,
   providers: [],
   hasMessages: false,
-  attachments: [],
-  onAttachmentsChange: noop,
-  onChange: noop,
-  onModeChange: noop,
-  onSubmitMessage: noop,
-  onStop: noop,
-  onSelectProvider: noop,
+  onSubmitMessage: vi.fn().mockResolvedValue(true),
+  onStop: vi.fn(),
+  onSelectProvider: vi.fn(),
 };
 
 describe("Composer", () => {
@@ -227,23 +219,27 @@ describe("Composer", () => {
 
   it("submits message on Enter when no mention is active", async () => {
     setMobileViewport(false);
-    const onSubmitMessage = vi.fn();
-    renderComposer({ onSubmitMessage, value: "hello" });
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
     const editor = getEditor();
     typeInEditor(editor, "hello");
     await flushMicrotasks();
 
-    act(() => {
+    await act(async () => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
-    expect(onSubmitMessage).toHaveBeenCalled();
+    expect(onSubmitMessage).toHaveBeenCalledWith({
+      content: "hello",
+      mode: "default",
+      attachments: [],
+    });
   });
 
   it("does not submit on Enter in mobile viewport", async () => {
     setMobileViewport(true);
-    const onSubmitMessage = vi.fn();
-    renderComposer({ onSubmitMessage, value: "hello" });
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
     const editor = getEditor();
     typeInEditor(editor, "hello");
     await flushMicrotasks();
@@ -255,16 +251,27 @@ describe("Composer", () => {
     expect(onSubmitMessage).not.toHaveBeenCalled();
   });
 
-  it("toggles mode on Shift+Tab", () => {
-    const onModeChange = vi.fn();
-    renderComposer({ onModeChange });
+  it("toggles mode on Shift+Tab", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
     const editor = getEditor();
 
     act(() => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
     });
 
-    expect(onModeChange).toHaveBeenCalledWith("plan");
+    typeInEditor(editor, "plan this");
+    await flushMicrotasks();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledWith({
+      content: "plan this",
+      mode: "plan",
+      attachments: [],
+    });
   });
 
   it("shows loading indicator when file index is loading", async () => {
@@ -335,24 +342,21 @@ describe("Composer", () => {
   });
 
   it("syncs value during composition (button state updates)", async () => {
-    const onChange = vi.fn();
-    renderComposer({ onChange });
+    renderComposer();
     const editor = getEditor();
 
-    // Start composition (simulates mobile keyboard predictive text)
     act(() => {
       editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
     });
 
-    // Type during composition
     act(() => {
       editor.textContent = "hello";
       editor.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushMicrotasks();
 
-    // onChange should still be called even during composition
-    expect(onChange).toHaveBeenCalledWith("hello");
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+    expect(sendButton?.disabled).toBe(false);
   });
 
   it("detects mentions during composition (mobile keyboard)", async () => {
@@ -385,33 +389,9 @@ describe("Composer", () => {
     expect(buttons.length).toBeGreaterThan(0);
   });
 
-  it("submits pasted attachment even when parent attachment prop is delayed", async () => {
-    const onSubmitMessage = vi.fn();
-
-    function DelayedAttachmentHarness() {
-      const [value, setValue] = useState("");
-      const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
-      const attachmentRef = useRef<PendingAttachment[]>([]);
-
-      return (
-        <Composer
-          {...defaultProps}
-          value={value}
-          attachments={attachments}
-          onChange={setValue}
-          onSubmitMessage={onSubmitMessage}
-          onAttachmentsChange={(next) => {
-            const resolved = typeof next === "function" ? next(attachmentRef.current) : next;
-            attachmentRef.current = resolved;
-            setTimeout(() => setAttachments(resolved), 20);
-          }}
-        />
-      );
-    }
-
-    act(() => {
-      root.render(<DelayedAttachmentHarness />);
-    });
+  it("submits pasted attachment from local composer state", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
 
     const editor = getEditor();
     const longText = "x".repeat(400);
@@ -421,14 +401,48 @@ describe("Composer", () => {
     });
     await flushMicrotasks();
 
-    act(() => {
+    await act(async () => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
     expect(onSubmitMessage).toHaveBeenCalledTimes(1);
-    const [, sentAttachments] = onSubmitMessage.mock.calls[0] as [string, PendingAttachment[]];
-    expect(sentAttachments).toHaveLength(1);
-    expect(sentAttachments[0].source).toBe("clipboard_text");
-    expect(sentAttachments[0].content).toBe(longText);
+    const [payload] = onSubmitMessage.mock.calls[0] as [{
+      content: string;
+      mode: string;
+      attachments: Array<{ source: string; content: string }>;
+    }];
+    expect(payload.attachments).toHaveLength(1);
+    expect(payload.attachments[0].source).toBe("clipboard_text");
+    expect(payload.attachments[0].content).toBe(longText);
+  });
+
+  it("resets local draft when thread changes", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage, threadId: "thread-1" });
+    const editor = getEditor();
+
+    typeInEditor(editor, "hello");
+    await flushMicrotasks();
+    expect(editor.textContent).toBe("hello");
+
+    renderComposer({ onSubmitMessage, threadId: "thread-2" });
+    await flushMicrotasks();
+
+    expect(editor.textContent).toBe("");
+  });
+
+  it("keeps draft when submit fails", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(false);
+    renderComposer({ onSubmitMessage });
+    const editor = getEditor();
+
+    typeInEditor(editor, "hello");
+    await flushMicrotasks();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(editor.textContent).toBe("hello");
   });
 });

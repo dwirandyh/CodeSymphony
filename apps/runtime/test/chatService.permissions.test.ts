@@ -15,7 +15,7 @@ const stubModelProviderService = {
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
     ? process.env.DATABASE_URL
-    : "file:./test.db";
+    : "file:./prisma/test.db";
 
 const prisma = new PrismaClient({
   datasources: {
@@ -353,6 +353,8 @@ describe("chatService permission flow", () => {
       (event) => event.type === "permission.requested" && event.payload.requestId === "perm-1",
     );
     expect(requested.payload.toolName).toBe("Bash");
+    expect(requested.payload.ownershipReason).toBeNull();
+    expect(requested.payload.ownershipCandidates).toEqual([]);
 
     await chatService.resolvePermission(threadId, {
       requestId: "perm-1",
@@ -527,6 +529,11 @@ describe("chatService permission flow", () => {
 
     const events = await waitForTerminalEvent(chatService, threadId);
     expect(events.some((event) => event.type === "permission.resolved")).toBe(true);
+    const resolvedEvent = events.find(
+      (event) => event.type === "permission.resolved" && event.payload.requestId === "perm-2",
+    );
+    expect(resolvedEvent?.payload.ownershipReason).toBeNull();
+    expect(resolvedEvent?.payload.ownershipCandidates).toEqual([]);
     expect(events.some((event) => event.type === "tool.started")).toBe(false);
 
     const messages = await chatService.listMessages(threadId);

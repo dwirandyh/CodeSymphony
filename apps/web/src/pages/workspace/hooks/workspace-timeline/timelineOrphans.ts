@@ -1,9 +1,10 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { extractExploreActivityGroups } from "../../exploreUtils";
-import { extractSubagentGroups } from "../../subagentUtils";
+import { extractSubagentGroups, getSubagentAttributionReason, isOverlapUnclaimedSubagentEvent } from "../../subagentUtils";
 import {
   countDiffStats,
   getEventMessageId,
+  isBashToolEvent,
   isMetadataToolEvent,
   isPlanModeToolEvent,
   isWorktreeDiffEvent,
@@ -11,8 +12,8 @@ import {
   payloadStringArray,
   payloadStringOrNull,
 } from "../../eventUtils";
+import { extractBashRuns } from "../../bashUtils";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
-import { debugLog } from "../../../../lib/debugLog";
 import { logService } from "../../../../lib/logService";
 import type { SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types";
 
@@ -22,10 +23,10 @@ export function processOrphanSubagentGroups(
   chatTerminated: boolean,
   sortable: SortableEntry[],
 ): void {
-  const unassignedInlineForSubagent = inlineToolEvents.filter(
+  const unassignedInlineEvents = inlineToolEvents.filter(
     (event) => !assignedToolEventIds.has(event.id),
   );
-  const orphanSubagentGroups = extractSubagentGroups(unassignedInlineForSubagent);
+  const orphanSubagentGroups = extractSubagentGroups(unassignedInlineEvents);
   for (const group of orphanSubagentGroups) {
     group.eventIds.forEach((id) => assignedToolEventIds.add(id));
     const resolvedStatus = group.status === "running" && chatTerminated ? "success" : group.status;
@@ -59,20 +60,48 @@ export function processOrphanExploreGroups(
   chatTerminated: boolean,
   sortable: SortableEntry[],
 ): void {
-  const unassignedForExplore = inlineToolEvents.filter(
+  const unassignedInlineEvents = inlineToolEvents.filter(
     (event) => !assignedToolEventIds.has(event.id),
   );
-  const orphanExploreGroups = extractExploreActivityGroups(unassignedForExplore);
+  const quarantinedExploreEvents = unassignedInlineEvents.filter((event) => isOverlapUnclaimedSubagentEvent(event.id));
+  if (quarantinedExploreEvents.length > 0) {
+    pushRenderDebug({
+      source: "timelineOrphans",
+      event: "quarantinedOverlapSubagentExploreEvents",
+      details: {
+        eventIds: quarantinedExploreEvents.map((event) => event.id),
+        reasonCodes: quarantinedExploreEvents.map((event) => ({
+          eventId: event.id,
+          reasonCode: getSubagentAttributionReason(event.id),
+        })),
+      },
+    });
+  }
+  const orphanExploreGroups = extractExploreActivityGroups(
+    unassignedInlineEvents.filter((event) => !isOverlapUnclaimedSubagentEvent(event.id)),
+  );
   for (const group of orphanExploreGroups) {
+    pushRenderDebug({
+      source: "timelineOrphans",
+      event: "orphanExploreGroup",
+      details: {
+        groupId: group.id,
+        status: group.status,
+        eventIds: [...group.eventIds],
+        reasonCodes: [...group.eventIds]
+          .map((eventId) => ({ eventId, reasonCode: getSubagentAttributionReason(eventId) }))
+          .filter((entry) => entry.reasonCode !== null),
+      },
+    });
     group.eventIds.forEach((id) => assignedToolEventIds.add(id));
     const resolvedStatus = group.status === "running" && chatTerminated ? "success" : group.status;
     const resolvedEntries = chatTerminated
-      ? group.entries.map((e) => e.pending ? { ...e, pending: false } : e)
+      ? group.entries.map((entry) => entry.pending ? { ...entry, pending: false } : entry)
       : group.entries;
     sortable.push({
       item: {
         kind: "explore-activity",
-        id: group.id,
+        id: `orphan:${group.id}`,
         status: resolvedStatus,
         fileCount: group.fileCount,
         searchCount: group.searchCount,
@@ -97,6 +126,7 @@ export function processOrphanToolEvents(
 ): { orphanToolEvents: ChatEvent[]; hasIncompleteCoverage: boolean } {
   const orphanToolEvents = inlineToolEvents
     .filter((event) => !assignedToolEventIds.has(event.id))
+    .filter((event) => !isOverlapUnclaimedSubagentEvent(event.id))
     .filter((event) =>
       event.type !== "permission.requested"
       && event.type !== "permission.resolved"
@@ -111,10 +141,7 @@ export function processOrphanToolEvents(
     )
     .sort((a, b) => a.idx - b.idx);
 
-  let hasIncompleteCoverage = false;
-  if (messages.length > 0 && orphanToolEvents.length > 0) {
-    hasIncompleteCoverage = true;
-  }
+  const hasIncompleteCoverage = false;
 
   pushRenderDebug({
     source: "WorkspacePage",
@@ -127,6 +154,7 @@ export function processOrphanToolEvents(
         id: event.id,
         idx: event.idx,
         type: event.type,
+        reasonCode: getSubagentAttributionReason(event.id),
       })),
     },
   });
@@ -154,7 +182,40 @@ export function processOrphanToolEvents(
     }
   }
 
+  const orphanBashRuns = extractBashRuns(orphanToolEvents.filter((event) => isBashToolEvent(event) || event.type === "permission.requested" || event.type === "permission.resolved"));
+  for (const run of orphanBashRuns) {
+    run.eventIds.forEach((id) => assignedToolEventIds.add(id));
+    const sourceEvents = orphanToolEvents.filter((event) => run.eventIds.has(event.id));
+    sortable.push({
+      item: {
+        kind: "tool",
+        id: `orphan:${run.id}`,
+        event: sourceEvents[sourceEvents.length - 1] ?? null,
+        sourceEvents,
+        toolUseId: run.toolUseId,
+        toolName: "Bash",
+        shell: "bash",
+        command: run.command,
+        summary: run.summary,
+        output: run.output,
+        error: run.error,
+        truncated: run.truncated,
+        durationSeconds: run.durationSeconds,
+        status: run.status,
+        rejectedByUser: run.rejectedByUser,
+      },
+      anchorIdx: run.anchorIdx,
+      timestamp: parseTimestamp(run.createdAt),
+      rank: 0,
+      stableOrder: run.startIdx,
+    });
+  }
+
   for (const event of orphanToolEvents) {
+    if (assignedToolEventIds.has(event.id)) {
+      continue;
+    }
+
     if (isWorktreeDiffEvent(event)) {
       const hasRunsWithDiffs = hasEditedRunsWithDiffs;
       if (hasRunsWithDiffs) {
@@ -188,7 +249,17 @@ export function processOrphanToolEvents(
     sortable.push({
       item: {
         kind: "tool",
+        id: `orphan:${event.id}`,
         event,
+        sourceEvents: [event],
+        toolUseId: typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : undefined,
+        toolName: typeof event.payload.toolName === "string" ? event.payload.toolName : null,
+        summary: typeof event.payload.summary === "string" ? event.payload.summary : null,
+        output: typeof event.payload.output === "string" ? event.payload.output : null,
+        error: typeof event.payload.error === "string" ? event.payload.error : null,
+        truncated: event.payload.truncated === true,
+        durationSeconds: typeof event.payload.elapsedTimeSeconds === "number" ? event.payload.elapsedTimeSeconds : null,
+        status: event.type === "tool.started" ? "running" : typeof event.payload.error === "string" && event.payload.error.length > 0 ? "failed" : "success",
       },
       anchorIdx: event.idx,
       timestamp: parseTimestamp(event.createdAt),
@@ -263,11 +334,6 @@ export function processUnassignedSemanticEvents(
 
     if (unresolvedAssistantMessageIds.size > 0) {
       if (semanticHydrationInProgress) {
-        debugLog("useWorkspaceTimeline", "hydration-fallback-suppressed", {
-          threadId: selectedThreadId,
-          unresolvedMessageIds: Array.from(unresolvedAssistantMessageIds).sort(),
-          unresolvedMessageCount: unresolvedAssistantMessageIds.size,
-        });
         localHasIncompleteCoverage = true;
       } else {
         const firstAssistantMessage = sortedMessages.find((message) => message.role === "assistant") ?? null;

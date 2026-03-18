@@ -57,7 +57,7 @@ export function appendRuntimeDebugLog(entry: DebugLogPayload): number {
   return seq;
 }
 
-function resolveDatabaseInfo(databaseUrl: string | undefined): RuntimeDatabaseInfo {
+export function resolveDatabaseInfo(databaseUrl: string | undefined): RuntimeDatabaseInfo {
   if (!databaseUrl) {
     return { urlKind: "missing", resolvedPath: null, urlPreview: null };
   }

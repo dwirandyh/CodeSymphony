@@ -43,19 +43,24 @@ export function mergeThinkingRounds(
   rawRounds: ThinkingRound[],
   bashRuns: BashRun[],
   editedRuns: EditedRun[],
-  exploreActivityGroups: ExploreActivityGroup[],
   subagentGroups: SubagentGroup[],
+  exploreActivityGroups: ExploreActivityGroup[],
   planFileOutput: PlanFileOutput | undefined,
 ): ThinkingRound[] {
-  const hasInlineInserts = bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput;
+  const hasInlineInserts =
+    bashRuns.length > 0
+    || editedRuns.length > 0
+    || subagentGroups.length > 0
+    || exploreActivityGroups.length > 0
+    || !!planFileOutput;
 
   let mergedRounds = rawRounds;
   if (hasInlineInserts && rawRounds.length > 1) {
     const insertStartIdxes = [
       ...bashRuns.map(r => r.startIdx),
       ...editedRuns.map(r => r.startIdx),
-      ...exploreActivityGroups.map(g => g.startIdx),
       ...subagentGroups.map(g => g.startIdx),
+      ...exploreActivityGroups.map(g => g.startIdx),
       ...(planFileOutput ? [planFileOutput.idx] : []),
     ].sort((a, b) => a - b);
 

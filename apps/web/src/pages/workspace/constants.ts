@@ -39,9 +39,6 @@ export const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
 
 export const MAX_ORDER_INDEX = Number.MAX_SAFE_INTEGER;
 
-export const INITIAL_MESSAGES_PAGE_LIMIT = 50;
-export const INITIAL_EVENTS_PAGE_LIMIT = 200;
-
 export const READ_TOOL_PATTERN = /\b(read|open|cat)\b/i;
 export const SEARCH_TOOL_PATTERN = /\b(glob|grep|search|find|list|scan|ls)\b/i;
 export const EDIT_TOOL_NAME_PATTERN = /^(edit|multiedit|write)$/i;

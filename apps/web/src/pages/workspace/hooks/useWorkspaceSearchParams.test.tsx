@@ -7,9 +7,6 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: vi.fn().mockReturnValue(vi.fn()),
 }));
 
-vi.mock("../../../lib/debugLog", () => ({
-  debugLog: vi.fn(),
-}));
 
 import { useWorkspaceSearchParams } from "./useWorkspaceSearchParams";
 import { useNavigate } from "@tanstack/react-router";
@@ -73,7 +70,7 @@ describe("useWorkspaceSearchParams", () => {
     });
     act(() => {
       hookResult.updateSearch({ repoId: "r2" });
-      hookResult.updateSearch({ view: "diff" });
+      hookResult.updateSearch({ view: "review" });
     });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));

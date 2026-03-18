@@ -16,6 +16,17 @@ describe("parseSubagentTranscript", () => {
         expect(result.lastMessage).toBe("Done analyzing.");
     });
 
+    it("extracts description from string user content when message.type is user but content is plain text", () => {
+        const transcript = [
+            JSON.stringify({ type: "user", message: { role: "user", content: "Inspect repository structure" } }),
+            JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Found files." }] } }),
+        ].join("\n");
+
+        const result = parseSubagentTranscript(transcript);
+        expect(result.description).toBe("Inspect repository structure");
+        expect(result.lastMessage).toBe("Found files.");
+    });
+
     it("extracts description from content blocks", () => {
         const transcript = [
             JSON.stringify({

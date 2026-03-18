@@ -8,52 +8,49 @@ import {
   generateAttachmentId,
   generateClipboardFilename,
 } from "../../../lib/attachments";
-import { detectMentionInEditor } from "./composerEditorUtils";
 import { createAttachmentChipElement } from "./composerChipUtils";
 import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
 
+type ComposerSubmitPayload = {
+  content: string;
+  mode: ChatMode;
+  attachments: PendingAttachment[];
+};
+
 type ComposerProps = {
-  value: string;
   disabled: boolean;
   sending: boolean;
   showStop: boolean;
   stopping: boolean;
-  mode: ChatMode;
+  threadId: string | null;
   worktreeId: string | null;
   fileIndex: FileEntry[];
   fileIndexLoading: boolean;
   providers: ModelProvider[];
   hasMessages: boolean;
-  attachments: PendingAttachment[];
-  onAttachmentsChange: (attachments: PendingAttachment[] | ((prev: PendingAttachment[]) => PendingAttachment[])) => void;
-  onChange: (nextValue: string) => void;
-  onModeChange: (mode: ChatMode) => void;
-  onSubmitMessage: (content: string, attachments: PendingAttachment[]) => void;
+  onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onStop: () => void;
   onSelectProvider: (id: string | null) => void;
 };
 
 export function Composer({
-  value,
   disabled,
   sending,
   showStop,
   stopping,
-  mode,
+  threadId,
   worktreeId,
   fileIndex,
   fileIndexLoading,
   providers,
   hasMessages,
-  attachments,
-  onAttachmentsChange,
-  onChange,
-  onModeChange,
   onSubmitMessage,
   onStop,
   onSelectProvider,
 }: ComposerProps) {
+  const [draftText, setDraftText] = useState("");
+  const [mode, setMode] = useState<ChatMode>("default");
   const isPlan = mode === "plan";
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
@@ -117,10 +114,11 @@ export function Composer({
     popoverRef,
     fileIndex,
     fileIndexLoading,
-    onChange,
+    onChange: setDraftText,
   });
 
   const {
+    attachments,
     attachmentsRef,
     pendingAttachmentReads,
     pendingAttachmentReadsRef,
@@ -135,14 +133,12 @@ export function Composer({
     handlePasteImages,
     barAttachments,
   } = useComposerAttachments({
-    attachments,
-    onAttachmentsChange,
     editorRef,
   });
 
   const cannotSend = disabled
     || pendingAttachmentReads > 0
-    || (value.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
+    || (draftText.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
 
   const handleInput = useCallback(() => {
     if (suppressInputRef.current) return;
@@ -227,11 +223,11 @@ export function Composer({
         detectMention();
       }
     });
-  }, [syncValueFromEditor, onAttachmentsChange]);
+  }, [syncValueFromEditor, applyAttachmentsChange, detectMention]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
-    if (!editor) return value;
+    if (!editor) return draftText;
 
     const parts: string[] = [];
     for (const node of editor.childNodes) {
@@ -251,9 +247,24 @@ export function Composer({
       }
     }
     return parts.join("").replace(/\u00A0/g, " ").trim();
-  }, [value]);
+  }, [draftText]);
 
-  const handleSubmit = useCallback(() => {
+  const resetDraft = useCallback(() => {
+    const editor = editorRef.current;
+    if (editor) {
+      editor.innerHTML = "";
+    }
+    mentionedFilesRef.current = [];
+    closeMention();
+    applyAttachmentsChange([]);
+    setDraftText("");
+    setMode("default");
+    lastStableHTMLRef.current = "";
+    prevContentLenRef.current = 0;
+    afterChipHTMLRef.current = null;
+  }, [applyAttachmentsChange, closeMention]);
+
+  const handleSubmit = useCallback(async () => {
     if (cannotSend) return;
     if (pendingAttachmentReadsRef.current > 0) return;
     const content = buildFinalContent();
@@ -283,14 +294,11 @@ export function Composer({
       return true;
     });
 
-    if (editor) {
-      editor.innerHTML = "";
+    const didSubmit = await onSubmitMessage({ content, mode, attachments: dedupedAttachments });
+    if (didSubmit) {
+      resetDraft();
     }
-    mentionedFilesRef.current = [];
-    onSubmitMessage(content, dedupedAttachments);
-    applyAttachmentsChange([]);
-    onChange("");
-  }, [cannotSend, buildFinalContent, onSubmitMessage, applyAttachmentsChange, onChange]);
+  }, [cannotSend, buildFinalContent, onSubmitMessage, mode, resetDraft]);
 
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLDivElement>) => {
@@ -482,7 +490,7 @@ export function Composer({
 
       if (event.key === "Tab" && event.shiftKey) {
         event.preventDefault();
-        onModeChange(isPlan ? "default" : "plan");
+        setMode(isPlan ? "default" : "plan");
         return;
       }
 
@@ -501,20 +509,12 @@ export function Composer({
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, onModeChange, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-
-    if (value === "" && editor.innerHTML !== "") {
-      editor.innerHTML = "";
-      mentionedFilesRef.current = [];
-      lastStableHTMLRef.current = "";
-      prevContentLenRef.current = 0;
-    }
-  }, [value]);
+    resetDraft();
+  }, [threadId, worktreeId, resetDraft]);
 
   return (
     <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
@@ -646,7 +646,7 @@ export function Composer({
             </button>
             <button
               type="button"
-              onClick={() => onModeChange(isPlan ? "default" : "plan")}
+              onClick={() => setMode(isPlan ? "default" : "plan")}
               className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
                 isPlan
                   ? "bg-amber-500/15 text-amber-400 hover:bg-amber-500/25"

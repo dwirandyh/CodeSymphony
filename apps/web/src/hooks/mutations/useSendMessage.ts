@@ -9,7 +9,7 @@ export function useSendMessage() {
     mutationFn: ({ threadId, input }: { threadId: string; input: SendChatMessageInput }) =>
       api.sendMessage(threadId, input),
     onSuccess: (_data, variables) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.snapshot(variables.threadId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(variables.threadId) });
     },
   });
 }

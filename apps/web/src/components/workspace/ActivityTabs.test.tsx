@@ -22,13 +22,12 @@ function makeEvent(overrides: Partial<ChatEvent> = {}): ChatEvent {
   return {
     id: "e1",
     threadId: "t1",
-    messageId: null,
     idx: 0,
-    type: "tool_use_begin",
+    type: "tool.started",
     payload: {},
-    timestamp: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
     ...overrides,
-  } as ChatEvent;
+  };
 }
 
 describe("ActivityTabs", () => {
@@ -77,8 +76,8 @@ describe("ActivityTabs", () => {
 
   it("renders tool events on logs tab", () => {
     const events = [
-      makeEvent({ id: "e1", idx: 0, type: "tool_use_begin" }),
-      makeEvent({ id: "e2", idx: 1, type: "tool_result" }),
+      makeEvent({ id: "e1", idx: 0, type: "tool.started" }),
+      makeEvent({ id: "e2", idx: 1, type: "tool.finished" }),
     ];
     act(() => {
       root.render(
@@ -90,8 +89,8 @@ describe("ActivityTabs", () => {
         />
       );
     });
-    expect(container.textContent).toContain("[0] tool_use_begin");
-    expect(container.textContent).toContain("[1] tool_result");
+    expect(container.textContent).toContain("[0] tool.started");
+    expect(container.textContent).toContain("[1] tool.finished");
   });
 
   it("renders Activity title", () => {

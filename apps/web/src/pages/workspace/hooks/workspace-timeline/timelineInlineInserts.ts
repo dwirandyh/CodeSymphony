@@ -8,18 +8,17 @@ import {
   splitAtFirstSentenceBoundary,
 } from "../../textUtils";
 import { parseTimestamp } from "../../eventUtils";
-import { debugLog } from "../../../../lib/debugLog";
-import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types";
+import { pushRenderDebug } from "../../../../lib/renderDebug";
+import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry } from "./useWorkspaceTimeline.types";
 import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../../types";
 
 export function buildInlineInserts(
   bashRuns: BashRun[],
   editedRuns: EditedRun[],
-  exploreActivityGroups: ExploreActivityGroup[],
   subagentGroups: SubagentGroup[],
+  exploreActivityGroups: ExploreActivityGroup[],
   planFileOutput: PlanFileOutput | undefined,
 ): InlineInsert[] {
-  const hasInlineExploreRuns = exploreActivityGroups.length > 0;
   const hasInlineSubagentRuns = subagentGroups.length > 0;
 
   return [
@@ -41,14 +40,6 @@ export function buildInlineInserts(
         createdAt: run.createdAt,
         run,
       })),
-    ...(hasInlineExploreRuns ? exploreActivityGroups.map((group) => ({
-      kind: "explore-activity" as const,
-      id: group.id,
-      startIdx: group.startIdx,
-      anchorIdx: group.anchorIdx,
-      createdAt: group.createdAt,
-      group,
-    })) : []),
     ...(hasInlineSubagentRuns ? subagentGroups.map((group, index) => ({
       kind: "subagent-activity" as const,
       id: `subagent:${group.id}:${index}`,
@@ -57,6 +48,14 @@ export function buildInlineInserts(
       createdAt: group.createdAt,
       group,
     })) : []),
+    ...exploreActivityGroups.map((group, index) => ({
+      kind: "explore-activity" as const,
+      id: `explore:${group.id}:${index}`,
+      startIdx: group.startIdx,
+      anchorIdx: group.anchorIdx,
+      createdAt: group.createdAt,
+      group,
+    })),
     ...(planFileOutput ? [{
       kind: "plan-file-output" as const,
       id: `plan:${planFileOutput.id}`,
@@ -322,9 +321,12 @@ export function pushInlineInsert(
     const status = run.status === "running" && isCompleted ? "success" : run.status;
     sortable.push({
       item: {
-        kind: "bash-command",
+        kind: "tool",
         id: `${message.id}:${run.toolUseId}:${insert.id}`,
+        event: null,
+        sourceEvents: [],
         toolUseId: run.toolUseId,
+        toolName: "Bash",
         shell: "bash",
         command: run.command,
         summary: run.summary,
@@ -398,26 +400,29 @@ export function pushInlineInsert(
     return;
   }
 
-  const group = insert.group;
-  const resolvedExploreStatus = group.status === "running" && isCompleted ? "success" : group.status;
-  const resolvedEntries = isCompleted
-    ? group.entries.map((e) => e.pending ? { ...e, pending: false } : e)
-    : group.entries;
-  sortable.push({
-    item: {
-      kind: "explore-activity",
-      id: group.id,
-      status: resolvedExploreStatus,
-      fileCount: group.fileCount,
-      searchCount: group.searchCount,
-      entries: resolvedEntries,
-    },
-    anchorIdx: bucketAnchorIdx ?? group.anchorIdx,
-    timestamp: bucketTimestamp ?? timestamp,
-    rank: 3,
-    stableOrder: message.seq + stableOffset.value,
-  });
-  stableOffset.value += 0.001;
+  if (insert.kind === "explore-activity") {
+    const group = insert.group;
+    const resolvedStatus = group.status === "running" && isCompleted ? "success" : group.status;
+    const resolvedEntries = isCompleted
+      ? group.entries.map((entry) => entry.pending ? { ...entry, pending: false } : entry)
+      : group.entries;
+    sortable.push({
+      item: {
+        kind: "explore-activity",
+        id: `${message.id}:${group.id}:${insert.id}`,
+        status: resolvedStatus,
+        fileCount: group.fileCount,
+        searchCount: group.searchCount,
+        entries: resolvedEntries,
+      },
+      anchorIdx: bucketAnchorIdx ?? group.anchorIdx,
+      timestamp: bucketTimestamp ?? timestamp,
+      rank: 3,
+      stableOrder: message.seq + stableOffset.value,
+    });
+    stableOffset.value += 0.001;
+    return;
+  }
 }
 
 export function pushMessageSegment(
@@ -471,12 +476,27 @@ export function processInlineInsertLoop(
   anchorIdx: number,
   timestamp: number | null,
   stableOffset: { value: number },
-  refs: TimelineRefs,
-  selectedThreadId: string | null,
 ): void {
+  pushRenderDebug({
+    source: "timelineInlineInserts",
+    event: "processInlineInsertLoop",
+    messageId: message.id,
+    details: {
+      segmentBuckets: segmentBuckets.map((bucket, index) => ({
+        index,
+        anchorIdx: bucket.anchorIdx,
+        contentLength: bucket.content.length,
+      })),
+      inlineInserts: inlineInserts.map((insert) => ({
+        kind: insert.kind,
+        id: insert.id,
+        startIdx: insert.startIdx,
+        anchorIdx: insert.anchorIdx,
+      })),
+    },
+  });
+
   const firstInlineInsert = inlineInserts[0] ?? null;
-  const firstInsertLogKey = `${selectedThreadId ?? "no-thread"}:${message.id}`;
-  let firstInsertOrderingLogged = false;
 
   const hasLeadingText = segmentBuckets[0].content.length > 0;
   const hasAnyTrailingText = segmentBuckets.slice(1).some((bucket) => bucket.content.length > 0);
@@ -497,52 +517,6 @@ export function processInlineInsertLoop(
   let delayedFirstSegmentContent = "";
   let delayedFirstSegmentAnchorIdx: number | null = null;
   let delayedFirstSegmentTimestamp: number | null = null;
-
-  const logFirstInsertOrdering = (
-    decision: "tool-before-text" | "text-before-tool" | "delay-first-insert",
-    options?: {
-      bucketIndex?: number;
-      bucketAnchorIdx?: number | null;
-      splitHeadLength?: number;
-      splitTailLength?: number;
-    },
-  ) => {
-    if (!firstInlineInsert || firstInsertOrderingLogged) {
-      return;
-    }
-    if (refs.loggedFirstInsertOrderByMessageId.has(firstInsertLogKey)) {
-      firstInsertOrderingLogged = true;
-      return;
-    }
-
-    refs.loggedFirstInsertOrderByMessageId.add(firstInsertLogKey);
-    firstInsertOrderingLogged = true;
-
-    const firstNonEmptyBucketIndex = segmentBuckets.findIndex((bucket) => bucket.content.length > 0);
-    const firstNonEmptyBucket = firstNonEmptyBucketIndex >= 0
-      ? segmentBuckets[firstNonEmptyBucketIndex]
-      : null;
-
-    debugLog("useWorkspaceTimeline", "first-insert-ordering", {
-      threadId: selectedThreadId,
-      messageId: message.id,
-      decision,
-      firstInsertKind: firstInlineInsert.kind,
-      firstInsertId: firstInlineInsert.id,
-      firstInsertStartIdx: firstInlineInsert.startIdx,
-      firstInsertAnchorIdx: firstInlineInsert.anchorIdx,
-      firstNonEmptyBucketIndex,
-      firstNonEmptyBucketAnchorIdx: firstNonEmptyBucket?.anchorIdx ?? null,
-      firstNonEmptyBucketLength: firstNonEmptyBucket?.content.length ?? 0,
-      firstBucketAnchorIdx: segmentBuckets[0]?.anchorIdx ?? null,
-      hasAnyTrailingText,
-      firstInsertHasTrailingTextScenario: hasAnyTrailingText && segmentBuckets[0].content.length === 0,
-      bucketIndex: options?.bucketIndex ?? null,
-      bucketAnchorIdx: options?.bucketAnchorIdx ?? null,
-      splitHeadLength: options?.splitHeadLength ?? null,
-      splitTailLength: options?.splitTailLength ?? null,
-    });
-  };
 
   const doPushInlineInsert = (insert: InlineInsert, bTimestamp?: number | null, bAnchorIdx?: number | null) => {
     pushInlineInsert(insert, sortable, message, isCompleted, timestamp, stableOffset, bTimestamp, bAnchorIdx);
@@ -585,10 +559,6 @@ export function processInlineInsertLoop(
         && nextInsertIndex === 0
         && isSentenceAwareInlineInsertKind(firstInsertKind)
       ) {
-        logFirstInsertOrdering("delay-first-insert", {
-          bucketIndex,
-          bucketAnchorIdx: bucket.anchorIdx,
-        });
         delayedFirstSegmentContent += bucket.content;
         delayedFirstSegmentAnchorIdx = delayedFirstSegmentAnchorIdx == null
           ? bucket.anchorIdx
@@ -664,10 +634,6 @@ export function processInlineInsertLoop(
       ) {
         const textIsAfterInsert = (bucket.anchorIdx ?? 0) > inlineInserts[0].startIdx;
         if (textIsAfterInsert) {
-          logFirstInsertOrdering("tool-before-text", {
-            bucketIndex,
-            bucketAnchorIdx: bucket.anchorIdx,
-          });
           doPushInlineInsert(inlineInserts[0], bucket.timestamp);
           doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
           nextInsertIndex = 1;
@@ -676,12 +642,6 @@ export function processInlineInsertLoop(
         } else {
           const splitSegment = hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null;
           if (splitSegment) {
-            logFirstInsertOrdering("text-before-tool", {
-              bucketIndex,
-              bucketAnchorIdx: bucket.anchorIdx,
-              splitHeadLength: splitSegment.head.length,
-              splitTailLength: splitSegment.tail.length,
-            });
             doPushMessageSegment(splitSegment.head, `${bucketIndex}:head`, bucket.anchorIdx, bucket.timestamp);
             doPushInlineInsert(inlineInserts[0], bucket.timestamp);
             if (splitSegment.tail.length > 0) {
@@ -710,6 +670,7 @@ export function processInlineInsertLoop(
         nextInsertIndex === 0
         && isSentenceAwareInlineInsertKind(firstInsertKind)
         && firstInsertKind !== "subagent-activity"
+        && firstInsertKind !== "explore-activity"
         && hasAnyTrailingText
         && bucketIndex === 0;
       if (shouldHoldLeadingSentenceAwareInsert) {

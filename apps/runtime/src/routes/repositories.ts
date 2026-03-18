@@ -8,10 +8,44 @@ import { TeardownError } from "../services/worktreeService.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
+const GIT_STATUS_CACHE_TTL_MS = 2_000;
+
+type GitStatusResult = Awaited<ReturnType<typeof getGitStatus>>;
+
+const cachedGitStatusByWorktreeId = new Map<string, { expiresAt: number; value: GitStatusResult }>();
+const inFlightGitStatusByWorktreeId = new Map<string, Promise<GitStatusResult>>();
 
 function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
   const relative = path.relative(rootPath, targetPath);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function getCachedGitStatus(worktreeId: string, worktreePath: string): Promise<GitStatusResult> {
+  const now = Date.now();
+  const cached = cachedGitStatusByWorktreeId.get(worktreeId);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const inFlight = inFlightGitStatusByWorktreeId.get(worktreeId);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const requestPromise = getGitStatus(worktreePath)
+    .then((status) => {
+      cachedGitStatusByWorktreeId.set(worktreeId, {
+        value: status,
+        expiresAt: Date.now() + GIT_STATUS_CACHE_TTL_MS,
+      });
+      return status;
+    })
+    .finally(() => {
+      inFlightGitStatusByWorktreeId.delete(worktreeId);
+    });
+
+  inFlightGitStatusByWorktreeId.set(worktreeId, requestPromise);
+  return requestPromise;
 }
 
 function writeSseHeaders(request: FastifyRequest, reply: FastifyReply) {
@@ -330,7 +364,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
-      const status = await getGitStatus(worktree.path);
+      const status = await getCachedGitStatus(worktree.id, worktree.path);
       return { data: status };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to get git status";
@@ -348,7 +382,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       const diff = await getGitDiff(worktree.path, query.filePath);
-      const status = await getGitStatus(worktree.path);
+      const status = await getCachedGitStatus(worktree.id, worktree.path);
       const summary = status.entries.map((e) => `${e.status}: ${e.path}`).join("\n");
       return { data: { diff, summary } };
     } catch (error) {

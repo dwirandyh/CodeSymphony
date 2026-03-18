@@ -1,6 +1,16 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { isBashPayload, isBashToolEvent, payloadStringOrNull } from "./eventUtils";
+import { isBashPayload, isBashToolEvent, isRecord, payloadStringOrNull } from "./eventUtils";
 import type { BashRun } from "./types";
+
+function getBashCommand(event: ChatEvent): string | null {
+  const directCommand = payloadStringOrNull(event.payload.command);
+  if (directCommand) {
+    return directCommand;
+  }
+
+  const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+  return toolInput ? payloadStringOrNull(toolInput.command) : null;
+}
 
 export function extractBashRuns(context: ChatEvent[]): BashRun[] {
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
@@ -9,7 +19,13 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
   const hasBashToolLifecycleEvents = ordered.some((event) => isBashToolEvent(event));
   const permissionRequestById = new Map<
     string,
-    { idx: number; createdAt: string; command: string | null; eventId: string }
+    {
+      idx: number;
+      createdAt: string;
+      command: string | null;
+      eventId: string;
+      subagentOwnerToolUseId: string | null;
+    }
   >();
 
   function ensureRun(toolUseId: string, event: ChatEvent): BashRun {
@@ -26,7 +42,7 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
       startIdx: event.idx,
       anchorIdx: event.idx,
       summary: null,
-      command: payloadStringOrNull(event.payload.command),
+      command: getBashCommand(event),
       output: null,
       error: null,
       truncated: false,
@@ -49,7 +65,7 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
       knownBashToolUseIds.add(toolUseId);
       const run = ensureRun(toolUseId, event);
       run.startIdx = Math.min(run.startIdx, event.idx);
-      run.command = run.command ?? payloadStringOrNull(event.payload.command);
+      run.command = run.command ?? getBashCommand(event);
       if (event.type === "tool.output") {
         const elapsed = Number(event.payload.elapsedTimeSeconds ?? 0);
         if (Number.isFinite(elapsed) && elapsed > 0) {
@@ -76,7 +92,7 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
     for (const toolUseId of bashToolUseIds) {
       const run = ensureRun(toolUseId, event);
       run.summary = payloadStringOrNull(event.payload.summary);
-      run.command = run.command ?? payloadStringOrNull(event.payload.command);
+      run.command = run.command ?? getBashCommand(event);
       run.output = payloadStringOrNull(event.payload.output);
       run.error = payloadStringOrNull(event.payload.error);
       run.truncated = event.payload.truncated === true;
@@ -100,15 +116,17 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
         continue;
       }
 
-      const command = payloadStringOrNull(event.payload.command);
+      const command = getBashCommand(event);
+      const subagentOwnerToolUseId = payloadStringOrNull(event.payload.subagentOwnerToolUseId);
       permissionRequestById.set(requestId, {
         idx: event.idx,
         createdAt: event.createdAt,
         command,
         eventId: event.id,
+        subagentOwnerToolUseId,
       });
 
-      if (!hasBashToolLifecycleEvents) {
+      if (!hasBashToolLifecycleEvents && !subagentOwnerToolUseId) {
         const run = ensureRun(`permission:${requestId}`, event);
         run.summary = "Awaiting approval";
         run.command = run.command ?? command;
@@ -130,7 +148,7 @@ export function extractBashRuns(context: ChatEvent[]): BashRun[] {
     const key = `permission:${requestId}`;
     const requestMeta = permissionRequestById.get(requestId);
     let run = byToolUseId.get(key);
-    if (!run && decision === "deny" && requestMeta) {
+    if (!run && decision === "deny" && requestMeta && !requestMeta.subagentOwnerToolUseId) {
       run = ensureRun(key, event);
       run.startIdx = Math.min(run.startIdx, requestMeta.idx);
       run.anchorIdx = Math.min(run.anchorIdx, requestMeta.idx);
