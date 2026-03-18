@@ -7,6 +7,7 @@ const STATUS_GIT_TIMEOUT_MS = 4_000;
 
 type RunGitOptions = {
   timeoutMs?: number;
+  allowedExitCodes?: number[];
 };
 
 async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
@@ -20,6 +21,17 @@ async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Pr
 
     return stdout.trimEnd();
   } catch (error) {
+    const exitCode = typeof (error as { code?: unknown }).code === "number"
+      ? (error as { code: number }).code
+      : null;
+    const stdout = typeof (error as { stdout?: unknown }).stdout === "string"
+      ? (error as { stdout: string }).stdout
+      : "";
+
+    if (exitCode !== null && options?.allowedExitCodes?.includes(exitCode)) {
+      return stdout.trimEnd();
+    }
+
     const message = error instanceof Error ? error.message : "git command failed";
     throw new Error(`git ${args.join(" ")} failed: ${message}`);
   }
@@ -186,8 +198,9 @@ export async function discardGitChange(cwd: string, filePath: string): Promise<v
   }
 }
 
-export async function getGitDiff(cwd: string, filePath?: string): Promise<string> {
+async function getTrackedGitDiff(cwd: string, filePath?: string): Promise<string> {
   const pathArgs = filePath ? ["--", filePath] : [];
+
   try {
     return await runGit(["diff", "HEAD", ...pathArgs], cwd);
   } catch {
@@ -197,6 +210,54 @@ export async function getGitDiff(cwd: string, filePath?: string): Promise<string
       return "";
     }
   }
+}
+
+async function getUntrackedFilePaths(cwd: string, filePath?: string): Promise<string[]> {
+  const pathArgs = filePath ? ["--", filePath] : [];
+
+  try {
+    const status = await runGit(["status", "--porcelain", ...pathArgs], cwd, {
+      timeoutMs: STATUS_GIT_TIMEOUT_MS,
+    });
+    return status
+      .split("\n")
+      .filter((line) => line.startsWith("?? "))
+      .map((line) => line.slice(3));
+  } catch {
+    return [];
+  }
+}
+
+async function getUntrackedGitDiff(cwd: string, filePaths: string[]): Promise<string> {
+  const diffs = await Promise.all(
+    filePaths.map((relativePath) => runGit([
+      "diff",
+      "--no-index",
+      "--",
+      "/dev/null",
+      relativePath,
+    ], cwd, { allowedExitCodes: [1] }).catch(() => ""))
+  );
+
+  return diffs.filter((diff) => diff.length > 0).join("\n");
+}
+
+export async function getGitDiff(cwd: string, filePath?: string): Promise<string> {
+  const trackedDiff = await getTrackedGitDiff(cwd, filePath);
+  const untrackedFilePaths = await getUntrackedFilePaths(cwd, filePath);
+
+  if (filePath) {
+    if (trackedDiff) {
+      return trackedDiff;
+    }
+    if (untrackedFilePaths.length === 0) {
+      return "";
+    }
+    return getUntrackedGitDiff(cwd, untrackedFilePaths);
+  }
+
+  const untrackedDiff = await getUntrackedGitDiff(cwd, untrackedFilePaths);
+  return [trackedDiff, untrackedDiff].filter((diff) => diff.length > 0).join("\n");
 }
 
 export async function getFileAtHead(cwd: string, filePath: string): Promise<string | null> {

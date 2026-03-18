@@ -118,6 +118,24 @@ describe("git utilities", () => {
       expect(diff).toContain("Specific");
       git("checkout -- README.md");
     });
+
+    it("returns diff for selected untracked file", async () => {
+      await writeFile(join(repoDir, "untracked.txt"), "brand new file\n");
+      const diff = await getGitDiff(repoDir, "untracked.txt");
+      expect(diff).toContain("diff --git");
+      expect(diff).toContain("--- /dev/null");
+      expect(diff).toContain("+++ b/untracked.txt");
+      expect(diff).toContain("brand new file");
+      git("clean -f untracked.txt");
+    });
+
+    it("includes untracked files in full diff review", async () => {
+      await writeFile(join(repoDir, "untracked.txt"), "brand new file\n");
+      const diff = await getGitDiff(repoDir);
+      expect(diff).toContain("+++ b/untracked.txt");
+      expect(diff).toContain("brand new file");
+      git("clean -f untracked.txt");
+    });
   });
 
   describe("getFileAtHead", () => {
