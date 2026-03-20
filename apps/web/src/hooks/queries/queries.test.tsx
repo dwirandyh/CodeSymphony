@@ -15,6 +15,7 @@ import { useInstalledApps } from "./useInstalledApps";
 import { useFileContents } from "./useFileContents";
 import { useFileIndexQuery } from "./useFileIndexQuery";
 import { useWorktreeStatuses } from "./useWorktreeStatuses";
+import { useRepositoryReviews } from "./useRepositoryReviews";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -29,6 +30,7 @@ vi.mock("../../lib/api", () => ({
     getInstalledApps: vi.fn().mockResolvedValue([]),
     getFileContents: vi.fn().mockResolvedValue({ oldContent: "", newContent: "" }),
     getFileIndex: vi.fn().mockResolvedValue([]),
+    getRepositoryReviews: vi.fn().mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} }),
   },
 }));
 
@@ -151,6 +153,11 @@ describe("query hooks", () => {
 
   it("useWorktreeStatuses renders", () => {
     renderHook(useWorktreeStatuses as (...a: unknown[]) => unknown, [repoFixture]);
+    expect(container.textContent).toBe("ok");
+  });
+
+  it("useRepositoryReviews renders", () => {
+    renderHook(useRepositoryReviews as (...a: unknown[]) => unknown, ["r1"]);
     expect(container.textContent).toBe("ok");
   });
 });

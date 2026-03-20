@@ -48,7 +48,7 @@ describe("useGitChanges", () => {
       data: { entries: [], branch: "main" },
       isLoading: false,
       refetch: vi.fn(),
-    } as ReturnType<typeof useGitStatus>);
+    } as unknown as ReturnType<typeof useGitStatus>);
   });
 
   it("returns empty entries initially", () => {
@@ -129,7 +129,7 @@ describe("useGitChanges", () => {
       },
       isLoading: false,
       refetch: vi.fn(),
-    } as ReturnType<typeof useGitStatus>);
+    } as unknown as ReturnType<typeof useGitStatus>);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     act(() => {
@@ -140,7 +140,7 @@ describe("useGitChanges", () => {
       );
     });
 
-    expect(hookResult.entries.map((entry) => entry.path)).toEqual([
+    expect(hookResult.entries.map((entry: { path: string }) => entry.path)).toEqual([
       "src/alpha.ts",
       "src/zeta.ts",
       "src/new.ts",

@@ -586,6 +586,80 @@ describe("tool instrumentation", () => {
     expect(decisionEvent?.decision).toBe("auto_allow");
   });
 
+  it("auto-allows git review commands for review threads only", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
+    const decisions: string[] = [];
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        decisions.push((await canUseTool("Bash", { command: "git status" }, {
+          toolUseID: "tool-review-git",
+          blockedPath: "/tmp/repo/.git",
+          decisionReason: "Needs approval",
+          suggestions: [{ type: "addRules" }],
+        })).behavior);
+
+        decisions.push((await canUseTool("Bash", { command: "gh pr create --fill" }, {
+          toolUseID: "tool-review-gh",
+          blockedPath: "/tmp/repo/.git",
+          decisionReason: "Needs approval",
+          suggestions: [{ type: "addRules" }],
+        })).behavior);
+
+        decisions.push((await canUseTool("Bash", { command: "glab mr create --fill --yes" }, {
+          toolUseID: "tool-review-glab",
+          blockedPath: "/tmp/repo/.git",
+          decisionReason: "Needs approval",
+          suggestions: [{ type: "addRules" }],
+        })).behavior);
+
+        decisions.push((await canUseTool("Bash", { command: "npm test" }, {
+          toolUseID: "tool-review-npm",
+          blockedPath: "/tmp/repo/package.json",
+          decisionReason: "Needs approval",
+          suggestions: [{ type: "addRules" }],
+        })).behavior);
+
+        yield { type: "system", subtype: "init", session_id: "session-review-git" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "review thread",
+      sessionId: null,
+      cwd: process.cwd(),
+      permissionProfile: "review_git",
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+      onThinking: () => { },
+    });
+
+    expect(decisions).toEqual(["allow", "allow", "allow", "deny"]);
+    expect(onPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(onPermissionRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: "tool-review-npm",
+      toolName: "Bash",
+    }));
+  });
+
   it("keeps non-edit tools on permission request path", async () => {
     const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
 

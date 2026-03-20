@@ -1,6 +1,7 @@
 export const queryKeys = {
   repositories: {
     all: ["repositories"] as const,
+    reviews: (repositoryId: string) => ["repositories", repositoryId, "reviews"] as const,
   },
   worktrees: {
     gitStatus: (worktreeId: string) => ["worktrees", worktreeId, "gitStatus"] as const,

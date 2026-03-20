@@ -6,6 +6,7 @@ import type {
   ClaudeToolInstrumentationDecision,
   ClaudeToolInstrumentationEvent,
 } from "../types.js";
+import type { ChatThreadPermissionProfile } from "@codesymphony/shared-types";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 
 import { sanitizeForLog } from "./sanitize.js";
@@ -639,6 +640,23 @@ export type SessionState = {
   queryStartTimestamp: number;
 };
 
+function isReviewGitCommand(command: string | null | undefined): boolean {
+  if (typeof command !== "string") {
+    return false;
+  }
+
+  const normalized = command.trim();
+  if (!/^(git|gh|glab)(\s|$)/.test(normalized)) {
+    return false;
+  }
+
+  if (/[\n\r;&|><`]/.test(normalized) || normalized.includes("$(")) {
+    return false;
+  }
+
+  return true;
+}
+
 export function createCanUseTool(
   callbacks: HookCallbacks,
   emitInstrumentation: (event: ClaudeToolInstrumentationEvent) => Promise<void>,
@@ -654,6 +672,7 @@ export function createCanUseTool(
   state: SessionState,
   permissionMode: string | undefined,
   autoAcceptTools: boolean | undefined,
+  permissionProfile: ChatThreadPermissionProfile | undefined,
 ) {
   return async (
     toolName: string,
@@ -801,6 +820,20 @@ export function createCanUseTool(
       await emitDecision(toolUseId, "allow", toolName, permissionParentToolUseId, {
         ...(command ? { command } : {}),
         input: sanitizeForLog(input),
+      });
+      return {
+        behavior: "allow" as const,
+        updatedInput: input,
+      };
+    }
+
+    if (permissionProfile === "review_git" && isBash && isReviewGitCommand(command)) {
+      await emitDecision(toolUseId, "auto_allow", toolName, permissionParentToolUseId, {
+        ...(command ? { command } : {}),
+        input: sanitizeForLog(input),
+        blockedPath: options.blockedPath ?? null,
+        decisionReason: options.decisionReason ?? null,
+        suggestionsCount: options.suggestions?.length ?? 0,
       });
       return {
         behavior: "allow" as const,

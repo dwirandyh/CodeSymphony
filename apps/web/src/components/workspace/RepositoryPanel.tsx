@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, FolderGit2, GitBranch, Pencil, Plus, Trash2 } from "lucide-react";
-import type { GitStatus, Repository } from "@codesymphony/shared-types";
+import type { GitStatus, Repository, ReviewRef } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
 import { cn } from "../../lib/utils";
 import { isRootWorktree } from "../../lib/worktree";
 import { gitStatusQueryOptions } from "../../hooks/queries/useGitStatus";
+import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import type { WorktreeStatusSummary, WorktreeThreadUiStatus } from "../../pages/workspace/hooks/worktreeThreadStatus";
 
@@ -57,6 +58,31 @@ function WorktreeStatusBadge({ status }: { status: WorktreeThreadUiStatus | unde
   );
 }
 
+function WorktreeReviewMeta({ review, insertions, deletions, testId }: {
+  review: ReviewRef | null;
+  insertions: number;
+  deletions: number;
+  testId: string;
+}) {
+  const hasDiff = insertions > 0 || deletions > 0;
+
+  return (
+    <div className="flex shrink-0 items-center gap-2 text-right text-[10px] leading-none" data-testid={`${testId}-meta`}>
+      {review ? (
+        <span className="text-muted-foreground" data-testid={`${testId}-review`}>
+          {review.display}
+        </span>
+      ) : null}
+      {hasDiff ? (
+        <span className="flex items-center gap-1" data-testid={`${testId}-diff`}>
+          <span className="text-green-500">+{insertions}</span>
+          <span className="text-red-500">-{deletions}</span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export function RepositoryPanel({
   repositories,
   selectedRepositoryId,
@@ -83,6 +109,15 @@ export function RepositoryPanel({
   const gitStatusQueries = useQueries({
     queries: activeWorktreeIds.map((worktreeId) => gitStatusQueryOptions(worktreeId)),
   });
+  const repositoryReviewQueries = useQueries({
+    queries: repositories.map((repository) => repositoryReviewsQueryOptions(repository.id)),
+  });
+  const reviewsByRepositoryId = useMemo(() => Object.fromEntries(
+    repositories.map((repository, index) => [
+      repository.id,
+      repositoryReviewQueries[index]?.data?.reviewsByBranch ?? {},
+    ]),
+  ) as Record<string, Record<string, ReviewRef>>, [repositories, repositoryReviewQueries]);
   const worktreeStats = useMemo(() => {
     return activeWorktreeIds.reduce<Record<string, { insertions: number; deletions: number; fileCount: number }>>((acc, worktreeId, index) => {
       const status = gitStatusQueries[index]?.data as GitStatus | undefined;
@@ -148,6 +183,7 @@ export function RepositoryPanel({
             const rootPriorityThreadId = rootWorkspace
               ? resolvePriorityThreadId(worktreeStatuses[rootWorkspace.id])
               : null;
+            const repositoryReviews = reviewsByRepositoryId[repository.id] ?? {};
 
             return (
               <article
@@ -206,31 +242,30 @@ export function RepositoryPanel({
                           <button
                             type="button"
                             className={cn(
-                              "flex w-full min-w-0 items-start gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40",
+                              "flex w-full min-w-0 items-start gap-2 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40",
                               selectedWorktreeId === rootWorkspace.id && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
                             )}
                             onClick={() => onSelectWorktree(repository.id, rootWorkspace.id, rootPriorityThreadId)}
                           >
                             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                              <div className="flex min-w-0 items-center gap-1.5 overflow-hidden pr-20">
+                              <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
                                 <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                                   <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                                 </span>
                                 <span className="truncate text-xs">{rootWorkspace.branch}</span>
                               </div>
-
-                              <div className="flex h-4 items-center gap-1.5 pl-5 pr-20">
-                                {worktreeStats[rootWorkspace.id] && ((worktreeStats[rootWorkspace.id].insertions > 0) || (worktreeStats[rootWorkspace.id].deletions > 0)) ? (
-                                  <span className="flex items-center gap-1 text-[10px] leading-none">
-                                    <span className="text-green-500">+{worktreeStats[rootWorkspace.id].insertions}</span>
-                                    <span className="text-red-500">-{worktreeStats[rootWorkspace.id].deletions}</span>
-                                  </span>
-                                ) : null}
+                              <div className="pl-5 pt-1">
+                                <WorktreeStatusBadge status={worktreeStatuses[rootWorkspace.id]?.kind} />
                               </div>
                             </div>
 
-                            <div className="absolute top-1.5 right-2 flex items-center justify-end">
-                              <WorktreeStatusBadge status={worktreeStatuses[rootWorkspace.id]?.kind} />
+                            <div className="ml-auto">
+                              <WorktreeReviewMeta
+                                review={repositoryReviews[rootWorkspace.branch] ?? null}
+                                insertions={worktreeStats[rootWorkspace.id]?.insertions ?? 0}
+                                deletions={worktreeStats[rootWorkspace.id]?.deletions ?? 0}
+                                testId={`worktree-${rootWorkspace.id}`}
+                              />
                             </div>
                           </button>
                         </div>
@@ -243,6 +278,7 @@ export function RepositoryPanel({
                           const isWorktreeSelected = selectedWorktreeId === worktree.id;
                           const stats = worktreeStats[worktree.id];
                           const priorityThreadId = resolvePriorityThreadId(worktreeStatuses[worktree.id]);
+                          const review = repositoryReviews[worktree.branch] ?? null;
 
                           return (
                             <div key={worktree.id} className="group/wt relative">
@@ -266,7 +302,7 @@ export function RepositoryPanel({
                                 }}
                               >
                                 <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden pr-20">
+                                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
                                     <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                                       <GitBranch className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                                     </span>
@@ -312,18 +348,18 @@ export function RepositoryPanel({
                                     )}
                                   </div>
 
-                                  <div className="flex h-4 items-center gap-1.5 pl-5 pr-20">
-                                    {stats && (stats.insertions > 0 || stats.deletions > 0) ? (
-                                      <span className="flex items-center gap-1 text-[10px] leading-none">
-                                        <span className="text-green-500">+{stats.insertions}</span>
-                                        <span className="text-red-500">-{stats.deletions}</span>
-                                      </span>
-                                    ) : null}
+                                  <div className="pl-5 pt-1 transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0 group-focus-within/wt:pointer-events-none group-focus-within/wt:opacity-0">
+                                    <WorktreeStatusBadge status={worktreeStatuses[worktree.id]?.kind} />
                                   </div>
                                 </div>
 
-                                <div className="absolute top-1.5 right-2 flex items-center justify-end transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0 group-focus-within/wt:pointer-events-none group-focus-within/wt:opacity-0">
-                                  <WorktreeStatusBadge status={worktreeStatuses[worktree.id]?.kind} />
+                                <div className="ml-auto pr-20 transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0 group-focus-within/wt:pointer-events-none group-focus-within/wt:opacity-0">
+                                  <WorktreeReviewMeta
+                                    review={review}
+                                    insertions={stats?.insertions ?? 0}
+                                    deletions={stats?.deletions ?? 0}
+                                    testId={`worktree-${worktree.id}`}
+                                  />
                                 </div>
                               </div>
 

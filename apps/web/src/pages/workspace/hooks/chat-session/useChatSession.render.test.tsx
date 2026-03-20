@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread, ChatTimelineSnapshot } from "@codesymphony/shared-types";
+import { api } from "../../../../lib/api";
 import { useChatSession } from "./useChatSession";
 
 const { threadsState, snapshotState } = vi.hoisted(() => ({
@@ -46,7 +47,7 @@ vi.mock("../../../../lib/renderDebug", () => ({
 vi.mock("../../../../lib/api", () => ({
   api: {
     createThread: vi.fn(),
-    createRepositoryThread: vi.fn(),
+    getOrCreatePrMrThread: vi.fn(),
     renameThreadTitle: vi.fn(),
     deleteThread: vi.fn(),
     sendMessage: vi.fn(),
@@ -64,6 +65,8 @@ function makeThread(id: string, active = false): ChatThread {
     id,
     worktreeId: "wt-1",
     title: id,
+    kind: "default",
+    permissionProfile: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active,
@@ -110,6 +113,39 @@ afterEach(() => {
 });
 
 describe("useChatSession", () => {
+  it("creates or reuses dedicated PR/MR thread and sends message", async () => {
+    const prMrThread = {
+      ...makeThread("pr-mr-thread"),
+      title: "PR / MR",
+      kind: "review" as const,
+      permissionProfile: "review_git" as const,
+    };
+    vi.mocked(api.getOrCreatePrMrThread).mockResolvedValue(prMrThread);
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "message-1",
+      threadId: prMrThread.id,
+      seq: 1,
+      role: "user",
+      content: "Create PR",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      const created = await hookResult.createOrSelectPrMrThreadAndSendMessage("Create PR");
+      expect(created?.id).toBe(prMrThread.id);
+    });
+
+    expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1");
+    expect(api.sendMessage).toHaveBeenCalledWith(prMrThread.id, {
+      content: "Create PR",
+      mode: "default",
+      attachments: [],
+    });
+  });
+
   it("respects desiredThreadId on first render", () => {
     renderHook("thread-a");
     expect(hookResult.selectedThreadId).toBe("thread-a");

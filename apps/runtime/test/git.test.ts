@@ -13,6 +13,7 @@ import {
   getFileAtHead,
   gitCommitAll,
   discardGitChange,
+  detectReviewProvider,
 } from "../src/services/git";
 
 let repoDir: string;
@@ -173,6 +174,20 @@ describe("git utilities", () => {
       await discardGitChange(repoDir, "temp.txt");
       const status = await getGitStatus(repoDir);
       expect(status.entries.find(e => e.path === "temp.txt")).toBeUndefined();
+    });
+  });
+
+  describe("detectReviewProvider", () => {
+    it("detects github remotes", () => {
+      expect(detectReviewProvider("git@github.com:test/repo.git")).toBe("github");
+    });
+
+    it("detects gitlab remotes", () => {
+      expect(detectReviewProvider("git@gitlab.com:test/repo.git")).toBe("gitlab");
+    });
+
+    it("returns unknown for unsupported hosts", () => {
+      expect(detectReviewProvider("git@example.com:test/repo.git")).toBe("unknown");
     });
   });
 });

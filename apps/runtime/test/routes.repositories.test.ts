@@ -19,6 +19,11 @@ const mockWorktreeService = {
   renameBranch: vi.fn(),
 };
 
+const mockReviewService = {
+  getRepositoryReviews: vi.fn(),
+};
+
+
 const mockFileService = {
   searchFiles: vi.fn(),
   listFileIndex: vi.fn(),
@@ -31,6 +36,7 @@ const mockSystemService = {
 
 const mockChatService = {
   generateCommitMessage: vi.fn(),
+  getOrCreatePrMrThread: vi.fn(),
 };
 
 const mockScriptStreamService = {
@@ -54,6 +60,7 @@ function buildApp(): FastifyInstance {
   app.decorate("systemService", mockSystemService as never);
   app.decorate("chatService", mockChatService as never);
   app.decorate("scriptStreamService", mockScriptStreamService as never);
+  app.decorate("reviewService", mockReviewService as never);
   return app;
 }
 
@@ -62,6 +69,8 @@ describe("repository routes", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockReviewService.getRepositoryReviews.mockReset();
+    mockChatService.getOrCreatePrMrThread.mockReset();
     app = buildApp();
     await app.register(registerRepositoryRoutes, { prefix: "/api" });
     await app.ready();
@@ -139,6 +148,74 @@ describe("repository routes", () => {
     it("returns 404 when repo not found", async () => {
       mockRepoService.listBranches.mockRejectedValue(new Error("Repository not found"));
       const res = await app.inject({ method: "GET", url: "/api/repositories/r1/branches" });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("GET /api/repositories/:id/reviews", () => {
+    it("returns repository review state", async () => {
+      mockReviewService.getRepositoryReviews.mockResolvedValue({
+        provider: "github",
+        kind: "pr",
+        available: true,
+        reviewsByBranch: {
+          "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123" },
+        },
+      });
+      const res = await app.inject({ method: "GET", url: "/api/repositories/r1/reviews" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.reviewsByBranch["feature-x"].display).toBe("#123");
+    });
+
+    it("returns cached review state for repeated requests within ttl", async () => {
+      const repositoryId = `repo-cache-${Date.now()}`;
+      mockReviewService.getRepositoryReviews.mockResolvedValue({
+        provider: "github",
+        kind: "pr",
+        available: true,
+        reviewsByBranch: {},
+      });
+
+      const first = await app.inject({ method: "GET", url: `/api/repositories/${repositoryId}/reviews` });
+      const second = await app.inject({ method: "GET", url: `/api/repositories/${repositoryId}/reviews` });
+
+      expect(first.statusCode).toBe(200);
+      expect(second.statusCode).toBe(200);
+      expect(mockReviewService.getRepositoryReviews).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns 404 when repository not found", async () => {
+      mockReviewService.getRepositoryReviews.mockRejectedValue(new Error("Repository not found"));
+      const res = await app.inject({ method: "GET", url: "/api/repositories/r2/reviews" });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("POST /api/worktrees/:id/pr-mr-thread", () => {
+    it("returns existing or created PR/MR thread", async () => {
+      mockChatService.getOrCreatePrMrThread.mockResolvedValue({
+        id: "thread-review",
+        worktreeId: "w1",
+        title: "PR / MR",
+        kind: "review",
+        permissionProfile: "review_git",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: false,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        updatedAt: "2026-03-20T00:00:00.000Z",
+      });
+
+      const res = await app.inject({ method: "POST", url: "/api/worktrees/w1/pr-mr-thread" });
+      expect(res.statusCode).toBe(201);
+      expect(mockChatService.getOrCreatePrMrThread).toHaveBeenCalledWith("w1");
+      expect(res.json().data.kind).toBe("review");
+      expect(res.json().data.permissionProfile).toBe("review_git");
+    });
+
+    it("returns 404 when worktree is missing", async () => {
+      mockChatService.getOrCreatePrMrThread.mockRejectedValue(new Error("Worktree not found"));
+      const res = await app.inject({ method: "POST", url: "/api/worktrees/missing/pr-mr-thread" });
       expect(res.statusCode).toBe(404);
     });
   });

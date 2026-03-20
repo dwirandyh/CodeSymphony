@@ -73,6 +73,7 @@ describe("GitChangesPanel", () => {
     onReview: vi.fn(),
     onRefresh: vi.fn(),
     onClose: vi.fn(),
+    onPrMrAction: vi.fn(),
   };
 
   it("renders Source Control header", () => {
@@ -174,6 +175,38 @@ describe("GitChangesPanel", () => {
     }
   });
 
+  it("renders create PR action in source control header", () => {
+    act(() => {
+      root.render(<GitChangesPanel {...baseProps} reviewKind="pr" />);
+    });
+    expect(container.textContent).toContain("Create PR");
+  });
+
+  it("calls onPrMrAction when create PR is clicked", () => {
+    const onPrMrAction = vi.fn();
+    act(() => {
+      root.render(<GitChangesPanel {...baseProps} reviewKind="pr" onPrMrAction={onPrMrAction} />);
+    });
+    const btn = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create PR"));
+    if (btn) {
+      act(() => (btn as HTMLElement).click());
+      expect(onPrMrAction).toHaveBeenCalled();
+    }
+  });
+
+  it("renders open review action in source control header", () => {
+    act(() => {
+      root.render(
+        <GitChangesPanel
+          {...baseProps}
+          reviewKind="mr"
+          reviewRef={{ number: 52, display: "!52", url: "https://example.com/mr/52" }}
+        />
+      );
+    });
+    expect(container.textContent).toContain("Open !52");
+  });
+
   it("renders Discard button for entries", () => {
     const entries = [makeEntry({ path: "src/app.ts" })];
     act(() => {
@@ -223,7 +256,7 @@ describe("GitChangesPanel", () => {
       },
       isLoading: false,
       refetch: vi.fn(),
-    } as ReturnType<typeof useGitStatus>);
+    } as unknown as ReturnType<typeof useGitStatus>);
 
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 

@@ -84,6 +84,8 @@ function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
     id: "t1",
     worktreeId: "wt-1",
     title: "Thread",
+    kind: "default",
+    permissionProfile: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active: false,

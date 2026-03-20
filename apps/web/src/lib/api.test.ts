@@ -191,10 +191,11 @@ describe("api", () => {
       expect(result).toEqual({ id: "t1" });
     });
 
-    it("creates repository thread", async () => {
+    it("gets or creates PR/MR thread", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "t1" }));
-      const result = await api.createRepositoryThread("r1");
+      const result = await api.getOrCreatePrMrThread("w1");
       expect(result).toEqual({ id: "t1" });
+      expect(mockFetch.mock.calls[0]?.[0]).toContain("/worktrees/w1/pr-mr-thread");
     });
 
     it("gets thread", async () => {

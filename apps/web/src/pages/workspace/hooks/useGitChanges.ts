@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from "react";
-import type { GitChangeStatus } from "@codesymphony/shared-types";
+import type { GitChangeEntry, GitChangeStatus } from "@codesymphony/shared-types";
 import { useGitStatus } from "../../../hooks/queries/useGitStatus";
 import { useGitCommit } from "../../../hooks/mutations/useGitCommit";
 import { useDiscardGitChange } from "../../../hooks/mutations/useDiscardGitChange";
@@ -39,18 +39,16 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     return api.getGitDiff(worktreeId);
   }, [worktreeId]);
 
-  const entries = useMemo(
-    () => (data?.entries ?? [])
-      .filter((entry) => !entry.path.endsWith("/"))
-      .toSorted((left, right) => {
-        const statusDiff = STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status];
-        if (statusDiff !== 0) {
-          return statusDiff;
-        }
-        return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: "base" });
-      }),
-    [data?.entries],
-  );
+  const entries = useMemo(() => {
+    const filteredEntries = (data?.entries ?? []).filter((entry) => !entry.path.endsWith("/"));
+    return [...filteredEntries].sort((left: GitChangeEntry, right: GitChangeEntry) => {
+      const statusDiff = STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status];
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+      return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: "base" });
+    });
+  }, [data?.entries]);
 
   return {
     entries,

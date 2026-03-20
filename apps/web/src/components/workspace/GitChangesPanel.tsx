@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Dot, ExternalLink, Eye, Plus, Minus, RefreshCw, Undo2, X, Loader2 } from "lucide-react";
-import type { GitChangeEntry } from "@codesymphony/shared-types";
+import { Dot, ExternalLink, Eye, GitPullRequestArrow, Plus, Minus, RefreshCw, Undo2, X, Loader2 } from "lucide-react";
+import type { GitChangeEntry, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -23,6 +23,12 @@ interface GitChangesPanelProps {
   onSelectFile?: (path: string) => void;
   onDiscardChange?: (path: string) => void;
   onOpenFile?: (path: string) => void;
+  reviewKind?: ReviewKind | null;
+  reviewRef?: ReviewRef | null;
+  prMrActionDisabled?: boolean;
+  prMrActionTitle?: string;
+  prMrActionBusy?: boolean;
+  onPrMrAction?: () => void;
 }
 
 const STATUS_CONFIG: Record<string, { icon: any; className: string }> = {
@@ -53,6 +59,12 @@ export function GitChangesPanel({
   onSelectFile,
   onDiscardChange,
   onOpenFile,
+  reviewKind,
+  reviewRef,
+  prMrActionDisabled,
+  prMrActionTitle,
+  prMrActionBusy,
+  onPrMrAction,
 }: GitChangesPanelProps) {
   const [commitMessage, setCommitMessage] = useState("");
 
@@ -61,6 +73,12 @@ export function GitChangesPanel({
     setCommitMessage("");
   };
 
+  const prMrActionLabel = reviewRef
+    ? `Open ${reviewRef.display}`
+    : reviewKind === "mr"
+      ? "Create MR"
+      : "Create PR";
+
   return (
     <Card className="flex h-full flex-col overflow-hidden border-0 bg-transparent shadow-none">
       {/* Header */}
@@ -68,15 +86,30 @@ export function GitChangesPanel({
         <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
           Source Control
         </span>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
-          onClick={onClose}
-          aria-label="Close Source Control"
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
+        <div className="flex items-center gap-1">
+          {onPrMrAction && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1 px-2 text-[10px] text-muted-foreground/80 hover:text-foreground"
+              onClick={onPrMrAction}
+              disabled={prMrActionDisabled || prMrActionBusy}
+              title={prMrActionTitle ?? prMrActionLabel}
+            >
+              <GitPullRequestArrow className="h-3 w-3" />
+              <span>{prMrActionBusy ? "Working..." : prMrActionLabel}</span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
+            onClick={onClose}
+            aria-label="Close Source Control"
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       <Separator className="opacity-20" />

@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "./RepositoryPanel";
 
-const { listThreadsMock, getThreadSnapshotMock, getGitStatusMock } = vi.hoisted(() => ({
+const { listThreadsMock, getThreadSnapshotMock, getGitStatusMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn(),
   getThreadSnapshotMock: vi.fn(),
   getGitStatusMock: vi.fn().mockResolvedValue({ branch: "main", entries: [] }),
+  getRepositoryReviewsMock: vi.fn().mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} }),
 }));
 
 vi.mock("../../lib/api", () => ({
@@ -16,6 +17,7 @@ vi.mock("../../lib/api", () => ({
     listThreads: listThreadsMock,
     getThreadSnapshot: getThreadSnapshotMock,
     getGitStatus: getGitStatusMock,
+    getRepositoryReviews: getRepositoryReviewsMock,
   },
 }));
 
@@ -32,9 +34,12 @@ beforeEach(() => {
   });
   listThreadsMock.mockReset();
   getThreadSnapshotMock.mockReset();
-  getGitStatusMock.mockClear();
+  getGitStatusMock.mockReset();
+  getRepositoryReviewsMock.mockReset();
   listThreadsMock.mockResolvedValue([]);
   getThreadSnapshotMock.mockResolvedValue(makeSnapshot());
+  getGitStatusMock.mockResolvedValue({ branch: "main", entries: [] });
+  getRepositoryReviewsMock.mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} });
 });
 
 afterEach(() => {
@@ -87,6 +92,8 @@ function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
     id: "t1",
     worktreeId: "wt-feat",
     title: "Thread",
+    kind: "default",
+    permissionProfile: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active: false,
@@ -210,6 +217,36 @@ describe("RepositoryPanel", () => {
       act(() => attachBtn.click());
       expect(onAttach).toHaveBeenCalled();
     }
+  });
+
+  it("renders stacked review and diff metadata", async () => {
+    getRepositoryReviewsMock.mockResolvedValue({
+      provider: "github",
+      kind: "pr",
+      available: true,
+      reviewsByBranch: {
+        "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123" },
+      },
+    });
+    getGitStatusMock.mockResolvedValue({
+      branch: "feature-x",
+      entries: [{ path: "src/app.ts", status: "modified", insertions: 24, deletions: 3 }],
+    });
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "wt-feat",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.textContent).toBe("#123");
+    expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.textContent).toContain("+24");
+    expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.textContent).toContain("-3");
   });
 
   it("renders root and branch status badges", async () => {
