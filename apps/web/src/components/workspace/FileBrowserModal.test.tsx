@@ -23,6 +23,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -31,6 +32,12 @@ afterEach(() => {
 });
 
 describe("FileBrowserModal", () => {
+  async function flushEffects(delay = 50) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    });
+  }
+
   it("renders nothing when closed", () => {
     act(() => {
       root.render(<FileBrowserModal open={false} onClose={vi.fn()} onSelect={vi.fn()} />);
@@ -42,9 +49,7 @@ describe("FileBrowserModal", () => {
     await act(async () => {
       root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);
     });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 50));
-    });
+    await flushEffects();
     const body = document.body.textContent || "";
     expect(body).toContain("Browse Server Filesystem");
     expect(body).toContain("Select this directory");
@@ -54,9 +59,7 @@ describe("FileBrowserModal", () => {
     await act(async () => {
       root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);
     });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 50));
-    });
+    await flushEffects();
     const input = document.body.querySelector('input[placeholder="Filter directories..."]');
     expect(input).toBeTruthy();
   });
@@ -65,9 +68,7 @@ describe("FileBrowserModal", () => {
     await act(async () => {
       root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);
     });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 100));
-    });
+    await flushEffects(100);
     const body = document.body.textContent || "";
     expect(body).toContain("project");
     expect(body).toContain("docs");
@@ -77,10 +78,49 @@ describe("FileBrowserModal", () => {
     await act(async () => {
       root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);
     });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 100));
-    });
+    await flushEffects(100);
     const body = document.body.textContent || "";
     expect(body).toContain("Git");
+  });
+
+  it("updates recent paths immediately after selecting a directory", async () => {
+    const onSelect = vi.fn();
+    await act(async () => {
+      root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={onSelect} />);
+    });
+    await flushEffects(100);
+
+    const selectButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Select this directory"),
+    ) as HTMLButtonElement;
+
+    await act(async () => {
+      selectButton.click();
+    });
+
+    expect(onSelect).toHaveBeenCalledWith("/home/user");
+    expect(document.body.querySelector('button[title="/home/user"]')).toBeTruthy();
+  });
+
+  it("refreshes recent paths when reopened", async () => {
+    localStorage.setItem("codesymphony:recent-browse-paths", JSON.stringify(["/old/path"]));
+
+    await act(async () => {
+      root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);
+    });
+    await flushEffects(100);
+    expect(document.body.querySelector('button[title="/old/path"]')).toBeTruthy();
+
+    localStorage.setItem("codesymphony:recent-browse-paths", JSON.stringify(["/new/path"]));
+
+    await act(async () => {
+      root.render(<FileBrowserModal open={false} onClose={vi.fn()} onSelect={vi.fn()} />);
+    });
+    await act(async () => {
+      root.render(<FileBrowserModal open={true} onClose={vi.fn()} onSelect={vi.fn()} />);
+    });
+    await flushEffects(100);
+
+    expect(document.body.querySelector('button[title="/new/path"]')).toBeTruthy();
   });
 });

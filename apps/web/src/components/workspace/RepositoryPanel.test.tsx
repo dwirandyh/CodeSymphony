@@ -192,7 +192,7 @@ describe("RepositoryPanel", () => {
     const featureRow = container.querySelector("[data-worktree-id='wt-feat']") as HTMLElement | null;
     expect(featureRow).toBeTruthy();
     act(() => featureRow?.click());
-    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "wt-feat");
+    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "wt-feat", null);
   });
 
   it("shows loading state", () => {
@@ -251,5 +251,64 @@ describe("RepositoryPanel", () => {
 
     expect(container.textContent).toContain("Waiting approval");
     expect(container.textContent).toContain("Running");
+  });
+
+  it("derives review-plan status from a non-latest inactive thread and forwards that thread on click", async () => {
+    const onSelectWorktree = vi.fn();
+    listThreadsMock.mockImplementation(async (worktreeId: string) => {
+      if (worktreeId === "wt-root") {
+        return [makeThread({ id: "t-root", worktreeId: "wt-root" })];
+      }
+      if (worktreeId === "wt-feat") {
+        return [
+          makeThread({ id: "t-plan", worktreeId: "wt-feat", title: "Needs review", updatedAt: "2026-01-01T00:00:00Z" }),
+          makeThread({ id: "t-latest", worktreeId: "wt-feat", title: "Latest idle", updatedAt: "2026-01-02T00:00:00Z" }),
+        ];
+      }
+      return [];
+    });
+    getThreadSnapshotMock.mockImplementation(async (threadId: string) => {
+      if (threadId === "t-plan") {
+        return makeSnapshot([
+          {
+            id: "e1",
+            threadId,
+            idx: 1,
+            type: "plan.created",
+            payload: { content: "Plan", filePath: ".claude/plan.md" },
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "e2",
+            threadId,
+            idx: 2,
+            type: "chat.completed",
+            payload: {},
+            createdAt: "2026-01-01T00:00:01Z",
+          },
+        ]);
+      }
+      return makeSnapshot();
+    });
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      onSelectWorktree,
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("Review plan");
+
+    const featureRow = container.querySelector("[data-worktree-id='wt-feat']") as HTMLElement | null;
+    expect(featureRow).toBeTruthy();
+    act(() => featureRow?.click());
+
+    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "wt-feat", "t-plan");
   });
 });

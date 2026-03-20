@@ -27,8 +27,8 @@ export interface ScriptUpdateEvent {
 }
 
 interface UseRepositoryManagerOptions {
-  initialRepoId?: string;
-  initialWorktreeId?: string;
+  desiredRepoId?: string;
+  desiredWorktreeId?: string;
   onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
   onScriptUpdate?: (event: ScriptUpdateEvent) => void;
   onScriptOutputChunk?: (event: { worktreeId: string; chunk: string }) => void;
@@ -166,10 +166,13 @@ export function useRepositoryManager(
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
 
-  const initialAppliedRef = useRef(false);
   const previousRepositoryCountRef = useRef(0);
   const previousRepositoriesRef = useRef(repositories);
   const prevSelectionRef = useRef<{ repoId: string | null; worktreeId: string | null }>({
+    repoId: null,
+    worktreeId: null,
+  });
+  const prevRequestedSelectionRef = useRef<{ repoId: string | null; worktreeId: string | null }>({
     repoId: null,
     worktreeId: null,
   });
@@ -205,7 +208,49 @@ export function useRepositoryManager(
     return primary?.id ?? null;
   }
 
-  // Auto-select first repo/worktree when data arrives, respecting initial URL IDs
+  function resolveFallbackWorktreeId(repository: Repository): string | null {
+    const primaryWorktreeId = findPrimaryWorktreeId(repository);
+    if (primaryWorktreeId) {
+      return primaryWorktreeId;
+    }
+
+    return repository.worktrees[0]?.id ?? null;
+  }
+
+  function applyRequestedSelection(requestedRepoId: string | null, requestedWorktreeId: string | null): boolean {
+    if (requestedWorktreeId) {
+      for (const repo of repositories) {
+        if (repo.worktrees.some((worktree) => worktree.id === requestedWorktreeId)) {
+          if (selectedRepositoryId !== repo.id) {
+            setSelectedRepositoryId(repo.id);
+          }
+          if (selectedWorktreeId !== requestedWorktreeId) {
+            setSelectedWorktreeId(requestedWorktreeId);
+          }
+          return true;
+        }
+      }
+    }
+
+    if (requestedRepoId) {
+      const repo = repositories.find((candidate) => candidate.id === requestedRepoId);
+      if (!repo) {
+        return false;
+      }
+
+      const fallbackWorktreeId = resolveFallbackWorktreeId(repo);
+      if (selectedRepositoryId !== repo.id) {
+        setSelectedRepositoryId(repo.id);
+      }
+      if (selectedWorktreeId !== fallbackWorktreeId) {
+        setSelectedWorktreeId(fallbackWorktreeId);
+      }
+      return true;
+    }
+
+    return false;
+  }
+
   useEffect(() => {
     if (repositories.length === 0) {
       const hadRepositories = previousRepositoryCountRef.current > 0;
@@ -228,45 +273,21 @@ export function useRepositoryManager(
     previousRepositoryCountRef.current = repositories.length;
     previousRepositoriesRef.current = repositories;
 
-    if (!initialAppliedRef.current && (options?.initialWorktreeId || options?.initialRepoId)) {
-      initialAppliedRef.current = true;
+    const requestedRepoId = options?.desiredRepoId ?? null;
+    const requestedWorktreeId = options?.desiredWorktreeId ?? null;
+    const requestedSelectionChanged =
+      prevRequestedSelectionRef.current.repoId !== requestedRepoId
+      || prevRequestedSelectionRef.current.worktreeId !== requestedWorktreeId;
 
-      // Validate initialWorktreeId against fetched data
-      if (options.initialWorktreeId) {
-        let foundRepo: Repository | undefined;
-        for (const repo of repositories) {
-          if (repo.worktrees.some((w) => w.id === options.initialWorktreeId)) {
-            foundRepo = repo;
-            break;
-          }
-        }
-        if (foundRepo) {
-          setSelectedRepositoryId(foundRepo.id);
-          setSelectedWorktreeId(options.initialWorktreeId);
-          return;
-        }
+    if (requestedSelectionChanged) {
+      prevRequestedSelectionRef.current = {
+        repoId: requestedRepoId,
+        worktreeId: requestedWorktreeId,
+      };
+
+      if (applyRequestedSelection(requestedRepoId, requestedWorktreeId)) {
+        return;
       }
-
-      // Validate initialRepoId against fetched data
-      if (options.initialRepoId) {
-        const repo = repositories.find((r) => r.id === options.initialRepoId);
-        if (repo) {
-          setSelectedRepositoryId(repo.id);
-          const primaryWorktreeId = findPrimaryWorktreeId(repo);
-          if (primaryWorktreeId) {
-            setSelectedWorktreeId(primaryWorktreeId);
-          } else {
-            const firstWorktree = repo.worktrees[0];
-            if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
-          }
-          return;
-        }
-      }
-      // Fall through to auto-select if URL IDs were invalid
-    }
-
-    if (!initialAppliedRef.current) {
-      initialAppliedRef.current = true;
     }
 
     const selectedRepositoryStillExists =
@@ -293,16 +314,21 @@ export function useRepositoryManager(
     if (!selectedWorktreeId) {
       const firstRepo = repositories[0];
       if (firstRepo) {
-        const primaryWorktreeId = findPrimaryWorktreeId(firstRepo);
-        if (primaryWorktreeId) {
-          setSelectedWorktreeId(primaryWorktreeId);
-        } else {
-          const firstWorktree = firstRepo.worktrees[0];
-          if (firstWorktree) setSelectedWorktreeId(firstWorktree.id);
+        const fallbackWorktreeId = resolveFallbackWorktreeId(firstRepo);
+        if (fallbackWorktreeId) {
+          setSelectedWorktreeId(fallbackWorktreeId);
         }
       }
     }
-  }, [onError, queryClient, repositories, selectedRepositoryId, selectedWorktreeId]);
+  }, [
+    onError,
+    options?.desiredRepoId,
+    options?.desiredWorktreeId,
+    queryClient,
+    repositories,
+    selectedRepositoryId,
+    selectedWorktreeId,
+  ]);
 
   // Notify parent when selection changes
   useEffect(() => {

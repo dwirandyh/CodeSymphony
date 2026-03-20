@@ -116,15 +116,15 @@ let mockOptions: {
   onScriptUpdate?: ReturnType<typeof vi.fn>;
   onScriptOutputChunk?: ReturnType<typeof vi.fn>;
   onTeardownError?: ReturnType<typeof vi.fn>;
-  initialRepoId?: string;
-  initialWorktreeId?: string;
+  desiredRepoId?: string;
+  desiredWorktreeId?: string;
 };
 
-function TestComponent({ initialRepoId, initialWorktreeId }: { initialRepoId?: string; initialWorktreeId?: string }) {
+function TestComponent({ desiredRepoId, desiredWorktreeId }: { desiredRepoId?: string; desiredWorktreeId?: string }) {
   hookResult = useRepositoryManager(mockOnError, {
     ...mockOptions,
-    initialRepoId,
-    initialWorktreeId,
+    desiredRepoId,
+    desiredWorktreeId,
   });
   return (
     <div>
@@ -161,7 +161,7 @@ afterEach(() => {
   container.remove();
 });
 
-function render(props: { initialRepoId?: string; initialWorktreeId?: string } = {}) {
+function render(props: { desiredRepoId?: string; desiredWorktreeId?: string } = {}) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -185,7 +185,7 @@ describe("useRepositoryManager", () => {
   });
 
   it("clears stale selection and cached thread data when repositories disappear", () => {
-    render({ initialWorktreeId: "wt-feat" });
+    render({ desiredWorktreeId: "wt-feat" });
     queryClient.setQueryData(queryKeys.threads.list("wt-feat"), [{ id: "t1" }]);
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot("t1"), { seed: { messages: { data: [] }, events: { data: [] } } });
     queryClient.setQueryData(queryKeys.threads.statusSnapshot("t1"), { messages: { data: [] }, events: { data: [] } });
@@ -195,7 +195,7 @@ describe("useRepositoryManager", () => {
       repositoriesState.data = [];
       root.render(
         <QueryClientProvider client={queryClient}>
-          <TestComponent initialWorktreeId="wt-feat" />
+          <TestComponent desiredWorktreeId="wt-feat" />
         </QueryClientProvider>
       );
     });
@@ -209,15 +209,63 @@ describe("useRepositoryManager", () => {
     expect(mockOnError).toHaveBeenCalledWith(null);
   });
 
-  it("respects initialWorktreeId", () => {
-    render({ initialWorktreeId: "wt-feat" });
+  it("respects desiredWorktreeId", () => {
+    render({ desiredWorktreeId: "wt-feat" });
     expect(hookResult.selectedWorktreeId).toBe("wt-feat");
     expect(hookResult.selectedRepositoryId).toBe("r1");
   });
 
-  it("respects initialRepoId", () => {
-    render({ initialRepoId: "r1" });
+  it("respects desiredRepoId", () => {
+    render({ desiredRepoId: "r1" });
     expect(hookResult.selectedRepositoryId).toBe("r1");
+  });
+
+  it("syncs selection when desiredWorktreeId changes after mount", () => {
+    render();
+    expect(hookResult.selectedWorktreeId).toBe("wt-root");
+
+    render({ desiredWorktreeId: "wt-feat" });
+
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+    expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+  });
+
+  it("falls back to the repository primary worktree when desiredRepoId changes after mount", () => {
+    repositoriesState.data = [
+      ...makeRepositories(),
+      {
+        id: "r2",
+        name: "second-repo",
+        rootPath: "/home/user/second-repo",
+        defaultBranch: "develop",
+        setupScript: null,
+        teardownScript: null,
+        runScript: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        worktrees: [
+          {
+            id: "wt-r2-root",
+            repositoryId: "r2",
+            branch: "develop",
+            path: "/home/user/second-repo",
+            baseBranch: "develop",
+            status: "active",
+            branchRenamed: false,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      },
+    ];
+
+    render();
+    expect(hookResult.selectedRepositoryId).toBe("r1");
+
+    render({ desiredRepoId: "r2" });
+
+    expect(hookResult.selectedRepositoryId).toBe("r2");
+    expect(hookResult.selectedWorktreeId).toBe("wt-r2-root");
   });
 
   it("returns selectedRepository derived from selectedRepositoryId", () => {
@@ -227,7 +275,7 @@ describe("useRepositoryManager", () => {
   });
 
   it("returns selectedWorktree derived from selectedWorktreeId", () => {
-    render({ initialWorktreeId: "wt-feat" });
+    render({ desiredWorktreeId: "wt-feat" });
     expect(hookResult.selectedWorktree).toBeDefined();
     expect(hookResult.selectedWorktree?.branch).toBe("feature");
   });
@@ -282,7 +330,7 @@ describe("useRepositoryManager", () => {
 
   describe("removeWorktree", () => {
     it("deletes worktree via mutation", async () => {
-      render({ initialWorktreeId: "wt-feat" });
+      render({ desiredWorktreeId: "wt-feat" });
       expect(hookResult.selectedWorktreeId).toBe("wt-feat");
       await act(async () => {
         await hookResult.removeWorktree("wt-feat");

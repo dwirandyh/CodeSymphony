@@ -30,14 +30,8 @@ export function useWorktreeStatuses(repositories: Repository[]) {
 
     for (const worktreeId of activeWorktreeIds) {
       const threads = threadsByWorktreeId[worktreeId] ?? [];
-      const latestThread = threads[threads.length - 1] ?? null;
-      if (latestThread) {
-        candidateThreadIds.add(latestThread.id);
-      }
       for (const thread of threads) {
-        if (thread.active) {
-          candidateThreadIds.add(thread.id);
-        }
+        candidateThreadIds.add(thread.id);
       }
     }
 

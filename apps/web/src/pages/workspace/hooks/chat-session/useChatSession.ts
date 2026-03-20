@@ -176,10 +176,10 @@ export function useChatSession(
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
-  const initialThreadAppliedRef = useRef(false);
   const creatingThreadRef = useRef(false);
   const prevThreadIdRef = useRef<string | null>(null);
   const prevSeedThreadRef = useRef<string | null>(null);
+  const prevRequestedThreadIdRef = useRef<string | null>(null);
   const restoredActiveThreadIdsRef = useRef<Set<string>>(new Set());
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
@@ -222,31 +222,35 @@ export function useChatSession(
       return queriedThreads;
     });
 
+    const requestedThreadId = options?.desiredThreadId ?? null;
+    const requestedThreadIdChanged = prevRequestedThreadIdRef.current !== requestedThreadId;
+
+    if (requestedThreadIdChanged) {
+      prevRequestedThreadIdRef.current = requestedThreadId;
+    }
+
     if (queriedThreads.length > 0) {
+      if (requestedThreadIdChanged) {
+        const nextThreadId = requestedThreadId != null
+          ? queriedThreads.find((thread) => thread.id === requestedThreadId)?.id ?? resolvePreferredThreadId(queriedThreads)
+          : resolvePreferredThreadId(queriedThreads);
+
+        if (selectedThreadId !== nextThreadId) {
+          setSelectedThreadId(nextThreadId);
+        }
+        return;
+      }
+
       const selectedThreadStillExists =
         selectedThreadId != null && queriedThreads.some((thread) => thread.id === selectedThreadId);
 
       if (selectedThreadStillExists) return;
 
-      let nextThreadId = resolvePreferredThreadId(queriedThreads);
-
-      if (!initialThreadAppliedRef.current) {
-        initialThreadAppliedRef.current = true;
-        if (options?.initialThreadId) {
-          const match = queriedThreads.find((thread) => thread.id === options.initialThreadId);
-          if (match) {
-            nextThreadId = match.id;
-          }
-        }
-      }
-
-      if (nextThreadId != null && selectedThreadId !== nextThreadId) {
+      const nextThreadId = resolvePreferredThreadId(queriedThreads);
+      if (selectedThreadId !== nextThreadId) {
         setSelectedThreadId(nextThreadId);
       }
     } else {
-      if (!initialThreadAppliedRef.current) {
-        initialThreadAppliedRef.current = true;
-      }
       if (creatingThreadRef.current) return;
       let cancelled = false;
       creatingThreadRef.current = true;
@@ -265,7 +269,7 @@ export function useChatSession(
       })();
       return () => { cancelled = true; };
     }
-  }, [selectedWorktreeId, queriedThreads]);
+  }, [options?.desiredThreadId, queriedThreads, selectedThreadId, selectedWorktreeId]);
 
   useEffect(() => {
     if (!selectedThreadId) return;
