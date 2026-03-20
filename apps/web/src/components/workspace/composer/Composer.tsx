@@ -89,7 +89,7 @@ export function Composer({
   }, [modelPopoverOpen]);
 
   const activeProvider = useMemo(() => providers.find((p) => p.isActive) ?? null, [providers]);
-  const modelLabel = activeProvider ? `${activeProvider.modelId} · ${activeProvider.name}` : "Default";
+  const modelLabel = activeProvider ? `${activeProvider.modelId} · ${activeProvider.name}` : "CLI";
 
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -693,7 +693,7 @@ export function Composer({
                         setModelPopoverOpen(false);
                       }}
                     >
-                      Default (CLI)
+                      CLI
                     </button>
                     {providers.map((p) => (
                       <button

@@ -35,7 +35,7 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
-  const [recentPaths] = useState(getRecentPaths);
+  const [recentPaths, setRecentPaths] = useState<string[]>(() => getRecentPaths());
 
   const browse = useCallback(async (path?: string) => {
     setLoading(true);
@@ -55,6 +55,7 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
 
   useEffect(() => {
     if (open) {
+      setRecentPaths(getRecentPaths());
       void browse();
     }
   }, [open, browse]);
@@ -76,6 +77,7 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
 
   function handleSelect() {
     addRecentPath(currentPath);
+    setRecentPaths(getRecentPaths());
     onSelect(currentPath);
     onClose();
   }
@@ -88,6 +90,7 @@ export function FileBrowserModal({ open, onClose, onSelect }: FileBrowserModalPr
     if (entry.isGitRepo) {
       const fullPath = currentPath + "/" + entry.name;
       addRecentPath(fullPath);
+      setRecentPaths(getRecentPaths());
       onSelect(fullPath);
       onClose();
     }

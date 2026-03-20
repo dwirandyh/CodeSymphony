@@ -151,8 +151,8 @@ export function WorkspacePage() {
   }, []);
 
   const repos = useRepositoryManager(setError, {
-    initialRepoId: search.repoId,
-    initialWorktreeId: search.worktreeId,
+    desiredRepoId: search.repoId,
+    desiredWorktreeId: search.worktreeId,
     onScriptUpdate: handleScriptUpdate,
     onScriptOutputChunk: handleScriptOutputChunk,
     onTeardownError: handleTeardownError,
@@ -186,6 +186,18 @@ export function WorkspacePage() {
     repos.setSelectedWorktreeId(primaryWorktree?.id ?? null);
   }, [repos.repositories, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
 
+  const handleSelectWorktree = useCallback((repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => {
+    repos.setSelectedRepositoryId(repositoryId);
+    repos.setSelectedWorktreeId(worktreeId);
+    updateSearch({
+      repoId: repositoryId,
+      worktreeId,
+      threadId: preferredThreadId ?? undefined,
+      view: undefined,
+      file: undefined,
+    });
+  }, [repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
+
   const selectedIsRootWorkspace = !!(
     repos.selectedRepository &&
     repos.selectedWorktree &&
@@ -202,7 +214,7 @@ export function WorkspacePage() {
   const reviewTabOpen = activeView === "review";
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
-    initialThreadId: search.threadId,
+    desiredThreadId: search.threadId,
     selectedRepositoryId: repos.selectedRepositoryId,
     timelineEnabled: !reviewTabOpen,
     onWorktreeResolved: (worktreeId) => {
@@ -480,6 +492,7 @@ export function WorkspacePage() {
           repos={repos}
           onOpenSettings={() => setSettingsOpen(true)}
           onSelectRepository={handleSelectRepository}
+          onSelectWorktree={handleSelectWorktree}
         />
 
         {/* ── Main content area (chat + bottom panel) ── */}
@@ -740,9 +753,8 @@ export function WorkspacePage() {
             onAttachRepository={repos.openFileBrowser}
             onSelectRepository={handleSelectRepository}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
-            onSelectWorktree={(repositoryId, worktreeId) => {
-              repos.setSelectedRepositoryId(repositoryId);
-              repos.setSelectedWorktreeId(worktreeId);
+            onSelectWorktree={(repositoryId, worktreeId, preferredThreadId) => {
+              handleSelectWorktree(repositoryId, worktreeId, preferredThreadId);
               setMobilePanelOpen(null);
             }}
             onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
