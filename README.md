@@ -1,83 +1,86 @@
-# CodeSymphony Workspace MVP
+# CodeSymphony Workspace
 
-Local-first conductor.build-style workspace with:
+> Local-first AI coding workspace powered by Claude Agent SDK
 
-- Repository onboarding from local filesystem paths
-- Git worktree branch creation per repository
-- Threaded Claude chat sessions bound to a selected worktree
-- Live chat + tool events over SSE
-- Web client (React + Vite) and optional desktop shell (Tauri)
+A conductor.build-style development environment that combines repository management, Git worktrees, and threaded Claude conversations into a unified IDE-like interface.
 
-## Architecture
+## ✨ Features
 
-- `apps/runtime` - local API service (Fastify + Prisma + SQLite + Claude Agent SDK)
-- `apps/web` - web UI with repository sidebar and chat panel
-- `apps/desktop` - Tauri shell
-- `packages/shared-types` - shared API schemas/types
-- `packages/orchestrator-core` - standalone utility package (not required by runtime)
+- **🗂️ Repository Management** - Onboard local repositories and manage Git worktrees
+- **💬 AI-Powered Chat** - Threaded Claude sessions with real-time streaming
+- **🔧 Tool Execution** - Watch Claude use development tools with live progress updates
+- **🎯 Permission Control** - Approve or deny tool executions before they run
+- **🌐 Local-First Architecture** - Web client with optional desktop shell (Tauri)
+- **📊 Event Timeline** - Visual history of all actions, thoughts, and tool calls
+- **🔄 SSE Streaming** - Real-time updates without polling
 
-Default ports:
+## 🏗️ Architecture
 
-- Web dev + runtime dev: `4331`
-- Installed desktop bundle runtime: `4321`
-
-## Docker Compose
-
-Run web + runtime together with one command:
-
-```bash
-pnpm docker:up
+```
+┌─────────────────────────────────────────────────────────┐
+│                     Web/Desktop Client                   │
+│              (React 19 + Vite + Tailwind)                │
+└────────────────────┬────────────────────────────────────┘
+                     │ REST + SSE
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                    Runtime API Server                    │
+│              (Fastify + Prisma + SQLite)                 │
+├─────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │
+│  │   Claude    │  │   Event      │  │    Git         │  │
+│  │  Agent SDK  │  │    Hub       │  │  Worktrees     │  │
+│  └─────────────┘  └──────────────┘  └────────────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-Or directly:
+### Project Structure
+
+- **`apps/runtime`** - Fastify API server with Claude Agent SDK integration
+- **`apps/web`** - React UI with chat panel, repository sidebar, and terminal
+- **`apps/desktop`** - Tauri shell for desktop packaging
+- **`packages/shared-types`** - Zod schemas and TypeScript types for API contracts
+- **`packages/orchestrator-core`** - Run state machine utility
+
+### Technology Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Backend | Fastify, Prisma, SQLite |
+| Frontend | React 19, Vite, Tailwind CSS, Radix UI |
+| AI | Claude Agent SDK |
+| Desktop | Tauri (Rust) |
+| Build | Turbo, pnpm workspaces |
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Node.js** 22+
+- **pnpm** 10+
+- **Git** (installed and in PATH)
+- **Claude Code CLI** - Install and authenticate with `claude login`
+
+Optional (for desktop):
+- **Rust + Cargo** + Tauri prerequisites
+
+### Installation
+
+1. **Clone and install dependencies:**
 
 ```bash
-docker compose -f infra/docker/docker-compose.yml up --build
-```
-
-Endpoints:
-
-- Web: `http://127.0.0.1:5173`
-- Runtime: `http://127.0.0.1:4321`
-
-Stop services:
-
-```bash
-pnpm docker:down
-```
-
-Important notes for Docker mode:
-
-- Runtime runs in Linux container, so macOS `Browse` folder picker is unavailable.
-- Use manual repository path input in the UI.
-- Host project directory is mounted to `/workspace/repos`, so this repo is available at `/workspace/repos`.
-- Worktrees and SQLite DB are persisted in Docker volume `runtime_data`.
-
-## Prerequisites
-
-- Node.js 22+
-- pnpm 10+
-- Git installed and available in PATH
-- Claude Code CLI installed and authenticated (`claude login`)
-
-Optional:
-- Rust + Cargo + Tauri prerequisites (desktop)
-
-## Setup
-
-1. Install dependencies:
-
-```bash
+git clone <repository-url>
+cd west-nusa-tenggara
 pnpm install
 ```
 
-2. Configure runtime:
+2. **Configure runtime environment:**
 
 ```bash
 cp apps/runtime/.env.example apps/runtime/.env
 ```
 
-Recommended `.env` values:
+Edit `apps/runtime/.env`:
 
 ```env
 RUNTIME_HOST=0.0.0.0
@@ -87,135 +90,220 @@ CLAUDE_CODE_EXECUTABLE=claude
 WORKTREE_ROOT="~/.codesymphony/worktrees"
 ```
 
-The default dev runtime database lives at `apps/runtime/prisma/dev.db`. Runtime tests use `apps/runtime/prisma/test.db`, and desktop dev uses `apps/runtime/prisma/desktop.db`.
-
-3. Initialize database:
+3. **Initialize database:**
 
 ```bash
-pnpm db:generate
-pnpm db:migrate
-pnpm db:seed
+pnpm db:generate && pnpm db:migrate && pnpm db:seed
 ```
 
-## Run
+### Development
 
-Web + runtime:
+Start the full development stack (web + runtime):
 
 ```bash
 pnpm dev
-```
-
-Or using `make` shortcuts:
-
-```bash
+# or
 make dev
 ```
 
-- Web (same machine): `http://127.0.0.1:5173`
-- Runtime (same machine): `http://127.0.0.1:4331`
+Access the application:
+- **Web UI**: http://127.0.0.1:5173
+- **Runtime API**: http://127.0.0.1:4331
 
-Runtime only:
-
-```bash
-pnpm dev:runtime
-```
-
-Web only:
+Individual services:
 
 ```bash
-pnpm dev:web
+pnpm dev:runtime    # Backend only
+pnpm dev:web        # Frontend only
+pnpm dev:desktop    # Desktop shell
 ```
 
-Desktop shell:
+### Building
 
 ```bash
-pnpm dev:desktop
+pnpm build          # Build all workspaces
+pnpm --filter @codesymphony/web build
+pnpm --filter @codesymphony/runtime build
 ```
 
-- Desktop dev web URL (used by Tauri): `http://127.0.0.1:5174`
+## 📖 Usage
 
-## Makefile Shortcuts
+### Basic Workflow
+
+1. **Add a Repository**
+   - Click "Add Repository" in the sidebar
+   - Browse or enter local filesystem path
+
+2. **Create a Worktree**
+   - Select your repository
+   - Click "Create Worktree" to make an isolated branch workspace
+
+3. **Start a Chat Thread**
+   - Select your worktree
+   - Create a new chat thread or open existing one
+
+4. **Interact with Claude**
+   - Send prompts and receive real-time responses
+   - Approve tool executions when prompted
+   - Watch the event timeline for detailed progress
+
+### Permission System
+
+Claude will request permission before:
+- Running shell commands
+- Writing/deleting files
+- Executing potentially destructive operations
+
+You can **Approve** or **Deny** each request, and decisions are persisted in the event history.
+
+## 🐳 Docker Deployment
+
+Run web + runtime together with Docker Compose:
 
 ```bash
-make help
-make install
-make dev
-make dev-runtime
-make dev-web
-make db-init
-make lint
-make test
-make build
+pnpm docker:up
 ```
 
-## Core Flow
+Access:
+- **Web**: http://127.0.0.1:5173
+- **Runtime**: http://127.0.0.1:4321
 
-1. Add a repository by local path in the sidebar.
-2. Select the repository and create a worktree branch.
-3. Select that worktree and open/create a chat thread.
-4. Send prompts; Claude executes in that worktree `cwd`.
-5. Watch message deltas and tool logs stream in real time.
+Stop services:
 
-## API Quick Reference
+```bash
+pnpm docker:down
+```
 
-Base URL (same machine): `http://127.0.0.1:4331/api`
+**Docker Notes:**
+- macOS folder picker unavailable - use manual path input
+- Host directory mounted to `/workspace/repos`
+- Worktrees and database persisted in Docker volume
+- Use `/workspace/repos` to reference the mounted project
 
-- `GET /repositories`
-- `GET /repositories/:id`
-- `POST /repositories`
-- `POST /repositories/:id/worktrees`
-- `GET /worktrees/:id`
-- `DELETE /worktrees/:id`
-- `GET /worktrees/:id/threads`
-- `POST /worktrees/:id/threads`
-- `GET /threads/:id`
-- `GET /threads/:id/messages`
-- `POST /threads/:id/messages`
-- `POST /threads/:id/permissions/resolve`
-- `GET /threads/:id/events`
-- `GET /threads/:id/events/stream`
-- `GET /debug/runtime-info`
-- `GET /health`
+## 🧪 Testing
 
-## Test and Build
+Run all tests:
 
 ```bash
 pnpm test
+```
+
+Run specific workspace tests:
+
+```bash
+pnpm --filter @codesymphony/runtime test
+pnpm --filter @codesymphony/web test
+```
+
+Run specific test file:
+
+```bash
+pnpm --filter @codesymphony/runtime test -- chatService.permissions.test.ts
+```
+
+Type checking:
+
+```bash
 pnpm lint
-pnpm build
 ```
 
-## Permission Approval Testing
+## 🔌 API Reference
 
-Automated checks:
+Base URL: `http://127.0.0.1:4331/api`
+
+### Repositories
+
+- `GET /repositories` - List all repositories
+- `GET /repositories/:id` - Get repository details
+- `POST /repositories` - Add repository by path
+
+### Worktrees
+
+- `POST /repositories/:id/worktrees` - Create worktree branch
+- `GET /worktrees/:id` - Get worktree details
+- `DELETE /worktrees/:id` - Delete worktree
+
+### Chat Threads
+
+- `GET /worktrees/:id/threads` - List threads in worktree
+- `POST /worktrees/:id/threads` - Create new thread
+- `GET /threads/:id` - Get thread details
+- `GET /threads/:id/messages` - List messages in thread
+- `POST /threads/:id/messages` - Send message to Claude
+
+### Permissions
+
+- `POST /threads/:id/permissions/resolve` - Approve/deny permission request
+
+### Events
+
+- `GET /threads/:id/events` - Get event history
+- `GET /threads/:id/events/stream` - SSE stream for live events
+
+### System
+
+- `GET /debug/runtime-info` - Runtime diagnostic information
+- `GET /health` - Health check
+
+## 🛠️ Makefile Shortcuts
 
 ```bash
-pnpm --filter @codesymphony/runtime test -- chatService.permissions.test.ts chats.stream.test.ts
-pnpm --filter @codesymphony/web test -- WorkspacePage.test.tsx
-pnpm test
+make help        # Show all available commands
+make install     # Install dependencies
+make dev         # Start dev servers (web + runtime)
+make dev-runtime # Start runtime only
+make dev-web     # Start web only
+make db-init     # Initialize database (generate + migrate + seed)
+make lint        # Run TypeScript type checking
+make test        # Run all tests
+make build       # Build all workspaces
 ```
 
-Manual end-to-end:
+## 🐛 Debugging
 
-1. Start app with `make dev`.
-2. Open web app, choose repository/worktree/thread.
-3. Send prompt such as `jalankan bash untuk baca /etc/hosts lalu jelaskan`.
-4. Verify permission card shows tool/command/reason.
-5. Click `Deny`, verify card disappears and chat continues with deny context.
-6. Send same prompt again.
-7. Click `Approve`, verify tool events (`tool.started`, `tool.output`, `tool.finished`) and assistant completes.
-8. Refresh while approval is pending, verify pending card is replayed from event history.
+### Client-Side Debug Logging
 
-Negative/edge checks:
+The web app includes client-to-server debug logging for diagnosing browser issues:
 
-1. Click `Approve`/`Deny` repeatedly for the same request. Only the first decision should be accepted.
-2. Call `POST /threads/:id/permissions/resolve` with unknown `requestId`, expect `400`.
-3. While approval is pending, ensure no tool execution event appears before decision.
-4. On runtime restart during pending approval, the turn should fail clearly instead of hanging indefinitely.
+```javascript
+// In browser console
+copy(JSON.stringify(window.__CS_DEBUG_LOG__.slice(0, 200), null, 2))
+```
 
-QA exit criteria:
+Logs are sent to `apps/runtime/debug.log` via `navigator.sendBeacon`.
 
-1. No `runtime-integrity-warning` message appears in assistant output.
-2. Permission-gated operations are controlled only by UI approve/deny.
-3. After approve/deny, stream proceeds to `chat.completed` or `chat.failed`.
-4. `permission.requested` and `permission.resolved` events are visible and replay correctly after reload.
+To add debug logging:
+```typescript
+import { debugLog } from '@/lib/debugLog';
+
+debugLog("source", "message", data);
+```
+
+## 📦 Database
+
+Database files by environment:
+- **Development**: `apps/runtime/prisma/dev.db`
+- **Testing**: `apps/runtime/prisma/test.db`
+- **Desktop**: `apps/runtime/prisma/desktop.db`
+
+Schema is managed via Prisma migrations in `apps/runtime/prisma/schema.prisma`.
+
+## 🤝 Contributing
+
+1. Follow the code conventions outlined in `CLAUDE.md`
+2. Write tests for new features
+3. Use Conventional Commits: `feat(runtime):`, `fix(web):`, etc.
+4. Run `pnpm lint` and `pnpm test` before submitting
+5. Follow React best practices from Vercel Engineering guidelines
+
+## 📄 License
+
+[Your License Here]
+
+## 🔗 Resources
+
+- [Claude Code Documentation](https://docs.anthropic.com)
+- [Conductor.build](https://conductor.build)
+- [Fastify](https://fastify.io)
+- [Prisma](https://www.prisma.io)
+- [React 19](https://react.dev)
