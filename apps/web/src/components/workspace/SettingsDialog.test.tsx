@@ -5,17 +5,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Repository } from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
 
+const apiMocks = vi.hoisted(() => ({
+  updateRepositoryScripts: vi.fn(),
+  listBranches: vi.fn(),
+  listModelProviders: vi.fn(),
+  createModelProvider: vi.fn(),
+  updateModelProvider: vi.fn(),
+  deleteModelProvider: vi.fn(),
+  activateModelProvider: vi.fn(),
+  deactivateAllProviders: vi.fn(),
+  testModelProvider: vi.fn(),
+}));
+
 vi.mock("../../lib/api", () => ({
   api: {
-    updateRepositoryScripts: vi.fn().mockResolvedValue({}),
-    listBranches: vi.fn().mockResolvedValue(["main", "dev"]),
-    listModelProviders: vi.fn().mockResolvedValue([]),
-    createModelProvider: vi.fn().mockResolvedValue({}),
-    updateModelProvider: vi.fn().mockResolvedValue({}),
-    deleteModelProvider: vi.fn().mockResolvedValue(undefined),
-    activateModelProvider: vi.fn().mockResolvedValue({}),
-    deactivateAllProviders: vi.fn().mockResolvedValue(undefined),
-    testModelProvider: vi.fn().mockResolvedValue({ success: true }),
+    updateRepositoryScripts: apiMocks.updateRepositoryScripts,
+    listBranches: apiMocks.listBranches,
+    listModelProviders: apiMocks.listModelProviders,
+    createModelProvider: apiMocks.createModelProvider,
+    updateModelProvider: apiMocks.updateModelProvider,
+    deleteModelProvider: apiMocks.deleteModelProvider,
+    activateModelProvider: apiMocks.activateModelProvider,
+    deactivateAllProviders: apiMocks.deactivateAllProviders,
+    testModelProvider: apiMocks.testModelProvider,
   },
 }));
 
@@ -28,6 +40,21 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  apiMocks.updateRepositoryScripts.mockImplementation(async (_repoId: string, payload: Record<string, unknown>) => ({
+    ...makeRepo(),
+    ...(payload.runScript ? { runScript: payload.runScript as string[] } : {}),
+    ...(payload.setupScript ? { setupScript: payload.setupScript as string[] } : {}),
+    ...(payload.teardownScript ? { teardownScript: payload.teardownScript as string[] } : {}),
+    ...(payload.defaultBranch ? { defaultBranch: payload.defaultBranch as string } : {}),
+  }));
+  apiMocks.listBranches.mockResolvedValue(["main", "dev"]);
+  apiMocks.listModelProviders.mockResolvedValue([]);
+  apiMocks.createModelProvider.mockResolvedValue({});
+  apiMocks.updateModelProvider.mockResolvedValue({});
+  apiMocks.deleteModelProvider.mockResolvedValue(undefined);
+  apiMocks.activateModelProvider.mockResolvedValue({});
+  apiMocks.deactivateAllProviders.mockResolvedValue(undefined);
+  apiMocks.testModelProvider.mockResolvedValue({ success: true });
 });
 
 afterEach(() => {
@@ -35,7 +62,7 @@ afterEach(() => {
   container.remove();
 });
 
-function makeRepo(): Repository {
+function makeRepo(overrides: Partial<Repository> = {}): Repository {
   return {
     id: "r1",
     name: "test-repo",
@@ -47,7 +74,29 @@ function makeRepo(): Repository {
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
     worktrees: [],
+    ...overrides,
   };
+}
+
+function renderDialog(repositories: Repository[], onClose = vi.fn()) {
+  act(() => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsDialog
+          open={true}
+          onClose={onClose}
+          repositories={repositories}
+          onRemoveRepository={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+  });
+}
+
+async function flushEffects() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 describe("SettingsDialog", () => {
@@ -155,5 +204,59 @@ describe("SettingsDialog", () => {
         </QueryClientProvider>
       );
     });
+  });
+
+  it("keeps dirty workspace form values when repositories refresh", async () => {
+    renderDialog([makeRepo({ runScript: ["npm run dev"] })]);
+    await flushEffects();
+
+    const defaultBranchSelect = document.body.querySelectorAll("select")[1] as HTMLSelectElement;
+    expect(defaultBranchSelect.value).toBe("main");
+
+    await act(async () => {
+      defaultBranchSelect.value = "dev";
+      defaultBranchSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushEffects();
+    expect((document.body.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("dev");
+
+    renderDialog([
+      makeRepo({
+        runScript: ["remote refresh"],
+        updatedAt: "2026-01-02T00:00:00Z",
+      }),
+    ]);
+    await flushEffects();
+
+    expect((document.body.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("dev");
+  });
+
+  it("reselects a valid repository when the current one disappears", async () => {
+    renderDialog([
+      makeRepo(),
+      makeRepo({
+        id: "r2",
+        name: "other-repo",
+        defaultBranch: "develop",
+        runScript: ["pnpm test"],
+      }),
+    ]);
+    await flushEffects();
+
+    const repoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement;
+    await act(async () => {
+      repoSelect.value = "r2";
+      repoSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushEffects();
+
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const nextRepoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement;
+    const runScriptTextarea = document.body.querySelector('textarea[rows="3"]') as HTMLTextAreaElement;
+
+    expect(nextRepoSelect.value).toBe("r1");
+    expect(runScriptTextarea.value).toBe("");
   });
 });

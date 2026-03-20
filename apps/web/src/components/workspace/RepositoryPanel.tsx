@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, FolderGit2, GitBranch, Pencil, Plus, Trash2 } from "lucide-react";
 import type { GitStatus, Repository } from "@codesymphony/shared-types";
@@ -9,7 +9,7 @@ import { cn } from "../../lib/utils";
 import { isRootWorktree } from "../../lib/worktree";
 import { gitStatusQueryOptions } from "../../hooks/queries/useGitStatus";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
-import type { WorktreeThreadUiStatus } from "../../pages/workspace/hooks/worktreeThreadStatus";
+import type { WorktreeStatusSummary, WorktreeThreadUiStatus } from "../../pages/workspace/hooks/worktreeThreadStatus";
 
 type RepositoryPanelProps = {
   repositories: Repository[];
@@ -21,7 +21,7 @@ type RepositoryPanelProps = {
   onAttachRepository: () => void;
   onSelectRepository: (repositoryId: string) => void;
   onCreateWorktree: (repositoryId: string) => void;
-  onSelectWorktree: (repositoryId: string, worktreeId: string) => void;
+  onSelectWorktree: (repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => void;
   onDeleteWorktree: (worktreeId: string) => void;
   onRenameWorktreeBranch: (worktreeId: string, newBranch: string) => void;
 };
@@ -32,6 +32,16 @@ const WORKTREE_STATUS_META: Record<WorktreeThreadUiStatus, { label: string; vari
   running: { label: "Running", variant: "default" },
   idle: { label: "Idle", variant: "outline" },
 };
+
+function resolvePriorityThreadId(status: WorktreeStatusSummary | undefined): string | null {
+  if (!status?.threadId) {
+    return null;
+  }
+
+  return status.kind === "waiting_approval" || status.kind === "review_plan"
+    ? status.threadId
+    : null;
+}
 
 function WorktreeStatusBadge({ status }: { status: WorktreeThreadUiStatus | undefined }) {
   const resolvedStatus = status ?? "idle";
@@ -91,23 +101,6 @@ export function RepositoryPanel({
     }, {});
   }, [activeWorktreeIds, gitStatusQueries]);
 
-  useEffect(() => {
-    if (!selectedRepositoryId) {
-      return;
-    }
-
-    setExpandedByRepo((current) => {
-      if (current[selectedRepositoryId] != null) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [selectedRepositoryId]: true,
-      };
-    });
-  }, [selectedRepositoryId]);
-
   function toggleRepository(repositoryId: string) {
     setExpandedByRepo((current) => ({
       ...current,
@@ -152,6 +145,9 @@ export function RepositoryPanel({
               ? activeWorktrees.filter((worktree) => worktree.id !== rootWorkspace.id)
               : activeWorktrees;
             const isExpanded = expandedByRepo[repository.id] ?? isSelected;
+            const rootPriorityThreadId = rootWorkspace
+              ? resolvePriorityThreadId(worktreeStatuses[rootWorkspace.id])
+              : null;
 
             return (
               <article
@@ -213,7 +209,7 @@ export function RepositoryPanel({
                               "flex w-full min-w-0 items-start gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40",
                               selectedWorktreeId === rootWorkspace.id && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
                             )}
-                            onClick={() => onSelectWorktree(repository.id, rootWorkspace.id)}
+                            onClick={() => onSelectWorktree(repository.id, rootWorkspace.id, rootPriorityThreadId)}
                           >
                             <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                               <div className="flex min-w-0 items-center gap-1.5 overflow-hidden pr-20">
@@ -246,6 +242,7 @@ export function RepositoryPanel({
                         {branchWorktrees.map((worktree) => {
                           const isWorktreeSelected = selectedWorktreeId === worktree.id;
                           const stats = worktreeStats[worktree.id];
+                          const priorityThreadId = resolvePriorityThreadId(worktreeStatuses[worktree.id]);
 
                           return (
                             <div key={worktree.id} className="group/wt relative">
@@ -257,14 +254,14 @@ export function RepositoryPanel({
                                   "flex w-full min-w-0 cursor-pointer items-start gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                                   isWorktreeSelected && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
                                 )}
-                                onClick={() => onSelectWorktree(repository.id, worktree.id)}
+                                onClick={() => onSelectWorktree(repository.id, worktree.id, priorityThreadId)}
                                 onKeyDown={(e) => {
                                   if (e.target !== e.currentTarget) {
                                     return;
                                   }
                                   if (e.key === "Enter" || e.key === " ") {
                                     e.preventDefault();
-                                    onSelectWorktree(repository.id, worktree.id);
+                                    onSelectWorktree(repository.id, worktree.id, priorityThreadId);
                                   }
                                 }}
                               >

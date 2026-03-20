@@ -76,7 +76,7 @@ describe("Composer", () => {
 
   function getModelSelectorButton(): HTMLButtonElement {
     const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
-    const modelButton = buttons.find((button) => button.textContent?.trim() === "Default");
+    const modelButton = buttons.find((button) => button.textContent?.trim() === "CLI");
     if (!modelButton) {
       throw new Error("Model selector button not found");
     }

@@ -9,6 +9,29 @@ import type { ModelProvider, Repository } from "@codesymphony/shared-types";
 
 type SettingsTab = "workspace" | "models";
 
+type RepositoryFormState = {
+  runScriptText: string;
+  setupText: string;
+  teardownText: string;
+  defaultBranchValue: string;
+};
+
+function buildRepositoryFormState(
+  repository: Repository,
+  cachedState?: RepositoryFormState,
+): RepositoryFormState {
+  if (cachedState) {
+    return cachedState;
+  }
+
+  return {
+    runScriptText: repository.runScript?.join("\n") ?? "",
+    setupText: repository.setupScript?.join("\n") ?? "",
+    teardownText: repository.teardownScript?.join("\n") ?? "",
+    defaultBranchValue: repository.defaultBranch,
+  };
+}
+
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
@@ -32,8 +55,9 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
-  const savedScriptsRef = useRef<Record<string, { runScript: string; setup: string; teardown: string; defaultBranch: string }>>({});
+  const savedScriptsRef = useRef<Record<string, RepositoryFormState>>({});
   const savePromiseRef = useRef<Promise<void> | null>(null);
+  const hydratedRepoIdRef = useRef<string | null>(null);
 
   // ── Models tab state ──
   const [providers, setProviders] = useState<ModelProvider[]>([]);
@@ -52,31 +76,53 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
 
   // ── Workspace: Select first repo ──
   useEffect(() => {
-    if (open && repositories.length > 0 && !selectedRepoId) {
-      setSelectedRepoId(repositories[0].id);
+    if (!open) {
+      return;
     }
+
+    hydratedRepoIdRef.current = null;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    if (repositories.length === 0) {
+      if (selectedRepoId !== null) {
+        setSelectedRepoId(null);
+      }
+      return;
+    }
+
+    if (selectedRepoId && repositories.some((repo) => repo.id === selectedRepoId)) {
+      return;
+    }
+
+    setSelectedRepoId(repositories[0]?.id ?? null);
   }, [open, repositories, selectedRepoId]);
 
   // ── Workspace: Load scripts ──
   useEffect(() => {
-    if (!selectedRepoId) return;
-    const cached = savedScriptsRef.current[selectedRepoId];
-    if (cached) {
-      setRunScriptText(cached.runScript);
-      setSetupText(cached.setup);
-      setTeardownText(cached.teardown);
-      setDefaultBranchValue(cached.defaultBranch);
-    } else {
-      const repo = repositories.find((r) => r.id === selectedRepoId);
-      if (!repo) return;
-      setRunScriptText(repo.runScript?.join("\n") ?? "");
-      setSetupText(repo.setupScript?.join("\n") ?? "");
-      setTeardownText(repo.teardownScript?.join("\n") ?? "");
-      setDefaultBranchValue(repo.defaultBranch);
+    if (!open || !selectedRepoId) return;
+
+    const repo = repositories.find((candidate) => candidate.id === selectedRepoId);
+    if (!repo) return;
+
+    const repoChanged = hydratedRepoIdRef.current !== selectedRepoId;
+    if (!repoChanged && dirty) {
+      return;
     }
+
+    const nextState = buildRepositoryFormState(repo, savedScriptsRef.current[selectedRepoId]);
+    setRunScriptText(nextState.runScriptText);
+    setSetupText(nextState.setupText);
+    setTeardownText(nextState.teardownText);
+    setDefaultBranchValue(nextState.defaultBranchValue);
+    hydratedRepoIdRef.current = selectedRepoId;
     setDirty(false);
     setShowRemoveDialog(false);
-  }, [selectedRepoId, repositories]);
+  }, [dirty, open, repositories, selectedRepoId]);
 
   // ── Workspace: Fetch branches ──
   useEffect(() => {
@@ -138,11 +184,12 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
         void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
 
         savedScriptsRef.current[selectedRepoId] = {
-          runScript: updatedRepository.runScript?.join("\n") ?? "",
-          setup: updatedRepository.setupScript?.join("\n") ?? "",
-          teardown: updatedRepository.teardownScript?.join("\n") ?? "",
-          defaultBranch: updatedRepository.defaultBranch,
+          runScriptText: updatedRepository.runScript?.join("\n") ?? "",
+          setupText: updatedRepository.setupScript?.join("\n") ?? "",
+          teardownText: updatedRepository.teardownScript?.join("\n") ?? "",
+          defaultBranchValue: updatedRepository.defaultBranch,
         };
+        hydratedRepoIdRef.current = selectedRepoId;
         setDirty(false);
       } catch {
         // Error is non-critical; user can retry

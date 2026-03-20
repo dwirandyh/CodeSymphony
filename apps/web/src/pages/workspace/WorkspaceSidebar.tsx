@@ -10,10 +10,12 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   repos,
   onOpenSettings,
   onSelectRepository,
+  onSelectWorktree,
 }: {
   repos: RepoManager;
   onOpenSettings: () => void;
   onSelectRepository: (repositoryId: string) => void;
+  onSelectWorktree: (repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => void;
 }) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
 
@@ -40,10 +42,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
             onAttachRepository={repos.openFileBrowser}
             onSelectRepository={onSelectRepository}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
-            onSelectWorktree={(repositoryId, worktreeId) => {
-              repos.setSelectedRepositoryId(repositoryId);
-              repos.setSelectedWorktreeId(worktreeId);
-            }}
+            onSelectWorktree={onSelectWorktree}
             onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
             onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
           />
