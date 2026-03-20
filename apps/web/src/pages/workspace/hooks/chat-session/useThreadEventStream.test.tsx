@@ -117,9 +117,13 @@ let latestWaitingAssistant: { threadId: string; afterIdx: number } | null = null
 
 function HookHarness({
   selectedThreadId,
+  repositoryId = null,
+  selectedThreadIsPrMr = false,
   initialWaitingAssistant = null,
 }: {
   selectedThreadId: string | null;
+  repositoryId?: string | null;
+  selectedThreadIsPrMr?: boolean;
   initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -149,6 +153,8 @@ function HookHarness({
   useThreadEventStream({
     selectedThreadId,
     selectedWorktreeId: "wt-1",
+    repositoryId,
+    selectedThreadIsPrMr,
     setMessages,
     setEvents,
     setThreads,
@@ -171,13 +177,19 @@ function HookHarness({
 
 function renderHook(
   selectedThreadId: string | null,
-  options?: { initialWaitingAssistant?: { threadId: string; afterIdx: number } | null },
+  options?: {
+    repositoryId?: string | null;
+    selectedThreadIsPrMr?: boolean;
+    initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
+  },
 ) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
         <HookHarness
           selectedThreadId={selectedThreadId}
+          repositoryId={options?.repositoryId}
+          selectedThreadIsPrMr={options?.selectedThreadIsPrMr}
           initialWaitingAssistant={options?.initialWaitingAssistant}
         />
       </QueryClientProvider>,
@@ -363,6 +375,63 @@ describe("useThreadEventStream", () => {
 
     const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
     expect(updated?.[0]?.active).toBe(false);
+  });
+
+  it.each(["chat.completed", "chat.failed"] as const)(
+    "invalidates repository reviews when selected PR/MR thread receives %s",
+    async (type) => {
+      const threadId = "selected-thread";
+      queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+      renderHook(threadId, { repositoryId: "repo-1", selectedThreadIsPrMr: true });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const stream = MockEventSource.instances[0]!;
+      act(() => {
+        stream.emit(
+          type,
+          makeEvent({
+            id: `event-${type}`,
+            threadId,
+            idx: 5,
+            type,
+            payload: type === "chat.completed" ? { messageId: "msg-2", threadTitle: "Done" } : { error: "boom" },
+          }),
+        );
+      });
+
+      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+    },
+  );
+
+  it("does not invalidate repository reviews for non-PR/MR selected threads", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+    renderHook(threadId, { repositoryId: "repo-1", selectedThreadIsPrMr: false });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "chat.completed",
+        makeEvent({
+          id: "non-prmr-complete",
+          threadId,
+          idx: 5,
+          type: "chat.completed",
+          payload: { messageId: "msg-2", threadTitle: "Done" },
+        }),
+      );
+    });
+
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
   });
 
   it("patches selected thread as inactive on chat.failed", async () => {

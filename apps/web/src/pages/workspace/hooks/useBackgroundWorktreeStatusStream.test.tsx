@@ -304,6 +304,34 @@ describe("useBackgroundWorktreeStatusStream", () => {
     expect(updated?.[0]?.active).toBe(false);
   });
 
+  it.each(["chat.completed", "chat.failed"] as const)(
+    "invalidates repository reviews when a background PR/MR thread receives %s",
+    async (type) => {
+      const thread = makeThread({
+        id: "background-prmr-thread",
+        active: true,
+        kind: "review",
+        permissionProfile: "review_git",
+      });
+      queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
+      queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+
+      renderHook([makeRepository()], null, null);
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const stream = MockEventSource.instances[0]!;
+      act(() => {
+        stream.emit(type, makeEvent({ id: `event-${type}`, threadId: thread.id, idx: 2, type }));
+      });
+
+      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("r1") });
+    },
+  );
+
   it("invalidates snapshot queries on gate and plan events", async () => {
     const thread = makeThread({ id: "background-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);

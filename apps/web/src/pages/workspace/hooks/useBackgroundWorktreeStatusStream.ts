@@ -146,6 +146,16 @@ export function useBackgroundWorktreeStatusStream(
     [repositories, selectedWorktreeId],
   );
 
+  const repositoryIdByWorktreeId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const repository of repositories) {
+      for (const worktree of repository.worktrees) {
+        map.set(worktree.id, repository.id);
+      }
+    }
+    return map;
+  }, [repositories]);
+
   const threadListQueries = useQueries({
     queries: activeWorktreeIds.map((worktreeId) => ({
       queryKey: queryKeys.threads.list(worktreeId),
@@ -262,6 +272,12 @@ export function useBackgroundWorktreeStatusStream(
               active: false,
               threadTitle: nextTitle,
             });
+            if (thread.kind === "review") {
+              const repositoryId = repositoryIdByWorktreeId.get(worktreeId);
+              if (repositoryId) {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
+              }
+            }
             recentlyRelevantThreadIdsRef.current.delete(thread.id);
             void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(thread.id) });
             stopThreadStream(streamsRef, thread.id);
@@ -315,7 +331,7 @@ export function useBackgroundWorktreeStatusStream(
 
       startStream();
     }
-  }, [queryClient, subscribedThreads]);
+  }, [queryClient, repositoryIdByWorktreeId, subscribedThreads]);
 
   useEffect(() => {
     return () => {

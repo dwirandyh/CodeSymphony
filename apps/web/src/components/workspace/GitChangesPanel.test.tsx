@@ -207,6 +207,14 @@ describe("GitChangesPanel", () => {
     expect(container.textContent).toContain("Open !52");
   });
 
+  it("shows working label while PR/MR action is busy", () => {
+    act(() => {
+      root.render(<GitChangesPanel {...baseProps} reviewKind="pr" prMrActionBusy={true} />);
+    });
+    expect(container.textContent).toContain("Working...");
+    expect(container.textContent).not.toContain("Create PR");
+  });
+
   it("renders Discard button for entries", () => {
     const entries = [makeEntry({ path: "src/app.ts" })];
     act(() => {

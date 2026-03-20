@@ -26,6 +26,7 @@ export type ThreadMetadataSnapshot = {
 
 export interface UseChatSessionOptions {
   desiredThreadId?: string;
+  repositoryId?: string | null;
   onThreadChange?: (threadId: string | null) => void;
   timelineEnabled?: boolean;
 }

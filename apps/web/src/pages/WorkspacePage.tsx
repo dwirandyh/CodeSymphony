@@ -227,6 +227,7 @@ export function WorkspacePage() {
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     desiredThreadId: search.threadId,
+    repositoryId: repos.selectedRepositoryId,
     timelineEnabled: !reviewTabOpen,
     onThreadChange: useCallback(
       (threadId: string | null) => {
@@ -382,17 +383,14 @@ export function WorkspacePage() {
     ].join("\n");
 
     try {
-      const createdThread = await chat.createOrSelectPrMrThreadAndSendMessage(instruction, "default");
-      if (!createdThread) {
-        throw new Error("Failed to start PR creation flow");
-      }
+      await chat.createOrSelectPrMrThreadAndSendMessage(instruction, "default");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start PR creation flow");
     }
   }, [chat, repos.selectedRepository, repos.selectedWorktree, repositoryReviews.data?.provider, reviewKind, selectedReviewRef]);
 
   const reviewLookupAvailable = !!repositoryReviews.data?.available;
-  const prMrActionBusy = chat.sendingMessage;
+  const prMrActionBusy = !selectedReviewRef && prMrThreadIsActiveOrPending;
   const prMrActionDisabled = (
     !repos.selectedWorktree
     || selectedWorktreeIsDefaultBranch
@@ -892,6 +890,7 @@ export function WorkspacePage() {
             prMrActionTitle={prMrActionTitle}
             prMrActionBusy={prMrActionBusy}
             onPrMrAction={() => {
+              setMobilePanelOpen(null);
               void handlePrMrAction();
             }}
           />

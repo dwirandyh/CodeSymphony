@@ -586,9 +586,9 @@ describe("tool instrumentation", () => {
     expect(decisionEvent?.decision).toBe("auto_allow");
   });
 
-  it("auto-allows git review commands for review threads only", async () => {
+  it("auto-allows safe git/gh/glab review command chains only in review threads", async () => {
     const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
-    const decisions: string[] = [];
+    const decisions: Array<{ requestId: string; behavior: string }> = [];
 
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return (async function* () {
@@ -598,33 +598,36 @@ describe("tool instrumentation", () => {
           runtimeOptions: Record<string, unknown>,
         ) => Promise<{ behavior: string; updatedInput?: unknown }>;
 
-        decisions.push((await canUseTool("Bash", { command: "git status" }, {
-          toolUseID: "tool-review-git",
-          blockedPath: "/tmp/repo/.git",
-          decisionReason: "Needs approval",
-          suggestions: [{ type: "addRules" }],
-        })).behavior);
+        const reviewCommands = [
+          { requestId: "tool-review-git", command: "git status", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-gh", command: "gh pr create --fill", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-glab", command: "glab mr create --fill --yes", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-gh-heredoc", command: "gh pr create --title \"test\" --body \"$(cat <<'EOF'\nsummary\nEOF\n)\"", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-glab-heredoc", command: "glab mr create --title \"test\" --description \"$(cat <<'EOF'\nsummary\nEOF\n)\"", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-gh", command: "git push && gh pr create --fill", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-glab", command: "git push && glab mr create --fill --yes", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-gh-heredoc", command: "git push && gh pr create --title \"test\" --body \"$(cat <<'EOF'\nsummary\nEOF\n)\"", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-or", command: "git push || gh pr create --fill", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-semicolon", command: "git push; glab mr create --fill --yes", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-mixed", command: "git push && npm test", blockedPath: "/tmp/repo/package.json" },
+          { requestId: "tool-review-pipe", command: "git status | cat", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-redirect", command: "gh pr create > out.txt", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-backticks", command: "git status `whoami`", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-subshell", command: "git status $(whoami)", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-multiline", command: "git status\ngh pr create --fill", blockedPath: "/tmp/repo/.git" },
+        ];
 
-        decisions.push((await canUseTool("Bash", { command: "gh pr create --fill" }, {
-          toolUseID: "tool-review-gh",
-          blockedPath: "/tmp/repo/.git",
-          decisionReason: "Needs approval",
-          suggestions: [{ type: "addRules" }],
-        })).behavior);
-
-        decisions.push((await canUseTool("Bash", { command: "glab mr create --fill --yes" }, {
-          toolUseID: "tool-review-glab",
-          blockedPath: "/tmp/repo/.git",
-          decisionReason: "Needs approval",
-          suggestions: [{ type: "addRules" }],
-        })).behavior);
-
-        decisions.push((await canUseTool("Bash", { command: "npm test" }, {
-          toolUseID: "tool-review-npm",
-          blockedPath: "/tmp/repo/package.json",
-          decisionReason: "Needs approval",
-          suggestions: [{ type: "addRules" }],
-        })).behavior);
+        for (const reviewCommand of reviewCommands) {
+          decisions.push({
+            requestId: reviewCommand.requestId,
+            behavior: (await canUseTool("Bash", { command: reviewCommand.command }, {
+              toolUseID: reviewCommand.requestId,
+              blockedPath: reviewCommand.blockedPath,
+              decisionReason: "Needs approval",
+              suggestions: [{ type: "addRules" }],
+            })).behavior,
+          });
+        }
 
         yield { type: "system", subtype: "init", session_id: "session-review-git" };
         yield {
@@ -652,10 +655,83 @@ describe("tool instrumentation", () => {
       onThinking: () => { },
     });
 
-    expect(decisions).toEqual(["allow", "allow", "allow", "deny"]);
+    expect(decisions).toEqual([
+      { requestId: "tool-review-git", behavior: "allow" },
+      { requestId: "tool-review-gh", behavior: "allow" },
+      { requestId: "tool-review-glab", behavior: "allow" },
+      { requestId: "tool-review-gh-heredoc", behavior: "allow" },
+      { requestId: "tool-review-glab-heredoc", behavior: "allow" },
+      { requestId: "tool-review-chain-gh", behavior: "allow" },
+      { requestId: "tool-review-chain-glab", behavior: "allow" },
+      { requestId: "tool-review-chain-gh-heredoc", behavior: "allow" },
+      { requestId: "tool-review-chain-or", behavior: "allow" },
+      { requestId: "tool-review-chain-semicolon", behavior: "allow" },
+      { requestId: "tool-review-mixed", behavior: "deny" },
+      { requestId: "tool-review-pipe", behavior: "deny" },
+      { requestId: "tool-review-redirect", behavior: "deny" },
+      { requestId: "tool-review-backticks", behavior: "deny" },
+      { requestId: "tool-review-subshell", behavior: "deny" },
+      { requestId: "tool-review-multiline", behavior: "deny" },
+    ]);
+    expect(onPermissionRequest).toHaveBeenCalledTimes(6);
+    expect(onPermissionRequest).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      requestId: "tool-review-mixed",
+      toolName: "Bash",
+    }));
+    expect(onPermissionRequest).toHaveBeenNthCalledWith(6, expect.objectContaining({
+      requestId: "tool-review-multiline",
+      toolName: "Bash",
+    }));
+  });
+
+  it("keeps git review commands on the permission path outside review threads", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
+    const decisions: string[] = [];
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        decisions.push((await canUseTool("Bash", { command: "git push && gh pr create --fill" }, {
+          toolUseID: "tool-default-review-chain",
+          blockedPath: "/tmp/repo/.git",
+          decisionReason: "Needs approval",
+          suggestions: [{ type: "addRules" }],
+        })).behavior);
+
+        yield { type: "system", subtype: "init", session_id: "session-default-review-git" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "default thread",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+      onThinking: () => { },
+    });
+
+    expect(decisions).toEqual(["deny"]);
     expect(onPermissionRequest).toHaveBeenCalledTimes(1);
     expect(onPermissionRequest).toHaveBeenCalledWith(expect.objectContaining({
-      requestId: "tool-review-npm",
+      requestId: "tool-default-review-chain",
       toolName: "Bash",
     }));
   });

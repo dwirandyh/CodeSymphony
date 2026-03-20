@@ -156,6 +156,7 @@ export function useChatSession(
   options?: UseChatSessionOptions,
 ) {
   const queryClient = useQueryClient();
+  const repositoryId = options?.repositoryId ?? null;
   const timelineEnabled = options?.timelineEnabled !== false;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
@@ -306,6 +307,9 @@ export function useChatSession(
     waitingAssistant,
   });
   const selectedThreadIsRunning = selectedThreadUiStatus === "running";
+  const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
+    (thread) => thread.id === selectedThreadId && thread.kind === "review",
+  );
 
   const { data: queriedThreadSnapshot } = useThreadSnapshot(selectedThreadId);
 
@@ -398,6 +402,14 @@ export function useChatSession(
     setWaitingAssistant((current) => (current?.threadId === threadId ? null : current));
   }
 
+  function invalidateRepositoryReviews() {
+    if (!repositoryId) {
+      return;
+    }
+
+    void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
+  }
+
   useEffect(() => {
     const willNotify = prevThreadIdRef.current !== selectedThreadId;
     if (willNotify) {
@@ -409,6 +421,8 @@ export function useChatSession(
   useThreadEventStream({
     selectedThreadId,
     selectedWorktreeId,
+    repositoryId,
+    selectedThreadIsPrMr,
     setMessages,
     setEvents,
     setThreads,
@@ -533,8 +547,10 @@ export function useChatSession(
         return updated;
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      invalidateRepositoryReviews();
       startWaitingAssistant(created.id);
       await api.sendMessage(created.id, { content, mode, attachments: [] });
+      invalidateRepositoryReviews();
       return created;
     } catch (e) {
       setWaitingAssistant(null);
@@ -549,6 +565,7 @@ export function useChatSession(
     onError(null);
     setClosingThreadId(threadId);
     try {
+      const closedThreadWasPrMr = threads.some((thread) => thread.id === threadId && thread.kind === "review");
       await api.deleteThread(threadId);
       setThreads((current) => {
         const updated = current.filter((t) => t.id !== threadId);
@@ -565,6 +582,9 @@ export function useChatSession(
       });
       if (selectedWorktreeId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      }
+      if (closedThreadWasPrMr) {
+        invalidateRepositoryReviews();
       }
       clearThreadTrackingState(threadId);
     } catch (e) {
