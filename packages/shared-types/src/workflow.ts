@@ -449,10 +449,14 @@ export type ReviewProvider = z.infer<typeof ReviewProviderSchema>;
 export const ReviewKindSchema = z.enum(["pr", "mr"]);
 export type ReviewKind = z.infer<typeof ReviewKindSchema>;
 
+export const ReviewStateSchema = z.enum(["open", "merged", "closed"]);
+export type ReviewState = z.infer<typeof ReviewStateSchema>;
+
 export const ReviewRefSchema = z.object({
   number: z.number().int().positive(),
   display: z.string().min(1),
   url: z.string().url(),
+  state: ReviewStateSchema,
 });
 export type ReviewRef = z.infer<typeof ReviewRefSchema>;
 

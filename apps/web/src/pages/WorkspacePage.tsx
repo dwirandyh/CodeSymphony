@@ -220,9 +220,10 @@ export function WorkspacePage() {
     && repos.selectedRepository
     && repos.selectedWorktree.branch === repos.selectedRepository.defaultBranch
   );
-  const selectedReviewRef = repos.selectedWorktree && repositoryReviews.data
+  const selectedLatestReviewRef = repos.selectedWorktree && repositoryReviews.data
     ? repositoryReviews.data.reviewsByBranch[repos.selectedWorktree.branch] ?? null
     : null;
+  const selectedReviewRef = selectedLatestReviewRef?.state === "open" ? selectedLatestReviewRef : null;
   const reviewKind: ReviewKind = repositoryReviews.data?.kind ?? "pr";
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {

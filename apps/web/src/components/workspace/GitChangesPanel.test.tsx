@@ -200,7 +200,7 @@ describe("GitChangesPanel", () => {
         <GitChangesPanel
           {...baseProps}
           reviewKind="mr"
-          reviewRef={{ number: 52, display: "!52", url: "https://example.com/mr/52" }}
+          reviewRef={{ number: 52, display: "!52", url: "https://example.com/mr/52", state: "open" }}
         />
       );
     });

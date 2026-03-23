@@ -204,13 +204,22 @@ export function GitChangesPanel({
 
                 return (
                   <div key={entry.path} className="group relative">
-                    <button
-                      type="button"
+                    <div
                       role="option"
+                      tabIndex={0}
                       aria-selected={isSelected}
                       onClick={() => onSelectFile?.(entry.path)}
+                      onKeyDown={(e) => {
+                        if (e.target !== e.currentTarget) {
+                          return;
+                        }
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSelectFile?.(entry.path);
+                        }
+                      }}
                       className={cn(
-                        "flex w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/40",
+                        "flex w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                         isSelected && "bg-secondary/60 ring-[0.5px] ring-foreground/10",
                         isDeleted && "hover:bg-red-500/5"
                       )}
@@ -231,7 +240,7 @@ export function GitChangesPanel({
 
                       <div className="relative ml-auto flex shrink-0 items-center justify-end">
                         {/* Indicators — always visible */}
-                        <div className="flex items-center gap-2 transition-opacity group-hover:opacity-0 group-hover:pointer-events-none">
+                        <div className="flex items-center gap-2 transition-opacity group-hover:opacity-0 group-hover:pointer-events-none group-focus-within:opacity-0 group-focus-within:pointer-events-none">
                           {(entry.insertions > 0 || entry.deletions > 0) && (
                             <div className="flex items-center gap-1.5 text-[10px] font-medium whitespace-nowrap">
                               {entry.insertions > 0 && (
@@ -255,7 +264,7 @@ export function GitChangesPanel({
                         </div>
 
                         {/* Hover actions (visible on hover) */}
-                        <div className="absolute inset-0 flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                        <div className="absolute inset-0 flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                           <Button
                             variant="ghost"
                             size="icon"
@@ -282,7 +291,7 @@ export function GitChangesPanel({
                           </Button>
                         </div>
                       </div>
-                    </button>
+                    </div>
                   </div>
                 );
               })}

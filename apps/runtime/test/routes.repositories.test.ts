@@ -159,12 +159,13 @@ describe("repository routes", () => {
         kind: "pr",
         available: true,
         reviewsByBranch: {
-          "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123" },
+          "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123", state: "open" },
         },
       });
       const res = await app.inject({ method: "GET", url: "/api/repositories/r1/reviews" });
       expect(res.statusCode).toBe(200);
       expect(res.json().data.reviewsByBranch["feature-x"].display).toBe("#123");
+      expect(res.json().data.reviewsByBranch["feature-x"].state).toBe("open");
     });
 
     it("returns cached review state for repeated requests within ttl", async () => {

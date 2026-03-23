@@ -1,6 +1,6 @@
 import { promisify } from "node:util";
 import { execFile as execFileRaw } from "node:child_process";
-import type { ReviewProvider } from "@codesymphony/shared-types";
+import type { ReviewProvider, ReviewState } from "@codesymphony/shared-types";
 
 const execFile = promisify(execFileRaw);
 const DEFAULT_GIT_TIMEOUT_MS = 15_000;
@@ -30,6 +30,8 @@ export type RemoteReviewRef = {
   url: string;
   headBranch: string;
   baseBranch: string;
+  state: ReviewState;
+  updatedAt: string | null;
 };
 
 async function runCommand(command: string, args: string[], options?: RunCommandOptions): Promise<string> {
@@ -260,11 +262,11 @@ export async function listGithubPullRequests(cwd: string, baseBranch: string): P
     "pr",
     "list",
     "--state",
-    "open",
+    "all",
     "--base",
     baseBranch,
     "--json",
-    "number,url,headRefName,baseRefName",
+    "number,url,headRefName,baseRefName,state,updatedAt",
   ], { cwd, timeoutMs: REVIEW_CLI_TIMEOUT_MS });
 
   const items = parseJsonOutput<Array<{
@@ -272,15 +274,19 @@ export async function listGithubPullRequests(cwd: string, baseBranch: string): P
     url: string;
     headRefName: string;
     baseRefName: string;
+    state: "OPEN" | "MERGED" | "CLOSED";
+    updatedAt?: string | null;
   }>>(output || "[]", "gh pr list");
 
   return items
-    .filter((item) => item.headRefName && item.baseRefName === baseBranch)
+    .filter((item) => item.headRefName)
     .map((item) => ({
       number: item.number,
       url: item.url,
       headBranch: item.headRefName,
       baseBranch: item.baseRefName,
+      state: item.state === "OPEN" ? "open" : item.state === "MERGED" ? "merged" : "closed",
+      updatedAt: item.updatedAt ?? null,
     }));
 }
 
@@ -301,7 +307,7 @@ export async function listGitlabMergeRequests(cwd: string, baseBranch: string): 
     "mr",
     "list",
     "--state",
-    "opened",
+    "all",
     "--target-branch",
     baseBranch,
     "--output",
@@ -313,15 +319,19 @@ export async function listGitlabMergeRequests(cwd: string, baseBranch: string): 
     web_url: string;
     source_branch: string;
     target_branch: string;
+    state: "opened" | "merged" | "closed";
+    updated_at?: string | null;
   }>>(output || "[]", "glab mr list");
 
   return items
-    .filter((item) => item.source_branch && item.target_branch === baseBranch)
+    .filter((item) => item.source_branch)
     .map((item) => ({
       number: item.iid,
       url: item.web_url,
       headBranch: item.source_branch,
       baseBranch: item.target_branch,
+      state: item.state === "opened" ? "open" : item.state,
+      updatedAt: item.updated_at ?? null,
     }));
 }
 

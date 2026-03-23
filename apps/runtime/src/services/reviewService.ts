@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import type { RepositoryReviewState, ReviewKind, ReviewProvider, ReviewRef } from "@codesymphony/shared-types";
+import type { RepositoryReviewState, ReviewKind, ReviewProvider, ReviewRef, ReviewState } from "@codesymphony/shared-types";
 import {
   ensureCliAvailable,
   listGithubPullRequests,
@@ -23,7 +23,45 @@ function mapReviewRef(provider: ReviewProvider, review: RemoteReviewRef): Review
     number: review.number,
     display: toReviewDisplay(provider, review.number),
     url: review.url,
+    state: review.state,
   };
+}
+
+function reviewPriority(state: ReviewState): number {
+  if (state === "open") return 0;
+  if (state === "merged") return 1;
+  return 2;
+}
+
+function compareReviewRecency(a: RemoteReviewRef, b: RemoteReviewRef): number {
+  const priorityDelta = reviewPriority(a.state) - reviewPriority(b.state);
+  if (priorityDelta !== 0) {
+    return priorityDelta;
+  }
+
+  const aTime = a.updatedAt ? Date.parse(a.updatedAt) : Number.NEGATIVE_INFINITY;
+  const bTime = b.updatedAt ? Date.parse(b.updatedAt) : Number.NEGATIVE_INFINITY;
+  if (Number.isNaN(aTime) && Number.isNaN(bTime)) {
+    return 0;
+  }
+  if (Number.isNaN(aTime)) {
+    return 1;
+  }
+  if (Number.isNaN(bTime)) {
+    return -1;
+  }
+
+  return bTime - aTime;
+}
+
+function selectReviewsByBranch(reviews: RemoteReviewRef[]): Record<string, RemoteReviewRef> {
+  return reviews.reduce<Record<string, RemoteReviewRef>>((acc, review) => {
+    const current = acc[review.headBranch];
+    if (!current || compareReviewRecency(review, current) < 0) {
+      acc[review.headBranch] = review;
+    }
+    return acc;
+  }, {});
 }
 
 function resolveUnavailableReason(provider: ReviewProvider, remoteUrl: string | null): string {
@@ -103,9 +141,11 @@ export function createReviewService(prisma: PrismaClient) {
           kind,
           available: true,
           reviewsByBranch: Object.fromEntries(
-            reviews
-              .filter((review) => review.baseBranch === repository.defaultBranch)
-              .map((review) => [review.headBranch, mapReviewRef(remote.provider, review)]),
+            Object.entries(
+              selectReviewsByBranch(
+                reviews.filter((review) => review.baseBranch === repository.defaultBranch),
+              ),
+            ).map(([branch, review]) => [branch, mapReviewRef(remote.provider, review)]),
           ),
         };
       } catch (error) {

@@ -225,7 +225,7 @@ describe("RepositoryPanel", () => {
       kind: "pr",
       available: true,
       reviewsByBranch: {
-        "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123" },
+        "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123", state: "open" },
       },
     });
     getGitStatusMock.mockResolvedValue({
@@ -244,9 +244,68 @@ describe("RepositoryPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.textContent).toBe("#123");
+    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.textContent).toContain("#123");
+    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.textContent).not.toContain("PR");
     expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.textContent).toContain("+24");
     expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.textContent).toContain("-3");
+  });
+
+  it("renders merged and closed review states", async () => {
+    getRepositoryReviewsMock.mockResolvedValue({
+      provider: "github",
+      kind: "pr",
+      available: true,
+      reviewsByBranch: {
+        main: { number: 9, display: "#9", url: "https://example.com/pr/9", state: "closed" },
+        "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123", state: "merged" },
+      },
+    });
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "wt-feat",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-wt-root-review"]')?.textContent).toContain("#9");
+    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.textContent).toContain("#123");
+    expect(container.querySelector('[data-testid="worktree-wt-root-review"]')?.textContent).not.toContain("PR");
+    expect(container.querySelector('[data-testid="worktree-wt-root-review"]')?.getAttribute("title")).toContain("Closed");
+    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.getAttribute("title")).toContain("Merged");
+  });
+
+  it("keeps review and diff metadata visible on hover-capable worktree rows", async () => {
+    getRepositoryReviewsMock.mockResolvedValue({
+      provider: "github",
+      kind: "pr",
+      available: true,
+      reviewsByBranch: {
+        "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123", state: "open" },
+      },
+    });
+    getGitStatusMock.mockResolvedValue({
+      branch: "feature-x",
+      entries: [{ path: "src/app.ts", status: "modified", insertions: 24, deletions: 3 }],
+    });
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "wt-feat",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
+    expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
   });
 
   it("renders root and branch status badges", async () => {

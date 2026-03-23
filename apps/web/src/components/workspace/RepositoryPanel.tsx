@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, FolderGit2, GitBranch, Pencil, Plus, Trash2 } from "lucide-react";
-import type { GitStatus, Repository, ReviewRef } from "@codesymphony/shared-types";
+import { ChevronDown, ChevronRight, FolderGit2, GitBranch, GitPullRequestArrow, Pencil, Plus, Trash2 } from "lucide-react";
+import type { GitStatus, Repository, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
@@ -34,6 +34,21 @@ const WORKTREE_STATUS_META: Record<WorktreeThreadUiStatus, { label: string; vari
   idle: { label: "Idle", variant: "outline" },
 };
 
+const REVIEW_STATE_META: Record<ReviewRef["state"], { label: string; className: string }> = {
+  open: {
+    label: "Open",
+    className: "text-emerald-600 dark:text-emerald-300",
+  },
+  merged: {
+    label: "Merged",
+    className: "text-indigo-600 dark:text-indigo-300",
+  },
+  closed: {
+    label: "Closed",
+    className: "text-rose-600 dark:text-rose-300",
+  },
+};
+
 function resolvePriorityThreadId(status: WorktreeStatusSummary | undefined): string | null {
   if (!status?.threadId) {
     return null;
@@ -50,7 +65,7 @@ function WorktreeStatusBadge({ status }: { status: WorktreeThreadUiStatus | unde
   return (
     <Badge
       variant={meta.variant}
-      className="pointer-events-none h-4 rounded-md px-1.5 py-0 text-[10px] leading-none shadow-sm"
+      className="pointer-events-none h-3.5 rounded-md px-1 py-0 text-[9px] leading-none shadow-sm"
       data-testid={`worktree-status-${resolvedStatus}`}
     >
       {meta.label}
@@ -58,27 +73,125 @@ function WorktreeStatusBadge({ status }: { status: WorktreeThreadUiStatus | unde
   );
 }
 
-function WorktreeReviewMeta({ review, insertions, deletions, testId }: {
+function WorktreeReviewBadge({ review, kind, testId }: {
   review: ReviewRef | null;
+  kind: ReviewKind | null | undefined;
+  testId: string;
+}) {
+  if (!review) {
+    return null;
+  }
+
+  const meta = REVIEW_STATE_META[review.state];
+  const reviewLabel = review.display;
+  const reviewTitleLabel = `${kind === "mr" ? "MR" : "PR"} ${review.display}`;
+
+  return (
+    <div
+      className={cn(
+        "pointer-events-none inline-flex items-center gap-0.5 text-[10px] leading-none",
+        meta.className,
+      )}
+      data-testid={`${testId}-review`}
+      title={`${meta.label} ${reviewTitleLabel}`}
+    >
+      <GitPullRequestArrow className="h-3 w-3" aria-hidden="true" />
+      <span>{reviewLabel}</span>
+    </div>
+  );
+}
+
+function WorktreeDiffSummary({ insertions, deletions, testId }: {
   insertions: number;
   deletions: number;
   testId: string;
 }) {
-  const hasDiff = insertions > 0 || deletions > 0;
+  if (insertions <= 0 && deletions <= 0) {
+    return null;
+  }
 
   return (
-    <div className="flex shrink-0 items-center gap-2 text-right text-[10px] leading-none" data-testid={`${testId}-meta`}>
-      {review ? (
-        <span className="text-muted-foreground" data-testid={`${testId}-review`}>
-          {review.display}
-        </span>
-      ) : null}
-      {hasDiff ? (
-        <span className="flex items-center gap-1" data-testid={`${testId}-diff`}>
-          <span className="text-green-500">+{insertions}</span>
-          <span className="text-red-500">-{deletions}</span>
-        </span>
-      ) : null}
+    <div
+      className="flex shrink-0 items-center gap-1 text-[10px] leading-none"
+      data-testid={`${testId}-diff`}
+    >
+      <span className="text-green-500">+{insertions}</span>
+      <span className="text-red-500">-{deletions}</span>
+    </div>
+  );
+}
+
+function WorktreeMetaSlot({
+  hiddenOnHover,
+  children,
+}: {
+  hiddenOnHover?: boolean;
+  children: ReactNode;
+}) {
+  if (!children) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        "shrink-0",
+        hiddenOnHover && "transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0 group-focus-within/wt:pointer-events-none group-focus-within/wt:opacity-0",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function WorktreeRowContent({
+  icon,
+  branchContent,
+  status,
+  review,
+  reviewKind,
+  insertions,
+  deletions,
+  testId,
+  hideStatusOnHover = false,
+}: {
+  icon: ReactNode;
+  branchContent: ReactNode;
+  status: WorktreeThreadUiStatus | undefined;
+  review: ReviewRef | null;
+  reviewKind: ReviewKind | null | undefined;
+  insertions: number;
+  deletions: number;
+  testId: string;
+  hideStatusOnHover?: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+          {icon}
+          {branchContent}
+        </div>
+        <WorktreeMetaSlot hiddenOnHover={hideStatusOnHover}>
+          <WorktreeStatusBadge status={status} />
+        </WorktreeMetaSlot>
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5 pl-5 pt-0.5">
+        <WorktreeMetaSlot>
+          <WorktreeReviewBadge
+            review={review}
+            kind={reviewKind}
+            testId={testId}
+          />
+        </WorktreeMetaSlot>
+        <WorktreeMetaSlot>
+          <WorktreeDiffSummary
+            insertions={insertions}
+            deletions={deletions}
+            testId={testId}
+          />
+        </WorktreeMetaSlot>
+      </div>
     </div>
   );
 }
@@ -118,6 +231,12 @@ export function RepositoryPanel({
       repositoryReviewQueries[index]?.data?.reviewsByBranch ?? {},
     ]),
   ) as Record<string, Record<string, ReviewRef>>, [repositories, repositoryReviewQueries]);
+  const reviewKindsByRepositoryId = useMemo(() => Object.fromEntries(
+    repositories.map((repository, index) => [
+      repository.id,
+      repositoryReviewQueries[index]?.data?.kind ?? null,
+    ]),
+  ) as Record<string, ReviewKind | null>, [repositories, repositoryReviewQueries]);
   const worktreeStats = useMemo(() => {
     return activeWorktreeIds.reduce<Record<string, { insertions: number; deletions: number; fileCount: number }>>((acc, worktreeId, index) => {
       const status = gitStatusQueries[index]?.data as GitStatus | undefined;
@@ -184,6 +303,7 @@ export function RepositoryPanel({
               ? resolvePriorityThreadId(worktreeStatuses[rootWorkspace.id])
               : null;
             const repositoryReviews = reviewsByRepositoryId[repository.id] ?? {};
+            const repositoryReviewKind = reviewKindsByRepositoryId[repository.id] ?? null;
 
             return (
               <article
@@ -242,31 +362,25 @@ export function RepositoryPanel({
                           <button
                             type="button"
                             className={cn(
-                              "flex w-full min-w-0 items-start gap-2 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40",
+                              "flex w-full min-w-0 items-start gap-2 overflow-hidden rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-secondary/40",
                               selectedWorktreeId === rootWorkspace.id && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
                             )}
                             onClick={() => onSelectWorktree(repository.id, rootWorkspace.id, rootPriorityThreadId)}
                           >
-                            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                              <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                            <WorktreeRowContent
+                              icon={(
                                 <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                                   <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                                 </span>
-                                <span className="truncate text-xs">{rootWorkspace.branch}</span>
-                              </div>
-                              <div className="pl-5 pt-1">
-                                <WorktreeStatusBadge status={worktreeStatuses[rootWorkspace.id]?.kind} />
-                              </div>
-                            </div>
-
-                            <div className="ml-auto">
-                              <WorktreeReviewMeta
-                                review={repositoryReviews[rootWorkspace.branch] ?? null}
-                                insertions={worktreeStats[rootWorkspace.id]?.insertions ?? 0}
-                                deletions={worktreeStats[rootWorkspace.id]?.deletions ?? 0}
-                                testId={`worktree-${rootWorkspace.id}`}
-                              />
-                            </div>
+                              )}
+                              branchContent={<span className="truncate text-xs">{rootWorkspace.branch}</span>}
+                              status={worktreeStatuses[rootWorkspace.id]?.kind}
+                              review={repositoryReviews[rootWorkspace.branch] ?? null}
+                              reviewKind={repositoryReviewKind}
+                              insertions={worktreeStats[rootWorkspace.id]?.insertions ?? 0}
+                              deletions={worktreeStats[rootWorkspace.id]?.deletions ?? 0}
+                              testId={`worktree-${rootWorkspace.id}`}
+                            />
                           </button>
                         </div>
                       </div>
@@ -287,7 +401,7 @@ export function RepositoryPanel({
                                 tabIndex={0}
                                 data-worktree-id={worktree.id}
                                 className={cn(
-                                  "flex w-full min-w-0 cursor-pointer items-start gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                                  "flex w-full min-w-0 cursor-pointer items-start gap-1.5 overflow-hidden rounded-md px-2 py-1 text-left text-muted-foreground transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                                   isWorktreeSelected && "bg-secondary/60 text-foreground ring-[0.5px] ring-foreground/10",
                                 )}
                                 onClick={() => onSelectWorktree(repository.id, worktree.id, priorityThreadId)}
@@ -301,66 +415,60 @@ export function RepositoryPanel({
                                   }
                                 }}
                               >
-                                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                                <WorktreeRowContent
+                                  icon={(
                                     <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                                       <GitBranch className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
                                     </span>
-                                    {editingWorktreeId === worktree.id ? (
-                                      <input
-                                        type="text"
-                                        className="min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
-                                        value={editingBranchValue}
-                                        autoFocus
-                                        onChange={(e) => setEditingBranchValue(e.target.value)}
-                                        onClick={(e) => e.stopPropagation()}
-                                        onKeyDown={(e) => {
-                                          if (e.key === "Enter") {
-                                            const trimmed = editingBranchValue.trim();
-                                            if (trimmed && trimmed !== worktree.branch) {
-                                              onRenameWorktreeBranch(worktree.id, trimmed);
-                                            }
-                                            setEditingWorktreeId(null);
-                                          }
-                                          if (e.key === "Escape") {
-                                            setEditingWorktreeId(null);
-                                          }
-                                        }}
-                                        onBlur={() => {
+                                  )}
+                                  branchContent={editingWorktreeId === worktree.id ? (
+                                    <input
+                                      type="text"
+                                      className="min-w-0 flex-1 rounded border border-input bg-background px-1 text-xs outline-none focus:ring-1 focus:ring-ring"
+                                      value={editingBranchValue}
+                                      autoFocus
+                                      onChange={(e) => setEditingBranchValue(e.target.value)}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
                                           const trimmed = editingBranchValue.trim();
                                           if (trimmed && trimmed !== worktree.branch) {
                                             onRenameWorktreeBranch(worktree.id, trimmed);
                                           }
                                           setEditingWorktreeId(null);
-                                        }}
-                                      />
-                                    ) : (
-                                      <span
-                                        className="truncate text-xs"
-                                        onDoubleClick={(e) => {
-                                          e.stopPropagation();
-                                          setEditingWorktreeId(worktree.id);
-                                          setEditingBranchValue(worktree.branch);
-                                        }}
-                                      >
-                                        {worktree.branch}
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  <div className="pl-5 pt-1 transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0 group-focus-within/wt:pointer-events-none group-focus-within/wt:opacity-0">
-                                    <WorktreeStatusBadge status={worktreeStatuses[worktree.id]?.kind} />
-                                  </div>
-                                </div>
-
-                                <div className="ml-auto pr-20 transition-opacity group-hover/wt:pointer-events-none group-hover/wt:opacity-0 group-focus-within/wt:pointer-events-none group-focus-within/wt:opacity-0">
-                                  <WorktreeReviewMeta
-                                    review={review}
-                                    insertions={stats?.insertions ?? 0}
-                                    deletions={stats?.deletions ?? 0}
-                                    testId={`worktree-${worktree.id}`}
-                                  />
-                                </div>
+                                        }
+                                        if (e.key === "Escape") {
+                                          setEditingWorktreeId(null);
+                                        }
+                                      }}
+                                      onBlur={() => {
+                                        const trimmed = editingBranchValue.trim();
+                                        if (trimmed && trimmed !== worktree.branch) {
+                                          onRenameWorktreeBranch(worktree.id, trimmed);
+                                        }
+                                        setEditingWorktreeId(null);
+                                      }}
+                                    />
+                                  ) : (
+                                    <span
+                                      className="truncate text-xs"
+                                      onDoubleClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingWorktreeId(worktree.id);
+                                        setEditingBranchValue(worktree.branch);
+                                      }}
+                                    >
+                                      {worktree.branch}
+                                    </span>
+                                  )}
+                                  status={worktreeStatuses[worktree.id]?.kind}
+                                  review={review}
+                                  reviewKind={repositoryReviewKind}
+                                  insertions={stats?.insertions ?? 0}
+                                  deletions={stats?.deletions ?? 0}
+                                  testId={`worktree-${worktree.id}`}
+                                  hideStatusOnHover={true}
+                                />
                               </div>
 
                               <div className="pointer-events-none absolute top-0 right-2 bottom-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:pointer-events-auto group-hover/wt:opacity-100 group-focus-within/wt:pointer-events-auto group-focus-within/wt:opacity-100">
