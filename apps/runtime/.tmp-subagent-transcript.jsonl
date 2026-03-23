@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"Recovered prompt from transcript"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Recovered answer"}]}}

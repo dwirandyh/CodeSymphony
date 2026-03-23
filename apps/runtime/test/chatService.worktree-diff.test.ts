@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
-import type { ClaudeRunner } from "../src/types";
+import type { AgentRunner } from "../src/types";
 
 const stubModelProviderService = {
   getActiveProvider: async () => null,
@@ -132,7 +132,7 @@ describe("chatService worktree diff delta", () => {
     });
     writeFileSync(join(worktreePath, "src/a.ts"), "export const a = 2;\n", "utf8");
 
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText }) => {
       writeFileSync(join(worktreePath, "src/b.ts"), "export const b = 2;\n", "utf8");
       await onText("Updated src/b.ts");
       return {
@@ -144,7 +144,7 @@ describe("chatService worktree diff delta", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const threadId = await seedThreadForWorktree(worktreePath, "Worktree Diff Delta");
@@ -166,7 +166,7 @@ describe("chatService worktree diff delta", () => {
       "src/main.ts": "export const main = () => 1;\n",
     });
 
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText }) => {
       await onText("No changes made.");
       return {
         output: "No changes made.",
@@ -177,7 +177,7 @@ describe("chatService worktree diff delta", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const threadId = await seedThreadForWorktree(worktreePath, "Worktree No Changes");
@@ -197,7 +197,7 @@ describe("chatService worktree diff delta", () => {
     });
     writeFileSync(join(worktreePath, "src/value.ts"), "export const value = 2;\n", "utf8");
 
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText }) => {
       writeFileSync(join(worktreePath, "src/value.ts"), original, "utf8");
       await onText("Reverted file to clean state.");
       return {
@@ -209,7 +209,7 @@ describe("chatService worktree diff delta", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const threadId = await seedThreadForWorktree(worktreePath, "Worktree Clean Transition");

@@ -81,7 +81,7 @@ export async function buildThreadTitleWithAi(
   }, TITLE_GENERATION_TIMEOUT_MS);
 
   try {
-    const result = await deps.claudeRunner({
+    const result = await deps.agentRunner({
       prompt,
       sessionId: null,
       cwd: worktreePath,
@@ -286,7 +286,7 @@ export async function buildBranchNameWithAi(
   }, BRANCH_GENERATION_TIMEOUT_MS);
 
   try {
-    const result = await deps.claudeRunner({
+    const result = await deps.agentRunner({
       prompt,
       sessionId: null,
       cwd: worktreePath,

@@ -34,6 +34,10 @@ export function isOverlapUnclaimedSubagentEvent(eventId: string): boolean {
 function buildStepInfo(event: ChatEvent): { label: string; openPath: string | null } {
   const toolName = payloadStringOrNull(event.payload.toolName);
   const summary = payloadStringOrNull(event.payload.summary);
+  const command = payloadStringOrNull(event.payload.command)
+    ?? (typeof event.payload.toolInput === "object" && event.payload.toolInput != null && !Array.isArray(event.payload.toolInput)
+      ? payloadStringOrNull((event.payload.toolInput as Record<string, unknown>).command)
+      : null);
 
   // Read tools: show short basename instead of full path
   if (isReadToolEvent(event) && event.type === "tool.finished") {
@@ -47,6 +51,20 @@ function buildStepInfo(event: ChatEvent): { label: string; openPath: string | nu
   if (isSearchToolEvent(event) && event.type === "tool.finished") {
     const ctx = searchContextFromEvent(event);
     return { label: extractSearchEntryLabel(event, { toolName: ctx.toolName, searchParams: ctx.searchParams }), openPath: null };
+  }
+
+  if ((toolName ?? "").toLowerCase() === "bash" && command) {
+    const shortenedCommand = command.replace(
+      /"(\/[^\"]+)"|'(\/[^']+)'|(\/(?:[^\s,]+\/)+[^\s,]+)/g,
+      (match, quoted1: string | undefined, quoted2: string | undefined, unquoted: string | undefined) => {
+        const p = quoted1 ?? quoted2 ?? unquoted ?? match;
+        const short = shortenReadTargetForDisplay(p);
+        if (quoted1) return `"${short}"`;
+        if (quoted2) return `'${short}'`;
+        return short;
+      },
+    );
+    return { label: shortenedCommand, openPath: null };
   }
 
   if (summary) {

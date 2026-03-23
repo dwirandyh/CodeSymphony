@@ -382,7 +382,7 @@ describe("chat routes", () => {
       const realChatService = createChatService({
         prisma,
         eventHub: hub,
-        claudeRunner: vi.fn(),
+        agentRunner: vi.fn(),
         modelProviderService: { getActiveProvider: async () => null },
       });
       app.chatService = realChatService as never;

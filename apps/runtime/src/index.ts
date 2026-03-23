@@ -7,7 +7,7 @@ import websocket from "@fastify/websocket";
 import { ZodError } from "zod";
 import { prisma } from "./db/prisma.js";
 import { createEventHub } from "./events/eventHub.js";
-import { runClaudeWithStreaming } from "./claude/sessionRunner.js";
+import { runClaudeViaAcp } from "./claude/acpRunner.js";
 import { createRepositoryService } from "./services/repositoryService.js";
 import { createWorktreeService } from "./services/worktreeService.js";
 import { createChatService } from "./services/chat/index.js";
@@ -62,7 +62,7 @@ function createApp() {
   const chatService = createChatService({
     prisma,
     eventHub,
-    claudeRunner: runClaudeWithStreaming,
+    agentRunner: runClaudeViaAcp,
     logService,
     modelProviderService,
   });

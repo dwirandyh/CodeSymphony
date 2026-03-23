@@ -56,12 +56,16 @@ export function isClaudePlanFilePayload(payload: Record<string, unknown>): boole
 
 export function isPlanFilePath(filePath: string): boolean {
   if (!filePath.endsWith(".md")) return false;
-  return filePath.includes(".claude/plans/") || filePath.includes("codesymphony-claude-provider/plans/");
+  return filePath.includes(".claude/plans/")
+    || filePath.includes("codesymphony-claude-provider/plans/")
+    || filePath.includes("/Users/") && filePath.includes("/.claude/plans/");
 }
 
 export function isPlanModeToolEvent(event: ChatEvent): boolean {
   const toolName = payloadStringOrNull(event.payload.toolName)?.toLowerCase() ?? "";
+  const summary = payloadStringOrNull(event.payload.summary)?.toLowerCase() ?? "";
   if (toolName === "exitplanmode" || toolName === "enterplanmode") return true;
+  if (summary === "completed enterplanmode" || summary === "exited plan mode") return true;
   const filePath = payloadStringOrNull(event.payload.file_path)
     ?? payloadStringOrNull(event.payload.filePath) ?? "";
   if ((toolName === "edit" || toolName === "write") && isPlanFilePath(filePath)) return true;
@@ -556,6 +560,10 @@ export function buildActivitySteps(context: ChatEvent[]): ActivityTraceStep[] {
   const candidates: StepCandidate[] = [];
 
   for (const event of context) {
+    if (isPlanModeToolEvent(event)) {
+      continue;
+    }
+
     if (event.type === "chat.failed") {
       const detail = toolEventDetail(event);
       candidates.push({

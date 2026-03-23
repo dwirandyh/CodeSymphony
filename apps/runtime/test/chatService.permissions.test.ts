@@ -6,7 +6,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
 import { createLogService } from "../src/services/logService";
-import type { ClaudeRunner } from "../src/types";
+import type { AgentRunner } from "../src/types";
 
 const stubModelProviderService = {
   getActiveProvider: async () => null,
@@ -123,7 +123,7 @@ describe("chatService permission flow", () => {
   });
 
   it("does not emit integrity warning and keeps plain assistant output", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
         await onText("Flutter analyze status");
         return {
@@ -142,7 +142,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -165,11 +165,11 @@ describe("chatService permission flow", () => {
     const assistantMessage = messages.find((message) => message.role === "assistant");
     expect(assistantMessage?.content).toContain("Siap, saya jalankan flutter analyze sekarang.");
     expect(assistantMessage?.content).not.toContain("runtime-integrity-warning");
-    expect(claudeRunner).toHaveBeenCalledTimes(2);
+    expect(agentRunner).toHaveBeenCalledTimes(2);
   });
 
   it("auto renames default thread title after first assistant reply via metadata event", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
         await onText("Summarize README.md");
         return {
@@ -188,7 +188,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -218,7 +218,7 @@ describe("chatService permission flow", () => {
   });
 
   it("passes active provider config to AI title generation", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({
+    const agentRunner: AgentRunner = vi.fn(async ({
       onText,
       prompt,
       model,
@@ -246,7 +246,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: {
         getActiveProvider: async () => ({
           apiKey: "provider-key",
@@ -273,7 +273,7 @@ describe("chatService permission flow", () => {
   });
 
   it("does not overwrite non-default thread title and emits no metadata title event", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText }) => {
       await onText("Done.");
       return {
         output: "Done.",
@@ -284,7 +284,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread("Session Integrasi API");
@@ -311,7 +311,7 @@ describe("chatService permission flow", () => {
   });
 
   it("emits permission requested and proceeds after approve", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onToolStarted, onToolFinished, onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onPermissionRequest, onToolStarted, onToolFinished, onText }) => {
       const decision = await onPermissionRequest({
         requestId: "perm-1",
         toolName: "Bash",
@@ -343,7 +343,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -378,7 +378,7 @@ describe("chatService permission flow", () => {
   });
 
   it("persists bash command output metadata in tool events", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onToolStarted, onToolFinished, onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onToolStarted, onToolFinished, onText }) => {
       await onToolStarted({
         toolName: "Bash",
         toolUseId: "tool-metadata",
@@ -410,7 +410,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -434,7 +434,7 @@ describe("chatService permission flow", () => {
 
   it("writes tool instrumentation logs with thread context", async () => {
     const runtimeLogService = createLogService();
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onToolInstrumentation, onText, permissionProfile }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onToolInstrumentation, onText, permissionProfile }) => {
       expect(permissionProfile).toBe("default");
       await onToolInstrumentation?.({
         stage: "requested",
@@ -467,7 +467,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       logService: runtimeLogService,
       modelProviderService: stubModelProviderService,
     });
@@ -493,7 +493,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner: vi.fn(async () => ({ output: "", sessionId: null })),
+      agentRunner: vi.fn(async () => ({ output: "", sessionId: null })),
       modelProviderService: stubModelProviderService,
     });
 
@@ -531,7 +531,7 @@ describe("chatService permission flow", () => {
   });
 
   it("emits permission requested and proceeds with deny decision", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
       const decision = await onPermissionRequest({
         requestId: "perm-2",
         toolName: "Bash",
@@ -554,7 +554,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -589,7 +589,7 @@ describe("chatService permission flow", () => {
   });
 
   it("rejects duplicate or missing permission resolve", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
       const decision = await onPermissionRequest({
         requestId: "perm-3",
         toolName: "Bash",
@@ -609,7 +609,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -645,7 +645,7 @@ describe("chatService permission flow", () => {
   });
 
   it("treats duplicate permission callback for same requestId as idempotent", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
       const first = onPermissionRequest({
         requestId: "perm-dup",
         toolName: "Bash",
@@ -674,7 +674,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -707,7 +707,7 @@ describe("chatService permission flow", () => {
 
   it("stops active run and keeps partial assistant output", async () => {
     let receivedAbortController: AbortController | undefined;
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, abortController }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText, abortController }) => {
       receivedAbortController = abortController;
       if (!abortController) {
         throw new Error("Missing abort controller");
@@ -729,7 +729,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -764,7 +764,7 @@ describe("chatService permission flow", () => {
 
   it("stops run while waiting for question without aborting controller", async () => {
     let receivedAbortController: AbortController | undefined;
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onQuestionRequest, abortController }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onQuestionRequest, abortController }) => {
       receivedAbortController = abortController;
       if (!abortController) {
         throw new Error("Missing abort controller");
@@ -784,7 +784,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -810,7 +810,7 @@ describe("chatService permission flow", () => {
   });
 
   it("rejects stop when no active run exists", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+    const agentRunner: AgentRunner = vi.fn(async () => ({
       output: "",
       sessionId: "session-noop",
     }));
@@ -818,7 +818,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -827,7 +827,7 @@ describe("chatService permission flow", () => {
   });
 
   it("persists allow_always rule to local workspace settings", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
       const firstDecision = await onPermissionRequest({
         requestId: "perm-always-1",
         toolName: "Bash",
@@ -847,7 +847,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId, worktreePath } = await seedThread();
@@ -890,7 +890,7 @@ describe("chatService permission flow", () => {
   });
 
   it("returns error for allow_always when local settings file has invalid JSON", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onPermissionRequest, onText }) => {
       const decision = await onPermissionRequest({
         requestId: "perm-always-invalid",
         toolName: "Bash",
@@ -910,7 +910,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId, worktreePath } = await seedThread();
@@ -945,7 +945,7 @@ describe("chatService permission flow", () => {
   });
 
   it("does not emit question.requested events in default (execute) mode", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText }) => {
       await onText("I will proceed with my best judgment.");
       return {
         output: "I will proceed with my best judgment.",
@@ -956,7 +956,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -968,12 +968,12 @@ describe("chatService permission flow", () => {
     const events = await waitForTerminalEvent(chatService, threadId);
     expect(events.some((event) => event.type === "question.requested")).toBe(false);
 
-    const calledArgs = (claudeRunner as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const calledArgs = (agentRunner as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(calledArgs.permissionMode).toBe("default");
   });
 
   it("emits question.requested events in plan mode", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
       if (permissionMode === "plan") {
         const result = await onQuestionRequest({
           requestId: "q-plan-1",
@@ -993,7 +993,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -1020,7 +1020,7 @@ describe("chatService permission flow", () => {
   });
 
   it("dismisses pending plan question and cancels the active run", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
       if (permissionMode === "plan") {
         try {
           await onQuestionRequest({
@@ -1045,7 +1045,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -1075,7 +1075,7 @@ describe("chatService permission flow", () => {
   });
 
   it("records stale dismisses as non-persisted and keeps run stable", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onQuestionRequest, onText, permissionMode }) => {
       if (permissionMode === "plan") {
         const result = await onQuestionRequest({
           requestId: "q-stale-1",
@@ -1095,7 +1095,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId } = await seedThread();
@@ -1132,7 +1132,7 @@ describe("chatService permission flow", () => {
   });
 
   it("stores image attachments outside the worktree", async () => {
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
+    const agentRunner: AgentRunner = vi.fn(async ({ onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
         await onText("Image attachment");
         return {
@@ -1151,7 +1151,7 @@ describe("chatService permission flow", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner,
+      agentRunner,
       modelProviderService: stubModelProviderService,
     });
     const { threadId, worktreePath } = await seedThread();

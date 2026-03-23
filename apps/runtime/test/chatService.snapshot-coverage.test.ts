@@ -108,7 +108,7 @@ describe("chatService snapshot", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner: vi.fn(),
+      agentRunner: vi.fn(),
       modelProviderService: stubModelProviderService,
     });
 
@@ -130,7 +130,7 @@ describe("chatService snapshot", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner: vi.fn(),
+      agentRunner: vi.fn(),
       modelProviderService: stubModelProviderService,
     });
 
@@ -152,7 +152,7 @@ describe("chatService snapshot", () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
-      claudeRunner: vi.fn(),
+      agentRunner: vi.fn(),
       modelProviderService: stubModelProviderService,
     });
 

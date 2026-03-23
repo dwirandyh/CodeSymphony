@@ -17,6 +17,7 @@ import {
   isExploreLikeBashEvent,
   isClaudePlanFilePayload,
   isPlanFilePath,
+  isPlanModeToolEvent,
   isLikelyDiffContent,
   isReadToolEvent,
   isRecord,
@@ -668,7 +669,15 @@ export function useWorkspaceTimeline(
         })
         : nonSubagentContext;
       const activityContext = message.role === "assistant"
-        ? nonBashContext.filter((event) => !isWorktreeDiffEvent(event))
+        ? nonBashContext.filter((event) => {
+          if (isWorktreeDiffEvent(event)) {
+            return false;
+          }
+          if (planFileOutput && isPlanModeToolEvent(event)) {
+            return false;
+          }
+          return true;
+        })
         : nonBashContext;
       if (message.role === "assistant") {
         for (const run of bashRuns) {

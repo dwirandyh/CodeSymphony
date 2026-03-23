@@ -2,7 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { ClaudeRunner } from "../types.js";
+import type { AgentRunner } from "../types.js";
 
 import { extractBashToolResult } from "./bashResult.js";
 import { sanitizeForLog } from "./sanitize.js";
@@ -37,7 +37,7 @@ export const __testing = {
   sanitizeForLog,
 };
 
-export const runClaudeWithStreaming: ClaudeRunner = async ({
+export const runClaudeWithStreaming: AgentRunner = async ({
   prompt,
   sessionId,
   cwd,

@@ -9,7 +9,7 @@ export type RuntimeEventHub = {
   subscribe: (threadId: string, listener: (event: ChatEvent) => void) => () => void;
 };
 
-export type ClaudeRunnerResult = {
+export type AgentRunnerResult = {
   output: string;
   sessionId: string | null;
 };
@@ -85,7 +85,7 @@ export type ClaudeToolInstrumentationEvent = {
   };
 };
 
-export type ClaudeRunner = (args: {
+export type AgentRunner = (args: {
   prompt: string;
   sessionId: string | null;
   cwd: string;
@@ -185,12 +185,12 @@ export type ClaudeRunner = (args: {
     isResponseUpdate?: boolean;
   }) => Promise<void> | void;
   onToolInstrumentation?: (event: ClaudeToolInstrumentationEvent) => Promise<void> | void;
-}) => Promise<ClaudeRunnerResult>;
+}) => Promise<AgentRunnerResult>;
 
 export type RuntimeDeps = {
   prisma: PrismaClient;
   eventHub: RuntimeEventHub;
-  claudeRunner: ClaudeRunner;
+  agentRunner: AgentRunner;
   logService?: {
     log: (level: "debug" | "info" | "warn" | "error", source: string, message: string, data?: unknown) => void;
   };

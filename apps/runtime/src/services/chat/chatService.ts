@@ -183,7 +183,7 @@ export function createChatService(deps: RuntimeDeps) {
         }, FLUSH_INTERVAL_MS);
       }
 
-      const result = await deps.claudeRunner({
+      const result = await deps.agentRunner({
         prompt,
         sessionId: thread.claudeSessionId,
         cwd: worktreePath,
@@ -1072,7 +1072,7 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
       let streamedOutput = "";
 
       try {
-        const result = await deps.claudeRunner({
+        const result = await deps.agentRunner({
           prompt,
           sessionId: null,
           cwd: worktreePath,
