@@ -119,8 +119,15 @@ export function WorkspacePage() {
       }
       return [...prev, entry];
     });
-    setActiveBottomTab("output");
+    if (event.type === "run") {
+      setActiveBottomTab("run");
+      setBottomPanelOpenSignal((prev) => prev + 1);
+      return;
+    }
+
     if (event.type === "setup" || event.type === "teardown") {
+      setActiveBottomTab("setup-script");
+      setBottomPanelOpenSignal((prev) => prev + 1);
     }
   }, []);
 
@@ -422,7 +429,8 @@ export function WorkspacePage() {
 
   const handleRerunSetup = useCallback(() => {
     if (!repos.selectedWorktreeId) return;
-    setActiveBottomTab("output");
+    setActiveBottomTab("setup-script");
+    setBottomPanelOpenSignal((prev) => prev + 1);
     void repos.rerunSetup(repos.selectedWorktreeId);
   }, [repos.rerunSetup, repos.selectedWorktreeId]);
 
@@ -450,7 +458,7 @@ export function WorkspacePage() {
     if (!sessionId) return;
 
     try {
-      setActiveBottomTab("output");
+      setActiveBottomTab("run");
       setBottomPanelOpenSignal((prev) => prev + 1);
       setRunScriptActive(true);
       runScriptWorktreeIdRef.current = repos.selectedWorktreeId;
@@ -471,7 +479,7 @@ export function WorkspacePage() {
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
     try {
-      setActiveBottomTab("output");
+      setActiveBottomTab("run");
       setBottomPanelOpenSignal((prev) => prev + 1);
       await api.interruptTerminalSession(sessionId);
       setRunScriptActive(false);

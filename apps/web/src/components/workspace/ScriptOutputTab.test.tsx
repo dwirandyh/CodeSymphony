@@ -3,10 +3,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScriptOutputTab, type ScriptOutputEntry } from "./ScriptOutputTab";
 
-vi.mock("./TerminalTab", () => ({
-  TerminalTab: () => <div data-testid="terminal-tab">Terminal Mock</div>,
-}));
-
 let container: HTMLDivElement;
 let root: Root;
 
@@ -42,8 +38,6 @@ describe("ScriptOutputTab", () => {
       root.render(
         <ScriptOutputTab
           entries={[]}
-          scriptRunnerSessionId={null}
-          worktreePath={null}
         />
       );
     });
@@ -55,8 +49,6 @@ describe("ScriptOutputTab", () => {
       root.render(
         <ScriptOutputTab
           entries={[]}
-          scriptRunnerSessionId={null}
-          worktreePath={null}
         />
       );
     });
@@ -69,8 +61,6 @@ describe("ScriptOutputTab", () => {
       root.render(
         <ScriptOutputTab
           entries={entries}
-          scriptRunnerSessionId={null}
-          worktreePath={null}
         />
       );
     });
@@ -84,24 +74,20 @@ describe("ScriptOutputTab", () => {
         <ScriptOutputTab
           entries={[]}
           onRerunSetup={onRerun}
-          scriptRunnerSessionId={null}
-          worktreePath={null}
         />
       );
     });
     expect(container.textContent).toContain("Re-run setup");
   });
 
-  it("renders run script section when scriptRunnerSessionId provided", () => {
+  it("shows helper text for setup lifecycle", () => {
     act(() => {
       root.render(
         <ScriptOutputTab
           entries={[]}
-          scriptRunnerSessionId="w1:script-runner"
-          worktreePath="/tmp/wt"
         />
       );
     });
-    expect(container.textContent).toContain("Run Script");
+    expect(container.textContent).toContain("Runs automatically after worktree creation.");
   });
 });

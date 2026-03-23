@@ -145,6 +145,26 @@ describe("WorkspaceHeader", () => {
     expect(container.querySelector('input[aria-label="Rename thread title"]')).toBeNull();
   });
 
+  it("uses the same button background styling for run and stop states", () => {
+    renderHeader({ runScriptRunning: false, onToggleRunScript: noop });
+
+    const runButton = container.querySelector<HTMLButtonElement>('button[aria-label="Run script"]');
+    if (!runButton) {
+      throw new Error("Run button not found");
+    }
+
+    const runClassName = runButton.className;
+
+    renderHeader({ runScriptRunning: true, onToggleRunScript: noop });
+
+    const stopButton = container.querySelector<HTMLButtonElement>('button[aria-label="Stop script"]');
+    if (!stopButton) {
+      throw new Error("Stop button not found");
+    }
+
+    expect(stopButton.className).toBe(runClassName);
+  });
+
   it("keeps add session button pinned outside scroll area", () => {
     const onCreateThread = vi.fn();
     renderHeader({ onCreateThread });

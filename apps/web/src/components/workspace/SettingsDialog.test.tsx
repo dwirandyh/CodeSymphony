@@ -165,29 +165,14 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("test-repo");
   });
 
-  it("shows script configuration fields when repo selected", async () => {
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <SettingsDialog
-            open={true}
-            onClose={vi.fn()}
-            repositories={[makeRepo()]}
-            onRemoveRepository={vi.fn()}
-          />
-        </QueryClientProvider>
-      );
-    });
+  it("shows script configuration fields in workspace settings", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
 
-    const repoButton = Array.from(document.body.querySelectorAll("button")).find(
-      (b) => b.textContent?.includes("test-repo")
-    );
-    if (repoButton) {
-      await act(async () => {
-        repoButton.click();
-        await new Promise((r) => setTimeout(r, 50));
-      });
-    }
+    expect(document.body.textContent).toContain("Default Branch");
+    expect(document.body.textContent).toContain("Run Script");
+    expect(document.body.textContent).toContain("Setup Scripts");
+    expect(document.body.textContent).toContain("Teardown Scripts");
   });
 
   it("calls onClose when close triggered", async () => {
@@ -230,6 +215,7 @@ describe("SettingsDialog", () => {
 
     expect((document.body.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("dev");
   });
+
 
   it("reselects a valid repository when the current one disappears", async () => {
     renderDialog([
