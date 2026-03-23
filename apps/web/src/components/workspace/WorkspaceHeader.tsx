@@ -136,7 +136,7 @@ export function WorkspaceHeader({
           {onToggleRunScript && (
             <Button
               type="button"
-              variant={runScriptRunning ? "ghost" : "secondary"}
+              variant="secondary"
               size="icon"
               disabled={disabled}
               aria-label={runScriptRunning ? "Stop script" : "Run script"}

@@ -281,7 +281,7 @@ export function RepositoryPanel({
 
       {loadingRepos ? <div className="px-2 py-2 text-xs text-muted-foreground">Loading repositories...</div> : null}
 
-      <ScrollArea className="min-h-0 flex-1 px-1 pb-1 [&_[data-radix-scroll-area-viewport]>div]:!block">
+      <ScrollArea className="min-h-0 flex-1 px-1 pb-1">
         {repositories.length === 0 ? (
           <div className="px-2 py-3 text-xs text-muted-foreground">
             No repositories added yet.

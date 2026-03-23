@@ -65,6 +65,10 @@ export function BottomPanel({
         () => worktreeId ? scriptOutputs.filter((e) => e.worktreeId === worktreeId) : [],
         [scriptOutputs, worktreeId],
     );
+    const setupOutputs = useMemo(
+        () => filteredOutputs.filter((entry) => entry.type === "setup" || entry.type === "teardown"),
+        [filteredOutputs],
+    );
     const scriptRunnerSessionId = useMemo(
         () => (worktreeId && runScriptActive ? `${worktreeId}:script-runner` : null),
         [worktreeId, runScriptActive],
@@ -161,6 +165,18 @@ export function BottomPanel({
                 <div className="flex items-center border-b border-border/20 bg-card/75 px-1">
                     <Tabs.List className="flex items-center">
                         <Tabs.Trigger
+                            value="setup-script"
+                            className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
+                        >
+                            Setup Script
+                            {setupOutputs.length > 0 && (
+                                <span className="ml-1 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary/20 px-1 text-[9px] font-bold leading-none text-primary">
+                                    {setupOutputs.length}
+                                </span>
+                            )}
+                            <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
+                        </Tabs.Trigger>
+                        <Tabs.Trigger
                             value="terminal"
                             className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
@@ -168,22 +184,22 @@ export function BottomPanel({
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
                         </Tabs.Trigger>
                         <Tabs.Trigger
+                            value="run"
+                            className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
+                        >
+                            Run
+                            {runScriptActive && (
+                                <span className="ml-1 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary/20 px-1 text-[9px] font-bold leading-none text-primary">
+                                    •
+                                </span>
+                            )}
+                            <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
+                        </Tabs.Trigger>
+                        <Tabs.Trigger
                             value="debug"
                             className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
                             Debug Console
-                            <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
-                        </Tabs.Trigger>
-                        <Tabs.Trigger
-                            value="output"
-                            className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
-                        >
-                            Output
-                            {filteredOutputs.length > 0 && (
-                                <span className="ml-1 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary/20 px-1 text-[9px] font-bold leading-none text-primary">
-                                    {filteredOutputs.length}
-                                </span>
-                            )}
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
                         </Tabs.Trigger>
                     </Tabs.List>
@@ -209,25 +225,38 @@ export function BottomPanel({
                     className={`flex flex-col overflow-hidden ${collapsed ? "invisible h-0" : ""}`}
                     style={collapsed ? undefined : { height: `${height}px` }}
                 >
+                    <Tabs.Content value="setup-script" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
+                        <ScriptOutputTab
+                            entries={setupOutputs}
+                            onRerunSetup={onRerunSetup}
+                            rerunning={setupOutputs.some((e) => e.status === "running")}
+                        />
+                    </Tabs.Content>
+
                     <Tabs.Content value="terminal" className="min-h-0 flex-1 data-[state=inactive]:hidden">
                         <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
                             <TerminalTab sessionId={worktreeId && selectedThreadId ? `${worktreeId}:${selectedThreadId}` : worktreeId ?? "default"} cwd={worktreePath} />
                         </Suspense>
                     </Tabs.Content>
 
-                    <Tabs.Content value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                        <DebugConsoleTab selectedThreadId={selectedThreadId} />
+                    <Tabs.Content value="run" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
+                        {scriptRunnerSessionId ? (
+                            <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                                <TerminalTab
+                                    sessionId={scriptRunnerSessionId}
+                                    cwd={worktreePath}
+                                    onSessionExit={onRunScriptExit}
+                                />
+                            </Suspense>
+                        ) : (
+                            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                                No run session active.
+                            </div>
+                        )}
                     </Tabs.Content>
 
-                    <Tabs.Content value="output" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
-                        <ScriptOutputTab
-                            entries={filteredOutputs}
-                            onRerunSetup={onRerunSetup}
-                            rerunning={filteredOutputs.some((e) => e.type !== "run" && e.status === "running")}
-                            scriptRunnerSessionId={scriptRunnerSessionId}
-                            worktreePath={worktreePath}
-                            onRunScriptExit={onRunScriptExit}
-                        />
+                    <Tabs.Content value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
+                        <DebugConsoleTab selectedThreadId={selectedThreadId} />
                     </Tabs.Content>
                 </div>
             </Tabs.Root>

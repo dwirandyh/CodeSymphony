@@ -189,7 +189,7 @@ export function GitChangesPanel({
           </div>
         </div>
 
-        <ScrollArea className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block">
+        <ScrollArea className="min-h-0 flex-1">
           {entries.length === 0 ? (
             <div className="px-3 py-6 text-center text-[11px] text-muted-foreground/50">
               {loading ? "Loading changes..." : "No uncommitted changes"}

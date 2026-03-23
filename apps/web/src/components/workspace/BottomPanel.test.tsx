@@ -39,13 +39,14 @@ describe("BottomPanel", () => {
     );
   };
 
-  it("renders Terminal, Debug Console, and Output tab buttons", () => {
+  it("renders Setup Script, Terminal, Run, and Debug Console tab buttons", () => {
     act(() => {
       root.render(<BottomPanel {...baseProps} />);
     });
+    expect(container.textContent).toContain("Setup Script");
     expect(container.textContent).toContain("Terminal");
+    expect(container.textContent).toContain("Run");
     expect(container.textContent).toContain("Debug Console");
-    expect(container.textContent).toContain("Output");
   });
 
   it("renders collapse/expand button", () => {
@@ -72,11 +73,14 @@ describe("BottomPanel", () => {
     const buttons = container.querySelectorAll("button");
     const debugTab = Array.from(buttons).find((b) => b.textContent?.includes("Debug Console"));
     if (debugTab) {
-      act(() => debugTab.click());
+      act(() => {
+        debugTab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      });
     }
+    expect(onTabChange).toHaveBeenCalledWith("debug");
   });
 
-  it("shows output count badge when scriptOutputs has entries", () => {
+  it("shows setup badge count when setup script outputs exist", () => {
     const scriptOutputs = [
       {
         id: "1",
@@ -92,7 +96,15 @@ describe("BottomPanel", () => {
     act(() => {
       root.render(<BottomPanel {...baseProps} scriptOutputs={scriptOutputs} />);
     });
+    expect(container.textContent).toContain("Setup Script");
     expect(container.textContent).toContain("1");
+  });
+
+  it("shows run empty state when no run session is active", () => {
+    act(() => {
+      root.render(<BottomPanel {...baseProps} activeTab="run" />);
+    });
+    expect(container.textContent).toContain("No run session active.");
   });
 
   it("toggles collapsed state when collapse button clicked", () => {
