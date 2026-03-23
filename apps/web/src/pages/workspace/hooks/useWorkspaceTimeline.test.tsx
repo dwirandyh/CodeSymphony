@@ -227,6 +227,29 @@ describe("useWorkspaceTimeline", () => {
     expect(exploreItems).toHaveLength(0);
   });
 
+  it("keeps worktree diff events out of explore activity cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "delete file"),
+      makeMessage("m2", 2, "assistant", "Deleted the top-level README."),
+    ];
+    const events = [
+      makeEvent(0, "tool.finished", {
+        source: "worktree.diff",
+        summary: "Edited 1 file",
+        changedFiles: ["README.md"],
+        diff: "diff --git a/README.md b/README.md\n-Read the docs\n-find the repo\n",
+      }, "m2"),
+      makeEvent(1, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+    const assistantMessages = items.filter((item) => item.kind === "message" && item.message.role === "assistant");
+
+    expect(exploreItems).toHaveLength(0);
+    expect(assistantMessages).toHaveLength(1);
+  });
+
   it("keeps pure explore bash chains in subagent activity", () => {
     const messages = [
       makeMessage("m1", 1, "user", "inspect files"),

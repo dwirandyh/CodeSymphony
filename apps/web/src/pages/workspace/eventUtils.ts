@@ -257,6 +257,51 @@ export function eventPayloadText(event: ChatEvent): string {
   return JSON.stringify(event.payload ?? {}).toLowerCase();
 }
 
+function eventClassificationText(event: ChatEvent): string {
+  if (isWorktreeDiffEvent(event) || isMetadataToolEvent(event)) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      parts.push(trimmed);
+    }
+  };
+
+  const payload = event.payload;
+  push(payload.toolName);
+  push(payload.summary);
+  push(payload.command);
+  push(payload.searchParams);
+  push(payload.file_path);
+  push(payload.filePath);
+  push(payload.path);
+  push(payload.editTarget);
+  push(payload.target);
+
+  const toolInput = isRecord(payload.toolInput) ? payload.toolInput : null;
+  if (toolInput) {
+    push(toolInput.toolName);
+    push(toolInput.command);
+    push(toolInput.searchParams);
+    push(toolInput.file_path);
+    push(toolInput.filePath);
+    push(toolInput.path);
+    push(toolInput.editTarget);
+    push(toolInput.target);
+    push(toolInput.pattern);
+    push(toolInput.query);
+  }
+
+  return parts.join(" ").toLowerCase();
+}
+
 export function isReadToolEvent(event: ChatEvent): boolean {
   if (event.type === "chat.failed" || event.type === "permission.requested" || event.type === "permission.resolved") {
     return false;
@@ -266,7 +311,7 @@ export function isReadToolEvent(event: ChatEvent): boolean {
     return false;
   }
 
-  return READ_TOOL_PATTERN.test(eventPayloadText(event));
+  return READ_TOOL_PATTERN.test(eventClassificationText(event));
 }
 
 export function isSearchToolEvent(event: ChatEvent): boolean {
@@ -278,7 +323,7 @@ export function isSearchToolEvent(event: ChatEvent): boolean {
     return false;
   }
 
-  return SEARCH_TOOL_PATTERN.test(eventPayloadText(event));
+  return SEARCH_TOOL_PATTERN.test(eventClassificationText(event));
 }
 
 // ── Event data extraction ──
