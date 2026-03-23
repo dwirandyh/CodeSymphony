@@ -13,9 +13,11 @@ import type {
   ExternalApp,
   FileEntry,
   FilesystemBrowseResponse,
+  GitBranchDiffSummary,
   GitCommitInput,
   GitDiff,
   GitStatus,
+  RepositoryReviewState,
   ModelProvider,
   OpenInAppInput,
   OpenWorktreeFileInput,
@@ -163,12 +165,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   const payload = await response.json().catch(() => null);
-  const debug = await readResponseDebugInfo(response);
 
   if (!response.ok) {
     throw new Error(payload?.error ?? "Request failed");
   }
 
+  if (payload && typeof payload === "object" && "data" in payload) {
+    return extractDataEnvelope<T>(payload);
+  }
+
+  const debug = await readResponseDebugInfo(response);
   return extractDataEnvelope<T>(payload, debug);
 }
 
@@ -189,6 +195,13 @@ export const api = {
     }),
   listBranches: (repositoryId: string) =>
     request<string[]>(`/repositories/${repositoryId}/branches`),
+  getRepositoryReviews: (repositoryId: string) =>
+    request<RepositoryReviewState>(`/repositories/${repositoryId}/reviews`),
+  getOrCreatePrMrThread: (worktreeId: string) =>
+    request<ChatThread>(`/worktrees/${worktreeId}/pr-mr-thread`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   deleteRepository: async (repositoryId: string) => {
     const response = await runtimeFetch(`/repositories/${repositoryId}`, {
       method: "DELETE",
@@ -285,11 +298,6 @@ export const api = {
   listThreads: (worktreeId: string) => request<ChatThread[]>(`/worktrees/${worktreeId}/threads`),
   createThread: (worktreeId: string, input: CreateChatThreadInput = {}) =>
     request<ChatThread>(`/worktrees/${worktreeId}/threads`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
-  createRepositoryThread: (repositoryId: string, input: CreateChatThreadInput = {}) =>
-    request<ChatThread>(`/repositories/${repositoryId}/threads`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
@@ -398,6 +406,8 @@ export const api = {
   },
   getGitStatus: (worktreeId: string) =>
     request<GitStatus>(`/worktrees/${worktreeId}/git/status`),
+  getGitBranchDiffSummary: (worktreeId: string) =>
+    request<GitBranchDiffSummary>(`/worktrees/${worktreeId}/git/branch-diff-summary`),
   getGitDiff: (worktreeId: string, opts?: { filePath?: string }) => {
     const params = opts?.filePath ? `?filePath=${encodeURIComponent(opts.filePath)}` : "";
     return request<GitDiff>(`/worktrees/${worktreeId}/git/diff${params}`);

@@ -44,6 +44,8 @@ describe("PATCH /api/threads/:id/title", () => {
       id: "thread-1",
       worktreeId: "wt-1",
       title: "Investigate SSE reconnect",
+      kind: "default",
+      permissionProfile: "default",
       titleEditedManually: true,
       claudeSessionId: null,
       active: false,

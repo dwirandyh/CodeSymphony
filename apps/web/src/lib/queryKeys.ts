@@ -1,9 +1,12 @@
 export const queryKeys = {
   repositories: {
     all: ["repositories"] as const,
+    reviews: (repositoryId: string) => ["repositories", repositoryId, "reviews"] as const,
   },
   worktrees: {
     gitStatus: (worktreeId: string) => ["worktrees", worktreeId, "gitStatus"] as const,
+    gitBranchDiffSummary: (worktreeId: string, baseBranch: string) =>
+      ["worktrees", worktreeId, "gitBranchDiffSummary", baseBranch] as const,
     gitDiff: (worktreeId: string, filePath?: string) =>
       ["worktrees", worktreeId, "gitDiff", filePath ?? "__all__"] as const,
     fileIndex: (worktreeId: string) => ["worktrees", worktreeId, "fileIndex"] as const,

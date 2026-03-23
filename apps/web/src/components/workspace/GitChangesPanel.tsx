@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { Dot, ExternalLink, Eye, Plus, Minus, RefreshCw, Undo2, X, Loader2 } from "lucide-react";
-import type { GitChangeEntry } from "@codesymphony/shared-types";
+import { Dot, ExternalLink, Eye, GitPullRequestArrow, Plus, Minus, RefreshCw, Undo2, X, Loader2 } from "lucide-react";
+import type { GitChangeEntry, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Card } from "../ui/card";
@@ -23,6 +23,12 @@ interface GitChangesPanelProps {
   onSelectFile?: (path: string) => void;
   onDiscardChange?: (path: string) => void;
   onOpenFile?: (path: string) => void;
+  reviewKind?: ReviewKind | null;
+  reviewRef?: ReviewRef | null;
+  prMrActionDisabled?: boolean;
+  prMrActionTitle?: string;
+  prMrActionBusy?: boolean;
+  onPrMrAction?: () => void;
 }
 
 const STATUS_CONFIG: Record<string, { icon: any; className: string }> = {
@@ -53,6 +59,12 @@ export function GitChangesPanel({
   onSelectFile,
   onDiscardChange,
   onOpenFile,
+  reviewKind,
+  reviewRef,
+  prMrActionDisabled,
+  prMrActionTitle,
+  prMrActionBusy,
+  onPrMrAction,
 }: GitChangesPanelProps) {
   const [commitMessage, setCommitMessage] = useState("");
 
@@ -61,6 +73,12 @@ export function GitChangesPanel({
     setCommitMessage("");
   };
 
+  const prMrActionLabel = reviewRef
+    ? `Open ${reviewRef.display}`
+    : reviewKind === "mr"
+      ? "Create MR"
+      : "Create PR";
+
   return (
     <Card className="flex h-full flex-col overflow-hidden border-0 bg-transparent shadow-none">
       {/* Header */}
@@ -68,15 +86,30 @@ export function GitChangesPanel({
         <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
           Source Control
         </span>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
-          onClick={onClose}
-          aria-label="Close Source Control"
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
+        <div className="flex items-center gap-1">
+          {onPrMrAction && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1 px-2 text-[10px] text-muted-foreground/80 hover:text-foreground"
+              onClick={onPrMrAction}
+              disabled={prMrActionDisabled || prMrActionBusy}
+              title={prMrActionTitle ?? prMrActionLabel}
+            >
+              <GitPullRequestArrow className="h-3 w-3" />
+              <span>{prMrActionBusy ? "Working..." : prMrActionLabel}</span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
+            onClick={onClose}
+            aria-label="Close Source Control"
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       <Separator className="opacity-20" />
@@ -171,13 +204,22 @@ export function GitChangesPanel({
 
                 return (
                   <div key={entry.path} className="group relative">
-                    <button
-                      type="button"
+                    <div
                       role="option"
+                      tabIndex={0}
                       aria-selected={isSelected}
                       onClick={() => onSelectFile?.(entry.path)}
+                      onKeyDown={(e) => {
+                        if (e.target !== e.currentTarget) {
+                          return;
+                        }
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSelectFile?.(entry.path);
+                        }
+                      }}
                       className={cn(
-                        "flex w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/40",
+                        "flex w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 py-1.5 text-left transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                         isSelected && "bg-secondary/60 ring-[0.5px] ring-foreground/10",
                         isDeleted && "hover:bg-red-500/5"
                       )}
@@ -198,7 +240,7 @@ export function GitChangesPanel({
 
                       <div className="relative ml-auto flex shrink-0 items-center justify-end">
                         {/* Indicators — always visible */}
-                        <div className="flex items-center gap-2 transition-opacity group-hover:opacity-0 group-hover:pointer-events-none">
+                        <div className="flex items-center gap-2 transition-opacity group-hover:opacity-0 group-hover:pointer-events-none group-focus-within:opacity-0 group-focus-within:pointer-events-none">
                           {(entry.insertions > 0 || entry.deletions > 0) && (
                             <div className="flex items-center gap-1.5 text-[10px] font-medium whitespace-nowrap">
                               {entry.insertions > 0 && (
@@ -222,7 +264,7 @@ export function GitChangesPanel({
                         </div>
 
                         {/* Hover actions (visible on hover) */}
-                        <div className="absolute inset-0 flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                        <div className="absolute inset-0 flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                           <Button
                             variant="ghost"
                             size="icon"
@@ -249,7 +291,7 @@ export function GitChangesPanel({
                           </Button>
                         </div>
                       </div>
-                    </button>
+                    </div>
                   </div>
                 );
               })}

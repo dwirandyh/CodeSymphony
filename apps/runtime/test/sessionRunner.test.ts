@@ -586,6 +586,156 @@ describe("tool instrumentation", () => {
     expect(decisionEvent?.decision).toBe("auto_allow");
   });
 
+  it("auto-allows safe git/gh/glab review command chains only in review threads", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
+    const decisions: Array<{ requestId: string; behavior: string }> = [];
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        const reviewCommands = [
+          { requestId: "tool-review-git", command: "git status", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-gh", command: "gh pr create --fill", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-glab", command: "glab mr create --fill --yes", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-gh-heredoc", command: "gh pr create --title \"test\" --body \"$(cat <<'EOF'\nsummary\nEOF\n)\"", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-glab-heredoc", command: "glab mr create --title \"test\" --description \"$(cat <<'EOF'\nsummary\nEOF\n)\"", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-gh", command: "git push && gh pr create --fill", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-glab", command: "git push && glab mr create --fill --yes", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-gh-heredoc", command: "git push && gh pr create --title \"test\" --body \"$(cat <<'EOF'\nsummary\nEOF\n)\"", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-or", command: "git push || gh pr create --fill", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-chain-semicolon", command: "git push; glab mr create --fill --yes", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-mixed", command: "git push && npm test", blockedPath: "/tmp/repo/package.json" },
+          { requestId: "tool-review-pipe", command: "git status | cat", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-redirect", command: "gh pr create > out.txt", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-backticks", command: "git status `whoami`", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-subshell", command: "git status $(whoami)", blockedPath: "/tmp/repo/.git" },
+          { requestId: "tool-review-multiline", command: "git status\ngh pr create --fill", blockedPath: "/tmp/repo/.git" },
+        ];
+
+        for (const reviewCommand of reviewCommands) {
+          decisions.push({
+            requestId: reviewCommand.requestId,
+            behavior: (await canUseTool("Bash", { command: reviewCommand.command }, {
+              toolUseID: reviewCommand.requestId,
+              blockedPath: reviewCommand.blockedPath,
+              decisionReason: "Needs approval",
+              suggestions: [{ type: "addRules" }],
+            })).behavior,
+          });
+        }
+
+        yield { type: "system", subtype: "init", session_id: "session-review-git" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "review thread",
+      sessionId: null,
+      cwd: process.cwd(),
+      permissionProfile: "review_git",
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+      onThinking: () => { },
+    });
+
+    expect(decisions).toEqual([
+      { requestId: "tool-review-git", behavior: "allow" },
+      { requestId: "tool-review-gh", behavior: "allow" },
+      { requestId: "tool-review-glab", behavior: "allow" },
+      { requestId: "tool-review-gh-heredoc", behavior: "allow" },
+      { requestId: "tool-review-glab-heredoc", behavior: "allow" },
+      { requestId: "tool-review-chain-gh", behavior: "allow" },
+      { requestId: "tool-review-chain-glab", behavior: "allow" },
+      { requestId: "tool-review-chain-gh-heredoc", behavior: "allow" },
+      { requestId: "tool-review-chain-or", behavior: "allow" },
+      { requestId: "tool-review-chain-semicolon", behavior: "allow" },
+      { requestId: "tool-review-mixed", behavior: "deny" },
+      { requestId: "tool-review-pipe", behavior: "deny" },
+      { requestId: "tool-review-redirect", behavior: "deny" },
+      { requestId: "tool-review-backticks", behavior: "deny" },
+      { requestId: "tool-review-subshell", behavior: "deny" },
+      { requestId: "tool-review-multiline", behavior: "deny" },
+    ]);
+    expect(onPermissionRequest).toHaveBeenCalledTimes(6);
+    expect(onPermissionRequest).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      requestId: "tool-review-mixed",
+      toolName: "Bash",
+    }));
+    expect(onPermissionRequest).toHaveBeenNthCalledWith(6, expect.objectContaining({
+      requestId: "tool-review-multiline",
+      toolName: "Bash",
+    }));
+  });
+
+  it("keeps git review commands on the permission path outside review threads", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
+    const decisions: string[] = [];
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        decisions.push((await canUseTool("Bash", { command: "git push && gh pr create --fill" }, {
+          toolUseID: "tool-default-review-chain",
+          blockedPath: "/tmp/repo/.git",
+          decisionReason: "Needs approval",
+          suggestions: [{ type: "addRules" }],
+        })).behavior);
+
+        yield { type: "system", subtype: "init", session_id: "session-default-review-git" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })();
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "default thread",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+      onThinking: () => { },
+    });
+
+    expect(decisions).toEqual(["deny"]);
+    expect(onPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(onPermissionRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: "tool-default-review-chain",
+      toolName: "Bash",
+    }));
+  });
+
   it("keeps non-edit tools on permission request path", async () => {
     const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
 

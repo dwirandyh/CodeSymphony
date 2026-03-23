@@ -18,6 +18,7 @@ import { createLogService } from "./services/logService.js";
 import { createFilesystemService } from "./services/filesystemService.js";
 import { createScriptStreamService } from "./services/scriptStreamService.js";
 import { createModelProviderService } from "./services/modelProviderService.js";
+import { createReviewService } from "./services/reviewService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -41,6 +42,7 @@ declare module "fastify" {
     filesystemService: ReturnType<typeof createFilesystemService>;
     scriptStreamService: ReturnType<typeof createScriptStreamService>;
     modelProviderService: ReturnType<typeof createModelProviderService>;
+    reviewService: ReturnType<typeof createReviewService>;
   }
 }
 
@@ -56,6 +58,7 @@ function createApp() {
   const filesystemService = createFilesystemService();
   const scriptStreamService = createScriptStreamService();
   const modelProviderService = createModelProviderService(prisma);
+  const reviewService = createReviewService(prisma);
   const chatService = createChatService({
     prisma,
     eventHub,
@@ -76,6 +79,7 @@ function createApp() {
   app.decorate("filesystemService", filesystemService);
   app.decorate("scriptStreamService", scriptStreamService);
   app.decorate("modelProviderService", modelProviderService);
+  app.decorate("reviewService", reviewService);
 
   app.register(cors, {
     origin: true,

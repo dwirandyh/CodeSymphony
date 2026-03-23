@@ -9,12 +9,14 @@ import { useThreadEvents } from "./useThreadEvents";
 import { useThreadMessages } from "./useThreadMessages";
 import { useThreadSnapshot } from "./useThreadSnapshot";
 import { useGitStatus } from "./useGitStatus";
+import { useGitBranchDiffSummary } from "./useGitBranchDiffSummary";
 import { useGitDiff } from "./useGitDiff";
 import { useFilesystemBrowse } from "./useFilesystemBrowse";
 import { useInstalledApps } from "./useInstalledApps";
 import { useFileContents } from "./useFileContents";
 import { useFileIndexQuery } from "./useFileIndexQuery";
 import { useWorktreeStatuses } from "./useWorktreeStatuses";
+import { useRepositoryReviews } from "./useRepositoryReviews";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -24,11 +26,13 @@ vi.mock("../../lib/api", () => ({
     listMessagesPage: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
     getThreadSnapshot: vi.fn().mockResolvedValue({ messages: [], events: [] }),
     getGitStatus: vi.fn().mockResolvedValue({ entries: [], branch: "main" }),
+    getGitBranchDiffSummary: vi.fn().mockResolvedValue({ branch: "feature-x", baseBranch: "main", insertions: 10, deletions: 2, filesChanged: 1, available: true }),
     getGitDiff: vi.fn().mockResolvedValue({ diff: "", summary: "" }),
     browseFilesystem: vi.fn().mockResolvedValue({ entries: [] }),
     getInstalledApps: vi.fn().mockResolvedValue([]),
     getFileContents: vi.fn().mockResolvedValue({ oldContent: "", newContent: "" }),
     getFileIndex: vi.fn().mockResolvedValue([]),
+    getRepositoryReviews: vi.fn().mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} }),
   },
 }));
 
@@ -124,6 +128,11 @@ describe("query hooks", () => {
     expect(container.textContent).toBe("ok");
   });
 
+  it("useGitBranchDiffSummary renders", () => {
+    renderHook(useGitBranchDiffSummary as (...a: unknown[]) => unknown, ["wt-1", "main"]);
+    expect(container.textContent).toBe("ok");
+  });
+
   it("useGitDiff renders", () => {
     renderHook(useGitDiff as (...a: unknown[]) => unknown, ["wt-1"]);
     expect(container.textContent).toBe("ok");
@@ -151,6 +160,11 @@ describe("query hooks", () => {
 
   it("useWorktreeStatuses renders", () => {
     renderHook(useWorktreeStatuses as (...a: unknown[]) => unknown, [repoFixture]);
+    expect(container.textContent).toBe("ok");
+  });
+
+  it("useRepositoryReviews renders", () => {
+    renderHook(useRepositoryReviews as (...a: unknown[]) => unknown, ["r1"]);
     expect(container.textContent).toBe("ok");
   });
 });

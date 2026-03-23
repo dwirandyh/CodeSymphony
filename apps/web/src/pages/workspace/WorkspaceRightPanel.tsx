@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { GitBranch } from "lucide-react";
+import type { ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { GitChangesPanel } from "../../components/workspace/GitChangesPanel";
 import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
@@ -15,6 +16,12 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   onSelectDiffFile,
   onUpdatePanel,
   onOpenReadFile,
+  reviewKind,
+  reviewRef,
+  prMrActionDisabled,
+  prMrActionTitle,
+  prMrActionBusy,
+  onPrMrAction,
 }: {
   rightPanelId: string | null;
   gitChanges: GitChangesData;
@@ -23,6 +30,12 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   onSelectDiffFile: (filePath: string) => void;
   onUpdatePanel: (panel: "git" | undefined) => void;
   onOpenReadFile: (path: string) => void | Promise<void>;
+  reviewKind?: ReviewKind | null;
+  reviewRef?: ReviewRef | null;
+  prMrActionDisabled?: boolean;
+  prMrActionTitle?: string;
+  prMrActionBusy?: boolean;
+  onPrMrAction?: () => void;
 }) {
   const {
     sidebarWidth: rightPanelWidth,
@@ -81,6 +94,12 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
                 onSelectFile={onSelectDiffFile}
                 onDiscardChange={(path) => void gitChanges.discardChange(path)}
                 onOpenFile={(path) => void onOpenReadFile(path)}
+                reviewKind={reviewKind}
+                reviewRef={reviewRef}
+                prMrActionDisabled={prMrActionDisabled}
+                prMrActionTitle={prMrActionTitle}
+                prMrActionBusy={prMrActionBusy}
+                onPrMrAction={onPrMrAction}
               />
             )}
           </aside>

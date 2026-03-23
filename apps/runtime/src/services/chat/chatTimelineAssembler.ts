@@ -1,9 +1,9 @@
-import type { ChatEvent, ChatMessage, ChatTimelineItem, ChatTimelineSummary } from "@codesymphony/shared-types";
+import type { AssistantRenderHint, ChatEvent, ChatMessage, ChatTimelineItem, ChatTimelineSummary } from "@codesymphony/shared-types";
 import { appendRuntimeDebugLog } from "../../routes/debug.js";
-import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "../../../../web/src/pages/workspace/constants.ts";
-import { extractBashRuns } from "../../../../web/src/pages/workspace/bashUtils.ts";
-import { extractEditedRuns } from "../../../../web/src/pages/workspace/editUtils.ts";
-import { extractSubagentExploreGroups } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/subagentExploreExtraction.ts";
+import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "../../../../web/src/pages/workspace/constants";
+import { extractBashRuns } from "../../../../web/src/pages/workspace/bashUtils";
+import { extractEditedRuns } from "../../../../web/src/pages/workspace/editUtils";
+import { extractSubagentExploreGroups } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/subagentExploreExtraction";
 import {
   buildActivityIntroText,
   buildActivitySteps,
@@ -22,9 +22,9 @@ import {
   parseTimestamp,
   payloadStringOrNull,
   promptLooksLikeFileRead,
-} from "../../../../web/src/pages/workspace/eventUtils.ts";
-import { computeMessageAnchorIdxById } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineAnchorUtils.ts";
-import { buildThinkingRounds, mergeThinkingRounds, insertThinkingItems } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineThinkingUtils.ts";
+} from "../../../../web/src/pages/workspace/eventUtils";
+import { computeMessageAnchorIdxById } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineAnchorUtils";
+import { buildThinkingRounds, mergeThinkingRounds, insertThinkingItems } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineThinkingUtils";
 import {
   buildInlineInserts,
   buildSegmentBuckets,
@@ -33,14 +33,14 @@ import {
   fixPunctuationSplits,
   processInlineInsertLoop,
   filterPostPlanDeltaEvents,
-} from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineInlineInserts.ts";
+} from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineInlineInserts";
 import {
   processOrphanSubagentGroups,
   processOrphanExploreGroups,
   processOrphanToolEvents,
   processUnassignedSemanticEvents,
   processFailedEvents,
-} from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineOrphans.ts";
+} from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineOrphans";
 
 const SUBAGENT_SUMMARY_REGEX = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
 const MAIN_SUMMARY_REGEX = /###main(?:\s+agent)? summary(?:\s+start)?\n?[\s\S]*?###main(?:\s+agent)? summary end\n?/g;
@@ -355,7 +355,7 @@ export function buildTimelineFromSeed(params: {
       && refs.stickyRawFallbackMessageIds.has(message.id);
     const isStreamingMessage = message.role === "assistant" && refs.streamingMessageIds.has(message.id) && !isCompleted;
 
-    let renderHint: ChatTimelineItem["renderHint"];
+    let renderHint: AssistantRenderHint | undefined;
     let rawFileLanguage: string | undefined;
     if (message.role === "assistant") {
       if (isLikelyDiffContent(message.content)) {
@@ -752,7 +752,6 @@ function getTimelineItemKey(item: ChatTimelineItem): string {
     case "message":
       return `message:${item.message.id}`;
     case "plan-file-output":
-    case "bash-command":
     case "edited-diff":
     case "explore-activity":
     case "subagent-activity":
@@ -760,7 +759,7 @@ function getTimelineItemKey(item: ChatTimelineItem): string {
     case "error":
       return `${item.kind}:${item.id}`;
     case "tool":
-      return `tool:${item.event.id}`;
+      return `tool:${item.id}`;
     case "activity":
       return `activity:${item.messageId}`;
   }

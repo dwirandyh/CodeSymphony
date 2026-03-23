@@ -1,10 +1,13 @@
-import type { ExploreActivityEntry } from "../../components/workspace/chat-message-list";
+import type {
+  ChatTimelineActivityStep as ActivityTraceStep,
+  ChatTimelineExploreActivityEntry as ExploreActivityEntry,
+} from "@codesymphony/shared-types";
 
 export type StepCandidate = {
   key: string | null;
   priority: number;
   idx: number;
-  step: import("../../components/workspace/chat-message-list").ActivityTraceStep;
+  step: ActivityTraceStep;
 };
 
 export type BashRun = {

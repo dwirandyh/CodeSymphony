@@ -8,13 +8,14 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
+  AttachmentInput,
   ChatEvent,
   ChatMessage,
   ChatMode,
   ChatThread,
-  AttachmentInput,
+  ChatTimelineItem,
+  ChatTimelineSummary,
 } from "@codesymphony/shared-types";
-import type { ChatTimelineItem, ChatTimelineSummary } from "../../../../components/workspace/chat-message-list";
 import { api } from "../../../../lib/api";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { queryKeys } from "../../../../lib/queryKeys";
@@ -155,6 +156,7 @@ export function useChatSession(
   options?: UseChatSessionOptions,
 ) {
   const queryClient = useQueryClient();
+  const repositoryId = options?.repositoryId ?? null;
   const timelineEnabled = options?.timelineEnabled !== false;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
@@ -177,6 +179,7 @@ export function useChatSession(
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
   const creatingThreadRef = useRef(false);
+  const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
   const prevThreadIdRef = useRef<string | null>(null);
   const prevSeedThreadRef = useRef<string | null>(null);
   const prevRequestedThreadIdRef = useRef<string | null>(null);
@@ -216,10 +219,19 @@ export function useChatSession(
     prevWorktreeIdRef2.current = selectedWorktreeId;
 
     setThreads((current) => {
-      if (current.length === queriedThreads.length && current.every((t, i) => t.id === queriedThreads[i].id && t.title === queriedThreads[i].title && t.claudeSessionId === queriedThreads[i].claudeSessionId && t.active === queriedThreads[i].active && t.updatedAt === queriedThreads[i].updatedAt)) {
+      const optimisticCreatedThreadIds = optimisticCreatedThreadIdsRef.current;
+      const optimisticThreads = current.filter((thread) => optimisticCreatedThreadIds.has(thread.id));
+      const mergedThreads = [...queriedThreads];
+      for (const optimisticThread of optimisticThreads) {
+        if (!mergedThreads.some((thread) => thread.id === optimisticThread.id)) {
+          mergedThreads.push(optimisticThread);
+        }
+      }
+
+      if (current.length === mergedThreads.length && current.every((t, i) => t.id === mergedThreads[i].id && t.title === mergedThreads[i].title && t.claudeSessionId === mergedThreads[i].claudeSessionId && t.active === mergedThreads[i].active && t.updatedAt === mergedThreads[i].updatedAt)) {
         return current;
       }
-      return queriedThreads;
+      return mergedThreads;
     });
 
     const requestedThreadId = options?.desiredThreadId ?? null;
@@ -295,6 +307,9 @@ export function useChatSession(
     waitingAssistant,
   });
   const selectedThreadIsRunning = selectedThreadUiStatus === "running";
+  const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
+    (thread) => thread.id === selectedThreadId && thread.kind === "review",
+  );
 
   const { data: queriedThreadSnapshot } = useThreadSnapshot(selectedThreadId);
 
@@ -387,6 +402,14 @@ export function useChatSession(
     setWaitingAssistant((current) => (current?.threadId === threadId ? null : current));
   }
 
+  function invalidateRepositoryReviews() {
+    if (!repositoryId) {
+      return;
+    }
+
+    void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
+  }
+
   useEffect(() => {
     const willNotify = prevThreadIdRef.current !== selectedThreadId;
     if (willNotify) {
@@ -398,6 +421,8 @@ export function useChatSession(
   useThreadEventStream({
     selectedThreadId,
     selectedWorktreeId,
+    repositoryId,
+    selectedThreadIsPrMr,
     setMessages,
     setEvents,
     setThreads,
@@ -432,34 +457,31 @@ export function useChatSession(
   }, [events, selectedThreadId]);
 
   async function createThreadInCurrentContext(title: string): Promise<{ created: ChatThread; worktreeId: string } | null> {
-    if (selectedWorktreeId) {
-      const created = await api.createThread(selectedWorktreeId, { title });
-      return { created, worktreeId: selectedWorktreeId };
+    if (!selectedWorktreeId) {
+      return null;
     }
 
-    const repositoryId = options?.selectedRepositoryId ?? null;
-    if (!repositoryId) return null;
-
-    const created = await api.createRepositoryThread(repositoryId, { title });
-    options?.onWorktreeResolved?.(created.worktreeId);
-    void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
-    return { created, worktreeId: created.worktreeId };
+    const created = await api.createThread(selectedWorktreeId, { title });
+    return { created, worktreeId: selectedWorktreeId };
   }
 
   async function createAdditionalThread() {
     onError(null);
     try {
       const result = await createThreadInCurrentContext(`Thread ${threads.length + 1}`);
-      if (!result) return;
+      if (!result) return null;
       const { created, worktreeId } = result;
+      optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         return [...current, created];
       });
       setSelectedThreadId(created.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
+      return created;
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create thread");
+      return null;
     }
   }
 
@@ -469,6 +491,7 @@ export function useChatSession(
       const result = await createThreadInCurrentContext(title);
       if (!result) return;
       const { created, worktreeId } = result;
+      optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         return [...current, created];
@@ -486,7 +509,55 @@ export function useChatSession(
         setSendingMessage(false);
       }
     } catch (e) {
-      onError(e instanceof Error ? e.message : "Failed to create review thread");
+      onError(e instanceof Error ? e.message : "Failed to create thread");
+    }
+  }
+
+  async function createOrSelectPrMrThreadAndSendMessage(content: string, mode: ChatMode = "default") {
+    if (!selectedWorktreeId) {
+      onError("Worktree is not selected");
+      return null;
+    }
+
+    onError(null);
+    setSendingMessage(true);
+    try {
+      const created = await api.getOrCreatePrMrThread(selectedWorktreeId);
+      optimisticCreatedThreadIdsRef.current.add(created.id);
+      setThreads((current) => {
+        const existingIndex = current.findIndex((thread) => thread.id === created.id);
+        if (existingIndex === -1) {
+          return [...current, created];
+        }
+        const updated = [...current];
+        updated[existingIndex] = created;
+        return updated;
+      });
+      setSelectedThreadId(created.id);
+      queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(selectedWorktreeId), (current) => {
+        if (!current) {
+          return current;
+        }
+        const existingIndex = current.findIndex((thread) => thread.id === created.id);
+        if (existingIndex === -1) {
+          return [...current, created];
+        }
+        const updated = [...current];
+        updated[existingIndex] = created;
+        return updated;
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      invalidateRepositoryReviews();
+      startWaitingAssistant(created.id);
+      await api.sendMessage(created.id, { content, mode, attachments: [] });
+      invalidateRepositoryReviews();
+      return created;
+    } catch (e) {
+      setWaitingAssistant(null);
+      onError(e instanceof Error ? e.message : "Failed to create PR/MR thread");
+      return null;
+    } finally {
+      setSendingMessage(false);
     }
   }
 
@@ -494,6 +565,7 @@ export function useChatSession(
     onError(null);
     setClosingThreadId(threadId);
     try {
+      const closedThreadWasPrMr = threads.some((thread) => thread.id === threadId && thread.kind === "review");
       await api.deleteThread(threadId);
       setThreads((current) => {
         const updated = current.filter((t) => t.id !== threadId);
@@ -510,6 +582,9 @@ export function useChatSession(
       });
       if (selectedWorktreeId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+      }
+      if (closedThreadWasPrMr) {
+        invalidateRepositoryReviews();
       }
       clearThreadTrackingState(threadId);
     } catch (e) {
@@ -731,6 +806,7 @@ export function useChatSession(
 
     createAdditionalThread,
     createThreadAndSendMessage,
+    createOrSelectPrMrThreadAndSendMessage,
     closeThread,
     renameThreadTitle,
     submitMessage,
