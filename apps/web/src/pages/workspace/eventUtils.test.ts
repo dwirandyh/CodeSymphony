@@ -279,6 +279,19 @@ describe("isReadToolEvent", () => {
     const event = makeEvent({ type: "permission.requested", payload: { toolName: "Read" } });
     expect(isReadToolEvent(event)).toBe(false);
   });
+
+  it("returns false for worktree diff events even when diff content contains read-like words", () => {
+    const event = makeEvent({
+      type: "tool.finished",
+      payload: {
+        source: "worktree.diff",
+        summary: "Edited 1 file",
+        diff: "diff --git a/README.md b/README.md\n-Read the docs\n-open the app\n-cat package.json\n",
+      },
+    });
+
+    expect(isReadToolEvent(event)).toBe(false);
+  });
 });
 
 describe("isSearchToolEvent", () => {
@@ -294,6 +307,19 @@ describe("isSearchToolEvent", () => {
 
   it("returns false for bash events", () => {
     const event = makeEvent({ type: "tool.finished", payload: { toolName: "bash", isBash: true } });
+    expect(isSearchToolEvent(event)).toBe(false);
+  });
+
+  it("returns false for worktree diff events even when diff content contains search-like words", () => {
+    const event = makeEvent({
+      type: "tool.finished",
+      payload: {
+        source: "worktree.diff",
+        summary: "Edited 1 file",
+        diff: "diff --git a/README.md b/README.md\n-find the repo\n-search the code\n-glob pattern\n",
+      },
+    });
+
     expect(isSearchToolEvent(event)).toBe(false);
   });
 });
@@ -777,6 +803,28 @@ describe("detectSemanticBoundaryFromEvents", () => {
       eventId: "e-bash-mixed",
       eventIdx: 4,
       eventType: "tool.started",
+    });
+  });
+
+  it("classifies worktree diff events as edited-diff before explore fallbacks", () => {
+    const boundary = detectSemanticBoundaryFromEvents([
+      makeEvent({
+        id: "e-diff",
+        idx: 5,
+        type: "tool.finished",
+        payload: {
+          source: "worktree.diff",
+          summary: "Edited 1 file",
+          diff: "diff --git a/README.md b/README.md\n-Read the docs\n-find the repo\n",
+        },
+      }),
+    ]);
+
+    expect(boundary).toEqual({
+      kind: "edited-diff",
+      eventId: "e-diff",
+      eventIdx: 5,
+      eventType: "tool.finished",
     });
   });
 });

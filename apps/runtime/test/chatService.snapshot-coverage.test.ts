@@ -269,6 +269,64 @@ describe("chatService snapshot", () => {
     );
   });
 
+  it("keeps worktree diff events out of runtime explore activity assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "delete file README.md",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "Deleted the top-level README.md.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "tool.finished" as const,
+        payload: {
+          source: "worktree.diff",
+          summary: "Edited 1 file",
+          changedFiles: ["README.md"],
+          diff: "diff --git a/README.md b/README.md\n-Read the docs\n-find the repo\n",
+        },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "chat.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(assembly.items.filter((item) => item.kind === "explore-activity")).toHaveLength(0);
+    expect(
+      assembly.items.filter((item) => item.kind === "message" && item.message.role === "assistant"),
+    ).toHaveLength(1);
+  });
+
   it("quarantines overlap-unresolved subagent explore events in runtime snapshot assembly", async () => {
     const messages = [
       {
