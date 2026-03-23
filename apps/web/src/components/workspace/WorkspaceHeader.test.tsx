@@ -13,6 +13,8 @@ const threads: ChatThread[] = [
     id: "thread-1",
     worktreeId: "wt-1",
     title: "Main Thread",
+    kind: "default",
+    permissionProfile: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active: false,
@@ -23,6 +25,8 @@ const threads: ChatThread[] = [
     id: "thread-2",
     worktreeId: "wt-1",
     title: "Secondary Thread",
+    kind: "default",
+    permissionProfile: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active: false,
@@ -163,4 +167,5 @@ describe("WorkspaceHeader", () => {
 
     expect(onCreateThread).toHaveBeenCalledTimes(1);
   });
+
 });

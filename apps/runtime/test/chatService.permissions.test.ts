@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-import type { ChatEvent } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatThreadPermissionProfile } from "@codesymphony/shared-types";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,7 +37,10 @@ async function resetDatabase(): Promise<void> {
   await prisma.repository.deleteMany();
 }
 
-async function seedThread(title = "Main Thread"): Promise<{ threadId: string; worktreePath: string }> {
+async function seedThread(
+  title = "Main Thread",
+  options?: { kind?: "default" | "review"; permissionProfile?: ChatThreadPermissionProfile },
+): Promise<{ threadId: string; worktreePath: string }> {
   const suffix = uniqueSuffix();
   const worktreePath = `/tmp/codesymphony-worktree-${suffix}`;
   const repository = await prisma.repository.create({
@@ -61,6 +64,8 @@ async function seedThread(title = "Main Thread"): Promise<{ threadId: string; wo
     data: {
       worktreeId: worktree.id,
       title,
+      kind: options?.kind ?? "default",
+      permissionProfile: options?.permissionProfile ?? (options?.kind === "review" ? "review_git" : "default"),
     },
   });
 
@@ -429,7 +434,8 @@ describe("chatService permission flow", () => {
 
   it("writes tool instrumentation logs with thread context", async () => {
     const runtimeLogService = createLogService();
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onToolInstrumentation, onText }) => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onToolInstrumentation, onText, permissionProfile }) => {
+      expect(permissionProfile).toBe("default");
       await onToolInstrumentation?.({
         stage: "requested",
         toolUseId: "tool-log-1",
@@ -481,6 +487,47 @@ describe("chatService permission flow", () => {
     expect((lifecycleEntry?.data as Record<string, unknown>).threadId).toBe(threadId);
     expect((lifecycleEntry?.data as Record<string, unknown>).toolUseId).toBe("tool-log-1");
     expect((anomalyEntry?.data as Record<string, unknown>).stage).toBe("anomaly");
+  });
+
+  it("creates or reuses dedicated PR/MR threads with review git profile", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({ output: "", sessionId: null })),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId, worktreePath } = await seedThread("PR / MR", { kind: "review", permissionProfile: "review_git" });
+    const existingThread = await prisma.chatThread.findUnique({ where: { id: threadId } });
+    const reused = await chatService.getOrCreatePrMrThread(existingThread!.worktreeId);
+
+    expect(reused.id).toBe(threadId);
+    expect(reused.kind).toBe("review");
+    expect(reused.permissionProfile).toBe("review_git");
+
+    const suffix = uniqueSuffix();
+    const repository = await prisma.repository.create({
+      data: {
+        name: `repo-review-${suffix}`,
+        rootPath: `/tmp/codesymphony-root-review-${suffix}`,
+        defaultBranch: "main",
+      },
+    });
+    const worktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "feature/review",
+        baseBranch: "main",
+        path: `${worktreePath}-new-${suffix}`,
+        status: "active",
+      },
+    });
+    mkdirSync(worktree.path, { recursive: true });
+
+    const created = await chatService.getOrCreatePrMrThread(worktree.id);
+    expect(created.kind).toBe("review");
+    expect(created.permissionProfile).toBe("review_git");
+    expect(created.title).toBe("PR / MR");
   });
 
   it("emits permission requested and proceeds with deny decision", async () => {

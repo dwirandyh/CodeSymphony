@@ -1,5 +1,5 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import type { AssistantRenderHint } from "../../../../components/workspace/chat-message-list";
+import type { AssistantRenderHint } from "@codesymphony/shared-types";
 import { SENTENCE_BOUNDARY_PATTERN } from "../../constants";
 import {
   hasSentenceBoundary,

@@ -191,10 +191,11 @@ describe("api", () => {
       expect(result).toEqual({ id: "t1" });
     });
 
-    it("creates repository thread", async () => {
+    it("gets or creates PR/MR thread", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "t1" }));
-      const result = await api.createRepositoryThread("r1");
+      const result = await api.getOrCreatePrMrThread("w1");
       expect(result).toEqual({ id: "t1" });
+      expect(mockFetch.mock.calls[0]?.[0]).toContain("/worktrees/w1/pr-mr-thread");
     });
 
     it("gets thread", async () => {
@@ -316,6 +317,12 @@ describe("api", () => {
     it("gets git status", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ branch: "main", entries: [] }));
       await api.getGitStatus("w1");
+    });
+
+    it("gets git branch diff summary", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ branch: "feature-x", baseBranch: "main", insertions: 10, deletions: 2, filesChanged: 1, available: true }));
+      await api.getGitBranchDiffSummary("w1");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/git/branch-diff-summary");
     });
 
     it("gets git diff", async () => {

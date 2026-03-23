@@ -43,6 +43,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   cwd,
   abortController,
   permissionMode,
+  permissionProfile,
   autoAcceptTools,
   model,
   providerApiKey,
@@ -89,6 +90,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     sessionId,
     permissionMode: permissionMode ?? "default",
     autoAcceptTools: Boolean(autoAcceptTools),
+    permissionProfile: permissionProfile ?? "default",
   };
 
   const state: SessionState = {
@@ -120,6 +122,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     state,
     permissionMode,
     autoAcceptTools,
+    permissionProfile,
   );
 
   const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;

@@ -52,10 +52,18 @@ export const RepositorySchema = z.object({
   worktrees: z.array(WorktreeSchema),
 });
 
+export const ChatThreadKindSchema = z.enum(["default", "review"]);
+export type ChatThreadKind = z.infer<typeof ChatThreadKindSchema>;
+
+export const ChatThreadPermissionProfileSchema = z.enum(["default", "review_git"]);
+export type ChatThreadPermissionProfile = z.infer<typeof ChatThreadPermissionProfileSchema>;
+
 export const ChatThreadSchema = z.object({
   id: z.string(),
   worktreeId: z.string(),
   title: z.string().min(1),
+  kind: ChatThreadKindSchema,
+  permissionProfile: ChatThreadPermissionProfileSchema,
   titleEditedManually: z.boolean(),
   claudeSessionId: z.string().nullable(),
   active: z.boolean(),
@@ -131,6 +139,19 @@ export const ChatTimelinePlanFileOutputItemSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+export const ChatTimelineReadFileEntrySchema = z.object({
+  label: z.string(),
+  openPath: z.string().nullable(),
+});
+
+export const ChatTimelineExploreActivityEntrySchema = z.object({
+  kind: z.enum(["read", "search"]),
+  label: z.string(),
+  openPath: z.string().nullable(),
+  pending: z.boolean(),
+  orderIdx: z.number().int(),
+});
+
 export const ChatTimelineActivityStepSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -148,21 +169,19 @@ export const ChatTimelineActivityItemSchema = z.object({
 
 export const ChatTimelineToolItemSchema = z.object({
   kind: z.literal("tool"),
-  event: ChatEventSchema,
-});
-
-export const ChatTimelineBashCommandItemSchema = z.object({
-  kind: z.literal("bash-command"),
   id: z.string(),
-  toolUseId: z.string(),
-  shell: z.literal("bash"),
-  command: z.string().nullable(),
-  summary: z.string().nullable(),
-  output: z.string().nullable(),
-  error: z.string().nullable(),
-  truncated: z.boolean(),
-  durationSeconds: z.number().nullable(),
-  status: z.enum(["running", "success", "failed"]),
+  event: ChatEventSchema.nullable(),
+  sourceEvents: z.array(ChatEventSchema).optional(),
+  toolUseId: z.string().optional(),
+  toolName: z.string().nullable().optional(),
+  shell: z.literal("bash").optional(),
+  command: z.string().nullable().optional(),
+  summary: z.string().nullable().optional(),
+  output: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+  truncated: z.boolean().optional(),
+  durationSeconds: z.number().nullable().optional(),
+  status: z.enum(["running", "success", "failed"]).optional(),
   rejectedByUser: z.boolean().optional(),
 });
 
@@ -181,14 +200,6 @@ export const ChatTimelineEditedDiffItemSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
-export const ChatTimelineExploreActivityEntrySchema = z.object({
-  kind: z.enum(["read", "search"]),
-  label: z.string(),
-  openPath: z.string().nullable(),
-  pending: z.boolean(),
-  orderIdx: z.number().int(),
-});
-
 export const ChatTimelineExploreActivityItemSchema = z.object({
   kind: z.literal("explore-activity"),
   id: z.string(),
@@ -199,10 +210,12 @@ export const ChatTimelineExploreActivityItemSchema = z.object({
 });
 
 export const ChatTimelineSubagentStepSchema = z.object({
-  id: z.string(),
+  toolUseId: z.string(),
+  toolName: z.string(),
   label: z.string(),
-  detail: z.string(),
-}).passthrough();
+  openPath: z.string().nullable(),
+  status: z.enum(["running", "success"]),
+});
 
 export const ChatTimelineSubagentActivityItemSchema = z.object({
   kind: z.literal("subagent-activity"),
@@ -237,7 +250,6 @@ export const ChatTimelineItemSchema = z.discriminatedUnion("kind", [
   ChatTimelinePlanFileOutputItemSchema,
   ChatTimelineActivityItemSchema,
   ChatTimelineToolItemSchema,
-  ChatTimelineBashCommandItemSchema,
   ChatTimelineEditedDiffItemSchema,
   ChatTimelineExploreActivityItemSchema,
   ChatTimelineSubagentActivityItemSchema,
@@ -250,7 +262,6 @@ export const ChatTimelineItemKindSchema = z.enum([
   "plan-file-output",
   "activity",
   "tool",
-  "bash-command",
   "edited-diff",
   "explore-activity",
   "subagent-activity",
@@ -295,6 +306,8 @@ const MAX_THREAD_TITLE_LENGTH = 48;
 
 export const CreateChatThreadInputSchema = z.object({
   title: z.string().trim().min(1).max(MAX_THREAD_TITLE_LENGTH).optional(),
+  kind: ChatThreadKindSchema.optional(),
+  permissionProfile: ChatThreadPermissionProfileSchema.optional(),
 });
 
 export const RenameChatThreadTitleInputSchema = z.object({
@@ -374,10 +387,10 @@ export type ChatEvent = z.infer<typeof ChatEventSchema>;
 export type ChatTimelineItemKind = z.infer<typeof ChatTimelineItemKindSchema>;
 export type ChatTimelineMessageItem = z.infer<typeof ChatTimelineMessageItemSchema>;
 export type ChatTimelinePlanFileOutputItem = z.infer<typeof ChatTimelinePlanFileOutputItemSchema>;
+export type ChatTimelineReadFileEntry = z.infer<typeof ChatTimelineReadFileEntrySchema>;
 export type ChatTimelineActivityStep = z.infer<typeof ChatTimelineActivityStepSchema>;
 export type ChatTimelineActivityItem = z.infer<typeof ChatTimelineActivityItemSchema>;
 export type ChatTimelineToolItem = z.infer<typeof ChatTimelineToolItemSchema>;
-export type ChatTimelineBashCommandItem = z.infer<typeof ChatTimelineBashCommandItemSchema>;
 export type ChatTimelineEditedDiffItem = z.infer<typeof ChatTimelineEditedDiffItemSchema>;
 export type ChatTimelineExploreActivityEntry = z.infer<typeof ChatTimelineExploreActivityEntrySchema>;
 export type ChatTimelineExploreActivityItem = z.infer<typeof ChatTimelineExploreActivityItemSchema>;
@@ -419,6 +432,17 @@ export const GitStatusSchema = z.object({
 });
 export type GitStatus = z.infer<typeof GitStatusSchema>;
 
+export const GitBranchDiffSummarySchema = z.object({
+  branch: z.string(),
+  baseBranch: z.string(),
+  insertions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  filesChanged: z.number().int().nonnegative(),
+  available: z.boolean(),
+  unavailableReason: z.string().optional(),
+});
+export type GitBranchDiffSummary = z.infer<typeof GitBranchDiffSummarySchema>;
+
 export const GitCommitInputSchema = z.object({
   message: z.string().trim().optional().default(""),
 });
@@ -429,6 +453,32 @@ export const GitDiffSchema = z.object({
   summary: z.string(),
 });
 export type GitDiff = z.infer<typeof GitDiffSchema>;
+
+export const ReviewProviderSchema = z.enum(["github", "gitlab", "unknown"]);
+export type ReviewProvider = z.infer<typeof ReviewProviderSchema>;
+
+export const ReviewKindSchema = z.enum(["pr", "mr"]);
+export type ReviewKind = z.infer<typeof ReviewKindSchema>;
+
+export const ReviewStateSchema = z.enum(["open", "merged", "closed"]);
+export type ReviewState = z.infer<typeof ReviewStateSchema>;
+
+export const ReviewRefSchema = z.object({
+  number: z.number().int().positive(),
+  display: z.string().min(1),
+  url: z.string().url(),
+  state: ReviewStateSchema,
+});
+export type ReviewRef = z.infer<typeof ReviewRefSchema>;
+
+export const RepositoryReviewStateSchema = z.object({
+  provider: ReviewProviderSchema,
+  kind: ReviewKindSchema.nullable(),
+  available: z.boolean(),
+  unavailableReason: z.string().optional(),
+  reviewsByBranch: z.record(z.string(), ReviewRefSchema),
+});
+export type RepositoryReviewState = z.infer<typeof RepositoryReviewStateSchema>;
 
 // ── Filesystem Browse Types ──
 

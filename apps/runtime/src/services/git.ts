@@ -1,22 +1,47 @@
 import { promisify } from "node:util";
 import { execFile as execFileRaw } from "node:child_process";
+import type { ReviewProvider, ReviewState } from "@codesymphony/shared-types";
 
 const execFile = promisify(execFileRaw);
 const DEFAULT_GIT_TIMEOUT_MS = 15_000;
 const STATUS_GIT_TIMEOUT_MS = 4_000;
+const REVIEW_CLI_TIMEOUT_MS = 60_000;
+
+type RunCommandOptions = {
+  cwd?: string;
+  timeoutMs?: number;
+  allowedExitCodes?: number[];
+  env?: NodeJS.ProcessEnv;
+};
 
 type RunGitOptions = {
   timeoutMs?: number;
   allowedExitCodes?: number[];
 };
 
-async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
+export type ReviewRemote = {
+  remote: string | null;
+  remoteUrl: string | null;
+  provider: ReviewProvider;
+};
+
+export type RemoteReviewRef = {
+  number: number;
+  url: string;
+  headBranch: string;
+  baseBranch: string;
+  state: ReviewState;
+  updatedAt: string | null;
+};
+
+async function runCommand(command: string, args: string[], options?: RunCommandOptions): Promise<string> {
   try {
-    const { stdout } = await execFile("git", args, {
-      cwd,
+    const { stdout } = await execFile(command, args, {
+      cwd: options?.cwd,
       encoding: "utf8",
       timeout: options?.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
       maxBuffer: 10 * 1024 * 1024,
+      env: options?.env,
     });
 
     return stdout.trimEnd();
@@ -27,13 +52,37 @@ async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Pr
     const stdout = typeof (error as { stdout?: unknown }).stdout === "string"
       ? (error as { stdout: string }).stdout
       : "";
+    const stderr = typeof (error as { stderr?: unknown }).stderr === "string"
+      ? (error as { stderr: string }).stderr
+      : "";
 
     if (exitCode !== null && options?.allowedExitCodes?.includes(exitCode)) {
       return stdout.trimEnd();
     }
 
-    const message = error instanceof Error ? error.message : "git command failed";
-    throw new Error(`git ${args.join(" ")} failed: ${message}`);
+    if (typeof (error as { code?: unknown }).code === "string" && (error as { code: string }).code === "ENOENT") {
+      throw new Error(`${command} is not installed or not available in PATH`);
+    }
+
+    const message = stderr.trim() || stdout.trim() || (error instanceof Error ? error.message : `${command} command failed`);
+    throw new Error(`${command} ${args.join(" ")} failed: ${message}`);
+  }
+}
+
+async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
+  return runCommand("git", args, {
+    cwd,
+    timeoutMs: options?.timeoutMs,
+    allowedExitCodes: options?.allowedExitCodes,
+  });
+}
+
+function parseJsonOutput<T>(output: string, label: string): T {
+  try {
+    return JSON.parse(output) as T;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "invalid JSON";
+    throw new Error(`Failed to parse ${label} output: ${message}`);
   }
 }
 
@@ -125,6 +174,215 @@ export async function renameBranch(args: { cwd: string; oldBranch: string; newBr
   await runGit(["branch", "-m", args.oldBranch, args.newBranch], args.cwd);
 }
 
+export async function getUpstreamRemote(cwd: string): Promise<string | null> {
+  const upstreamRef = await runGit([
+    "rev-parse",
+    "--abbrev-ref",
+    "--symbolic-full-name",
+    "@{upstream}",
+  ], cwd, { allowedExitCodes: [128] }).catch(() => "");
+
+  if (!upstreamRef) {
+    return null;
+  }
+
+  const [remote] = upstreamRef.split("/");
+  return remote?.trim() || null;
+}
+
+export async function hasUpstreamBranch(cwd: string): Promise<boolean> {
+  return (await getUpstreamRemote(cwd)) !== null;
+}
+
+export async function getRemoteUrl(cwd: string, remote: string): Promise<string | null> {
+  const output = await runGit(["remote", "get-url", remote], cwd, { allowedExitCodes: [2] }).catch(() => "");
+  const trimmed = output.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function detectReviewProvider(remoteUrl: string | null): ReviewProvider {
+  if (!remoteUrl) {
+    return "unknown";
+  }
+
+  const normalized = remoteUrl.toLowerCase();
+  if (normalized.includes("github")) {
+    return "github";
+  }
+  if (normalized.includes("gitlab")) {
+    return "gitlab";
+  }
+  return "unknown";
+}
+
+export async function resolveReviewRemote(cwd: string): Promise<ReviewRemote> {
+  const upstreamRemote = await getUpstreamRemote(cwd);
+  const candidates = Array.from(new Set([
+    upstreamRemote,
+    "origin",
+  ].filter((remote): remote is string => Boolean(remote && remote.trim()))));
+
+  let fallbackRemote: string | null = null;
+  let fallbackRemoteUrl: string | null = null;
+
+  for (const remote of candidates) {
+    const remoteUrl = await getRemoteUrl(cwd, remote);
+    if (!remoteUrl) {
+      continue;
+    }
+
+    const provider = detectReviewProvider(remoteUrl);
+    if (provider !== "unknown") {
+      return { remote, remoteUrl, provider };
+    }
+
+    if (!fallbackRemote) {
+      fallbackRemote = remote;
+      fallbackRemoteUrl = remoteUrl;
+    }
+  }
+
+  return {
+    remote: fallbackRemote,
+    remoteUrl: fallbackRemoteUrl,
+    provider: "unknown",
+  };
+}
+
+export async function ensureCliAvailable(command: "gh" | "glab"): Promise<void> {
+  await runCommand(command, ["--version"], { timeoutMs: 5_000 });
+}
+
+export async function pushCurrentBranch(cwd: string, remote: string): Promise<void> {
+  await runGit(["push", "-u", remote, "HEAD"], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+}
+
+export async function listGithubPullRequests(cwd: string, baseBranch: string): Promise<RemoteReviewRef[]> {
+  const output = await runCommand("gh", [
+    "pr",
+    "list",
+    "--state",
+    "all",
+    "--base",
+    baseBranch,
+    "--json",
+    "number,url,headRefName,baseRefName,state,updatedAt",
+  ], { cwd, timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+
+  const items = parseJsonOutput<Array<{
+    number: number;
+    url: string;
+    headRefName: string;
+    baseRefName: string;
+    state: "OPEN" | "MERGED" | "CLOSED";
+    updatedAt?: string | null;
+  }>>(output || "[]", "gh pr list");
+
+  return items
+    .filter((item) => item.headRefName)
+    .map((item) => ({
+      number: item.number,
+      url: item.url,
+      headBranch: item.headRefName,
+      baseBranch: item.baseRefName,
+      state: item.state === "OPEN" ? "open" : item.state === "MERGED" ? "merged" : "closed",
+      updatedAt: item.updatedAt ?? null,
+    }));
+}
+
+export async function createGithubPullRequest(cwd: string, baseBranch: string, headBranch: string): Promise<void> {
+  await runCommand("gh", [
+    "pr",
+    "create",
+    "--base",
+    baseBranch,
+    "--head",
+    headBranch,
+    "--fill",
+  ], { cwd, timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+}
+
+export async function listGitlabMergeRequests(cwd: string, baseBranch: string): Promise<RemoteReviewRef[]> {
+  const output = await runCommand("glab", [
+    "mr",
+    "list",
+    "--state",
+    "all",
+    "--target-branch",
+    baseBranch,
+    "--output",
+    "json",
+  ], { cwd, timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+
+  const items = parseJsonOutput<Array<{
+    iid: number;
+    web_url: string;
+    source_branch: string;
+    target_branch: string;
+    state: "opened" | "merged" | "closed";
+    updated_at?: string | null;
+  }>>(output || "[]", "glab mr list");
+
+  return items
+    .filter((item) => item.source_branch)
+    .map((item) => ({
+      number: item.iid,
+      url: item.web_url,
+      headBranch: item.source_branch,
+      baseBranch: item.target_branch,
+      state: item.state === "opened" ? "open" : item.state,
+      updatedAt: item.updated_at ?? null,
+    }));
+}
+
+export async function createGitlabMergeRequest(cwd: string, baseBranch: string, headBranch: string): Promise<void> {
+  await runCommand("glab", [
+    "mr",
+    "create",
+    "--source-branch",
+    headBranch,
+    "--target-branch",
+    baseBranch,
+    "--fill",
+    "--yes",
+  ], { cwd, timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+}
+
+function parseNumstatOutput(output: string): Map<string, { insertions: number; deletions: number }> {
+  const statsMap = new Map<string, { insertions: number; deletions: number }>();
+
+  for (const line of output.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3) continue;
+    const insertions = parseInt(parts[0], 10) || 0;
+    const deletions = parseInt(parts[1], 10) || 0;
+    const path = parts.slice(2).join(" ");
+    const existing = statsMap.get(path) || { insertions: 0, deletions: 0 };
+    statsMap.set(path, {
+      insertions: existing.insertions + insertions,
+      deletions: existing.deletions + deletions,
+    });
+  }
+
+  return statsMap;
+}
+
+async function resolveBranchDiffBaseRef(cwd: string, baseBranch: string): Promise<string | null> {
+  const candidates = Array.from(new Set([baseBranch, `origin/${baseBranch}`]));
+
+  for (const candidate of candidates) {
+    const resolved = await runGit(["rev-parse", "--verify", candidate], cwd, {
+      timeoutMs: STATUS_GIT_TIMEOUT_MS,
+      allowedExitCodes: [128],
+    }).catch(() => "");
+    if (resolved.trim().length > 0) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 export async function getGitStatus(cwd: string): Promise<{ branch: string; entries: Array<{ path: string; status: string; insertions: number; deletions: number }> }> {
   const branch = await runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD");
   let porcelain = "";
@@ -136,31 +394,20 @@ export async function getGitStatus(cwd: string): Promise<{ branch: string; entri
 
   const entries: Array<{ path: string; status: string; insertions: number; deletions: number }> = [];
 
-  // Fetch numstat for staged and unstaged changes
   const [stagedNumstat, unstagedNumstat] = await Promise.all([
     runGit(["diff", "--cached", "--numstat"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => ""),
     runGit(["diff", "--numstat"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => ""),
   ]);
 
-  const statsMap = new Map<string, { insertions: number; deletions: number }>();
-
-  const parseNumstat = (output: string) => {
-    for (const line of output.split("\n")) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length < 3) continue;
-      const insertions = parseInt(parts[0], 10) || 0;
-      const deletions = parseInt(parts[1], 10) || 0;
-      const path = parts[2];
-      const existing = statsMap.get(path) || { insertions: 0, deletions: 0 };
-      statsMap.set(path, {
-        insertions: existing.insertions + insertions,
-        deletions: existing.deletions + deletions,
-      });
-    }
-  };
-
-  parseNumstat(stagedNumstat);
-  parseNumstat(unstagedNumstat);
+  const statsMap = parseNumstatOutput(stagedNumstat);
+  const unstagedStatsMap = parseNumstatOutput(unstagedNumstat);
+  for (const [path, stats] of unstagedStatsMap) {
+    const existing = statsMap.get(path) || { insertions: 0, deletions: 0 };
+    statsMap.set(path, {
+      insertions: existing.insertions + stats.insertions,
+      deletions: existing.deletions + stats.deletions,
+    });
+  }
 
   for (const line of porcelain.split("\n")) {
     if (line.length < 3) continue;
@@ -187,13 +434,68 @@ export async function getGitStatus(cwd: string): Promise<{ branch: string; entri
   return { branch, entries };
 }
 
+export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): Promise<{
+  branch: string;
+  baseBranch: string;
+  insertions: number;
+  deletions: number;
+  filesChanged: number;
+  available: boolean;
+  unavailableReason?: string;
+}> {
+  const branch = await runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD");
+
+  if (branch === baseBranch) {
+    return {
+      branch,
+      baseBranch,
+      insertions: 0,
+      deletions: 0,
+      filesChanged: 0,
+      available: true,
+    };
+  }
+
+  const resolvedBaseRef = await resolveBranchDiffBaseRef(cwd, baseBranch);
+  if (!resolvedBaseRef) {
+    return {
+      branch,
+      baseBranch,
+      insertions: 0,
+      deletions: 0,
+      filesChanged: 0,
+      available: false,
+      unavailableReason: `Base branch ${baseBranch} is not available locally or on origin`,
+    };
+  }
+
+  const numstat = await runGit(["diff", "--numstat", `${resolvedBaseRef}...HEAD`], cwd, {
+    timeoutMs: STATUS_GIT_TIMEOUT_MS,
+  }).catch(() => "");
+  const statsMap = parseNumstatOutput(numstat);
+
+  let insertions = 0;
+  let deletions = 0;
+  for (const stats of statsMap.values()) {
+    insertions += stats.insertions;
+    deletions += stats.deletions;
+  }
+
+  return {
+    branch,
+    baseBranch,
+    insertions,
+    deletions,
+    filesChanged: statsMap.size,
+    available: true,
+  };
+}
+
 export async function discardGitChange(cwd: string, filePath: string): Promise<void> {
-  // Check if it's untracked
   const status = await runGit(["status", "--porcelain", filePath], cwd);
   if (status.startsWith("??")) {
     await runGit(["clean", "-f", filePath], cwd);
   } else {
-    // Restore from HEAD for tracked files
     await runGit(["restore", "--source=HEAD", "--staged", "--worktree", filePath], cwd);
   }
 }
@@ -264,7 +566,7 @@ export async function getFileAtHead(cwd: string, filePath: string): Promise<stri
   try {
     return await runGit(["show", `HEAD:${filePath}`], cwd);
   } catch {
-    return null; // New file — no HEAD version
+    return null;
   }
 }
 

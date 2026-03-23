@@ -1,4 +1,4 @@
-import type { ChatMode } from "@codesymphony/shared-types";
+import type { ChatMode, ChatThreadPermissionProfile } from "@codesymphony/shared-types";
 import type {
   ClaudeOwnershipDiagnostics,
   ClaudeToolInstrumentationDecision,
@@ -21,6 +21,7 @@ export type InstrumentContext = {
   sessionId: string | null;
   permissionMode: ChatMode;
   autoAcceptTools: boolean;
+  permissionProfile: ChatThreadPermissionProfile;
 };
 
 export type SessionMaps = {

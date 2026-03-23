@@ -1,6 +1,5 @@
 import { useMemo, useRef } from "react";
-import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import type { AssistantRenderHint } from "../../../../components/workspace/chat-message-list";
+import type { AssistantRenderHint, ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX, SENTENCE_BOUNDARY_PATTERN } from "../../constants";
 import { extractBashRuns } from "../../bashUtils";
 import { extractEditedRuns } from "../../editUtils";
@@ -104,7 +103,7 @@ function compactTimelineSignatureItem(item: SortableEntry["item"]): string {
     case "error":
       return `error:${item.id}`;
     default:
-      return item.kind;
+      return "unknown";
   }
 }
 

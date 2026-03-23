@@ -37,6 +37,8 @@ const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["
 export interface UseThreadEventStreamParams {
   selectedThreadId: string | null;
   selectedWorktreeId: string | null;
+  repositoryId: string | null;
+  selectedThreadIsPrMr: boolean;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setEvents: Dispatch<SetStateAction<ChatEvent[]>>;
   setThreads: Dispatch<SetStateAction<ChatThread[]>>;
@@ -59,6 +61,8 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
   const {
     selectedThreadId,
     selectedWorktreeId,
+    repositoryId,
+    selectedThreadIsPrMr,
     setMessages,
     setEvents,
     setThreads,
@@ -236,6 +240,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             },
           );
         }
+        if (repositoryId && selectedThreadIsPrMr) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
+        }
       }
 
       if (payload.type === "chat.completed") {
@@ -391,5 +398,5 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         stream.close();
       }
     };
-  }, [selectedThreadId]);
+  }, [queryClient, repositoryId, selectedThreadId, selectedThreadIsPrMr, selectedWorktreeId]);
 }

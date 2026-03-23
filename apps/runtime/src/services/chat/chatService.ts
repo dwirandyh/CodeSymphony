@@ -15,6 +15,8 @@ import {
   type ChatMessage,
   type ChatMode,
   type ChatThread,
+  type ChatThreadKind,
+  type ChatThreadPermissionProfile,
   type ChatThreadSnapshot,
   type CreateChatThreadInput,
   type DismissQuestionInput,
@@ -67,9 +69,24 @@ const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
+const PR_MR_THREAD_TITLE = "PR / MR";
 
 function getAttachmentStorageDir(worktreeId: string, messageId: string): string {
   return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, messageId);
+}
+
+function normalizeThreadKind(kind: ChatThreadKind | undefined): ChatThreadKind {
+  return kind === "review" ? "review" : "default";
+}
+
+function normalizePermissionProfile(
+  permissionProfile: ChatThreadPermissionProfile | undefined,
+  kind: ChatThreadKind,
+): ChatThreadPermissionProfile {
+  if (permissionProfile === "review_git") {
+    return "review_git";
+  }
+  return kind === "review" ? "review_git" : "default";
 }
 
 export function createChatService(deps: RuntimeDeps) {
@@ -172,6 +189,7 @@ export function createChatService(deps: RuntimeDeps) {
         cwd: worktreePath,
         abortController,
         permissionMode: mode,
+        permissionProfile: thread.permissionProfile,
         autoAcceptTools: options?.autoAcceptTools,
         model: activeProvider?.modelId || undefined,
         providerApiKey: activeProvider?.apiKey,
@@ -517,6 +535,54 @@ export function createChatService(deps: RuntimeDeps) {
       return threads.map((t) => mapChatThread(t, activeThreads.has(t.id)));
     },
 
+    async getLatestPrMrThread(worktreeId: string): Promise<ChatThread | null> {
+      const thread = await deps.prisma.chatThread.findFirst({
+        where: {
+          worktreeId,
+          kind: "review",
+        },
+        orderBy: [
+          { updatedAt: "desc" },
+          { createdAt: "desc" },
+        ],
+      });
+
+      return thread ? mapChatThread(thread, activeThreads.has(thread.id)) : null;
+    },
+
+    async getOrCreatePrMrThread(worktreeId: string): Promise<ChatThread> {
+      const worktree = await deps.prisma.worktree.findUnique({ where: { id: worktreeId } });
+      if (!worktree) {
+        throw new Error("Worktree not found");
+      }
+
+      const existing = await deps.prisma.chatThread.findFirst({
+        where: {
+          worktreeId,
+          kind: "review",
+        },
+        orderBy: [
+          { updatedAt: "desc" },
+          { createdAt: "desc" },
+        ],
+      });
+
+      if (existing) {
+        return mapChatThread(existing, activeThreads.has(existing.id));
+      }
+
+      const created = await deps.prisma.chatThread.create({
+        data: {
+          worktreeId,
+          title: PR_MR_THREAD_TITLE,
+          kind: "review",
+          permissionProfile: "review_git",
+        },
+      });
+
+      return mapChatThread(created);
+    },
+
     async createThread(worktreeId: string, rawInput: unknown): Promise<ChatThread> {
       const input: CreateChatThreadInput = CreateChatThreadInputSchema.parse(rawInput ?? {});
 
@@ -525,10 +591,14 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Worktree not found");
       }
 
+      const kind = normalizeThreadKind(input.kind);
+      const permissionProfile = normalizePermissionProfile(input.permissionProfile, kind);
       const thread = await deps.prisma.chatThread.create({
         data: {
           worktreeId,
-          title: input.title ?? "Main Thread",
+          title: input.title ?? (kind === "review" ? PR_MR_THREAD_TITLE : "Main Thread"),
+          kind,
+          permissionProfile,
         },
       });
 

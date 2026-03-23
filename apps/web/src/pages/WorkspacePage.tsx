@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitBranch, Menu, Settings, X } from "lucide-react";
-import type { ModelProvider } from "@codesymphony/shared-types";
+import type { ModelProvider, ReviewKind } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -33,6 +33,7 @@ import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgrou
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { useQueryClient } from "@tanstack/react-query";
+import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
@@ -212,14 +213,23 @@ export function WorkspacePage() {
   const activeView = search.view ?? "chat";
   const selectedDiffFilePath = search.file ?? null;
   const reviewTabOpen = activeView === "review";
+  const queryClient = useQueryClient();
+  const repositoryReviews = useRepositoryReviews(repos.selectedRepositoryId);
+  const selectedWorktreeIsDefaultBranch = !!(
+    repos.selectedWorktree
+    && repos.selectedRepository
+    && repos.selectedWorktree.branch === repos.selectedRepository.defaultBranch
+  );
+  const selectedLatestReviewRef = repos.selectedWorktree && repositoryReviews.data
+    ? repositoryReviews.data.reviewsByBranch[repos.selectedWorktree.branch] ?? null
+    : null;
+  const selectedReviewRef = selectedLatestReviewRef?.state === "open" ? selectedLatestReviewRef : null;
+  const reviewKind: ReviewKind = repositoryReviews.data?.kind ?? "pr";
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     desiredThreadId: search.threadId,
-    selectedRepositoryId: repos.selectedRepositoryId,
+    repositoryId: repos.selectedRepositoryId,
     timelineEnabled: !reviewTabOpen,
-    onWorktreeResolved: (worktreeId) => {
-      repos.setSelectedWorktreeId(worktreeId);
-    },
     onThreadChange: useCallback(
       (threadId: string | null) => {
         updateSearch({ threadId: threadId ?? undefined });
@@ -227,6 +237,12 @@ export function WorkspacePage() {
       [updateSearch],
     ),
   });
+  const prMrThread = chat.threads.find((thread) => thread.kind === "review") ?? null;
+  const prMrThreadIsActiveOrPending = !!prMrThread && (
+    prMrThread.active
+    || prMrThread.id === chat.waitingAssistant?.threadId
+    || (chat.sendingMessage && prMrThread.id === chat.selectedThreadId)
+  );
   const prevSelectedThreadIdRef = useRef<string | null>(chat.selectedThreadId);
   const chatMessageListKeyRef = useRef<string>(chat.selectedThreadId ?? "empty");
   const chatMessageListKey = resolveChatMessageListKey({
@@ -332,7 +348,63 @@ export function WorkspacePage() {
     updateSearch({ file: undefined, view: "review" });
   }, [updateSearch]);
 
-  const forceDeleteQueryClient = useQueryClient();
+  const handlePrMrAction = useCallback(async () => {
+    if (!repos.selectedRepository || !repos.selectedWorktree) {
+      return;
+    }
+
+    if (selectedReviewRef) {
+      window.open(selectedReviewRef.url, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    const provider = repositoryReviews.data?.provider ?? "unknown";
+    const providerLabel = provider === "gitlab" ? "GitLab" : provider === "github" ? "GitHub" : "your git provider";
+    const reviewLabel = reviewKind === "mr" ? "MR" : "PR";
+    const reviewTool = provider === "gitlab" ? "glab" : "gh";
+    const instruction = [
+      `Create or open the ${reviewLabel} for the current worktree branch.`,
+      "",
+      "Context:",
+      `- Repository: ${repos.selectedRepository.name}`,
+      `- Provider: ${providerLabel}`,
+      `- Current branch: ${repos.selectedWorktree.branch}`,
+      `- Default branch: ${repos.selectedRepository.defaultBranch}`,
+      `- Worktree path: ${repos.selectedWorktree.path}`,
+      "",
+      "Workflow:",
+      `1. Check whether an open ${reviewLabel} already exists for this branch and open/return it instead of creating a duplicate.`,
+      "2. Check whether the branch needs to be pushed first, and push it if needed.",
+      `3. Use ${reviewTool} to create the ${reviewLabel} targeting ${repos.selectedRepository.defaultBranch}.`,
+      "4. Report the resulting review number and URL in this thread.",
+      "",
+      "Constraints:",
+      "- Stay focused on PR/MR creation only.",
+      "- Finish only when you have the final review URL/number, or explain the blocker clearly.",
+    ].join("\n");
+
+    try {
+      await chat.createOrSelectPrMrThreadAndSendMessage(instruction, "default");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start PR creation flow");
+    }
+  }, [chat, repos.selectedRepository, repos.selectedWorktree, repositoryReviews.data?.provider, reviewKind, selectedReviewRef]);
+
+  const reviewLookupAvailable = !!repositoryReviews.data?.available;
+  const prMrActionBusy = !selectedReviewRef && prMrThreadIsActiveOrPending;
+  const prMrActionDisabled = (
+    !repos.selectedWorktree
+    || selectedWorktreeIsDefaultBranch
+    || (!selectedReviewRef && !reviewLookupAvailable)
+    || (!selectedReviewRef && prMrThreadIsActiveOrPending)
+  );
+  const prMrActionTitle = selectedWorktreeIsDefaultBranch
+    ? "Cannot start a PR/MR thread from the default branch"
+    : (!selectedReviewRef && prMrThreadIsActiveOrPending)
+      ? "PR/MR thread is already active"
+      : repositoryReviews.data?.unavailableReason;
+
+  const forceDeleteQueryClient = queryClient;
 
   const handleForceDelete = useCallback(async (worktreeId: string) => {
     try {
@@ -551,7 +623,7 @@ export function WorkspacePage() {
               threads={chat.threads}
               selectedThreadId={chat.selectedThreadId}
               disabled={!repos.selectedWorktreeId}
-              createThreadDisabled={!repos.selectedRepositoryId}
+              createThreadDisabled={!repos.selectedWorktreeId || chat.sendingMessage}
               closingThreadId={chat.closingThreadId}
               showReviewTab={reviewTabOpen}
               reviewTabActive={activeView === "review"}
@@ -708,6 +780,12 @@ export function WorkspacePage() {
           onSelectDiffFile={handleSelectDiffFile}
           onUpdatePanel={(panel) => updateSearch({ panel })}
           onOpenReadFile={openReadFile}
+          reviewKind={repositoryReviews.data?.kind ?? null}
+          reviewRef={selectedReviewRef}
+          prMrActionDisabled={prMrActionDisabled}
+          prMrActionTitle={prMrActionTitle}
+          prMrActionBusy={prMrActionBusy}
+          onPrMrAction={() => void handlePrMrAction()}
         />
       </div>
 
@@ -806,6 +884,15 @@ export function WorkspacePage() {
             onOpenFile={(path) => {
               void openReadFile(path);
               setMobilePanelOpen(null);
+            }}
+            reviewKind={repositoryReviews.data?.kind ?? null}
+            reviewRef={selectedReviewRef}
+            prMrActionDisabled={prMrActionDisabled}
+            prMrActionTitle={prMrActionTitle}
+            prMrActionBusy={prMrActionBusy}
+            onPrMrAction={() => {
+              setMobilePanelOpen(null);
+              void handlePrMrAction();
             }}
           />
         )}

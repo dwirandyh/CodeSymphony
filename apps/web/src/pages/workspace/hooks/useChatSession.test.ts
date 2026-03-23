@@ -33,6 +33,8 @@ function makeThread(title: string, id = "thread-1"): ChatThread {
     id,
     worktreeId: "wt-1",
     title,
+    kind: "default",
+    permissionProfile: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active: false,

@@ -3,6 +3,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread, ChatTimelineSnapshot } from "@codesymphony/shared-types";
+import { api } from "../../../../lib/api";
+import { queryKeys } from "../../../../lib/queryKeys";
 import { useChatSession } from "./useChatSession";
 
 const { threadsState, snapshotState } = vi.hoisted(() => ({
@@ -46,13 +48,15 @@ vi.mock("../../../../lib/renderDebug", () => ({
 vi.mock("../../../../lib/api", () => ({
   api: {
     createThread: vi.fn(),
-    createRepositoryThread: vi.fn(),
+    getOrCreatePrMrThread: vi.fn(),
     renameThreadTitle: vi.fn(),
     deleteThread: vi.fn(),
     sendMessage: vi.fn(),
     stopRun: vi.fn(),
   },
 }));
+
+const invalidateQueriesMock = vi.fn();
 
 let container: HTMLDivElement;
 let root: Root;
@@ -64,6 +68,8 @@ function makeThread(id: string, active = false): ChatThread {
     id,
     worktreeId: "wt-1",
     title: id,
+    kind: "default",
+    permissionProfile: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active,
@@ -72,18 +78,19 @@ function makeThread(id: string, active = false): ChatThread {
   };
 }
 
-function HookHarness({ desiredThreadId }: { desiredThreadId?: string }) {
+function HookHarness({ desiredThreadId, repositoryId = null }: { desiredThreadId?: string; repositoryId?: string | null }) {
   hookResult = useChatSession("wt-1", vi.fn(), undefined, {
     desiredThreadId,
+    repositoryId,
   });
   return null;
 }
 
-function renderHook(desiredThreadId?: string) {
+function renderHook(desiredThreadId?: string, repositoryId?: string | null) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <HookHarness desiredThreadId={desiredThreadId} />
+        <HookHarness desiredThreadId={desiredThreadId} repositoryId={repositoryId} />
       </QueryClientProvider>,
     );
   });
@@ -101,6 +108,9 @@ beforeEach(() => {
       mutations: { retry: false },
     },
   });
+  invalidateQueriesMock.mockReset();
+  invalidateQueriesMock.mockResolvedValue(undefined);
+  queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
 });
 
 afterEach(() => {
@@ -110,6 +120,65 @@ afterEach(() => {
 });
 
 describe("useChatSession", () => {
+  it("creates or reuses dedicated PR/MR thread, sends message, and invalidates repository reviews", async () => {
+    const prMrThread = {
+      ...makeThread("pr-mr-thread"),
+      title: "PR / MR",
+      kind: "review" as const,
+      permissionProfile: "review_git" as const,
+    };
+    vi.mocked(api.getOrCreatePrMrThread).mockResolvedValue(prMrThread);
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "message-1",
+      threadId: prMrThread.id,
+      seq: 1,
+      role: "user",
+      content: "Create PR",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+
+    renderHook("thread-a", "repo-1");
+
+    await act(async () => {
+      const created = await hookResult.createOrSelectPrMrThreadAndSendMessage("Create PR");
+      expect(created?.id).toBe(prMrThread.id);
+    });
+
+    expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1");
+    expect(api.sendMessage).toHaveBeenCalledWith(prMrThread.id, {
+      content: "Create PR",
+      mode: "default",
+      attachments: [],
+    });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+    expect(
+      invalidateQueriesMock.mock.calls.filter(
+        (call) => JSON.stringify(call[0]) === JSON.stringify({ queryKey: queryKeys.repositories.reviews("repo-1") }),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("invalidates repository reviews when closing a PR/MR thread", async () => {
+    const reviewThread = {
+      ...makeThread("pr-mr-thread"),
+      title: "PR / MR",
+      kind: "review" as const,
+      permissionProfile: "review_git" as const,
+    };
+    threadsState.data = [reviewThread, makeThread("thread-b", true)];
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+
+    renderHook("pr-mr-thread", "repo-1");
+
+    await act(async () => {
+      await hookResult.closeThread("pr-mr-thread");
+    });
+
+    expect(api.deleteThread).toHaveBeenCalledWith("pr-mr-thread");
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+  });
+
   it("respects desiredThreadId on first render", () => {
     renderHook("thread-a");
     expect(hookResult.selectedThreadId).toBe("thread-a");
