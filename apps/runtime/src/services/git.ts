@@ -348,6 +348,41 @@ export async function createGitlabMergeRequest(cwd: string, baseBranch: string, 
   ], { cwd, timeoutMs: REVIEW_CLI_TIMEOUT_MS });
 }
 
+function parseNumstatOutput(output: string): Map<string, { insertions: number; deletions: number }> {
+  const statsMap = new Map<string, { insertions: number; deletions: number }>();
+
+  for (const line of output.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3) continue;
+    const insertions = parseInt(parts[0], 10) || 0;
+    const deletions = parseInt(parts[1], 10) || 0;
+    const path = parts.slice(2).join(" ");
+    const existing = statsMap.get(path) || { insertions: 0, deletions: 0 };
+    statsMap.set(path, {
+      insertions: existing.insertions + insertions,
+      deletions: existing.deletions + deletions,
+    });
+  }
+
+  return statsMap;
+}
+
+async function resolveBranchDiffBaseRef(cwd: string, baseBranch: string): Promise<string | null> {
+  const candidates = Array.from(new Set([baseBranch, `origin/${baseBranch}`]));
+
+  for (const candidate of candidates) {
+    const resolved = await runGit(["rev-parse", "--verify", candidate], cwd, {
+      timeoutMs: STATUS_GIT_TIMEOUT_MS,
+      allowedExitCodes: [128],
+    }).catch(() => "");
+    if (resolved.trim().length > 0) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 export async function getGitStatus(cwd: string): Promise<{ branch: string; entries: Array<{ path: string; status: string; insertions: number; deletions: number }> }> {
   const branch = await runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD");
   let porcelain = "";
@@ -364,25 +399,15 @@ export async function getGitStatus(cwd: string): Promise<{ branch: string; entri
     runGit(["diff", "--numstat"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => ""),
   ]);
 
-  const statsMap = new Map<string, { insertions: number; deletions: number }>();
-
-  const parseNumstat = (output: string) => {
-    for (const line of output.split("\n")) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length < 3) continue;
-      const insertions = parseInt(parts[0], 10) || 0;
-      const deletions = parseInt(parts[1], 10) || 0;
-      const path = parts[2];
-      const existing = statsMap.get(path) || { insertions: 0, deletions: 0 };
-      statsMap.set(path, {
-        insertions: existing.insertions + insertions,
-        deletions: existing.deletions + deletions,
-      });
-    }
-  };
-
-  parseNumstat(stagedNumstat);
-  parseNumstat(unstagedNumstat);
+  const statsMap = parseNumstatOutput(stagedNumstat);
+  const unstagedStatsMap = parseNumstatOutput(unstagedNumstat);
+  for (const [path, stats] of unstagedStatsMap) {
+    const existing = statsMap.get(path) || { insertions: 0, deletions: 0 };
+    statsMap.set(path, {
+      insertions: existing.insertions + stats.insertions,
+      deletions: existing.deletions + stats.deletions,
+    });
+  }
 
   for (const line of porcelain.split("\n")) {
     if (line.length < 3) continue;
@@ -407,6 +432,63 @@ export async function getGitStatus(cwd: string): Promise<{ branch: string; entri
   }
 
   return { branch, entries };
+}
+
+export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): Promise<{
+  branch: string;
+  baseBranch: string;
+  insertions: number;
+  deletions: number;
+  filesChanged: number;
+  available: boolean;
+  unavailableReason?: string;
+}> {
+  const branch = await runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD");
+
+  if (branch === baseBranch) {
+    return {
+      branch,
+      baseBranch,
+      insertions: 0,
+      deletions: 0,
+      filesChanged: 0,
+      available: true,
+    };
+  }
+
+  const resolvedBaseRef = await resolveBranchDiffBaseRef(cwd, baseBranch);
+  if (!resolvedBaseRef) {
+    return {
+      branch,
+      baseBranch,
+      insertions: 0,
+      deletions: 0,
+      filesChanged: 0,
+      available: false,
+      unavailableReason: `Base branch ${baseBranch} is not available locally or on origin`,
+    };
+  }
+
+  const numstat = await runGit(["diff", "--numstat", `${resolvedBaseRef}...HEAD`], cwd, {
+    timeoutMs: STATUS_GIT_TIMEOUT_MS,
+  }).catch(() => "");
+  const statsMap = parseNumstatOutput(numstat);
+
+  let insertions = 0;
+  let deletions = 0;
+  for (const stats of statsMap.values()) {
+    insertions += stats.insertions;
+    deletions += stats.deletions;
+  }
+
+  return {
+    branch,
+    baseBranch,
+    insertions,
+    deletions,
+    filesChanged: statsMap.size,
+    available: true,
+  };
 }
 
 export async function discardGitChange(cwd: string, filePath: string): Promise<void> {

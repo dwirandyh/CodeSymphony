@@ -13,6 +13,7 @@ import type {
   ExternalApp,
   FileEntry,
   FilesystemBrowseResponse,
+  GitBranchDiffSummary,
   GitCommitInput,
   GitDiff,
   GitStatus,
@@ -405,6 +406,8 @@ export const api = {
   },
   getGitStatus: (worktreeId: string) =>
     request<GitStatus>(`/worktrees/${worktreeId}/git/status`),
+  getGitBranchDiffSummary: (worktreeId: string) =>
+    request<GitBranchDiffSummary>(`/worktrees/${worktreeId}/git/branch-diff-summary`),
   getGitDiff: (worktreeId: string, opts?: { filePath?: string }) => {
     const params = opts?.filePath ? `?filePath=${encodeURIComponent(opts.filePath)}` : "";
     return request<GitDiff>(`/worktrees/${worktreeId}/git/diff${params}`);

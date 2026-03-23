@@ -9,6 +9,7 @@ import {
   listBranches,
   getCurrentBranch,
   getGitStatus,
+  getGitBranchDiffSummary,
   getGitDiff,
   getFileAtHead,
   gitCommitAll,
@@ -97,6 +98,46 @@ describe("git utilities", () => {
       expect(untracked).toBeTruthy();
       expect(untracked!.status).toBe("untracked");
       git("clean -f untracked.txt");
+    });
+  });
+
+  describe("getGitBranchDiffSummary", () => {
+    it("returns zero summary when branch matches base branch", async () => {
+      const summary = await getGitBranchDiffSummary(repoDir, "main");
+      expect(summary).toMatchObject({
+        branch: "main",
+        baseBranch: "main",
+        insertions: 0,
+        deletions: 0,
+        filesChanged: 0,
+        available: true,
+      });
+    });
+
+    it("returns committed branch diff summary and ignores uncommitted changes", async () => {
+      git("checkout -b feature-branch");
+      await writeFile(join(repoDir, "feature.txt"), "one\ntwo\nthree\n");
+      git("add feature.txt");
+      git('commit -m "feature change"');
+      await writeFile(join(repoDir, "README.md"), "# Uncommitted change");
+
+      const summary = await getGitBranchDiffSummary(repoDir, "main");
+      expect(summary.branch).toBe("feature-branch");
+      expect(summary.baseBranch).toBe("main");
+      expect(summary.insertions).toBe(3);
+      expect(summary.deletions).toBe(0);
+      expect(summary.filesChanged).toBe(1);
+      expect(summary.available).toBe(true);
+
+      git("checkout -- README.md");
+      git("checkout main");
+      git("branch -D feature-branch");
+    });
+
+    it("returns unavailable summary when base branch is missing", async () => {
+      const summary = await getGitBranchDiffSummary(repoDir, "missing-base");
+      expect(summary.available).toBe(false);
+      expect(summary.unavailableReason).toContain("missing-base");
     });
   });
 

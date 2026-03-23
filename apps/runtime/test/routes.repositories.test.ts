@@ -46,6 +46,7 @@ const mockScriptStreamService = {
 
 vi.mock("../src/services/git.js", () => ({
   getGitStatus: vi.fn().mockResolvedValue({ entries: [], branch: "main" }),
+  getGitBranchDiffSummary: vi.fn().mockResolvedValue({ branch: "feature-x", baseBranch: "main", insertions: 10, deletions: 2, filesChanged: 1, available: true }),
   getGitDiff: vi.fn().mockResolvedValue("diff output"),
   getFileAtHead: vi.fn().mockResolvedValue("old content"),
   gitCommitAll: vi.fn().mockResolvedValue("abc123"),
@@ -327,6 +328,22 @@ describe("repository routes", () => {
     it("returns 404 when worktree not found", async () => {
       mockWorktreeService.getById.mockResolvedValue(null);
       const res = await app.inject({ method: "GET", url: "/api/worktrees/xxx/git/status" });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("GET /api/worktrees/:id/git/branch-diff-summary", () => {
+    it("returns branch diff summary", async () => {
+      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt", baseBranch: "main" });
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/git/branch-diff-summary" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.baseBranch).toBe("main");
+      expect(res.json().data.insertions).toBe(10);
+    });
+
+    it("returns 404 when worktree not found", async () => {
+      mockWorktreeService.getById.mockResolvedValue(null);
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/xxx/git/branch-diff-summary" });
       expect(res.statusCode).toBe(404);
     });
   });

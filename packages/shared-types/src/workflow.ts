@@ -432,6 +432,17 @@ export const GitStatusSchema = z.object({
 });
 export type GitStatus = z.infer<typeof GitStatusSchema>;
 
+export const GitBranchDiffSummarySchema = z.object({
+  branch: z.string(),
+  baseBranch: z.string(),
+  insertions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  filesChanged: z.number().int().nonnegative(),
+  available: z.boolean(),
+  unavailableReason: z.string().optional(),
+});
+export type GitBranchDiffSummary = z.infer<typeof GitBranchDiffSummarySchema>;
+
 export const GitCommitInputSchema = z.object({
   message: z.string().trim().optional().default(""),
 });

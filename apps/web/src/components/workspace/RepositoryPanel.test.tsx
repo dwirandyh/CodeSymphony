@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "./RepositoryPanel";
 
-const { listThreadsMock, getThreadSnapshotMock, getGitStatusMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
+const { listThreadsMock, getThreadSnapshotMock, getGitBranchDiffSummaryMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn(),
   getThreadSnapshotMock: vi.fn(),
-  getGitStatusMock: vi.fn().mockResolvedValue({ branch: "main", entries: [] }),
+  getGitBranchDiffSummaryMock: vi.fn().mockResolvedValue({ branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true }),
   getRepositoryReviewsMock: vi.fn().mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} }),
 }));
 
@@ -16,7 +16,7 @@ vi.mock("../../lib/api", () => ({
   api: {
     listThreads: listThreadsMock,
     getThreadSnapshot: getThreadSnapshotMock,
-    getGitStatus: getGitStatusMock,
+    getGitBranchDiffSummary: getGitBranchDiffSummaryMock,
     getRepositoryReviews: getRepositoryReviewsMock,
   },
 }));
@@ -34,11 +34,11 @@ beforeEach(() => {
   });
   listThreadsMock.mockReset();
   getThreadSnapshotMock.mockReset();
-  getGitStatusMock.mockReset();
+  getGitBranchDiffSummaryMock.mockReset();
   getRepositoryReviewsMock.mockReset();
   listThreadsMock.mockResolvedValue([]);
   getThreadSnapshotMock.mockResolvedValue(makeSnapshot());
-  getGitStatusMock.mockResolvedValue({ branch: "main", entries: [] });
+  getGitBranchDiffSummaryMock.mockResolvedValue({ branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true });
   getRepositoryReviewsMock.mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} });
 });
 
@@ -228,9 +228,13 @@ describe("RepositoryPanel", () => {
         "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123", state: "open" },
       },
     });
-    getGitStatusMock.mockResolvedValue({
+    getGitBranchDiffSummaryMock.mockResolvedValue({
       branch: "feature-x",
-      entries: [{ path: "src/app.ts", status: "modified", insertions: 24, deletions: 3 }],
+      baseBranch: "main",
+      insertions: 24,
+      deletions: 3,
+      filesChanged: 1,
+      available: true,
     });
 
     renderPanel({
@@ -260,6 +264,12 @@ describe("RepositoryPanel", () => {
         "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123", state: "merged" },
       },
     });
+    getGitBranchDiffSummaryMock.mockImplementation(async (worktreeId: string) => {
+      if (worktreeId === "wt-feat") {
+        return { branch: "feature-x", baseBranch: "main", insertions: 24, deletions: 3, filesChanged: 1, available: true };
+      }
+      return { branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true };
+    });
 
     renderPanel({
       repositories: [makeRepo()],
@@ -288,9 +298,11 @@ describe("RepositoryPanel", () => {
         "feature-x": { number: 123, display: "#123", url: "https://example.com/pr/123", state: "open" },
       },
     });
-    getGitStatusMock.mockResolvedValue({
-      branch: "feature-x",
-      entries: [{ path: "src/app.ts", status: "modified", insertions: 24, deletions: 3 }],
+    getGitBranchDiffSummaryMock.mockImplementation(async (worktreeId: string) => {
+      if (worktreeId === "wt-feat") {
+        return { branch: "feature-x", baseBranch: "main", insertions: 24, deletions: 3, filesChanged: 1, available: true };
+      }
+      return { branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true };
     });
 
     renderPanel({
@@ -306,6 +318,31 @@ describe("RepositoryPanel", () => {
 
     expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
     expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
+  });
+
+  it("hides branch diff when summary is unavailable", async () => {
+    getGitBranchDiffSummaryMock.mockResolvedValue({
+      branch: "feature-x",
+      baseBranch: "main",
+      insertions: 0,
+      deletions: 0,
+      filesChanged: 0,
+      available: false,
+      unavailableReason: "Base branch main is not available locally or on origin",
+    });
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "wt-feat",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')).toBeNull();
   });
 
   it("renders root and branch status badges", async () => {

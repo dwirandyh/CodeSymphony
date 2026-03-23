@@ -9,6 +9,7 @@ import { useThreadEvents } from "./useThreadEvents";
 import { useThreadMessages } from "./useThreadMessages";
 import { useThreadSnapshot } from "./useThreadSnapshot";
 import { useGitStatus } from "./useGitStatus";
+import { useGitBranchDiffSummary } from "./useGitBranchDiffSummary";
 import { useGitDiff } from "./useGitDiff";
 import { useFilesystemBrowse } from "./useFilesystemBrowse";
 import { useInstalledApps } from "./useInstalledApps";
@@ -25,6 +26,7 @@ vi.mock("../../lib/api", () => ({
     listMessagesPage: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
     getThreadSnapshot: vi.fn().mockResolvedValue({ messages: [], events: [] }),
     getGitStatus: vi.fn().mockResolvedValue({ entries: [], branch: "main" }),
+    getGitBranchDiffSummary: vi.fn().mockResolvedValue({ branch: "feature-x", baseBranch: "main", insertions: 10, deletions: 2, filesChanged: 1, available: true }),
     getGitDiff: vi.fn().mockResolvedValue({ diff: "", summary: "" }),
     browseFilesystem: vi.fn().mockResolvedValue({ entries: [] }),
     getInstalledApps: vi.fn().mockResolvedValue([]),
@@ -123,6 +125,11 @@ describe("query hooks", () => {
 
   it("useGitStatus renders with worktreeId", () => {
     renderHook(useGitStatus as (...a: unknown[]) => unknown, ["wt-1"]);
+    expect(container.textContent).toBe("ok");
+  });
+
+  it("useGitBranchDiffSummary renders", () => {
+    renderHook(useGitBranchDiffSummary as (...a: unknown[]) => unknown, ["wt-1", "main"]);
     expect(container.textContent).toBe("ok");
   });
 

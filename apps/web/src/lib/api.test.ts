@@ -319,6 +319,12 @@ describe("api", () => {
       await api.getGitStatus("w1");
     });
 
+    it("gets git branch diff summary", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ branch: "feature-x", baseBranch: "main", insertions: 10, deletions: 2, filesChanged: 1, available: true }));
+      await api.getGitBranchDiffSummary("w1");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/git/branch-diff-summary");
+    });
+
     it("gets git diff", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ diff: "" }));
       await api.getGitDiff("w1", { filePath: "src/a.ts" });

@@ -1,13 +1,13 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, FolderGit2, GitBranch, GitPullRequestArrow, Pencil, Plus, Trash2 } from "lucide-react";
-import type { GitStatus, Repository, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
+import type { GitBranchDiffSummary, Repository, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
 import { cn } from "../../lib/utils";
 import { isRootWorktree } from "../../lib/worktree";
-import { gitStatusQueryOptions } from "../../hooks/queries/useGitStatus";
+import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBranchDiffSummary";
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import type { WorktreeStatusSummary, WorktreeThreadUiStatus } from "../../pages/workspace/hooks/worktreeThreadStatus";
@@ -214,13 +214,18 @@ export function RepositoryPanel({
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(null);
   const [editingBranchValue, setEditingBranchValue] = useState("");
 
-  const activeWorktreeIds = useMemo(
-    () => repositories.flatMap((r) => r.worktrees.filter((w) => w.status === "active").map((w) => w.id)),
+  const activeWorktreeSummaries = useMemo(
+    () => repositories.flatMap((repository) => repository.worktrees
+      .filter((worktree) => worktree.status === "active")
+      .map((worktree) => ({
+        worktreeId: worktree.id,
+        baseBranch: worktree.baseBranch || repository.defaultBranch,
+      }))),
     [repositories],
   );
   const worktreeStatuses = useWorktreeStatuses(repositories);
-  const gitStatusQueries = useQueries({
-    queries: activeWorktreeIds.map((worktreeId) => gitStatusQueryOptions(worktreeId)),
+  const gitBranchDiffQueries = useQueries({
+    queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) => gitBranchDiffSummaryQueryOptions(worktreeId, baseBranch)),
   });
   const repositoryReviewQueries = useQueries({
     queries: repositories.map((repository) => repositoryReviewsQueryOptions(repository.id)),
@@ -238,22 +243,15 @@ export function RepositoryPanel({
     ]),
   ) as Record<string, ReviewKind | null>, [repositories, repositoryReviewQueries]);
   const worktreeStats = useMemo(() => {
-    return activeWorktreeIds.reduce<Record<string, { insertions: number; deletions: number; fileCount: number }>>((acc, worktreeId, index) => {
-      const status = gitStatusQueries[index]?.data as GitStatus | undefined;
-      if (!status) {
+    return activeWorktreeSummaries.reduce<Record<string, GitBranchDiffSummary>>((acc, { worktreeId }, index) => {
+      const summary = gitBranchDiffQueries[index]?.data as GitBranchDiffSummary | undefined;
+      if (!summary?.available) {
         return acc;
       }
-
-      const insertions = status.entries.reduce((sum, entry) => sum + entry.insertions, 0);
-      const deletions = status.entries.reduce((sum, entry) => sum + entry.deletions, 0);
-      acc[worktreeId] = {
-        insertions,
-        deletions,
-        fileCount: status.entries.length,
-      };
+      acc[worktreeId] = summary;
       return acc;
     }, {});
-  }, [activeWorktreeIds, gitStatusQueries]);
+  }, [activeWorktreeSummaries, gitBranchDiffQueries]);
 
   function toggleRepository(repositoryId: string) {
     setExpandedByRepo((current) => ({

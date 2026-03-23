@@ -3,7 +3,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema, UpdateRepositoryScriptsInputSchema } from "@codesymphony/shared-types";
 import { z } from "zod";
-import { getGitStatus, getGitDiff, getFileAtHead, gitCommitAll, discardGitChange } from "../services/git.js";
+import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHead, gitCommitAll, discardGitChange } from "../services/git.js";
 import { TeardownError } from "../services/worktreeService.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
@@ -12,10 +12,13 @@ const GIT_STATUS_CACHE_TTL_MS = 2_000;
 const REPOSITORY_REVIEW_CACHE_TTL_MS = 10_000;
 
 type GitStatusResult = Awaited<ReturnType<typeof getGitStatus>>;
+type GitBranchDiffSummaryResult = Awaited<ReturnType<typeof getGitBranchDiffSummary>>;
 type RepositoryReviewStateResult = Awaited<ReturnType<FastifyInstance["reviewService"]["getRepositoryReviews"]>>;
 
 const cachedGitStatusByWorktreeId = new Map<string, { expiresAt: number; value: GitStatusResult }>();
 const inFlightGitStatusByWorktreeId = new Map<string, Promise<GitStatusResult>>();
+const cachedBranchDiffByWorktreeKey = new Map<string, { expiresAt: number; value: GitBranchDiffSummaryResult }>();
+const inFlightBranchDiffByWorktreeKey = new Map<string, Promise<GitBranchDiffSummaryResult>>();
 const cachedReviewsByRepositoryId = new Map<string, { expiresAt: number; value: RepositoryReviewStateResult }>();
 const inFlightReviewsByRepositoryId = new Map<string, Promise<RepositoryReviewStateResult>>();
 
@@ -77,6 +80,35 @@ async function getCachedRepositoryReviews(app: FastifyInstance, repositoryId: st
     });
 
   inFlightReviewsByRepositoryId.set(repositoryId, requestPromise);
+  return requestPromise;
+}
+
+async function getCachedGitBranchDiffSummary(worktreeId: string, worktreePath: string, baseBranch: string): Promise<GitBranchDiffSummaryResult> {
+  const cacheKey = `${worktreeId}:${baseBranch}`;
+  const now = Date.now();
+  const cached = cachedBranchDiffByWorktreeKey.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const inFlight = inFlightBranchDiffByWorktreeKey.get(cacheKey);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const requestPromise = getGitBranchDiffSummary(worktreePath, baseBranch)
+    .then((summary) => {
+      cachedBranchDiffByWorktreeKey.set(cacheKey, {
+        value: summary,
+        expiresAt: Date.now() + GIT_STATUS_CACHE_TTL_MS,
+      });
+      return summary;
+    })
+    .finally(() => {
+      inFlightBranchDiffByWorktreeKey.delete(cacheKey);
+    });
+
+  inFlightBranchDiffByWorktreeKey.set(cacheKey, requestPromise);
   return requestPromise;
 }
 
@@ -432,6 +464,20 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return { data: status };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to get git status";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  app.get("/worktrees/:id/git/branch-diff-summary", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      const summary = await getCachedGitBranchDiffSummary(worktree.id, worktree.path, worktree.baseBranch);
+      return { data: summary };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to get branch diff summary";
       return reply.code(500).send({ error: message });
     }
   });
