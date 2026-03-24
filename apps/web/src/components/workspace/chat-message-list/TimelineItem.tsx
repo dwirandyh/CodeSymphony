@@ -531,7 +531,7 @@ export const TimelineItem = memo(function TimelineItem({
         >
           <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
             <Bot className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">
+            <span className={cn("truncate", isRunning ? "thinking-shimmer" : "") }>
               {headerText}
             </span>
             <span className={cn("text-[10px] shrink-0", isRunning ? "text-muted-foreground" : "text-muted-foreground/50")}>
@@ -641,11 +641,6 @@ export const TimelineItem = memo(function TimelineItem({
                 </div>
               )}
 
-              {!resolvedLastMessage && isRunning && (
-                <div className="px-1 text-sm text-muted-foreground">
-                  <span>Thinking…</span>
-                </div>
-              )}
             </div>
 
             <div className="border-t border-border/20 px-3 py-1.5 text-[10px] text-muted-foreground/50 flex items-center gap-1.5">

@@ -380,6 +380,29 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Searching codebase");
   });
 
+  it("shows thinking shimmer in the running subagent header", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "sub-running-shimmer",
+        agentId: "agent-running",
+        agentType: "explore",
+        toolUseId: "tu-running",
+        status: "running",
+        description: "Searching codebase",
+        lastMessage: null,
+        steps: [],
+        durationSeconds: null,
+      },
+    ];
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    const shimmerNode = Array.from(container.querySelectorAll("span")).find((node) => node.textContent?.includes("explore(Searching codebase)"));
+    expect(shimmerNode?.className).toContain("thinking-shimmer");
+  });
+
   it("handles subagent-activity items without steps", () => {
     const items = [
       {

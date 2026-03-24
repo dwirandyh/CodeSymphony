@@ -358,6 +358,39 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items.length).toBeGreaterThan(0);
   });
 
+  it("keeps stable subagent ids from running to finished states", () => {
+    const messages = [makeMessage("m1", 1, "user", "Do"), makeMessage("m2", 2, "assistant", "Using agent")];
+    const refs = makeRefs();
+    const runningEvents = [
+      makeEvent(0, "subagent.started", {
+        toolUseId: "tu-stable",
+        agentId: "agent-stable",
+        agentType: "explore",
+        description: "Searching code",
+      }, "m2"),
+    ];
+    const finishedEvents = [
+      ...runningEvents,
+      makeEvent(1, "subagent.finished", {
+        toolUseId: "tu-stable",
+        agentId: "agent-stable",
+        lastMessage: "Done",
+      }, "m2"),
+    ];
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={runningEvents} threadId="t1" refs={refs} />);
+    });
+    const runningItem = hookResult.items.find((item) => item.kind === "subagent-activity");
+    expect(runningItem && runningItem.kind === "subagent-activity" ? runningItem.id : null).toBe("tu-stable");
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={finishedEvents} threadId="t1" refs={refs} />);
+    });
+    const finishedItem = hookResult.items.find((item) => item.kind === "subagent-activity");
+    expect(finishedItem && finishedItem.kind === "subagent-activity" ? finishedItem.id : null).toBe("tu-stable");
+  });
+
   it("keeps subagent-owned explore work out of top-level explore cards and backfills prompt from finish", () => {
     const messages = [
       makeMessage("m1", 1, "user", "Inspect the codebase"),

@@ -381,7 +381,7 @@ export function pushInlineInsert(
     sortable.push({
       item: {
         kind: "subagent-activity",
-        id: `${message.id}:${group.id}:${insert.id}`,
+        id: group.toolUseId,
         agentId: group.agentId,
         agentType: group.agentType,
         toolUseId: group.toolUseId,

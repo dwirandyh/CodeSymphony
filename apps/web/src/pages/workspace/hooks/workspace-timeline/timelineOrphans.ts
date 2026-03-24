@@ -36,7 +36,7 @@ export function processOrphanSubagentGroups(
     sortable.push({
       item: {
         kind: "subagent-activity",
-        id: `orphan:${group.id}`,
+        id: group.toolUseId,
         agentId: group.agentId,
         agentType: group.agentType,
         toolUseId: group.toolUseId,
