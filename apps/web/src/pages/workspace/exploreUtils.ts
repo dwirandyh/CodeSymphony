@@ -37,8 +37,20 @@ export function extractReadTargetFromSummary(summary: string): string | null {
 
 export function extractReadFileEntry(event: ChatEvent): ReadFileTimelineEntry | null {
   const summary = payloadStringOrNull(event.payload.summary);
+  const toolInput = typeof event.payload.toolInput === "object" && event.payload.toolInput != null && !Array.isArray(event.payload.toolInput)
+    ? event.payload.toolInput as Record<string, unknown>
+    : null;
+  const explicitTarget = payloadStringOrNull(event.payload.file_path)
+    ?? payloadStringOrNull(event.payload.filePath)
+    ?? (toolInput
+      ? payloadStringOrNull(toolInput.file_path)
+        ?? payloadStringOrNull(toolInput.filePath)
+        ?? payloadStringOrNull(toolInput.path)
+        ?? payloadStringOrNull(toolInput.file)
+      : null);
+
   if (summary) {
-    const target = extractReadTargetFromSummary(summary);
+    const target = extractReadTargetFromSummary(summary) ?? explicitTarget;
     if (target) {
       return {
         label: shortenReadTargetForDisplay(target),
@@ -51,6 +63,14 @@ export function extractReadFileEntry(event: ChatEvent): ReadFileTimelineEntry | 
       openPath: null,
     };
   }
+
+  if (explicitTarget) {
+    return {
+      label: shortenReadTargetForDisplay(explicitTarget),
+      openPath: explicitTarget,
+    };
+  }
+
   return null;
 }
 

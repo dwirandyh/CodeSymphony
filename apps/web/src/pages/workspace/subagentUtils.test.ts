@@ -507,6 +507,36 @@ describe("extractSubagentGroups", () => {
     expect(claimedEventIds.has("e6")).toBe(false);
     expect(getSubagentAttributionReason("e5")?.startsWith("unclaimed_")).toBe(true);
   });
+
+  it("preserves explore-like Bash command labels when finish summary is generic", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "subagent.started", idx: 1, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "Explore skill" } }),
+      makeEvent({ id: "e2", type: "tool.started", idx: 2, payload: { toolName: "Bash", toolUseId: "bash-1", parentToolUseId: "sa-1", command: "ls \"/repo/.claude/skills/foo\"" } }),
+      makeEvent({ id: "e3", type: "tool.finished", idx: 3, payload: { toolName: "Bash", toolUseId: "bash-1-done", precedingToolUseIds: ["bash-1"], summary: "Completed Bash" } }),
+      makeEvent({ id: "e4", type: "subagent.finished", idx: 4, payload: { toolUseId: "sa-1", lastMessage: "Done" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].steps).toHaveLength(1);
+    expect(groups[0].steps[0].label).toBe('ls "foo"');
+  });
+
+  it("preserves explore-like Bash command labels when bash output events are generic", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "subagent.started", idx: 1, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "Explore skill" } }),
+      makeEvent({ id: "e2", type: "tool.started", idx: 2, payload: { toolName: "Bash", toolUseId: "bash-1", parentToolUseId: "sa-1", command: "ls \"/repo/.claude/skills/foo\" && ls \"/repo/.claude/skills/foo/rules\" | wc -l" } }),
+      makeEvent({ id: "e3", type: "tool.output", idx: 3, payload: { toolName: "Bash", toolUseId: "bash-1", parentToolUseId: "sa-1", elapsedTimeSeconds: 1.2 } }),
+      makeEvent({ id: "e4", type: "tool.finished", idx: 4, payload: { toolName: "Bash", toolUseId: "bash-1-done", precedingToolUseIds: ["bash-1"], summary: "Completed Bash", command: "ls \"/repo/.claude/skills/foo\" && ls \"/repo/.claude/skills/foo/rules\" | wc -l" } }),
+      makeEvent({ id: "e5", type: "subagent.finished", idx: 5, payload: { toolUseId: "sa-1", lastMessage: "Done" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].steps).toHaveLength(1);
+    expect(groups[0].steps[0].label).toContain('ls "foo"');
+    expect(groups[0].steps[0].label).not.toBe("Bash");
+  });
 });
 
 describe("extractExploreActivityGroups", () => {

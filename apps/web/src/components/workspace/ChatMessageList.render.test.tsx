@@ -499,6 +499,38 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Explored 1 search");
   });
 
+  it("treats generic completed bash labels as explore when tool name is lowercase bash", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "sub-explore-bash-lower",
+        agentId: "agent-4",
+        agentType: "explore",
+        toolUseId: "tu-4",
+        status: "success",
+        description: "Run explore commands",
+        lastMessage: null,
+        steps: [
+          {
+            toolUseId: "step-1",
+            toolName: "bash",
+            label: 'ls "foo"',
+            openPath: null,
+            status: "success",
+          },
+        ],
+        durationSeconds: 1,
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Explored 1 search");
+    expect(container.textContent).not.toContain("Completed Bash");
+  });
+
   it("filters legacy activity items from the rendered list", () => {
     const items: ChatTimelineItem[] = [
       {

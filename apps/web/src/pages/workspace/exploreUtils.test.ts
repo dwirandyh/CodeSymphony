@@ -90,7 +90,14 @@ describe("extractReadFileEntry", () => {
     expect(entry?.openPath).toBe("/src/file.ts");
   });
 
-  it("returns generic entry for 'Completed Read' summary", () => {
+  it("uses toolInput file_path when summary is 'Completed Read'", () => {
+    const event = makeEvent({ type: "tool.finished", payload: { summary: "Completed Read", toolInput: { file_path: "/src/file.ts" } } });
+    const entry = extractReadFileEntry(event);
+    expect(entry?.label).toBe("file.ts");
+    expect(entry?.openPath).toBe("/src/file.ts");
+  });
+
+  it("returns generic entry for 'Completed Read' summary without path", () => {
     const event = makeEvent({ type: "tool.finished", payload: { summary: "Completed Read" } });
     const entry = extractReadFileEntry(event);
     expect(entry?.label).toBe("file");

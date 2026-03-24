@@ -219,6 +219,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         const skipInvalidation = ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES.has(payload.type);
         if (!skipInvalidation) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
         }
       }
 

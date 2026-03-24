@@ -1,6 +1,6 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { pushRenderDebug } from "../../lib/renderDebug";
-import { isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
+import { isExploreLikeBashCommand, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
 import {
   extractReadFileEntry,
   extractSearchEntryLabel,
@@ -33,6 +33,7 @@ export function isOverlapUnclaimedSubagentEvent(eventId: string): boolean {
 
 function buildStepInfo(event: ChatEvent): { label: string; openPath: string | null } {
   const toolName = payloadStringOrNull(event.payload.toolName);
+  const normalizedToolName = toolName?.trim().toLowerCase() ?? "";
   const summary = payloadStringOrNull(event.payload.summary);
   const command = payloadStringOrNull(event.payload.command)
     ?? (typeof event.payload.toolInput === "object" && event.payload.toolInput != null && !Array.isArray(event.payload.toolInput)
@@ -53,7 +54,7 @@ function buildStepInfo(event: ChatEvent): { label: string; openPath: string | nu
     return { label: extractSearchEntryLabel(event, { toolName: ctx.toolName, searchParams: ctx.searchParams }), openPath: null };
   }
 
-  if ((toolName ?? "").toLowerCase() === "bash" && command) {
+  if (normalizedToolName === "bash" && command) {
     const shortenedCommand = command.replace(
       /"(\/[^\"]+)"|'(\/[^']+)'|(\/(?:[^\s,]+\/)+[^\s,]+)/g,
       (match, quoted1: string | undefined, quoted2: string | undefined, unquoted: string | undefined) => {
@@ -696,14 +697,27 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         if (event.type === "tool.finished") {
           existingStep.status = "success";
           const info = buildStepInfo(event);
-          existingStep.label = info.label;
-          existingStep.openPath = info.openPath;
+          const normalizedToolName = (payloadStringOrNull(event.payload.toolName) ?? "").trim().toLowerCase();
+          const normalizedLabel = info.label.trim().toLowerCase();
+          const preserveExistingBashLabel = normalizedToolName === "bash"
+            && normalizedLabel === "completed bash"
+            && isExploreLikeBashCommand(existingStep.label);
+          if (!preserveExistingBashLabel) {
+            existingStep.label = info.label;
+            existingStep.openPath = info.openPath;
+          }
           // Update toolUseId to the finished event's ID so future lookups work
           existingStep.toolUseId = toolUseId;
         } else if (event.type === "tool.output" && existingStep.status === "running") {
           const info = buildStepInfo(event);
-          existingStep.label = info.label;
-          existingStep.openPath = info.openPath;
+          const normalizedToolName = (payloadStringOrNull(event.payload.toolName) ?? "").trim().toLowerCase();
+          const preserveExistingBashLabel = normalizedToolName === "bash"
+            && !isExploreLikeBashCommand(info.label)
+            && isExploreLikeBashCommand(existingStep.label);
+          if (!preserveExistingBashLabel) {
+            existingStep.label = info.label;
+            existingStep.openPath = info.openPath;
+          }
         }
       } else {
         const info = buildStepInfo(event);

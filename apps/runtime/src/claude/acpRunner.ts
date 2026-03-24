@@ -17,6 +17,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { AgentRunner, ClaudeOwnershipReason } from "../types.js";
 import { extractBashToolResult } from "./bashResult.js";
+import { extractSubagentResponse } from "./subagentTranscript.js";
 import {
   DEFAULT_CLAUDE_EXECUTABLE,
   buildExecutableCandidates,
@@ -57,6 +58,8 @@ type SubagentState = {
   toolUseId: string;
   launcherToolUseId: string | null;
   description: string;
+  lastMessage: string;
+  responseFallback: string;
 };
 
 type SessionClientOptions = {
@@ -198,6 +201,46 @@ function mapMode(permissionMode: string | undefined, autoAcceptTools: boolean | 
   return "default";
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function meaningfulCompletionTitle(title: string | null | undefined, toolName: string): string {
+  const trimmed = typeof title === "string" ? title.trim() : "";
+  if (trimmed.length === 0) {
+    return "";
+  }
+
+  const genericPattern = new RegExp(`^completed\\s+${escapeRegExp(toolName)}$`, "i");
+  if (genericPattern.test(trimmed)) {
+    return "";
+  }
+
+  if (/^(done|running)(?:\b|\s*[·-])/i.test(trimmed)) {
+    return "";
+  }
+
+  return trimmed;
+}
+
+function resolveSubagentLastMessage(subagent: SubagentState, update: ToolCallUpdate): string {
+  const streamedMessage = subagent.lastMessage.trim();
+  if (streamedMessage.length > 0) {
+    return streamedMessage;
+  }
+
+  const extractedResponse = extractSubagentResponse(update.rawOutput);
+  if (extractedResponse.length > 0) {
+    return extractedResponse;
+  }
+
+  if (subagent.responseFallback.trim().length > 0) {
+    return subagent.responseFallback.trim();
+  }
+
+  return "";
+}
+
 function createPromptRequest(sessionId: string, prompt: string): PromptRequest {
   return {
     sessionId,
@@ -267,8 +310,17 @@ class RuntimeAcpClient implements Client {
     switch (update.sessionUpdate) {
       case "agent_message_chunk": {
         if (update.content.type === "text") {
-          this.output += update.content.text;
-          await this.options.onText(update.content.text);
+          const chunk = update.content.text;
+          const parentToolUseId = extractParentToolUseId(update);
+          if (parentToolUseId) {
+            const subagent = this.subagentByToolUseId.get(parentToolUseId);
+            if (subagent) {
+              subagent.lastMessage = `${subagent.lastMessage}${chunk}`.trim();
+            }
+          } else {
+            this.output += chunk;
+            await this.options.onText(chunk);
+          }
         }
         return;
       }
@@ -326,6 +378,8 @@ class RuntimeAcpClient implements Client {
               toolUseId: update.toolCallId,
               launcherToolUseId: null,
               description: state.description ?? "",
+              lastMessage: "",
+              responseFallback: "",
             };
             this.subagentByToolUseId.set(update.toolCallId, subagent);
             await this.options.onSubagentStarted?.({
@@ -336,13 +390,18 @@ class RuntimeAcpClient implements Client {
             } as any);
           }
 
+          const completionTitle = meaningfulCompletionTitle(update.title, state.toolName ?? "Task");
+          if (completionTitle.length > 0) {
+            subagent.responseFallback = completionTitle;
+          }
+
           if (update.status === "completed" || update.status === "failed") {
             await this.options.onSubagentStopped?.({
               agentId: subagent.agentId,
               agentType: subagent.agentType,
               toolUseId: subagent.toolUseId,
               description: subagent.description,
-              lastMessage: "",
+              lastMessage: resolveSubagentLastMessage(subagent, update),
               isResponseUpdate: false,
             } as any);
             this.subagentByToolUseId.delete(update.toolCallId);
@@ -375,22 +434,6 @@ class RuntimeAcpClient implements Client {
 
         if (update.status === "completed" || update.status === "failed") {
           if (state.toolName === "ExitPlanMode") {
-            return;
-          }
-
-          if (state.isSubagentLauncher) {
-            const subagent = this.subagentByToolUseId.get(update.toolCallId);
-            if (subagent) {
-              await this.options.onSubagentStopped?.({
-                agentId: subagent.agentId,
-                agentType: subagent.agentType,
-                toolUseId: subagent.toolUseId,
-                description: subagent.description,
-                lastMessage: "",
-                isResponseUpdate: false,
-              } as any);
-              this.subagentByToolUseId.delete(update.toolCallId);
-            }
             return;
           }
 
@@ -502,6 +545,11 @@ async function createOrResumeSession(
   });
   return { sessionId: session.sessionId };
 }
+
+export const __testing = {
+  meaningfulCompletionTitle,
+  resolveSubagentLastMessage,
+};
 
 export const runClaudeViaAcp: AgentRunner = async ({
   prompt,

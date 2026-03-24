@@ -457,7 +457,7 @@ export const TimelineItem = memo(function TimelineItem({
     const EXPLORE_TOOL_NAMES = new Set(["Read", "Grep", "Search", "Glob", "ListDir"]);
     const isExploreStep = (s: { toolName: string; label?: string }) => {
       if (EXPLORE_TOOL_NAMES.has(s.toolName)) return true;
-      if (s.toolName === "Bash" && s.label) {
+      if (s.toolName.trim().toLowerCase() === "bash" && s.label) {
         const cmd = s.label.replace(/^Ran\s+/i, "").trim();
         return isExploreLikeBashCommand(cmd);
       }
@@ -471,6 +471,10 @@ export const TimelineItem = memo(function TimelineItem({
 
     const stepCount = steps.length;
     const durationText = item.durationSeconds != null ? `${item.durationSeconds}s` : "";
+    const fallbackLastMessage = !item.lastMessage && !isRunning && steps.length > 0
+      ? steps[steps.length - 1]?.label ?? null
+      : null;
+    const resolvedLastMessage = item.lastMessage ?? fallbackLastMessage;
     const statusParts = [
       stepCount > 0 ? `${stepCount} step${stepCount !== 1 ? "s" : ""}` : "",
       durationText,
@@ -631,13 +635,13 @@ export const TimelineItem = memo(function TimelineItem({
                 </div>
               ))}
 
-              {item.lastMessage && (
+              {resolvedLastMessage && (
                 <div className="px-1 text-sm text-foreground">
-                  <MarkdownBody content={item.lastMessage} testId="subagent-response-markdown" />
+                  <MarkdownBody content={resolvedLastMessage} testId="subagent-response-markdown" />
                 </div>
               )}
 
-              {!item.lastMessage && isRunning && (
+              {!resolvedLastMessage && isRunning && (
                 <div className="px-1 text-sm text-muted-foreground">
                   <span>Thinking…</span>
                 </div>
