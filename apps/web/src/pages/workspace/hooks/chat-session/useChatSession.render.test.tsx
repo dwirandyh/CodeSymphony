@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread, ChatTimelineSnapshot } from "@codesymphony/shared-types";
-import { api } from "../../../../lib/api";
+import { ApiError, api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useChatSession } from "./useChatSession";
 
@@ -45,16 +45,20 @@ vi.mock("../../../../lib/renderDebug", () => ({
   pushRenderDebug: vi.fn(),
 }));
 
-vi.mock("../../../../lib/api", () => ({
-  api: {
-    createThread: vi.fn(),
-    getOrCreatePrMrThread: vi.fn(),
-    renameThreadTitle: vi.fn(),
-    deleteThread: vi.fn(),
-    sendMessage: vi.fn(),
-    stopRun: vi.fn(),
-  },
-}));
+vi.mock("../../../../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../lib/api")>();
+  return {
+    ...actual,
+    api: {
+      createThread: vi.fn(),
+      getOrCreatePrMrThread: vi.fn(),
+      renameThreadTitle: vi.fn(),
+      deleteThread: vi.fn(),
+      sendMessage: vi.fn(),
+      stopRun: vi.fn(),
+    },
+  };
+});
 
 const invalidateQueriesMock = vi.fn();
 
@@ -99,6 +103,12 @@ function renderHook(desiredThreadId?: string, repositoryId?: string | null) {
 beforeEach(() => {
   threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
   snapshotState.data = null;
+  vi.mocked(api.createThread).mockReset();
+  vi.mocked(api.getOrCreatePrMrThread).mockReset();
+  vi.mocked(api.renameThreadTitle).mockReset();
+  vi.mocked(api.deleteThread).mockReset();
+  vi.mocked(api.sendMessage).mockReset();
+  vi.mocked(api.stopRun).mockReset();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -165,6 +175,7 @@ describe("useChatSession", () => {
       title: "PR / MR",
       kind: "review" as const,
       permissionProfile: "review_git" as const,
+      active: false,
     };
     threadsState.data = [reviewThread, makeThread("thread-b", true)];
     vi.mocked(api.deleteThread).mockResolvedValue(undefined);
@@ -175,6 +186,7 @@ describe("useChatSession", () => {
       await hookResult.closeThread("pr-mr-thread");
     });
 
+    expect(api.stopRun).not.toHaveBeenCalled();
     expect(api.deleteThread).toHaveBeenCalledWith("pr-mr-thread");
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
   });
@@ -199,6 +211,65 @@ describe("useChatSession", () => {
 
     renderHook("missing-thread");
 
+    expect(hookResult.selectedThreadId).toBe("thread-b");
+  });
+
+  it("creates a replacement thread before removing the last thread", async () => {
+    threadsState.data = [makeThread("solo-thread")];
+    vi.mocked(api.createThread).mockResolvedValue(makeThread("replacement-thread"));
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+
+    renderHook("solo-thread");
+
+    await act(async () => {
+      await hookResult.closeThread("solo-thread");
+    });
+
+    expect(api.createThread).toHaveBeenCalledWith("wt-1", { title: "New Thread" });
+    expect(api.deleteThread).toHaveBeenCalledWith("solo-thread");
+    expect(hookResult.selectedThreadId).toBe("replacement-thread");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["replacement-thread"]);
+
+    renderHook("solo-thread");
+
+    expect(hookResult.selectedThreadId).toBe("replacement-thread");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["replacement-thread"]);
+  });
+
+  it("keeps a newly created thread selected and appended while query data is stale", async () => {
+    vi.mocked(api.createThread).mockResolvedValue(makeThread("thread-c"));
+
+    renderHook("thread-b");
+
+    await act(async () => {
+      await hookResult.createAdditionalThread();
+    });
+
+    expect(api.createThread).toHaveBeenCalledWith("wt-1", { title: "New Thread" });
+    expect(hookResult.selectedThreadId).toBe("thread-c");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-b", "thread-c"]);
+
+    renderHook("thread-b");
+
+    expect(hookResult.selectedThreadId).toBe("thread-c");
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-b", "thread-c"]);
+  });
+
+  it("retries delete after stop when the first delete sees an active conflict", async () => {
+    threadsState.data = [makeThread("thread-a", true), makeThread("thread-b")];
+    vi.mocked(api.stopRun).mockResolvedValue(undefined);
+    vi.mocked(api.deleteThread)
+      .mockRejectedValueOnce(new ApiError("Cannot delete a thread while assistant is processing", 409))
+      .mockResolvedValueOnce(undefined);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    expect(api.stopRun).toHaveBeenCalledWith("thread-a");
+    expect(api.deleteThread).toHaveBeenCalledTimes(2);
     expect(hookResult.selectedThreadId).toBe("thread-b");
   });
 });

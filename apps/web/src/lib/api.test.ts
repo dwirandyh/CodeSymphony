@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { TeardownFailedError } from "./api";
+import { ApiError, TeardownFailedError } from "./api";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
@@ -214,9 +214,13 @@ describe("api", () => {
       await api.deleteThread("t1");
     });
 
-    it("delete thread throws on error", async () => {
-      mockFetch.mockReturnValueOnce(mockError(500, "fail"));
-      await expect(api.deleteThread("t1")).rejects.toThrow("fail");
+    it("delete thread throws ApiError on error", async () => {
+      mockFetch.mockReturnValueOnce(mockError(409, "fail"));
+      await expect(api.deleteThread("t1")).rejects.toMatchObject({
+        name: "ApiError",
+        message: "fail",
+        status: 409,
+      });
     });
   });
 
@@ -248,9 +252,22 @@ describe("api", () => {
       await api.stopRun("t1");
     });
 
-    it("throws on error", async () => {
-      mockFetch.mockReturnValueOnce(mockError(500, "fail"));
-      await expect(api.stopRun("t1")).rejects.toThrow("fail");
+    it("throws ApiError on error", async () => {
+      mockFetch.mockReturnValueOnce(mockError(404, "fail"));
+      await expect(api.stopRun("t1")).rejects.toMatchObject({
+        name: "ApiError",
+        message: "fail",
+        status: 404,
+      });
+    });
+  });
+
+  describe("ApiError", () => {
+    it("stores HTTP status", () => {
+      const error = new ApiError("bad", 409);
+      expect(error.name).toBe("ApiError");
+      expect(error.message).toBe("bad");
+      expect(error.status).toBe(409);
     });
   });
 

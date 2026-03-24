@@ -28,6 +28,7 @@ export interface UseChatSessionOptions {
   desiredThreadId?: string;
   repositoryId?: string | null;
   onThreadChange?: (threadId: string | null) => void;
+  onThreadMissing?: (threadId: string) => void;
   timelineEnabled?: boolean;
 }
 

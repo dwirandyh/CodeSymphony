@@ -1,4 +1,8 @@
-export { createChatService } from "./chatService.js";
+export {
+  createChatService,
+  ChatThreadNotFoundError,
+  ChatThreadActiveConflictError,
+} from "./chatService.js";
 export type {
   WorktreeStateSnapshot,
   ActiveModelProvider,

@@ -71,7 +71,7 @@ describe("repositoryService primary root workspace", () => {
     const thread = await prisma.chatThread.findFirst({
       where: {
         worktreeId: rootWorktree!.id,
-        title: "Main Thread",
+        title: "New Thread",
       },
     });
     expect(thread).toBeTruthy();
@@ -137,7 +137,7 @@ describe("repositoryService primary root workspace", () => {
     const thread = await prisma.chatThread.findFirst({
       where: {
         worktreeId: listedRepository!.worktrees[0].id,
-        title: "Main Thread",
+        title: "New Thread",
       },
     });
     expect(thread).toBeTruthy();
@@ -185,7 +185,7 @@ describe("repositoryService primary root workspace", () => {
     expect(rootWorktree).toBeDefined();
 
     await prisma.chatThread.updateMany({
-      where: { worktreeId: rootWorktree!.id, title: "Main Thread" },
+      where: { worktreeId: rootWorktree!.id, title: "New Thread" },
       data: { title: "Renamed Root Thread", titleEditedManually: true },
     });
 

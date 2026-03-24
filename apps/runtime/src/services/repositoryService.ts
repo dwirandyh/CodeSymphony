@@ -4,6 +4,7 @@ import prismaClientPkg, { type PrismaClient } from "@prisma/client";
 import { CreateRepositoryInputSchema, UpdateRepositoryScriptsInputSchema, type CreateRepositoryInput, type Repository, type UpdateRepositoryScriptsInput } from "@codesymphony/shared-types";
 import { ensureGitRepository, detectDefaultBranch, getCurrentBranch, listBranches } from "./git.js";
 import { mapRepository } from "./mappers.js";
+import { DEFAULT_THREAD_TITLE } from "./chat/chatNamingService.js";
 
 const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
 
@@ -63,7 +64,7 @@ export function createRepositoryService(prisma: PrismaClient) {
     await prisma.chatThread.create({
       data: {
         worktreeId,
-        title: "Main Thread",
+        title: DEFAULT_THREAD_TITLE,
       },
     });
   }
@@ -240,7 +241,7 @@ export function createRepositoryService(prisma: PrismaClient) {
           await tx.chatThread.create({
             data: {
               worktreeId: primaryWorktree.id,
-              title: "Main Thread",
+              title: DEFAULT_THREAD_TITLE,
             },
           });
 

@@ -16,7 +16,9 @@ import type {
   ChatTimelineItem,
   ChatTimelineSummary,
 } from "@codesymphony/shared-types";
-import { api } from "../../../../lib/api";
+import { ApiError, api } from "../../../../lib/api";
+
+const DEFAULT_THREAD_TITLE = "New Thread";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreads } from "../../../../hooks/queries/useThreads";
@@ -54,6 +56,61 @@ function resolvePreferredThreadId(threads: ChatThread[]): string | null {
   }
 
   return threads[threads.length - 1]?.id ?? null;
+}
+
+function areThreadListsEqual(current: ChatThread[], next: ChatThread[]): boolean {
+  return current.length === next.length && current.every((thread, index) => (
+    thread.id === next[index]?.id
+    && thread.title === next[index]?.title
+    && thread.claudeSessionId === next[index]?.claudeSessionId
+    && thread.active === next[index]?.active
+    && thread.updatedAt === next[index]?.updatedAt
+  ));
+}
+
+function upsertThreadInList(current: ChatThread[] | undefined, thread: ChatThread): ChatThread[] {
+  const next = current ? [...current] : [];
+  const existingIndex = next.findIndex((entry) => entry.id === thread.id);
+  if (existingIndex === -1) {
+    next.push(thread);
+    return next;
+  }
+  next[existingIndex] = thread;
+  return next;
+}
+
+function removeThreadFromList(current: ChatThread[] | undefined, threadId: string): ChatThread[] | undefined {
+  if (!current) {
+    return current;
+  }
+
+  const next = current.filter((thread) => thread.id !== threadId);
+  return next.length === current.length ? current : next;
+}
+
+function mergeThreadList(params: {
+  queriedThreads: ChatThread[];
+  localThreads: ChatThread[];
+  optimisticCreatedThreadIds: Set<string>;
+  locallyRemovedThreadIds: Set<string>;
+}): ChatThread[] {
+  const mergedThreads = params.queriedThreads.filter(
+    (thread) => !params.locallyRemovedThreadIds.has(thread.id),
+  );
+
+  for (const optimisticThread of params.localThreads) {
+    if (!params.optimisticCreatedThreadIds.has(optimisticThread.id)) {
+      continue;
+    }
+    if (params.locallyRemovedThreadIds.has(optimisticThread.id)) {
+      continue;
+    }
+    if (!mergedThreads.some((thread) => thread.id === optimisticThread.id)) {
+      mergedThreads.push(optimisticThread);
+    }
+  }
+
+  return mergedThreads;
 }
 
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
@@ -180,6 +237,7 @@ export function useChatSession(
   const activeThreadIdRef = useRef<string | null>(null);
   const creatingThreadRef = useRef(false);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
+  const locallyRemovedThreadIdsRef = useRef<Set<string>>(new Set());
   const prevThreadIdRef = useRef<string | null>(null);
   const prevSeedThreadRef = useRef<string | null>(null);
   const prevRequestedThreadIdRef = useRef<string | null>(null);
@@ -188,18 +246,22 @@ export function useChatSession(
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
   const rafIdRef = useRef<number | null>(null);
   const lastAppliedSnapshotKeyByThreadRef = useRef<Map<string, string>>(new Map());
+  const closingThreadIdsRef = useRef<Set<string>>(new Set());
 
   activeThreadIdRef.current = selectedThreadId;
 
   const { data: queriedThreads } = useThreads(selectedWorktreeId);
 
   const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
+  const suppressAutoCreateRef = useRef(false);
 
   useEffect(() => {
     const worktreeChanged = selectedWorktreeId !== prevWorktreeIdRef2.current;
 
     if (!selectedWorktreeId) {
       prevWorktreeIdRef2.current = selectedWorktreeId;
+      optimisticCreatedThreadIdsRef.current.clear();
+      locallyRemovedThreadIdsRef.current.clear();
       setWaitingAssistant(null);
       setThreads([]);
       setSelectedThreadId(null);
@@ -209,6 +271,9 @@ export function useChatSession(
     }
 
     if (worktreeChanged) {
+      suppressAutoCreateRef.current = false;
+      optimisticCreatedThreadIdsRef.current.clear();
+      locallyRemovedThreadIdsRef.current.clear();
       setWaitingAssistant(null);
       setMessages([]);
       setEvents([]);
@@ -218,21 +283,14 @@ export function useChatSession(
 
     prevWorktreeIdRef2.current = selectedWorktreeId;
 
-    setThreads((current) => {
-      const optimisticCreatedThreadIds = optimisticCreatedThreadIdsRef.current;
-      const optimisticThreads = current.filter((thread) => optimisticCreatedThreadIds.has(thread.id));
-      const mergedThreads = [...queriedThreads];
-      for (const optimisticThread of optimisticThreads) {
-        if (!mergedThreads.some((thread) => thread.id === optimisticThread.id)) {
-          mergedThreads.push(optimisticThread);
-        }
-      }
-
-      if (current.length === mergedThreads.length && current.every((t, i) => t.id === mergedThreads[i].id && t.title === mergedThreads[i].title && t.claudeSessionId === mergedThreads[i].claudeSessionId && t.active === mergedThreads[i].active && t.updatedAt === mergedThreads[i].updatedAt)) {
-        return current;
-      }
-      return mergedThreads;
+    const mergedThreads = mergeThreadList({
+      queriedThreads,
+      localThreads: threads,
+      optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+      locallyRemovedThreadIds: locallyRemovedThreadIdsRef.current,
     });
+
+    setThreads((current) => (areThreadListsEqual(current, mergedThreads) ? current : mergedThreads));
 
     const requestedThreadId = options?.desiredThreadId ?? null;
     const requestedThreadIdChanged = prevRequestedThreadIdRef.current !== requestedThreadId;
@@ -241,11 +299,11 @@ export function useChatSession(
       prevRequestedThreadIdRef.current = requestedThreadId;
     }
 
-    if (queriedThreads.length > 0) {
+    if (mergedThreads.length > 0) {
       if (requestedThreadIdChanged) {
         const nextThreadId = requestedThreadId != null
-          ? queriedThreads.find((thread) => thread.id === requestedThreadId)?.id ?? resolvePreferredThreadId(queriedThreads)
-          : resolvePreferredThreadId(queriedThreads);
+          ? mergedThreads.find((thread) => thread.id === requestedThreadId)?.id ?? resolvePreferredThreadId(mergedThreads)
+          : resolvePreferredThreadId(mergedThreads);
 
         if (selectedThreadId !== nextThreadId) {
           setSelectedThreadId(nextThreadId);
@@ -254,21 +312,30 @@ export function useChatSession(
       }
 
       const selectedThreadStillExists =
-        selectedThreadId != null && queriedThreads.some((thread) => thread.id === selectedThreadId);
+        selectedThreadId != null && mergedThreads.some((thread) => thread.id === selectedThreadId);
 
       if (selectedThreadStillExists) return;
 
-      const nextThreadId = resolvePreferredThreadId(queriedThreads);
+      const nextThreadId = resolvePreferredThreadId(mergedThreads);
       if (selectedThreadId !== nextThreadId) {
         setSelectedThreadId(nextThreadId);
       }
     } else {
+      if (suppressAutoCreateRef.current) {
+        if (selectedThreadId !== null) {
+          setSelectedThreadId(null);
+        }
+        if (threads.length > 0) {
+          setThreads([]);
+        }
+        return;
+      }
       if (creatingThreadRef.current) return;
       let cancelled = false;
       creatingThreadRef.current = true;
       void (async () => {
         try {
-          const created = await api.createThread(selectedWorktreeId, { title: "Main Thread" });
+          const created = await api.createThread(selectedWorktreeId, { title: DEFAULT_THREAD_TITLE });
           if (cancelled) return;
           setThreads([created]);
           setSelectedThreadId(created.id);
@@ -381,6 +448,7 @@ export function useChatSession(
   }, [selectedThreadId]);
 
   function clearThreadTrackingState(threadId: string) {
+    optimisticCreatedThreadIdsRef.current.delete(threadId);
     seenEventIdsByThreadRef.current.delete(threadId);
     lastEventIdxByThreadRef.current.delete(threadId);
     loggedOrphanEventIdsByThreadRef.current.delete(threadId);
@@ -400,6 +468,40 @@ export function useChatSession(
 
   function clearWaitingAssistantForThread(threadId: string) {
     setWaitingAssistant((current) => (current?.threadId === threadId ? null : current));
+  }
+
+  function removeThreadLocally(threadId: string) {
+    locallyRemovedThreadIdsRef.current.add(threadId);
+    clearThreadTrackingState(threadId);
+    clearWaitingAssistantForThread(threadId);
+    setThreads((current) => {
+      const updated = current.filter((thread) => thread.id !== threadId);
+      const activeSelectedThreadId = activeThreadIdRef.current;
+      if (activeSelectedThreadId === threadId) {
+        const nextThreadId = resolvePreferredThreadId(updated);
+        setSelectedThreadId(nextThreadId);
+        if (!nextThreadId) {
+          setMessages([]);
+          setEvents([]);
+        }
+      }
+      return updated;
+    });
+  }
+
+  function handleMissingThread(threadId: string) {
+    if (activeThreadIdRef.current !== threadId) {
+      clearThreadTrackingState(threadId);
+      return;
+    }
+
+    if (!threads.some((thread) => thread.id === threadId)) {
+      clearThreadTrackingState(threadId);
+      return;
+    }
+
+    removeThreadLocally(threadId);
+    options?.onThreadMissing?.(threadId);
   }
 
   function invalidateRepositoryReviews() {
@@ -438,6 +540,7 @@ export function useChatSession(
     pendingMessageMutationsRef,
     rafIdRef,
     onError,
+    onThreadMissing: handleMissingThread,
     onBranchRenamed,
   });
 
@@ -466,16 +569,22 @@ export function useChatSession(
   }
 
   async function createAdditionalThread() {
+    suppressAutoCreateRef.current = false;
     onError(null);
     try {
-      const result = await createThreadInCurrentContext(`Thread ${threads.length + 1}`);
+      const result = await createThreadInCurrentContext(DEFAULT_THREAD_TITLE);
       if (!result) return null;
       const { created, worktreeId } = result;
+      locallyRemovedThreadIdsRef.current.delete(created.id);
       optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         return [...current, created];
       });
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(worktreeId),
+        (current) => upsertThreadInList(current, created),
+      );
       setSelectedThreadId(created.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
       return created;
@@ -486,16 +595,22 @@ export function useChatSession(
   }
 
   async function createThreadAndSendMessage(title: string, content: string, mode: ChatMode = "default") {
+    suppressAutoCreateRef.current = false;
     onError(null);
     try {
       const result = await createThreadInCurrentContext(title);
       if (!result) return;
       const { created, worktreeId } = result;
+      locallyRemovedThreadIdsRef.current.delete(created.id);
       optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         return [...current, created];
       });
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(worktreeId),
+        (current) => upsertThreadInList(current, created),
+      );
       setSelectedThreadId(created.id);
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
       startWaitingAssistant(created.id);
@@ -523,6 +638,7 @@ export function useChatSession(
     setSendingMessage(true);
     try {
       const created = await api.getOrCreatePrMrThread(selectedWorktreeId);
+      locallyRemovedThreadIdsRef.current.delete(created.id);
       optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         const existingIndex = current.findIndex((thread) => thread.id === created.id);
@@ -534,18 +650,10 @@ export function useChatSession(
         return updated;
       });
       setSelectedThreadId(created.id);
-      queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(selectedWorktreeId), (current) => {
-        if (!current) {
-          return current;
-        }
-        const existingIndex = current.findIndex((thread) => thread.id === created.id);
-        if (existingIndex === -1) {
-          return [...current, created];
-        }
-        const updated = [...current];
-        updated[existingIndex] = created;
-        return updated;
-      });
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(selectedWorktreeId),
+        (current) => upsertThreadInList(current, created),
+      );
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
       invalidateRepositoryReviews();
       startWaitingAssistant(created.id);
@@ -562,35 +670,81 @@ export function useChatSession(
   }
 
   async function closeThread(threadId: string) {
+    if (closingThreadIdsRef.current.has(threadId)) {
+      return;
+    }
+
+    closingThreadIdsRef.current.add(threadId);
     onError(null);
     setClosingThreadId(threadId);
     try {
-      const closedThreadWasPrMr = threads.some((thread) => thread.id === threadId && thread.kind === "review");
-      await api.deleteThread(threadId);
-      setThreads((current) => {
-        const updated = current.filter((t) => t.id !== threadId);
-        if (selectedThreadId === threadId) {
-          const nextThreadId = resolvePreferredThreadId(updated);
-          setWaitingAssistant(null);
-          setSelectedThreadId(nextThreadId);
-          if (!nextThreadId) {
-            setMessages([]);
-            setEvents([]);
+      const targetThread = threads.find((thread) => thread.id === threadId) ?? null;
+      const closedThreadWasPrMr = targetThread?.kind === "review";
+      const shouldStopFirst = Boolean(
+        targetThread?.active
+        || waitingAssistant?.threadId === threadId
+        || stopRequestedThreadId === threadId
+        || stoppingThreadId === threadId,
+      );
+      const wasLastThread = threads.length === 1 && threads[0]?.id === threadId;
+
+      let replacementThread: ChatThread | null = null;
+      if (wasLastThread && selectedWorktreeId) {
+        replacementThread = await api.createThread(selectedWorktreeId, { title: DEFAULT_THREAD_TITLE });
+        suppressAutoCreateRef.current = false;
+        locallyRemovedThreadIdsRef.current.delete(replacementThread.id);
+        optimisticCreatedThreadIdsRef.current.add(replacementThread.id);
+        setThreads((current) => {
+          if (current.some((thread) => thread.id === replacementThread!.id)) {
+            return current;
+          }
+          return [...current, replacementThread!];
+        });
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(selectedWorktreeId),
+          (current) => upsertThreadInList(current, replacementThread!),
+        );
+        setSelectedThreadId(replacementThread.id);
+      }
+
+      if (shouldStopFirst) {
+        try {
+          await api.stopRun(threadId);
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.status !== 400) {
+            throw error;
           }
         }
-        return updated;
-      });
+      }
+
+      try {
+        await api.deleteThread(threadId);
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 409) {
+          throw error;
+        }
+        await api.deleteThread(threadId);
+      }
+
+      if (wasLastThread && !replacementThread) {
+        suppressAutoCreateRef.current = true;
+      }
+      removeThreadLocally(threadId);
       if (selectedWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(selectedWorktreeId),
+          (current) => removeThreadFromList(current, threadId),
+        );
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
       }
       if (closedThreadWasPrMr) {
         invalidateRepositoryReviews();
       }
-      clearThreadTrackingState(threadId);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to close session");
     } finally {
-      setClosingThreadId(null);
+      closingThreadIdsRef.current.delete(threadId);
+      setClosingThreadId((current) => (current === threadId ? null : current));
     }
   }
 

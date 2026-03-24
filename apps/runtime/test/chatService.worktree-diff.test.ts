@@ -94,15 +94,21 @@ async function waitForTerminalEvent(
   chatService: ReturnType<typeof createChatService>,
   threadId: string,
   timeoutMs = 4000,
+  options?: { requireWorktreeDiff?: boolean },
 ): Promise<ChatEvent[]> {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
     const events = await chatService.listEvents(threadId);
     const done = events.some((event) => event.type === "chat.completed" || event.type === "chat.failed");
-    if (done) {
+    const hasWorktreeDiff = events.some(
+      (event) => event.type === "tool.finished" && event.payload.source === "worktree.diff",
+    );
+
+    if (done && (!options?.requireWorktreeDiff || hasWorktreeDiff)) {
       return events;
     }
+
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
@@ -153,7 +159,7 @@ describe("chatService worktree diff delta", () => {
       content: "update src/b.ts",
     });
 
-    const events = await waitForTerminalEvent(chatService, threadId);
+    const events = await waitForTerminalEvent(chatService, threadId, 4000, { requireWorktreeDiff: true });
     const diffEvent = worktreeDiffEvent(events);
     expect(diffEvent).toBeDefined();
     expect(diffEvent?.payload.changedFiles).toEqual(["src/b.ts"]);
@@ -218,7 +224,7 @@ describe("chatService worktree diff delta", () => {
       content: "revert local changes",
     });
 
-    const events = await waitForTerminalEvent(chatService, threadId);
+    const events = await waitForTerminalEvent(chatService, threadId, 4000, { requireWorktreeDiff: true });
     const diffEvent = worktreeDiffEvent(events);
     expect(diffEvent).toBeDefined();
     expect(diffEvent?.payload.changedFiles).toEqual(["src/value.ts"]);

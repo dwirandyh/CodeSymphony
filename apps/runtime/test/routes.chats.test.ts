@@ -2,7 +2,11 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
-import { createChatService } from "../src/services/chat";
+import {
+  createChatService,
+  ChatThreadActiveConflictError,
+  ChatThreadNotFoundError,
+} from "../src/services/chat";
 import { registerChatRoutes, parseStreamStartCursor, formatSseEvent } from "../src/routes/chats";
 
 describe("parseStreamStartCursor", () => {
@@ -193,6 +197,20 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "DELETE", url: "/api/threads/t1" });
       expect(res.statusCode).toBe(204);
     });
+
+    it("returns 404 when thread is missing", async () => {
+      mockChatService.deleteThread.mockRejectedValue(new ChatThreadNotFoundError());
+      const res = await app.inject({ method: "DELETE", url: "/api/threads/missing" });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "Chat thread not found" });
+    });
+
+    it("returns 409 when thread is still active", async () => {
+      mockChatService.deleteThread.mockRejectedValue(new ChatThreadActiveConflictError());
+      const res = await app.inject({ method: "DELETE", url: "/api/threads/t1" });
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toEqual({ error: "Cannot delete a thread while assistant is processing" });
+    });
   });
 
   describe("POST /api/threads/:id/messages", () => {
@@ -295,6 +313,13 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/events" });
       expect(res.statusCode).toBe(200);
     });
+
+    it("returns 404 when thread events are requested for a missing thread", async () => {
+      mockChatService.listEvents.mockRejectedValue(new ChatThreadNotFoundError());
+      const res = await app.inject({ method: "GET", url: "/api/threads/missing/events" });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "Chat thread not found" });
+    });
   });
 
   describe("GET /api/threads/:id/snapshot", () => {
@@ -320,9 +345,23 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/snapshot" });
       expect(res.statusCode).toBe(200);
     });
+
+    it("returns 404 when thread snapshot is requested for a missing thread", async () => {
+      mockChatService.listThreadSnapshot.mockRejectedValue(new ChatThreadNotFoundError());
+      const res = await app.inject({ method: "GET", url: "/api/threads/missing/snapshot" });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "Chat thread not found" });
+    });
   });
 
   describe("GET /api/threads/:id/timeline", () => {
+    it("returns 404 when timeline is requested for a missing thread", async () => {
+      mockChatService.listThreadSnapshot.mockRejectedValue(new ChatThreadNotFoundError());
+      const res = await app.inject({ method: "GET", url: "/api/threads/missing/timeline" });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "Chat thread not found" });
+    });
+
     it("does not leak overlap-unresolved subagent explore events into top-level explore cards", async () => {
       const suffix = uniqueSuffix();
       const repository = await prisma.repository.create({
@@ -344,7 +383,7 @@ describe("chat routes", () => {
       const thread = await prisma.chatThread.create({
         data: {
           worktreeId: worktree.id,
-          title: "Main Thread",
+          title: "New Thread",
         },
       });
       const assistantMessage = await prisma.chatMessage.create({
@@ -398,6 +437,16 @@ describe("chat routes", () => {
       expect(exploreItems).toHaveLength(0);
       expect(activityItems).toHaveLength(0);
       expect(subagentItems).toHaveLength(2);
+    });
+  });
+
+  describe("GET /api/threads/:id/events/stream", () => {
+    it("returns 404 when stream is requested for a missing thread", async () => {
+      mockChatService.getThreadById.mockResolvedValue(null);
+      const res = await app.inject({ method: "GET", url: "/api/threads/missing/events/stream" });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "Chat thread not found" });
+      expect(mockEventHub.subscribe).not.toHaveBeenCalled();
     });
   });
 

@@ -6,7 +6,7 @@ function createThread(overrides: Partial<ChatThread> = {}): ChatThread {
   return {
     id: "thread-1",
     worktreeId: "worktree-1",
-    title: "Thread 1",
+    title: "New Thread",
     kind: "default",
     permissionProfile: "default",
     titleEditedManually: false,

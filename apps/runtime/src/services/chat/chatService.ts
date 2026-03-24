@@ -59,6 +59,7 @@ import {
 } from "./chatGateService.js";
 import {
   clampThreadTitle,
+  DEFAULT_THREAD_TITLE,
   isDefaultThreadTitle,
   maybeAutoRenameThreadAfterFirstAssistantReply,
   maybeAutoRenameBranchAfterFirstAssistantReply,
@@ -70,6 +71,20 @@ const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
 const PR_MR_THREAD_TITLE = "PR / MR";
+
+export class ChatThreadNotFoundError extends Error {
+  constructor() {
+    super("Chat thread not found");
+    this.name = "ChatThreadNotFoundError";
+  }
+}
+
+export class ChatThreadActiveConflictError extends Error {
+  constructor() {
+    super("Cannot delete a thread while assistant is processing");
+    this.name = "ChatThreadActiveConflictError";
+  }
+}
 
 function getAttachmentStorageDir(worktreeId: string, messageId: string): string {
   return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, messageId);
@@ -96,6 +111,14 @@ export function createChatService(deps: RuntimeDeps) {
   const pendingPermissionsByThread = new Map<string, Map<string, PendingPermissionEntry>>();
   const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
   const pendingPlanByThread = new Map<string, PendingPlanEntry>();
+
+  async function requireThread(threadId: string): Promise<NonNullable<Awaited<ReturnType<typeof deps.prisma.chatThread.findUnique>>>> {
+    const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
+    if (!thread) {
+      throw new ChatThreadNotFoundError();
+    }
+    return thread;
+  }
 
   function clearScheduledAssistantRun(threadId: string): boolean {
     const timer = scheduledAssistantRunsByThread.get(threadId);
@@ -137,7 +160,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       const worktreePath = thread.worktree.path;
@@ -596,7 +619,7 @@ export function createChatService(deps: RuntimeDeps) {
       const thread = await deps.prisma.chatThread.create({
         data: {
           worktreeId,
-          title: input.title ?? (kind === "review" ? PR_MR_THREAD_TITLE : "Main Thread"),
+          title: input.title ?? (kind === "review" ? PR_MR_THREAD_TITLE : DEFAULT_THREAD_TITLE),
           kind,
           permissionProfile,
         },
@@ -618,7 +641,7 @@ export function createChatService(deps: RuntimeDeps) {
         where: { id: threadId },
       });
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       const updatedThread = await deps.prisma.chatThread.update({
@@ -633,16 +656,10 @@ export function createChatService(deps: RuntimeDeps) {
     },
 
     async deleteThread(threadId: string): Promise<void> {
-      const thread = await deps.prisma.chatThread.findUnique({
-        where: { id: threadId },
-      });
-
-      if (!thread) {
-        throw new Error("Chat thread not found");
-      }
+      await requireThread(threadId);
 
       if (activeThreads.has(threadId)) {
-        throw new Error("Cannot delete a thread while assistant is processing");
+        throw new ChatThreadActiveConflictError();
       }
 
       await deps.prisma.chatThread.delete({
@@ -661,10 +678,13 @@ export function createChatService(deps: RuntimeDeps) {
     },
 
     async listEvents(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
+      await requireThread(threadId);
       return deps.eventHub.list(threadId, afterIdx);
     },
 
     async listThreadSnapshot(threadId: string): Promise<ChatThreadSnapshot> {
+      await requireThread(threadId);
+
       const [messageRows, eventRows] = await deps.prisma.$transaction([
         deps.prisma.chatMessage.findMany({
           where: { threadId },
@@ -698,7 +718,7 @@ export function createChatService(deps: RuntimeDeps) {
         where: { id: threadId },
       });
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       if (!activeThreads.has(threadId)) {
@@ -736,7 +756,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       const pendingMap = pendingPermissionsByThread.get(threadId);
@@ -821,7 +841,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       const pendingMap = pendingQuestionsByThread.get(threadId);
@@ -856,7 +876,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       const pendingMap = pendingQuestionsByThread.get(threadId);
@@ -890,7 +910,7 @@ export function createChatService(deps: RuntimeDeps) {
     async approvePlan(threadId: string): Promise<void> {
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       let plan = pendingPlanByThread.get(threadId);
@@ -921,7 +941,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       let plan = pendingPlanByThread.get(threadId);
@@ -967,7 +987,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       if (!thread) {
-        throw new Error("Chat thread not found");
+        throw new ChatThreadNotFoundError();
       }
 
       if (activeThreads.has(threadId)) {

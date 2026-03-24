@@ -142,32 +142,32 @@ describe("useChatSession metadata seed helpers", () => {
 
 describe("applyThreadTitleUpdate", () => {
   it("returns the same array when the title is unchanged", () => {
-    const threads = [makeThread("Main Thread")];
-    const next = applyThreadTitleUpdate(threads, "thread-1", "Main Thread");
+    const threads = [makeThread("New Thread")];
+    const next = applyThreadTitleUpdate(threads, "thread-1", "New Thread");
     expect(next).toBe(threads);
   });
 
   it("returns updated array when title changes", () => {
-    const threads = [makeThread("Main Thread")];
+    const threads = [makeThread("New Thread")];
     const next = applyThreadTitleUpdate(threads, "thread-1", "Renamed title");
     expect(next).not.toBe(threads);
     expect(next[0].title).toBe("Renamed title");
   });
 
   it("returns same array when threadId is null", () => {
-    const threads = [makeThread("Main Thread")];
+    const threads = [makeThread("New Thread")];
     const next = applyThreadTitleUpdate(threads, null, "New Title");
     expect(next).toBe(threads);
   });
 
   it("returns same array when threadTitle is null", () => {
-    const threads = [makeThread("Main Thread")];
+    const threads = [makeThread("New Thread")];
     const next = applyThreadTitleUpdate(threads, "thread-1", null);
     expect(next).toBe(threads);
   });
 
   it("returns same array when thread is not found", () => {
-    const threads = [makeThread("Main Thread")];
+    const threads = [makeThread("New Thread")];
     const next = applyThreadTitleUpdate(threads, "non-existent", "New Title");
     expect(next).toBe(threads);
   });
@@ -381,7 +381,7 @@ describe("deriveSelectedThreadUiState", () => {
   it("returns running and keeps composer enabled after refresh for an active selected thread", () => {
     const state = deriveSelectedThreadUiState({
       selectedThreadId: "thread-1",
-      threads: [{ ...makeThread("Main Thread"), active: true }],
+      threads: [{ ...makeThread("New Thread"), active: true }],
       events: [],
       sendingMessage: false,
       waitingAssistant: { threadId: "thread-1", afterIdx: 10 },
@@ -394,7 +394,7 @@ describe("deriveSelectedThreadUiState", () => {
   it("returns waiting_approval over running when a permission gate is pending", () => {
     const state = deriveSelectedThreadUiState({
       selectedThreadId: "thread-1",
-      threads: [{ ...makeThread("Main Thread"), active: true }],
+      threads: [{ ...makeThread("New Thread"), active: true }],
       events: [makeEvent(1, "permission.requested", { requestId: "perm-1", toolName: "Bash" })],
       sendingMessage: false,
       waitingAssistant: { threadId: "thread-1", afterIdx: 0 },
@@ -407,7 +407,7 @@ describe("deriveSelectedThreadUiState", () => {
   it("returns review_plan over running once a pending plan run has completed", () => {
     const state = deriveSelectedThreadUiState({
       selectedThreadId: "thread-1",
-      threads: [{ ...makeThread("Main Thread"), active: true }],
+      threads: [{ ...makeThread("New Thread"), active: true }],
       events: [
         makeEvent(1, "plan.created", { content: "Plan body", filePath: "/tmp/plan.md" }),
         makeEvent(2, "chat.completed", {}),
@@ -423,7 +423,7 @@ describe("deriveSelectedThreadUiState", () => {
   it("disables the composer only while a send request is in flight", () => {
     const state = deriveSelectedThreadUiState({
       selectedThreadId: "thread-1",
-      threads: [{ ...makeThread("Main Thread"), active: true }],
+      threads: [{ ...makeThread("New Thread"), active: true }],
       events: [],
       sendingMessage: true,
       waitingAssistant: { threadId: "thread-1", afterIdx: 0 },

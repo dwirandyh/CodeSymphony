@@ -9,6 +9,7 @@ import type {
   ChatThread,
   ChatTimelineSnapshot,
 } from "@codesymphony/shared-types";
+import { ApiError } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreadEventStream } from "./useThreadEventStream";
 
@@ -69,14 +70,18 @@ const { runtimeBaseUrlMock, getTimelineSnapshotMock } = vi.hoisted(() => ({
   getTimelineSnapshotMock: vi.fn(),
 }));
 
-vi.mock("../../../../lib/api", () => ({
-  api: {
-    getTimelineSnapshot: getTimelineSnapshotMock,
-    get runtimeBaseUrl() {
-      return runtimeBaseUrlMock;
+vi.mock("../../../../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../lib/api")>();
+  return {
+    ...actual,
+    api: {
+      getTimelineSnapshot: getTimelineSnapshotMock,
+      get runtimeBaseUrl() {
+        return runtimeBaseUrlMock;
+      },
     },
-  },
-}));
+  };
+});
 
 let originalEventSource: typeof EventSource | undefined;
 let originalRequestAnimationFrame: typeof requestAnimationFrame | undefined;
@@ -114,6 +119,8 @@ function makeEvent(overrides: Partial<ChatEvent> & Pick<ChatEvent, "id" | "threa
 }
 
 let latestWaitingAssistant: { threadId: string; afterIdx: number } | null = null;
+
+const onThreadMissingMock = vi.fn();
 
 function HookHarness({
   selectedThreadId,
@@ -170,6 +177,7 @@ function HookHarness({
     pendingMessageMutationsRef,
     rafIdRef,
     onError: vi.fn(),
+    onThreadMissing: onThreadMissingMock,
   });
 
   return null;
@@ -207,6 +215,7 @@ beforeEach(() => {
   latestWaitingAssistant = null;
   invalidateQueriesMock.mockReset();
   getTimelineSnapshotMock.mockReset();
+  onThreadMissingMock.mockReset();
   getTimelineSnapshotMock.mockResolvedValue(makeSnapshot());
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
 
@@ -474,6 +483,21 @@ describe("useThreadEventStream", () => {
 
     const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
     expect(updated?.[0]?.active).toBe(false);
+  });
+
+  it("notifies when bootstrap snapshot reports missing thread", async () => {
+    const threadId = "selected-thread";
+    getTimelineSnapshotMock.mockRejectedValueOnce(new ApiError("Chat thread not found", 404));
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onThreadMissingMock).toHaveBeenCalledWith(threadId);
+    expect(MockEventSource.instances).toHaveLength(0);
   });
 
   it.each(["tool.started", "tool.output", "tool.finished"] as const)(

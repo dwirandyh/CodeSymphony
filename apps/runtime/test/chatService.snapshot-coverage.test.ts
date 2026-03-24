@@ -166,6 +166,28 @@ describe("chatService snapshot", () => {
     expect(snapshot.timeline.newestSeq).toBeNull();
   });
 
+  it("throws when snapshot is requested for a missing thread", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      agentRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    await expect(chatService.listThreadSnapshot("missing-thread")).rejects.toThrow("Chat thread not found");
+  });
+
+  it("throws when events are requested for a missing thread", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      agentRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    await expect(chatService.listEvents("missing-thread")).rejects.toThrow("Chat thread not found");
+  });
+
   it("matches runtime snapshot assembly for subagent-owned explore activity", async () => {
     const messages = [
       {

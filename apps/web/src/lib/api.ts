@@ -152,6 +152,16 @@ export class TeardownFailedError extends Error {
   }
 }
 
+export class ApiError extends Error {
+  public readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
 
@@ -167,7 +177,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(payload?.error ?? "Request failed");
+    throw new ApiError(payload?.error ?? "Request failed", response.status);
   }
 
   if (payload && typeof payload === "object" && "data" in payload) {
@@ -314,7 +324,7 @@ export const api = {
 
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
-      throw new Error(payload?.error ?? "Failed to delete thread");
+      throw new ApiError(payload?.error ?? "Failed to delete thread", response.status);
     }
   },
   listMessages: (threadId: string) =>
@@ -339,7 +349,7 @@ export const api = {
 
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
-      throw new Error(payload?.error ?? "Failed to stop run");
+      throw new ApiError(payload?.error ?? "Failed to stop run", response.status);
     }
   },
   answerQuestion: async (threadId: string, input: AnswerQuestionInput) => {

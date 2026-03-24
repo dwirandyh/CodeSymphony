@@ -5,6 +5,7 @@ import prismaClientPkg, { type PrismaClient } from "@prisma/client";
 import { CreateWorktreeInputSchema, type CreateWorktreeInput, type ScriptResult, type Worktree } from "@codesymphony/shared-types";
 import { createGitWorktree, getCurrentBranch, removeGitWorktree, renameBranch as renameBranchGit } from "./git.js";
 import { mapWorktree } from "./mappers.js";
+import { DEFAULT_THREAD_TITLE } from "./chat/chatNamingService.js";
 import { runScripts } from "./scriptRunner.js";
 
 const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
@@ -208,7 +209,7 @@ export function createWorktreeService(prisma: PrismaClient) {
           await prisma.chatThread.create({
             data: {
               worktreeId: created.id,
-              title: "Main Thread",
+              title: DEFAULT_THREAD_TITLE,
             },
           });
 

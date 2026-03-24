@@ -12,7 +12,7 @@ const threads: ChatThread[] = [
   {
     id: "thread-1",
     worktreeId: "wt-1",
-    title: "Main Thread",
+    title: "New Thread",
     kind: "default",
     permissionProfile: "default",
     titleEditedManually: false,

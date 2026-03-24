@@ -8,9 +8,11 @@ const TITLE_GENERATION_TIMEOUT_MS = 15000;
 const MAX_BRANCH_NAME_LENGTH = 60;
 const BRANCH_GENERATION_TIMEOUT_MS = 15000;
 
+export const DEFAULT_THREAD_TITLE = "New Thread";
+
 export function isDefaultThreadTitle(title: string): boolean {
   const normalized = title.trim();
-  return normalized === "Main Thread" || /^Thread\s+\d+$/.test(normalized);
+  return normalized === DEFAULT_THREAD_TITLE || normalized === "Main Thread" || /^Thread\s+\d+$/.test(normalized);
 }
 
 export function clampThreadTitle(input: string, maxLength = MAX_THREAD_TITLE_LENGTH): string {

@@ -1,7 +1,11 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ChatEvent, ChatThreadSnapshot, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import path from "node:path";
 import { z } from "zod";
+import {
+  ChatThreadActiveConflictError,
+  ChatThreadNotFoundError,
+} from "../services/chat/index.js";
 import { appendRuntimeDebugLog } from "./debug.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
@@ -65,6 +69,20 @@ function summarizeTimelineEnvelope(snapshot: ChatTimelineSnapshot) {
     messagesCount: snapshot.messages.length,
     eventsCount: snapshot.events.length,
   };
+}
+
+function replyForThreadRouteError(reply: FastifyReply, error: unknown, fallbackMessage: string) {
+  const message = error instanceof Error ? error.message : fallbackMessage;
+
+  if (error instanceof ChatThreadNotFoundError) {
+    return reply.code(404).send({ error: message });
+  }
+
+  if (error instanceof ChatThreadActiveConflictError) {
+    return reply.code(409).send({ error: message });
+  }
+
+  return reply.code(400).send({ error: message });
 }
 
 export async function registerChatRoutes(app: FastifyInstance) {
@@ -163,8 +181,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       await app.chatService.deleteThread(params.id);
       return reply.code(204).send();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to delete thread";
-      return reply.code(400).send({ error: message });
+      return replyForThreadRouteError(reply, error, "Unable to delete thread");
     }
   });
 
@@ -200,8 +217,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
         }
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to load thread snapshot";
-      return reply.code(400).send({ error: message });
+      return replyForThreadRouteError(reply, error, "Unable to load thread snapshot");
     }
   });
 
@@ -234,8 +250,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
         }
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to load timeline";
-      return reply.code(400).send({ error: message });
+      return replyForThreadRouteError(reply, error, "Unable to load timeline");
     }
   });
 
@@ -329,14 +344,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const events = await app.chatService.listEvents(params.id);
       return { data: events };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to list events";
-      return reply.code(400).send({ error: message });
+      return replyForThreadRouteError(reply, error, "Unable to list events");
     }
   });
 
   app.get("/threads/:id/events/stream", async (request, reply) => {
     try {
       const params = threadParams.parse(request.params);
+      await app.chatService.getThreadById(params.id).then((thread) => {
+        if (!thread) {
+          throw new ChatThreadNotFoundError();
+        }
+      });
       const query = streamEventQuery.parse(request.query);
       const startCursor = parseStreamStartCursor(query.afterIdx, request.headers["last-event-id"]);
       const streamRequestId = `sse-${params.id}-${Date.now()}`;
@@ -442,8 +461,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
       return reply;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to stream events";
-      return reply.code(400).send({ error: message });
+      return replyForThreadRouteError(reply, error, "Unable to stream events");
     }
   });
 }

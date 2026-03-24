@@ -12,7 +12,7 @@ import type {
   ChatThread,
   ChatTimelineSnapshot,
 } from "@codesymphony/shared-types";
-import { api } from "../../../../lib/api";
+import { ApiError, api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { logService } from "../../../../lib/logService";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
@@ -54,6 +54,7 @@ export interface UseThreadEventStreamParams {
   pendingMessageMutationsRef: MutableRefObject<PendingMessageMutation[]>;
   rafIdRef: MutableRefObject<number | null>;
   onError: (msg: string | null) => void;
+  onThreadMissing?: (threadId: string) => void;
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void;
 }
 
@@ -78,6 +79,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     pendingMessageMutationsRef,
     rafIdRef,
     onError,
+    onThreadMissing,
     onBranchRenamed,
   } = params;
 
@@ -376,7 +378,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             updateLastEventIdx(selectedThreadId, e.idx);
           }
         }
-      } catch {}
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          onThreadMissing?.(selectedThreadId);
+          return;
+        }
+      }
       if (!disposed) startStream();
     })();
 

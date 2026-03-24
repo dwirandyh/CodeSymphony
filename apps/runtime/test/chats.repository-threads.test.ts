@@ -45,7 +45,7 @@ describe("POST /api/repositories/:id/threads", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/repositories/repo-unknown/threads",
-      payload: { title: "Main Thread" },
+      payload: { title: "New Thread" },
     });
 
     expect(response.statusCode).toBe(404);
@@ -65,7 +65,7 @@ describe("POST /api/repositories/:id/threads", () => {
     chatCreateThread.mockResolvedValueOnce({
       id: "thread-1",
       worktreeId: "wt-root",
-      title: "Thread 1",
+      title: "New Thread",
       kind: "default",
       permissionProfile: "default",
       claudeSessionId: null,
@@ -77,11 +77,11 @@ describe("POST /api/repositories/:id/threads", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/repositories/repo-1/threads",
-      payload: { title: "Thread 1" },
+      payload: { title: "New Thread" },
     });
 
     expect(response.statusCode).toBe(201);
-    expect(chatCreateThread).toHaveBeenCalledWith("wt-root", { title: "Thread 1" });
+    expect(chatCreateThread).toHaveBeenCalledWith("wt-root", { title: "New Thread" });
   });
 
   it("falls back to an active worktree when no root-path worktree exists", async () => {
@@ -96,7 +96,7 @@ describe("POST /api/repositories/:id/threads", () => {
     chatCreateThread.mockResolvedValueOnce({
       id: "thread-2",
       worktreeId: "wt-feature",
-      title: "Thread 2",
+      title: "New Thread",
       kind: "default",
       permissionProfile: "default",
       claudeSessionId: null,
@@ -108,10 +108,10 @@ describe("POST /api/repositories/:id/threads", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/repositories/repo-1/threads",
-      payload: { title: "Thread 2" },
+      payload: { title: "New Thread" },
     });
 
     expect(response.statusCode).toBe(201);
-    expect(chatCreateThread).toHaveBeenCalledWith("wt-feature", { title: "Thread 2" });
+    expect(chatCreateThread).toHaveBeenCalledWith("wt-feature", { title: "New Thread" });
   });
 });
