@@ -662,7 +662,7 @@ export function useChatSession(
       return created;
     } catch (e) {
       setWaitingAssistant(null);
-      onError(e instanceof Error ? e.message : "Failed to create PR/MR thread");
+      onError(e instanceof Error ? e.message : "Failed to create review thread");
       return null;
     } finally {
       setSendingMessage(false);

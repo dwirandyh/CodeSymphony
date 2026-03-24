@@ -305,7 +305,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
   });
 
   it.each(["chat.completed", "chat.failed"] as const)(
-    "invalidates repository reviews when a background PR/MR thread receives %s",
+    "invalidates repository reviews when a background review thread receives %s",
     async (type) => {
       const thread = makeThread({
         id: "background-prmr-thread",

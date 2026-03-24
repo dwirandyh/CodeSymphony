@@ -406,9 +406,9 @@ export function WorkspacePage() {
     || (!selectedReviewRef && prMrThreadIsActiveOrPending)
   );
   const prMrActionTitle = selectedWorktreeIsDefaultBranch
-    ? "Cannot start a PR/MR thread from the default branch"
+    ? "Cannot start a review thread from the default branch"
     : (!selectedReviewRef && prMrThreadIsActiveOrPending)
-      ? "PR/MR thread is already active"
+      ? "Review thread is already active"
       : repositoryReviews.data?.unavailableReason;
 
   const forceDeleteQueryClient = queryClient;

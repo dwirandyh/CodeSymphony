@@ -20,6 +20,7 @@ import {
   type ChatThreadSnapshot,
   type CreateChatThreadInput,
   type DismissQuestionInput,
+  type ReviewProvider,
   type PlanRevisionInput,
   type RenameChatThreadTitleInput,
   type ResolvePermissionInput,
@@ -65,12 +66,13 @@ import {
   maybeAutoRenameBranchAfterFirstAssistantReply,
 } from "./chatNamingService.js";
 import { recoverPendingPlan } from "./chatPlanService.js";
+import { resolveReviewRemote } from "../git.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
-const PR_MR_THREAD_TITLE = "PR / MR";
+const DEFAULT_REVIEW_THREAD_TITLE = "Create Pull Request";
 
 export class ChatThreadNotFoundError extends Error {
   constructor() {
@@ -102,6 +104,19 @@ function normalizePermissionProfile(
     return "review_git";
   }
   return kind === "review" ? "review_git" : "default";
+}
+
+function reviewThreadTitleForProvider(provider: ReviewProvider): string {
+  return provider === "gitlab" ? "Create Merge Request" : "Create Pull Request";
+}
+
+async function resolveReviewThreadTitle(worktreePath: string): Promise<string> {
+  try {
+    const remote = await resolveReviewRemote(worktreePath);
+    return reviewThreadTitleForProvider(remote.provider);
+  } catch {
+    return DEFAULT_REVIEW_THREAD_TITLE;
+  }
 }
 
 export function createChatService(deps: RuntimeDeps) {
@@ -597,7 +612,7 @@ export function createChatService(deps: RuntimeDeps) {
       const created = await deps.prisma.chatThread.create({
         data: {
           worktreeId,
-          title: PR_MR_THREAD_TITLE,
+          title: await resolveReviewThreadTitle(worktree.path),
           kind: "review",
           permissionProfile: "review_git",
         },
@@ -616,10 +631,13 @@ export function createChatService(deps: RuntimeDeps) {
 
       const kind = normalizeThreadKind(input.kind);
       const permissionProfile = normalizePermissionProfile(input.permissionProfile, kind);
+      const threadTitle = input.title ?? (kind === "review"
+        ? await resolveReviewThreadTitle(worktree.path)
+        : DEFAULT_THREAD_TITLE);
       const thread = await deps.prisma.chatThread.create({
         data: {
           worktreeId,
-          title: input.title ?? (kind === "review" ? PR_MR_THREAD_TITLE : DEFAULT_THREAD_TITLE),
+          title: threadTitle,
           kind,
           permissionProfile,
         },

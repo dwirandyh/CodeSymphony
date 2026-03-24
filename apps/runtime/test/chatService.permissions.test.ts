@@ -1,7 +1,9 @@
 import { PrismaClient } from "@prisma/client";
 import type { ChatEvent, ChatThreadPermissionProfile } from "@codesymphony/shared-types";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
@@ -39,10 +41,10 @@ async function resetDatabase(): Promise<void> {
 
 async function seedThread(
   title = "New Thread",
-  options?: { kind?: "default" | "review"; permissionProfile?: ChatThreadPermissionProfile },
+  options?: { kind?: "default" | "review"; permissionProfile?: ChatThreadPermissionProfile; worktreePath?: string },
 ): Promise<{ threadId: string; worktreePath: string }> {
   const suffix = uniqueSuffix();
-  const worktreePath = `/tmp/codesymphony-worktree-${suffix}`;
+  const worktreePath = options?.worktreePath ?? `/tmp/codesymphony-worktree-${suffix}`;
   const repository = await prisma.repository.create({
     data: {
       name: `repo-${suffix}`,
@@ -489,7 +491,7 @@ describe("chatService permission flow", () => {
     expect((anomalyEntry?.data as Record<string, unknown>).stage).toBe("anomaly");
   });
 
-  it("creates or reuses dedicated PR/MR threads with review git profile", async () => {
+  it("creates or reuses dedicated review threads with provider-specific titles", async () => {
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
@@ -497,7 +499,7 @@ describe("chatService permission flow", () => {
       modelProviderService: stubModelProviderService,
     });
 
-    const { threadId, worktreePath } = await seedThread("PR / MR", { kind: "review", permissionProfile: "review_git" });
+    const { threadId } = await seedThread("Create Pull Request", { kind: "review", permissionProfile: "review_git" });
     const existingThread = await prisma.chatThread.findUnique({ where: { id: threadId } });
     const reused = await chatService.getOrCreatePrMrThread(existingThread!.worktreeId);
 
@@ -505,29 +507,68 @@ describe("chatService permission flow", () => {
     expect(reused.kind).toBe("review");
     expect(reused.permissionProfile).toBe("review_git");
 
-    const suffix = uniqueSuffix();
-    const repository = await prisma.repository.create({
+    const githubRepoDir = mkdtempSync(join(tmpdir(), "codesymphony-review-github-"));
+    execFileSync("git", ["init", "-q"], { cwd: githubRepoDir });
+    execFileSync("git", ["checkout", "-b", "main"], { cwd: githubRepoDir });
+    execFileSync("git", ["remote", "add", "origin", "git@github.com:test/repo.git"], { cwd: githubRepoDir });
+
+    const githubRepository = await prisma.repository.create({
       data: {
-        name: `repo-review-${suffix}`,
-        rootPath: `/tmp/codesymphony-root-review-${suffix}`,
+        name: `repo-review-github-${uniqueSuffix()}`,
+        rootPath: githubRepoDir,
         defaultBranch: "main",
       },
     });
-    const worktree = await prisma.worktree.create({
+    const githubWorktree = await prisma.worktree.create({
       data: {
-        repositoryId: repository.id,
-        branch: "feature/review",
+        repositoryId: githubRepository.id,
+        branch: "feature/review-github",
         baseBranch: "main",
-        path: `${worktreePath}-new-${suffix}`,
+        path: githubRepoDir,
         status: "active",
       },
     });
-    mkdirSync(worktree.path, { recursive: true });
 
-    const created = await chatService.getOrCreatePrMrThread(worktree.id);
-    expect(created.kind).toBe("review");
-    expect(created.permissionProfile).toBe("review_git");
-    expect(created.title).toBe("PR / MR");
+    const githubThread = await chatService.getOrCreatePrMrThread(githubWorktree.id);
+    expect(githubThread.kind).toBe("review");
+    expect(githubThread.permissionProfile).toBe("review_git");
+    expect(githubThread.title).toBe("Create Pull Request");
+
+    const createdGithubThread = await chatService.createThread(githubWorktree.id, { kind: "review" });
+    expect(createdGithubThread.title).toBe("Create Pull Request");
+
+    const gitlabRepoDir = mkdtempSync(join(tmpdir(), "codesymphony-review-gitlab-"));
+    execFileSync("git", ["init", "-q"], { cwd: gitlabRepoDir });
+    execFileSync("git", ["checkout", "-b", "main"], { cwd: gitlabRepoDir });
+    execFileSync("git", ["remote", "add", "origin", "git@gitlab.com:test/repo.git"], { cwd: gitlabRepoDir });
+
+    const gitlabRepository = await prisma.repository.create({
+      data: {
+        name: `repo-review-gitlab-${uniqueSuffix()}`,
+        rootPath: gitlabRepoDir,
+        defaultBranch: "main",
+      },
+    });
+    const gitlabWorktree = await prisma.worktree.create({
+      data: {
+        repositoryId: gitlabRepository.id,
+        branch: "feature/review-gitlab",
+        baseBranch: "main",
+        path: gitlabRepoDir,
+        status: "active",
+      },
+    });
+
+    const gitlabThread = await chatService.getOrCreatePrMrThread(gitlabWorktree.id);
+    expect(gitlabThread.kind).toBe("review");
+    expect(gitlabThread.permissionProfile).toBe("review_git");
+    expect(gitlabThread.title).toBe("Create Merge Request");
+
+    const createdGitlabThread = await chatService.createThread(gitlabWorktree.id, { kind: "review" });
+    expect(createdGitlabThread.title).toBe("Create Merge Request");
+
+    rmSync(githubRepoDir, { recursive: true, force: true });
+    rmSync(gitlabRepoDir, { recursive: true, force: true });
   });
 
   it("emits permission requested and proceeds with deny decision", async () => {

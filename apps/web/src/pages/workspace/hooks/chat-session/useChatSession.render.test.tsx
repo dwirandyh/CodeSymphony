@@ -130,10 +130,10 @@ afterEach(() => {
 });
 
 describe("useChatSession", () => {
-  it("creates or reuses dedicated PR/MR thread, sends message, and invalidates repository reviews", async () => {
+  it("creates or reuses dedicated review thread, sends message, and invalidates repository reviews", async () => {
     const prMrThread = {
       ...makeThread("pr-mr-thread"),
-      title: "PR / MR",
+      title: "Create Pull Request",
       kind: "review" as const,
       permissionProfile: "review_git" as const,
     };
@@ -169,10 +169,10 @@ describe("useChatSession", () => {
     ).toHaveLength(2);
   });
 
-  it("invalidates repository reviews when closing a PR/MR thread", async () => {
+  it("invalidates repository reviews when closing a review thread", async () => {
     const reviewThread = {
       ...makeThread("pr-mr-thread"),
-      title: "PR / MR",
+      title: "Create Pull Request",
       kind: "review" as const,
       permissionProfile: "review_git" as const,
       active: false,

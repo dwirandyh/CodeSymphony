@@ -282,7 +282,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       const thread = await app.chatService.getOrCreatePrMrThread(params.id);
       return reply.code(201).send({ data: thread });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to get PR/MR thread";
+      const message = error instanceof Error ? error.message : "Unable to get review thread";
       if (message === "Worktree not found") {
         return reply.code(404).send({ error: message });
       }

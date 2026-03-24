@@ -387,7 +387,7 @@ describe("useThreadEventStream", () => {
   });
 
   it.each(["chat.completed", "chat.failed"] as const)(
-    "invalidates repository reviews when selected PR/MR thread receives %s",
+    "invalidates repository reviews when selected review thread receives %s",
     async (type) => {
       const threadId = "selected-thread";
       queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());

@@ -194,11 +194,11 @@ describe("repository routes", () => {
   });
 
   describe("POST /api/worktrees/:id/pr-mr-thread", () => {
-    it("returns existing or created PR/MR thread", async () => {
+    it("returns existing or created review thread", async () => {
       mockChatService.getOrCreatePrMrThread.mockResolvedValue({
         id: "thread-review",
         worktreeId: "w1",
-        title: "PR / MR",
+        title: "Create Pull Request",
         kind: "review",
         permissionProfile: "review_git",
         titleEditedManually: false,

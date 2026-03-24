@@ -191,7 +191,7 @@ describe("api", () => {
       expect(result).toEqual({ id: "t1" });
     });
 
-    it("gets or creates PR/MR thread", async () => {
+    it("gets or creates review thread", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "t1" }));
       const result = await api.getOrCreatePrMrThread("w1");
       expect(result).toEqual({ id: "t1" });

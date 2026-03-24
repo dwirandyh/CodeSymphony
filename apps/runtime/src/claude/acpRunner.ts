@@ -15,6 +15,7 @@ import type {
   AuthenticateRequest,
   AuthenticateResponse,
 } from "@agentclientprotocol/sdk";
+import type { ChatThreadPermissionProfile } from "@codesymphony/shared-types";
 import type { AgentRunner, ClaudeOwnershipReason } from "../types.js";
 import { extractBashToolResult } from "./bashResult.js";
 import { extractSubagentResponse } from "./subagentTranscript.js";
@@ -30,6 +31,7 @@ import {
   isBashTool,
   searchParamsFromUnknownToolInput,
 } from "./toolClassification.js";
+import { shouldAutoAllowReviewGitPermission } from "./reviewGitPermissionPolicy.js";
 
 const ADAPTER_ENTRYPOINT = new URL(
   "../../../../node_modules/.pnpm/@zed-industries+claude-agent-acp@0.22.2/node_modules/@zed-industries/claude-agent-acp/dist/index.js",
@@ -63,6 +65,7 @@ type SubagentState = {
 };
 
 type SessionClientOptions = {
+  permissionProfile?: ChatThreadPermissionProfile;
   onText: (chunk: string) => Promise<void> | void;
   onThinking: (chunk: string) => Promise<void> | void;
   onToolStarted: NonNullable<Parameters<AgentRunner>[0]["onToolStarted"]>;
@@ -274,6 +277,19 @@ class RuntimeAcpClient implements Client {
         outcome: {
           outcome: "selected",
           optionId: "plan",
+        },
+      };
+    }
+
+    if (shouldAutoAllowReviewGitPermission({
+      permissionProfile: this.options.permissionProfile,
+      isBash: toolState.isBash,
+      command: toolState.command,
+    })) {
+      return {
+        outcome: {
+          outcome: "selected",
+          optionId: "allow",
         },
       };
     }
@@ -549,6 +565,7 @@ async function createOrResumeSession(
 export const __testing = {
   meaningfulCompletionTitle,
   resolveSubagentLastMessage,
+  RuntimeAcpClient,
 };
 
 export const runClaudeViaAcp: AgentRunner = async ({
@@ -598,6 +615,7 @@ export const runClaudeViaAcp: AgentRunner = async ({
   });
 
   const runtimeClient = new RuntimeAcpClient({
+    permissionProfile,
     onText,
     onThinking,
     onToolStarted,
