@@ -148,7 +148,12 @@ export function createChatService(deps: RuntimeDeps) {
     return true;
   }
 
-  async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
+  async function runAssistant(
+    threadId: string,
+    prompt: string,
+    mode: ChatMode = "default",
+    options?: { autoAcceptTools?: boolean; loadAvailableCommands?: boolean; prefetchOnly?: boolean },
+  ): Promise<void> {
     deps.logService?.log("debug", "chat.lifecycle", "runAssistant started", {
       threadId,
       mode,
@@ -230,6 +235,7 @@ export function createChatService(deps: RuntimeDeps) {
         permissionMode: mode,
         permissionProfile: thread.permissionProfile,
         autoAcceptTools: options?.autoAcceptTools,
+        loadAvailableCommands: options?.loadAvailableCommands,
         model: activeProvider?.modelId || undefined,
         providerApiKey: activeProvider?.apiKey,
         providerBaseUrl: activeProvider?.baseUrl,
@@ -549,7 +555,12 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  function scheduleAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): void {
+  function scheduleAssistant(
+    threadId: string,
+    prompt: string,
+    mode: ChatMode = "default",
+    options?: { autoAcceptTools?: boolean },
+  ): void {
     clearScheduledAssistantRun(threadId);
     deps.logService?.log("debug", "chat.lifecycle", "scheduling assistant run", {
       threadId,
@@ -564,7 +575,7 @@ export function createChatService(deps: RuntimeDeps) {
         threadId,
         mode,
         waitedMs,
-      });
+        });
       void runAssistant(threadId, prompt, mode, options);
     }, AUTO_EXECUTE_DELAY_MS);
     scheduledAssistantRunsByThread.set(threadId, timer);
@@ -613,6 +624,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       if (existing) {
+        await runAssistant(existing.id, "", "default", { prefetchOnly: true, loadAvailableCommands: true });
         return mapChatThread(existing, activeThreads.has(existing.id));
       }
 
@@ -625,6 +637,7 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
 
+      await runAssistant(created.id, "", "default", { prefetchOnly: true, loadAvailableCommands: true });
       return mapChatThread(created);
     },
 
@@ -650,6 +663,7 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
 
+      await runAssistant(thread.id, "", "default", { prefetchOnly: true, loadAvailableCommands: true });
       return mapChatThread(thread);
     },
 

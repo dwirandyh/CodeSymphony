@@ -223,7 +223,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         if (!skipInvalidation) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.commands(selectedThreadId) });
         }
       }
 

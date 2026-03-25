@@ -59,6 +59,18 @@ export function getMentionedFilesFromEditor(el: HTMLElement): MentionedFile[] {
   return files;
 }
 
+export function getCommandNamesFromEditor(el: HTMLElement): string[] {
+  const commands: string[] = [];
+  const chips = el.querySelectorAll<HTMLElement>("[data-command-name]");
+  for (const chip of chips) {
+    const name = chip.dataset.commandName;
+    if (name) {
+      commands.push(name);
+    }
+  }
+  return commands;
+}
+
 function detectTokenInEditor(el: HTMLElement, token: "@" | "/"): MentionState {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
@@ -107,3 +119,6 @@ export const FOLDER_ICON_SVG =
 
 export const PAPERCLIP_ICON_SVG =
   '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>';
+
+export const COMMAND_ICON_SVG =
+  '<path d="M4 17h16"/><path d="m4 12 4-4-4-4"/><path d="M12 12h8"/>';

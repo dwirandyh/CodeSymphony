@@ -362,11 +362,34 @@ class RuntimeAcpClient implements Client {
   private readonly subagentByToolUseId = new Map<string, SubagentState>();
   private output = "";
   private pendingPlanContent = "";
+  private availableCommandsLoaded = false;
+  private readonly availableCommandsWaiters = new Set<() => void>();
 
   constructor(private readonly options: SessionClientOptions) {}
 
   private async emitToolInstrumentation(event: ClaudeToolInstrumentationEvent): Promise<void> {
     await emitInstrumentation(this.options.onToolInstrumentation, event);
+  }
+
+  async waitForAvailableCommands(timeoutMs = 1000): Promise<void> {
+    if (this.availableCommandsLoaded) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.availableCommandsWaiters.delete(handleResolve);
+        resolve();
+      }, timeoutMs);
+
+      const handleResolve = () => {
+        clearTimeout(timer);
+        this.availableCommandsWaiters.delete(handleResolve);
+        resolve();
+      };
+
+      this.availableCommandsWaiters.add(handleResolve);
+    });
   }
 
   getOutput(): string {
@@ -522,7 +545,12 @@ class RuntimeAcpClient implements Client {
       }
       case "available_commands_update": {
         const availableCommands = normalizeAvailableCommands(update.availableCommands);
+        this.availableCommandsLoaded = true;
         await this.options.onAvailableCommandsUpdated?.({ availableCommands });
+        for (const waiter of this.availableCommandsWaiters) {
+          waiter();
+        }
+        this.availableCommandsWaiters.clear();
         return;
       }
       case "tool_call": {
@@ -843,6 +871,8 @@ export const runClaudeViaAcp: AgentRunner = async ({
   onSubagentStarted,
   onSubagentStopped,
   onAvailableCommandsUpdated,
+  loadAvailableCommands,
+  prefetchOnly,
   onToolInstrumentation,
 }) => {
   void onQuestionRequest;
@@ -965,9 +995,18 @@ export const runClaudeViaAcp: AgentRunner = async ({
       }, { once: true });
     }
 
-    const response: PromptResponse = await connection.prompt(createPromptRequest(activeSessionId, prompt));
-    if (response.stopReason === "cancelled" && abortController?.signal.aborted) {
-      throw new Error("Cancelled");
+    let response: PromptResponse | null = null;
+    if (prefetchOnly) {
+      await runtimeClient.waitForAvailableCommands();
+    } else {
+      response = await connection.prompt(createPromptRequest(activeSessionId, prompt));
+
+      if (loadAvailableCommands) {
+        await runtimeClient.waitForAvailableCommands();
+      }
+      if (response.stopReason === "cancelled" && abortController?.signal.aborted) {
+        throw new Error("Cancelled");
+      }
     }
 
     return {

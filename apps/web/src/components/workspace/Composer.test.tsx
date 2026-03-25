@@ -160,7 +160,18 @@ describe("Composer", () => {
     expect(buttons[0]?.textContent).toContain("/commit");
   });
 
-  it("shows no slash suggestions when no ACP commands are available", async () => {
+  it("shows no matching slash command state for unmatched query", async () => {
+    renderComposer();
+    const editor = getEditor();
+
+    typeInEditor(editor, "/zzz");
+    await flushMicrotasks();
+
+    expect(container.querySelectorAll("button[data-slash-index]").length).toBe(0);
+    expect(container.textContent).toContain("No matching slash commands.");
+  });
+
+  it("shows empty ACP command state when no commands are available", async () => {
     renderComposer({ availableCommands: [] });
     const editor = getEditor();
 
@@ -168,6 +179,7 @@ describe("Composer", () => {
     await flushMicrotasks();
 
     expect(container.querySelectorAll("button[data-slash-index]").length).toBe(0);
+    expect(container.textContent).toContain("Commands will appear after ACP reports them for this thread.");
   });
 
   it("shows no suggestions when worktreeId is null (empty fileIndex)", async () => {
@@ -245,7 +257,7 @@ describe("Composer", () => {
     expect(container.querySelectorAll("button[data-index]").length).toBe(0);
   });
 
-  it("inserts slash command selection via Enter", async () => {
+  it("inserts slash command selection via Enter as a chip", async () => {
     renderComposer();
     const editor = getEditor();
     typeInEditor(editor, "/");
@@ -256,7 +268,8 @@ describe("Composer", () => {
     });
     await flushMicrotasks();
 
-    expect(editor.textContent).toContain("/commit -m 'msg'");
+    expect(editor.querySelector("[data-command-name='commit']")).not.toBeNull();
+    expect(editor.textContent).toContain("/commit");
   });
 
   it("submits message on Enter when no mention is active", async () => {

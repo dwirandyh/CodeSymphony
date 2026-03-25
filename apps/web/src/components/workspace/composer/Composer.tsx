@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Paperclip, Slash, Square, X, Zap } from "lucide-react";
+import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Paperclip, TerminalSquare, Square, X, Zap } from "lucide-react";
 import type { AvailableCommand, ChatMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
 import { serializeMention } from "../../../lib/mentions";
@@ -258,6 +258,8 @@ export function Composer({
         } else if (node.dataset.mentionPath) {
           const type = node.dataset.mentionType === "directory" ? "directory" : "file";
           parts.push(serializeMention(node.dataset.mentionPath, type));
+        } else if (node.dataset.commandName) {
+          parts.push(`/${node.dataset.commandName}`);
         } else if (node.tagName === "BR") {
           parts.push("\n");
         } else {
@@ -477,7 +479,7 @@ export function Composer({
             anchorNode.nodeType === Node.TEXT_NODE &&
             anchorOffset === 0 &&
             anchorNode.previousSibling instanceof HTMLElement &&
-            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId)
+            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId || anchorNode.previousSibling.dataset.commandName)
           ) {
             event.preventDefault();
             const chip = anchorNode.previousSibling;
@@ -495,7 +497,8 @@ export function Composer({
             anchorOffset > 0 &&
             editor.childNodes[anchorOffset - 1] instanceof HTMLElement &&
             ((editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.mentionPath ||
-             (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.attachmentId)
+             (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.attachmentId ||
+             (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.commandName)
           ) {
             event.preventDefault();
             const chip = editor.childNodes[anchorOffset - 1] as HTMLElement;
@@ -514,7 +517,7 @@ export function Composer({
             anchorOffset === 1 &&
             anchorNode.textContent === "\u00A0" &&
             anchorNode.previousSibling instanceof HTMLElement &&
-            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId)
+            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId || anchorNode.previousSibling.dataset.commandName)
           ) {
             event.preventDefault();
             const chip = anchorNode.previousSibling;
@@ -625,41 +628,47 @@ export function Composer({
             </div>
           )}
 
-          {slashCommand.active && slashSuggestions.length > 0 && (
+          {slashCommand.active && (
             <div
               ref={popoverRef}
               className="absolute bottom-full left-0 z-50 mb-2 w-full max-h-60 overflow-y-auto rounded-xl border border-border/60 bg-popover shadow-lg"
             >
-              {slashSuggestions.map((entry, index) => (
-                <button
-                  key={entry.name}
-                  type="button"
-                  data-slash-index={index}
-                  className={`flex w-full items-start gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
-                    index === selectedSlashIndex
-                      ? "bg-accent text-accent-foreground"
-                      : "text-foreground hover:bg-accent/50"
-                  }`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    selectSlashSuggestion(entry);
-                  }}
-                  onMouseEnter={() => setSelectedSlashIndex(index)}
-                >
-                  <Slash className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-medium">/{entry.name}</span>
-                    {entry.highlighted ? (
-                      <span className="block truncate text-xs text-muted-foreground" dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
-                    ) : entry.description ? (
-                      <span className="block truncate text-xs text-muted-foreground">{entry.description}</span>
-                    ) : null}
-                    {entry.input?.hint ? (
-                      <span className="block truncate text-[11px] text-muted-foreground/80">{entry.input.hint}</span>
-                    ) : null}
-                  </span>
-                </button>
-              ))}
+              {availableCommands.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">Commands will appear after ACP reports them for this thread.</div>
+              ) : slashSuggestions.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">No matching slash commands.</div>
+              ) : (
+                slashSuggestions.map((entry, index) => (
+                  <button
+                    key={entry.name}
+                    type="button"
+                    data-slash-index={index}
+                    className={`flex w-full items-start gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
+                      index === selectedSlashIndex
+                        ? "bg-accent text-accent-foreground"
+                        : "text-foreground hover:bg-accent/50"
+                    }`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      selectSlashSuggestion(entry);
+                    }}
+                    onMouseEnter={() => setSelectedSlashIndex(index)}
+                  >
+                    <TerminalSquare className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-medium">/{entry.name}</span>
+                      {entry.highlighted ? (
+                        <span className="block truncate text-xs text-muted-foreground" dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
+                      ) : entry.description ? (
+                        <span className="block truncate text-xs text-muted-foreground">{entry.description}</span>
+                      ) : null}
+                      {entry.input?.hint ? (
+                        <span className="block truncate text-[11px] text-muted-foreground/80">{entry.input.hint}</span>
+                      ) : null}
+                    </span>
+                  </button>
+                ))
+              )}
             </div>
           )}
 

@@ -1,5 +1,5 @@
 import type { PendingAttachment } from "../../../lib/attachments";
-import { fileName, FILE_ICON_SVG, FOLDER_ICON_SVG, PAPERCLIP_ICON_SVG } from "./composerEditorUtils";
+import { fileName, FILE_ICON_SVG, FOLDER_ICON_SVG, PAPERCLIP_ICON_SVG, COMMAND_ICON_SVG } from "./composerEditorUtils";
 import type { MentionedFile } from "./composerEditorUtils";
 
 export function createChipElement(file: MentionedFile): HTMLSpanElement {
@@ -55,6 +55,35 @@ export function createAttachmentChipElement(attachment: PendingAttachment): HTML
   const label = document.createElement("span");
   label.className = "max-w-[140px] truncate";
   label.textContent = attachment.filename;
+
+  chip.appendChild(icon);
+  chip.appendChild(label);
+
+  return chip;
+}
+
+export function createCommandChipElement(command: { id: string; name: string; description?: string }): HTMLSpanElement {
+  const chip = document.createElement("span");
+  chip.contentEditable = "false";
+  chip.dataset.commandName = command.name;
+  chip.dataset.commandId = command.id;
+  chip.className =
+    "inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/15 px-1.5 py-0 text-xs text-blue-400 mx-0.5 align-baseline cursor-default select-none";
+  chip.setAttribute("title", command.description?.trim() || `/${command.name}`);
+
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("class", "h-3 w-3 shrink-0 inline-block");
+  icon.innerHTML = COMMAND_ICON_SVG;
+
+  const label = document.createElement("span");
+  label.className = "max-w-[140px] truncate";
+  label.textContent = `/${command.name}`;
 
   chip.appendChild(icon);
   chip.appendChild(label);

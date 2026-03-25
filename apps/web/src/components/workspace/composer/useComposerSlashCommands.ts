@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import fuzzysort from "fuzzysort";
 import type { AvailableCommand } from "@codesymphony/shared-types";
-import { detectSlashCommandInEditor } from "./composerEditorUtils";
+import { detectSlashCommandInEditor, getCommandNamesFromEditor, nextMentionId } from "./composerEditorUtils";
 import type { SlashCommandState } from "./composerEditorUtils";
+import { createCommandChipElement } from "./composerChipUtils";
 
 type SuggestionEntry = AvailableCommand & { highlighted?: string };
 
@@ -23,11 +24,15 @@ export function useComposerSlashCommands({
   const slashSuggestions: SuggestionEntry[] = useMemo(() => {
     if (!slashCommand.active) return [];
 
+    const editor = editorRef.current;
+    const existingCommands = editor ? new Set(getCommandNamesFromEditor(editor)) : new Set<string>();
+    const remainingCommands = availableCommands.filter((command) => !existingCommands.has(command.name));
+
     if (!slashCommand.query) {
-      return availableCommands.slice(0, 20);
+      return remainingCommands.slice(0, 20);
     }
 
-    const results = fuzzysort.go(slashCommand.query, availableCommands, {
+    const results = fuzzysort.go(slashCommand.query, remainingCommands, {
       keys: ["name", "description"],
       limit: 20,
     });
@@ -35,7 +40,7 @@ export function useComposerSlashCommands({
       ...result.obj,
       highlighted: result[0] ? result[0].highlight("<mark>", "</mark>") : undefined,
     }));
-  }, [availableCommands, slashCommand.active, slashCommand.query]);
+  }, [availableCommands, slashCommand.active, slashCommand.query, editorRef]);
 
   useEffect(() => {
     setSelectedSlashIndex(0);
@@ -70,16 +75,26 @@ export function useComposerSlashCommands({
     const text = textNode.textContent ?? "";
     const beforeSlash = text.slice(0, slashCommand.startOffset);
     const afterQuery = text.slice(slashCommand.startOffset + 1 + slashCommand.query.length);
-    const inserted = `/${entry.name}${entry.input?.hint ? ` ${entry.input.hint}` : ""}`;
-    const replacement = `${beforeSlash}${inserted}${afterQuery}`;
 
-    textNode.textContent = replacement;
+    const commandChip = createCommandChipElement({
+      id: nextMentionId(),
+      name: entry.name,
+      description: entry.description,
+    });
+    const afterNode = document.createTextNode(afterQuery.length > 0 ? afterQuery : "\u00A0");
+    const beforeNode = document.createTextNode(beforeSlash);
+    const parent = textNode.parentNode;
+    if (!parent) return;
+
+    parent.insertBefore(beforeNode, textNode);
+    parent.insertBefore(commandChip, textNode);
+    parent.insertBefore(afterNode, textNode);
+    parent.removeChild(textNode);
 
     const sel = window.getSelection();
     if (sel) {
       const range = document.createRange();
-      const cursorOffset = (beforeSlash + inserted).length;
-      range.setStart(textNode, cursorOffset);
+      range.setStart(afterNode, afterQuery.length > 0 ? 0 : 1);
       range.collapse(true);
       sel.removeAllRanges();
       sel.addRange(range);
