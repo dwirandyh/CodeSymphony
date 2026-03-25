@@ -152,7 +152,7 @@ export function createChatService(deps: RuntimeDeps) {
     threadId: string,
     prompt: string,
     mode: ChatMode = "default",
-    options?: { autoAcceptTools?: boolean; loadAvailableCommands?: boolean; prefetchOnly?: boolean },
+    options?: { autoAcceptTools?: boolean; loadAvailableCommands?: boolean },
   ): Promise<void> {
     deps.logService?.log("debug", "chat.lifecycle", "runAssistant started", {
       threadId,
@@ -555,6 +555,65 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
+  async function prefetchAvailableCommands(threadId: string): Promise<void> {
+    try {
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+        include: { worktree: true },
+      });
+      if (!thread) {
+        return;
+      }
+      if (!existsSync(thread.worktree.path) || !statSync(thread.worktree.path).isDirectory()) {
+        return;
+      }
+
+      const activeProvider = await deps.modelProviderService.getActiveProvider();
+      const result = await deps.agentRunner({
+        prompt: "",
+        sessionId: thread.claudeSessionId,
+        cwd: thread.worktree.path,
+        permissionMode: "default",
+        permissionProfile: thread.permissionProfile,
+        loadAvailableCommands: true,
+        model: activeProvider?.modelId || undefined,
+        providerApiKey: activeProvider?.apiKey,
+        providerBaseUrl: activeProvider?.baseUrl,
+        onText: async () => {},
+        onThinking: async () => {},
+        onToolStarted: async () => {},
+        onToolOutput: async () => {},
+        onToolFinished: async () => {},
+        onQuestionRequest: async () => ({ answers: {} }),
+        onPermissionRequest: async () => ({ decision: "deny", message: "Command preload disables tool execution." }),
+        onPlanFileDetected: async () => {},
+        onSubagentStarted: async () => {},
+        onSubagentStopped: async () => {},
+        onAvailableCommandsUpdated: async (payload: { availableCommands: AvailableCommand[] }) => {
+          const existingThread = await deps.prisma.chatThread.findUnique({ where: { id: threadId }, select: { id: true } });
+          if (!existingThread) {
+            return;
+          }
+          await deps.eventHub.emit(threadId, "commands.updated", {
+            availableCommands: payload.availableCommands,
+          });
+        },
+      });
+
+      if (result.sessionId && result.sessionId !== thread.claudeSessionId) {
+        await deps.prisma.chatThread.update({
+          where: { id: threadId },
+          data: { claudeSessionId: result.sessionId },
+        }).catch(() => {});
+      }
+    } catch (error) {
+      deps.logService?.log("debug", "chat.commands", "ACP command preload skipped", {
+        threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   function scheduleAssistant(
     threadId: string,
     prompt: string,
@@ -624,7 +683,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       if (existing) {
-        await runAssistant(existing.id, "", "default", { prefetchOnly: true, loadAvailableCommands: true });
+        prefetchAvailableCommands(existing.id);
         return mapChatThread(existing, activeThreads.has(existing.id));
       }
 
@@ -637,7 +696,7 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
 
-      await runAssistant(created.id, "", "default", { prefetchOnly: true, loadAvailableCommands: true });
+      prefetchAvailableCommands(created.id);
       return mapChatThread(created);
     },
 
@@ -663,7 +722,7 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
 
-      await runAssistant(thread.id, "", "default", { prefetchOnly: true, loadAvailableCommands: true });
+      prefetchAvailableCommands(thread.id);
       return mapChatThread(thread);
     },
 

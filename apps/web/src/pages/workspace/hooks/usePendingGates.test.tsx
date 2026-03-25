@@ -625,6 +625,20 @@ describe("usePendingGates", () => {
       expect(hookResult.pendingPlan).toBeNull();
     });
 
+    it("skips ACP fallback plan payload without showing plan gate", () => {
+      const events = [
+        makeEvent(0, "plan.created", {
+          content: "# Plan\n\n[-] Investigate",
+          filePath: ".claude/plans/acp-plan.md",
+          source: "streaming_fallback",
+        }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+      expect(hookResult.pendingPlan).toBeNull();
+      expect(hookResult.showPlanDecisionComposer).toBe(false);
+    });
+
     it("treats streaming_fallback with a real plan filePath as normal plan.created", () => {
       const events = [
         makeEvent(0, "plan.created", {

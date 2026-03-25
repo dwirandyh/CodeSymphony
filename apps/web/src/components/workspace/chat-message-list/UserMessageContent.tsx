@@ -1,6 +1,6 @@
 import { memo, useMemo, useState, useEffect, useRef, useCallback } from "react";
 import type { ChatAttachment } from "@codesymphony/shared-types";
-import { ChevronDown, ChevronUp, Copy, Download, FileText, Folder } from "lucide-react";
+import { ChevronDown, ChevronUp, Copy, Download, FileText, Folder, TerminalSquare } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { parseUserMentions } from "../../../lib/mentions";
 import { Button } from "../../ui/button";
@@ -15,6 +15,20 @@ function renderMentionSegment(seg: ReturnType<typeof parseUserMentions>[number],
   if (seg.kind === "text") {
     return <span key={key}>{seg.value}</span>;
   }
+
+  if (seg.kind === "command") {
+    return (
+      <span
+        key={key}
+        title={`/${seg.name}`}
+        className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/15 px-1.5 py-0 text-xs align-baseline text-blue-400"
+      >
+        <TerminalSquare className="h-3 w-3 shrink-0 inline-block" />
+        <span className="max-w-[140px] truncate">/{seg.name}</span>
+      </span>
+    );
+  }
+
   return (
     <span
       key={key}

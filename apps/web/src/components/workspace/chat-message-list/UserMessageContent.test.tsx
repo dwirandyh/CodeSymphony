@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PlanInlineMessage } from "./UserMessageContent";
+import { PlanInlineMessage, UserMessageContent } from "./UserMessageContent";
 
 vi.mock("./AssistantContent", () => ({
   MarkdownBody: ({ content, testId }: { content: string; testId?: string }) => (
@@ -70,6 +70,15 @@ describe("PlanInlineMessage", () => {
     requestAnimationFrameSpy.mockRestore();
     cancelAnimationFrameSpy.mockRestore();
     vi.clearAllMocks();
+  });
+
+  it("renders slash commands as transcript chips", () => {
+    act(() => {
+      root.render(<UserMessageContent content="please run /commit and inspect @file:src/index.ts" />);
+    });
+
+    expect(container.textContent).toContain("/commit");
+    expect(container.querySelector("svg")).not.toBeNull();
   });
 
   it("coalesces repeated resize callbacks into a single pending animation frame", () => {

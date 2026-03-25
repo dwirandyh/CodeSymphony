@@ -44,21 +44,36 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 // ── Event classification ──
 
+const ACP_PLAN_FALLBACK_PATH = ".claude/plans/acp-plan.md";
+const ACP_PLAN_FALLBACK_PATH_SUFFIX = "/.claude/plans/acp-plan.md";
+
+export function isAcpPlanFallbackPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/");
+  return normalized === ACP_PLAN_FALLBACK_PATH || normalized.endsWith(ACP_PLAN_FALLBACK_PATH_SUFFIX);
+}
+
 export function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
+  const filePath = typeof payload.filePath === "string" ? payload.filePath : "";
+  if (isAcpPlanFallbackPath(filePath)) {
+    return false;
+  }
+
   const rawSource = payload.source;
   if (rawSource === "claude_plan_file" || rawSource === "streaming_fallback") {
     return true;
   }
 
-  const filePath = typeof payload.filePath === "string" ? payload.filePath : "";
   return isPlanFilePath(filePath);
 }
 
 export function isPlanFilePath(filePath: string): boolean {
-  if (!filePath.endsWith(".md")) return false;
+  if (!filePath.endsWith(".md")) {
+    return false;
+  }
+
   return filePath.includes(".claude/plans/")
     || filePath.includes("codesymphony-claude-provider/plans/")
-    || filePath.includes("/Users/") && filePath.includes("/.claude/plans/");
+    || (filePath.includes("/Users/") && filePath.includes("/.claude/plans/"));
 }
 
 export function deriveAvailableCommands(events: ChatEvent[]): AvailableCommand[] {

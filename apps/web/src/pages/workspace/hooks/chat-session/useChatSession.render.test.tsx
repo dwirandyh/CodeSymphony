@@ -306,4 +306,41 @@ describe("useChatSession", () => {
     expect(api.deleteThread).toHaveBeenCalledTimes(2);
     expect(hookResult.selectedThreadId).toBe("thread-b");
   });
+
+  it("stops again after 409 before second delete attempt", async () => {
+    threadsState.data = [makeThread("thread-a", false), makeThread("thread-b")];
+    vi.mocked(api.stopRun).mockResolvedValue(undefined);
+    vi.mocked(api.deleteThread)
+      .mockRejectedValueOnce(new ApiError("Cannot delete a thread while assistant is processing", 409))
+      .mockResolvedValueOnce(undefined);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    expect(api.stopRun).toHaveBeenCalledTimes(1);
+    expect(api.stopRun).toHaveBeenLastCalledWith("thread-a");
+    expect(api.deleteThread).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries delete multiple times when active conflict persists", async () => {
+    threadsState.data = [makeThread("thread-a", false), makeThread("thread-b")];
+    vi.mocked(api.stopRun).mockResolvedValue(undefined);
+    vi.mocked(api.deleteThread)
+      .mockRejectedValueOnce(new ApiError("Cannot delete a thread while assistant is processing", 409))
+      .mockRejectedValueOnce(new ApiError("Cannot delete a thread while assistant is processing", 409))
+      .mockRejectedValueOnce(new ApiError("Cannot delete a thread while assistant is processing", 409))
+      .mockResolvedValueOnce(undefined);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    expect(api.stopRun).toHaveBeenCalledTimes(3);
+    expect(api.deleteThread).toHaveBeenCalledTimes(4);
+  });
 });

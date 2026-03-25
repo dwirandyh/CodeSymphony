@@ -349,6 +349,62 @@ describe("chatService snapshot", () => {
     ).toHaveLength(1);
   });
 
+  it("skips ACP fallback plan payload in runtime timeline assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "plan this",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "Thinking",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "plan.created" as const,
+        payload: {
+          messageId: "m2",
+          content: "# Plan\n\n[-] Investigate",
+          filePath: ".claude/plans/acp-plan.md",
+          source: "streaming_fallback",
+        },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "chat.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(assembly.items.filter((item) => item.kind === "plan-file-output")).toHaveLength(0);
+  });
+
   it("quarantines overlap-unresolved subagent explore events in runtime snapshot assembly", async () => {
     const messages = [
       {

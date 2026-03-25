@@ -872,7 +872,6 @@ export const runClaudeViaAcp: AgentRunner = async ({
   onSubagentStopped,
   onAvailableCommandsUpdated,
   loadAvailableCommands,
-  prefetchOnly,
   onToolInstrumentation,
 }) => {
   void onQuestionRequest;
@@ -995,18 +994,13 @@ export const runClaudeViaAcp: AgentRunner = async ({
       }, { once: true });
     }
 
-    let response: PromptResponse | null = null;
-    if (prefetchOnly) {
-      await runtimeClient.waitForAvailableCommands();
-    } else {
-      response = await connection.prompt(createPromptRequest(activeSessionId, prompt));
+    const response: PromptResponse = await connection.prompt(createPromptRequest(activeSessionId, prompt));
 
-      if (loadAvailableCommands) {
-        await runtimeClient.waitForAvailableCommands();
-      }
-      if (response.stopReason === "cancelled" && abortController?.signal.aborted) {
-        throw new Error("Cancelled");
-      }
+    if (loadAvailableCommands) {
+      await runtimeClient.waitForAvailableCommands();
+    }
+    if (response.stopReason === "cancelled" && abortController?.signal.aborted) {
+      throw new Error("Cancelled");
     }
 
     return {

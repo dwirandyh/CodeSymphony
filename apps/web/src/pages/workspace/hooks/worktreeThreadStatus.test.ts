@@ -106,6 +106,32 @@ describe("worktreeThreadStatus", () => {
     expect(deriveThreadUiStatus(thread, snapshot)).toBe("review_plan");
   });
 
+  it("ignores ACP fallback plan payload for review_plan status", () => {
+    const thread = makeThread();
+    const snapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: thread.id,
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          content: "# Plan\n\n[-] Investigate",
+          filePath: ".claude/plans/acp-plan.md",
+          source: "streaming_fallback",
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: thread.id,
+        idx: 2,
+        type: "chat.completed",
+        payload: {},
+      }),
+    ]);
+
+    expect(deriveThreadUiStatus(thread, snapshot)).toBe("idle");
+  });
+
   it("returns running for active thread without gates", () => {
     const thread = makeThread({ active: true });
     expect(deriveThreadUiStatus(thread, makeSnapshot())).toBe("running");

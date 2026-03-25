@@ -15,6 +15,7 @@ import {
   hasUnclosedCodeFence,
   isBashToolEvent,
   isExploreLikeBashEvent,
+  isAcpPlanFallbackPath,
   isClaudePlanFilePayload,
   isPlanFilePath,
   isPlanModeToolEvent,
@@ -224,9 +225,9 @@ export function useWorkspaceTimeline(
         continue;
       }
 
-      let content = typeof event.payload.content === "string" ? event.payload.content : "";
-      let filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "plan.md";
-      if (content.trim().length === 0) {
+      const content = typeof event.payload.content === "string" ? event.payload.content : "";
+      const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "plan.md";
+      if (content.trim().length === 0 || isAcpPlanFallbackPath(filePath)) {
         continue;
       }
 
@@ -240,28 +241,32 @@ export function useWorkspaceTimeline(
             ?? "",
           )
         );
-        if (realWrite) {
-          const toolInput = isRecord(realWrite.payload.toolInput)
-            ? realWrite.payload.toolInput
-            : null;
-          const realContent = toolInput
-            ? payloadStringOrNull(toolInput.content)
-            : null;
-          const realPath = payloadStringOrNull(realWrite.payload.editTarget)
-            ?? payloadStringOrNull(realWrite.payload.file_path)
-            ?? filePath;
-          if (realContent && realContent.trim().length > 0) {
-            planFileOutputByMessageId.set(messageId, {
-              id: realWrite.id,
-              messageId,
-              content: realContent,
-              filePath: realPath,
-              idx: realWrite.idx,
-              createdAt: realWrite.createdAt,
-            });
-            continue;
-          }
+        if (!realWrite) {
+          continue;
         }
+
+        const toolInput = isRecord(realWrite.payload.toolInput)
+          ? realWrite.payload.toolInput
+          : null;
+        const realContent = toolInput
+          ? payloadStringOrNull(toolInput.content)
+          : null;
+        const realPath = payloadStringOrNull(realWrite.payload.editTarget)
+          ?? payloadStringOrNull(realWrite.payload.file_path)
+          ?? filePath;
+        if (!realContent || realContent.trim().length === 0) {
+          continue;
+        }
+
+        planFileOutputByMessageId.set(messageId, {
+          id: realWrite.id,
+          messageId,
+          content: realContent,
+          filePath: realPath,
+          idx: realWrite.idx,
+          createdAt: realWrite.createdAt,
+        });
+        continue;
       }
 
       planFileOutputByMessageId.set(messageId, {

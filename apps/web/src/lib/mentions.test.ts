@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseUserMentions, serializeMention, serializeMentionPrefix, MENTION_TOKEN_REGEX } from "./mentions";
+import { parseUserMentions, serializeMention, serializeMentionPrefix, MENTION_TOKEN_REGEX, COMMAND_TOKEN_REGEX } from "./mentions";
 
 describe("MENTION_TOKEN_REGEX", () => {
   it("matches file mention", () => {
@@ -15,6 +15,13 @@ describe("MENTION_TOKEN_REGEX", () => {
   it("does not match invalid mention", () => {
     const match = "@invalid:path".match(new RegExp(MENTION_TOKEN_REGEX.source));
     expect(match).toBeNull();
+  });
+});
+
+describe("COMMAND_TOKEN_REGEX", () => {
+  it("matches slash command", () => {
+    const match = "/commit".match(new RegExp(COMMAND_TOKEN_REGEX.source));
+    expect(match).toBeTruthy();
   });
 });
 
@@ -54,6 +61,21 @@ describe("parseUserMentions", () => {
     expect(result[0].kind).toBe("mention");
     expect(result[1]).toEqual({ kind: "text", value: " and " });
     expect(result[2].kind).toBe("mention");
+  });
+
+  it("parses slash command segments", () => {
+    const result = parseUserMentions("run /commit then inspect @file:src/index.ts");
+    expect(result).toEqual([
+      { kind: "text", value: "run " },
+      { kind: "command", name: "commit" },
+      { kind: "text", value: " then inspect " },
+      {
+        kind: "mention",
+        path: "src/index.ts",
+        name: "index.ts",
+        isDirectory: false,
+      },
+    ]);
   });
 
   it("returns empty array elements for empty string", () => {

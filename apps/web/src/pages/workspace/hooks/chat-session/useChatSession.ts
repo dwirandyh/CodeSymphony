@@ -710,7 +710,7 @@ export function useChatSession(
         setSelectedThreadId(replacementThread.id);
       }
 
-      if (shouldStopFirst) {
+      const stopThreadRunIfNeeded = async () => {
         try {
           await api.stopRun(threadId);
         } catch (error) {
@@ -718,15 +718,26 @@ export function useChatSession(
             throw error;
           }
         }
+      };
+
+      if (shouldStopFirst) {
+        await stopThreadRunIfNeeded();
       }
 
-      try {
-        await api.deleteThread(threadId);
-      } catch (error) {
-        if (!(error instanceof ApiError) || error.status !== 409) {
-          throw error;
+      const maxDeleteAttempts = 4;
+      for (let attempt = 0; attempt < maxDeleteAttempts; attempt += 1) {
+        try {
+          await api.deleteThread(threadId);
+          break;
+        } catch (error) {
+          const isActiveConflict = error instanceof ApiError && error.status === 409;
+          const hasRemainingAttempts = attempt < maxDeleteAttempts - 1;
+          if (!isActiveConflict || !hasRemainingAttempts) {
+            throw error;
+          }
+
+          await stopThreadRunIfNeeded();
         }
-        await api.deleteThread(threadId);
       }
 
       if (wasLastThread && !replacementThread) {

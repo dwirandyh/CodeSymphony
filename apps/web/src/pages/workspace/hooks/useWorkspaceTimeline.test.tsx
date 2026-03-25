@@ -169,6 +169,22 @@ describe("useWorkspaceTimeline", () => {
     expect(bashItems.some((item) => item.command === "pwd")).toBe(true);
   });
 
+  it("does not render commands.updated as orphan tool items", () => {
+    const messages = [makeMessage("m1", 1, "user", "Hi")];
+    const events = [
+      makeEvent(0, "commands.updated", {
+        availableCommands: [{ name: "commit", description: "Create a git commit" }],
+      }, null),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const toolItems = items.filter((item) => item.kind === "tool");
+    const errorItems = items.filter((item) => item.kind === "error");
+
+    expect(toolItems).toHaveLength(0);
+    expect(errorItems).toHaveLength(0);
+  });
+
   it("routes mixed bash chains as normal tool items, not explore activity", () => {
     const messages = [
       makeMessage("m1", 1, "user", "run command"),
@@ -335,6 +351,27 @@ describe("useWorkspaceTimeline", () => {
     });
     const planItems = hookResult.items.filter((i) => i.kind === "plan-file-output");
     expect(planItems.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it("skips ACP fallback plan.created from rendering plan card", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "Plan"),
+      makeMessage("m2", 2, "assistant", "Thinking"),
+    ];
+    const events = [
+      makeEvent(0, "plan.created", {
+        content: "# Plan\n\n[-] Investigate",
+        filePath: ".claude/plans/acp-plan.md",
+        source: "streaming_fallback",
+      }, "m2"),
+    ];
+
+    act(() => {
+      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
+    });
+
+    const planItems = hookResult.items.filter((i) => i.kind === "plan-file-output");
+    expect(planItems).toHaveLength(0);
   });
 
   it("processes subagent events", () => {

@@ -195,7 +195,6 @@ export type AgentRunner = (args: {
     availableCommands: AvailableCommand[];
   }) => Promise<void> | void;
   loadAvailableCommands?: boolean;
-  prefetchOnly?: boolean;
   onToolInstrumentation?: (event: ClaudeToolInstrumentationEvent) => Promise<void> | void;
 }) => Promise<AgentRunnerResult>;
 

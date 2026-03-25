@@ -4,6 +4,7 @@ import {
   payloadStringOrNull,
   payloadStringArray,
   isRecord,
+  isAcpPlanFallbackPath,
   isClaudePlanFilePayload,
   isPlanFilePath,
   isPlanModeToolEvent,
@@ -102,6 +103,13 @@ describe("isClaudePlanFilePayload", () => {
     expect(isClaudePlanFilePayload({ source: "streaming_fallback" })).toBe(true);
   });
 
+  it("returns false for ACP fallback path payload", () => {
+    expect(isClaudePlanFilePayload({
+      source: "streaming_fallback",
+      filePath: ".claude/plans/acp-plan.md",
+    })).toBe(false);
+  });
+
   it("returns true for plan file path", () => {
     expect(isClaudePlanFilePayload({ source: "other", filePath: "/project/.claude/plans/plan.md" })).toBe(true);
   });
@@ -123,6 +131,20 @@ describe("isPlanFilePath", () => {
   it("returns false for non-plan paths", () => {
     expect(isPlanFilePath("/project/src/index.md")).toBe(false);
     expect(isPlanFilePath("/project/.claude/plans/plan.ts")).toBe(false);
+  });
+});
+
+describe("isAcpPlanFallbackPath", () => {
+  it("returns true for exact ACP fallback path", () => {
+    expect(isAcpPlanFallbackPath(".claude/plans/acp-plan.md")).toBe(true);
+  });
+
+  it("returns true for absolute ACP fallback path", () => {
+    expect(isAcpPlanFallbackPath("/Users/me/project/.claude/plans/acp-plan.md")).toBe(true);
+  });
+
+  it("returns false for non-ACP plan path", () => {
+    expect(isAcpPlanFallbackPath(".claude/plans/feature-plan.md")).toBe(false);
   });
 });
 
@@ -750,6 +772,23 @@ describe("detectSemanticBoundaryFromEvents", () => {
       eventIdx: 1,
       eventType: "tool.finished",
     });
+  });
+
+  it("does not classify ACP fallback plan payload as plan-file boundary", () => {
+    const boundary = detectSemanticBoundaryFromEvents([
+      makeEvent({
+        id: "e-plan-fallback",
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          content: "# Plan",
+          filePath: ".claude/plans/acp-plan.md",
+          source: "streaming_fallback",
+        },
+      }),
+    ]);
+
+    expect(boundary).toBeNull();
   });
 
   it("classifies search tool events as subagent-activity", () => {

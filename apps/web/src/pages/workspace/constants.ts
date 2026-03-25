@@ -33,7 +33,6 @@ export const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
-  "commands.updated",
   "subagent.started",
   "subagent.finished",
   "chat.failed",
