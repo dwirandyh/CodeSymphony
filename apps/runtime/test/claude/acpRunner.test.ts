@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import { __testing } from "../../src/claude/acpRunner";
 import { isReviewGitCommand, shouldAutoAllowReviewGitPermission } from "../../src/claude/reviewGitPermissionPolicy";
 
+const defaultInstrumentContext = {
+  cwd: "/repo",
+  sessionId: "session-1",
+  permissionMode: "default" as const,
+  autoAcceptTools: false,
+  permissionProfile: "default" as const,
+};
+
 describe("acpRunner __testing", () => {
   it("ignores generic completion titles", () => {
     expect(__testing.meaningfulCompletionTitle("Completed Task", "Task")).toBe("");
@@ -118,6 +126,7 @@ describe("acpRunner __testing", () => {
     const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
     const client = new __testing.RuntimeAcpClient({
       permissionProfile: "review_git",
+      instrumentContext: defaultInstrumentContext,
       onText: () => {},
       onThinking: () => {},
       onToolStarted: () => {},
@@ -172,6 +181,7 @@ describe("acpRunner __testing", () => {
     const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
     const client = new __testing.RuntimeAcpClient({
       permissionProfile: "default",
+      instrumentContext: defaultInstrumentContext,
       onText: () => {},
       onThinking: () => {},
       onToolStarted: () => {},
@@ -220,5 +230,175 @@ describe("acpRunner __testing", () => {
       isBash: false,
       command: "gh pr view --json number,url,headRefName,baseRefName,state",
     })).toBe(false);
+  });
+
+  it("extracts permission metadata from ACP claudeCode meta", () => {
+    expect(__testing.extractPermissionMetadata({
+      title: "Read",
+      toolCallId: "tool-1",
+      _meta: {
+        claudeCode: {
+          blockedPath: "/etc/passwd",
+          decisionReason: "Restricted path",
+        },
+      },
+    } as any)).toEqual({
+      blockedPath: "/etc/passwd",
+      decisionReason: "Restricted path",
+    });
+  });
+
+  it("formats ACP plan entries into markdown content", () => {
+    expect(__testing.formatPlanContent([
+      { content: "Inspect runtime", status: "completed" },
+      { content: "Add ACP tests", status: "in_progress" },
+      { content: "Cleanup docs", status: "pending" },
+    ])).toBe("# Plan\n\n[x] Inspect runtime\n[-] Add ACP tests\n[ ] Cleanup docs");
+  });
+
+  it("forwards permission metadata into runtime permission callback", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "allow" as const }));
+    const onToolInstrumentation = vi.fn();
+    const client = new __testing.RuntimeAcpClient({
+      permissionProfile: "default",
+      instrumentContext: defaultInstrumentContext,
+      onText: () => {},
+      onThinking: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onPermissionRequest,
+      onPlanFileDetected: () => {},
+      onToolInstrumentation,
+    });
+
+    await client.requestPermission({
+      toolCall: {
+        toolCallId: "tool-meta",
+        title: "Read",
+        rawInput: { file_path: "/etc/passwd" },
+        _meta: {
+          claudeCode: {
+            toolName: "Read",
+            blockedPath: "/etc/passwd",
+            decisionReason: "Restricted path",
+          },
+        },
+      } as any,
+      options: [{ optionId: "allow" }],
+    } as any);
+
+    expect(onPermissionRequest).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: "tool-meta",
+      blockedPath: "/etc/passwd",
+      decisionReason: "Restricted path",
+    }));
+    expect(onToolInstrumentation).toHaveBeenCalledWith(expect.objectContaining({
+      stage: "requested",
+      toolUseId: "tool-meta",
+      preview: expect.objectContaining({
+        blockedPath: "/etc/passwd",
+        decisionReason: "Restricted path",
+        suggestionsCount: 1,
+      }),
+    }));
+    expect(onToolInstrumentation).toHaveBeenCalledWith(expect.objectContaining({
+      stage: "decision",
+      toolUseId: "tool-meta",
+      decision: "allow",
+    }));
+  });
+
+  it("emits plan detection for ACP plan updates", async () => {
+    const onPlanFileDetected = vi.fn();
+    const client = new __testing.RuntimeAcpClient({
+      permissionProfile: "default",
+      instrumentContext: defaultInstrumentContext,
+      onText: () => {},
+      onThinking: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onPermissionRequest: async () => ({ decision: "deny" as const }),
+      onPlanFileDetected,
+    });
+
+    await client.sessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "plan",
+        entries: [
+          { content: "Review ACP parity", status: "pending", priority: "high" },
+          { content: "Write tests", status: "in_progress", priority: "medium" },
+        ],
+      } as any,
+    });
+
+    expect(onPlanFileDetected).toHaveBeenCalledWith({
+      filePath: ".claude/plans/acp-plan.md",
+      content: "# Plan\n\n[ ] Review ACP parity\n[-] Write tests",
+      source: "streaming_fallback",
+    });
+  });
+
+  it("emits instrumentation for tool lifecycle events", async () => {
+    const onToolInstrumentation = vi.fn();
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+    const client = new __testing.RuntimeAcpClient({
+      permissionProfile: "default",
+      instrumentContext: defaultInstrumentContext,
+      onText: () => {},
+      onThinking: () => {},
+      onToolStarted,
+      onToolOutput: () => {},
+      onToolFinished,
+      onPermissionRequest: async () => ({ decision: "deny" as const }),
+      onPlanFileDetected: () => {},
+      onToolInstrumentation,
+    });
+
+    await client.sessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-read",
+        title: "Read file",
+        rawInput: { file_path: "/repo/README.md" },
+        _meta: { claudeCode: { toolName: "Read" } },
+      } as any,
+    });
+
+    await client.sessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-read",
+        status: "completed",
+        title: "Read README.md",
+        rawInput: { file_path: "/repo/README.md" },
+        rawOutput: "done",
+        _meta: { claudeCode: { toolName: "Read" } },
+      } as any,
+    });
+
+    expect(onToolStarted).toHaveBeenCalledWith(expect.objectContaining({
+      toolUseId: "tool-read",
+      toolName: "Read",
+    }));
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      precedingToolUseIds: ["tool-read"],
+      summary: "Read README.md",
+    }));
+    expect(onToolInstrumentation).toHaveBeenCalledWith(expect.objectContaining({
+      stage: "started",
+      toolUseId: "tool-read",
+      toolName: "Read",
+    }));
+    expect(onToolInstrumentation).toHaveBeenCalledWith(expect.objectContaining({
+      stage: "finished",
+      toolUseId: "tool-read",
+      summary: "Read README.md",
+    }));
   });
 });

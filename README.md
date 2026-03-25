@@ -10,7 +10,7 @@ Local-first conductor.build-style workspace with:
 
 ## Architecture
 
-- `apps/runtime` - local API service (Fastify + Prisma + SQLite + Claude Agent SDK)
+- `apps/runtime` - local API service (Fastify + Prisma + SQLite + ACP-backed Claude runtime integration)
 - `apps/web` - web UI with repository sidebar and chat panel
 - `apps/desktop` - Tauri shell
 - `packages/shared-types` - shared API schemas/types

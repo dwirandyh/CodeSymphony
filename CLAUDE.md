@@ -56,7 +56,7 @@ Local-first monorepo (pnpm workspaces + Turbo) for a conductor.build-style AI co
 ### Key Data Flow
 
 1. Web/desktop sends user messages via REST to runtime
-2. Runtime invokes Claude Agent SDK (`query()` in `src/claude/sessionRunner.ts`)
+2. Runtime invokes Claude via ACP (`runClaudeViaAcp()` in `src/claude/acpRunner.ts`)
 3. Runtime emits fine-grained events (text deltas, tool starts/outputs, permission requests) via SSE at `GET /api/threads/:id/events/stream`
 4. Events are persisted to SQLite (`ChatEvent` table) and streamed to connected clients
 5. Web renders events as a timeline (thinking blocks, tool progress, permission prompts)
@@ -64,7 +64,7 @@ Local-first monorepo (pnpm workspaces + Turbo) for a conductor.build-style AI co
 ### Runtime Internals
 
 - **`src/services/chatService.ts`** — Core orchestrator: thread lifecycle, message sending, assistant scheduling
-- **`src/claude/sessionRunner.ts`** — Bridge to Claude Agent SDK with streaming, tool hooks (`canUseTool` for plan/execute modes), and subagent handling
+- **`src/claude/acpRunner.ts`** — ACP-backed bridge to Claude with streaming, permission handling, subagent tracking, and timeline event translation
 - **`src/events/eventHub.ts`** — Event bus with emit/subscribe pattern; persists to SQLite and notifies SSE subscribers
 - **`src/routes/`** — Fastify route handlers (chats, repositories, system, terminal, logs)
 - **`prisma/schema.prisma`** — Database schema: Repository → Worktree → ChatThread → ChatMessage/ChatEvent
