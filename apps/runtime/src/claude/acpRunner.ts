@@ -15,7 +15,7 @@ import type {
   AuthenticateRequest,
   AuthenticateResponse,
 } from "@agentclientprotocol/sdk";
-import type { ChatThreadPermissionProfile } from "@codesymphony/shared-types";
+import type { AvailableCommand, ChatThreadPermissionProfile } from "@codesymphony/shared-types";
 import type {
   AgentRunner,
   ClaudeOwnershipReason,
@@ -83,6 +83,7 @@ type SessionClientOptions = {
   onPlanFileDetected: NonNullable<Parameters<AgentRunner>[0]["onPlanFileDetected"]>;
   onSubagentStarted?: NonNullable<Parameters<AgentRunner>[0]["onSubagentStarted"]>;
   onSubagentStopped?: NonNullable<Parameters<AgentRunner>[0]["onSubagentStopped"]>;
+  onAvailableCommandsUpdated?: NonNullable<Parameters<AgentRunner>[0]["onAvailableCommandsUpdated"]>;
   onToolInstrumentation?: NonNullable<Parameters<AgentRunner>[0]["onToolInstrumentation"]>;
 };
 
@@ -163,6 +164,33 @@ function formatPlanContent(entries: Array<{ content?: unknown; status?: unknown 
 
 function buildPlanFallbackPath(): string {
   return ".claude/plans/acp-plan.md";
+}
+
+function normalizeAvailableCommands(rawCommands: unknown): AvailableCommand[] {
+  if (!Array.isArray(rawCommands)) {
+    return [];
+  }
+
+  return rawCommands.flatMap((rawCommand) => {
+    if (typeof rawCommand !== "object" || rawCommand == null || Array.isArray(rawCommand)) {
+      return [];
+    }
+
+    const command = rawCommand as Record<string, unknown>;
+    const name = typeof command.name === "string" ? command.name.trim() : "";
+    if (name.length === 0) {
+      return [];
+    }
+
+    const description = typeof command.description === "string" ? command.description : "";
+    const rawInput = command.input;
+    const input = typeof rawInput === "object" && rawInput != null && !Array.isArray(rawInput)
+      && typeof (rawInput as Record<string, unknown>).hint === "string"
+      ? { hint: (rawInput as Record<string, unknown>).hint as string }
+      : null;
+
+    return [{ name, description, ...(input ? { input } : {}) }];
+  });
 }
 
 async function emitInstrumentation(
@@ -492,6 +520,11 @@ class RuntimeAcpClient implements Client {
         }
         return;
       }
+      case "available_commands_update": {
+        const availableCommands = normalizeAvailableCommands(update.availableCommands);
+        await this.options.onAvailableCommandsUpdated?.({ availableCommands });
+        return;
+      }
       case "tool_call": {
         const state = buildToolState(update, this.toolStateById.get(update.toolCallId));
         state.startedAtMs = Date.now();
@@ -708,6 +741,7 @@ async function initializeConnection(stream: acp.Stream): Promise<acp.ClientSideC
     onToolFinished: async () => {},
     onPermissionRequest: async () => ({ decision: "deny" }),
     onPlanFileDetected: async () => {},
+    onAvailableCommandsUpdated: async () => {},
   });
   const connection = new acp.ClientSideConnection(() => runtimeClient, stream);
   await connection.initialize({
@@ -808,6 +842,7 @@ export const runClaudeViaAcp: AgentRunner = async ({
   onPlanFileDetected,
   onSubagentStarted,
   onSubagentStopped,
+  onAvailableCommandsUpdated,
   onToolInstrumentation,
 }) => {
   void onQuestionRequest;
@@ -862,6 +897,7 @@ export const runClaudeViaAcp: AgentRunner = async ({
     onPlanFileDetected,
     onSubagentStarted,
     onSubagentStopped,
+    onAvailableCommandsUpdated,
     onToolInstrumentation,
   });
 

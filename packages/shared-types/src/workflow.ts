@@ -20,6 +20,7 @@ export const ChatEventTypeSchema = z.enum([
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
+  "commands.updated",
   "subagent.started",
   "subagent.finished",
   "chat.completed",
@@ -117,6 +118,22 @@ export const ChatEventSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+export const AvailableCommandInputSchema = z.object({
+  hint: z.string(),
+});
+export type AvailableCommandInput = z.infer<typeof AvailableCommandInputSchema>;
+
+export const AvailableCommandSchema = z.object({
+  name: z.string().min(1),
+  description: z.string(),
+  input: AvailableCommandInputSchema.nullable().optional(),
+});
+export type AvailableCommand = z.infer<typeof AvailableCommandSchema>;
+
+export const AvailableCommandsUpdateSchema = z.object({
+  availableCommands: z.array(AvailableCommandSchema),
+});
+export type AvailableCommandsUpdate = z.infer<typeof AvailableCommandsUpdateSchema>;
 
 export const AssistantRenderHintSchema = z.enum(["markdown", "raw-file", "raw-fallback", "diff"]);
 export type AssistantRenderHint = z.infer<typeof AssistantRenderHintSchema>;

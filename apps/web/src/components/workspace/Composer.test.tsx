@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FileEntry } from "@codesymphony/shared-types";
+import type { AvailableCommand, FileEntry } from "@codesymphony/shared-types";
 import { Composer } from "./composer";
 
 const sampleFileIndex: FileEntry[] = [
@@ -11,6 +11,11 @@ const sampleFileIndex: FileEntry[] = [
   { path: "src/b.ts", type: "file" },
   { path: "src/c.ts", type: "file" },
   { path: "src/components.tsx", type: "file" },
+];
+
+const sampleCommands: AvailableCommand[] = [
+  { name: "commit", description: "Create a git commit", input: { hint: "-m 'msg'" } },
+  { name: "review-pr", description: "Review the current PR" },
 ];
 
 const defaultProps = {
@@ -23,6 +28,7 @@ const defaultProps = {
   fileIndex: sampleFileIndex,
   fileIndexLoading: false,
   providers: [],
+  availableCommands: sampleCommands,
   hasMessages: false,
   onSubmitMessage: vi.fn().mockResolvedValue(true),
   onStop: vi.fn(),
@@ -142,6 +148,28 @@ describe("Composer", () => {
     expect(buttons.length).toBeGreaterThan(0);
   });
 
+  it("shows slash command suggestions when / is typed", async () => {
+    renderComposer();
+    const editor = getEditor();
+
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+
+    const buttons = container.querySelectorAll("button[data-slash-index]");
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons[0]?.textContent).toContain("/commit");
+  });
+
+  it("shows no slash suggestions when no ACP commands are available", async () => {
+    renderComposer({ availableCommands: [] });
+    const editor = getEditor();
+
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+
+    expect(container.querySelectorAll("button[data-slash-index]").length).toBe(0);
+  });
+
   it("shows no suggestions when worktreeId is null (empty fileIndex)", async () => {
     renderComposer({ worktreeId: null, fileIndex: [], fileIndexLoading: false });
     const editor = getEditor();
@@ -215,6 +243,20 @@ describe("Composer", () => {
     });
 
     expect(container.querySelectorAll("button[data-index]").length).toBe(0);
+  });
+
+  it("inserts slash command selection via Enter", async () => {
+    renderComposer();
+    const editor = getEditor();
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(editor.textContent).toContain("/commit -m 'msg'");
   });
 
   it("submits message on Enter when no mention is active", async () => {

@@ -1,4 +1,4 @@
-import type { ActivityTraceStep, ChatEvent, Repository } from "@codesymphony/shared-types";
+import type { ActivityTraceStep, AvailableCommand, ChatEvent, Repository } from "@codesymphony/shared-types";
 import {
   EXPLORE_BASH_COMMAND_PATTERN,
   FILE_PATH_PATTERN,
@@ -59,6 +59,32 @@ export function isPlanFilePath(filePath: string): boolean {
   return filePath.includes(".claude/plans/")
     || filePath.includes("codesymphony-claude-provider/plans/")
     || filePath.includes("/Users/") && filePath.includes("/.claude/plans/");
+}
+
+export function deriveAvailableCommands(events: ChatEvent[]): AvailableCommand[] {
+  const latest = [...events]
+    .sort((a, b) => a.idx - b.idx)
+    .filter((event) => event.type === "commands.updated")
+    .at(-1);
+
+  if (!latest || !Array.isArray(latest.payload.availableCommands)) {
+    return [];
+  }
+
+  return latest.payload.availableCommands.flatMap((rawCommand) => {
+    if (!isRecord(rawCommand)) {
+      return [];
+    }
+    const name = typeof rawCommand.name === "string" ? rawCommand.name.trim() : "";
+    if (name.length === 0) {
+      return [];
+    }
+    const description = typeof rawCommand.description === "string" ? rawCommand.description : "";
+    const input = isRecord(rawCommand.input) && typeof rawCommand.input.hint === "string"
+      ? { hint: rawCommand.input.hint }
+      : undefined;
+    return [{ name, description, ...(input ? { input } : {}) }];
+  });
 }
 
 export function isPlanModeToolEvent(event: ChatEvent): boolean {

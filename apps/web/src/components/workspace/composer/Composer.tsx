@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Paperclip, Square, X, Zap } from "lucide-react";
-import type { ChatMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
+import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Paperclip, Slash, Square, X, Zap } from "lucide-react";
+import type { AvailableCommand, ChatMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
 import { serializeMention } from "../../../lib/mentions";
 import type { PendingAttachment } from "../../../lib/attachments";
@@ -10,6 +10,7 @@ import {
 } from "../../../lib/attachments";
 import { createAttachmentChipElement } from "./composerChipUtils";
 import { useComposerMention } from "./useComposerMention";
+import { useComposerSlashCommands } from "./useComposerSlashCommands";
 import { useComposerAttachments } from "./useComposerAttachments";
 
 type ComposerSubmitPayload = {
@@ -28,6 +29,7 @@ type ComposerProps = {
   fileIndex: FileEntry[];
   fileIndexLoading: boolean;
   providers: ModelProvider[];
+  availableCommands: AvailableCommand[];
   hasMessages: boolean;
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onStop: () => void;
@@ -44,6 +46,7 @@ export function Composer({
   fileIndex,
   fileIndexLoading,
   providers,
+  availableCommands,
   hasMessages,
   onSubmitMessage,
   onStop,
@@ -114,6 +117,21 @@ export function Composer({
     popoverRef,
     fileIndex,
     fileIndexLoading,
+    onChange: setDraftText,
+  });
+
+  const {
+    slashCommand,
+    selectedSlashIndex,
+    setSelectedSlashIndex,
+    slashSuggestions,
+    closeSlashCommands,
+    detectSlashCommand,
+    selectSlashSuggestion,
+  } = useComposerSlashCommands({
+    editorRef,
+    popoverRef,
+    availableCommands,
     onChange: setDraftText,
   });
 
@@ -221,9 +239,10 @@ export function Composer({
     queueMicrotask(() => {
       if (editor) {
         detectMention();
+        detectSlashCommand();
       }
     });
-  }, [syncValueFromEditor, applyAttachmentsChange, detectMention]);
+  }, [syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
@@ -423,6 +442,29 @@ export function Composer({
         }
       }
 
+      if (slashCommand.active && slashSuggestions.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setSelectedSlashIndex((prev) => (prev + 1) % slashSuggestions.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setSelectedSlashIndex((prev) => (prev - 1 + slashSuggestions.length) % slashSuggestions.length);
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          selectSlashSuggestion(slashSuggestions[selectedSlashIndex]);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeSlashCommands();
+          return;
+        }
+      }
+
       if (event.key === "Backspace") {
         const sel = window.getSelection();
         const editor = editorRef.current;
@@ -509,7 +551,7 @@ export function Composer({
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashSuggestions, selectedSlashIndex, selectSlashSuggestion, closeSlashCommands, isPlan, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
@@ -583,6 +625,44 @@ export function Composer({
             </div>
           )}
 
+          {slashCommand.active && slashSuggestions.length > 0 && (
+            <div
+              ref={popoverRef}
+              className="absolute bottom-full left-0 z-50 mb-2 w-full max-h-60 overflow-y-auto rounded-xl border border-border/60 bg-popover shadow-lg"
+            >
+              {slashSuggestions.map((entry, index) => (
+                <button
+                  key={entry.name}
+                  type="button"
+                  data-slash-index={index}
+                  className={`flex w-full items-start gap-2 px-3 py-1.5 text-left text-sm transition-colors ${
+                    index === selectedSlashIndex
+                      ? "bg-accent text-accent-foreground"
+                      : "text-foreground hover:bg-accent/50"
+                  }`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    selectSlashSuggestion(entry);
+                  }}
+                  onMouseEnter={() => setSelectedSlashIndex(index)}
+                >
+                  <Slash className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">/{entry.name}</span>
+                    {entry.highlighted ? (
+                      <span className="block truncate text-xs text-muted-foreground" dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
+                    ) : entry.description ? (
+                      <span className="block truncate text-xs text-muted-foreground">{entry.description}</span>
+                    ) : null}
+                    {entry.input?.hint ? (
+                      <span className="block truncate text-[11px] text-muted-foreground/80">{entry.input.hint}</span>
+                    ) : null}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
           {barAttachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {barAttachments.map((att) => (
@@ -617,7 +697,7 @@ export function Composer({
             ref={editorRef}
             role="textbox"
             aria-multiline="true"
-            aria-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type @ to mention files)"}
+            aria-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type / for commands, @ to mention files)"}
             contentEditable={!disabled}
             suppressContentEditableWarning
             onInput={handleInput}
@@ -628,7 +708,7 @@ export function Composer({
               isComposingRef.current = false;
               handleInput();
             }}
-            data-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type @ to mention files)"}
+            data-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type / for commands, @ to mention files)"}
             className={`min-h-[60px] max-h-[140px] w-full overflow-y-auto resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground empty:before:pointer-events-none md:min-h-[74px] md:max-h-[400px] ${
               disabled ? "cursor-not-allowed opacity-50" : ""
             }`}

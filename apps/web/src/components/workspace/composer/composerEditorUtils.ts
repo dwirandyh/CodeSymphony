@@ -7,6 +7,13 @@ export type MentionState = {
   anchorNode: Node | null;
 };
 
+export type SlashCommandState = {
+  active: boolean;
+  query: string;
+  startOffset: number;
+  anchorNode: Node | null;
+};
+
 export type MentionedFile = FileEntry & { id: string };
 
 let mentionIdCounter = 0;
@@ -52,7 +59,7 @@ export function getMentionedFilesFromEditor(el: HTMLElement): MentionedFile[] {
   return files;
 }
 
-export function detectMentionInEditor(el: HTMLElement): MentionState {
+function detectTokenInEditor(el: HTMLElement, token: "@" | "/"): MentionState {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
     return { active: false, query: "", startOffset: -1, anchorNode: null };
@@ -67,21 +74,29 @@ export function detectMentionInEditor(el: HTMLElement): MentionState {
   const cursorOffset = sel.anchorOffset;
   const textBeforeCursor = text.slice(0, cursorOffset);
 
-  const atIndex = textBeforeCursor.lastIndexOf("@");
-  if (atIndex === -1) {
+  const tokenIndex = textBeforeCursor.lastIndexOf(token);
+  if (tokenIndex === -1) {
     return { active: false, query: "", startOffset: -1, anchorNode: null };
   }
 
-  if (atIndex > 0 && !/\s/.test(textBeforeCursor[atIndex - 1])) {
+  if (tokenIndex > 0 && !/\s/.test(textBeforeCursor[tokenIndex - 1])) {
     return { active: false, query: "", startOffset: -1, anchorNode: null };
   }
 
-  const query = textBeforeCursor.slice(atIndex + 1);
+  const query = textBeforeCursor.slice(tokenIndex + 1);
   if (/\s/.test(query) && query.trim().includes(" ")) {
     return { active: false, query: "", startOffset: -1, anchorNode: null };
   }
 
-  return { active: true, query: query.trimEnd(), startOffset: atIndex, anchorNode };
+  return { active: true, query: query.trimEnd(), startOffset: tokenIndex, anchorNode };
+}
+
+export function detectMentionInEditor(el: HTMLElement): MentionState {
+  return detectTokenInEditor(el, "@");
+}
+
+export function detectSlashCommandInEditor(el: HTMLElement): SlashCommandState {
+  return detectTokenInEditor(el, "/");
 }
 
 export const FILE_ICON_SVG =

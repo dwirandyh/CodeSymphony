@@ -1,4 +1,4 @@
-import type { ChatMode } from "@codesymphony/shared-types";
+import type { AvailableCommand, ChatMode } from "@codesymphony/shared-types";
 import type { WorktreeThreadUiStatus } from "../worktreeThreadStatus";
 
 export type PendingMessageMutation =
@@ -35,4 +35,8 @@ export interface UseChatSessionOptions {
 export type SelectedThreadUiState = {
   selectedThreadUiStatus: WorktreeThreadUiStatus;
   composerDisabled: boolean;
+};
+
+export type AvailableCommandsState = {
+  availableCommands: AvailableCommand[];
 };

@@ -17,6 +17,7 @@ export const chatEventTypeFromDb: Record<DbChatEventType, ChatEvent["type"]> = {
   plan_created: "plan.created",
   plan_approved: "plan.approved",
   plan_revision_requested: "plan.revision_requested",
+  commands_updated: "commands.updated",
   subagent_started: "subagent.started",
   subagent_finished: "subagent.finished",
   chat_completed: "chat.completed",

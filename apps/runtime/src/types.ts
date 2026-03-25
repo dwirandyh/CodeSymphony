@@ -1,5 +1,12 @@
 import type { PrismaClient } from "@prisma/client";
-import type { ChatEvent, ChatEventType, ChatMode, ChatThreadPermissionProfile, PermissionDecision } from "@codesymphony/shared-types";
+import type {
+  AvailableCommand,
+  ChatEvent,
+  ChatEventType,
+  ChatMode,
+  ChatThreadPermissionProfile,
+  PermissionDecision,
+} from "@codesymphony/shared-types";
 
 export type RuntimeEventPayload = Record<string, unknown>;
 
@@ -183,6 +190,9 @@ export type AgentRunner = (args: {
     description: string;
     lastMessage: string;
     isResponseUpdate?: boolean;
+  }) => Promise<void> | void;
+  onAvailableCommandsUpdated?: (payload: {
+    availableCommands: AvailableCommand[];
   }) => Promise<void> | void;
   onToolInstrumentation?: (event: ClaudeToolInstrumentationEvent) => Promise<void> | void;
 }) => Promise<AgentRunnerResult>;

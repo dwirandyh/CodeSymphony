@@ -9,6 +9,7 @@ export const SNAPSHOT_INVALIDATION_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "plan.created",
   "plan.approved",
   "plan.revision_requested",
+  "commands.updated",
   "chat.completed",
   "chat.failed",
 ]);

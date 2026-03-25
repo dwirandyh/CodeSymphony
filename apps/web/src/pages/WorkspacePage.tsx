@@ -756,6 +756,7 @@ export function WorkspacePage() {
                     fileIndex={fileIndex.entries}
                     fileIndexLoading={fileIndex.loading}
                     providers={modelProviders}
+                    availableCommands={chat.availableCommands}
                     hasMessages={chat.messages.length > 0}
                     onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
                     onStop={() => void chat.stopAssistantRun()}

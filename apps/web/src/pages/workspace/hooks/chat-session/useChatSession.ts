@@ -9,6 +9,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   AttachmentInput,
+  AvailableCommand,
   ChatEvent,
   ChatMessage,
   ChatMode,
@@ -24,6 +25,7 @@ import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreads } from "../../../../hooks/queries/useThreads";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
 import {
+  deriveAvailableCommands,
   shouldClearWaitingAssistantOnEvent,
 } from "../../eventUtils";
 import { useWorkspaceTimeline } from "../workspace-timeline";
@@ -373,6 +375,7 @@ export function useChatSession(
     sendingMessage,
     waitingAssistant,
   });
+  const availableCommands = useMemo<AvailableCommand[]>(() => deriveAvailableCommands(events), [events]);
   const selectedThreadIsRunning = selectedThreadUiStatus === "running";
   const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
     (thread) => thread.id === selectedThreadId && thread.kind === "review",
@@ -957,6 +960,7 @@ export function useChatSession(
 
     timelineItems,
     timelineSummary,
+    availableCommands,
 
     createAdditionalThread,
     createThreadAndSendMessage,

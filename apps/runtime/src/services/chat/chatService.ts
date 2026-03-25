@@ -11,6 +11,7 @@ import {
   SendChatMessageInputSchema,
   type AnswerQuestionInput,
   type AttachmentInput,
+  type AvailableCommand,
   type ChatEvent,
   type ChatMessage,
   type ChatMode,
@@ -262,6 +263,12 @@ export function createChatService(deps: RuntimeDeps) {
         },
         onSubagentStopped: async (payload) => {
           await deps.eventHub.emit(threadId, "subagent.finished", payload);
+        },
+        onAvailableCommandsUpdated: async (payload: { availableCommands: AvailableCommand[] }) => {
+          await deps.eventHub.emit(threadId, "commands.updated", {
+            availableCommands: payload.availableCommands,
+            messageId: assistantMessage.id,
+          });
         },
         onToolInstrumentation: async (event) => {
           if (!deps.logService) {
@@ -1127,6 +1134,7 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
           onPlanFileDetected: async () => { },
           onSubagentStarted: async () => { },
           onSubagentStopped: async () => { },
+          onAvailableCommandsUpdated: async () => { },
           onThinking: async () => { },
         });
 

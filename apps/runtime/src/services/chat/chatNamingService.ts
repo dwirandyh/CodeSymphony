@@ -103,6 +103,7 @@ export async function buildThreadTitleWithAi(
       onPlanFileDetected: async () => { },
       onSubagentStarted: async () => { },
       onSubagentStopped: async () => { },
+      onAvailableCommandsUpdated: async () => { },
       onThinking: async () => { },
     });
 
@@ -308,6 +309,7 @@ export async function buildBranchNameWithAi(
       onPlanFileDetected: async () => { },
       onSubagentStarted: async () => { },
       onSubagentStopped: async () => { },
+      onAvailableCommandsUpdated: async () => { },
       onThinking: async () => { },
     });
 

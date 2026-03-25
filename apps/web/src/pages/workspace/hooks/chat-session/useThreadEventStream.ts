@@ -31,6 +31,7 @@ const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["
   "permission.requested",
   "question.requested",
   "plan.created",
+  "commands.updated",
   "chat.completed",
 ]);
 
@@ -222,6 +223,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         if (!skipInvalidation) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.commands(selectedThreadId) });
         }
       }
 

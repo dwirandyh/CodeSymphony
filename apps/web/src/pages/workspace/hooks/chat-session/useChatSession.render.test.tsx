@@ -196,6 +196,40 @@ describe("useChatSession", () => {
     expect(hookResult.selectedThreadId).toBe("thread-a");
   });
 
+  it("derives ACP available commands from command update events", () => {
+    snapshotState.data = {
+      timelineItems: [],
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      newestSeq: 0,
+      newestIdx: 1,
+      messages: [],
+      events: [{
+        id: "evt-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "commands.updated",
+        payload: {
+          availableCommands: [
+            { name: "commit", description: "Create a git commit", input: { hint: "-m 'msg'" } },
+          ],
+        },
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+    };
+
+    renderHook("thread-a");
+
+    expect(hookResult.availableCommands).toEqual([
+      { name: "commit", description: "Create a git commit", input: { hint: "-m 'msg'" } },
+    ]);
+  });
+
   it("syncs selection when desiredThreadId changes after mount", () => {
     renderHook("thread-a");
     expect(hookResult.selectedThreadId).toBe("thread-a");

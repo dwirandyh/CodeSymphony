@@ -341,6 +341,40 @@ describe("acpRunner __testing", () => {
     });
   });
 
+  it("emits available commands updates from ACP session events", async () => {
+    const onAvailableCommandsUpdated = vi.fn();
+    const client = new __testing.RuntimeAcpClient({
+      permissionProfile: "default",
+      instrumentContext: defaultInstrumentContext,
+      onText: () => {},
+      onThinking: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onPermissionRequest: async () => ({ decision: "deny" as const }),
+      onPlanFileDetected: () => {},
+      onAvailableCommandsUpdated,
+    });
+
+    await client.sessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          { name: "commit", description: "Create a git commit", input: { hint: "-m 'msg'" } },
+          { name: "review-pr", description: "Review the current PR" },
+        ],
+      } as any,
+    });
+
+    expect(onAvailableCommandsUpdated).toHaveBeenCalledWith({
+      availableCommands: [
+        { name: "commit", description: "Create a git commit", input: { hint: "-m 'msg'" } },
+        { name: "review-pr", description: "Review the current PR" },
+      ],
+    });
+  });
+
   it("emits instrumentation for tool lifecycle events", async () => {
     const onToolInstrumentation = vi.fn();
     const onToolStarted = vi.fn();
@@ -355,6 +389,7 @@ describe("acpRunner __testing", () => {
       onToolFinished,
       onPermissionRequest: async () => ({ decision: "deny" as const }),
       onPlanFileDetected: () => {},
+      onAvailableCommandsUpdated: () => {},
       onToolInstrumentation,
     });
 
