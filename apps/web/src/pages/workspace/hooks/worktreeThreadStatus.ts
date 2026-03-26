@@ -137,11 +137,11 @@ export function derivePendingPlan(events: ChatEvent[]): PendingPlan | null {
     if (event.type === "plan.created") {
       const content = typeof event.payload.content === "string" ? event.payload.content : "";
       const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
-      if (content.length === 0 || isAcpPlanFallbackPath(filePath)) {
+      if (content.length === 0) {
         continue;
       }
 
-      if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath)) {
+      if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath) && !isAcpPlanFallbackPath(filePath)) {
         const realWrite = orderedEvents.find((candidate) =>
           candidate.idx > event.idx
           && candidate.type === "tool.finished"
@@ -175,6 +175,11 @@ export function derivePendingPlan(events: ChatEvent[]): PendingPlan | null {
       if (latestPlan) {
         latestPlan = { ...latestPlan, status: "approved" };
       }
+      continue;
+    }
+
+    if (event.type === "plan.dismissed") {
+      latestPlan = null;
       continue;
     }
 

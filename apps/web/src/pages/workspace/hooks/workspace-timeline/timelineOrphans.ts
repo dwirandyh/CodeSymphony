@@ -134,6 +134,7 @@ export function processOrphanToolEvents(
       && event.type !== "subagent.finished"
       && event.type !== "plan.created"
       && event.type !== "plan.approved"
+      && event.type !== "plan.dismissed"
       && event.type !== "plan.revision_requested"
       && event.type !== "chat.failed"
       && !isPlanModeToolEvent(event)

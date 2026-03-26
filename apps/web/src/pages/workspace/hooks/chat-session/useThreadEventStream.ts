@@ -31,6 +31,7 @@ const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["
   "permission.requested",
   "question.requested",
   "plan.created",
+  "plan.dismissed",
   "commands.updated",
   "chat.completed",
 ]);

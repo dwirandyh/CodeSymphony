@@ -54,16 +54,12 @@ export function isAcpPlanFallbackPath(filePath: string): boolean {
 
 export function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
   const filePath = typeof payload.filePath === "string" ? payload.filePath : "";
-  if (isAcpPlanFallbackPath(filePath)) {
-    return false;
-  }
-
   const rawSource = payload.source;
   if (rawSource === "claude_plan_file" || rawSource === "streaming_fallback") {
     return true;
   }
 
-  return isPlanFilePath(filePath);
+  return isPlanFilePath(filePath) || isAcpPlanFallbackPath(filePath);
 }
 
 export function isPlanFilePath(filePath: string): boolean {
@@ -813,7 +809,7 @@ export function detectSemanticBoundaryFromEvents(events: ChatEvent[]): SemanticB
       continue;
     }
 
-    if (event.type === "plan.approved" || event.type === "plan.revision_requested") {
+    if (event.type === "plan.approved" || event.type === "plan.dismissed" || event.type === "plan.revision_requested") {
       continue;
     }
 

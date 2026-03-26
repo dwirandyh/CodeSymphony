@@ -36,6 +36,41 @@ type ComposerProps = {
   onSelectProvider: (id: string | null) => void;
 };
 
+const COMPOSER_MODE_STORAGE_KEY_PREFIX = "codesymphony:composer-mode";
+
+function getComposerModeStorageKey(threadId: string): string {
+  return `${COMPOSER_MODE_STORAGE_KEY_PREFIX}:${threadId}`;
+}
+
+function readStoredComposerMode(threadId: string | null): ChatMode {
+  if (!threadId) {
+    return "default";
+  }
+
+  try {
+    return localStorage.getItem(getComposerModeStorageKey(threadId)) === "plan" ? "plan" : "default";
+  } catch {
+    return "default";
+  }
+}
+
+function persistComposerMode(threadId: string | null, mode: ChatMode) {
+  if (!threadId) {
+    return;
+  }
+
+  try {
+    const key = getComposerModeStorageKey(threadId);
+    if (mode === "default") {
+      localStorage.removeItem(key);
+      return;
+    }
+    localStorage.setItem(key, mode);
+  } catch {
+    // localStorage not available
+  }
+}
+
 export function Composer({
   disabled,
   sending,
@@ -53,10 +88,11 @@ export function Composer({
   onSelectProvider,
 }: ComposerProps) {
   const [draftText, setDraftText] = useState("");
-  const [mode, setMode] = useState<ChatMode>("default");
+  const [mode, setMode] = useState<ChatMode>(() => readStoredComposerMode(threadId));
   const isPlan = mode === "plan";
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
+  const pendingModeRestoreRef = useRef<{ threadId: string | null; mode: ChatMode } | null>(null);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return false;
@@ -270,7 +306,7 @@ export function Composer({
     return parts.join("").replace(/\u00A0/g, " ").trim();
   }, [draftText]);
 
-  const resetDraft = useCallback(() => {
+  const resetDraft = useCallback((options?: { preserveMode?: boolean }) => {
     const editor = editorRef.current;
     if (editor) {
       editor.innerHTML = "";
@@ -279,11 +315,14 @@ export function Composer({
     closeMention();
     applyAttachmentsChange([]);
     setDraftText("");
-    setMode("default");
+    if (!options?.preserveMode) {
+      const nextMode = readStoredComposerMode(threadId);
+      setMode(nextMode);
+    }
     lastStableHTMLRef.current = "";
     prevContentLenRef.current = 0;
     afterChipHTMLRef.current = null;
-  }, [applyAttachmentsChange, closeMention]);
+  }, [applyAttachmentsChange, closeMention, threadId]);
 
   const handleSubmit = useCallback(async () => {
     if (cannotSend) return;
@@ -317,7 +356,7 @@ export function Composer({
 
     const didSubmit = await onSubmitMessage({ content, mode, attachments: dedupedAttachments });
     if (didSubmit) {
-      resetDraft();
+      resetDraft({ preserveMode: mode === "plan" });
     }
   }, [cannotSend, buildFinalContent, onSubmitMessage, mode, resetDraft]);
 
@@ -556,6 +595,23 @@ export function Composer({
     },
     [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashSuggestions, selectedSlashIndex, selectSlashSuggestion, closeSlashCommands, isPlan, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
   );
+
+  useEffect(() => {
+    const nextMode = readStoredComposerMode(threadId);
+    pendingModeRestoreRef.current = { threadId, mode: nextMode };
+    setMode(nextMode);
+  }, [threadId]);
+
+  useEffect(() => {
+    const pendingRestore = pendingModeRestoreRef.current;
+    if (pendingRestore && pendingRestore.threadId === threadId) {
+      if (pendingRestore.mode === mode) {
+        pendingModeRestoreRef.current = null;
+      }
+      return;
+    }
+    persistComposerMode(threadId, mode);
+  }, [threadId, mode]);
 
   useEffect(() => {
     resetDraft();

@@ -349,7 +349,7 @@ describe("chatService snapshot", () => {
     ).toHaveLength(1);
   });
 
-  it("skips ACP fallback plan payload in runtime timeline assembly", async () => {
+  it("renders ACP fallback plan payload in runtime timeline assembly", async () => {
     const messages = [
       {
         id: "m1",
@@ -402,7 +402,9 @@ describe("chatService snapshot", () => {
       semanticHydrationInProgress: false,
     });
 
-    expect(assembly.items.filter((item) => item.kind === "plan-file-output")).toHaveLength(0);
+    const planItems = assembly.items.filter((item) => item.kind === "plan-file-output");
+    expect(planItems).toHaveLength(1);
+    expect(planItems[0] && planItems[0].kind === "plan-file-output" ? planItems[0].filePath : null).toBe(".claude/plans/acp-plan.md");
   });
 
   it("quarantines overlap-unresolved subagent explore events in runtime snapshot assembly", async () => {

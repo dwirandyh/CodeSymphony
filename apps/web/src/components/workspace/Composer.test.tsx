@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AvailableCommand, FileEntry } from "@codesymphony/shared-types";
-import { Composer } from "./composer";
+import { Composer } from "./composer/Composer";
 
 const sampleFileIndex: FileEntry[] = [
   { path: "src/index.ts", type: "file" },
@@ -35,6 +35,9 @@ const defaultProps = {
   onSelectProvider: vi.fn(),
 };
 
+const COMPOSER_MODE_STORAGE_KEY = "codesymphony:composer-mode:thread-1";
+const OTHER_THREAD_COMPOSER_MODE_STORAGE_KEY = "codesymphony:composer-mode:thread-2";
+
 describe("Composer", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -55,6 +58,7 @@ describe("Composer", () => {
   }
 
   beforeEach(() => {
+    localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -327,6 +331,56 @@ describe("Composer", () => {
       mode: "plan",
       attachments: [],
     });
+  });
+
+  it("keeps plan mode selected after successful submit", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
+    const editor = getEditor();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+    });
+
+    typeInEditor(editor, "plan this");
+    await flushMicrotasks();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    const modeButton = container.querySelector<HTMLButtonElement>('button[aria-label="Switch to execute mode"]');
+    expect(modeButton?.textContent).toContain("Plan");
+    expect(getEditor().textContent).toBe("");
+  });
+
+  it("restores plan mode from localStorage for the same thread", async () => {
+    localStorage.setItem(COMPOSER_MODE_STORAGE_KEY, "plan");
+
+    renderComposer();
+    await flushMicrotasks();
+
+    const modeButton = container.querySelector<HTMLButtonElement>('button[aria-label="Switch to execute mode"]');
+    expect(modeButton?.textContent).toContain("Plan");
+  });
+
+  it("persists selected mode separately for each thread", async () => {
+    renderComposer({ threadId: "thread-1" });
+    const editor = getEditor();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+    });
+    await flushMicrotasks();
+    expect(localStorage.getItem(COMPOSER_MODE_STORAGE_KEY)).toBe("plan");
+
+    renderComposer({ threadId: "thread-2" });
+    await flushMicrotasks();
+    expect(localStorage.getItem(OTHER_THREAD_COMPOSER_MODE_STORAGE_KEY)).toBeNull();
+
+    const threadTwoButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.includes("Execute"));
+    expect(threadTwoButton).not.toBeUndefined();
   });
 
   it("shows loading indicator when file index is loading", async () => {

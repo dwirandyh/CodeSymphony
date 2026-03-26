@@ -90,6 +90,7 @@ describe("chat routes", () => {
     answerQuestion: vi.fn(),
     dismissQuestion: vi.fn(),
     approvePlan: vi.fn(),
+    dismissPlan: vi.fn(),
     revisePlan: vi.fn(),
     stopRun: vi.fn(),
     listMessages: vi.fn(),
@@ -295,6 +296,14 @@ describe("chat routes", () => {
         url: "/api/threads/t1/plan/revise",
         payload: { feedback: "Change approach" },
       });
+      expect(res.statusCode).toBe(204);
+    });
+  });
+
+  describe("POST /api/threads/:id/plan/dismiss", () => {
+    it("dismisses a plan (204)", async () => {
+      mockChatService.dismissPlan.mockResolvedValue(undefined);
+      const res = await app.inject({ method: "POST", url: "/api/threads/t1/plan/dismiss" });
       expect(res.statusCode).toBe(204);
     });
   });

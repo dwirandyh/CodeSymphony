@@ -164,6 +164,7 @@ const IDLE_GROUP_BOUNDARY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "thinking.delta",
   "plan.created",
   "plan.approved",
+  "plan.dismissed",
   "plan.revision_requested",
   "subagent.started",
   "subagent.finished",

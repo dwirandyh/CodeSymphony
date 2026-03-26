@@ -312,7 +312,7 @@ function buildToolState(update: ToolCall | ToolCallUpdate, previous?: ToolState)
   const isPlanWrite = Boolean(previous?.isPlanWrite)
     || ((toolName === "Write" || toolName === "Edit")
       && typeof filePath === "string"
-      && filePath.includes(".claude/plans/"));
+      && (filePath.includes(".claude/plans/") || filePath.includes("codesymphony-claude-provider/plans/")));
 
   return {
     toolName,
@@ -731,7 +731,9 @@ class RuntimeAcpClient implements Client {
             await this.options.onPlanFileDetected({
               filePath: state.filePath,
               content: state.rawInput.content,
-              source: state.filePath.includes(".claude/plans/") ? "claude_plan_file" : "streaming_fallback",
+              source: state.filePath.includes(".claude/plans/") || state.filePath.includes("codesymphony-claude-provider/plans/")
+                ? "claude_plan_file"
+                : "streaming_fallback",
             });
             return;
           }

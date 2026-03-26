@@ -19,6 +19,7 @@ export const ChatEventTypeSchema = z.enum([
   "question.dismissed",
   "plan.created",
   "plan.approved",
+  "plan.dismissed",
   "plan.revision_requested",
   "commands.updated",
   "subagent.started",

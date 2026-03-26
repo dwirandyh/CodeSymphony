@@ -1034,6 +1034,31 @@ export function createChatService(deps: RuntimeDeps) {
       scheduleAssistant(threadId, executePrompt, "default", { autoAcceptTools: true });
     },
 
+    async dismissPlan(threadId: string): Promise<void> {
+      const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
+      if (!thread) {
+        throw new ChatThreadNotFoundError();
+      }
+
+      let plan = pendingPlanByThread.get(threadId);
+      if (!plan) {
+        plan = await recoverPendingPlan(deps.eventHub, threadId) ?? undefined;
+        if (!plan) {
+          throw new Error("No pending plan to dismiss for this thread");
+        }
+      }
+
+      if (activeThreads.has(threadId)) {
+        throw new Error("Assistant is still processing");
+      }
+
+      pendingPlanByThread.delete(threadId);
+
+      await deps.eventHub.emit(threadId, "plan.dismissed", {
+        filePath: plan.filePath,
+      });
+    },
+
     async revisePlan(threadId: string, rawInput: unknown): Promise<void> {
       const input: PlanRevisionInput = PlanRevisionInputSchema.parse(rawInput);
 

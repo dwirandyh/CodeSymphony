@@ -103,11 +103,11 @@ describe("isClaudePlanFilePayload", () => {
     expect(isClaudePlanFilePayload({ source: "streaming_fallback" })).toBe(true);
   });
 
-  it("returns false for ACP fallback path payload", () => {
+  it("returns true for ACP fallback path payload", () => {
     expect(isClaudePlanFilePayload({
       source: "streaming_fallback",
       filePath: ".claude/plans/acp-plan.md",
-    })).toBe(false);
+    })).toBe(true);
   });
 
   it("returns true for plan file path", () => {
@@ -774,7 +774,7 @@ describe("detectSemanticBoundaryFromEvents", () => {
     });
   });
 
-  it("does not classify ACP fallback plan payload as plan-file boundary", () => {
+  it("classifies ACP fallback plan payload as plan-file boundary", () => {
     const boundary = detectSemanticBoundaryFromEvents([
       makeEvent({
         id: "e-plan-fallback",
@@ -788,7 +788,12 @@ describe("detectSemanticBoundaryFromEvents", () => {
       }),
     ]);
 
-    expect(boundary).toBeNull();
+    expect(boundary).toEqual({
+      kind: "plan-file-output",
+      eventId: "e-plan-fallback",
+      eventIdx: 1,
+      eventType: "plan.created",
+    });
   });
 
   it("classifies search tool events as subagent-activity", () => {

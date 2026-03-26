@@ -106,7 +106,36 @@ describe("worktreeThreadStatus", () => {
     expect(deriveThreadUiStatus(thread, snapshot)).toBe("review_plan");
   });
 
-  it("ignores ACP fallback plan payload for review_plan status", () => {
+  it("returns idle after a pending plan is dismissed", () => {
+    const thread = makeThread();
+    const snapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: thread.id,
+        idx: 1,
+        type: "plan.created",
+        payload: { content: "Plan body", filePath: "/tmp/plan.md" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: thread.id,
+        idx: 2,
+        type: "chat.completed",
+        payload: {},
+      }),
+      makeEvent({
+        id: "e3",
+        threadId: thread.id,
+        idx: 3,
+        type: "plan.dismissed",
+        payload: { filePath: "/tmp/plan.md" },
+      }),
+    ]);
+
+    expect(deriveThreadUiStatus(thread, snapshot)).toBe("idle");
+  });
+
+  it("returns review_plan for ACP fallback plan payload", () => {
     const thread = makeThread();
     const snapshot = makeSnapshot([
       makeEvent({
@@ -129,7 +158,7 @@ describe("worktreeThreadStatus", () => {
       }),
     ]);
 
-    expect(deriveThreadUiStatus(thread, snapshot)).toBe("idle");
+    expect(deriveThreadUiStatus(thread, snapshot)).toBe("review_plan");
   });
 
   it("returns running for active thread without gates", () => {

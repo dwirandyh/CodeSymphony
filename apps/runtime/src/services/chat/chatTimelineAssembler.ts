@@ -142,11 +142,11 @@ export function buildTimelineFromSeed(params: {
 
     const content = typeof event.payload.content === "string" ? event.payload.content : "";
     const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "plan.md";
-    if (content.trim().length === 0 || isAcpPlanFallbackPath(filePath)) {
+    if (content.trim().length === 0) {
       continue;
     }
 
-    if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath)) {
+    if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath) && !isAcpPlanFallbackPath(filePath)) {
       const realWrite = orderedEventsByIdx.find((candidate) =>
         candidate.idx > event.idx
         && candidate.type === "tool.finished"
@@ -217,6 +217,7 @@ export function buildTimelineFromSeed(params: {
     || event.type === "subagent.finished"
     || event.type === "plan.created"
     || event.type === "plan.approved"
+    || event.type === "plan.dismissed"
     || event.type === "plan.revision_requested"
     || event.type === "thinking.delta"
   );

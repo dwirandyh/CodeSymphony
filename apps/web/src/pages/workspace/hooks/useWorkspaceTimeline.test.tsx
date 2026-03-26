@@ -344,7 +344,7 @@ describe("useWorkspaceTimeline", () => {
   it("processes plan events", () => {
     const messages = [makeMessage("m1", 1, "user", "Plan"), makeMessage("m2", 2, "assistant", "Here's the plan")];
     const events = [
-      makeEvent(0, "plan.created", { content: "# My Plan", filePath: ".claude/plan.md" }, "m2"),
+      makeEvent(0, "plan.created", { content: "# My Plan", filePath: ".claude/plan.md", messageId: "m2" }, "m2"),
     ];
     act(() => {
       root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
@@ -353,7 +353,7 @@ describe("useWorkspaceTimeline", () => {
     expect(planItems.length).toBeGreaterThanOrEqual(0);
   });
 
-  it("skips ACP fallback plan.created from rendering plan card", () => {
+  it("renders ACP fallback plan.created as a plan card", () => {
     const messages = [
       makeMessage("m1", 1, "user", "Plan"),
       makeMessage("m2", 2, "assistant", "Thinking"),
@@ -363,6 +363,7 @@ describe("useWorkspaceTimeline", () => {
         content: "# Plan\n\n[-] Investigate",
         filePath: ".claude/plans/acp-plan.md",
         source: "streaming_fallback",
+        messageId: "m2",
       }, "m2"),
     ];
 
@@ -371,7 +372,8 @@ describe("useWorkspaceTimeline", () => {
     });
 
     const planItems = hookResult.items.filter((i) => i.kind === "plan-file-output");
-    expect(planItems).toHaveLength(0);
+    expect(planItems).toHaveLength(1);
+    expect(planItems[0] && planItems[0].kind === "plan-file-output" ? planItems[0].filePath : null).toBe(".claude/plans/acp-plan.md");
   });
 
   it("processes subagent events", () => {

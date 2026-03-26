@@ -414,6 +414,18 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to revise plan");
     }
   },
+  dismissPlan: async (threadId: string) => {
+    const response = await runtimeFetch(`/threads/${threadId}/plan/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to dismiss plan");
+    }
+  },
   getGitStatus: (worktreeId: string) =>
     request<GitStatus>(`/worktrees/${worktreeId}/git/status`),
   getGitBranchDiffSummary: (worktreeId: string) =>

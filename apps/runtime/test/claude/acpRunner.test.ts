@@ -373,6 +373,55 @@ describe("acpRunner __testing", () => {
     });
   });
 
+  it("emits plan detection for provider plan file writes", async () => {
+    const onPlanFileDetected = vi.fn();
+    const client = new __testing.RuntimeAcpClient({
+      permissionProfile: "default",
+      instrumentContext: defaultInstrumentContext,
+      onText: () => {},
+      onThinking: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onPermissionRequest: async () => ({ decision: "deny" as const }),
+      onPlanFileDetected,
+    });
+
+    await client.sessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-plan-write",
+        title: "Write plan file",
+        rawInput: {
+          file_path: "/tmp/codesymphony-claude-provider/plans/example-plan.md",
+          content: "# Plan\n\n[ ] Investigate bug",
+        },
+        _meta: { claudeCode: { toolName: "Write" } },
+      } as any,
+    });
+
+    await client.sessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-plan-write",
+        status: "completed",
+        rawInput: {
+          file_path: "/tmp/codesymphony-claude-provider/plans/example-plan.md",
+          content: "# Plan\n\n[ ] Investigate bug",
+        },
+        _meta: { claudeCode: { toolName: "Write" } },
+      } as any,
+    });
+
+    expect(onPlanFileDetected).toHaveBeenCalledWith({
+      filePath: "/tmp/codesymphony-claude-provider/plans/example-plan.md",
+      content: "# Plan\n\n[ ] Investigate bug",
+      source: "claude_plan_file",
+    });
+  });
+
   it("emits available commands updates from ACP session events", async () => {
     const onAvailableCommandsUpdated = vi.fn();
     const client = new __testing.RuntimeAcpClient({

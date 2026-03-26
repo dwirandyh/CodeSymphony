@@ -32,6 +32,7 @@ enum ChatEventType {
   question_dismissed
   plan_created
   plan_approved
+  plan_dismissed
   plan_revision_requested
   commands_updated
   subagent_started

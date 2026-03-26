@@ -9,12 +9,14 @@ const {
   mockResolvePermission,
   mockAnswerQuestion,
   mockApprovePlan,
+  mockDismissPlan,
   mockRevisePlan,
   mockDismissQuestion,
 } = vi.hoisted(() => ({
   mockResolvePermission: vi.fn().mockResolvedValue(undefined),
   mockAnswerQuestion: vi.fn().mockResolvedValue(undefined),
   mockApprovePlan: vi.fn().mockResolvedValue(undefined),
+  mockDismissPlan: vi.fn().mockResolvedValue(undefined),
   mockRevisePlan: vi.fn().mockResolvedValue(undefined),
   mockDismissQuestion: vi.fn().mockResolvedValue(undefined),
 }));
@@ -24,6 +26,7 @@ vi.mock("../../../lib/api", () => ({
     resolvePermission: mockResolvePermission,
     answerQuestion: mockAnswerQuestion,
     approvePlan: mockApprovePlan,
+    dismissPlan: mockDismissPlan,
     revisePlan: mockRevisePlan,
     dismissQuestion: mockDismissQuestion,
   },
@@ -556,7 +559,7 @@ describe("usePendingGates", () => {
   });
 
   describe("handleDismissPlan", () => {
-    it("optimistically hides plan decision", () => {
+    it("calls dismiss API and optimistically hides plan decision", async () => {
       const events = [
         makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
         makeEvent(1, "chat.completed", {}),
@@ -564,17 +567,57 @@ describe("usePendingGates", () => {
       render(events);
       expect(hookResult.showPlanDecisionComposer).toBe(true);
 
-      act(() => {
-        hookResult.handleDismissPlan();
+      await act(async () => {
+        await hookResult.handleDismissPlan();
       });
+
+      expect(mockDismissPlan).toHaveBeenCalledWith("t1");
       expect(hookResult.showPlanDecisionComposer).toBe(false);
     });
 
-    it("does nothing when no thread or plan", () => {
-      render([], null);
-      act(() => {
-        hookResult.handleDismissPlan();
+    it("keeps plan hidden once plan.dismissed is persisted", async () => {
+      const initialEvents = [
+        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(initialEvents);
+
+      await act(async () => {
+        await hookResult.handleDismissPlan();
       });
+
+      render([
+        ...initialEvents,
+        makeEvent(2, "plan.dismissed", { filePath: ".claude/plan.md" }),
+      ]);
+
+      expect(hookResult.pendingPlan).toBeNull();
+      expect(hookResult.showPlanDecisionComposer).toBe(false);
+    });
+
+    it("restores the plan decision when dismiss fails", async () => {
+      mockDismissPlan.mockRejectedValueOnce(new Error("Dismiss failed"));
+      const events = [
+        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+
+      await act(async () => {
+        await hookResult.handleDismissPlan();
+      });
+
+      expect(hookResult.showPlanDecisionComposer).toBe(true);
+      expect(mockDeps.clearWaitingAssistantForThread).toHaveBeenCalledWith("t1");
+      expect(mockDeps.onError).toHaveBeenCalledWith("Dismiss failed");
+    });
+
+    it("does nothing when no thread or plan", async () => {
+      render([], null);
+      await act(async () => {
+        await hookResult.handleDismissPlan();
+      });
+      expect(mockDismissPlan).not.toHaveBeenCalled();
       expect(hookResult.showPlanDecisionComposer).toBe(false);
     });
   });
@@ -625,7 +668,7 @@ describe("usePendingGates", () => {
       expect(hookResult.pendingPlan).toBeNull();
     });
 
-    it("skips ACP fallback plan payload without showing plan gate", () => {
+    it("shows plan gate for ACP fallback plan payload", () => {
       const events = [
         makeEvent(0, "plan.created", {
           content: "# Plan\n\n[-] Investigate",
@@ -635,8 +678,9 @@ describe("usePendingGates", () => {
         makeEvent(1, "chat.completed", {}),
       ];
       render(events);
-      expect(hookResult.pendingPlan).toBeNull();
-      expect(hookResult.showPlanDecisionComposer).toBe(false);
+      expect(hookResult.pendingPlan).not.toBeNull();
+      expect(hookResult.pendingPlan?.content).toBe("# Plan\n\n[-] Investigate");
+      expect(hookResult.showPlanDecisionComposer).toBe(true);
     });
 
     it("treats streaming_fallback with a real plan filePath as normal plan.created", () => {
