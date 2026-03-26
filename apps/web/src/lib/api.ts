@@ -317,8 +317,9 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  deleteThread: async (threadId: string) => {
-    const response = await runtimeFetch(`/threads/${threadId}`, {
+  deleteThread: async (threadId: string, options?: { force?: boolean }) => {
+    const params = options?.force ? "?force=true" : "";
+    const response = await runtimeFetch(`/threads/${threadId}${params}`, {
       method: "DELETE",
     });
 

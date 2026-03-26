@@ -27,7 +27,7 @@ import { insertAllEvents, applyMessageMutations } from "./messageEventMerge";
 import { applyThreadTitleUpdate } from "./snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
 
-const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["type"]>([
+const ACTIVE_THREAD_TIMELINE_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "permission.requested",
   "question.requested",
   "plan.created",
@@ -220,11 +220,11 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
-        const skipInvalidation = ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES.has(payload.type);
-        if (!skipInvalidation) {
+        const skipTimelineInvalidation = ACTIVE_THREAD_TIMELINE_INVALIDATION_SKIP_EVENT_TYPES.has(payload.type);
+        if (!skipTimelineInvalidation) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
         }
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
       }
 
       if (selectedWorktreeId && GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {

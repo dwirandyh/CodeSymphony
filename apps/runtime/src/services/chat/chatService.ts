@@ -640,6 +640,18 @@ export function createChatService(deps: RuntimeDeps) {
     scheduledAssistantRunsByThread.set(threadId, timer);
   }
 
+  function forceReleaseThread(threadId: string): void {
+    clearScheduledAssistantRun(threadId);
+    activeThreads.delete(threadId);
+    pendingPlanByThread.delete(threadId);
+    cancelPendingGateRequests(pendingPermissionsByThread, pendingQuestionsByThread, threadId);
+    const abortController = runningAbortControllersByThread.get(threadId);
+    if (abortController) {
+      abortController.abort();
+      runningAbortControllersByThread.delete(threadId);
+    }
+  }
+
   return {
     async listThreads(worktreeId: string): Promise<ChatThread[]> {
       const threads = await deps.prisma.chatThread.findMany({
@@ -753,11 +765,15 @@ export function createChatService(deps: RuntimeDeps) {
       return mapChatThread(updatedThread, activeThreads.has(updatedThread.id));
     },
 
-    async deleteThread(threadId: string): Promise<void> {
+    async deleteThread(threadId: string, options?: { force?: boolean }): Promise<void> {
       await requireThread(threadId);
 
-      if (activeThreads.has(threadId)) {
+      if (activeThreads.has(threadId) && !options?.force) {
         throw new ChatThreadActiveConflictError();
+      }
+
+      if (options?.force) {
+        forceReleaseThread(threadId);
       }
 
       await deps.prisma.chatThread.delete({

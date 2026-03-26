@@ -672,7 +672,7 @@ export function useChatSession(
     }
   }
 
-  async function closeThread(threadId: string) {
+  async function closeThread(threadId: string, options?: { force?: boolean }) {
     if (closingThreadIdsRef.current.has(threadId)) {
       return;
     }
@@ -720,14 +720,16 @@ export function useChatSession(
         }
       };
 
-      if (shouldStopFirst) {
+      const shouldStopBeforeDelete = options?.force ? true : shouldStopFirst;
+
+      if (shouldStopBeforeDelete) {
         await stopThreadRunIfNeeded();
       }
 
-      const maxDeleteAttempts = 4;
+      const maxDeleteAttempts = options?.force ? 4 : 4;
       for (let attempt = 0; attempt < maxDeleteAttempts; attempt += 1) {
         try {
-          await api.deleteThread(threadId);
+          await api.deleteThread(threadId, options?.force ? { force: true } : undefined);
           break;
         } catch (error) {
           const isActiveConflict = error instanceof ApiError && error.status === 409;

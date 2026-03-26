@@ -1,3 +1,5 @@
+import type { ChatTimelineItem } from "../../components/workspace/chat-message-list";
+
 export function resolveChatMessageListKey(params: {
   previousKey: string;
   previousThreadId: string | null;
@@ -16,6 +18,24 @@ export function resolveChatMessageListKey(params: {
   return previousKey;
 }
 
+export function resolveVisibleTimelineItems(params: {
+  items: ChatTimelineItem[];
+  showPlanDecisionComposer: boolean;
+}): ChatTimelineItem[] {
+  const { items, showPlanDecisionComposer } = params;
+
+  if (!showPlanDecisionComposer) {
+    return items;
+  }
+
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.kind === "plan-file-output") {
+      return items.slice(0, index + 1);
+    }
+  }
+
+  return items;
+}
 
 export function FilledPlayIcon({ className }: { className?: string }) {
   return (

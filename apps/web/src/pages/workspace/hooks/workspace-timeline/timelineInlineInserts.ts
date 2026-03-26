@@ -629,6 +629,8 @@ export function processInlineInsertLoop(
       if (
         nextInsertIndex === 0
         && isSentenceAwareInlineInsertKind(firstInsertKind)
+        && firstInsertKind !== "subagent-activity"
+        && firstInsertKind !== "explore-activity"
         && hasAnyTrailingText
         && inlineInserts.length > 0
       ) {

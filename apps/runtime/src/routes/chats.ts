@@ -11,6 +11,7 @@ import { appendRuntimeDebugLog } from "./debug.js";
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
+const deleteThreadQuery = z.object({ force: z.union([z.literal("true"), z.literal("false")]).optional() }).strict();
 const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
 const STREAM_PREFLUSH_BUFFER_LIMIT = 1000;
 
@@ -176,9 +177,10 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
   app.delete("/threads/:id", async (request, reply) => {
     const params = threadParams.parse(request.params);
+    const query = deleteThreadQuery.parse(request.query ?? {});
 
     try {
-      await app.chatService.deleteThread(params.id);
+      await app.chatService.deleteThread(params.id, { force: query.force === "true" });
       return reply.code(204).send();
     } catch (error) {
       return replyForThreadRouteError(reply, error, "Unable to delete thread");

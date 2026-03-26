@@ -634,6 +634,47 @@ describe("useWorkspaceTimeline", () => {
     expect(exploreItems).toHaveLength(2);
   });
 
+  it("keeps full pre-subagent text above a later subagent card", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "I'll help you create a plan to delete the README.md file. Let me first explore to understand the context and ensure this is the right action.",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "I'll help you create a plan to delete the README.md file. " }, "m2"),
+      makeEvent(2, "message.delta", { role: "assistant", messageId: "m2", delta: "Let me first explore to understand the context and ensure this is the right action." }, "m2"),
+      makeEvent(3, "subagent.started", {
+        toolUseId: "sa-1",
+        agentId: "agent-1",
+        agentType: "Explore",
+        description: "Explore README.md context",
+      }, "m2"),
+      makeEvent(4, "subagent.finished", {
+        toolUseId: "sa-1",
+        agentId: "agent-1",
+        agentType: "Explore",
+        description: "Explore README.md context",
+        lastMessage: "Done",
+      }, "m2"),
+      makeEvent(5, "message.delta", { role: "assistant", messageId: "m2", delta: " Based on the exploration, I can now create the plan." }, "m2"),
+      makeEvent(6, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const subagentIndex = items.findIndex((item) => item.kind === "subagent-activity");
+    const introMessageIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Let me first explore to understand the context and ensure this is the right action."),
+    );
+
+    expect(subagentIndex).toBeGreaterThan(-1);
+    expect(introMessageIndex).toBeGreaterThan(-1);
+    expect(introMessageIndex).toBeLessThan(subagentIndex);
+  });
+
   it("renders first tool insert before trailing text when text anchor is after insert", () => {
     const messages = [
       makeMessage("m1", 1, "user", "inspect"),

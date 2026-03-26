@@ -39,6 +39,7 @@ import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import {
   resolveChatMessageListKey,
+  resolveVisibleTimelineItems,
   FilledPlayIcon,
   FilledPauseIcon,
 } from "./workspace/workspacePageUtils";
@@ -555,7 +556,7 @@ export function WorkspacePage() {
   const handleConfirmCloseThread = useCallback(async () => {
     if (!confirmCloseThreadId) return;
     const threadId = confirmCloseThreadId;
-    await chat.closeThread(threadId);
+    await chat.closeThread(threadId, { force: true });
     setConfirmCloseThreadId(null);
   }, [chat.closeThread, confirmCloseThreadId]);
 
@@ -663,7 +664,10 @@ export function WorkspacePage() {
                   <div className="min-h-0 min-w-0 flex-1">
                     <ChatMessageList
                       key={chatMessageListKey}
-                      items={chat.timelineItems}
+                      items={resolveVisibleTimelineItems({
+                        items: chat.timelineItems,
+                        showPlanDecisionComposer: gates.showPlanDecisionComposer,
+                      })}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       onOpenReadFile={openReadFile}
                     />
@@ -947,11 +951,11 @@ export function WorkspacePage() {
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Close session?</DialogTitle>
+            <DialogTitle>Force close session?</DialogTitle>
             <DialogDescription>
               {confirmCloseThread
-                ? `AI is still responding in "${confirmCloseThread.title}". Closing now will end this session.`
-                : "AI is still responding in this session. Closing now will end this session."}
+                ? `AI is still responding in "${confirmCloseThread.title}". Confirming will stop the run and force delete this session.`
+                : "AI is still responding in this session. Confirming will stop the run and force delete this session."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2">
@@ -968,7 +972,7 @@ export function WorkspacePage() {
               onClick={() => void handleConfirmCloseThread()}
               disabled={closingConfirmedThread}
             >
-              Close session
+              Force delete session
             </Button>
           </div>
         </DialogContent>
