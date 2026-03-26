@@ -132,6 +132,7 @@ export type AgentRunner = (args: {
     elapsedTimeSeconds: number;
   }) => Promise<void> | void;
   onToolFinished: (payload: {
+    toolName: string;
     summary: string;
     precedingToolUseIds: string[];
     subagentOwnerToolUseId?: string | null;

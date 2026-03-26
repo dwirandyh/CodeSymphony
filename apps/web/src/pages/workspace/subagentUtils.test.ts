@@ -537,6 +537,22 @@ describe("extractSubagentGroups", () => {
     expect(groups[0].steps[0].label).toContain('ls "foo"');
     expect(groups[0].steps[0].label).not.toBe("Bash");
   });
+
+  it("preserves explore-like Bash command labels when finished payload only has bash shell markers", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "subagent.started", idx: 1, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "Explore skill" } }),
+      makeEvent({ id: "e2", type: "tool.started", idx: 2, payload: { toolName: "Bash", toolUseId: "bash-1", parentToolUseId: "sa-1", command: "ls -la .github 2>/dev/null || echo \"No .github directory\"" } }),
+      makeEvent({ id: "e3", type: "tool.finished", idx: 3, payload: { precedingToolUseIds: ["bash-1"], summary: "Completed Bash", command: "ls -la .github 2>/dev/null || echo \"No .github directory\"", shell: "bash", isBash: true } }),
+      makeEvent({ id: "e4", type: "subagent.finished", idx: 4, payload: { toolUseId: "sa-1", lastMessage: "Done" } }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].steps).toHaveLength(1);
+    expect(groups[0].steps[0].toolName).toBe("Bash");
+    expect(groups[0].steps[0].label).toContain('ls -la .github');
+    expect(groups[0].steps[0].label).not.toBe("Completed Bash");
+  });
 });
 
 describe("extractExploreActivityGroups", () => {

@@ -1016,4 +1016,25 @@ describe("useWorkspaceTimeline", () => {
     expect(first).toBeDefined();
     expect(second).toBeDefined();
   });
+
+  it("keeps subagent explore-like bash finish events out of top-level bash cards when finished payload lacks toolName", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect repo"),
+      makeMessage("m2", 2, "assistant", "running"),
+    ];
+    const events = [
+      makeEvent(1, "subagent.started", { toolUseId: "sa-1", agentId: "agent-1", agentType: "explore", description: "Inspect repo" }, "m2"),
+      makeEvent(2, "tool.started", { toolName: "Bash", toolUseId: "bash-1", parentToolUseId: "sa-1", subagentOwnerToolUseId: "sa-1", command: "ls -la .github 2>/dev/null || echo \"No .github directory\"", shell: "bash", isBash: true }, "m2"),
+      makeEvent(3, "tool.output", { toolName: "Bash", toolUseId: "bash-1", parentToolUseId: "sa-1", subagentOwnerToolUseId: "sa-1", elapsedTimeSeconds: 0.01 }, "m2"),
+      makeEvent(4, "tool.finished", { precedingToolUseIds: ["bash-1"], summary: "Completed Bash", command: "ls -la .github 2>/dev/null || echo \"No .github directory\"", output: "No .github directory", shell: "bash", isBash: true }, "m2"),
+      makeEvent(5, "subagent.finished", { toolUseId: "sa-1", lastMessage: "done" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const topLevelBash = items.filter((item) => item.kind === "tool" && item.shell === "bash");
+    const subagent = items.find((item) => item.kind === "subagent-activity" && item.toolUseId === "sa-1");
+
+    expect(topLevelBash).toHaveLength(0);
+    expect(subagent && subagent.kind === "subagent-activity" ? subagent.steps.some((step) => step.label !== "Completed Bash") : false).toBe(true);
+  });
 });

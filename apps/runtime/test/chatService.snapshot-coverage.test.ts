@@ -529,4 +529,115 @@ describe("chatService snapshot", () => {
       expect(item.steps.some((step) => step.toolUseId.includes("ambiguous-read"))).toBe(false);
     }
   });
+
+  it("keeps subagent explore-like bash finish events out of top-level runtime bash cards when finished payload lacks toolName", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "inspect repo",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "running",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "subagent.started" as const,
+        payload: { toolUseId: "sa-1", agentId: "agent-1", agentType: "Explore", description: "Inspect repo" },
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "tool.started" as const,
+        payload: {
+          toolName: "Bash",
+          toolUseId: "bash-1",
+          parentToolUseId: "sa-1",
+          subagentOwnerToolUseId: "sa-1",
+          command: "ls -la .github 2>/dev/null || echo \"No .github directory\"",
+          shell: "bash",
+          isBash: true,
+        },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "e3",
+        threadId: "t1",
+        idx: 3,
+        type: "tool.output" as const,
+        payload: {
+          toolName: "Bash",
+          toolUseId: "bash-1",
+          parentToolUseId: "sa-1",
+          subagentOwnerToolUseId: "sa-1",
+          elapsedTimeSeconds: 0.01,
+        },
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+      {
+        id: "e4",
+        threadId: "t1",
+        idx: 4,
+        type: "tool.finished" as const,
+        payload: {
+          precedingToolUseIds: ["bash-1"],
+          summary: "Completed Bash",
+          command: "ls -la .github 2>/dev/null || echo \"No .github directory\"",
+          output: "No .github directory",
+          shell: "bash",
+          isBash: true,
+        },
+        createdAt: "2026-01-01T00:00:04Z",
+      },
+      {
+        id: "e5",
+        threadId: "t1",
+        idx: 5,
+        type: "subagent.finished" as const,
+        payload: { toolUseId: "sa-1", lastMessage: "done" },
+        createdAt: "2026-01-01T00:00:05Z",
+      },
+      {
+        id: "e6",
+        threadId: "t1",
+        idx: 6,
+        type: "chat.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:06Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(assembly.items.filter((item) => item.kind === "tool" && item.shell === "bash")).toHaveLength(0);
+    const subagentItems = assembly.items.filter((item) => item.kind === "subagent-activity");
+    expect(subagentItems).toHaveLength(1);
+    const subagent = subagentItems[0];
+    if (subagent.kind !== "subagent-activity") {
+      throw new Error("Expected subagent activity item");
+    }
+    expect(subagent.steps.some((step) => step.label === "Completed Bash")).toBe(false);
+  });
 });

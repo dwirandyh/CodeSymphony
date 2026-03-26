@@ -1,6 +1,6 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { pushRenderDebug } from "../../lib/renderDebug";
-import { isExploreLikeBashCommand, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
+import { isBashPayload, isExploreLikeBashCommand, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
 import {
   extractReadFileEntry,
   extractSearchEntryLabel,
@@ -34,6 +34,7 @@ export function isOverlapUnclaimedSubagentEvent(eventId: string): boolean {
 function buildStepInfo(event: ChatEvent): { label: string; openPath: string | null } {
   const toolName = payloadStringOrNull(event.payload.toolName);
   const normalizedToolName = toolName?.trim().toLowerCase() ?? "";
+  const isBashLikeEvent = normalizedToolName === "bash" || isBashPayload(event.payload);
   const summary = payloadStringOrNull(event.payload.summary);
   const command = payloadStringOrNull(event.payload.command)
     ?? (typeof event.payload.toolInput === "object" && event.payload.toolInput != null && !Array.isArray(event.payload.toolInput)
@@ -54,7 +55,7 @@ function buildStepInfo(event: ChatEvent): { label: string; openPath: string | nu
     return { label: extractSearchEntryLabel(event, { toolName: ctx.toolName, searchParams: ctx.searchParams }), openPath: null };
   }
 
-  if (normalizedToolName === "bash" && command) {
+  if (isBashLikeEvent && command) {
     const shortenedCommand = command.replace(
       /"(\/[^\"]+)"|'(\/[^']+)'|(\/(?:[^\s,]+\/)+[^\s,]+)/g,
       (match, quoted1: string | undefined, quoted2: string | undefined, unquoted: string | undefined) => {
@@ -660,6 +661,11 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         ? event.payload.precedingToolUseIds.filter((id: unknown): id is string => typeof id === "string")
         : [];
       const toolName = payloadStringOrNull(event.payload.toolName) ?? "";
+      const finishedToolName = event.type === "tool.finished"
+        ? (payloadStringOrNull(event.payload.toolName)
+          ?? (precedingIds.length === 1 ? subagent.steps.find((s) => s.toolUseId === precedingIds[0])?.toolName ?? null : null)
+          ?? null)
+        : null;
       const taskMappedOwner = taskToolToSubagent.get(toolUseId);
       const hasMappedPrecedingOwner = precedingIds.some((precedingId) => taskToolToSubagent.get(precedingId) === ownerToolUseId);
       const subagentResponse = event.type === "tool.finished"
@@ -699,7 +705,10 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
           const info = buildStepInfo(event);
           const normalizedToolName = (payloadStringOrNull(event.payload.toolName) ?? "").trim().toLowerCase();
           const normalizedLabel = info.label.trim().toLowerCase();
-          const preserveExistingBashLabel = normalizedToolName === "bash"
+          const isBashLikeFinishedEvent = normalizedToolName === "bash"
+            || isBashPayload(event.payload)
+            || existingStep.toolName.trim().toLowerCase() === "bash";
+          const preserveExistingBashLabel = isBashLikeFinishedEvent
             && normalizedLabel === "completed bash"
             && isExploreLikeBashCommand(existingStep.label);
           if (!preserveExistingBashLabel) {
@@ -723,7 +732,9 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         const info = buildStepInfo(event);
         subagent.steps.push({
           toolUseId,
-          toolName: payloadStringOrNull(event.payload.toolName) ?? "Tool",
+          toolName: event.type === "tool.finished"
+            ? finishedToolName ?? "Tool"
+            : payloadStringOrNull(event.payload.toolName) ?? "Tool",
           label: info.label,
           openPath: info.openPath,
           status: event.type === "tool.finished" ? "success" : "running",

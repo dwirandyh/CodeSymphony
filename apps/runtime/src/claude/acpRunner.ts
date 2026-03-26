@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
-import { Writable, Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Writable, Readable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type {
   Client,
@@ -164,6 +167,55 @@ function formatPlanContent(entries: Array<{ content?: unknown; status?: unknown 
 
 function buildPlanFallbackPath(): string {
   return ".claude/plans/acp-plan.md";
+}
+
+function ensureIsolatedClaudeConfigDir(): string {
+  const providerConfigDir = join(tmpdir(), "codesymphony-claude-provider");
+  const settingsPath = join(providerConfigDir, "settings.json");
+  if (!existsSync(providerConfigDir)) {
+    mkdirSync(providerConfigDir, { recursive: true });
+  }
+  if (!existsSync(settingsPath)) {
+    writeFileSync(settingsPath, "{}", "utf-8");
+  }
+  return providerConfigDir;
+}
+
+function buildCustomProviderChildEnv(baseEnv: NodeJS.ProcessEnv, claudeExecutable: string, options: {
+  providerApiKey?: string;
+  providerBaseUrl?: string;
+  model?: string;
+}): NodeJS.ProcessEnv {
+  const { providerApiKey, providerBaseUrl, model } = options;
+  const childEnv: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    MAX_THINKING_TOKENS: "0",
+    CLAUDE_CODE_EXECUTABLE: claudeExecutable,
+    ANTHROPIC_API_KEY: providerApiKey || baseEnv.ANTHROPIC_API_KEY,
+    ANTHROPIC_BASE_URL: providerBaseUrl || baseEnv.ANTHROPIC_BASE_URL,
+    ANTHROPIC_AUTH_TOKEN: providerApiKey || baseEnv.ANTHROPIC_AUTH_TOKEN,
+  };
+
+  if (providerApiKey && providerBaseUrl) {
+    childEnv.CLAUDE_CONFIG_DIR = ensureIsolatedClaudeConfigDir();
+    childEnv.ANTHROPIC_API_KEY = providerApiKey;
+    childEnv.ANTHROPIC_AUTH_TOKEN = providerApiKey;
+    childEnv.ANTHROPIC_BASE_URL = providerBaseUrl;
+    if (model) {
+      childEnv.ANTHROPIC_DEFAULT_OPUS_MODEL = model;
+      childEnv.ANTHROPIC_DEFAULT_SONNET_MODEL = model;
+      childEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
+    }
+  }
+
+  return childEnv;
+}
+
+function resolveAcpModel(model: string | undefined, hasCustomProvider: boolean): string | undefined {
+  if (hasCustomProvider && model) {
+    return "opus";
+  }
+  return model;
 }
 
 function normalizeAvailableCommands(rawCommands: unknown): AvailableCommand[] {
@@ -691,6 +743,7 @@ class RuntimeAcpClient implements Client {
           const error = bashResult?.error ?? (update.status === "failed" ? "Tool failed" : undefined);
 
           await this.options.onToolFinished({
+            toolName: state.toolName,
             summary,
             precedingToolUseIds: [update.toolCallId],
             ...(state.command ? { command: state.command } : {}),
@@ -847,6 +900,8 @@ export const __testing = {
   extractPermissionMetadata,
   formatPlanContent,
   RuntimeAcpClient,
+  ensureIsolatedClaudeConfigDir,
+  buildCustomProviderChildEnv,
 };
 
 export const runClaudeViaAcp: AgentRunner = async ({
@@ -890,16 +945,15 @@ export const runClaudeViaAcp: AgentRunner = async ({
   const candidateExecutables = buildExecutableCandidates(configuredExecutable);
   const claudeExecutable = selectExecutableForCurrentProcess(candidateExecutables, baseEnv);
 
+  const hasCustomProvider = Boolean(providerApiKey && providerBaseUrl);
+  const acpModel = resolveAcpModel(model, hasCustomProvider);
   const child = spawn(process.execPath, [ADAPTER_ENTRYPOINT.pathname], {
     cwd,
-    env: {
-      ...baseEnv,
-      MAX_THINKING_TOKENS: "0",
-      CLAUDE_CODE_EXECUTABLE: claudeExecutable,
-      ANTHROPIC_API_KEY: providerApiKey || baseEnv.ANTHROPIC_API_KEY,
-      ANTHROPIC_BASE_URL: providerBaseUrl || baseEnv.ANTHROPIC_BASE_URL,
-      ANTHROPIC_AUTH_TOKEN: providerApiKey || baseEnv.ANTHROPIC_AUTH_TOKEN,
-    },
+    env: buildCustomProviderChildEnv(baseEnv, claudeExecutable, {
+      providerApiKey,
+      providerBaseUrl,
+      model,
+    }),
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -977,7 +1031,7 @@ export const runClaudeViaAcp: AgentRunner = async ({
       });
     }
 
-    const session = await createOrResumeSession(connection, cwd, sessionId, model);
+    const session = await createOrResumeSession(connection, cwd, sessionId, acpModel);
     activeSessionId = session.sessionId;
 
     const modeId = mapMode(permissionMode, autoAcceptTools);

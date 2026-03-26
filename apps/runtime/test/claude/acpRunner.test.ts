@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { __testing } from "../../src/claude/acpRunner";
 import { isReviewGitCommand, shouldAutoAllowReviewGitPermission } from "../../src/claude/reviewGitPermissionPolicy";
@@ -11,6 +12,37 @@ const defaultInstrumentContext = {
 };
 
 describe("acpRunner __testing", () => {
+  it("builds isolated child env for custom providers with legacy model aliases", () => {
+    const baseEnv = {
+      PATH: "/usr/bin",
+      ANTHROPIC_API_KEY: "global-key",
+      ANTHROPIC_BASE_URL: "https://global.example.com",
+      ANTHROPIC_AUTH_TOKEN: "global-token",
+    } as NodeJS.ProcessEnv;
+
+    const env = __testing.buildCustomProviderChildEnv(baseEnv, "/usr/local/bin/claude", {
+      providerApiKey: "provider-key",
+      providerBaseUrl: "https://provider.example.com/v1/",
+      model: "claude-3-7-sonnet",
+    });
+
+    expect(env.CLAUDE_CODE_EXECUTABLE).toBe("/usr/local/bin/claude");
+    expect(env.CLAUDE_CONFIG_DIR).toBeTruthy();
+    expect(env.ANTHROPIC_API_KEY).toBe("provider-key");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("provider-key");
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://provider.example.com/v1/");
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-3-7-sonnet");
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-3-7-sonnet");
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("claude-3-7-sonnet");
+  });
+
+  it("creates an isolated Claude config dir with empty settings", () => {
+    const configDir = __testing.ensureIsolatedClaudeConfigDir();
+    expect(configDir).toContain("codesymphony-claude-provider");
+    expect(existsSync(configDir)).toBe(true);
+    expect(readFileSync(`${configDir}/settings.json`, "utf8")).toBe("{}");
+  });
+
   it("ignores generic completion titles", () => {
     expect(__testing.meaningfulCompletionTitle("Completed Task", "Task")).toBe("");
     expect(__testing.meaningfulCompletionTitle("Completed Agent", "Agent")).toBe("");
@@ -422,6 +454,7 @@ describe("acpRunner __testing", () => {
       toolName: "Read",
     }));
     expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "Read",
       precedingToolUseIds: ["tool-read"],
       summary: "Read README.md",
     }));
