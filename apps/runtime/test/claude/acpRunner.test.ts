@@ -341,6 +341,93 @@ describe("acpRunner __testing", () => {
     }));
   });
 
+  it("bridges AskUserQuestion requests through ACP extension responses", async () => {
+    const onQuestionRequest = vi.fn(async () => ({
+      answers: { "Would you like me to proceed?": "Yes" },
+      annotations: {
+        "Would you like me to proceed?": {
+          notes: "Continue",
+        },
+      },
+    }));
+    const client = new __testing.RuntimeAcpClient({
+      permissionProfile: "default",
+      instrumentContext: defaultInstrumentContext,
+      onText: () => {},
+      onThinking: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest,
+      onPermissionRequest: async () => ({ decision: "deny" as const }),
+      onPlanFileDetected: () => {},
+    });
+
+    const response = await client.extMethod("codesymphony.askUserQuestion", {
+      requestId: "ask-1",
+      questions: [{
+        question: "Would you like me to proceed?",
+        header: "Proceed",
+        options: [
+          { label: "Yes", description: "Continue", preview: "<div>Yes</div>" },
+          { label: "No", description: "Stop" },
+        ],
+        multiSelect: false,
+      }],
+    });
+
+    expect(onQuestionRequest).toHaveBeenCalledWith({
+      requestId: "ask-1",
+      questions: [{
+        id: "q-0",
+        question: "Would you like me to proceed?",
+        header: "Proceed",
+        options: [
+          { label: "Yes", description: "Continue", preview: "<div>Yes</div>" },
+          { label: "No", description: "Stop" },
+        ],
+        multiSelect: false,
+      }],
+    });
+    expect(response).toEqual({
+      requestId: "ask-1",
+      answers: { "Would you like me to proceed?": "Yes" },
+      annotations: {
+        "Would you like me to proceed?": {
+          notes: "Continue",
+        },
+      },
+    });
+  });
+
+  it("returns dismissed extension payload when question handling rejects", async () => {
+    const client = new __testing.RuntimeAcpClient({
+      permissionProfile: "default",
+      instrumentContext: defaultInstrumentContext,
+      onText: () => {},
+      onThinking: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => {
+        throw new Error("Question cancelled by user.");
+      },
+      onPermissionRequest: async () => ({ decision: "deny" as const }),
+      onPlanFileDetected: () => {},
+    });
+
+    const response = await client.extMethod("codesymphony.askUserQuestion", {
+      toolUseId: "ask-2",
+      questions: [{ question: "Proceed?" }],
+    });
+
+    expect(response).toEqual({
+      requestId: "ask-2",
+      dismissed: true,
+      message: "Question cancelled by user.",
+    });
+  });
+
   it("emits plan detection for ACP plan updates", async () => {
     const onPlanFileDetected = vi.fn();
     const client = new __testing.RuntimeAcpClient({

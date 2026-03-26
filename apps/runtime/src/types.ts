@@ -92,6 +92,30 @@ export type ClaudeToolInstrumentationEvent = {
   };
 };
 
+export type AskUserQuestionOption = {
+  label: string;
+  description?: string;
+  preview?: string;
+};
+
+export type AskUserQuestionAnnotation = {
+  preview?: string;
+  notes?: string;
+};
+
+export type AskUserQuestionItem = {
+  id?: string;
+  question: string;
+  header?: string;
+  options?: AskUserQuestionOption[];
+  multiSelect?: boolean;
+};
+
+export type AskUserQuestionResult = {
+  answers: Record<string, string>;
+  annotations?: Record<string, AskUserQuestionAnnotation>;
+};
+
 export type AgentRunner = (args: {
   prompt: string;
   sessionId: string | null;
@@ -153,13 +177,8 @@ export type AgentRunner = (args: {
   }) => Promise<void> | void;
   onQuestionRequest: (payload: {
     requestId: string;
-    questions: Array<{
-      question: string;
-      header?: string;
-      options?: Array<{ label: string; description?: string }>;
-      multiSelect?: boolean;
-    }>;
-  }) => Promise<{ answers: Record<string, string> }>;
+    questions: AskUserQuestionItem[];
+  }) => Promise<AskUserQuestionResult>;
   onPermissionRequest: (payload: {
     requestId: string;
     toolName: string;

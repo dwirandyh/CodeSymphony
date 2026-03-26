@@ -1,0 +1,53 @@
+diff --git a/dist/acp-agent.js b/dist/acp-agent.js
+index 5c3fa73c670b24c7abd70d91be4db744deab15fc..49bb309676a078e147a1ae7b69b4c3e6d1a31b9c 100644
+--- a/dist/acp-agent.js
++++ b/dist/acp-agent.js
+@@ -689,6 +689,38 @@ export class ClaudeAcpAgent {
+                     message: "Session not found",
+                 };
+             }
++            if (toolName === "AskUserQuestion") {
++                if (!this.client.extMethod) {
++                    return {
++                        behavior: "deny",
++                        message: "Client does not support AskUserQuestion.",
++                    };
++                }
++                const response = await this.client.extMethod("codesymphony.askUserQuestion", {
++                    requestId: toolUseID,
++                    toolUseId: toolUseID,
++                    questions: Array.isArray(toolInput?.questions) ? toolInput.questions : [],
++                });
++                if (signal.aborted) {
++                    throw new Error("Tool use aborted");
++                }
++                if (response?.dismissed) {
++                    return {
++                        behavior: "deny",
++                        message: typeof response.message === "string" && response.message.length > 0
++                            ? response.message
++                            : "Question cancelled by user.",
++                    };
++                }
++                return {
++                    behavior: "allow",
++                    updatedInput: {
++                        ...toolInput,
++                        ...(response?.answers ? { answers: response.answers } : {}),
++                        ...(response?.annotations ? { annotations: response.annotations } : {}),
++                    },
++                };
++            }
+             if (toolName === "ExitPlanMode") {
+                 const options = [
+                     {
+@@ -925,8 +957,7 @@ export class ClaudeAcpAgent {
+         const maxThinkingTokens = process.env.MAX_THINKING_TOKENS
+             ? parseInt(process.env.MAX_THINKING_TOKENS, 10)
+             : undefined;
+-        // Disable this for now, not a great way to expose this over ACP at the moment (in progress work so we can revisit)
+-        const disallowedTools = ["AskUserQuestion"];
++        const disallowedTools = [];
+         // Resolve which built-in tools to expose.
+         // Explicit tools array from _meta.claudeCode.options takes precedence.
+         // disableBuiltInTools is a legacy shorthand for tools: [] — kept for

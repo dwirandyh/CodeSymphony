@@ -733,7 +733,7 @@ export function WorkspacePage() {
                           requestId={request.requestId}
                           questions={request.questions}
                           busy={gates.answeringQuestionIds.has(request.requestId) || gates.dismissingQuestionIds.has(request.requestId)}
-                          onAnswer={(requestId, answers) => void gates.answerQuestion(requestId, answers)}
+                          onAnswer={(requestId, answers, annotations) => void gates.answerQuestion(requestId, answers, annotations)}
                           onDismiss={(requestId) => void gates.dismissQuestion(requestId)}
                         />
                       ))}

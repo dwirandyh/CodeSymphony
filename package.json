@@ -16,11 +16,17 @@
     "db:seed": "DATABASE_URL=\"file:./prisma/dev.db\" pnpm --filter @codesymphony/runtime prisma:seed",
     "run": "turbo run build --filter=@codesymphony/runtime --filter=@codesymphony/web && WEB_DIST_PATH=../web/dist NODE_ENV=production PRISMA_SCHEMA_PATH=./prisma/schema.prisma pnpm --filter @codesymphony/runtime start",
     "run:web": "pnpm --filter @codesymphony/web preview",
-    "run:runtime": "pnpm --filter @codesymphony/runtime start"
+    "run:runtime": "pnpm --filter @codesymphony/runtime start",
+    "verify:ask-user-question": "pnpm --filter @codesymphony/runtime test -- acpRunner.test.ts chatService.permissions.test.ts && pnpm --filter @codesymphony/web test -- QuestionCard.test.tsx usePendingGates.test.tsx worktreeThreadStatus.test.ts"
   },
   "devDependencies": {
     "playwright": "^1.58.2",
     "turbo": "^2.8.8",
     "typescript": "^5.8.2"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@zed-industries/claude-agent-acp@0.22.2": "patches/@zed-industries__claude-agent-acp@0.22.2.patch"
+    }
   }
 }

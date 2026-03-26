@@ -1,4 +1,4 @@
-import type { ClaudeOwnershipReason } from "../../types.js";
+import type { AskUserQuestionItem, AskUserQuestionResult, ClaudeOwnershipReason } from "../../types.js";
 
 export type WorktreeStateSnapshot = {
   statusOutput: string;
@@ -41,12 +41,13 @@ export type PendingPermissionEntry = {
   activeSubagentToolUseIds: string[];
 };
 
-export type QuestionAnswerResult = { answers: Record<string, string> };
+export type QuestionAnswerResult = AskUserQuestionResult;
 export type PendingQuestionEntry = {
   status: "pending" | "resolved";
   promise: Promise<QuestionAnswerResult>;
   resolve?: (result: QuestionAnswerResult) => void;
   reject?: (error: Error) => void;
+  questions: AskUserQuestionItem[];
 };
 
 export type PendingPlanEntry = {

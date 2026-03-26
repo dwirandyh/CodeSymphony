@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@zed-industries/claude-agent-acp@0.22.2':
+    hash: 4600b3a457fbeca5738476069156679d673289d669737624239a47b6ab7f785f
+    path: patches/@zed-industries__claude-agent-acp@0.22.2.patch
+
 importers:
 
   .:
@@ -50,7 +55,7 @@ importers:
         version: 6.19.2(prisma@6.19.2(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       '@zed-industries/claude-agent-acp':
         specifier: ^0.22.2
-        version: 0.22.2
+        version: 0.22.2(patch_hash=4600b3a457fbeca5738476069156679d673289d669737624239a47b6ab7f785f)
       fastify:
         specifier: ^5.2.1
         version: 5.7.4
@@ -4724,7 +4729,7 @@ snapshots:
 
   '@xterm/xterm@6.0.0': {}
 
-  '@zed-industries/claude-agent-acp@0.22.2':
+  '@zed-industries/claude-agent-acp@0.22.2(patch_hash=4600b3a457fbeca5738476069156679d673289d669737624239a47b6ab7f785f)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.3.6)
       '@anthropic-ai/claude-agent-sdk': 0.2.76(zod@4.3.6)

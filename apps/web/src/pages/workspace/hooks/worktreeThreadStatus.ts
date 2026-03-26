@@ -97,13 +97,15 @@ export function derivePendingQuestionRequests(events: ChatEvent[]): PendingQuest
       }
 
       const rawQuestions = Array.isArray(event.payload.questions) ? event.payload.questions : [];
-      const questions: QuestionItem[] = rawQuestions.map((q: Record<string, unknown>) => ({
+      const questions: QuestionItem[] = rawQuestions.map((q: Record<string, unknown>, index) => ({
+        id: typeof q.id === "string" && q.id.trim().length > 0 ? q.id.trim() : `q-${index}`,
         question: typeof q.question === "string" ? q.question : "",
         header: typeof q.header === "string" ? q.header : undefined,
         options: Array.isArray(q.options)
           ? q.options.map((o: Record<string, unknown>) => ({
             label: typeof o.label === "string" ? o.label : "",
             description: typeof o.description === "string" ? o.description : undefined,
+            preview: typeof o.preview === "string" ? o.preview : undefined,
           }))
           : undefined,
         multiSelect: typeof q.multiSelect === "boolean" ? q.multiSelect : undefined,

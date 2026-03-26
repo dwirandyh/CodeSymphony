@@ -1,24 +1,31 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, MessageCircleQuestion } from "lucide-react";
 import { Button } from "../ui/button";
 
 type QuestionOption = {
   label: string;
   description?: string;
+  preview?: string;
 };
 
 type QuestionItem = {
+  id?: string;
   question: string;
   header?: string;
   options?: QuestionOption[];
   multiSelect?: boolean;
 };
 
+type QuestionAnnotation = {
+  preview?: string;
+  notes?: string;
+};
+
 type QuestionCardProps = {
   requestId: string;
   questions: QuestionItem[];
   busy: boolean;
-  onAnswer: (requestId: string, answers: Record<string, string>) => void;
+  onAnswer: (requestId: string, answers: Record<string, string>, annotations?: Record<string, QuestionAnnotation>) => void;
   onDismiss: (requestId: string) => void;
 };
 
@@ -26,20 +33,37 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
   const [currentStep, setCurrentStep] = useState(0);
   const [selectedByQuestion, setSelectedByQuestion] = useState<Map<string, Set<string>>>(() => new Map());
   const [freeTextByQuestion, setFreeTextByQuestion] = useState<Map<string, string>>(() => new Map());
+  const [notesByQuestion, setNotesByQuestion] = useState<Map<string, string>>(() => new Map());
 
   const total = questions.length;
   const question = questions[currentStep];
+  const questionKey = question?.id ?? `q-${currentStep}`;
+  const selected = selectedByQuestion.get(questionKey) ?? new Set<string>();
+  const freeText = freeTextByQuestion.get(questionKey) ?? "";
+  const noteText = notesByQuestion.get(questionKey) ?? "";
+
+  const selectedPreview = useMemo(() => {
+    if (!question?.options?.length || selected.size === 0) {
+      return null;
+    }
+
+    const previews = question.options
+      .filter((option) => selected.has(option.label) && typeof option.preview === "string" && option.preview.trim().length > 0)
+      .map((option) => option.preview!.trim());
+
+    return previews.length > 0 ? previews.join("\n\n") : null;
+  }, [question, selected]);
+
   if (!question) {
     return null;
   }
 
   const hasOptions = question.options && question.options.length > 0;
-  const selected = selectedByQuestion.get(question.question) ?? new Set<string>();
 
-  function toggleOption(questionText: string, label: string, multiSelect: boolean) {
+  function toggleOption(questionId: string, label: string, multiSelect: boolean) {
     setSelectedByQuestion((current) => {
       const next = new Map(current);
-      const existing = next.get(questionText) ?? new Set<string>();
+      const existing = next.get(questionId) ?? new Set<string>();
       const updated = new Set(existing);
 
       if (multiSelect) {
@@ -53,58 +77,76 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
         updated.add(label);
       }
 
-      next.set(questionText, updated);
+      next.set(questionId, updated);
       return next;
     });
-
-    if (!multiSelect && !isLastStep) {
-      setTimeout(() => setCurrentStep((s) => s + 1), 200);
-    }
   }
 
-  function setFreeText(questionText: string, value: string) {
+  function setFreeText(questionId: string, value: string) {
     setFreeTextByQuestion((current) => {
       const next = new Map(current);
-      next.set(questionText, value);
+      next.set(questionId, value);
+      return next;
+    });
+  }
+
+  function setNoteText(questionId: string, value: string) {
+    setNotesByQuestion((current) => {
+      const next = new Map(current);
+      next.set(questionId, value);
       return next;
     });
   }
 
   function buildAnswers(): Record<string, string> {
     const answers: Record<string, string> = {};
-    for (const q of questions) {
+    questions.forEach((q, index) => {
+      const key = q.id ?? `q-${index}`;
       const qHasOptions = q.options && q.options.length > 0;
       if (qHasOptions) {
-        const sel = selectedByQuestion.get(q.question);
-        answers[q.question] = sel ? Array.from(sel).join(", ") : "";
+        const selections = selectedByQuestion.get(key);
+        const note = notesByQuestion.get(key)?.trim() ?? "";
+        answers[q.question] = selections && selections.size > 0
+          ? Array.from(selections).join(", ")
+          : note;
       } else {
-        answers[q.question] = freeTextByQuestion.get(q.question) ?? "";
+        answers[q.question] = freeTextByQuestion.get(key) ?? "";
       }
-    }
+    });
     return answers;
   }
 
-  function isCurrentStepAnswered(): boolean {
-    if (hasOptions) {
-      return selected.size > 0;
+  function buildAnnotations(): Record<string, QuestionAnnotation> | undefined {
+    const annotations = new Map<string, QuestionAnnotation>();
+
+    questions.forEach((q, index) => {
+      const key = q.id ?? `q-${index}`;
+      const notes = notesByQuestion.get(key)?.trim();
+      if (!notes) {
+        return;
+      }
+
+      annotations.set(q.question, { notes });
+    });
+
+    return annotations.size > 0 ? Object.fromEntries(annotations) : undefined;
+  }
+
+  function isQuestionAnswered(q: QuestionItem, index: number): boolean {
+    const key = q.id ?? `q-${index}`;
+    if (q.options && q.options.length > 0) {
+      const selections = selectedByQuestion.get(key);
+      const notes = notesByQuestion.get(key) ?? "";
+      return (selections?.size ?? 0) > 0 || notes.trim().length > 0;
     }
-    const text = freeTextByQuestion.get(question.question) ?? "";
+
+    const text = freeTextByQuestion.get(key) ?? "";
     return text.trim().length > 0;
   }
 
-  const allAnswered = questions.every((q) => {
-    const qHasOptions = q.options && q.options.length > 0;
-    if (qHasOptions) {
-      const sel = selectedByQuestion.get(q.question);
-      return sel && sel.size > 0;
-    }
-    const text = freeTextByQuestion.get(q.question) ?? "";
-    return text.trim().length > 0;
-  });
-
   const isLastStep = currentStep === total - 1;
-  const canGoNext = isCurrentStepAnswered() && !isLastStep;
-  const canSubmit = isLastStep && allAnswered;
+  const canGoNext = isQuestionAnswered(question, currentStep) && !isLastStep;
+  const canSubmit = isLastStep && questions.every((q, index) => isQuestionAnswered(q, index));
 
   function handleNext() {
     if (canGoNext) {
@@ -161,7 +203,7 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
                     key={option.label}
                     type="button"
                     disabled={busy}
-                    onClick={() => toggleOption(question.question, option.label, isMulti)}
+                    onClick={() => toggleOption(questionKey, option.label, isMulti)}
                     className={`flex w-full items-start gap-2.5 rounded-md border px-3 py-2 text-left text-xs transition-colors ${
                       isSelected
                         ? "border-blue-500/50 bg-blue-500/15 text-blue-300"
@@ -210,13 +252,13 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
           <input
             type="text"
             disabled={busy}
-            value={freeTextByQuestion.get(question.question) ?? ""}
-            onChange={(event) => setFreeText(question.question, event.target.value)}
+            value={freeText}
+            onChange={(event) => setFreeText(questionKey, event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !busy) {
                 event.preventDefault();
-                if (isLastStep && allAnswered) {
-                  onAnswer(requestId, buildAnswers());
+                if (canSubmit) {
+                  onAnswer(requestId, buildAnswers(), buildAnnotations());
                 } else if (canGoNext) {
                   handleNext();
                 }
@@ -226,6 +268,27 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
             className="mt-2 w-full rounded-md border border-border/35 bg-background/35 px-3 py-2 text-left text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
           />
         )}
+
+        {hasOptions ? (
+          <div className="mt-2 space-y-2">
+            {selectedPreview ? (
+              <pre className="overflow-x-auto rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-[11px] leading-relaxed text-blue-100 whitespace-pre-wrap">
+                {selectedPreview}
+              </pre>
+            ) : null}
+            <div>
+              <p className="mb-1.5 text-[10px] text-muted-foreground/60">Optional note</p>
+              <textarea
+                disabled={busy}
+                value={noteText}
+                onChange={(event) => setNoteText(questionKey, event.target.value)}
+                placeholder={selected.size > 0 ? "Add context for your selection..." : "Or provide another answer..."}
+                rows={selectedPreview ? 4 : 3}
+                className="w-full rounded-md border border-border/35 bg-background/35 px-3 py-2 text-left text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
+              />
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-3 flex items-center justify-between">
@@ -274,7 +337,7 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
             size="sm"
             disabled={busy || !canSubmit}
             className="h-8 rounded-md px-4 text-xs"
-            onClick={() => onAnswer(requestId, buildAnswers())}
+            onClick={() => onAnswer(requestId, buildAnswers(), buildAnnotations())}
             aria-label={`Submit answer ${requestId}`}
           >
             {busy ? "Sending..." : "Submit Answer"}

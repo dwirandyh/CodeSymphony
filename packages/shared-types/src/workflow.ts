@@ -354,9 +354,16 @@ export const ResolvePermissionInputSchema = z.object({
 });
 export type ResolvePermissionInput = z.infer<typeof ResolvePermissionInputSchema>;
 
+export const QuestionAnnotationSchema = z.object({
+  preview: z.string().optional(),
+  notes: z.string().optional(),
+});
+export type QuestionAnnotation = z.infer<typeof QuestionAnnotationSchema>;
+
 export const AnswerQuestionInputSchema = z.object({
   requestId: z.string().trim().min(1),
   answers: z.record(z.string(), z.string()),
+  annotations: z.record(z.string(), QuestionAnnotationSchema).optional(),
 });
 export type AnswerQuestionInput = z.infer<typeof AnswerQuestionInputSchema>;
 

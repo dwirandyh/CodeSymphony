@@ -301,6 +301,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           const entry = {} as PendingQuestionEntry;
           entry.status = "pending";
+          entry.questions = payload.questions;
           entry.promise = new Promise<QuestionAnswerResult>((resolve, reject) => {
             entry.resolve = resolve;
             entry.reject = reject;
@@ -964,6 +965,7 @@ export function createChatService(deps: RuntimeDeps) {
         await deps.eventHub.emit(threadId, "question.answered", {
           requestId: input.requestId,
           answers: input.answers,
+          ...(input.annotations ? { annotations: input.annotations } : {}),
         });
         return;
       }
@@ -972,13 +974,17 @@ export function createChatService(deps: RuntimeDeps) {
         await deps.eventHub.emit(threadId, "question.answered", {
           requestId: input.requestId,
           answers: input.answers,
+          ...(input.annotations ? { annotations: input.annotations } : {}),
         });
       } finally {
         const resolve = entry.resolve;
         entry.status = "resolved";
         entry.resolve = undefined;
         entry.reject = undefined;
-        resolve?.({ answers: input.answers });
+        resolve?.({
+          answers: input.answers,
+          ...(input.annotations ? { annotations: input.annotations } : {}),
+        });
       }
     },
 

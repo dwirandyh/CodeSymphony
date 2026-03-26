@@ -21,6 +21,8 @@ import type {
 import type { AvailableCommand, ChatThreadPermissionProfile } from "@codesymphony/shared-types";
 import type {
   AgentRunner,
+  AskUserQuestionItem,
+  AskUserQuestionResult,
   ClaudeOwnershipReason,
   ClaudeToolInstrumentationDecision,
   ClaudeToolInstrumentationEvent,
@@ -43,10 +45,7 @@ import {
 } from "./toolClassification.js";
 import { shouldAutoAllowReviewGitPermission } from "./reviewGitPermissionPolicy.js";
 
-const ADAPTER_ENTRYPOINT = new URL(
-  "../../../../node_modules/.pnpm/@zed-industries+claude-agent-acp@0.22.2/node_modules/@zed-industries/claude-agent-acp/dist/index.js",
-  import.meta.url,
-);
+const ADAPTER_ENTRYPOINT = new URL("../../node_modules/@zed-industries/claude-agent-acp/dist/index.js", import.meta.url);
 
 type ToolState = {
   toolName: string;
@@ -82,6 +81,7 @@ type SessionClientOptions = {
   onToolStarted: NonNullable<Parameters<AgentRunner>[0]["onToolStarted"]>;
   onToolOutput: NonNullable<Parameters<AgentRunner>[0]["onToolOutput"]>;
   onToolFinished: NonNullable<Parameters<AgentRunner>[0]["onToolFinished"]>;
+  onQuestionRequest: NonNullable<Parameters<AgentRunner>[0]["onQuestionRequest"]>;
   onPermissionRequest: NonNullable<Parameters<AgentRunner>[0]["onPermissionRequest"]>;
   onPlanFileDetected: NonNullable<Parameters<AgentRunner>[0]["onPlanFileDetected"]>;
   onSubagentStarted?: NonNullable<Parameters<AgentRunner>[0]["onSubagentStarted"]>;
@@ -94,6 +94,8 @@ type PermissionMetadata = {
   blockedPath: string | null;
   decisionReason: string | null;
 };
+
+const ACP_ASK_USER_QUESTION_METHOD = "codesymphony.askUserQuestion";
 
 function mapOwnershipReason(raw: unknown): ClaudeOwnershipReason | undefined {
   if (typeof raw !== "string") {
@@ -120,6 +122,58 @@ function normalizeToolInput(rawInput: unknown): Record<string, unknown> {
   }
 
   return rawInput as Record<string, unknown>;
+}
+
+function normalizeAskUserQuestionItems(rawQuestions: unknown): AskUserQuestionItem[] {
+  if (!Array.isArray(rawQuestions)) {
+    return [];
+  }
+
+  return rawQuestions.flatMap((rawQuestion, index) => {
+    if (typeof rawQuestion !== "object" || rawQuestion == null || Array.isArray(rawQuestion)) {
+      return [];
+    }
+
+    const question = rawQuestion as Record<string, unknown>;
+    const questionText = typeof question.question === "string" ? question.question.trim() : "";
+    if (questionText.length === 0) {
+      return [];
+    }
+
+    const id = typeof question.id === "string" && question.id.trim().length > 0
+      ? question.id.trim()
+      : `q-${index}`;
+    const header = typeof question.header === "string" && question.header.trim().length > 0
+      ? question.header.trim()
+      : undefined;
+    const options = Array.isArray(question.options)
+      ? question.options.flatMap((rawOption) => {
+        if (typeof rawOption !== "object" || rawOption == null || Array.isArray(rawOption)) {
+          return [];
+        }
+
+        const option = rawOption as Record<string, unknown>;
+        const label = typeof option.label === "string" ? option.label.trim() : "";
+        if (label.length === 0) {
+          return [];
+        }
+
+        return [{
+          label,
+          ...(typeof option.description === "string" ? { description: option.description } : {}),
+          ...(typeof option.preview === "string" ? { preview: option.preview } : {}),
+        }];
+      })
+      : undefined;
+
+    return [{
+      id,
+      question: questionText,
+      ...(header ? { header } : {}),
+      ...(options && options.length > 0 ? { options } : {}),
+      ...(typeof question.multiSelect === "boolean" ? { multiSelect: question.multiSelect } : {}),
+    }];
+  });
 }
 
 function extractClaudeMeta(update: { _meta?: Record<string, unknown> | null }): Record<string, unknown> {
@@ -450,6 +504,40 @@ class RuntimeAcpClient implements Client {
 
   async authenticate(_params: AuthenticateRequest): Promise<AuthenticateResponse> {
     return {};
+  }
+
+  async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (method !== ACP_ASK_USER_QUESTION_METHOD) {
+      throw new Error(`Unsupported ACP extension method: ${method}`);
+    }
+
+    const requestId = typeof params.requestId === "string" && params.requestId.trim().length > 0
+      ? params.requestId.trim()
+      : typeof params.toolUseId === "string" && params.toolUseId.trim().length > 0
+        ? params.toolUseId.trim()
+        : randomUUID();
+    const questions = normalizeAskUserQuestionItems(params.questions);
+    if (questions.length === 0) {
+      throw new Error("AskUserQuestion request did not include any questions");
+    }
+
+    try {
+      const result: AskUserQuestionResult = await this.options.onQuestionRequest({
+        requestId,
+        questions,
+      });
+      return {
+        requestId,
+        answers: result.answers,
+        ...(result.annotations ? { annotations: result.annotations } : {}),
+      };
+    } catch (error) {
+      return {
+        requestId,
+        dismissed: true,
+        message: error instanceof Error ? error.message : "Question cancelled by user.",
+      };
+    }
   }
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
@@ -822,6 +910,7 @@ async function initializeConnection(stream: acp.Stream): Promise<acp.ClientSideC
     onToolStarted: async () => {},
     onToolOutput: async () => {},
     onToolFinished: async () => {},
+    onQuestionRequest: async () => ({ answers: {} }),
     onPermissionRequest: async () => ({ decision: "deny" }),
     onPlanFileDetected: async () => {},
     onAvailableCommandsUpdated: async () => {},
@@ -931,8 +1020,6 @@ export const runClaudeViaAcp: AgentRunner = async ({
   loadAvailableCommands,
   onToolInstrumentation,
 }) => {
-  void onQuestionRequest;
-
   const recentStderr: string[] = [];
   const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;
   const baseEnv = { ...process.env } as NodeJS.ProcessEnv;
@@ -978,6 +1065,7 @@ export const runClaudeViaAcp: AgentRunner = async ({
     onToolStarted,
     onToolOutput,
     onToolFinished,
+    onQuestionRequest,
     onPermissionRequest,
     onPlanFileDetected,
     onSubagentStarted,

@@ -77,7 +77,7 @@ describe("worktreeThreadStatus", () => {
         threadId: thread.id,
         idx: 1,
         type: "question.requested",
-        payload: { requestId: "q-1", questions: [{ question: "Proceed?" }] },
+        payload: { requestId: "q-1", questions: [{ id: "q-0", question: "Proceed?", options: [{ label: "Yes", preview: "Preview" }, { label: "No" }] }] },
       }),
     ]);
 

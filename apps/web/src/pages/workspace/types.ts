@@ -110,9 +110,11 @@ export type PendingPermissionRequest = {
 export type QuestionOption = {
   label: string;
   description?: string;
+  preview?: string;
 };
 
 export type QuestionItem = {
+  id?: string;
   question: string;
   header?: string;
   options?: QuestionOption[];
@@ -123,6 +125,11 @@ export type PendingQuestionRequest = {
   requestId: string;
   questions: QuestionItem[];
   idx: number;
+};
+
+export type QuestionAnnotation = {
+  preview?: string;
+  notes?: string;
 };
 
 export type PendingPlan = {

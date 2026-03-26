@@ -409,12 +409,13 @@ describe("usePendingGates", () => {
       render([makeEvent(0, "question.requested", { requestId: "q-1", questions: [{ question: "Q?" }] })]);
 
       await act(async () => {
-        await hookResult.answerQuestion("q-1", { "0": "My answer" });
+        await hookResult.answerQuestion("q-1", { "Q?": "My answer" }, { "Q?": { notes: "preview" } });
       });
 
       expect(mockAnswerQuestion).toHaveBeenCalledWith("t1", {
         requestId: "q-1",
-        answers: { "0": "My answer" },
+        answers: { "Q?": "My answer" },
+        annotations: { "Q?": { notes: "preview" } },
       });
       expect(mockDeps.startWaitingAssistant).toHaveBeenCalledWith("t1");
     });
@@ -422,7 +423,7 @@ describe("usePendingGates", () => {
     it("does nothing when no thread is selected", async () => {
       render([], null);
       await act(async () => {
-        await hookResult.answerQuestion("q-1", { "0": "answer" });
+        await hookResult.answerQuestion("q-1", { "Q?": "answer" });
       });
       expect(mockAnswerQuestion).not.toHaveBeenCalled();
     });
@@ -432,7 +433,7 @@ describe("usePendingGates", () => {
       render([makeEvent(0, "question.requested", { requestId: "q-1", questions: [{ question: "Q?" }] })]);
 
       await act(async () => {
-        await hookResult.answerQuestion("q-1", { "0": "answer" });
+        await hookResult.answerQuestion("q-1", { "Q?": "answer" });
       });
 
       expect(mockDeps.clearWaitingAssistantForThread).toHaveBeenCalledWith("t1");

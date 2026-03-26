@@ -156,6 +156,94 @@ describe("QuestionCard", () => {
     }
   });
 
+  it("renders preview and optional note for option questions", () => {
+    act(() => {
+      root.render(
+        <QuestionCard
+          {...baseProps}
+          questions={[{
+            id: "approach",
+            question: "Pick one",
+            options: [
+              { label: "A", description: "Option A", preview: "<div>A preview</div>" },
+              { label: "B", description: "Option B" },
+            ],
+          }]}
+        />
+      );
+    });
+
+    const optionBtn = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("A"));
+    if (optionBtn) {
+      act(() => optionBtn.click());
+    }
+
+    expect(container.textContent).toContain("Optional note");
+    expect(container.textContent).toContain("A preview");
+  });
+
+  it("uses question ids so duplicate question text can coexist", () => {
+    act(() => {
+      root.render(
+        <QuestionCard
+          {...baseProps}
+          questions={[
+            { id: "first", question: "Same question?" },
+            { id: "second", question: "Same question?" },
+          ]}
+        />
+      );
+    });
+
+    expect(container.textContent).toContain("1 / 2");
+  });
+
+  it("submits annotations alongside answers", () => {
+    const onAnswer = vi.fn();
+    act(() => {
+      root.render(
+        <QuestionCard
+          {...baseProps}
+          onAnswer={onAnswer}
+          questions={[{
+            id: "approach",
+            question: "Pick one",
+            options: [
+              { label: "A", description: "Option A", preview: "Preview A" },
+              { label: "B", description: "Option B" },
+            ],
+          }]}
+        />
+      );
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const optionBtn = buttons.find((button) => button.textContent?.includes("A"));
+    if (optionBtn) {
+      act(() => optionBtn.click());
+    }
+
+    const textarea = container.querySelector("textarea");
+    if (textarea instanceof HTMLTextAreaElement) {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      act(() => {
+        setValue?.call(textarea, "Need this path");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+
+    const submitBtn = buttons.find((button) => button.getAttribute("aria-label")?.includes("Submit answer"));
+    if (submitBtn) {
+      act(() => submitBtn.click());
+    }
+
+    expect(onAnswer).toHaveBeenCalledWith(
+      "q-1",
+      { "Pick one": "A" },
+      { "Pick one": { notes: "Need this path" } },
+    );
+  });
+
   it("disables interactions when busy", () => {
     act(() => {
       root.render(

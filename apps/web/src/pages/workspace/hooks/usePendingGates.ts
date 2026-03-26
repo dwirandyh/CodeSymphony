@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
-import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest } from "../types";
+import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionAnnotation } from "../types";
 import {
   derivePendingPermissionRequests,
   derivePendingPlan,
@@ -99,7 +99,11 @@ export function usePendingGates(
     }
   }
 
-  async function answerQuestion(requestId: string, answers: Record<string, string>) {
+  async function answerQuestion(
+    requestId: string,
+    answers: Record<string, string>,
+    annotations?: Record<string, QuestionAnnotation>,
+  ) {
     if (!selectedThreadId) return;
 
     startWaitingAssistant(selectedThreadId);
@@ -111,7 +115,11 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.answerQuestion(selectedThreadId, { requestId, answers });
+      await api.answerQuestion(selectedThreadId, {
+        requestId,
+        answers,
+        ...(annotations ? { annotations } : {}),
+      });
     } catch (e) {
       clearWaitingAssistantForThread(selectedThreadId);
       onError(e instanceof Error ? e.message : "Failed to answer question");
