@@ -7,6 +7,7 @@ import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
 import { createLogService } from "../src/services/logService";
 import type { ClaudeRunner } from "../src/types";
+import * as gitService from "../src/services/git.js";
 
 const stubModelProviderService = {
   getActiveProvider: async () => null,
@@ -115,6 +116,7 @@ async function waitForEvent(
 
 describe("chatService permission flow", () => {
   beforeEach(async () => {
+    vi.restoreAllMocks();
     await resetDatabase();
   });
 
@@ -490,6 +492,9 @@ describe("chatService permission flow", () => {
   });
 
   it("creates or reuses dedicated PR/MR threads with review git profile", async () => {
+    const resolveReviewRemoteMock = vi.spyOn(gitService, "resolveReviewRemote")
+      .mockResolvedValue({ remote: "origin", remoteUrl: "https://github.com/acme/repo", provider: "github" });
+
     const chatService = createChatService({
       prisma,
       eventHub: createEventHub(prisma),
@@ -497,13 +502,15 @@ describe("chatService permission flow", () => {
       modelProviderService: stubModelProviderService,
     });
 
-    const { threadId, worktreePath } = await seedThread("PR / MR", { kind: "review", permissionProfile: "review_git" });
+    const { threadId, worktreePath } = await seedThread("PR / MR", { kind: "review", permissionProfile: "default" });
     const existingThread = await prisma.chatThread.findUnique({ where: { id: threadId } });
     const reused = await chatService.getOrCreatePrMrThread(existingThread!.worktreeId);
 
     expect(reused.id).toBe(threadId);
     expect(reused.kind).toBe("review");
     expect(reused.permissionProfile).toBe("review_git");
+    expect(reused.title).toBe("Create Pull Request");
+    expect(resolveReviewRemoteMock).toHaveBeenCalledTimes(1);
 
     const suffix = uniqueSuffix();
     const repository = await prisma.repository.create({
@@ -527,7 +534,59 @@ describe("chatService permission flow", () => {
     const created = await chatService.getOrCreatePrMrThread(worktree.id);
     expect(created.kind).toBe("review");
     expect(created.permissionProfile).toBe("review_git");
-    expect(created.title).toBe("PR / MR");
+    expect(created.title).toBe("Create Pull Request");
+  });
+
+  it("creates GitLab review threads with merge request title and preserves custom titles", async () => {
+    const resolveReviewRemoteMock = vi.spyOn(gitService, "resolveReviewRemote")
+      .mockResolvedValue({ remote: "origin", remoteUrl: "https://gitlab.com/acme/repo", provider: "gitlab" });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({ output: "", sessionId: null })),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const suffix = uniqueSuffix();
+    const repository = await prisma.repository.create({
+      data: {
+        name: `repo-gitlab-${suffix}`,
+        rootPath: `/tmp/codesymphony-root-gitlab-${suffix}`,
+        defaultBranch: "main",
+      },
+    });
+    const worktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "feature/gitlab",
+        baseBranch: "main",
+        path: `/tmp/codesymphony-worktree-gitlab-${suffix}`,
+        status: "active",
+      },
+    });
+    mkdirSync(worktree.path, { recursive: true });
+
+    const created = await chatService.getOrCreatePrMrThread(worktree.id);
+    expect(created.title).toBe("Create Merge Request");
+    expect(created.permissionProfile).toBe("review_git");
+
+    const custom = await prisma.chatThread.create({
+      data: {
+        worktreeId: worktree.id,
+        title: "Release Review",
+        titleEditedManually: true,
+        kind: "review",
+        permissionProfile: "default",
+        mode: "default",
+      },
+    });
+
+    const reused = await chatService.getOrCreatePrMrThread(worktree.id);
+    expect(reused.id).toBe(custom.id);
+    expect(reused.title).toBe("Release Review");
+    expect(reused.permissionProfile).toBe("review_git");
+    expect(resolveReviewRemoteMock).toHaveBeenCalledTimes(1);
   });
 
   it("emits permission requested and proceeds with deny decision", async () => {

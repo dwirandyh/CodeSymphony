@@ -126,7 +126,7 @@ describe("useChatSession", () => {
     vi.mocked(api.updateThreadMode).mockResolvedValue({ ...makeThread("thread-a"), mode: "plan" });
     const prMrThread = {
       ...makeThread("pr-mr-thread"),
-      title: "PR / MR",
+      title: "Create Pull Request",
       kind: "review" as const,
       permissionProfile: "review_git" as const,
     };
@@ -165,7 +165,7 @@ describe("useChatSession", () => {
   it("invalidates repository reviews when closing a PR/MR thread", async () => {
     const reviewThread = {
       ...makeThread("pr-mr-thread"),
-      title: "PR / MR",
+      title: "Create Pull Request",
       kind: "review" as const,
       permissionProfile: "review_git" as const,
     };
