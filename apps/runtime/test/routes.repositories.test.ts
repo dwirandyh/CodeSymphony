@@ -198,7 +198,7 @@ describe("repository routes", () => {
       mockChatService.getOrCreatePrMrThread.mockResolvedValue({
         id: "thread-review",
         worktreeId: "w1",
-        title: "PR / MR",
+        title: "Create Pull Request",
         kind: "review",
         permissionProfile: "review_git",
         titleEditedManually: false,

@@ -24,11 +24,13 @@ import {
   type PlanRevisionInput,
   type RenameChatThreadTitleInput,
   type ResolvePermissionInput,
+  type ReviewProvider,
   type SendChatMessageInput,
   type UpdateChatThreadModeInput,
 } from "@codesymphony/shared-types";
 import type { RuntimeDeps } from "../../types.js";
 import { mapChatMessage, mapChatThread } from "../mappers.js";
+import { resolveReviewRemote } from "../git.js";
 import type {
   ActiveModelProvider,
   PendingPermissionEntry,
@@ -60,7 +62,6 @@ import {
 } from "./chatGateService.js";
 import {
   clampThreadTitle,
-  isDefaultThreadTitle,
   maybeAutoRenameThreadAfterFirstAssistantReply,
   maybeAutoRenameBranchAfterFirstAssistantReply,
 } from "./chatNamingService.js";
@@ -70,7 +71,7 @@ const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
-const PR_MR_THREAD_TITLE = "PR / MR";
+const REVIEW_THREAD_LEGACY_TITLE = "PR / MR";
 
 function getAttachmentStorageDir(worktreeId: string, messageId: string): string {
   return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, messageId);
@@ -80,14 +81,34 @@ function normalizeThreadKind(kind: ChatThreadKind | undefined): ChatThreadKind {
   return kind === "review" ? "review" : "default";
 }
 
-function normalizePermissionProfile(
-  permissionProfile: ChatThreadPermissionProfile | undefined,
-  kind: ChatThreadKind,
-): ChatThreadPermissionProfile {
-  if (permissionProfile === "review_git") {
-    return "review_git";
-  }
+const REVIEW_THREAD_GITHUB_TITLE = "Create Pull Request";
+const REVIEW_THREAD_GITLAB_TITLE = "Create Merge Request";
+
+function normalizePermissionProfile(kind: ChatThreadKind): ChatThreadPermissionProfile {
   return kind === "review" ? "review_git" : "default";
+}
+
+function getReviewThreadTitle(provider: ReviewProvider): string {
+  if (provider === "gitlab") {
+    return REVIEW_THREAD_GITLAB_TITLE;
+  }
+  if (provider === "github") {
+    return REVIEW_THREAD_GITHUB_TITLE;
+  }
+  return REVIEW_THREAD_LEGACY_TITLE;
+}
+
+async function resolveReviewThreadTitle(worktreePath: string): Promise<string> {
+  try {
+    const { provider } = await resolveReviewRemote(worktreePath);
+    return getReviewThreadTitle(provider);
+  } catch {
+    return REVIEW_THREAD_LEGACY_TITLE;
+  }
+}
+
+function isLegacyReviewThreadTitle(title: string): boolean {
+  return title.trim() === REVIEW_THREAD_LEGACY_TITLE;
 }
 
 export function createChatService(deps: RuntimeDeps) {
@@ -566,13 +587,33 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       if (existing) {
-        return mapChatThread(existing, activeThreads.has(existing.id));
+        const shouldUpgradePermissionProfile = existing.permissionProfile !== "review_git";
+        const shouldUpgradeLegacyTitle = !existing.titleEditedManually && isLegacyReviewThreadTitle(existing.title);
+        if (!shouldUpgradePermissionProfile && !shouldUpgradeLegacyTitle) {
+          return mapChatThread(existing, activeThreads.has(existing.id));
+        }
+
+        const reviewTitle = shouldUpgradeLegacyTitle ? await resolveReviewThreadTitle(worktree.path) : null;
+        const shouldUpgradeTitle = reviewTitle !== null && reviewTitle !== existing.title;
+        if (!shouldUpgradePermissionProfile && !shouldUpgradeTitle) {
+          return mapChatThread(existing, activeThreads.has(existing.id));
+        }
+
+        const updated = await deps.prisma.chatThread.update({
+          where: { id: existing.id },
+          data: {
+            ...(shouldUpgradePermissionProfile ? { permissionProfile: "review_git" } : {}),
+            ...(shouldUpgradeTitle ? { title: reviewTitle } : {}),
+          },
+        });
+        return mapChatThread(updated, activeThreads.has(updated.id));
       }
 
+      const reviewTitle = await resolveReviewThreadTitle(worktree.path);
       const created = await deps.prisma.chatThread.create({
         data: {
           worktreeId,
-          title: PR_MR_THREAD_TITLE,
+          title: reviewTitle,
           kind: "review",
           permissionProfile: "review_git",
           mode: "default",
@@ -591,11 +632,12 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       const kind = normalizeThreadKind(input.kind);
-      const permissionProfile = normalizePermissionProfile(input.permissionProfile, kind);
+      const permissionProfile = normalizePermissionProfile(kind);
+      const reviewTitle = kind === "review" && !input.title ? await resolveReviewThreadTitle(worktree.path) : null;
       const thread = await deps.prisma.chatThread.create({
         data: {
           worktreeId,
-          title: input.title ?? (kind === "review" ? PR_MR_THREAD_TITLE : "Main Thread"),
+          title: input.title ?? reviewTitle ?? "Main Thread",
           kind,
           permissionProfile,
           mode: "default",
