@@ -209,6 +209,15 @@ describe("api", () => {
       await api.renameThreadTitle("t1", { title: "New" });
     });
 
+    it("updates thread mode", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ id: "t1", mode: "plan" }));
+      await api.updateThreadMode("t1", { mode: "plan" });
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toContain("/threads/t1/mode");
+      expect(init.method).toBe("PATCH");
+      expect(init.body).toBe(JSON.stringify({ mode: "plan" }));
+    });
+
     it("deletes thread", async () => {
       mockFetch.mockReturnValueOnce(mock204());
       await api.deleteThread("t1");

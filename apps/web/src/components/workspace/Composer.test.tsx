@@ -20,11 +20,14 @@ const defaultProps = {
   stopping: false,
   threadId: "thread-1",
   worktreeId: "wt-1",
+  mode: "default" as const,
+  modeLocked: false,
   fileIndex: sampleFileIndex,
   fileIndexLoading: false,
   providers: [],
   hasMessages: false,
   onSubmitMessage: vi.fn().mockResolvedValue(true),
+  onModeChange: vi.fn(),
   onStop: vi.fn(),
   onSelectProvider: vi.fn(),
 };
@@ -220,7 +223,7 @@ describe("Composer", () => {
   it("submits message on Enter when no mention is active", async () => {
     setMobileViewport(false);
     const onSubmitMessage = vi.fn().mockResolvedValue(true);
-    renderComposer({ onSubmitMessage });
+    renderComposer({ onSubmitMessage, mode: "plan" });
     const editor = getEditor();
     typeInEditor(editor, "hello");
     await flushMicrotasks();
@@ -231,7 +234,7 @@ describe("Composer", () => {
 
     expect(onSubmitMessage).toHaveBeenCalledWith({
       content: "hello",
-      mode: "default",
+      mode: "plan",
       attachments: [],
     });
   });
@@ -252,26 +255,29 @@ describe("Composer", () => {
   });
 
   it("toggles mode on Shift+Tab", async () => {
-    const onSubmitMessage = vi.fn().mockResolvedValue(true);
-    renderComposer({ onSubmitMessage });
+    const onModeChange = vi.fn();
+    renderComposer({ onModeChange });
     const editor = getEditor();
 
     act(() => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
     });
 
-    typeInEditor(editor, "plan this");
-    await flushMicrotasks();
+    expect(onModeChange).toHaveBeenCalledWith("plan");
+  });
 
-    await act(async () => {
-      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  it("ignores mode changes when locked", async () => {
+    const onModeChange = vi.fn();
+    renderComposer({ modeLocked: true, onModeChange });
+    const editor = getEditor();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
     });
 
-    expect(onSubmitMessage).toHaveBeenCalledWith({
-      content: "plan this",
-      mode: "plan",
-      attachments: [],
-    });
+    expect(onModeChange).not.toHaveBeenCalled();
+    const toggleButton = container.querySelector<HTMLButtonElement>('button[aria-label="Switch to plan mode"]');
+    expect(toggleButton?.disabled).toBe(true);
   });
 
   it("shows loading indicator when file index is loading", async () => {

@@ -57,7 +57,6 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   onPlanFileDetected,
   onSubagentStarted,
   onSubagentStopped,
-  onThinking,
   onToolInstrumentation,
 }) => {
   const recentStderr: string[] = [];
@@ -224,7 +223,6 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         state,
         permissionMode,
         onText,
-        onThinking,
         onToolOutput,
       },
     );

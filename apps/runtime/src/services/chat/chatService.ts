@@ -9,6 +9,7 @@ import {
   RenameChatThreadTitleInputSchema,
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
+  UpdateChatThreadModeInputSchema,
   type AnswerQuestionInput,
   type AttachmentInput,
   type ChatEvent,
@@ -24,6 +25,7 @@ import {
   type RenameChatThreadTitleInput,
   type ResolvePermissionInput,
   type SendChatMessageInput,
+  type UpdateChatThreadModeInput,
 } from "@codesymphony/shared-types";
 import type { RuntimeDeps } from "../../types.js";
 import { mapChatMessage, mapChatThread } from "../mappers.js";
@@ -38,7 +40,6 @@ import type {
 import { captureWorktreeState, buildDiffDelta } from "./gitDiffUtils.js";
 import {
   mapMessages,
-  mapEvents,
   buildTimelineSnapshot,
 } from "./chatPaginationUtils.js";
 import {
@@ -202,12 +203,6 @@ export function createChatService(deps: RuntimeDeps) {
             role: "assistant",
             delta: chunk,
             ...(mode === "plan" ? { mode: "plan" } : {}),
-          });
-        },
-        onThinking: async (chunk) => {
-          await deps.eventHub.emit(threadId, "thinking.delta", {
-            messageId: assistantMessage.id,
-            delta: chunk,
           });
         },
         onToolStarted: async (payload) => {
@@ -382,6 +377,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
       await deps.eventHub.emit(threadId, "chat.completed", {
         messageId: assistantMessage.id,
+        threadMode: mode,
       });
       completionEmitted = true;
 
@@ -472,11 +468,13 @@ export function createChatService(deps: RuntimeDeps) {
           await deps.eventHub.emit(threadId, "chat.completed", {
             ...(assistantMessageId ? { messageId: assistantMessageId } : {}),
             cancelled: true,
+            threadMode: mode,
           });
         }
       } else {
         await deps.eventHub.emit(threadId, "chat.failed", {
           message: errorMessage,
+          threadMode: mode,
         });
       }
     } finally {
@@ -577,6 +575,7 @@ export function createChatService(deps: RuntimeDeps) {
           title: PR_MR_THREAD_TITLE,
           kind: "review",
           permissionProfile: "review_git",
+          mode: "default",
         },
       });
 
@@ -599,6 +598,7 @@ export function createChatService(deps: RuntimeDeps) {
           title: input.title ?? (kind === "review" ? PR_MR_THREAD_TITLE : "Main Thread"),
           kind,
           permissionProfile,
+          mode: "default",
         },
       });
 
@@ -626,6 +626,25 @@ export function createChatService(deps: RuntimeDeps) {
         data: {
           title: normalizedTitle,
           titleEditedManually: true,
+        },
+      });
+
+      return mapChatThread(updatedThread, activeThreads.has(updatedThread.id));
+    },
+
+    async updateThreadMode(threadId: string, rawInput: unknown): Promise<ChatThread> {
+      const input: UpdateChatThreadModeInput = UpdateChatThreadModeInputSchema.parse(rawInput);
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      const updatedThread = await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: {
+          mode: input.mode,
         },
       });
 
@@ -665,20 +684,17 @@ export function createChatService(deps: RuntimeDeps) {
     },
 
     async listThreadSnapshot(threadId: string): Promise<ChatThreadSnapshot> {
-      const [messageRows, eventRows] = await deps.prisma.$transaction([
+      const [messageRows, eventRows] = await Promise.all([
         deps.prisma.chatMessage.findMany({
           where: { threadId },
           orderBy: { seq: "asc" },
           include: { attachments: true },
         }),
-        deps.prisma.chatEvent.findMany({
-          where: { threadId },
-          orderBy: { idx: "asc" },
-        }),
+        deps.eventHub.list(threadId),
       ]);
 
       const messages = mapMessages(messageRows);
-      const events = mapEvents(eventRows);
+      const events = eventRows;
 
       const timeline = buildTimelineSnapshot({
         messages,
@@ -714,6 +730,7 @@ export function createChatService(deps: RuntimeDeps) {
         activeThreads.delete(threadId);
         await deps.eventHub.emit(threadId, "chat.completed", {
           cancelled: true,
+          threadMode: thread.mode,
         });
         return;
       }
@@ -908,6 +925,11 @@ export function createChatService(deps: RuntimeDeps) {
       pendingPlanByThread.delete(threadId);
       activeThreads.add(threadId);
 
+      await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: { mode: "default" },
+      });
+
       await deps.eventHub.emit(threadId, "plan.approved", {
         filePath: plan.filePath,
       });
@@ -938,6 +960,11 @@ export function createChatService(deps: RuntimeDeps) {
 
       pendingPlanByThread.delete(threadId);
       activeThreads.add(threadId);
+
+      await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: { mode: "plan" },
+      });
 
       const seq = await nextMessageSeq(deps.prisma, threadId);
       const message = await deps.prisma.chatMessage.create({
@@ -982,6 +1009,13 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       try {
+        if (thread.mode !== input.mode) {
+          await deps.prisma.chatThread.update({
+            where: { id: threadId },
+            data: { mode: input.mode },
+          });
+        }
+
         const seq = await nextMessageSeq(deps.prisma, threadId);
         const message = await deps.prisma.chatMessage.create({
           data: {
@@ -1089,7 +1123,6 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
           onPlanFileDetected: async () => { },
           onSubagentStarted: async () => { },
           onSubagentStopped: async () => { },
-          onThinking: async () => { },
         });
 
         const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
@@ -1109,7 +1142,7 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
 
     async recoverStuckThreads(): Promise<number> {
       const threads = await deps.prisma.chatThread.findMany({
-        select: { id: true },
+        select: { id: true, mode: true },
       });
 
       let recoveredCount = 0;
@@ -1124,6 +1157,7 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
 
         await deps.eventHub.emit(thread.id, "chat.failed", {
           message: "Chat run interrupted by a runtime restart. You can send a new message to continue.",
+          threadMode: thread.mode,
         });
         recoveredCount++;
       }

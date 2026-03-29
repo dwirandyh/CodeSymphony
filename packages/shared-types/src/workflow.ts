@@ -8,7 +8,6 @@ export type ChatRole = z.infer<typeof ChatRoleSchema>;
 
 export const ChatEventTypeSchema = z.enum([
   "message.delta",
-  "thinking.delta",
   "tool.started",
   "tool.output",
   "tool.finished",
@@ -58,12 +57,16 @@ export type ChatThreadKind = z.infer<typeof ChatThreadKindSchema>;
 export const ChatThreadPermissionProfileSchema = z.enum(["default", "review_git"]);
 export type ChatThreadPermissionProfile = z.infer<typeof ChatThreadPermissionProfileSchema>;
 
+export const ChatModeSchema = z.enum(["default", "plan"]);
+export type ChatMode = z.infer<typeof ChatModeSchema>;
+
 export const ChatThreadSchema = z.object({
   id: z.string(),
   worktreeId: z.string(),
   title: z.string().min(1),
   kind: ChatThreadKindSchema,
   permissionProfile: ChatThreadPermissionProfileSchema,
+  mode: ChatModeSchema,
   titleEditedManually: z.boolean(),
   claudeSessionId: z.string().nullable(),
   active: z.boolean(),
@@ -230,14 +233,6 @@ export const ChatTimelineSubagentActivityItemSchema = z.object({
   durationSeconds: z.number().nullable(),
 });
 
-export const ChatTimelineThinkingItemSchema = z.object({
-  kind: z.literal("thinking"),
-  id: z.string(),
-  messageId: z.string(),
-  content: z.string(),
-  isStreaming: z.boolean(),
-});
-
 export const ChatTimelineErrorItemSchema = z.object({
   kind: z.literal("error"),
   id: z.string(),
@@ -253,7 +248,6 @@ export const ChatTimelineItemSchema = z.discriminatedUnion("kind", [
   ChatTimelineEditedDiffItemSchema,
   ChatTimelineExploreActivityItemSchema,
   ChatTimelineSubagentActivityItemSchema,
-  ChatTimelineThinkingItemSchema,
   ChatTimelineErrorItemSchema,
 ]);
 
@@ -265,7 +259,6 @@ export const ChatTimelineItemKindSchema = z.enum([
   "edited-diff",
   "explore-activity",
   "subagent-activity",
-  "thinking",
   "error",
 ]);
 
@@ -315,8 +308,10 @@ export const RenameChatThreadTitleInputSchema = z.object({
 });
 export type RenameChatThreadTitleInput = z.infer<typeof RenameChatThreadTitleInputSchema>;
 
-export const ChatModeSchema = z.enum(["default", "plan"]);
-export type ChatMode = z.infer<typeof ChatModeSchema>;
+export const UpdateChatThreadModeInputSchema = z.object({
+  mode: ChatModeSchema,
+});
+export type UpdateChatThreadModeInput = z.infer<typeof UpdateChatThreadModeInputSchema>;
 
 export const SendChatMessageInputSchema = z.object({
   content: z.string().trim(),
@@ -396,7 +391,6 @@ export type ChatTimelineExploreActivityEntry = z.infer<typeof ChatTimelineExplor
 export type ChatTimelineExploreActivityItem = z.infer<typeof ChatTimelineExploreActivityItemSchema>;
 export type ChatTimelineSubagentStep = z.infer<typeof ChatTimelineSubagentStepSchema>;
 export type ChatTimelineSubagentActivityItem = z.infer<typeof ChatTimelineSubagentActivityItemSchema>;
-export type ChatTimelineThinkingItem = z.infer<typeof ChatTimelineThinkingItemSchema>;
 export type ChatTimelineErrorItem = z.infer<typeof ChatTimelineErrorItemSchema>;
 export type ChatTimelineItem = z.infer<typeof ChatTimelineItemSchema>;
 export type ChatTimelineSummary = z.infer<typeof ChatTimelineSummarySchema>;

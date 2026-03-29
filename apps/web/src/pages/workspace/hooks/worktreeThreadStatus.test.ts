@@ -12,6 +12,7 @@ function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
     title: "Thread",
     kind: "default",
     permissionProfile: "default",
+    mode: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active: false,
@@ -92,7 +93,7 @@ describe("worktreeThreadStatus", () => {
         threadId: thread.id,
         idx: 1,
         type: "plan.created",
-        payload: { content: "Plan body", filePath: "/tmp/plan.md" },
+        payload: { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" },
       }),
       makeEvent({
         id: "e2",
@@ -104,6 +105,32 @@ describe("worktreeThreadStatus", () => {
     ]);
 
     expect(deriveThreadUiStatus(thread, snapshot)).toBe("review_plan");
+  });
+
+  it("returns idle for bogus streaming fallback plans without a real write", () => {
+    const thread = makeThread();
+    const snapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: thread.id,
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          content: "Hello there",
+          filePath: "streaming-plan",
+          source: "streaming_fallback",
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: thread.id,
+        idx: 2,
+        type: "chat.completed",
+        payload: {},
+      }),
+    ]);
+
+    expect(deriveThreadUiStatus(thread, snapshot)).toBe("idle");
   });
 
   it("returns running for active thread without gates", () => {

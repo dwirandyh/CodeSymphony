@@ -86,6 +86,9 @@ describe("mappers", () => {
         id: "t1",
         worktreeId: "w1",
         title: "Test Thread",
+        kind: "default",
+        permissionProfile: "default",
+        mode: "plan",
         titleEditedManually: false,
         claudeSessionId: null,
         createdAt: now,
@@ -93,6 +96,7 @@ describe("mappers", () => {
       });
       expect(result.id).toBe("t1");
       expect(result.title).toBe("Test Thread");
+      expect(result.mode).toBe("plan");
       expect(result.active).toBe(false);
     });
 
@@ -101,6 +105,9 @@ describe("mappers", () => {
         id: "t1",
         worktreeId: "w1",
         title: "Test",
+        kind: "default",
+        permissionProfile: "default",
+        mode: "default",
         titleEditedManually: false,
         claudeSessionId: null,
         createdAt: now,

@@ -166,6 +166,86 @@ describe("chatService snapshot", () => {
     expect(snapshot.timeline.newestSeq).toBeNull();
   });
 
+  it("returns snapshot with messages and no events when unknown event enum values exist", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId } = await seedThreadWithMessages(1);
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "ChatEvent" (id, threadId, idx, type, payload, createdAt) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      `legacy-${Date.now()}`,
+      threadId,
+      1,
+      "commands_updated",
+      JSON.stringify({}),
+    );
+
+    const snapshot = await chatService.listThreadSnapshot(threadId);
+
+    expect(snapshot.messages).toHaveLength(1);
+    expect(snapshot.events).toEqual([]);
+    expect(snapshot.timeline.newestIdx).toBeNull();
+  });
+
+  it("skips bogus streaming fallback plan cards in runtime snapshot assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "hi",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "Hello there",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "plan.created" as const,
+        payload: {
+          messageId: "m2",
+          content: "Hello there",
+          filePath: "streaming-plan",
+          source: "streaming_fallback",
+        },
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "chat.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(assembly.items.filter((item) => item.kind === "plan-file-output")).toHaveLength(0);
+  });
+
   it("matches runtime snapshot assembly for subagent-owned explore activity", async () => {
     const messages = [
       {

@@ -185,7 +185,7 @@ describe("usePendingGates", () => {
 
   it("detects a pending plan", () => {
     const events = [
-      makeEvent(0, "plan.created", { content: "My plan content", filePath: ".claude/plan.md" }),
+      makeEvent(0, "plan.created", { content: "My plan content", filePath: ".claude/plans/plan.md" }),
       makeEvent(1, "chat.completed", {}),
     ];
     render(events);
@@ -196,7 +196,7 @@ describe("usePendingGates", () => {
 
   it("marks plan as approved after plan.approved event", () => {
     const events = [
-      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
       makeEvent(1, "plan.approved", {}),
     ];
     render(events);
@@ -205,7 +205,7 @@ describe("usePendingGates", () => {
 
   it("marks plan as sending after plan.revision_requested", () => {
     const events = [
-      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
       makeEvent(1, "plan.revision_requested", {}),
     ];
     render(events);
@@ -234,7 +234,7 @@ describe("usePendingGates", () => {
 
   it("does not show plan decision before chat.completed", () => {
     const events = [
-      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
     ];
     render(events);
     expect(hookResult.showPlanDecisionComposer).toBe(false);
@@ -242,7 +242,7 @@ describe("usePendingGates", () => {
 
   it("shows plan decision after chat.completed", () => {
     const events = [
-      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
       makeEvent(1, "chat.completed", {}),
     ];
     render(events);
@@ -251,7 +251,7 @@ describe("usePendingGates", () => {
 
   it("skips plan.created with empty content", () => {
     const events = [
-      makeEvent(0, "plan.created", { content: "", filePath: ".claude/plan.md" }),
+      makeEvent(0, "plan.created", { content: "", filePath: ".claude/plans/plan.md" }),
     ];
     render(events);
     expect(hookResult.pendingPlan).toBeNull();
@@ -473,7 +473,7 @@ describe("usePendingGates", () => {
   describe("handleApprovePlan", () => {
     it("calls approve mutation and optimistically hides plan", async () => {
       const events = [
-        makeEvent(0, "plan.created", { content: "Plan content", filePath: ".claude/plan.md" }),
+        makeEvent(0, "plan.created", { content: "Plan content", filePath: ".claude/plans/plan.md" }),
         makeEvent(1, "chat.completed", {}),
       ];
       render(events);
@@ -499,7 +499,7 @@ describe("usePendingGates", () => {
     it("handles errors", async () => {
       mockApprovePlan.mockRejectedValueOnce(new Error("Approve failed"));
       const events = [
-        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
         makeEvent(1, "chat.completed", {}),
       ];
       render(events);
@@ -516,7 +516,7 @@ describe("usePendingGates", () => {
   describe("handleRevisePlan", () => {
     it("calls revise mutation with feedback", async () => {
       const events = [
-        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
         makeEvent(1, "chat.completed", {}),
       ];
       render(events);
@@ -541,7 +541,7 @@ describe("usePendingGates", () => {
     it("handles errors", async () => {
       mockRevisePlan.mockRejectedValueOnce(new Error("Revise failed"));
       const events = [
-        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
         makeEvent(1, "chat.completed", {}),
       ];
       render(events);
@@ -558,7 +558,7 @@ describe("usePendingGates", () => {
   describe("handleDismissPlan", () => {
     it("optimistically hides plan decision", () => {
       const events = [
-        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plan.md" }),
+        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
         makeEvent(1, "chat.completed", {}),
       ];
       render(events);

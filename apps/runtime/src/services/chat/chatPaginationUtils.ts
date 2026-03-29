@@ -3,9 +3,8 @@ import type { ChatEvent } from "@codesymphony/shared-types";
 import { mapChatMessage } from "../mappers.js";
 import { buildTimelineFromSeed } from "./chatTimelineAssembler.js";
 
-export const chatEventTypeFromDb: Record<DbChatEventType, ChatEvent["type"]> = {
+export const chatEventTypeFromDb: Partial<Record<DbChatEventType, ChatEvent["type"]>> = {
   message_delta: "message.delta",
-  thinking_delta: "thinking.delta",
   tool_started: "tool.started",
   tool_output: "tool.output",
   tool_finished: "tool.finished",
@@ -30,14 +29,21 @@ export function mapMessages(rows: Array<Parameters<typeof mapChatMessage>[0]>) {
 export function mapEvents(
   rows: Array<{ id: string; threadId: string; idx: number; type: DbChatEventType; payload: unknown; createdAt: Date }>,
 ): ChatEvent[] {
-  return rows.map((row) => ({
-    id: row.id,
-    threadId: row.threadId,
-    idx: row.idx,
-    type: chatEventTypeFromDb[row.type],
-    payload: row.payload as Record<string, unknown>,
-    createdAt: row.createdAt.toISOString(),
-  }));
+  return rows.flatMap((row) => {
+    const type = chatEventTypeFromDb[row.type];
+    if (!type) {
+      return [];
+    }
+
+    return [{
+      id: row.id,
+      threadId: row.threadId,
+      idx: row.idx,
+      type,
+      payload: row.payload as Record<string, unknown>,
+      createdAt: row.createdAt.toISOString(),
+    }];
+  });
 }
 
 export function buildTimelineSnapshot(params: {

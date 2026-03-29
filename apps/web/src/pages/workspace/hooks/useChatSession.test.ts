@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatMessage, ChatThread } from "@codesymphony/shared-types";
 import {
   applySnapshotSeed,
+  applyThreadModeUpdate,
   applyThreadTitleUpdate,
   buildSnapshotKey,
   deriveSelectedThreadUiState,
@@ -35,6 +36,7 @@ function makeThread(title: string, id = "thread-1"): ChatThread {
     title,
     kind: "default",
     permissionProfile: "default",
+    mode: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active: false,
@@ -409,7 +411,7 @@ describe("deriveSelectedThreadUiState", () => {
       selectedThreadId: "thread-1",
       threads: [{ ...makeThread("Main Thread"), active: true }],
       events: [
-        makeEvent(1, "plan.created", { content: "Plan body", filePath: "/tmp/plan.md" }),
+        makeEvent(1, "plan.created", { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" }),
         makeEvent(2, "chat.completed", {}),
       ],
       sendingMessage: false,
@@ -431,6 +433,21 @@ describe("deriveSelectedThreadUiState", () => {
 
     expect(state.selectedThreadUiStatus).toBe("running");
     expect(state.composerDisabled).toBe(true);
+  });
+});
+
+describe("applyThreadModeUpdate", () => {
+  it("updates only the matching thread mode", () => {
+    const threads = [makeThread("Thread A", "t-a"), makeThread("Thread B", "t-b")];
+    const next = applyThreadModeUpdate(threads, "t-b", "plan");
+    expect(next[0].mode).toBe("default");
+    expect(next[1].mode).toBe("plan");
+  });
+
+  it("returns same array when mode is unchanged", () => {
+    const threads = [makeThread("Thread A", "t-a")];
+    const next = applyThreadModeUpdate(threads, "t-a", "default");
+    expect(next).toBe(threads);
   });
 });
 

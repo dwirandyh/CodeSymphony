@@ -1,11 +1,10 @@
-import type { Prisma, ChatEvent as DbChatEvent, ChatEventType as DbChatEventType } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { ChatEvent as DbChatEvent, ChatEventType as DbChatEventType, PrismaClient } from "@prisma/client";
 import type { ChatEvent, ChatEventType } from "@codesymphony/shared-types";
 import type { RuntimeEventHub } from "../types.js";
-import type { PrismaClient } from "@prisma/client";
 
 const typeToDb: Record<ChatEventType, DbChatEventType> = {
   "message.delta": "message_delta",
-  "thinking.delta": "thinking_delta",
   "tool.started": "tool_started",
   "tool.output": "tool_output",
   "tool.finished": "tool_finished",
@@ -23,9 +22,8 @@ const typeToDb: Record<ChatEventType, DbChatEventType> = {
   "chat.failed": "chat_failed",
 };
 
-const typeFromDb: Record<DbChatEventType, ChatEventType> = {
+const typeFromDb: Partial<Record<DbChatEventType, ChatEventType>> = {
   message_delta: "message.delta",
-  thinking_delta: "thinking.delta",
   tool_started: "tool.started",
   tool_output: "tool.output",
   tool_finished: "tool.finished",
@@ -43,16 +41,22 @@ const typeFromDb: Record<DbChatEventType, ChatEventType> = {
   chat_failed: "chat.failed",
 };
 
-function mapDbEvent(event: DbChatEvent): ChatEvent {
+function mapDbEvent(event: DbChatEvent): ChatEvent | null {
+  const type = typeFromDb[event.type];
+  if (!type) {
+    return null;
+  }
+
   return {
     id: event.id,
     threadId: event.threadId,
     idx: event.idx,
-    type: typeFromDb[event.type],
+    type,
     payload: event.payload as Record<string, unknown>,
     createdAt: event.createdAt.toISOString(),
   };
 }
+
 
 type ListenerMap = Map<string, Set<(event: ChatEvent) => void>>;
 
@@ -105,15 +109,25 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
   }
 
   async function list(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
-    const dbEvents = await prisma.chatEvent.findMany({
-      where: {
-        threadId,
-        ...(typeof afterIdx === "number" ? { idx: { gt: afterIdx } } : {}),
-      },
-      orderBy: { idx: "asc" },
-    });
+    try {
+      const dbEvents = await prisma.chatEvent.findMany({
+        where: {
+          threadId,
+          ...(typeof afterIdx === "number" ? { idx: { gt: afterIdx } } : {}),
+        },
+        orderBy: { idx: "asc" },
+      });
 
-    return dbEvents.map(mapDbEvent);
+      return dbEvents.flatMap((event) => {
+        const mapped = mapDbEvent(event);
+        return mapped ? [mapped] : [];
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientUnknownRequestError) {
+        return [];
+      }
+      throw error;
+    }
   }
 
   function subscribe(threadId: string, listener: (event: ChatEvent) => void): () => void {

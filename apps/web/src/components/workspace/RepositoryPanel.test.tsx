@@ -94,6 +94,7 @@ function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
     title: "Thread",
     kind: "default",
     permissionProfile: "default",
+    mode: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active: false,
@@ -408,7 +409,7 @@ describe("RepositoryPanel", () => {
             threadId,
             idx: 1,
             type: "plan.created",
-            payload: { content: "Plan", filePath: ".claude/plan.md" },
+            payload: { content: "Plan", filePath: ".claude/plans/plan.md" },
             createdAt: "2026-01-01T00:00:00Z",
           },
           {

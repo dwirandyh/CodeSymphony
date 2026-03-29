@@ -23,7 +23,7 @@ import {
 import { completionSummaryFromMetadata, failureSummaryFromMetadata } from "./toolSummary.js";
 import { extractBashToolResult } from "./bashResult.js";
 import { parseSubagentTranscript, extractSubagentResponse } from "./subagentTranscript.js";
-import { findLatestPlanFile } from "./planFile.js";
+import { findDetectedPlanFile } from "./planFile.js";
 
 import type { InstrumentContext, SessionMaps } from "./sessionInstrumentation.js";
 import { buildMetadataFromHookInput, buildFinishedTimingPreview, buildToolFinishedPayload } from "./sessionInstrumentation.js";
@@ -833,28 +833,12 @@ export function createCanUseTool(
     });
 
     if (permissionMode === "plan" && toolName !== "AskUserQuestion") {
-      if (!state.planFileDetected && state.finalOutput.trim().length > 0) {
-        state.planFileDetected = true;
-        let detectedPlan: { filePath: string; content: string; source: "claude_plan_file" | "streaming_fallback" } | null = null;
-        for (const fp of maps.sessionPersistedPlanFiles) {
-          try {
-            const content = readFileSync(fp, "utf-8");
-            if (content.trim().length > 0) {
-              detectedPlan = { filePath: fp, content, source: "claude_plan_file" };
-            }
-          } catch { /* skip unreadable */ }
+      if (!state.planFileDetected) {
+        const detectedPlan = findDetectedPlanFile(maps.sessionPersistedPlanFiles, state.queryStartTimestamp);
+        if (detectedPlan) {
+          state.planFileDetected = true;
+          await callbacks.onPlanFileDetected({ ...detectedPlan, source: "claude_plan_file" });
         }
-        if (!detectedPlan) {
-          const planFile = findLatestPlanFile(state.queryStartTimestamp);
-          if (planFile) {
-            detectedPlan = { ...planFile, source: "claude_plan_file" };
-          }
-        }
-        await callbacks.onPlanFileDetected(detectedPlan ?? {
-          filePath: "streaming-plan",
-          content: state.finalOutput.trim(),
-          source: "streaming_fallback",
-        });
       }
       await emitDecision(toolUseId, "plan_deny", toolName, permissionParentToolUseId, {
         ...(command ? { command } : {}),

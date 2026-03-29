@@ -1,5 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import type { ChatEvent, ChatThreadSnapshot, ChatTimelineSnapshot } from "@codesymphony/shared-types";
+import type {
+  ChatEvent,
+  ChatThreadSnapshot,
+  ChatTimelineSnapshot,
+} from "@codesymphony/shared-types";
 import path from "node:path";
 import { z } from "zod";
 import { appendRuntimeDebugLog } from "./debug.js";
@@ -152,6 +156,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
       return { data: thread };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to rename thread title";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.patch("/threads/:id/mode", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      const thread = await app.chatService.updateThreadMode(params.id, request.body);
+      return { data: thread };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to update thread mode";
       return reply.code(400).send({ error: message });
     }
   });

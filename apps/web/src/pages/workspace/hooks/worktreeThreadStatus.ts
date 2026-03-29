@@ -1,7 +1,7 @@
 import type { ChatEvent, ChatThread, ChatThreadSnapshot } from "@codesymphony/shared-types";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
-import { isPlanFilePath, payloadStringOrNull } from "../eventUtils";
+import { normalizePlanCreatedEvent } from "../eventUtils";
 
 export type WorktreeThreadUiStatus = "waiting_approval" | "review_plan" | "running" | "idle";
 
@@ -135,35 +135,17 @@ export function derivePendingPlan(events: ChatEvent[]): PendingPlan | null {
 
   for (const event of orderedEvents) {
     if (event.type === "plan.created") {
-      const content = typeof event.payload.content === "string" ? event.payload.content : "";
-      const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
-      if (content.length === 0) {
+      const normalizedPlan = normalizePlanCreatedEvent(event, orderedEvents);
+      if (!normalizedPlan) {
         continue;
       }
 
-      if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath)) {
-        const realWrite = orderedEvents.find((candidate) =>
-          candidate.idx > event.idx
-          && candidate.type === "tool.finished"
-          && isPlanFilePath(
-            payloadStringOrNull(candidate.payload.editTarget)
-              ?? payloadStringOrNull(candidate.payload.file_path)
-              ?? "",
-          ));
-        if (realWrite) {
-          const toolInput = isRecord(realWrite.payload.toolInput) ? realWrite.payload.toolInput : null;
-          const realContent = toolInput ? payloadStringOrNull(toolInput.content) : null;
-          const realPath = payloadStringOrNull(realWrite.payload.editTarget)
-            ?? payloadStringOrNull(realWrite.payload.file_path)
-            ?? filePath;
-          if (realContent && realContent.trim().length > 0) {
-            latestPlan = { content: realContent, filePath: realPath, createdIdx: realWrite.idx, status: "pending" };
-          }
-        }
-        continue;
-      }
-
-      latestPlan = { content, filePath, createdIdx: event.idx, status: "pending" };
+      latestPlan = {
+        content: normalizedPlan.content,
+        filePath: normalizedPlan.filePath,
+        createdIdx: normalizedPlan.idx,
+        status: "pending",
+      };
       continue;
     }
 

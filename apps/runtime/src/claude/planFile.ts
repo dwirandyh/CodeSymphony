@@ -2,6 +2,28 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
+export type DetectedPlanFile = {
+  filePath: string;
+  content: string;
+};
+
+function readLatestPersistedPlanFile(filePaths: Iterable<string>): DetectedPlanFile | null {
+  let latest: DetectedPlanFile | null = null;
+
+  for (const filePath of filePaths) {
+    try {
+      const content = readFileSync(filePath, "utf-8");
+      if (content.trim().length > 0) {
+        latest = { filePath, content };
+      }
+    } catch {
+      // Plan file could not be read; skip.
+    }
+  }
+
+  return latest;
+}
+
 function scanPlanDir(dir: string, afterTimestamp: number): { filePath: string; mtime: number } | null {
     if (!existsSync(dir)) return null;
     let latest: { filePath: string; mtime: number } | null = null;
@@ -18,21 +40,25 @@ function scanPlanDir(dir: string, afterTimestamp: number): { filePath: string; m
     return latest;
 }
 
-export function findLatestPlanFile(afterTimestamp: number): { filePath: string; content: string } | null {
-    const candidates = [
-        scanPlanDir(join(homedir(), ".claude", "plans"), afterTimestamp),
-        scanPlanDir(join(tmpdir(), "codesymphony-claude-provider", "plans"), afterTimestamp),
-    ].filter(Boolean) as { filePath: string; mtime: number }[];
+export function findLatestPlanFile(afterTimestamp: number): DetectedPlanFile | null {
+  const candidates = [
+    scanPlanDir(join(homedir(), ".claude", "plans"), afterTimestamp),
+    scanPlanDir(join(tmpdir(), "codesymphony-claude-provider", "plans"), afterTimestamp),
+  ].filter(Boolean) as { filePath: string; mtime: number }[];
 
-    candidates.sort((a, b) => b.mtime - a.mtime);
-    const latestFile = candidates[0] ?? null;
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  const latestFile = candidates[0] ?? null;
 
-    if (!latestFile) return null;
+  if (!latestFile) return null;
 
-    try {
-        const content = readFileSync(latestFile.filePath, "utf-8");
-        return content.trim().length > 0 ? { filePath: latestFile.filePath, content } : null;
-    } catch {
-        return null;
-    }
+  try {
+    const content = readFileSync(latestFile.filePath, "utf-8");
+    return content.trim().length > 0 ? { filePath: latestFile.filePath, content } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function findDetectedPlanFile(persistedPlanFiles: Iterable<string>, afterTimestamp: number): DetectedPlanFile | null {
+  return readLatestPersistedPlanFile(persistedPlanFiles) ?? findLatestPlanFile(afterTimestamp);
 }

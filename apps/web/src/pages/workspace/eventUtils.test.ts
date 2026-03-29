@@ -6,6 +6,7 @@ import {
   isRecord,
   isClaudePlanFilePayload,
   isPlanFilePath,
+  normalizePlanCreatedEvent,
   isPlanModeToolEvent,
   isBashPayload,
   isBashToolEvent,
@@ -98,16 +99,67 @@ describe("isClaudePlanFilePayload", () => {
     expect(isClaudePlanFilePayload({ source: "claude_plan_file" })).toBe(true);
   });
 
-  it("returns true for streaming_fallback source", () => {
-    expect(isClaudePlanFilePayload({ source: "streaming_fallback" })).toBe(true);
-  });
-
   it("returns true for plan file path", () => {
     expect(isClaudePlanFilePayload({ source: "other", filePath: "/project/.claude/plans/plan.md" })).toBe(true);
   });
 
   it("returns false for non-plan payload", () => {
     expect(isClaudePlanFilePayload({ source: "other", filePath: "/project/src/index.ts" })).toBe(false);
+  });
+});
+
+describe("normalizePlanCreatedEvent", () => {
+  it("returns null for streaming fallback without a real plan write", () => {
+    const events = [
+      makeEvent({
+        id: "plan-1",
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          messageId: "m2",
+          content: "Hello there",
+          filePath: "streaming-plan",
+          source: "streaming_fallback",
+        },
+      }),
+      makeEvent({ id: "done", idx: 2, type: "chat.completed", payload: {} }),
+    ];
+
+    expect(normalizePlanCreatedEvent(events[0]!, events)).toBeNull();
+  });
+
+  it("resolves streaming fallback to a later real plan write", () => {
+    const events = [
+      makeEvent({
+        id: "plan-1",
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          messageId: "m2",
+          content: "Intro",
+          filePath: "streaming-plan",
+          source: "streaming_fallback",
+        },
+      }),
+      makeEvent({
+        id: "write-1",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          editTarget: ".claude/plans/real-plan.md",
+          toolInput: { content: "# Real Plan" },
+        },
+      }),
+    ];
+
+    expect(normalizePlanCreatedEvent(events[0]!, events)).toEqual({
+      id: "write-1",
+      messageId: "m2",
+      content: "# Real Plan",
+      filePath: ".claude/plans/real-plan.md",
+      idx: 2,
+      createdAt: "2025-01-01T00:00:00.000Z",
+    });
   });
 });
 
@@ -361,11 +413,6 @@ describe("getEventMessageId", () => {
     expect(getEventMessageId(event)).toBe("msg-1");
   });
 
-  it("returns messageId for thinking.delta", () => {
-    const event = makeEvent({ type: "thinking.delta", payload: { messageId: "msg-2" } });
-    expect(getEventMessageId(event)).toBe("msg-2");
-  });
-
   it("returns null for other event types", () => {
     expect(getEventMessageId(makeEvent({ type: "tool.started", payload: { messageId: "msg-1" } }))).toBeNull();
   });
@@ -401,10 +448,6 @@ describe("shouldClearWaitingAssistantOnEvent", () => {
 
   it("returns false for user message.delta", () => {
     expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "message.delta", payload: { role: "user" } }))).toBe(false);
-  });
-
-  it("returns true for thinking.delta", () => {
-    expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "thinking.delta" }))).toBe(true);
   });
 
   it("returns true for permission.requested", () => {

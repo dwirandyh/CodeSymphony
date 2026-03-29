@@ -5,6 +5,7 @@ import { registerChatRoutes } from "../src/routes/chats";
 describe("PATCH /api/threads/:id/title", () => {
   let app: FastifyInstance;
   const chatRenameThreadTitle = vi.fn();
+  const chatUpdateThreadMode = vi.fn();
 
   beforeEach(async () => {
     app = Fastify({ logger: false });
@@ -16,6 +17,7 @@ describe("PATCH /api/threads/:id/title", () => {
       createThread: vi.fn(),
       getThreadById: vi.fn(),
       renameThreadTitle: chatRenameThreadTitle,
+      updateThreadMode: chatUpdateThreadMode,
       deleteThread: vi.fn(),
       listMessages: vi.fn(),
       sendMessage: vi.fn(),
@@ -46,6 +48,7 @@ describe("PATCH /api/threads/:id/title", () => {
       title: "Investigate SSE reconnect",
       kind: "default",
       permissionProfile: "default",
+      mode: "default",
       titleEditedManually: true,
       claudeSessionId: null,
       active: false,
@@ -77,6 +80,89 @@ describe("PATCH /api/threads/:id/title", () => {
       method: "PATCH",
       url: "/api/threads/thread-unknown/title",
       payload: { title: "Anything" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: "Chat thread not found" });
+  });
+});
+
+describe("PATCH /api/threads/:id/mode", () => {
+  let app: FastifyInstance;
+  const chatUpdateThreadMode = vi.fn();
+
+  beforeEach(async () => {
+    app = Fastify({ logger: false });
+    app.decorate("repositoryService", {
+      getById: vi.fn(),
+    } as never);
+    app.decorate("chatService", {
+      listThreads: vi.fn(),
+      createThread: vi.fn(),
+      getThreadById: vi.fn(),
+      renameThreadTitle: vi.fn(),
+      updateThreadMode: chatUpdateThreadMode,
+      deleteThread: vi.fn(),
+      listMessages: vi.fn(),
+      sendMessage: vi.fn(),
+      stopRun: vi.fn(),
+      answerQuestion: vi.fn(),
+      approvePlan: vi.fn(),
+      revisePlan: vi.fn(),
+      resolvePermission: vi.fn(),
+      listEvents: vi.fn(),
+    } as never);
+    app.decorate("eventHub", {
+      subscribe: vi.fn(() => () => undefined),
+    } as never);
+
+    await app.register(registerChatRoutes, { prefix: "/api" });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    vi.clearAllMocks();
+  });
+
+  it("updates thread mode and returns updated thread", async () => {
+    chatUpdateThreadMode.mockResolvedValueOnce({
+      id: "thread-1",
+      worktreeId: "wt-1",
+      title: "Investigate SSE reconnect",
+      kind: "default",
+      permissionProfile: "default",
+      mode: "plan",
+      titleEditedManually: true,
+      claudeSessionId: null,
+      active: false,
+      createdAt: "2026-02-28T00:00:00.000Z",
+      updatedAt: "2026-02-28T00:00:00.000Z",
+    });
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/threads/thread-1/mode",
+      payload: { mode: "plan" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(chatUpdateThreadMode).toHaveBeenCalledWith("thread-1", { mode: "plan" });
+    expect(response.json()).toMatchObject({
+      data: {
+        id: "thread-1",
+        mode: "plan",
+      },
+    });
+  });
+
+  it("returns 400 when mode update fails", async () => {
+    chatUpdateThreadMode.mockRejectedValueOnce(new Error("Chat thread not found"));
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/threads/thread-unknown/mode",
+      payload: { mode: "plan" },
     });
 
     expect(response.statusCode).toBe(400);

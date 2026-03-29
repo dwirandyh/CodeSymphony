@@ -253,34 +253,6 @@ describe("extractExploreActivityGroups", () => {
     expect(groups.length).toBe(2);
   });
 
-  it("splits groups on thinking.delta without message.delta", () => {
-    const events = [
-      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Read", toolUseId: "t1" } }),
-      makeEvent({ id: "e2", type: "tool.finished", idx: 2, payload: { toolName: "Read", summary: "Read /src/a.ts", precedingToolUseIds: ["t1"] } }),
-      makeEvent({ id: "e3", type: "thinking.delta", idx: 3, payload: { messageId: "m2", delta: "next" } }),
-      makeEvent({ id: "e4", type: "tool.started", idx: 4, payload: { toolName: "Read", toolUseId: "t2" } }),
-      makeEvent({ id: "e5", type: "tool.finished", idx: 5, payload: { toolName: "Read", summary: "Read /src/b.ts", precedingToolUseIds: ["t2"] } }),
-    ];
-
-    const groups = extractExploreActivityGroups(events);
-    expect(groups).toHaveLength(2);
-    expect(groups[0].fileCount).toBe(1);
-    expect(groups[1].fileCount).toBe(1);
-  });
-
-  it("does not flush on boundary when run is pending", () => {
-    const events = [
-      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Read", toolUseId: "t1" } }),
-      makeEvent({ id: "e2", type: "thinking.delta", idx: 2, payload: { messageId: "m2", delta: "wait" } }),
-      makeEvent({ id: "e3", type: "tool.finished", idx: 3, payload: { toolName: "Read", summary: "Read /src/a.ts", precedingToolUseIds: ["t1"] } }),
-    ];
-
-    const groups = extractExploreActivityGroups(events);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].startIdx).toBe(1);
-    expect(groups[0].endIdx).toBe(3);
-  });
-
   it("splits groups on plan and subagent boundaries when idle", () => {
     const events = [
       makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Read", toolUseId: "t1" } }),
@@ -302,7 +274,7 @@ describe("extractExploreActivityGroups", () => {
     const events = [
       makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Read", toolUseId: "t1" } }),
       makeEvent({ id: "e2", type: "tool.finished", idx: 2, payload: { toolName: "Read", summary: "Read /src/a.ts", precedingToolUseIds: ["t1"] } }),
-      makeEvent({ id: "e3", type: "thinking.delta", idx: 3, payload: { messageId: "m2", delta: "next" } }),
+      makeEvent({ id: "e3", type: "plan.created", idx: 3, payload: { messageId: "m2", content: "# Plan", filePath: ".claude/plan.md" } }),
       makeEvent({ id: "e4", type: "tool.started", idx: 4, payload: { toolName: "Read", toolUseId: "t2" } }),
       makeEvent({ id: "e5", type: "tool.finished", idx: 6, payload: { toolName: "Read", summary: "Read /src/b.ts", precedingToolUseIds: ["t2"] } }),
     ];
@@ -313,7 +285,6 @@ describe("extractExploreActivityGroups", () => {
     expect(groups[1].id).toBe("explore:4:6");
     expect(groups[0].id).not.toBe(groups[1].id);
   });
-
   it("counts search and file entries separately", () => {
     const events = [
       makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Glob", toolUseId: "t1" } }),

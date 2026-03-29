@@ -12,19 +12,17 @@ import {
   getEventMessageId,
   hasUnclosedCodeFence,
   isBashToolEvent,
-  isClaudePlanFilePayload,
   isExploreLikeBashEvent,
   isLikelyDiffContent,
   isPlanFilePath,
   isReadToolEvent,
-  isRecord,
   isWorktreeDiffEvent,
+  normalizePlanCreatedEvent,
   parseTimestamp,
   payloadStringOrNull,
   promptLooksLikeFileRead,
 } from "../../../../web/src/pages/workspace/eventUtils";
 import { computeMessageAnchorIdxById } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineAnchorUtils";
-import { buildThinkingRounds, mergeThinkingRounds, insertThinkingItems } from "../../../../web/src/pages/workspace/hooks/workspace-timeline/timelineThinkingUtils";
 import {
   buildInlineInserts,
   buildSegmentBuckets,
@@ -126,63 +124,14 @@ export function buildTimelineFromSeed(params: {
     }
   }
 
-  const thinkingRoundsByMessageId = buildThinkingRounds(orderedEventsByIdx);
-
   const planFileOutputByMessageId = new Map<string, PlanFileOutput>();
   for (const event of orderedEventsByIdx) {
-    if (event.type !== "plan.created") {
+    const normalizedPlan = normalizePlanCreatedEvent(event, orderedEventsByIdx);
+    if (!normalizedPlan || normalizedPlan.messageId.length === 0) {
       continue;
     }
 
-    const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
-    if (messageId.length === 0 || !isClaudePlanFilePayload(event.payload)) {
-      continue;
-    }
-
-    let content = typeof event.payload.content === "string" ? event.payload.content : "";
-    let filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "plan.md";
-    if (content.trim().length === 0) {
-      continue;
-    }
-
-    if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath)) {
-      const realWrite = orderedEventsByIdx.find((candidate) =>
-        candidate.idx > event.idx
-        && candidate.type === "tool.finished"
-        && isPlanFilePath(
-          payloadStringOrNull(candidate.payload.editTarget)
-            ?? payloadStringOrNull(candidate.payload.file_path)
-            ?? "",
-        )
-      );
-      if (realWrite) {
-        const toolInput = isRecord(realWrite.payload.toolInput) ? realWrite.payload.toolInput : null;
-        const realContent = toolInput ? payloadStringOrNull(toolInput.content) : null;
-        const realPath = payloadStringOrNull(realWrite.payload.editTarget)
-          ?? payloadStringOrNull(realWrite.payload.file_path)
-          ?? filePath;
-        if (realContent && realContent.trim().length > 0) {
-          planFileOutputByMessageId.set(messageId, {
-            id: realWrite.id,
-            messageId,
-            content: realContent,
-            filePath: realPath,
-            idx: realWrite.idx,
-            createdAt: realWrite.createdAt,
-          });
-          continue;
-        }
-      }
-    }
-
-    planFileOutputByMessageId.set(messageId, {
-      id: event.id,
-      messageId,
-      content,
-      filePath,
-      idx: event.idx,
-      createdAt: event.createdAt,
-    });
+    planFileOutputByMessageId.set(normalizedPlan.messageId, normalizedPlan);
   }
 
   const messageAnchorIdxById = computeMessageAnchorIdxById(
@@ -213,21 +162,9 @@ export function buildTimelineFromSeed(params: {
     || event.type === "plan.created"
     || event.type === "plan.approved"
     || event.type === "plan.revision_requested"
-    || event.type === "thinking.delta"
   );
   const assistantDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
-  const thinkingDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
   for (const event of orderedEventsByIdx) {
-    if (event.type === "thinking.delta") {
-      const thinkingMessageId = getEventMessageId(event);
-      if (thinkingMessageId) {
-        const existingThinking = thinkingDeltaEventsByMessageId.get(thinkingMessageId) ?? [];
-        existingThinking.push(event);
-        thinkingDeltaEventsByMessageId.set(thinkingMessageId, existingThinking);
-      }
-      continue;
-    }
-
     if (event.type !== "message.delta" || event.payload.role !== "assistant") {
       continue;
     }
@@ -317,15 +254,12 @@ export function buildTimelineFromSeed(params: {
 
     const hasToolEventsInContext = message.role === "assistant"
       && (assistantContextById.get(message.id)?.length ?? 0) > 0;
-    const rawRounds = message.role === "assistant" ? thinkingRoundsByMessageId.get(message.id) ?? [] : [];
-    const hasThinkingRounds = rawRounds.length > 0;
     const oldestAssistantMissingRichContext =
       message.role === "assistant"
       && oldestAssistantMessageId != null
       && message.id === oldestAssistantMessageId
       && message.content.trim().length > 0
       && !hasToolEventsInContext
-      && !hasThinkingRounds
       && !hasMessageDelta;
     if (oldestAssistantMissingRichContext) {
       hasIncompleteCoverage = true;
@@ -334,7 +268,6 @@ export function buildTimelineFromSeed(params: {
     if (
       message.role === "assistant"
       && !hasToolEventsInContext
-      && !hasThinkingRounds
       && (shouldSkipMessageBecausePlanCard || (message.content.trim().length === 0 && !isCompleted && !hasMessageDelta))
     ) {
       continue;
@@ -370,11 +303,8 @@ export function buildTimelineFromSeed(params: {
     const deltaEventsForAgent = message.role === "assistant"
       ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
       : [];
-    const thinkingEventsForAgent = message.role === "assistant"
-      ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
-      : [];
-    const contextWithAgentBoundaries = (deltaEventsForAgent.length > 0 || thinkingEventsForAgent.length > 0)
-      ? [...context, ...thinkingEventsForAgent, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
+    const contextWithAgentBoundaries = deltaEventsForAgent.length > 0
+      ? [...context, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
       : context;
     const subagentExploreExtraction = message.role === "assistant"
       ? extractSubagentExploreGroups(contextWithAgentBoundaries)
@@ -515,7 +445,14 @@ export function buildTimelineFromSeed(params: {
       }
     }
 
-    if (message.role === "assistant" && activityContext.length > 0 && bashRuns.length === 0) {
+    const hasInlineActivityCards =
+      bashRuns.length > 0
+      || editedRuns.length > 0
+      || subagentGroups.length > 0
+      || exploreActivityGroups.length > 0
+      || !!planFileOutput;
+
+    if (message.role === "assistant" && activityContext.length > 0 && !hasInlineActivityCards) {
       const steps = buildActivitySteps(activityContext);
       const contextTimestamp = parseTimestamp(activityContext[0]?.createdAt ?? message.createdAt);
       if (steps.length > 0) {
@@ -539,29 +476,6 @@ export function buildTimelineFromSeed(params: {
 
     if (message.role === "assistant" && activityContext.length > 0 && bashRuns.length > 0) {
       activityContext.forEach((event) => assignedToolEventIds.add(event.id));
-    }
-
-    if (message.role === "assistant") {
-      const mergedRounds = mergeThinkingRounds(
-        rawRounds,
-        bashRuns,
-        editedRuns,
-        subagentGroups,
-        exploreActivityGroups,
-        planFileOutput,
-      );
-      insertThinkingItems(
-        mergedRounds,
-        message.id,
-        message.seq,
-        isCompleted,
-        isStreamingMessage,
-        (assistantDeltaEventsByMessageId.get(message.id)?.length ?? 0) > 0,
-        planFileOutput,
-        orderedEventsByIdx,
-        timestamp,
-        sortable,
-      );
     }
 
     if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
@@ -682,7 +596,6 @@ export function buildTimelineFromSeed(params: {
     assignedToolEventIds,
     assistantContextById,
     assistantDeltaEventsByMessageId,
-    thinkingDeltaEventsByMessageId,
     sortedMessages,
     messageAnchorIdxById,
     completedMessageIds,
@@ -722,11 +635,9 @@ export function buildTimelineFromSeed(params: {
   const oldestRenderableKind = oldestRenderable?.kind ?? null;
   const oldestRenderableMessageId = oldestRenderable?.kind === "message"
     ? oldestRenderable.message.id
-    : oldestRenderable?.kind === "thinking"
+    : oldestRenderable?.kind === "plan-file-output"
       ? oldestRenderable.messageId
-      : oldestRenderable?.kind === "plan-file-output"
-        ? oldestRenderable.messageId
-        : null;
+      : null;
   const oldestRenderableHydrationPending = semanticHydrationInProgress
     && oldestRenderableMessageId != null
     && oldestRenderableMessageId === oldestAssistantMessageId
@@ -755,7 +666,6 @@ function getTimelineItemKey(item: ChatTimelineItem): string {
     case "edited-diff":
     case "explore-activity":
     case "subagent-activity":
-    case "thinking":
     case "error":
       return `${item.kind}:${item.id}`;
     case "tool":

@@ -46,12 +46,83 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
   const rawSource = payload.source;
-  if (rawSource === "claude_plan_file" || rawSource === "streaming_fallback") {
+  if (rawSource === "claude_plan_file") {
     return true;
   }
 
   const filePath = typeof payload.filePath === "string" ? payload.filePath : "";
   return isPlanFilePath(filePath);
+}
+
+export type NormalizedPlanCreatedEvent = {
+  id: string;
+  messageId: string;
+  content: string;
+  filePath: string;
+  idx: number;
+  createdAt: string;
+};
+
+export function normalizePlanCreatedEvent(event: ChatEvent, orderedEvents: ChatEvent[]): NormalizedPlanCreatedEvent | null {
+  if (event.type !== "plan.created") {
+    return null;
+  }
+
+  const rawSource = event.payload.source;
+  if (rawSource !== "streaming_fallback" && !isClaudePlanFilePayload(event.payload)) {
+    return null;
+  }
+
+  const messageId = payloadStringOrNull(event.payload.messageId) ?? "";
+  let content = payloadStringOrNull(event.payload.content) ?? "";
+  let filePath = payloadStringOrNull(event.payload.filePath) ?? "plan.md";
+  if (content.trim().length === 0) {
+    return null;
+  }
+
+  if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath)) {
+    const realWrite = orderedEvents.find((candidate) =>
+      candidate.idx > event.idx
+      && candidate.type === "tool.finished"
+      && isPlanFilePath(
+        payloadStringOrNull(candidate.payload.editTarget)
+          ?? payloadStringOrNull(candidate.payload.file_path)
+          ?? "",
+      )
+    );
+    if (!realWrite) {
+      return null;
+    }
+
+    const toolInput = isRecord(realWrite.payload.toolInput) ? realWrite.payload.toolInput : null;
+    const realContent = toolInput ? payloadStringOrNull(toolInput.content) : null;
+    const realPath = payloadStringOrNull(realWrite.payload.editTarget)
+      ?? payloadStringOrNull(realWrite.payload.file_path)
+      ?? filePath;
+    if (!realContent || realContent.trim().length === 0) {
+      return null;
+    }
+
+    content = realContent;
+    filePath = realPath;
+    return {
+      id: realWrite.id,
+      messageId,
+      content,
+      filePath,
+      idx: realWrite.idx,
+      createdAt: realWrite.createdAt,
+    };
+  }
+
+  return {
+    id: event.id,
+    messageId,
+    content,
+    filePath,
+    idx: event.idx,
+    createdAt: event.createdAt,
+  };
 }
 
 export function isPlanFilePath(filePath: string): boolean {
@@ -348,7 +419,7 @@ export function parseTimestamp(input: string): number | null {
 }
 
 export function getEventMessageId(event: ChatEvent): string | null {
-  if (event.type !== "message.delta" && event.type !== "thinking.delta") {
+  if (event.type !== "message.delta") {
     return null;
   }
 
@@ -375,8 +446,7 @@ export function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
   }
 
   if (
-    event.type === "thinking.delta"
-    || event.type === "tool.started"
+    event.type === "tool.started"
     || event.type === "tool.output"
     || event.type === "tool.finished"
   ) {
@@ -730,7 +800,7 @@ export function detectSemanticBoundaryFromEvents(events: ChatEvent[]): SemanticB
       continue;
     }
 
-    if (event.type === "plan.created" && isClaudePlanFilePayload(event.payload)) {
+    if (event.type === "plan.created" && normalizePlanCreatedEvent(event, ordered)) {
       return {
         kind: "plan-file-output",
         eventId: event.id,

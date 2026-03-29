@@ -301,16 +301,24 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items.length).toBeGreaterThan(0);
   });
 
-  it("processes thinking events", () => {
-    const messages = [makeMessage("m1", 1, "user", "Think")];
+  it("keeps read activity grouped before assistant text when text arrives after the read", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "Think"),
+      makeMessage("m2", 2, "assistant", "Checking the codebase."),
+    ];
     const events = [
-      makeEvent(0, "thinking.delta", { delta: "Let me think..." }, "m1"),
+      makeEvent(0, "tool.started", { toolName: "Read", toolUseId: "read-1", toolInput: { file_path: "src/app.ts" } }, "m2"),
+      makeEvent(1, "tool.finished", { toolName: "Read", toolUseId: "read-1", summary: "Read src/app.ts", precedingToolUseIds: ["read-1"] }, "m2"),
+      makeEvent(2, "message.delta", { role: "assistant", messageId: "m2", delta: "Checking the codebase." }, "m2"),
     ];
     act(() => {
       root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
     });
-    const thinkingItems = hookResult.items.filter((i) => i.kind === "thinking");
-    expect(thinkingItems.length).toBeGreaterThanOrEqual(0);
+    const firstMessageIndex = hookResult.items.findIndex((item) => item.kind === "message" && item.message.role === "assistant");
+    const firstExploreIndex = hookResult.items.findIndex((item) => item.kind === "explore-activity");
+    expect(firstExploreIndex).toBeGreaterThan(-1);
+    expect(firstMessageIndex).toBeGreaterThan(-1);
+    expect(firstExploreIndex).toBeLessThan(firstMessageIndex);
   });
 
   it("processes permission events", () => {
@@ -328,13 +336,53 @@ describe("useWorkspaceTimeline", () => {
   it("processes plan events", () => {
     const messages = [makeMessage("m1", 1, "user", "Plan"), makeMessage("m2", 2, "assistant", "Here's the plan")];
     const events = [
-      makeEvent(0, "plan.created", { content: "# My Plan", filePath: ".claude/plan.md" }, "m2"),
+      makeEvent(0, "plan.created", { messageId: "m2", content: "# My Plan", filePath: ".claude/plans/my-plan.md" }, "m2"),
     ];
     act(() => {
       root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
     });
     const planItems = hookResult.items.filter((i) => i.kind === "plan-file-output");
-    expect(planItems.length).toBeGreaterThanOrEqual(0);
+    expect(planItems).toHaveLength(1);
+  });
+
+  it("skips bogus streaming fallback plan events without a real plan write", () => {
+    const messages = [makeMessage("m1", 1, "user", "hi"), makeMessage("m2", 2, "assistant", "Hello there")];
+    const events = [
+      makeEvent(0, "plan.created", {
+        messageId: "m2",
+        content: "Hello there",
+        filePath: "streaming-plan",
+        source: "streaming_fallback",
+      }, "m2"),
+      makeEvent(1, "chat.completed", {}, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    expect(items.filter((i) => i.kind === "plan-file-output")).toHaveLength(0);
+  });
+
+  it("renders the real plan content for streaming fallback backed by a real write", () => {
+    const messages = [makeMessage("m1", 1, "user", "plan it"), makeMessage("m2", 2, "assistant", "Drafting")];
+    const events = [
+      makeEvent(0, "plan.created", {
+        messageId: "m2",
+        content: "Drafting",
+        filePath: "streaming-plan",
+        source: "streaming_fallback",
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        editTarget: ".claude/plans/real-plan.md",
+        toolInput: { content: "# Real Plan\n- Step 1" },
+      }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const planItems = items.filter((i) => i.kind === "plan-file-output");
+    expect(planItems).toHaveLength(1);
+    expect(planItems[0]).toMatchObject({
+      content: "# Real Plan\n- Step 1",
+      filePath: ".claude/plans/real-plan.md",
+    });
   });
 
   it("processes subagent events", () => {
@@ -449,31 +497,6 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items).toHaveLength(0);
   });
 
-  it("keeps incomplete-coverage stable for sparse delta-orphan rerenders", () => {
-    const messages = [
-      makeMessage("m1", 1, "user", "inspect"),
-      makeMessage("m2", 2, "assistant", ""),
-    ];
-    const events = [
-      makeEvent(1, "thinking.delta", { messageId: "m2", delta: "first thought " }, "m2"),
-      makeEvent(2, "tool.started", { toolName: "Read", toolUseId: "t1" }, "m2"),
-      makeEvent(3, "tool.finished", { toolName: "Read", summary: "Read /src/a.ts", precedingToolUseIds: ["t1"] }, "m2"),
-      makeEvent(4, "thinking.delta", { messageId: "m2", delta: "second thought" }, "m2"),
-      makeEvent(5, "tool.output", { toolUseId: "orphan-1", output: "late orphan tool output" }, "m2"),
-    ];
-
-    act(() => {
-      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
-    });
-    const firstCoverage = hookResult.hasIncompleteCoverage;
-
-    act(() => {
-      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
-    });
-
-    expect(hookResult.hasIncompleteCoverage).toBe(firstCoverage);
-  });
-
   it("handles Read tool events for subagent activity", () => {
     const messages = [makeMessage("m1", 1, "user", "Read"), makeMessage("m2", 2, "assistant", "Reading...")];
     const events = [
@@ -491,55 +514,6 @@ describe("useWorkspaceTimeline", () => {
       root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
     });
     expect(hookResult.items.length).toBeGreaterThan(0);
-  });
-
-  it("keeps thought/read/thought separate when no message.delta", () => {
-    const messages = [
-      makeMessage("m1", 1, "user", "inspect"),
-      makeMessage("m2", 2, "assistant", ""),
-    ];
-    const events = [
-      makeEvent(1, "thinking.delta", { messageId: "m2", delta: "first thought " }, "m2"),
-      makeEvent(2, "tool.started", { toolName: "Read", toolUseId: "t1" }, "m2"),
-      makeEvent(3, "tool.finished", { toolName: "Read", summary: "Read /src/a.ts", precedingToolUseIds: ["t1"] }, "m2"),
-      makeEvent(4, "thinking.delta", { messageId: "m2", delta: "and second thought." }, "m2"),
-    ];
-
-    const items = getTimelineItems(messages, events);
-    const thinkingIndexes = items
-      .map((item, idx) => item.kind === "thinking" ? idx : -1)
-      .filter((idx) => idx >= 0);
-    const exploreIndex = items.findIndex((item) => item.kind === "explore-activity");
-
-    expect(thinkingIndexes.length).toBeGreaterThanOrEqual(2);
-    expect(exploreIndex).toBeGreaterThan(-1);
-    expect(thinkingIndexes[0]).toBeLessThan(exploreIndex);
-    expect(thinkingIndexes[thinkingIndexes.length - 1]).toBeGreaterThan(exploreIndex);
-  });
-
-  it("does not append late explore entries into prior group", () => {
-    const messages = [
-      makeMessage("m1", 1, "user", "inspect"),
-      makeMessage("m2", 2, "assistant", ""),
-    ];
-    const events = [
-      makeEvent(1, "thinking.delta", { messageId: "m2", delta: "a " }, "m2"),
-      makeEvent(2, "tool.started", { toolName: "Read", toolUseId: "r1" }, "m2"),
-      makeEvent(3, "tool.finished", { toolName: "Read", summary: "Read /src/a.ts", precedingToolUseIds: ["r1"] }, "m2"),
-      makeEvent(4, "thinking.delta", { messageId: "m2", delta: "b " }, "m2"),
-      makeEvent(5, "tool.started", { toolName: "Glob", toolUseId: "g1" }, "m2"),
-      makeEvent(6, "tool.finished", { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] }, "m2"),
-      makeEvent(7, "thinking.delta", { messageId: "m2", delta: "c " }, "m2"),
-      makeEvent(8, "tool.started", { toolName: "Read", toolUseId: "r2" }, "m2"),
-      makeEvent(9, "tool.finished", { toolName: "Read", summary: "Read /src/b.ts", precedingToolUseIds: ["r2"] }, "m2"),
-    ];
-
-    const items = getTimelineItems(messages, events);
-    const exploreItems = items.filter((item) => item.kind === "explore-activity");
-    const exploreIds = exploreItems.map((item) => item.id);
-
-    expect(exploreItems.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(exploreIds).size).toBe(exploreIds.length);
   });
 
   it("preserves behavior for normal message.delta stream", () => {

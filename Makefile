@@ -27,6 +27,7 @@ install:
 
 stop-dev:
 	-@pkill -f "turbo run dev --parallel --filter=@codesymphony/runtime --filter=@codesymphony/web"
+	-@pkill -f "pnpm --filter @codesymphony/runtime dev"
 	-@pkill -f "tsx watch --env-file .env src/index.ts"
 	-@pkill -f "tsx --env-file .env src/index.ts"
 	-@pkill -f "pnpm --filter @codesymphony/runtime start"

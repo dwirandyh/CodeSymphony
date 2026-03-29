@@ -96,12 +96,16 @@ async function waitForTerminalEvent(
   timeoutMs = 4000,
 ): Promise<ChatEvent[]> {
   const startedAt = Date.now();
+  let sawCompletion = false;
 
   while (Date.now() - startedAt < timeoutMs) {
     const events = await chatService.listEvents(threadId);
     const done = events.some((event) => event.type === "chat.completed" || event.type === "chat.failed");
     if (done) {
-      return events;
+      if (sawCompletion) {
+        return events;
+      }
+      sawCompletion = true;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }

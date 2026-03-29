@@ -276,7 +276,6 @@ export function processUnassignedSemanticEvents(
   assignedToolEventIds: Set<string>,
   assistantContextById: Map<string, ChatEvent[]>,
   assistantDeltaEventsByMessageId: Map<string, ChatEvent[]>,
-  thinkingDeltaEventsByMessageId: Map<string, ChatEvent[]>,
   sortedMessages: ChatMessage[],
   messageAnchorIdxById: Map<string, number>,
   completedMessageIds: Set<string>,
@@ -304,12 +303,6 @@ export function processUnassignedSemanticEvents(
         assignedSemanticEventIds.add(event.id);
       }
     }
-    for (const thinkingEvents of thinkingDeltaEventsByMessageId.values()) {
-      for (const event of thinkingEvents) {
-        assignedSemanticEventIds.add(event.id);
-      }
-    }
-
     unassignedSemanticEvents = semanticContextEvents.filter((event) => !assignedSemanticEventIds.has(event.id));
     if (unassignedSemanticEvents.length > 0) {
       localHasIncompleteCoverage = true;
@@ -319,7 +312,7 @@ export function processUnassignedSemanticEvents(
   if (messages.length > 0 && unassignedSemanticEvents.length > 0) {
     const unresolvedAssistantMessageIds = new Set<string>();
     for (const event of unassignedSemanticEvents) {
-      if (event.type !== "message.delta" && event.type !== "thinking.delta") {
+      if (event.type !== "message.delta") {
         continue;
       }
       const messageId = getEventMessageId(event);
