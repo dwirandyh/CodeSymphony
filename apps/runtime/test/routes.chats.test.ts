@@ -81,6 +81,7 @@ describe("chat routes", () => {
     deleteThread: vi.fn(),
     getThreadById: vi.fn(),
     renameThreadTitle: vi.fn(),
+    updateThreadMode: vi.fn(),
     sendMessage: vi.fn(),
     resolvePermission: vi.fn(),
     answerQuestion: vi.fn(),
@@ -123,7 +124,7 @@ describe("chat routes", () => {
 
   describe("GET /api/worktrees/:id/threads", () => {
     it("lists threads for a worktree", async () => {
-      mockChatService.listThreads.mockResolvedValue([{ id: "t1", title: "Test" }]);
+      mockChatService.listThreads.mockResolvedValue([{ id: "t1", title: "Test", mode: "default" }]);
       const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/threads" });
       expect(res.statusCode).toBe(200);
       expect(res.json().data).toHaveLength(1);
@@ -138,7 +139,7 @@ describe("chat routes", () => {
 
   describe("POST /api/worktrees/:id/threads", () => {
     it("creates a new thread (201)", async () => {
-      mockChatService.createThread.mockResolvedValue({ id: "t-new", title: "New" });
+      mockChatService.createThread.mockResolvedValue({ id: "t-new", title: "New", mode: "default" });
       const res = await app.inject({ method: "POST", url: "/api/worktrees/w1/threads", payload: {} });
       expect(res.statusCode).toBe(201);
     });
@@ -152,7 +153,7 @@ describe("chat routes", () => {
 
   describe("GET /api/threads/:id", () => {
     it("returns thread data", async () => {
-      mockChatService.getThreadById.mockResolvedValue({ id: "t1", title: "Test" });
+      mockChatService.getThreadById.mockResolvedValue({ id: "t1", title: "Test", mode: "default" });
       const res = await app.inject({ method: "GET", url: "/api/threads/t1" });
       expect(res.statusCode).toBe(200);
       expect(res.json().data.id).toBe("t1");
@@ -167,7 +168,7 @@ describe("chat routes", () => {
 
   describe("PATCH /api/threads/:id/title", () => {
     it("renames thread title", async () => {
-      mockChatService.renameThreadTitle.mockResolvedValue({ id: "t1", title: "New" });
+      mockChatService.renameThreadTitle.mockResolvedValue({ id: "t1", title: "New", mode: "default" });
       const res = await app.inject({
         method: "PATCH",
         url: "/api/threads/t1/title",
@@ -182,6 +183,29 @@ describe("chat routes", () => {
         method: "PATCH",
         url: "/api/threads/t1/title",
         payload: { title: "" },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe("PATCH /api/threads/:id/mode", () => {
+    it("updates thread mode", async () => {
+      mockChatService.updateThreadMode.mockResolvedValue({ id: "t1", title: "Test", mode: "plan" });
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/threads/t1/mode",
+        payload: { mode: "plan" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.updateThreadMode).toHaveBeenCalledWith("t1", { mode: "plan" });
+    });
+
+    it("returns 400 on error", async () => {
+      mockChatService.updateThreadMode.mockRejectedValue(new Error("bad"));
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/threads/t1/mode",
+        payload: { mode: "plan" },
       });
       expect(res.statusCode).toBe(400);
     });

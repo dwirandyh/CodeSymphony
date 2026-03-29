@@ -161,3 +161,22 @@ export function applyThreadTitleUpdate(
   updated[index] = { ...updated[index], title: threadTitle };
   return updated;
 }
+
+export function applyThreadModeUpdate(
+  currentThreads: ChatThread[],
+  threadId: string | null,
+  mode: ChatThread["mode"] | null,
+): ChatThread[] {
+  if (!threadId || !mode) {
+    return currentThreads;
+  }
+
+  const index = currentThreads.findIndex((thread) => thread.id === threadId);
+  if (index === -1 || currentThreads[index].mode === mode) {
+    return currentThreads;
+  }
+
+  const updated = [...currentThreads];
+  updated[index] = { ...updated[index], mode };
+  return updated;
+}

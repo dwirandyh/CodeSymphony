@@ -21,7 +21,6 @@ enum ChatRole {
 
 enum ChatEventType {
   message_delta
-  thinking_delta
   tool_started
   tool_output
   tool_finished
@@ -42,6 +41,11 @@ enum ChatEventType {
 enum ChatThreadKind {
   default
   review
+}
+
+enum ChatMode {
+  default
+  plan
 }
 
 enum ChatThreadPermissionProfile {
@@ -84,8 +88,9 @@ model ChatThread {
   id                  String                      @id @default(cuid())
   worktreeId          String
   title               String
-  kind                ChatThreadKind             @default(default)
+  kind                ChatThreadKind              @default(default)
   permissionProfile   ChatThreadPermissionProfile @default(default)
+  mode                ChatMode                    @default(default)
   titleEditedManually Boolean                     @default(false)
   claudeSessionId     String?
   createdAt           DateTime                    @default(now())

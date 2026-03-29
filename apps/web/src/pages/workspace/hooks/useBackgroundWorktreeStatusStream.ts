@@ -6,12 +6,11 @@ import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { EVENT_TYPES } from "../constants";
 import { GIT_STATUS_INVALIDATION_EVENT_TYPES, payloadStringOrNull } from "../eventUtils";
-import { applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
+import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "./snapshotInvalidationEventTypes";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
-  "thinking.delta",
   "tool.started",
   "tool.output",
   "tool.finished",
@@ -84,8 +83,9 @@ function patchThreadListCache(params: {
   threadId: string;
   active?: boolean;
   threadTitle?: string | null;
+  mode?: ChatThread["mode"] | null;
 }) {
-  const { queryClient, worktreeId, threadId, active, threadTitle } = params;
+  const { queryClient, worktreeId, threadId, active, threadTitle, mode } = params;
 
   queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(worktreeId), (current) => {
     if (!current) {
@@ -94,21 +94,27 @@ function patchThreadListCache(params: {
 
     let next = current;
 
-    if (threadTitle) {
-      next = applyThreadTitleUpdate(next, threadId, threadTitle);
-    }
-
-    if (typeof active !== "boolean") {
+    const index = next.findIndex((thread) => thread.id === threadId);
+    if (index === -1) {
       return next;
     }
 
-    const index = next.findIndex((thread) => thread.id === threadId);
-    if (index === -1 || next[index]?.active === active) {
+    const thread = next[index]!;
+    const nextTitle = threadTitle ?? thread.title;
+    const nextMode = mode ?? thread.mode;
+    const nextActive = typeof active === "boolean" ? active : thread.active;
+
+    if (thread.title === nextTitle && thread.mode === nextMode && thread.active === nextActive) {
       return next;
     }
 
     const updated = [...next];
-    updated[index] = { ...updated[index]!, active };
+    updated[index] = {
+      ...thread,
+      title: nextTitle,
+      mode: nextMode,
+      active: nextActive,
+    };
     return updated;
   });
 }
@@ -242,6 +248,8 @@ export function useBackgroundWorktreeStatusStream(
             : payload.type === "tool.finished" && payloadStringOrNull(payload.payload.source) === "chat.thread.metadata"
               ? payloadStringOrNull(payload.payload.threadTitle)
               : null;
+          const nextModeRaw = payloadStringOrNull(payload.payload.threadMode);
+          const nextMode = nextModeRaw === "default" || nextModeRaw === "plan" ? nextModeRaw : null;
 
           if (LIVE_ACTIVITY_EVENT_TYPES.has(payload.type)) {
             patchThreadListCache({
@@ -250,6 +258,7 @@ export function useBackgroundWorktreeStatusStream(
               threadId: thread.id,
               active: true,
               threadTitle: nextTitle,
+              mode: nextMode,
             });
           } else if (nextTitle) {
             patchThreadListCache({
@@ -257,6 +266,7 @@ export function useBackgroundWorktreeStatusStream(
               worktreeId,
               threadId: thread.id,
               threadTitle: nextTitle,
+              mode: nextMode,
             });
           }
 
@@ -271,6 +281,7 @@ export function useBackgroundWorktreeStatusStream(
               threadId: thread.id,
               active: false,
               threadTitle: nextTitle,
+              mode: nextMode,
             });
             if (thread.kind === "review") {
               const repositoryId = repositoryIdByWorktreeId.get(worktreeId);

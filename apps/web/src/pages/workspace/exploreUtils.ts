@@ -141,7 +141,6 @@ export function extractExploreRunKind(event: ChatEvent): ExploreRunKind | null {
 
 const IDLE_GROUP_BOUNDARY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
-  "thinking.delta",
   "plan.created",
   "plan.approved",
   "plan.revision_requested",

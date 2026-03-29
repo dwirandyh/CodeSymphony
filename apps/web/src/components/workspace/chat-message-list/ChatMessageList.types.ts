@@ -100,13 +100,6 @@ export type ChatTimelineItem =
     entries: ExploreActivityEntry[];
   }
   | {
-    kind: "thinking";
-    id: string;
-    messageId: string;
-    content: string;
-    isStreaming: boolean;
-  }
-  | {
     kind: "error";
     id: string;
     message: string;

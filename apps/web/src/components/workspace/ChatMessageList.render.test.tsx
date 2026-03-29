@@ -218,14 +218,12 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Something went wrong");
   });
 
-  it("renders thinking item", () => {
-    const items: ChatTimelineItem[] = [
-      { kind: "thinking", id: "th-1", messageId: "m1", content: "Let me think...", isStreaming: false },
-    ];
+  it("shows only the shimmer placeholder when enabled", () => {
     act(() => {
-      root.render(<ChatMessageList {...baseProps} items={items} />);
+      root.render(<ChatMessageList {...baseProps} showThinkingPlaceholder={true} />);
     });
-    expect(container.textContent).toContain("Thought process");
+    expect(container.querySelector("[data-testid='thinking-placeholder']")).toBeTruthy();
+    expect(container.textContent).toContain("Thinking...");
   });
 
   it("renders unified collapsible tool item for bash output", () => {
@@ -499,7 +497,7 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Explored 1 search");
   });
 
-  it("filters legacy activity items from the rendered list", () => {
+  it("renders activity items in the timeline", () => {
     const items: ChatTimelineItem[] = [
       {
         kind: "activity",
@@ -509,7 +507,6 @@ describe("ChatMessageList", () => {
         steps: [{ id: "s1", label: "Step 1", detail: "Reading file" }],
         defaultExpanded: false,
       },
-      { kind: "thinking", id: "th-activity-gap", messageId: "m2", content: "Thinking", isStreaming: false },
     ];
     act(() => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
@@ -517,7 +514,9 @@ describe("ChatMessageList", () => {
 
     const rows = getTimelineRowWrappers();
     expect(rows).toHaveLength(1);
-    expect(container.querySelector("[data-testid='timeline-thinking']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='timeline-activity']")).toBeTruthy();
+    expect(container.textContent).toContain("Working on it");
+    expect(container.textContent).toContain("Step 1");
   });
 
   it("renders plan-file-output item", () => {
@@ -557,7 +556,6 @@ describe("ChatMessageList", () => {
       createdAt: "2026-01-01T00:00:00Z",
     };
     const items: ChatTimelineItem[] = [
-      { kind: "thinking", id: "th-stream", messageId: "m1", content: "Thinking", isStreaming: true },
       {
         kind: "explore-activity",
         id: "exp-running",
@@ -611,7 +609,6 @@ describe("ChatMessageList", () => {
     expectRowSpacingClass(0, "pb-2");
     expectRowSpacingClass(1, "pb-2");
     expectRowSpacingClass(2, "pb-2");
-    expectRowSpacingClass(3, "pb-2");
   });
 
   it("keeps default spacing for non-running timeline rows and messages", () => {
@@ -630,7 +627,6 @@ describe("ChatMessageList", () => {
     };
     const items: ChatTimelineItem[] = [
       makeMessageItem("m1", 1, "Hello"),
-      { kind: "thinking", id: "th-done", messageId: "m2", content: "Done thinking", isStreaming: false },
       {
         kind: "explore-activity",
         id: "exp-done",
@@ -686,14 +682,11 @@ describe("ChatMessageList", () => {
     expectRowSpacingClass(1, "pb-4");
     expectRowSpacingClass(2, "pb-4");
     expectRowSpacingClass(3, "pb-4");
-    expectRowSpacingClass(4, "pb-4");
-    expectRowSpacingClass(5, "pb-4");
   });
 
   it("handles multiple mixed items", () => {
     const items: ChatTimelineItem[] = [
       { kind: "message", message: makeMessage("m1", "user", "Hi", 1) },
-      { kind: "thinking", id: "th1", messageId: "m2", content: "hmm", isStreaming: false },
       { kind: "message", message: makeMessage("m2", "assistant", "Hello!", 2) },
       { kind: "error", id: "err1", message: "Oops", createdAt: "2026-01-01T00:00:00Z" },
     ];

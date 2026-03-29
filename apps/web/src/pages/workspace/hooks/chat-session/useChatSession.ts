@@ -43,7 +43,7 @@ import {
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
 } from "./hydrationUtils";
 import { prependUniqueMessages, prependUniqueEvents } from "./messageEventMerge";
-import { applySnapshotSeed, applyThreadTitleUpdate } from "./snapshotSeed";
+import { applySnapshotSeed, applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { useThreadEventStream } from "./useThreadEventStream";
 
 function resolvePreferredThreadId(threads: ChatThread[]): string | null {
@@ -97,11 +97,6 @@ function summarizeTimelineItems(items: ChatTimelineItem[]): {
 
     if (item.kind === "message") {
       signatures.push(`message:${item.message.id}:${item.message.role}:${item.message.content.length}`);
-      continue;
-    }
-
-    if (item.kind === "thinking") {
-      signatures.push(`thinking:${item.id}:${item.content.length}:${item.isStreaming ? 1 : 0}`);
       continue;
     }
 
@@ -228,7 +223,7 @@ export function useChatSession(
         }
       }
 
-      if (current.length === mergedThreads.length && current.every((t, i) => t.id === mergedThreads[i].id && t.title === mergedThreads[i].title && t.claudeSessionId === mergedThreads[i].claudeSessionId && t.active === mergedThreads[i].active && t.updatedAt === mergedThreads[i].updatedAt)) {
+      if (current.length === mergedThreads.length && current.every((t, i) => t.id === mergedThreads[i].id && t.title === mergedThreads[i].title && t.mode === mergedThreads[i].mode && t.claudeSessionId === mergedThreads[i].claudeSessionId && t.active === mergedThreads[i].active && t.updatedAt === mergedThreads[i].updatedAt)) {
         return current;
       }
       return mergedThreads;
@@ -307,6 +302,13 @@ export function useChatSession(
     waitingAssistant,
   });
   const selectedThreadIsRunning = selectedThreadUiStatus === "running";
+  const selectedThread = selectedThreadId
+    ? threads.find((thread) => thread.id === selectedThreadId) ?? null
+    : null;
+  const composerMode = selectedThreadUiStatus === "review_plan"
+    ? "plan"
+    : selectedThread?.mode ?? "default";
+  const composerModeLocked = selectedThreadUiStatus !== "idle";
   const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
     (thread) => thread.id === selectedThreadId && thread.kind === "review",
   );
@@ -501,6 +503,11 @@ export function useChatSession(
       startWaitingAssistant(created.id);
       setSendingMessage(true);
       try {
+        setThreads((current) => applyThreadModeUpdate(current, created.id, mode));
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(worktreeId),
+          (current) => current ? applyThreadModeUpdate(current, created.id, mode) : current,
+        );
         await api.sendMessage(created.id, { content, mode, attachments: [] });
       } catch (e) {
         setWaitingAssistant(null);
@@ -549,6 +556,11 @@ export function useChatSession(
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
       invalidateRepositoryReviews();
       startWaitingAssistant(created.id);
+      setThreads((current) => applyThreadModeUpdate(current, created.id, mode));
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(selectedWorktreeId),
+        (current) => current ? applyThreadModeUpdate(current, created.id, mode) : current,
+      );
       await api.sendMessage(created.id, { content, mode, attachments: [] });
       invalidateRepositoryReviews();
       return created;
@@ -616,6 +628,43 @@ export function useChatSession(
     }
   }
 
+  async function setThreadMode(threadId: string, mode: ChatMode) {
+    const currentThread = threads.find((thread) => thread.id === threadId) ?? null;
+    if (currentThread?.mode === mode) {
+      return;
+    }
+
+    onError(null);
+    const previousThreads = threads;
+    const cacheWorktreeId = selectedWorktreeId ?? previousThreads.find((thread) => thread.id === threadId)?.worktreeId ?? null;
+
+    setThreads((current) => applyThreadModeUpdate(current, threadId, mode));
+    if (cacheWorktreeId) {
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(cacheWorktreeId),
+        (current) => current ? applyThreadModeUpdate(current, threadId, mode) : current,
+      );
+    }
+
+    try {
+      const updated = await api.updateThreadMode(threadId, { mode });
+      setThreads((current) => applyThreadModeUpdate(current, updated.id, updated.mode));
+      const updatedCacheWorktreeId = selectedWorktreeId ?? updated.worktreeId;
+      if (updatedCacheWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(updatedCacheWorktreeId),
+          (current) => current ? applyThreadModeUpdate(current, updated.id, updated.mode) : current,
+        );
+      }
+    } catch (e) {
+      setThreads(previousThreads);
+      if (cacheWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(cacheWorktreeId), previousThreads);
+      }
+      onError(e instanceof Error ? e.message : "Failed to update thread mode");
+    }
+  }
+
   async function submitMessage(
     content: string,
     mode: ChatMode,
@@ -647,6 +696,13 @@ export function useChatSession(
     onError(null);
 
     try {
+      setThreads((current) => applyThreadModeUpdate(current, selectedThreadId, mode));
+      if (selectedWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(selectedWorktreeId),
+          (current) => current ? applyThreadModeUpdate(current, selectedThreadId, mode) : current,
+        );
+      }
       await api.sendMessage(selectedThreadId, { content, mode, attachments: attachmentsToSend });
       if (shouldInvalidateSnapshot) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
@@ -794,6 +850,8 @@ export function useChatSession(
     sendingMessage,
     waitingAssistant,
     selectedThreadUiStatus,
+    composerMode,
+    composerModeLocked,
     composerDisabled,
     showStopAction,
     stoppingRun,
@@ -809,6 +867,7 @@ export function useChatSession(
     createOrSelectPrMrThreadAndSendMessage,
     closeThread,
     renameThreadTitle,
+    setThreadMode,
     submitMessage,
     loadOlderHistory: async () => {},
     stopAssistantRun,

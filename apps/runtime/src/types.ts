@@ -97,7 +97,6 @@ export type ClaudeRunner = (args: {
   providerApiKey?: string;
   providerBaseUrl?: string;
   onText: (chunk: string) => Promise<void> | void;
-  onThinking: (chunk: string) => Promise<void> | void;
   onToolStarted: (payload: {
     toolName: string;
     toolUseId: string;

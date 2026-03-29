@@ -15,12 +15,11 @@ import {
   hasUnclosedCodeFence,
   isBashToolEvent,
   isExploreLikeBashEvent,
-  isClaudePlanFilePayload,
-  isPlanFilePath,
   isLikelyDiffContent,
+  isPlanFilePath,
   isReadToolEvent,
-  isRecord,
   isWorktreeDiffEvent,
+  normalizePlanCreatedEvent,
   parseTimestamp,
   payloadStringOrNull,
   promptLooksLikeFileRead,
@@ -34,7 +33,6 @@ import type {
   PlanFileOutput,
 } from "./useWorkspaceTimeline.types";
 import { computeMessageAnchorIdxById } from "./timelineAnchorUtils";
-import { buildThinkingRounds, mergeThinkingRounds, insertThinkingItems } from "./timelineThinkingUtils";
 import {
   buildInlineInserts,
   buildSegmentBuckets,
@@ -68,8 +66,6 @@ function getTimelineItemStableKey(item: { kind: string;[key: string]: unknown })
       return `subagent-activity:${item.id}`;
     case "explore-activity":
       return `explore-activity:${item.id}`;
-    case "thinking":
-      return `thinking:${item.id}`;
     case "error":
       return `error:${item.id}`;
     default:
@@ -86,8 +82,6 @@ function compactTimelineSignatureItem(item: SortableEntry["item"]): string {
   switch (item.kind) {
     case "message":
       return `message:${item.message.id}:${item.message.role}:${item.message.content.length}`;
-    case "thinking":
-      return `thinking:${item.id}:${item.content.length}`;
     case "tool":
       return `tool:${item.id}:${item.toolName ?? ""}:${item.status ?? ""}`;
     case "edited-diff":
@@ -206,71 +200,14 @@ export function useWorkspaceTimeline(
       }
     }
 
-    const thinkingRoundsByMessageId = buildThinkingRounds(orderedEventsByIdx);
-
     const planFileOutputByMessageId = new Map<string, PlanFileOutput>();
     for (const event of orderedEventsByIdx) {
-      if (event.type !== "plan.created") {
+      const normalizedPlan = normalizePlanCreatedEvent(event, orderedEventsByIdx);
+      if (!normalizedPlan || normalizedPlan.messageId.length === 0) {
         continue;
       }
 
-      const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : "";
-      if (messageId.length === 0) {
-        continue;
-      }
-
-      if (!isClaudePlanFilePayload(event.payload)) {
-        continue;
-      }
-
-      let content = typeof event.payload.content === "string" ? event.payload.content : "";
-      let filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "plan.md";
-      if (content.trim().length === 0) {
-        continue;
-      }
-
-      if (event.payload.source === "streaming_fallback" && !isPlanFilePath(filePath)) {
-        const realWrite = orderedEventsByIdx.find(e =>
-          e.idx > event.idx
-          && e.type === "tool.finished"
-          && isPlanFilePath(
-            payloadStringOrNull(e.payload.editTarget)
-            ?? payloadStringOrNull(e.payload.file_path)
-            ?? "",
-          )
-        );
-        if (realWrite) {
-          const toolInput = isRecord(realWrite.payload.toolInput)
-            ? realWrite.payload.toolInput
-            : null;
-          const realContent = toolInput
-            ? payloadStringOrNull(toolInput.content)
-            : null;
-          const realPath = payloadStringOrNull(realWrite.payload.editTarget)
-            ?? payloadStringOrNull(realWrite.payload.file_path)
-            ?? filePath;
-          if (realContent && realContent.trim().length > 0) {
-            planFileOutputByMessageId.set(messageId, {
-              id: realWrite.id,
-              messageId,
-              content: realContent,
-              filePath: realPath,
-              idx: realWrite.idx,
-              createdAt: realWrite.createdAt,
-            });
-            continue;
-          }
-        }
-      }
-
-      planFileOutputByMessageId.set(messageId, {
-        id: event.id,
-        messageId,
-        content,
-        filePath,
-        idx: event.idx,
-        createdAt: event.createdAt,
-      });
+      planFileOutputByMessageId.set(normalizedPlan.messageId, normalizedPlan);
     }
 
     const messageAnchorIdxById = computeMessageAnchorIdxById(
@@ -300,22 +237,10 @@ export function useWorkspaceTimeline(
       || event.type === "subagent.finished"
       || event.type === "plan.created"
       || event.type === "plan.approved"
-      || event.type === "plan.revision_requested"
-      || event.type === "thinking.delta",
+      || event.type === "plan.revision_requested",
     );
     const assistantDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
-    const thinkingDeltaEventsByMessageId = new Map<string, ChatEvent[]>();
     for (const event of orderedEventsByIdx) {
-      if (event.type === "thinking.delta") {
-        const thinkingMessageId = getEventMessageId(event);
-        if (thinkingMessageId) {
-          const existingThinking = thinkingDeltaEventsByMessageId.get(thinkingMessageId) ?? [];
-          existingThinking.push(event);
-          thinkingDeltaEventsByMessageId.set(thinkingMessageId, existingThinking);
-        }
-        continue;
-      }
-
       if (event.type !== "message.delta" || event.payload.role !== "assistant") {
         continue;
       }
@@ -419,14 +344,12 @@ export function useWorkspaceTimeline(
       const hasToolEventsInContext = message.role === "assistant"
         && (assistantContextById.get(message.id)?.length ?? 0) > 0;
 
-      const hasThinkingRounds = (thinkingRoundsByMessageId.get(message.id)?.length ?? 0) > 0;
       const oldestAssistantMissingRichContext =
         message.role === "assistant"
         && oldestAssistantMessageId != null
         && message.id === oldestAssistantMessageId
         && message.content.trim().length > 0
         && !hasToolEventsInContext
-        && !hasThinkingRounds
         && !hasMessageDelta;
       if (oldestAssistantMissingRichContext) {
         hasIncompleteCoverage = true;
@@ -435,7 +358,6 @@ export function useWorkspaceTimeline(
       if (
         message.role === "assistant" &&
         !hasToolEventsInContext &&
-        !hasThinkingRounds &&
         (shouldSkipMessageBecausePlanCard || (message.content.trim().length === 0 && !isCompleted && !hasMessageDelta))
       ) {
         continue;
@@ -498,11 +420,8 @@ export function useWorkspaceTimeline(
       const deltaEventsForAgent = message.role === "assistant"
         ? (assistantDeltaEventsByMessageId.get(message.id) ?? [])
         : [];
-      const thinkingEventsForAgent = message.role === "assistant"
-        ? (thinkingDeltaEventsByMessageId.get(message.id) ?? [])
-        : [];
-      const contextWithAgentBoundaries = (deltaEventsForAgent.length > 0 || thinkingEventsForAgent.length > 0)
-        ? [...context, ...thinkingEventsForAgent, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
+      const contextWithAgentBoundaries = deltaEventsForAgent.length > 0
+        ? [...context, ...deltaEventsForAgent].sort((a, b) => a.idx - b.idx)
         : context;
       const claimedContextCacheKey = selectedThreadId && message.role === "assistant"
         ? `${selectedThreadId}:${message.id}`
@@ -706,7 +625,14 @@ export function useWorkspaceTimeline(
         }
       }
 
-      if (message.role === "assistant" && activityContext.length > 0 && bashRuns.length === 0) {
+      const hasInlineActivityCards =
+        bashRuns.length > 0
+        || editedRuns.length > 0
+        || subagentGroups.length > 0
+        || exploreActivityGroups.length > 0
+        || !!planFileOutput;
+
+      if (message.role === "assistant" && activityContext.length > 0 && !hasInlineActivityCards) {
         const steps = buildActivitySteps(activityContext);
         const contextTimestamp = parseTimestamp(activityContext[0]?.createdAt ?? message.createdAt);
         pushRenderDebug({
@@ -740,30 +666,6 @@ export function useWorkspaceTimeline(
 
       if (message.role === "assistant" && activityContext.length > 0 && bashRuns.length > 0) {
         activityContext.forEach((event) => assignedToolEventIds.add(event.id));
-      }
-
-      if (message.role === "assistant") {
-        const rawRounds = thinkingRoundsByMessageId.get(message.id) ?? [];
-        const mergedRounds = mergeThinkingRounds(
-          rawRounds,
-          bashRuns,
-          editedRuns,
-          subagentGroups,
-          exploreActivityGroups,
-          planFileOutput,
-        );
-        insertThinkingItems(
-          mergedRounds,
-          message.id,
-          message.seq,
-          isCompleted,
-          isStreamingMessage,
-          (assistantDeltaEventsByMessageId.get(message.id)?.length ?? 0) > 0,
-          planFileOutput,
-          orderedEventsByIdx,
-          timestamp,
-          sortable,
-        );
       }
 
       if (
@@ -907,7 +809,6 @@ export function useWorkspaceTimeline(
       assignedToolEventIds,
       assistantContextById,
       assistantDeltaEventsByMessageId,
-      thinkingDeltaEventsByMessageId,
       sortedMessages,
       messageAnchorIdxById,
       completedMessageIds,
@@ -960,11 +861,9 @@ export function useWorkspaceTimeline(
     const oldestRenderableKind = oldestRenderable?.kind ?? null;
     const oldestRenderableMessageId = oldestRenderable?.kind === "message"
       ? oldestRenderable.message.id
-      : oldestRenderable?.kind === "thinking"
+      : oldestRenderable?.kind === "plan-file-output"
         ? oldestRenderable.messageId
-        : oldestRenderable?.kind === "plan-file-output"
-          ? oldestRenderable.messageId
-          : null;
+        : null;
     const oldestRenderableHydrationPending = semanticHydrationInProgress
       && oldestRenderableMessageId != null
       && oldestRenderableMessageId === oldestAssistantMessageId

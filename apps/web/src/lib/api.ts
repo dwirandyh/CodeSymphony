@@ -10,6 +10,7 @@ import type {
   CreateRepositoryInput,
   CreateWorktreeInput,
   DismissQuestionInput,
+  UpdateChatThreadModeInput,
   ExternalApp,
   FileEntry,
   FilesystemBrowseResponse,
@@ -304,6 +305,11 @@ export const api = {
   getThread: (id: string) => request<ChatThread>(`/threads/${id}`),
   renameThreadTitle: (threadId: string, input: RenameChatThreadTitleInput) =>
     request<ChatThread>(`/threads/${threadId}/title`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  updateThreadMode: (threadId: string, input: UpdateChatThreadModeInput) =>
+    request<ChatThread>(`/threads/${threadId}/mode`, {
       method: "PATCH",
       body: JSON.stringify(input),
     }),

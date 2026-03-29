@@ -25,11 +25,14 @@ type ComposerProps = {
   stopping: boolean;
   threadId: string | null;
   worktreeId: string | null;
+  mode: ChatMode;
+  modeLocked: boolean;
   fileIndex: FileEntry[];
   fileIndexLoading: boolean;
   providers: ModelProvider[];
   hasMessages: boolean;
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
+  onModeChange: (mode: ChatMode) => void;
   onStop: () => void;
   onSelectProvider: (id: string | null) => void;
 };
@@ -41,16 +44,18 @@ export function Composer({
   stopping,
   threadId,
   worktreeId,
+  mode,
+  modeLocked,
   fileIndex,
   fileIndexLoading,
   providers,
   hasMessages,
   onSubmitMessage,
+  onModeChange,
   onStop,
   onSelectProvider,
 }: ComposerProps) {
   const [draftText, setDraftText] = useState("");
-  const [mode, setMode] = useState<ChatMode>("default");
   const isPlan = mode === "plan";
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
@@ -258,7 +263,6 @@ export function Composer({
     closeMention();
     applyAttachmentsChange([]);
     setDraftText("");
-    setMode("default");
     lastStableHTMLRef.current = "";
     prevContentLenRef.current = 0;
     afterChipHTMLRef.current = null;
@@ -490,7 +494,9 @@ export function Composer({
 
       if (event.key === "Tab" && event.shiftKey) {
         event.preventDefault();
-        setMode(isPlan ? "default" : "plan");
+        if (!modeLocked) {
+          onModeChange(isPlan ? "default" : "plan");
+        }
         return;
       }
 
@@ -509,7 +515,7 @@ export function Composer({
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
@@ -646,12 +652,17 @@ export function Composer({
             </button>
             <button
               type="button"
-              onClick={() => setMode(isPlan ? "default" : "plan")}
+              onClick={() => {
+                if (!modeLocked) {
+                  onModeChange(isPlan ? "default" : "plan");
+                }
+              }}
+              disabled={modeLocked}
               className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
                 isPlan
                   ? "bg-amber-500/15 text-amber-400 hover:bg-amber-500/25"
                   : "bg-secondary/60 text-muted-foreground hover:bg-secondary hover:text-secondary-foreground"
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-50`}
               aria-label={isPlan ? "Switch to execute mode" : "Switch to plan mode"}
             >
               {isPlan ? <Lightbulb className="h-3 w-3" /> : <Zap className="h-3 w-3" />}

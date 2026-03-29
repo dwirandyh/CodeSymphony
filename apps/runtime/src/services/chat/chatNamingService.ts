@@ -101,7 +101,6 @@ export async function buildThreadTitleWithAi(
       onPlanFileDetected: async () => { },
       onSubagentStarted: async () => { },
       onSubagentStopped: async () => { },
-      onThinking: async () => { },
     });
 
     const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;
@@ -306,7 +305,6 @@ export async function buildBranchNameWithAi(
       onPlanFileDetected: async () => { },
       onSubagentStarted: async () => { },
       onSubagentStopped: async () => { },
-      onThinking: async () => { },
     });
 
     const raw = streamedOutput.trim().length > 0 ? streamedOutput : result.output;

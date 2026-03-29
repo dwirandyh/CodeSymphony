@@ -334,7 +334,7 @@ export function WorkspacePage() {
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
   const showThinkingPlaceholder =
-    waitingAssistantThreadId === chat.selectedThreadId && !gates.isWaitingForUserGate;
+    chat.selectedThreadUiStatus === "running" && !gates.isWaitingForUserGate;
 
   const openReadFile = useCallback(
     async (filePath: string) => {
@@ -753,11 +753,18 @@ export function WorkspacePage() {
                     stopping={chat.stoppingRun}
                     threadId={chat.selectedThreadId}
                     worktreeId={repos.selectedWorktreeId}
+                    mode={chat.composerMode}
+                    modeLocked={chat.composerModeLocked}
                     fileIndex={fileIndex.entries}
                     fileIndexLoading={fileIndex.loading}
                     providers={modelProviders}
                     hasMessages={chat.messages.length > 0}
                     onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
+                    onModeChange={(mode) => {
+                      if (chat.selectedThreadId) {
+                        void chat.setThreadMode(chat.selectedThreadId, mode);
+                      }
+                    }}
                     onStop={() => void chat.stopAssistantRun()}
                     onSelectProvider={(id) => void handleSelectProvider(id)}
                   />

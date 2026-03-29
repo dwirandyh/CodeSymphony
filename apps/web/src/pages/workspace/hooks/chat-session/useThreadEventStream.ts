@@ -24,7 +24,7 @@ import {
 } from "../../eventUtils";
 import type { PendingMessageMutation } from "./useChatSession.types";
 import { insertAllEvents, applyMessageMutations } from "./messageEventMerge";
-import { applyThreadTitleUpdate } from "./snapshotSeed";
+import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
 
 const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["type"]>([
@@ -160,18 +160,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       pendingEventsRef.current.push(payload);
 
-      if (payload.type === "thinking.delta") {
-        const messageId = String(payload.payload.messageId ?? "");
-        if (messageId.length > 0) {
-          streamingMessageIdsRef.current.add(messageId);
-          pendingMessageMutationsRef.current.push({
-            kind: "ensure-placeholder",
-            id: messageId,
-            threadId: selectedThreadId,
-          });
-        }
-      }
-
       if (payload.type === "message.delta") {
         const messageId = String(payload.payload.messageId ?? "");
         const role =
@@ -254,6 +242,16 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         }
         if (completedThreadTitle) {
           setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, completedThreadTitle));
+        }
+        const completedMode = payloadStringOrNull(payload.payload.threadMode);
+        if (completedMode === "default" || completedMode === "plan") {
+          setThreads((current) => applyThreadModeUpdate(current, selectedThreadId, completedMode));
+          if (selectedWorktreeId) {
+            queryClient.setQueryData<ChatThread[] | undefined>(
+              queryKeys.threads.list(selectedWorktreeId),
+              (current) => current ? applyThreadModeUpdate(current, selectedThreadId, completedMode) : current,
+            );
+          }
         }
         if (completedBranch && selectedWorktreeId) {
           onBranchRenamed?.(selectedWorktreeId, completedBranch);

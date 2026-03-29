@@ -9,7 +9,7 @@ const AT_BOTTOM_THRESHOLD = 48;
 
 function getTimelineRowClassName(item: ChatTimelineItem): string {
   const isCompactRunningRow =
-    (item.kind === "thinking" && item.isStreaming) ||
+    (item.kind === "activity" && item.defaultExpanded) ||
     (item.kind === "subagent-activity" && item.status === "running") ||
     (item.kind === "explore-activity" && item.status === "running") ||
     (item.kind === "tool" && item.status === "running");
@@ -65,7 +65,7 @@ export function ChatMessageList({
   }, []);
 
   const displayItems = useMemo(() => {
-    const result: Array<ChatTimelineItem | "thinking-placeholder"> = items.filter((item) => item.kind !== "activity");
+    const result: Array<ChatTimelineItem | "thinking-placeholder"> = [...items];
     if (showThinkingPlaceholder) {
       result.push("thinking-placeholder");
     }

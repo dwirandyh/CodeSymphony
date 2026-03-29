@@ -101,6 +101,22 @@ describe("eventHub", () => {
       expect(events[1].idx).toBe(1);
     });
 
+    it("returns empty when unknown enum values exist in the database", async () => {
+      const threadId = await seedThread();
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO "ChatEvent" (id, threadId, idx, type, payload, createdAt) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+        `legacy-${Date.now()}`,
+        threadId,
+        0,
+        "commands_updated",
+        JSON.stringify({}),
+      );
+
+      const hub = createEventHub(prisma);
+      const events = await hub.list(threadId);
+      expect(events).toEqual([]);
+    });
+
     it("filters events after idx", async () => {
       const hub = createEventHub(prisma);
       const threadId = await seedThread();

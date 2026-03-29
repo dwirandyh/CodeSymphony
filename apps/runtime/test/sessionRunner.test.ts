@@ -147,6 +147,50 @@ describe("tool instrumentation", () => {
     expect(startedPreview.startSource).toBe("sdk.stream.tool_progress");
   });
 
+  it("does not emit a plan for generic plan-mode assistant text without a real plan file", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return (async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+        yield { type: "system", subtype: "init", session_id: "session-plan-1" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Hello! I'm here to help." }],
+          },
+        };
+        await canUseTool("Read", { file_path: "README.md" }, {
+          toolUseID: "tool-plan-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+      })();
+    });
+
+    const onPlanFileDetected = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "hi",
+      sessionId: null,
+      cwd: process.cwd(),
+      permissionMode: "plan",
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected,
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onPlanFileDetected).not.toHaveBeenCalled();
+  });
+
   it("emits started instrumentation from PreToolUse hook for non-bash tools", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return (async function* () {
@@ -2349,7 +2393,7 @@ describe("thinking_delta", () => {
     process.env.CLAUDE_CODE_EXECUTABLE = "node";
   });
 
-  it("forwards thinking_delta events to onThinking callback", async () => {
+  it("ignores thinking_delta events and still forwards text deltas", async () => {
     mockQuery.mockImplementation(() => {
       return (async function* () {
         yield { type: "system", subtype: "init", session_id: "session-think" };
@@ -2406,11 +2450,11 @@ describe("thinking_delta", () => {
       onToolInstrumentation: () => { },
     });
 
-    expect(thinkingChunks).toEqual(["Let me think about this...", " I should check the file first."]);
+    expect(thinkingChunks).toEqual([]);
     expect(textChunks.join("")).toBe("Here is the answer.");
   });
 
-  it("skips thinking_delta from subagent (parent_tool_use_id set)", async () => {
+  it("ignores thinking_delta from subagents", async () => {
     mockQuery.mockImplementation(() => {
       return (async function* () {
         yield { type: "system", subtype: "init", session_id: "session-think-sub" };

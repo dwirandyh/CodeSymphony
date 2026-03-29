@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Bot, Brain, CheckCircle2, ChevronRight, Loader2, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, ChevronRight, Loader2, XCircle } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { isExploreLikeBashCommand } from "../../../pages/workspace/eventUtils";
 import { parsePatchFiles } from "@pierre/diffs";
@@ -429,7 +429,6 @@ export const TimelineItem = memo(function TimelineItem({
               </span>
             ))}
 
-            {entries.length === 0 ? null : null}
           </div>
         </details>
       </article>
@@ -656,29 +655,6 @@ export const TimelineItem = memo(function TimelineItem({
     );
   }
 
-  if (item.kind === "thinking") {
-    return (
-      <article
-        className="px-1"
-        data-testid="timeline-thinking"
-      >
-        <details className="group">
-          <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
-            <Brain className="h-3.5 w-3.5 shrink-0" />
-            <span className={item.isStreaming ? "thinking-shimmer" : ""}>
-              {item.isStreaming ? "Thinking\u2026" : "Thought process"}
-            </span>
-            <ChevronRight className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
-          </summary>
-          <div className="mt-1.5 rounded-lg border border-border/20 bg-secondary/10 px-3 py-2">
-            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-muted-foreground/80">
-              {item.content}
-            </pre>
-          </div>
-        </details>
-      </article>
-    );
-  }
 
   if (item.kind === "error") {
     return (
@@ -696,7 +672,40 @@ export const TimelineItem = memo(function TimelineItem({
   }
 
   if (item.kind === "activity") {
-    return null;
+    const expanded = ctx.exploreActivityExpandedById.get(`activity:${item.messageId}`) ?? item.defaultExpanded;
+    const introText = item.introText?.trim() ?? "";
+
+    return (
+      <article className="px-1" data-testid="timeline-activity">
+        <details
+          open={expanded}
+          onToggle={(event) => {
+            const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+            ctx.setExploreActivityExpandedById((current) => {
+              const next = new Map(current);
+              next.set(`activity:${item.messageId}`, nextOpen);
+              return next;
+            });
+          }}
+        >
+          <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
+            <span>{introText.length > 0 ? introText : "Activity"}</span>
+            <span className={cn("inline-flex shrink-0 transition-transform duration-150", expanded ? "rotate-90" : "") }>
+              <ChevronRight className="h-3 w-3" />
+            </span>
+          </summary>
+
+          <div className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground" data-testid="timeline-activity-steps">
+            {item.steps.map((step) => (
+              <div key={step.id} className="px-1 text-xs text-muted-foreground flex items-center gap-1.5">
+                <span>{step.label}</span>
+                {step.detail.length > 0 ? <span className="text-muted-foreground/70">· {step.detail}</span> : null}
+              </div>
+            ))}
+          </div>
+        </details>
+      </article>
+    );
   }
 
   // item.kind === "message"

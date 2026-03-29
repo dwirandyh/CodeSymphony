@@ -6,7 +6,7 @@ import { appendRuntimeDebugLog } from "../routes/debug.js";
 import { isBashTool } from "./toolClassification.js";
 import type { ToolMetadata } from "./toolClassification.js";
 import { completionSummaryFromMetadata } from "./toolSummary.js";
-import { findLatestPlanFile } from "./planFile.js";
+import { findDetectedPlanFile } from "./planFile.js";
 
 import type { InstrumentContext, SessionMaps } from "./sessionInstrumentation.js";
 import { buildFinishedTimingPreview, buildToolFinishedPayload } from "./sessionInstrumentation.js";
@@ -34,7 +34,6 @@ export type StreamProcessorDeps = {
   state: SessionState;
   permissionMode: string | undefined;
   onText: (chunk: string) => Promise<void> | void;
-  onThinking: (chunk: string) => Promise<void> | void;
   onToolOutput: (payload: {
     toolName: string;
     toolUseId: string;
@@ -287,7 +286,6 @@ export async function processStreamMessages(
     instrumentContext,
     state,
     onText,
-    onThinking,
     onToolOutput,
   } = deps;
 
@@ -298,7 +296,7 @@ export async function processStreamMessages(
     }
 
     if ((message as { type: string }).type === "stream_event") {
-      const event = (message as { event: { type: string; delta: { type: string; text?: string; thinking?: string } } }).event;
+      const event = (message as { event: { type: string; delta: { type: string; text?: string } } }).event;
       if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
         if ((message as { parent_tool_use_id?: string }).parent_tool_use_id) {
           continue;
@@ -310,11 +308,6 @@ export async function processStreamMessages(
         sawToolUseSinceLastText = false;
         state.finalOutput += event.delta.text!;
         await onText(event.delta.text!);
-      }
-      if (event.type === "content_block_delta" && event.delta.type === "thinking_delta") {
-        if (!(message as { parent_tool_use_id?: string }).parent_tool_use_id) {
-          await onThinking(event.delta.thinking!);
-        }
       }
       continue;
     }
@@ -648,29 +641,9 @@ export async function runPostStreamPlanDetection(
     return;
   }
 
-  let detectedPlan: { filePath: string; content: string; source: "claude_plan_file" | "streaming_fallback" } | null = null;
-  for (const fp of maps.sessionPersistedPlanFiles) {
-    try {
-      const content = readFileSync(fp, "utf-8");
-      if (content.trim().length > 0) {
-        detectedPlan = { filePath: fp, content, source: "claude_plan_file" };
-      }
-    } catch { /* skip unreadable */ }
-  }
-  if (!detectedPlan) {
-    const planFile = findLatestPlanFile(state.queryStartTimestamp);
-    if (planFile) {
-      detectedPlan = { ...planFile, source: "claude_plan_file" };
-    }
-  }
+  const detectedPlan = findDetectedPlanFile(maps.sessionPersistedPlanFiles, state.queryStartTimestamp);
   if (detectedPlan) {
-    await callbacks.onPlanFileDetected(detectedPlan);
-  } else if (state.finalOutput.trim().length > 0) {
-    await callbacks.onPlanFileDetected({
-      filePath: "streaming-plan",
-      content: state.finalOutput.trim(),
-      source: "streaming_fallback",
-    });
+    await callbacks.onPlanFileDetected({ ...detectedPlan, source: "claude_plan_file" });
   }
 }
 

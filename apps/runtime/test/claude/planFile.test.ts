@@ -2,11 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findLatestPlanFile } from "../../src/claude/planFile";
+import { findDetectedPlanFile, findLatestPlanFile } from "../../src/claude/planFile";
 
 describe("findLatestPlanFile", () => {
     const plansDir = join(tmpdir(), "codesymphony-claude-provider", "plans");
     const testFile = join(plansDir, "__vitest_plan_test__.md");
+    const persistedFile = join(plansDir, "__vitest_persisted_plan_test__.md");
 
     beforeEach(() => {
         // Ensure plans dir exists
@@ -14,9 +15,12 @@ describe("findLatestPlanFile", () => {
     });
 
     afterEach(() => {
-        // Clean up test file
+        // Clean up test files
         if (existsSync(testFile)) {
             rmSync(testFile);
+        }
+        if (existsSync(persistedFile)) {
+            rmSync(persistedFile);
         }
     });
 
@@ -47,5 +51,22 @@ describe("findLatestPlanFile", () => {
         if (result) {
             expect(result.filePath).not.toBe(testFile);
         }
+    });
+
+    it("prefers persisted plan files before scanning directories", () => {
+        const beforeTimestamp = Date.now() - 1000;
+        writeFileSync(testFile, "# Scanned Plan");
+        writeFileSync(persistedFile, "# Persisted Plan");
+
+        const result = findDetectedPlanFile([persistedFile], beforeTimestamp);
+        expect(result).toEqual({
+            filePath: persistedFile,
+            content: "# Persisted Plan",
+        });
+    });
+
+    it("returns null when no persisted or scanned plans exist", () => {
+        const result = findDetectedPlanFile([], Date.now() + 100000);
+        expect(result).toBeNull();
     });
 });

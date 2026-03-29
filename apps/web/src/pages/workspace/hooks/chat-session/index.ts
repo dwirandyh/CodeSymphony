@@ -26,4 +26,5 @@ export {
   applySnapshotSeed,
   extractLatestThreadMetadata,
   applyThreadTitleUpdate,
+  applyThreadModeUpdate,
 } from "./snapshotSeed";

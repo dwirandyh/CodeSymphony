@@ -50,6 +50,7 @@ vi.mock("../../../../lib/api", () => ({
     createThread: vi.fn(),
     getOrCreatePrMrThread: vi.fn(),
     renameThreadTitle: vi.fn(),
+    updateThreadMode: vi.fn(),
     deleteThread: vi.fn(),
     sendMessage: vi.fn(),
     stopRun: vi.fn(),
@@ -70,6 +71,7 @@ function makeThread(id: string, active = false): ChatThread {
     title: id,
     kind: "default",
     permissionProfile: "default",
+    mode: "default",
     titleEditedManually: false,
     claudeSessionId: null,
     active,
@@ -121,6 +123,7 @@ afterEach(() => {
 
 describe("useChatSession", () => {
   it("creates or reuses dedicated PR/MR thread, sends message, and invalidates repository reviews", async () => {
+    vi.mocked(api.updateThreadMode).mockResolvedValue({ ...makeThread("thread-a"), mode: "plan" });
     const prMrThread = {
       ...makeThread("pr-mr-thread"),
       title: "PR / MR",
