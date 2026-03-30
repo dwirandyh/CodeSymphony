@@ -56,6 +56,23 @@ function resolvePreferredThreadId(threads: ChatThread[]): string | null {
   return threads[threads.length - 1]?.id ?? null;
 }
 
+function findThreadForWorktree(
+  threads: ChatThread[],
+  threadId: string | null,
+  worktreeId: string | null,
+): ChatThread | null {
+  if (!threadId || !worktreeId) {
+    return null;
+  }
+
+  const thread = threads.find((candidate) => candidate.id === threadId) ?? null;
+  if (!thread || thread.worktreeId !== worktreeId) {
+    return null;
+  }
+
+  return thread;
+}
+
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
   total: number;
   signatures: string[];
@@ -205,6 +222,8 @@ export function useChatSession(
 
     if (worktreeChanged) {
       setWaitingAssistant(null);
+      setThreads([]);
+      setSelectedThreadId(null);
       setMessages([]);
       setEvents([]);
     }
@@ -508,7 +527,12 @@ export function useChatSession(
           queryKeys.threads.list(worktreeId),
           (current) => current ? applyThreadModeUpdate(current, created.id, mode) : current,
         );
-        await api.sendMessage(created.id, { content, mode, attachments: [] });
+        await api.sendMessage(created.id, {
+          content,
+          mode,
+          attachments: [],
+          expectedWorktreeId: worktreeId,
+        });
       } catch (e) {
         setWaitingAssistant(null);
         throw e;
@@ -561,7 +585,12 @@ export function useChatSession(
         queryKeys.threads.list(selectedWorktreeId),
         (current) => current ? applyThreadModeUpdate(current, created.id, mode) : current,
       );
-      await api.sendMessage(created.id, { content, mode, attachments: [] });
+      await api.sendMessage(created.id, {
+        content,
+        mode,
+        attachments: [],
+        expectedWorktreeId: created.worktreeId,
+      });
       invalidateRepositoryReviews();
       return created;
     } catch (e) {
@@ -681,11 +710,17 @@ export function useChatSession(
 
     if (!selectedThreadId || (!content.trim() && attachmentsToSend.length === 0)) return false;
 
-    startWaitingAssistant(selectedThreadId);
+    const activeThread = findThreadForWorktree(threads, selectedThreadId, selectedWorktreeId);
+    if (!activeThread) {
+      onError("Selected thread is stale for the active worktree. Please retry.");
+      return false;
+    }
+
+    startWaitingAssistant(activeThread.id);
     if (selectedWorktreeId) {
       queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(selectedWorktreeId), (current) => {
         if (!current) return current;
-        const index = current.findIndex((thread) => thread.id === selectedThreadId);
+        const index = current.findIndex((thread) => thread.id === activeThread.id);
         if (index === -1 || current[index]?.active) return current;
         const updated = [...current];
         updated[index] = { ...updated[index]!, active: true };
@@ -696,16 +731,21 @@ export function useChatSession(
     onError(null);
 
     try {
-      setThreads((current) => applyThreadModeUpdate(current, selectedThreadId, mode));
+      setThreads((current) => applyThreadModeUpdate(current, activeThread.id, mode));
       if (selectedWorktreeId) {
         queryClient.setQueryData<ChatThread[] | undefined>(
           queryKeys.threads.list(selectedWorktreeId),
-          (current) => current ? applyThreadModeUpdate(current, selectedThreadId, mode) : current,
+          (current) => current ? applyThreadModeUpdate(current, activeThread.id, mode) : current,
         );
       }
-      await api.sendMessage(selectedThreadId, { content, mode, attachments: attachmentsToSend });
+      await api.sendMessage(activeThread.id, {
+        content,
+        mode,
+        attachments: attachmentsToSend,
+        expectedWorktreeId: activeThread.worktreeId,
+      });
       if (shouldInvalidateSnapshot) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(activeThread.id) });
       }
       return true;
     } catch (e) {

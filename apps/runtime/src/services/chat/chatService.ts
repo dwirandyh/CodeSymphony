@@ -208,6 +208,7 @@ export function createChatService(deps: RuntimeDeps) {
       const result = await deps.claudeRunner({
         prompt,
         sessionId: thread.claudeSessionId,
+        sessionWorktreePath: thread.claudeSessionId ? worktreePath : null,
         cwd: worktreePath,
         abortController,
         permissionMode: mode,
@@ -1037,6 +1038,10 @@ export function createChatService(deps: RuntimeDeps) {
 
       if (!thread) {
         throw new Error("Chat thread not found");
+      }
+
+      if (input.expectedWorktreeId && input.expectedWorktreeId !== thread.worktreeId) {
+        throw new Error("Selected worktree no longer matches this thread. Please retry from the active worktree.");
       }
 
       if (activeThreads.has(threadId)) {

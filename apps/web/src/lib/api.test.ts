@@ -320,6 +320,17 @@ describe("api", () => {
       const result = await api.getTimelineSnapshot("t1");
       expect(result).toBeTruthy();
     });
+
+    it("sends expectedWorktreeId with chat messages", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ id: "m1" }));
+      await api.sendMessage("t1", {
+        content: "hello",
+        mode: "default",
+        attachments: [],
+        expectedWorktreeId: "w1",
+      });
+      expect(String(mockFetch.mock.calls[0]?.[1]?.body)).toContain('"expectedWorktreeId":"w1"');
+    });
   });
 
   describe("git operations", () => {

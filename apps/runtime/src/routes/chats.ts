@@ -4,9 +4,9 @@ import type {
   ChatThreadSnapshot,
   ChatTimelineSnapshot,
 } from "@codesymphony/shared-types";
-import path from "node:path";
 import { z } from "zod";
 import { appendRuntimeDebugLog } from "./debug.js";
+import { areLikelySameFsPath } from "../services/repositoryService.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
@@ -44,21 +44,6 @@ export function parseStreamStartCursor(afterIdx: unknown, lastEventId: unknown):
 
 export function formatSseEvent(event: ChatEvent): string {
   return `id: ${event.idx}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-}
-
-function stripPrivatePrefix(input: string): string {
-  if (input === "/private") return "/";
-  if (input.startsWith("/private/")) return input.slice("/private".length);
-  return input;
-}
-
-function areLikelySameFsPath(a: string, b: string): boolean {
-  const normalizedA = path.resolve(a.trim());
-  const normalizedB = path.resolve(b.trim());
-  if (normalizedA === normalizedB) return true;
-  if (stripPrivatePrefix(normalizedA) === normalizedB) return true;
-  if (normalizedA === stripPrivatePrefix(normalizedB)) return true;
-  return false;
 }
 
 function summarizeTimelineEnvelope(snapshot: ChatTimelineSnapshot) {
@@ -108,14 +93,12 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const rootWorktree = repository.worktrees.find((worktree) =>
         worktree.status === "active" && areLikelySameFsPath(worktree.path, repository.rootPath),
       ) ?? null;
-      const targetWorktree = rootWorktree
-        ?? repository.worktrees.find((worktree) => worktree.status === "active")
-        ?? repository.worktrees[0]
-        ?? null;
 
-      if (!targetWorktree) {
-        return reply.code(400).send({ error: "No available worktree for repository" });
+      if (!rootWorktree) {
+        return reply.code(400).send({ error: "Repository root worktree is not available" });
       }
+
+      const targetWorktree = rootWorktree;
 
       app.log.info(
         {
@@ -124,7 +107,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
           targetWorktreeId: targetWorktree.id,
           targetWorktreePath: targetWorktree.path,
           targetWorktreeBranch: targetWorktree.branch,
-          targetReason: rootWorktree ? "root-worktree" : "fallback-active-worktree",
+          targetReason: "root-worktree",
         },
         "create thread for repository",
       );

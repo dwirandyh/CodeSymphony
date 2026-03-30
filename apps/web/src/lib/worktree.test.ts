@@ -42,6 +42,10 @@ describe("areLikelySameFsPath", () => {
     expect(areLikelySameFsPath("/home/user/project/", "/home/user/project")).toBe(true);
   });
 
+  it("matches trimmed paths", () => {
+    expect(areLikelySameFsPath("  /home/user/project  ", "/home/user/project")).toBe(true);
+  });
+
   it("matches with /private prefix on macOS", () => {
     expect(areLikelySameFsPath("/private/var/folders/abc", "/var/folders/abc")).toBe(true);
     expect(areLikelySameFsPath("/var/folders/abc", "/private/var/folders/abc")).toBe(true);
