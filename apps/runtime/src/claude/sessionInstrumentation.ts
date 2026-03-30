@@ -11,6 +11,7 @@ import {
   readTargetFromUnknownToolInput,
   searchParamsFromUnknownToolInput,
   editTargetFromUnknownToolInput,
+  skillNameFromUnknownToolInput,
   isBashTool,
   type ToolMetadata,
 } from "./toolClassification.js";
@@ -100,6 +101,7 @@ export function createMarkStarted(
     command?: string;
     searchParams?: string;
     editTarget?: string;
+    skillName?: string;
     shell?: "bash";
     isBash?: true;
   }) => Promise<void> | void,
@@ -138,6 +140,11 @@ export function createMarkStarted(
       ...(metadata?.editTarget
         ? {
           editTarget: metadata.editTarget,
+        }
+        : {}),
+      ...(metadata?.skillName
+        ? {
+          skillName: metadata.skillName,
         }
         : {}),
       ...(metadata?.isBash
@@ -181,6 +188,7 @@ export function buildMetadataFromHookInput(
     readTarget: readTargetFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
     searchParams: searchParamsFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
     editTarget: editTargetFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
+    skillName: skillNameFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
     isBash: isBashTool(hookInput.tool_name as string),
   };
   if (!metadata.readTarget) {
@@ -191,6 +199,9 @@ export function buildMetadataFromHookInput(
   }
   if (!metadata.editTarget) {
     metadata.editTarget = editTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
+  }
+  if (!metadata.skillName) {
+    metadata.skillName = skillNameFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
   }
   toolMetadataByUseId.set(hookToolUseId, metadata);
   return metadata;
@@ -247,6 +258,7 @@ export function buildToolFinishedPayload(
     summary,
     precedingToolUseIds: toolUseIds,
     ...(subagentResponse ? { subagentResponse } : {}),
+    ...(metadata.skillName ? { skillName: metadata.skillName } : {}),
     ...(metadata.editTarget
       ? { editTarget: metadata.editTarget }
       : {}),

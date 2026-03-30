@@ -1575,6 +1575,12 @@ describe("tool instrumentation", () => {
           decisionReason: null,
           suggestions: [],
         });
+        await canUseTool("Skill", { skillName: "finly-architecture" }, {
+          toolUseID: "call-skill-tool",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
 
         const hooks = options.hooks as {
           PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
@@ -1625,6 +1631,27 @@ describe("tool instrumentation", () => {
           "tool-read-skill-hinted",
         );
 
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "call-skill-tool",
+            tool_name: "Skill",
+            tool_input: { skillName: "finly-architecture" },
+          },
+          "call-skill-tool",
+        );
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "call-skill-tool",
+            tool_name: "Skill",
+            tool_input: { skillName: "finly-architecture" },
+            tool_response: "Loaded skill",
+          },
+          "call-skill-tool",
+        );
+
         yield { type: "system", subtype: "init", session_id: "session-subagent-overlap-skill-hinted" };
       })();
     });
@@ -1673,6 +1700,24 @@ describe("tool instrumentation", () => {
     expect(finishedPayload).toBeDefined();
     expect(finishedPayload?.subagentOwnerToolUseId).toBe("subagent-skill");
     expect(finishedPayload?.ownershipReason).toBe("resolved_tool_use_id");
+
+    const skillStartedPayload = onToolStarted.mock.calls
+      .map(([payload]) => payload as {
+        toolUseId: string;
+        skillName?: string;
+      })
+      .find((payload) => payload.toolUseId === "call-skill-tool");
+    expect(skillStartedPayload).toBeDefined();
+    expect(skillStartedPayload?.skillName).toBe("finly-architecture");
+
+    const skillFinishedPayload = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        precedingToolUseIds: string[];
+        skillName?: string;
+      })
+      .find((payload) => payload.precedingToolUseIds.includes("call-skill-tool"));
+    expect(skillFinishedPayload).toBeDefined();
+    expect(skillFinishedPayload?.skillName).toBe("finly-architecture");
   });
 
   it("uses subagent description hints to resolve ownership under overlap", async () => {

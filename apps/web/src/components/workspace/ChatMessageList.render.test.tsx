@@ -401,6 +401,58 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Found something");
   });
 
+  it("renders skill subagent items with skill-style header and body", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "skill-1",
+        agentId: "agent-skill",
+        agentType: "Task",
+        toolUseId: "tu-skill",
+        status: "success",
+        description: "Load browser-verification skill for the current task",
+        lastMessage: "Successfully loaded skill\n1 tool allowed",
+        steps: [],
+        durationSeconds: 1,
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Skill(browser-verification)");
+    expect(container.textContent).toContain("Successfully loaded skill");
+    expect(container.textContent).toContain("1 tool allowed");
+    expect(container.textContent).not.toContain("Prompt");
+  });
+
+  it("hides skill tool count when it is unavailable", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "skill-2",
+        agentId: "agent-skill-2",
+        agentType: "Task",
+        toolUseId: "tu-skill-2",
+        status: "success",
+        description: "Load browser-verification skill for the current task",
+        lastMessage: "Successfully loaded skill",
+        steps: [],
+        durationSeconds: 1,
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Skill(browser-verification)");
+    expect(container.textContent).toContain("Successfully loaded skill");
+    expect(container.textContent).not.toContain("tool allowed");
+    expect(container.textContent).not.toContain("tools allowed");
+  });
+
   it("renders subagent explore steps even when prompt text is missing", () => {
     const items: ChatTimelineItem[] = [
       {
@@ -540,6 +592,63 @@ describe("ChatMessageList", () => {
     act(() => {
       root.render(<ChatMessageList {...baseProps} showThinkingPlaceholder={true} />);
     });
+  });
+
+  it("renders skill tool items with skill-style header and body", () => {
+    const skillStartedEvent: ChatEvent = {
+      id: "ev-skill-started",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.started",
+      payload: {
+        toolName: "Skill",
+        toolUseId: "tu-skill-running",
+        skillName: "finly-architecture",
+        summary: "Running skill",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const skillFinishedEvent: ChatEvent = {
+      id: "ev-skill-finished",
+      threadId: "t1",
+      idx: 2,
+      type: "tool.finished",
+      payload: {
+        toolName: "Skill",
+        toolUseId: "tu-skill-running",
+        skillName: "finly-architecture",
+        summary: "Completed Skill",
+        output: "Successfully loaded skill\n1 tool allowed",
+      },
+      createdAt: "2026-01-01T00:00:01Z",
+    };
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "tool",
+        id: "tool-skill",
+        event: skillFinishedEvent,
+        sourceEvents: [skillStartedEvent, skillFinishedEvent],
+        toolUseId: "tu-skill-running",
+        toolName: "Skill",
+        summary: "Completed Skill",
+        output: "Successfully loaded skill\n1 tool allowed",
+        error: null,
+        truncated: false,
+        durationSeconds: 1,
+        status: "success",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Skill(finly-architecture)");
+    expect(container.textContent).toContain("Successfully loaded skill");
+    expect(container.textContent).toContain("1 tool allowed");
+    expect(container.textContent).not.toContain("tool.finished · Completed Skill");
+    expect(container.textContent).not.toContain("Raw payload");
+    expect(container.querySelector("[data-testid='timeline-tool-payload-details']")).toBeNull();
   });
 
   it("uses denser spacing for compact running timeline rows", () => {
