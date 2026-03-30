@@ -84,7 +84,7 @@ describe("POST /api/repositories/:id/threads", () => {
     expect(chatCreateThread).toHaveBeenCalledWith("wt-root", { title: "Thread 1" });
   });
 
-  it("falls back to an active worktree when no root-path worktree exists", async () => {
+  it("returns 400 when no active root worktree exists", async () => {
     repositoryGetById.mockResolvedValueOnce({
       id: "repo-1",
       rootPath: "/Users/test/project",
@@ -93,17 +93,6 @@ describe("POST /api/repositories/:id/threads", () => {
         { id: "wt-feature", status: "active", path: "/Users/test/.codesymphony/worktrees/feature", branch: "feature/a" },
       ],
     });
-    chatCreateThread.mockResolvedValueOnce({
-      id: "thread-2",
-      worktreeId: "wt-feature",
-      title: "Thread 2",
-      kind: "default",
-      permissionProfile: "default",
-      claudeSessionId: null,
-      active: false,
-      createdAt: "2026-02-27T00:00:00.000Z",
-      updatedAt: "2026-02-27T00:00:00.000Z",
-    });
 
     const response = await app.inject({
       method: "POST",
@@ -111,7 +100,8 @@ describe("POST /api/repositories/:id/threads", () => {
       payload: { title: "Thread 2" },
     });
 
-    expect(response.statusCode).toBe(201);
-    expect(chatCreateThread).toHaveBeenCalledWith("wt-feature", { title: "Thread 2" });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: "Repository root worktree is not available" });
+    expect(chatCreateThread).not.toHaveBeenCalled();
   });
 });

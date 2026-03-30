@@ -153,6 +153,7 @@ describe("useChatSession", () => {
       content: "Create PR",
       mode: "default",
       attachments: [],
+      expectedWorktreeId: "wt-1",
     });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
     expect(

@@ -317,6 +317,7 @@ export const SendChatMessageInputSchema = z.object({
   content: z.string().trim(),
   mode: ChatModeSchema.optional().default("default"),
   attachments: z.array(AttachmentInputSchema).max(20).optional().default([]),
+  expectedWorktreeId: z.string().trim().min(1).optional(),
 }).refine(
   (data) => data.content.length > 0 || data.attachments.length > 0,
   { message: "Message must have content or attachments" },

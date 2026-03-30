@@ -452,5 +452,16 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "POST", url: "/api/repositories/r1/threads", payload: {} });
       expect(res.statusCode).toBe(400);
     });
+
+    it("returns 400 when active root worktree is missing", async () => {
+      mockRepositoryService.getById.mockResolvedValue({
+        id: "r1",
+        rootPath: "/home/repo",
+        worktrees: [{ id: "wt-1", path: "/home/repo/feature", status: "active", branch: "feature/test" }],
+      });
+      const res = await app.inject({ method: "POST", url: "/api/repositories/r1/threads", payload: {} });
+      expect(res.statusCode).toBe(400);
+      expect(mockChatService.createThread).not.toHaveBeenCalled();
+    });
   });
 });

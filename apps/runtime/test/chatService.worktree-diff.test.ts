@@ -194,6 +194,34 @@ describe("chatService worktree diff delta", () => {
     expect(worktreeDiffEvent(events)).toBeUndefined();
   });
 
+  it("rejects sends when expected worktree id does not match the thread worktree", async () => {
+    const worktreePath = createGitWorktree({
+      "src/main.ts": "export const main = () => 1;\n",
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+      await onText("Should not run.");
+      return {
+        output: "Should not run.",
+        sessionId: "session-worktree-mismatch",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree mismatch");
+
+    await expect(chatService.sendMessage(threadId, {
+      content: "update src/main.ts",
+      expectedWorktreeId: "different-worktree",
+    })).rejects.toThrow("Selected worktree no longer matches this thread");
+    expect(claudeRunner).not.toHaveBeenCalled();
+  });
+
   it("records changedFiles when a previously dirty file becomes clean", async () => {
     const original = "export const value = 1;\n";
     const worktreePath = createGitWorktree({

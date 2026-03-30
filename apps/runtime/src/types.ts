@@ -88,6 +88,7 @@ export type ClaudeToolInstrumentationEvent = {
 export type ClaudeRunner = (args: {
   prompt: string;
   sessionId: string | null;
+  sessionWorktreePath?: string | null;
   cwd: string;
   abortController?: AbortController;
   permissionMode?: ChatMode;

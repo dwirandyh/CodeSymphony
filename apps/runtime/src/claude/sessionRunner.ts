@@ -41,6 +41,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
   sessionId,
   cwd,
+  sessionWorktreePath,
   abortController,
   permissionMode,
   permissionProfile,
@@ -168,7 +169,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         model: effectiveModel,
         abortController,
         includePartialMessages: true,
-        resume: sessionId ?? undefined,
+        resume: sessionId && sessionWorktreePath === cwd ? sessionId : undefined,
         permissionMode: permissionMode ?? "default",
         canUseTool,
         tools: {
