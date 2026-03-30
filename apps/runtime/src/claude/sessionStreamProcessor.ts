@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import type { ClaudeOwnershipDiagnostics, ClaudeToolInstrumentationEvent } from "../types.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 
-import { isBashTool } from "./toolClassification.js";
+import { isBashTool, skillNameFromUnknownToolInput } from "./toolClassification.js";
 import type { ToolMetadata } from "./toolClassification.js";
 import { completionSummaryFromMetadata } from "./toolSummary.js";
 import { findDetectedPlanFile } from "./planFile.js";
@@ -329,6 +329,7 @@ export async function processStreamMessages(
       if (!metadata) {
         maps.toolMetadataByUseId.set(msg.tool_use_id, {
           toolName: msg.tool_name,
+          skillName: skillNameFromUnknownToolInput(msg.tool_name, null),
           isBash: isBashTool(msg.tool_name),
         });
       }

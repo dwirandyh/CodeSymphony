@@ -169,6 +169,37 @@ describe("useWorkspaceTimeline", () => {
     expect(bashItems.some((item) => item.command === "pwd")).toBe(true);
   });
 
+  it("coalesces orphan skill events into a single skill tool item", () => {
+    const messages = [makeMessage("m1", 1, "user", "anything")];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Skill",
+        toolUseId: "call-skill-1",
+        skillName: "finly-pull-request",
+      }, null),
+      makeEvent(1, "tool.finished", {
+        summary: "Completed Skill",
+        precedingToolUseIds: ["call-skill-1"],
+        skillName: "finly-pull-request",
+      }, null),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const toolItems = items.filter((item) => item.kind === "tool");
+    const skillItems = toolItems.filter((item) => item.kind === "tool" && item.toolName === "Skill");
+
+    const debugEntries = pushRenderDebugMock.mock.calls
+      .map(([entry]) => entry as { source?: string; event?: string; details?: Record<string, unknown> });
+
+    expect(skillItems).toHaveLength(1);
+    expect(debugEntries.some((entry) => entry.source === "timelineOrphans" && entry.event === "coalescedSkillToolRun")).toBe(true);
+    if (skillItems[0]?.kind !== "tool") {
+      throw new Error("Expected tool item");
+    }
+    expect(skillItems[0].summary).toBe("Using finly-pull-request skill");
+    expect(skillItems[0].event?.type).toBe("tool.finished");
+  });
+
   it("routes mixed bash chains as normal tool items, not explore activity", () => {
     const messages = [
       makeMessage("m1", 1, "user", "run command"),

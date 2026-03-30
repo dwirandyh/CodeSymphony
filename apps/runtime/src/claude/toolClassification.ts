@@ -8,6 +8,7 @@ export type ToolMetadata = {
     readTarget?: string;
     searchParams?: string;
     editTarget?: string;
+    skillName?: string;
     isBash: boolean;
 };
 
@@ -104,6 +105,31 @@ export function editTargetFromUnknownToolInput(toolName: string, input: unknown)
         const candidate = stringFromUnknown(record[key]);
         if (candidate) {
             return candidate;
+        }
+    }
+
+    return undefined;
+}
+
+export function skillNameFromUnknownToolInput(toolName: string, input: unknown): string | undefined {
+    if (toolName.trim().toLowerCase() !== "skill") {
+        return undefined;
+    }
+
+    if (typeof input !== "object" || input == null || Array.isArray(input)) {
+        return undefined;
+    }
+
+    const record = input as Record<string, unknown>;
+    const keyCandidates = ["skillName", "skill", "name", "slug"];
+    for (const key of keyCandidates) {
+        const candidate = stringFromUnknown(record[key]);
+        if (!candidate) {
+            continue;
+        }
+        const normalized = candidate.trim().toLowerCase().replace(/\s+/g, "-");
+        if (/^[a-z0-9][a-z0-9-]{1,}$/.test(normalized)) {
+            return normalized;
         }
     }
 

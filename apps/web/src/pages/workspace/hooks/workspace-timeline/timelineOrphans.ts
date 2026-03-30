@@ -18,6 +18,31 @@ import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { logService } from "../../../../lib/logService";
 import type { SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types";
 
+function explicitSkillNameFromEvents(events: ChatEvent[]): string | null {
+  for (const event of events) {
+    const skillName = payloadStringOrNull(event.payload.skillName)?.trim().toLowerCase() ?? null;
+    if (skillName) {
+      return skillName;
+    }
+  }
+  return null;
+}
+
+function isExplicitSkillToolEvent(event: ChatEvent): boolean {
+  return (event.type === "tool.started" || event.type === "tool.output" || event.type === "tool.finished")
+    && payloadStringOrNull(event.payload.toolName)?.toLowerCase() === "skill";
+}
+
+function skillToolRunId(event: ChatEvent): string | null {
+  const precedingToolUseIds = Array.isArray(event.payload.precedingToolUseIds)
+    ? event.payload.precedingToolUseIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
+  if (precedingToolUseIds.length > 0) {
+    return precedingToolUseIds[0] ?? null;
+  }
+  return payloadStringOrNull(event.payload.toolUseId);
+}
+
 export function processOrphanSubagentGroups(
   inlineToolEvents: ChatEvent[],
   assignedToolEventIds: Set<string>,
@@ -141,6 +166,76 @@ export function processOrphanToolEvents(
       && !isMetadataToolEvent(event)
     )
     .sort((a, b) => a.idx - b.idx);
+
+  const explicitSkillToolEvents = orphanToolEvents.filter(isExplicitSkillToolEvent);
+  const explicitSkillRunIds = new Set(
+    explicitSkillToolEvents
+      .map((event) => skillToolRunId(event))
+      .filter((runId): runId is string => typeof runId === "string" && runId.length > 0),
+  );
+  const orphanSkillToolEvents = orphanToolEvents.filter((event) => {
+    if (isExplicitSkillToolEvent(event)) {
+      return true;
+    }
+    if (event.type !== "tool.finished") {
+      return false;
+    }
+    const runId = skillToolRunId(event);
+    return !!runId && explicitSkillRunIds.has(runId) && payloadStringOrNull(event.payload.summary)?.toLowerCase() === "completed skill";
+  });
+  const skillEventsByRunId = new Map<string, ChatEvent[]>();
+  for (const event of orphanSkillToolEvents) {
+    const runId = skillToolRunId(event);
+    if (!runId) {
+      continue;
+    }
+    const existing = skillEventsByRunId.get(runId) ?? [];
+    existing.push(event);
+    skillEventsByRunId.set(runId, existing);
+  }
+
+  for (const [runId, events] of skillEventsByRunId.entries()) {
+    const sortedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
+      ?? sortedEvents.find((event) => event.type === "tool.output")
+      ?? sortedEvents[sortedEvents.length - 1]
+      ?? null;
+    if (!primaryEvent) {
+      continue;
+    }
+
+    sortedEvents.forEach((event) => assignedToolEventIds.add(event.id));
+    pushRenderDebug({
+      source: "timelineOrphans",
+      event: "coalescedSkillToolRun",
+      details: {
+        runId,
+        eventIds: sortedEvents.map((event) => event.id),
+        primaryEventId: primaryEvent.id,
+      },
+    });
+    const explicitSkillName = explicitSkillNameFromEvents(sortedEvents);
+    sortable.push({
+      item: {
+        kind: "tool",
+        id: `orphan:skill:${runId}`,
+        event: primaryEvent,
+        sourceEvents: sortedEvents,
+        toolUseId: runId,
+        toolName: "Skill",
+        summary: explicitSkillName ? `Using ${explicitSkillName} skill` : payloadStringOrNull(primaryEvent.payload.summary),
+        output: typeof primaryEvent.payload.output === "string" ? primaryEvent.payload.output : null,
+        error: typeof primaryEvent.payload.error === "string" ? primaryEvent.payload.error : null,
+        truncated: primaryEvent.payload.truncated === true,
+        durationSeconds: typeof primaryEvent.payload.elapsedTimeSeconds === "number" ? primaryEvent.payload.elapsedTimeSeconds : null,
+        status: primaryEvent.type === "tool.started" ? "running" : typeof primaryEvent.payload.error === "string" && primaryEvent.payload.error.length > 0 ? "failed" : "success",
+      },
+      anchorIdx: primaryEvent.idx,
+      timestamp: parseTimestamp(primaryEvent.createdAt),
+      rank: 0,
+      stableOrder: primaryEvent.idx,
+    });
+  }
 
   const hasIncompleteCoverage = false;
 

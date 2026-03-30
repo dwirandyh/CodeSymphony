@@ -109,6 +109,7 @@ export type ClaudeRunner = (args: {
     command?: string;
     searchParams?: string;
     editTarget?: string;
+    skillName?: string;
     shell?: "bash";
     isBash?: true;
   }) => Promise<void> | void;
@@ -137,6 +138,7 @@ export type ClaudeRunner = (args: {
     toolInput?: Record<string, unknown>;
     output?: string;
     error?: string;
+    skillName?: string;
     shell?: "bash";
     isBash?: true;
     truncated?: boolean;

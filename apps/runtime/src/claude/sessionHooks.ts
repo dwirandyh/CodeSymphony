@@ -18,6 +18,7 @@ import {
   readTargetFromUnknownToolInput,
   searchParamsFromUnknownToolInput,
   editTargetFromUnknownToolInput,
+  skillNameFromUnknownToolInput,
   type ToolMetadata,
 } from "./toolClassification.js";
 import { completionSummaryFromMetadata, failureSummaryFromMetadata } from "./toolSummary.js";
@@ -780,6 +781,7 @@ export function createCanUseTool(
       readTarget: readTargetFromUnknownToolInput(toolName, input),
       searchParams: searchParamsFromUnknownToolInput(toolName, input),
       editTarget: editTargetFromUnknownToolInput(toolName, input),
+      skillName: skillNameFromUnknownToolInput(toolName, input),
       isBash,
     });
     maps.subagentToolInputByUseId.set(toolUseId, input);
@@ -1021,6 +1023,7 @@ export function createPreToolUseHook(
       readTarget: readTargetFromUnknownToolInput(hookToolName, hookInput.tool_input),
       searchParams: searchParamsFromUnknownToolInput(hookToolName, hookInput.tool_input),
       editTarget: editTargetFromUnknownToolInput(hookToolName, hookInput.tool_input),
+      skillName: skillNameFromUnknownToolInput(hookToolName, hookInput.tool_input),
       isBash: isBashTool(hookToolName),
     });
 
@@ -1272,6 +1275,7 @@ export function createPostToolUseFailureHook(
         : metadata.searchParams
           ? { searchParams: metadata.searchParams }
           : {}),
+      ...(metadata.skillName ? { skillName: metadata.skillName } : {}),
       error: hookInput.error as string,
       truncated: false,
       outputBytes: Buffer.byteLength(hookInput.error as string, "utf8"),
