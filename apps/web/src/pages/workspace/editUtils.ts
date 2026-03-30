@@ -261,7 +261,23 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
       if (run.status !== "failed") {
         run.status = "running";
       }
-      setRunTargetIfPresent(run, payloadStringOrNull(event.payload.editTarget));
+      const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+      const explicitTarget =
+        payloadStringOrNull(event.payload.editTarget)
+        ?? extractEditTargetFromUnknownToolInput(toolInput)
+        ?? null;
+      setRunTargetIfPresent(run, explicitTarget);
+      if (toolInput && explicitTarget && run.diffKind === "none") {
+        const proposedDiff = buildProposedEditDiffFromToolInput(toolInput, explicitTarget);
+        if (proposedDiff) {
+          run.diff = proposedDiff;
+          run.diffKind = "proposed";
+          run.diffTruncated = false;
+          const { additions, deletions } = countDiffStats(proposedDiff);
+          run.additions = additions;
+          run.deletions = deletions;
+        }
+      }
       continue;
     }
 
@@ -269,8 +285,11 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
       const runIds = finishedToolUseIds(event);
       const summary = payloadStringOrNull(event.payload.summary);
       const summaryTarget = summary ? extractEditTargetFromSummary(summary) : null;
-      const explicitTarget = payloadStringOrNull(event.payload.editTarget) ?? summaryTarget;
       const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+      const explicitTarget =
+        payloadStringOrNull(event.payload.editTarget)
+        ?? extractEditTargetFromUnknownToolInput(toolInput)
+        ?? summaryTarget;
 
       function applyProposedDiffIfNeeded(run: EditedRun): void {
         if (toolInput && explicitTarget && run.diffKind === "none" && run.status !== "failed") {

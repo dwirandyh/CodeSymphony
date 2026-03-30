@@ -232,6 +232,31 @@ describe("extractEditedRuns", () => {
     expect(runs[0].diff).toContain("+new");
   });
 
+  it("creates proposed diff from orphan tool.started payload", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: {
+          toolName: "Write",
+          toolUseId: "t1",
+          toolInput: {
+            file_path: "/tmp/test/main_tab_page_test.dart",
+            content: "hello world",
+          },
+        },
+      }),
+    ];
+    const runs = extractEditedRuns(events);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].status).toBe("running");
+    expect(runs[0].changedFiles).toContain("/tmp/test/main_tab_page_test.dart");
+    expect(runs[0].diffKind).toBe("proposed");
+    expect(runs[0].diff).toContain("diff --git a//tmp/test/main_tab_page_test.dart b//tmp/test/main_tab_page_test.dart");
+    expect(runs[0].diff).toContain("+hello world");
+  });
+
   it("handles failed edit from summary", () => {
     const events = [
       makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "edit", toolUseId: "t1" } }),

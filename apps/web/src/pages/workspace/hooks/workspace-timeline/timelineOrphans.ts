@@ -13,6 +13,7 @@ import {
   payloadStringOrNull,
 } from "../../eventUtils";
 import { extractBashRuns } from "../../bashUtils";
+import { extractEditedRuns } from "../../editUtils";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { logService } from "../../../../lib/logService";
 import type { SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types";
@@ -203,6 +204,33 @@ export function processOrphanToolEvents(
         durationSeconds: run.durationSeconds,
         status: run.status,
         rejectedByUser: run.rejectedByUser,
+      },
+      anchorIdx: run.anchorIdx,
+      timestamp: parseTimestamp(run.createdAt),
+      rank: 0,
+      stableOrder: run.startIdx,
+    });
+  }
+
+  const orphanEditedRuns = extractEditedRuns(
+    orphanToolEvents.filter((event) => !assignedToolEventIds.has(event.id)),
+  );
+  for (const run of orphanEditedRuns) {
+    run.eventIds.forEach((id) => assignedToolEventIds.add(id));
+    sortable.push({
+      item: {
+        kind: "edited-diff",
+        id: `orphan:${run.id}`,
+        eventId: run.eventId,
+        status: run.status,
+        diffKind: run.diffKind,
+        changedFiles: run.changedFiles,
+        diff: run.diff,
+        diffTruncated: run.diffTruncated,
+        additions: run.additions,
+        deletions: run.deletions,
+        rejectedByUser: run.rejectedByUser,
+        createdAt: run.createdAt,
       },
       anchorIdx: run.anchorIdx,
       timestamp: parseTimestamp(run.createdAt),
