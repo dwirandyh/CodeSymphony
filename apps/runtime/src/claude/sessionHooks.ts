@@ -1020,6 +1020,7 @@ export function createPreToolUseHook(
       command,
       readTarget: readTargetFromUnknownToolInput(hookToolName, hookInput.tool_input),
       searchParams: searchParamsFromUnknownToolInput(hookToolName, hookInput.tool_input),
+      editTarget: editTargetFromUnknownToolInput(hookToolName, hookInput.tool_input),
       isBash: isBashTool(hookToolName),
     });
 

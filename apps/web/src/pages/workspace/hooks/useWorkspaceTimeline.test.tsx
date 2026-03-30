@@ -301,6 +301,33 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items.length).toBeGreaterThan(0);
   });
 
+  it("renders orphan write start as edited-diff instead of generic tool", () => {
+    const messages = [makeMessage("m1", 1, "user", "Fix"), makeMessage("m2", 2, "assistant", "Editing...")];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Write",
+        toolUseId: "tu-write-1",
+        toolInput: {
+          file_path: "/tmp/test/main_tab_page_test.dart",
+          content: "hello world",
+        },
+      }, null),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const editedItems = items.filter((item) => item.kind === "edited-diff");
+    const genericToolItems = items.filter((item) => item.kind === "tool");
+
+    expect(editedItems).toHaveLength(1);
+    expect(genericToolItems).toHaveLength(0);
+    if (editedItems[0]?.kind !== "edited-diff") {
+      throw new Error("Expected edited-diff item");
+    }
+    expect(editedItems[0].status).toBe("running");
+    expect(editedItems[0].changedFiles).toContain("/tmp/test/main_tab_page_test.dart");
+    expect(editedItems[0].diffKind).toBe("proposed");
+  });
+
   it("keeps read activity grouped before assistant text when text arrives after the read", () => {
     const messages = [
       makeMessage("m1", 1, "user", "Think"),
