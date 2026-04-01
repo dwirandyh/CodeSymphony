@@ -84,6 +84,15 @@ function normalizeThreadKind(kind: ChatThreadKind | undefined): ChatThreadKind {
 const REVIEW_THREAD_GITHUB_TITLE = "Create Pull Request";
 const REVIEW_THREAD_GITLAB_TITLE = "Create Merge Request";
 
+type ThreadRunStatus = "scheduled" | "running" | "waiting_permission" | "waiting_question" | "waiting_plan";
+
+type ThreadRunState = {
+  status: ThreadRunStatus;
+  mode: ChatMode;
+  scheduledTimer?: ReturnType<typeof setTimeout>;
+  abortController?: AbortController;
+};
+
 function normalizePermissionProfile(kind: ChatThreadKind): ChatThreadPermissionProfile {
   return kind === "review" ? "review_git" : "default";
 }
@@ -112,21 +121,55 @@ function isLegacyReviewThreadTitle(title: string): boolean {
 }
 
 export function createChatService(deps: RuntimeDeps) {
-  const activeThreads = new Set<string>();
-  const scheduledAssistantRunsByThread = new Map<string, ReturnType<typeof setTimeout>>();
-  const runningAbortControllersByThread = new Map<string, AbortController>();
+  const threadRuns = new Map<string, ThreadRunState>();
   const pendingPermissionsByThread = new Map<string, Map<string, PendingPermissionEntry>>();
   const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
   const pendingPlanByThread = new Map<string, PendingPlanEntry>();
 
+  function getThreadRun(threadId: string): ThreadRunState | null {
+    return threadRuns.get(threadId) ?? null;
+  }
+
+  function isThreadActive(threadId: string): boolean {
+    return threadRuns.has(threadId);
+  }
+
+  function setThreadRunState(threadId: string, nextState: ThreadRunState): void {
+    threadRuns.set(threadId, nextState);
+  }
+
+  function clearThreadRunState(threadId: string): ThreadRunState | null {
+    const existing = threadRuns.get(threadId) ?? null;
+    if (existing?.scheduledTimer) {
+      clearTimeout(existing.scheduledTimer);
+    }
+    threadRuns.delete(threadId);
+    return existing;
+  }
+
+  function markThreadWaiting(threadId: string, status: Extract<ThreadRunStatus, "waiting_permission" | "waiting_question" | "waiting_plan">): void {
+    const current = getThreadRun(threadId);
+    if (!current) {
+      return;
+    }
+    setThreadRunState(threadId, {
+      ...current,
+      status,
+    });
+  }
+
   function clearScheduledAssistantRun(threadId: string): boolean {
-    const timer = scheduledAssistantRunsByThread.get(threadId);
-    if (!timer) {
+    const current = getThreadRun(threadId);
+    if (!current?.scheduledTimer) {
       return false;
     }
 
-    clearTimeout(timer);
-    scheduledAssistantRunsByThread.delete(threadId);
+    clearTimeout(current.scheduledTimer);
+    setThreadRunState(threadId, {
+      status: current.status,
+      mode: current.mode,
+      abortController: current.abortController,
+    });
     deps.logService?.log("debug", "chat.lifecycle", "cleared scheduled assistant run", { threadId });
     return true;
   }
@@ -144,7 +187,11 @@ export function createChatService(deps: RuntimeDeps) {
     let threadWorktreePath: string | null = null;
     let completionEmitted = false;
     const abortController = new AbortController();
-    runningAbortControllersByThread.set(threadId, abortController);
+    setThreadRunState(threadId, {
+      status: "running",
+      mode,
+      abortController,
+    });
 
     const FLUSH_INTERVAL_MS = 2000;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -259,6 +306,7 @@ export function createChatService(deps: RuntimeDeps) {
           );
         },
         onQuestionRequest: async (payload) => {
+          markThreadWaiting(threadId, "waiting_question");
           const pendingMap = ensureThreadQuestionMap(pendingQuestionsByThread, threadId);
           const existing = pendingMap.get(payload.requestId);
           if (existing) {
@@ -289,6 +337,7 @@ export function createChatService(deps: RuntimeDeps) {
           return entry.promise;
         },
         onPlanFileDetected: async (payload) => {
+          markThreadWaiting(threadId, "waiting_plan");
           const source = inferPlanDetectionSource(payload.filePath, payload.source);
           pendingPlanByThread.set(threadId, {
             content: payload.content,
@@ -302,6 +351,7 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onPermissionRequest: async (payload) => {
+          markThreadWaiting(threadId, "waiting_permission");
           const pendingMap = ensureThreadPermissionMap(pendingPermissionsByThread, threadId);
           const existing = pendingMap.get(payload.requestId);
           if (existing) {
@@ -393,73 +443,85 @@ export function createChatService(deps: RuntimeDeps) {
           });
         } catch { /* session id is non-critical */ }
       }
-      deps.logService?.log("debug", "chat.lifecycle", "run about to emit chat.completed", {
-        threadId,
-        assistantMessageId: assistantMessage.id,
-      });
-      await deps.eventHub.emit(threadId, "chat.completed", {
-        messageId: assistantMessage.id,
-        threadMode: mode,
-      });
-      completionEmitted = true;
+      let diffSnapshot: ReturnType<typeof buildDiffDelta> | null = null;
+      try {
+        const afterState = threadWorktreePath ? await captureWorktreeState(threadWorktreePath) : null;
+        diffSnapshot = beforeState && afterState ? buildDiffDelta(beforeState, afterState) : null;
+        if (diffSnapshot) {
+          const fileCount = diffSnapshot.changedFiles.length;
+          const summary = fileCount > 0 ? `Edited ${fileCount} file${fileCount === 1 ? "" : "s"}` : "Captured worktree diff";
+          await deps.eventHub.emit(threadId, "tool.finished", {
+            summary,
+            precedingToolUseIds: [],
+            source: "worktree.diff",
+            changedFiles: diffSnapshot.changedFiles,
+            diff: diffSnapshot.diff,
+            diffTruncated: diffSnapshot.diffTruncated,
+          });
+        }
+      } catch (postError) {
+        deps.logService?.log("warn", "chat.lifecycle", "Worktree diff enrichment failed before completion", {
+          threadId,
+          error: postError instanceof Error ? postError.message : String(postError),
+        });
+      }
 
-      void (async () => {
-        try {
-          const renamedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(
-            deps,
-            threadId,
-            assistantMessage.id,
-            {
-              model: activeProvider?.modelId,
-              providerApiKey: activeProvider?.apiKey,
-              providerBaseUrl: activeProvider?.baseUrl,
-            },
-          );
-          if (renamedThreadTitle) {
+      let completedThreadTitle: string | null = null;
+      let completedWorktreeBranch: string | null = null;
+      try {
+        completedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(
+          deps,
+          threadId,
+          assistantMessage.id,
+          {
+            model: activeProvider?.modelId,
+            providerApiKey: activeProvider?.apiKey,
+            providerBaseUrl: activeProvider?.baseUrl,
+          },
+        );
+        if (completedThreadTitle) {
+          await deps.eventHub.emit(threadId, "tool.finished", {
+            source: "chat.thread.metadata",
+            summary: "Updated thread title",
+            threadTitle: completedThreadTitle,
+            mode,
+            precedingToolUseIds: [],
+          });
+        }
+
+        const hasFileChanges = (diffSnapshot?.changedFiles.length ?? 0) > 0;
+        if (hasFileChanges) {
+          completedWorktreeBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(deps, threadId, assistantMessage.id);
+          if (completedWorktreeBranch) {
             await deps.eventHub.emit(threadId, "tool.finished", {
               source: "chat.thread.metadata",
-              summary: "Updated thread title",
-              threadTitle: renamedThreadTitle,
+              summary: "Updated worktree branch",
+              worktreeBranch: completedWorktreeBranch,
               mode,
               precedingToolUseIds: [],
             });
           }
-
-          const afterState = threadWorktreePath ? await captureWorktreeState(threadWorktreePath) : null;
-          const diffSnapshot = beforeState && afterState ? buildDiffDelta(beforeState, afterState) : null;
-          if (diffSnapshot) {
-            const fileCount = diffSnapshot.changedFiles.length;
-            const summary = fileCount > 0 ? `Edited ${fileCount} file${fileCount === 1 ? "" : "s"}` : "Captured worktree diff";
-            await deps.eventHub.emit(threadId, "tool.finished", {
-              summary,
-              precedingToolUseIds: [],
-              source: "worktree.diff",
-              changedFiles: diffSnapshot.changedFiles,
-              diff: diffSnapshot.diff,
-              diffTruncated: diffSnapshot.diffTruncated,
-            });
-
-            const hasFileChanges = diffSnapshot.changedFiles.length > 0;
-            if (hasFileChanges) {
-              const renamedBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(deps, threadId, assistantMessage.id);
-              if (renamedBranch) {
-                await deps.eventHub.emit(threadId, "tool.finished", {
-                  source: "chat.thread.metadata",
-                  summary: "Updated worktree branch",
-                  worktreeBranch: renamedBranch,
-                  mode,
-                  precedingToolUseIds: [],
-                });
-              }
-            }
-          }
-        } catch (postError) {
-          deps.logService?.log("warn", "chat.lifecycle", "Post-completion enrichment failed", {
-            threadId,
-            error: postError instanceof Error ? postError.message : String(postError),
-          });
         }
-      })();
+      } catch (postError) {
+        deps.logService?.log("warn", "chat.lifecycle", "Post-completion enrichment failed", {
+          threadId,
+          error: postError instanceof Error ? postError.message : String(postError),
+        });
+      }
+
+      deps.logService?.log("debug", "chat.lifecycle", "run about to emit chat.completed", {
+        threadId,
+        assistantMessageId: assistantMessage.id,
+        completedThreadTitle,
+        completedWorktreeBranch,
+      });
+      await deps.eventHub.emit(threadId, "chat.completed", {
+        messageId: assistantMessage.id,
+        threadMode: mode,
+        ...(completedThreadTitle ? { threadTitle: completedThreadTitle } : {}),
+        ...(completedWorktreeBranch ? { worktreeBranch: completedWorktreeBranch } : {}),
+      });
+      completionEmitted = true;
     } catch (error) {
       deps.logService?.log("error", "chat.lifecycle", "runAssistant failed", {
         threadId,
@@ -507,20 +569,17 @@ export function createChatService(deps: RuntimeDeps) {
         clearTimeout(flushTimer);
         flushTimer = null;
       }
-      runningAbortControllersByThread.delete(threadId);
-      const hadScheduled = scheduledAssistantRunsByThread.has(threadId);
-      scheduledAssistantRunsByThread.delete(threadId);
+      const currentRun = getThreadRun(threadId);
+      const shouldClearRunState = currentRun?.abortController === abortController;
+      const previousRun = shouldClearRunState ? clearThreadRunState(threadId) : currentRun;
       deps.logService?.log("debug", "chat.lifecycle", "run cleanup removed scheduling + abort state", {
         threadId,
-        hadScheduled,
+        previousStatus: previousRun?.status ?? null,
+        shouldClearRunState,
       });
-      clearPendingGateRequestsBecauseRunEnded(pendingPermissionsByThread, pendingQuestionsByThread, threadId);
-      const wasActive = activeThreads.has(threadId);
-      activeThreads.delete(threadId);
-      deps.logService?.log("debug", "chat.lifecycle", "activeThreads cleared", {
-        threadId,
-        wasActive,
-      });
+      if (shouldClearRunState) {
+        clearPendingGateRequestsBecauseRunEnded(pendingPermissionsByThread, pendingQuestionsByThread, threadId);
+      }
     }
   }
 
@@ -534,7 +593,6 @@ export function createChatService(deps: RuntimeDeps) {
     const scheduledAt = Date.now();
     const timer = setTimeout(() => {
       const waitedMs = Date.now() - scheduledAt;
-      scheduledAssistantRunsByThread.delete(threadId);
       deps.logService?.log("debug", "chat.lifecycle", "scheduled assistant run started", {
         threadId,
         mode,
@@ -542,7 +600,11 @@ export function createChatService(deps: RuntimeDeps) {
       });
       void runAssistant(threadId, prompt, mode, options);
     }, AUTO_EXECUTE_DELAY_MS);
-    scheduledAssistantRunsByThread.set(threadId, timer);
+    setThreadRunState(threadId, {
+      status: "scheduled",
+      mode,
+      scheduledTimer: timer,
+    });
   }
 
   return {
@@ -552,7 +614,7 @@ export function createChatService(deps: RuntimeDeps) {
         orderBy: { createdAt: "asc" },
       });
 
-      return threads.map((t) => mapChatThread(t, activeThreads.has(t.id)));
+      return threads.map((t) => mapChatThread(t, isThreadActive(t.id)));
     },
 
     async getLatestPrMrThread(worktreeId: string): Promise<ChatThread | null> {
@@ -567,7 +629,7 @@ export function createChatService(deps: RuntimeDeps) {
         ],
       });
 
-      return thread ? mapChatThread(thread, activeThreads.has(thread.id)) : null;
+      return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
     },
 
     async getOrCreatePrMrThread(worktreeId: string): Promise<ChatThread> {
@@ -576,7 +638,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Worktree not found");
       }
 
-      const existing = await deps.prisma.chatThread.findFirst({
+      const existingCandidates = await deps.prisma.chatThread.findMany({
         where: {
           worktreeId,
           kind: "review",
@@ -586,18 +648,21 @@ export function createChatService(deps: RuntimeDeps) {
           { createdAt: "desc" },
         ],
       });
+      const existing = existingCandidates.find((thread) => thread.titleEditedManually)
+        ?? existingCandidates[0]
+        ?? null;
 
       if (existing) {
         const shouldUpgradePermissionProfile = existing.permissionProfile !== "review_git";
         const shouldUpgradeLegacyTitle = !existing.titleEditedManually && isLegacyReviewThreadTitle(existing.title);
         if (!shouldUpgradePermissionProfile && !shouldUpgradeLegacyTitle) {
-          return mapChatThread(existing, activeThreads.has(existing.id));
+          return mapChatThread(existing, isThreadActive(existing.id));
         }
 
         const reviewTitle = shouldUpgradeLegacyTitle ? await resolveReviewThreadTitle(worktree.path) : null;
         const shouldUpgradeTitle = reviewTitle !== null && reviewTitle !== existing.title;
         if (!shouldUpgradePermissionProfile && !shouldUpgradeTitle) {
-          return mapChatThread(existing, activeThreads.has(existing.id));
+          return mapChatThread(existing, isThreadActive(existing.id));
         }
 
         const updated = await deps.prisma.chatThread.update({
@@ -607,7 +672,7 @@ export function createChatService(deps: RuntimeDeps) {
             ...(shouldUpgradeTitle ? { title: reviewTitle } : {}),
           },
         });
-        return mapChatThread(updated, activeThreads.has(updated.id));
+        return mapChatThread(updated, isThreadActive(updated.id));
       }
 
       const reviewTitle = await resolveReviewThreadTitle(worktree.path);
@@ -650,7 +715,7 @@ export function createChatService(deps: RuntimeDeps) {
 
     async getThreadById(threadId: string): Promise<ChatThread | null> {
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
-      return thread ? mapChatThread(thread, activeThreads.has(thread.id)) : null;
+      return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
     },
 
     async renameThreadTitle(threadId: string, rawInput: unknown): Promise<ChatThread> {
@@ -672,7 +737,7 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
 
-      return mapChatThread(updatedThread, activeThreads.has(updatedThread.id));
+      return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
     },
 
     async updateThreadMode(threadId: string, rawInput: unknown): Promise<ChatThread> {
@@ -691,7 +756,7 @@ export function createChatService(deps: RuntimeDeps) {
         },
       });
 
-      return mapChatThread(updatedThread, activeThreads.has(updatedThread.id));
+      return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
     },
 
     async deleteThread(threadId: string): Promise<void> {
@@ -703,7 +768,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
-      if (activeThreads.has(threadId)) {
+      if (isThreadActive(threadId)) {
         throw new Error("Cannot delete a thread while assistant is processing");
       }
 
@@ -760,7 +825,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
-      if (!activeThreads.has(threadId)) {
+      if (!isThreadActive(threadId)) {
         throw new Error("No active assistant run for this thread");
       }
 
@@ -770,7 +835,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const cancelledScheduledRun = clearScheduledAssistantRun(threadId);
       if (cancelledScheduledRun) {
-        activeThreads.delete(threadId);
+        clearThreadRunState(threadId);
         await deps.eventHub.emit(threadId, "chat.completed", {
           cancelled: true,
           threadMode: thread.mode,
@@ -778,7 +843,7 @@ export function createChatService(deps: RuntimeDeps) {
         return;
       }
 
-      const abortController = runningAbortControllersByThread.get(threadId);
+      const abortController = getThreadRun(threadId)?.abortController;
       if (!abortController) {
         throw new Error("Assistant run is not cancellable right now");
       }
@@ -801,7 +866,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const pendingMap = pendingPermissionsByThread.get(threadId);
       const entry = pendingMap?.get(input.requestId);
-      if (!entry || entry.status !== "pending" || !entry.resolve) {
+      if (!entry) {
         await deps.eventHub.emit(threadId, "permission.resolved", {
           requestId: input.requestId,
           decision: "deny",
@@ -816,6 +881,10 @@ export function createChatService(deps: RuntimeDeps) {
           ownershipCandidates: [],
           activeSubagentToolUseIds: [],
         });
+        return;
+      }
+
+      if (entry.status !== "pending" || !entry.resolve) {
         return;
       }
 
@@ -940,7 +1009,7 @@ export function createChatService(deps: RuntimeDeps) {
         persisted: true,
       });
 
-      if (!activeThreads.has(threadId)) {
+      if (!isThreadActive(threadId)) {
         return;
       }
 
@@ -961,12 +1030,12 @@ export function createChatService(deps: RuntimeDeps) {
         }
       }
 
-      if (activeThreads.has(threadId)) {
+      if (isThreadActive(threadId)) {
         throw new Error("Assistant is still processing");
       }
 
       pendingPlanByThread.delete(threadId);
-      activeThreads.add(threadId);
+      setThreadRunState(threadId, { status: "scheduled", mode: "default" });
 
       await deps.prisma.chatThread.update({
         where: { id: threadId },
@@ -997,12 +1066,12 @@ export function createChatService(deps: RuntimeDeps) {
         }
       }
 
-      if (activeThreads.has(threadId)) {
+      if (isThreadActive(threadId)) {
         throw new Error("Assistant is still processing");
       }
 
       pendingPlanByThread.delete(threadId);
-      activeThreads.add(threadId);
+      setThreadRunState(threadId, { status: "scheduled", mode: "plan" });
 
       await deps.prisma.chatThread.update({
         where: { id: threadId },
@@ -1044,13 +1113,13 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Selected worktree no longer matches this thread. Please retry from the active worktree.");
       }
 
-      if (activeThreads.has(threadId)) {
+      if (isThreadActive(threadId)) {
         deps.logService?.log("debug", "chat.lifecycle", "sendMessage rejected because thread still active", {
           threadId,
         });
         throw new Error("Assistant is still processing the previous message");
       }
-      activeThreads.add(threadId);
+      setThreadRunState(threadId, { status: "scheduled", mode: input.mode });
       deps.logService?.log("debug", "chat.lifecycle", "sendMessage marked thread active", {
         threadId,
       });
@@ -1134,7 +1203,7 @@ export function createChatService(deps: RuntimeDeps) {
 
         return mapChatMessage(messageWithAttachments ?? message);
       } catch (error) {
-        activeThreads.delete(threadId);
+        clearThreadRunState(threadId);
         throw error;
       }
     },
@@ -1194,7 +1263,7 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
 
       let recoveredCount = 0;
       for (const thread of threads) {
-        if (activeThreads.has(thread.id)) continue;
+        if (isThreadActive(thread.id)) continue;
 
         const events = await deps.eventHub.list(thread.id);
         if (events.length === 0) continue;

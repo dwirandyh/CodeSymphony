@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { ChatEvent, ChatMessage, ChatThread } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatThread, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import {
+  applyMessageMutations,
   applySnapshotSeed,
   applyThreadModeUpdate,
   applyThreadTitleUpdate,
@@ -500,6 +501,14 @@ describe("snapshot seed decision helpers", () => {
     });
   });
 
+  it("treats count changes as a new snapshot key", () => {
+    const snapshotA = makeSnapshot();
+    const snapshotB: ChatTimelineSnapshot = makeSnapshot();
+    snapshotB.timelineItems = [{ kind: "error", id: "err-1", message: "boom", createdAt: "2026-01-01T00:00:00Z" }] as ChatTimelineSnapshot["timelineItems"];
+
+    expect(buildSnapshotKey(snapshotA)).not.toBe(buildSnapshotKey(snapshotB));
+  });
+
   it("applies on thread change even with same lengths", () => {
     const snapshotA = makeSnapshot({ newestSeq: 1, newestIdx: 100 });
     const snapshotB = makeSnapshot({ newestSeq: 2, newestIdx: 110 });
@@ -532,6 +541,52 @@ function createStateSetter<T>(state: { current: T }) {
 function createRef<T>(value: T) {
   return { current: value };
 }
+
+describe("applyMessageMutations", () => {
+  it("skips appending a duplicate assistant delta when the message already ends with that delta", () => {
+    const current = [{
+      id: "m1",
+      threadId: "thread-1",
+      seq: 1,
+      role: "assistant" as const,
+      content: "BuildBuild gagalal",
+      attachments: [],
+      createdAt: "2026-02-28T00:00:00.000Z",
+    }];
+
+    const result = applyMessageMutations(current, [{
+      kind: "message-delta",
+      id: "m1",
+      threadId: "thread-1",
+      role: "assistant",
+      delta: "gagalal",
+    }]);
+
+    expect(result[0]?.content).toBe("BuildBuild gagalal");
+  });
+
+  it("only appends the unseen suffix when a streamed delta repeats the full existing content", () => {
+    const current = [{
+      id: "m1",
+      threadId: "thread-1",
+      seq: 1,
+      role: "assistant" as const,
+      content: "Saya akan cek struktur project terlebih dahulu",
+      attachments: [],
+      createdAt: "2026-02-28T00:00:00.000Z",
+    }];
+
+    const result = applyMessageMutations(current, [{
+      kind: "message-delta",
+      id: "m1",
+      threadId: "thread-1",
+      role: "assistant",
+      delta: "Saya akan cek struktur project terlebih dahulu untuk menentukan perintah build yang tepat.",
+    }]);
+
+    expect(result[0]?.content).toBe("Saya akan cek struktur project terlebih dahulu untuk menentukan perintah build yang tepat.");
+  });
+});
 
 describe("applySnapshotSeed", () => {
   it("applies snapshot events and messages to state setters", () => {

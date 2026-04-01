@@ -101,6 +101,9 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
       });
 
       const event = mapDbEvent(dbEvent);
+      if (!event) {
+        throw new Error(`Failed to map chat event type: ${dbEvent.type}`);
+      }
       const threadListeners = listeners.get(threadId);
       threadListeners?.forEach((listener) => listener(event));
 

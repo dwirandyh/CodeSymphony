@@ -9,6 +9,9 @@ export function buildSnapshotKey(snapshot: ChatTimelineSnapshot): string {
   return [
     snapshot.newestSeq ?? "null",
     snapshot.newestIdx ?? "null",
+    snapshot.messages.length,
+    snapshot.events.length,
+    snapshot.timelineItems.length,
   ].join(":");
 }
 

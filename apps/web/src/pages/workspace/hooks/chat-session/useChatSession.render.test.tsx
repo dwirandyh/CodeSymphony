@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatThread, ChatTimelineSnapshot } from "@codesymphony/shared-types";
+import type { ChatThread, ChatTimelineItem, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useChatSession } from "./useChatSession";
@@ -28,8 +28,8 @@ vi.mock("./useThreadEventStream", () => ({
   useThreadEventStream: vi.fn(),
 }));
 
-vi.mock("../workspace-timeline", () => ({
-  useWorkspaceTimeline: vi.fn(() => ({
+const { useWorkspaceTimelineMock } = vi.hoisted(() => ({
+  useWorkspaceTimelineMock: vi.fn(() => ({
     items: [],
     summary: {
       oldestRenderableKey: null,
@@ -39,6 +39,10 @@ vi.mock("../workspace-timeline", () => ({
       headIdentityStable: true,
     },
   })),
+}));
+
+vi.mock("../workspace-timeline", () => ({
+  useWorkspaceTimeline: useWorkspaceTimelineMock,
 }));
 
 vi.mock("../../../../lib/renderDebug", () => ({
@@ -98,6 +102,24 @@ function renderHook(desiredThreadId?: string, repositoryId?: string | null) {
   });
 }
 
+function makeSnapshot(overrides?: Partial<ChatTimelineSnapshot>): ChatTimelineSnapshot {
+  return {
+    timelineItems: [],
+    summary: {
+      oldestRenderableKey: null,
+      oldestRenderableKind: null,
+      oldestRenderableMessageId: null,
+      oldestRenderableHydrationPending: false,
+      headIdentityStable: true,
+    },
+    newestSeq: null,
+    newestIdx: null,
+    messages: [],
+    events: [],
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
   snapshotState.data = null;
@@ -119,6 +141,17 @@ afterEach(() => {
   act(() => root.unmount());
   queryClient.clear();
   container.remove();
+  useWorkspaceTimelineMock.mockReset();
+  useWorkspaceTimelineMock.mockReturnValue({
+    items: [],
+    summary: {
+      oldestRenderableKey: null,
+      oldestRenderableKind: null,
+      oldestRenderableMessageId: null,
+      oldestRenderableHydrationPending: false,
+      headIdentityStable: true,
+    },
+  });
 });
 
 describe("useChatSession", () => {
@@ -204,5 +237,95 @@ describe("useChatSession", () => {
     renderHook("missing-thread");
 
     expect(hookResult.selectedThreadId).toBe("thread-b");
+  });
+
+  it("reselects desiredThreadId when it appears after an initial fallback", () => {
+    threadsState.data = [makeThread("thread-b", true)];
+    renderHook("thread-a");
+    expect(hookResult.selectedThreadId).toBe("thread-b");
+
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
+    renderHook("thread-a");
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+  });
+
+  it("prefers derived timeline when server snapshot contains stale cards but derived timeline is empty", () => {
+    const staleServerItems: ChatTimelineItem[] = [
+      {
+        kind: "edited-diff",
+        id: "stale-edited",
+        eventId: "event-1",
+        status: "success",
+        diffKind: "proposed",
+        changedFiles: ["src/app.ts"],
+        diff: "",
+        diffTruncated: false,
+        additions: 1,
+        deletions: 1,
+        rejectedByUser: false,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    snapshotState.data = makeSnapshot({
+      timelineItems: staleServerItems as ChatTimelineSnapshot["timelineItems"],
+      summary: {
+        oldestRenderableKey: "edited-diff:stale-edited",
+        oldestRenderableKind: "edited-diff",
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
+
+    renderHook("thread-a");
+
+    expect(hookResult.timelineItems).toEqual([]);
+  });
+
+  it("replaces stale local messages and events when the latest snapshot for the same thread is empty", () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      messages: [{
+        id: "msg-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "old content",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "msg-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    renderHook("thread-a");
+    expect(hookResult.messages).toHaveLength(1);
+    expect(hookResult.events).toHaveLength(1);
+
+    snapshotState.data = makeSnapshot();
+    renderHook("thread-a");
+
+    expect(hookResult.messages).toEqual([]);
+    expect(hookResult.events).toEqual([]);
   });
 });

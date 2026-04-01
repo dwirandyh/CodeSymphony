@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { ChatTimelineItem } from "./chat-message-list";
 import { MarkdownBody, ChatMessageList } from "./chat-message-list";
+import { getTimelineItemKey } from "./chat-message-list/toolEventUtils";
 
 vi.mock("@pierre/diffs", () => ({
   parsePatchFiles: vi.fn().mockReturnValue([]),
@@ -188,6 +189,36 @@ describe("ChatMessageList", () => {
     expect(container).toBeTruthy();
   });
 
+  it("clears rendered timeline rows when items transition from non-empty to empty", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "edited-diff",
+        id: "diff-1",
+        eventId: "ev-1",
+        status: "success",
+        diffKind: "actual",
+        changedFiles: ["src/index.ts"],
+        diff: "+hello\n-world",
+        diffTruncated: false,
+        additions: 1,
+        deletions: 1,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+    expect(container.querySelector("[data-testid='timeline-edited-diff']")).toBeTruthy();
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={[]} />);
+    });
+
+    expect(container.querySelector("[data-testid='timeline-edited-diff']")).toBeNull();
+    expect(container.textContent).toContain("No messages yet. Send a prompt to start.");
+  });
+
   it("renders user message", () => {
     const items: ChatTimelineItem[] = [
       { kind: "message", message: makeMessage("m1", "user", "Hello there", 1) },
@@ -206,6 +237,23 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
     expect(container.textContent).toContain("Hi back!");
+  });
+
+  it("changes the render key when an assistant message grows in place", () => {
+    const initialKey = getTimelineItemKey({
+      kind: "message",
+      message: makeMessage("m2", "assistant", "Start", 2),
+      renderHint: "markdown",
+      isCompleted: false,
+    });
+    const updatedKey = getTimelineItemKey({
+      kind: "message",
+      message: makeMessage("m2", "assistant", "Start\n\n- item", 2),
+      renderHint: "markdown",
+      isCompleted: false,
+    });
+
+    expect(updatedKey).not.toBe(initialKey);
   });
 
   it("renders error item", () => {

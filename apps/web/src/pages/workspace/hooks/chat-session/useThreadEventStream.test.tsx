@@ -308,7 +308,7 @@ describe("useThreadEventStream", () => {
     expect(invalidateQueriesMock).not.toHaveBeenCalled();
   });
 
-  it("does not invalidate the selected thread snapshot on active-thread chat.completed events", async () => {
+  it("invalidates the selected thread snapshot on active-thread chat.completed events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -332,7 +332,7 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
   it("patches selected thread as inactive on chat.completed", async () => {
@@ -407,6 +407,27 @@ describe("useThreadEventStream", () => {
       expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
     },
   );
+
+  it("does not reopen the stream when repository or review metadata changes for the same thread", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+    renderHook(threadId, { repositoryId: "repo-1", selectedThreadIsPrMr: false });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(1);
+
+    renderHook(threadId, { repositoryId: "repo-2", selectedThreadIsPrMr: true });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(1);
+  });
 
   it("does not invalidate repository reviews for non-PR/MR selected threads", async () => {
     const threadId = "selected-thread";

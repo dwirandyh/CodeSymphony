@@ -213,6 +213,84 @@ describe("extractEditedRuns", () => {
     expect(runs[0].diff).toContain("+new");
   });
 
+  it("splits a multi-file worktree diff across matching edit runs", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: {
+          toolName: "Edit",
+          toolUseId: "t1",
+          toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "tool.finished",
+        idx: 2,
+        payload: {
+          summary: "Edited /repo/README.md",
+          precedingToolUseIds: ["t1"],
+          editTarget: "/repo/README.md",
+        },
+      }),
+      makeEvent({
+        id: "e3",
+        type: "tool.started",
+        idx: 3,
+        payload: {
+          toolName: "Edit",
+          toolUseId: "t2",
+          toolInput: { file_path: "/repo/build.gradle", old_string: "x", new_string: "y" },
+        },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "tool.finished",
+        idx: 4,
+        payload: {
+          summary: "Edited /repo/build.gradle",
+          precedingToolUseIds: ["t2"],
+          editTarget: "/repo/build.gradle",
+        },
+      }),
+      makeEvent({
+        id: "e5",
+        type: "tool.finished",
+        idx: 5,
+        payload: {
+          source: "worktree.diff",
+          changedFiles: ["README.md", "build.gradle"],
+          diff: [
+            "diff --git a/README.md b/README.md",
+            "--- a/README.md",
+            "+++ b/README.md",
+            "@@ -1 +1 @@",
+            "-a",
+            "+b",
+            "diff --git a/build.gradle b/build.gradle",
+            "--- a/build.gradle",
+            "+++ b/build.gradle",
+            "@@ -1 +1 @@",
+            "-x",
+            "+y",
+          ].join("\n"),
+        },
+      }),
+    ];
+
+    const runs = extractEditedRuns(events);
+
+    expect(runs).toHaveLength(2);
+    expect(runs[0].diffKind).toBe("actual");
+    expect(runs[1].diffKind).toBe("actual");
+    expect(runs[0].diff).toContain("README.md");
+    expect(runs[0].diff).not.toContain("build.gradle");
+    expect(runs[1].diff).toContain("build.gradle");
+    expect(runs[1].diff).not.toContain("README.md");
+  });
+
   it("creates proposed diff from tool input on permission request", () => {
     const events = [
       makeEvent({

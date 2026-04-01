@@ -78,7 +78,7 @@ function parseSkillTool(item: Extract<ChatTimelineItem, { kind: "tool" }>): {
   const skillName = explicitSkillNames[0] ?? null;
   let allowedToolsCount: number | null = null;
   for (const candidate of candidates) {
-    const parsedAllowedToolsCount = parseAllowedToolsCount(candidate);
+    const parsedAllowedToolsCount = parseAllowedToolsCount(candidate ?? null);
     if (allowedToolsCount == null && parsedAllowedToolsCount != null) {
       allowedToolsCount = parsedAllowedToolsCount;
     }

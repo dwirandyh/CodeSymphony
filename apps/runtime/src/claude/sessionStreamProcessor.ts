@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeOwnershipDiagnostics, ClaudeToolInstrumentationEvent } from "../types.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 
@@ -272,7 +273,7 @@ function extractSubagentResponse(
 }
 
 export async function processStreamMessages(
-  stream: AsyncIterable<Record<string, unknown>>,
+  stream: AsyncIterable<SDKMessage>,
   deps: StreamProcessorDeps,
 ): Promise<string | null> {
   let latestSessionId: string | null = null;
@@ -290,15 +291,15 @@ export async function processStreamMessages(
   } = deps;
 
   for await (const message of stream) {
-    if ((message as { type: string }).type === "system" && (message as { subtype?: string }).subtype === "init") {
-      latestSessionId = (message as { session_id: string }).session_id;
+    if (message.type === "system" && message.subtype === "init") {
+      latestSessionId = message.session_id;
       continue;
     }
 
-    if ((message as { type: string }).type === "stream_event") {
-      const event = (message as { event: { type: string; delta: { type: string; text?: string } } }).event;
+    if (message.type === "stream_event") {
+      const event = message.event;
       if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-        if ((message as { parent_tool_use_id?: string }).parent_tool_use_id) {
+        if (message.parent_tool_use_id) {
           continue;
         }
         if (sawToolUseSinceLastText && state.finalOutput.length > 0 && !/\s$/.test(state.finalOutput)) {
@@ -312,14 +313,26 @@ export async function processStreamMessages(
       continue;
     }
 
-    if ((message as { type: string }).type === "tool_progress") {
-      sawToolUseSinceLastText = true;
-      const msg = message as {
-        tool_use_id: string;
-        tool_name: string;
-        parent_tool_use_id: string | null;
-        elapsed_time_seconds: number;
+    if (message.type === "result") {
+      state.resultSummary = {
+        subtype: message.subtype,
+        isError: message.is_error,
+        durationMs: message.duration_ms,
+        durationApiMs: message.duration_api_ms,
+        totalCostUsd: message.total_cost_usd,
+        stopReason: message.stop_reason,
+        permissionDenialCount: message.permission_denials.length,
+        errorCount: "errors" in message ? message.errors.length : 0,
       };
+      if (message.subtype === "success" && state.finalOutput.trim().length === 0 && message.result.trim().length > 0) {
+        state.finalOutput = message.result.trim();
+      }
+      continue;
+    }
+
+    if (message.type === "tool_progress") {
+      sawToolUseSinceLastText = true;
+      const msg = message;
       const metadata = maps.toolMetadataByUseId.get(msg.tool_use_id);
       maps.requestedToolByUseId.set(msg.tool_use_id, {
         toolName: msg.tool_name,
@@ -386,12 +399,9 @@ export async function processStreamMessages(
       continue;
     }
 
-    if ((message as { type: string }).type === "tool_use_summary") {
+    if (message.type === "tool_use_summary") {
       sawToolUseSinceLastText = true;
-      const msg = message as {
-        preceding_tool_use_ids: string[];
-        summary: string;
-      };
+      const msg = message;
       const { summaryToolUseIds, skippedAmbiguousFallback, debug: summaryFallbackDebug } = buildSummaryToolUseIds(
         maps,
         msg.preceding_tool_use_ids,
@@ -589,13 +599,8 @@ export async function processStreamMessages(
       continue;
     }
 
-    if (
-      (message as { type: string }).type === "system" &&
-      "subtype" in message &&
-      (message as { subtype?: string }).subtype === "files_persisted"
-    ) {
-      const filesPersistedMessage = message as { files?: Array<{ filename: string; file_id: string }> };
-      const files = filesPersistedMessage.files ?? [];
+    if (message.type === "system" && message.subtype === "files_persisted") {
+      const files = message.files ?? [];
       for (const file of files) {
         if (file.filename.includes(".claude/plans/") && file.filename.endsWith(".md")) {
           maps.sessionPersistedPlanFiles.add(file.filename);
@@ -613,11 +618,10 @@ export async function processStreamMessages(
       continue;
     }
 
-    if ((message as { type: string }).type === "assistant") {
+    if (message.type === "assistant") {
       const textParts: string[] = [];
-      const assistantMsg = message as { message: { content: Array<{ type: string; text?: string }> } };
 
-      for (const part of assistantMsg.message.content) {
+      for (const part of message.message.content) {
         if (part.type === "text") {
           textParts.push(part.text!);
         }

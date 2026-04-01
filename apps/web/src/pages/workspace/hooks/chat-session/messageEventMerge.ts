@@ -84,8 +84,20 @@ export function applyMessageMutations(
           attachments: [],
           createdAt: new Date().toISOString(),
         });
-      } else if (mut.role !== "user") {
-        appendedDeltas.set(mut.id, (appendedDeltas.get(mut.id) ?? "") + mut.delta);
+      } else if (mut.role !== "user" && mut.delta.length > 0) {
+        const existingContent = current.find((message) => message.id === mut.id)?.content ?? "";
+        const pendingContent = appendedDeltas.get(mut.id) ?? "";
+        const effectiveContent = existingContent + pendingContent;
+        if (effectiveContent.length > 0) {
+          if (effectiveContent.endsWith(mut.delta)) {
+            continue;
+          }
+          if (mut.delta.includes(effectiveContent)) {
+            appendedDeltas.set(mut.id, mut.delta.slice(effectiveContent.length));
+            continue;
+          }
+        }
+        appendedDeltas.set(mut.id, pendingContent + mut.delta);
       }
     }
   }

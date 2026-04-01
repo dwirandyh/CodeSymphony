@@ -12,6 +12,7 @@
     "lint": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@codesymphony/chat-timeline-core": "workspace:*",
     "@codesymphony/shared-types": "workspace:*",
     "@pierre/diffs": "^1.0.11",
     "@radix-ui/react-dialog": "^1.1.15",

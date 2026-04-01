@@ -12,6 +12,17 @@ export type RuntimeEventHub = {
 export type ClaudeRunnerResult = {
   output: string;
   sessionId: string | null;
+  promptSuggestions?: string[];
+  resultSummary?: {
+    subtype: string;
+    isError: boolean;
+    durationMs: number;
+    durationApiMs: number;
+    totalCostUsd: number;
+    stopReason: string | null;
+    permissionDenialCount: number;
+    errorCount: number;
+  };
 };
 
 export type PlanDetectionSource = "claude_plan_file" | "streaming_fallback";

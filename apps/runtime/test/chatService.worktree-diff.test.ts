@@ -159,7 +159,10 @@ describe("chatService worktree diff delta", () => {
 
     const events = await waitForTerminalEvent(chatService, threadId);
     const diffEvent = worktreeDiffEvent(events);
+    const completedEvent = events.find((event) => event.type === "chat.completed");
     expect(diffEvent).toBeDefined();
+    expect(completedEvent).toBeDefined();
+    expect((diffEvent?.idx ?? Number.POSITIVE_INFINITY)).toBeLessThan(completedEvent?.idx ?? Number.NEGATIVE_INFINITY);
     expect(diffEvent?.payload.changedFiles).toEqual(["src/b.ts"]);
     expect(diffEvent?.payload.diff).toContain("diff --git a/src/b.ts b/src/b.ts");
     expect(diffEvent?.payload.diff).not.toContain("diff --git a/src/a.ts b/src/a.ts");
