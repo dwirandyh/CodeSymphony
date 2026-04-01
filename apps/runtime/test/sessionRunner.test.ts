@@ -2,8 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockQuery = vi.fn();
 
+function attachQueryControls<T extends AsyncGenerator<unknown, void>>(generator: T) {
+  return Object.assign(generator, {
+    interrupt: vi.fn(async () => {}),
+    close: vi.fn(() => {}),
+  });
+}
+
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  listSessions: vi.fn(),
+  getSessionInfo: vi.fn(),
+  getSessionMessages: vi.fn(),
 }));
 
 import { __testing, runClaudeWithStreaming } from "../src/claude/sessionRunner";
@@ -78,7 +88,7 @@ describe("tool instrumentation", () => {
 
   it("emits requested/decision/started/finished instrumentation events", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -110,7 +120,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     const instrumentationEvents: Array<Record<string, unknown>> = [];
@@ -149,7 +159,7 @@ describe("tool instrumentation", () => {
 
   it("does not emit a plan for generic plan-mode assistant text without a real plan file", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -168,7 +178,7 @@ describe("tool instrumentation", () => {
           decisionReason: null,
           suggestions: [],
         });
-      })();
+      })());
     });
 
     const onPlanFileDetected = vi.fn();
@@ -193,7 +203,7 @@ describe("tool instrumentation", () => {
 
   it("emits started instrumentation from PreToolUse hook for non-bash tools", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -240,7 +250,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     const instrumentationEvents: Array<Record<string, unknown>> = [];
@@ -271,7 +281,7 @@ describe("tool instrumentation", () => {
 
   it("includes search parameters in onToolStarted payload for search tools", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -297,7 +307,7 @@ describe("tool instrumentation", () => {
           summary: "Completed Glob",
           preceding_tool_use_ids: ["tool-glob-1"],
         };
-      })();
+      })());
     });
 
     const onToolStarted = vi.fn();
@@ -325,7 +335,7 @@ describe("tool instrumentation", () => {
 
   it("includes edit target metadata for edit lifecycle events", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const hooks = options.hooks as {
           PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
           PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
@@ -369,7 +379,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     const onToolStarted = vi.fn();
@@ -402,7 +412,7 @@ describe("tool instrumentation", () => {
 
   it("emits synthetic finish for incomplete non-bash lifecycle", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -429,7 +439,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "partial" }],
           },
         };
-      })();
+      })());
     });
 
     const instrumentationEvents: Array<Record<string, unknown>> = [];
@@ -466,7 +476,7 @@ describe("tool instrumentation", () => {
 
   it("inserts newline separator between text blocks separated by tool use", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -506,7 +516,7 @@ describe("tool instrumentation", () => {
             delta: { type: "text_delta", text: "The file does not exist." },
           },
         };
-      })();
+      })());
     });
 
     const textChunks: string[] = [];
@@ -532,7 +542,7 @@ describe("tool instrumentation", () => {
 
   it("emits requested_not_started anomaly when tool is allowed but never starts", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -552,7 +562,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     const instrumentationEvents: Array<Record<string, unknown>> = [];
@@ -583,12 +593,225 @@ describe("tool instrumentation", () => {
     expect(anomalyEvent).toBeDefined();
   });
 
+  it("resumes sessions when worktree paths are canonically equivalent", async () => {
+    let capturedOptions: Record<string, unknown> | null = null;
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      capturedOptions = options;
+      return attachQueryControls((async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-resume" };
+        yield {
+          type: "result",
+          subtype: "success",
+          duration_ms: 1,
+          duration_api_ms: 1,
+          is_error: false,
+          num_turns: 1,
+          result: "done",
+          stop_reason: null,
+          total_cost_usd: 0,
+          usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 0 } },
+          modelUsage: {},
+          permission_denials: [],
+          uuid: "uuid-result",
+          session_id: "session-resume",
+        };
+      })());
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "resume",
+      sessionId: "session-existing",
+      sessionWorktreePath: "/private/tmp/project",
+      cwd: "/tmp/project",
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(capturedOptions?.resume).toBe("session-existing");
+    expect(capturedOptions?.forkSession).toBe(false);
+  });
+
+  it("does not resume sessions when worktree paths differ", async () => {
+    let capturedOptions: Record<string, unknown> | null = null;
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      capturedOptions = options;
+      return attachQueryControls((async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-fresh" };
+      })());
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "fresh",
+      sessionId: "session-existing",
+      sessionWorktreePath: "/tmp/project-a",
+      cwd: "/tmp/project-b",
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(capturedOptions?.resume).toBeUndefined();
+  });
+
+  it("returns result summary metadata", async () => {
+    mockQuery.mockImplementation(() => {
+      return attachQueryControls((async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-meta" };
+        yield {
+          type: "result",
+          subtype: "success",
+          duration_ms: 123,
+          duration_api_ms: 45,
+          is_error: false,
+          num_turns: 2,
+          result: "final output",
+          stop_reason: "end_turn",
+          total_cost_usd: 0.42,
+          usage: { input_tokens: 10, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: { web_search_requests: 0 } },
+          modelUsage: {},
+          permission_denials: [{ tool_name: "Bash", tool_use_id: "tool-1", tool_input: {} }],
+          uuid: "uuid-result-meta",
+          session_id: "session-meta",
+        };
+      })());
+    });
+
+    const result = await runClaudeWithStreaming({
+      prompt: "meta",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(result.output).toBe("final output");
+    expect(result.promptSuggestions).toEqual([]);
+    expect(result.resultSummary).toEqual({
+      subtype: "success",
+      isError: false,
+      durationMs: 123,
+      durationApiMs: 45,
+      totalCostUsd: 0.42,
+      stopReason: "end_turn",
+      permissionDenialCount: 1,
+      errorCount: 0,
+    });
+  });
+
+  it("auto-allows read and search tools with approval hints without prompting user", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
+    const instrumentationEvents: Array<Record<string, unknown>> = [];
+    const decisions: Array<{ toolName: string; behavior: string }> = [];
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return attachQueryControls((async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        decisions.push({
+          toolName: "Read",
+          behavior: (await canUseTool("Read", {
+            file_path: "README.md",
+          }, {
+            toolUseID: "tool-read-auto",
+            blockedPath: "/outside-workspace/README.md",
+            decisionReason: "Path requires approval",
+            suggestions: [{ type: "addRules" }],
+          })).behavior,
+        });
+        decisions.push({
+          toolName: "Glob",
+          behavior: (await canUseTool("Glob", {
+            pattern: "**/*.md",
+          }, {
+            toolUseID: "tool-glob-auto",
+            blockedPath: "/outside-workspace",
+            decisionReason: "Path requires approval",
+            suggestions: [{ type: "addRules" }],
+          })).behavior,
+        });
+        decisions.push({
+          toolName: "Grep",
+          behavior: (await canUseTool("Grep", {
+            pattern: "TODO",
+          }, {
+            toolUseID: "tool-grep-auto",
+            blockedPath: "/outside-workspace",
+            decisionReason: "Path requires approval",
+            suggestions: [{ type: "addRules" }],
+          })).behavior,
+        });
+
+        yield { type: "system", subtype: "init", session_id: "session-read-search-auto" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })());
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "inspect repo",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: (event) => {
+        instrumentationEvents.push(event as unknown as Record<string, unknown>);
+      },
+    });
+
+    expect(decisions).toEqual([
+      { toolName: "Read", behavior: "allow" },
+      { toolName: "Glob", behavior: "allow" },
+      { toolName: "Grep", behavior: "allow" },
+    ]);
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+
+    const decisionEvents = instrumentationEvents.filter((event) => event.stage === "decision");
+    expect(decisionEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolUseId: "tool-read-auto", decision: "auto_allow" }),
+      expect.objectContaining({ toolUseId: "tool-glob-auto", decision: "auto_allow" }),
+      expect.objectContaining({ toolUseId: "tool-grep-auto", decision: "auto_allow" }),
+    ]));
+  });
+
   it("auto-allows Edit tool with approval hints without prompting user", async () => {
     const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
     const instrumentationEvents: Array<Record<string, unknown>> = [];
 
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -615,7 +838,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "edited" }],
           },
         };
-      })();
+      })());
     });
 
     await runClaudeWithStreaming({
@@ -648,7 +871,7 @@ describe("tool instrumentation", () => {
     const decisions: Array<{ requestId: string; behavior: string }> = [];
 
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -693,7 +916,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     await runClaudeWithStreaming({
@@ -746,7 +969,7 @@ describe("tool instrumentation", () => {
     const decisions: string[] = [];
 
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -767,7 +990,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     await runClaudeWithStreaming({
@@ -797,7 +1020,7 @@ describe("tool instrumentation", () => {
     const onPermissionRequest = vi.fn(async () => ({ decision: "deny" as const }));
 
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -822,7 +1045,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "denied" }],
           },
         };
-      })();
+      })());
     });
 
     await runClaudeWithStreaming({
@@ -849,9 +1072,66 @@ describe("tool instrumentation", () => {
     }));
   });
 
+  it("keeps read tools denied in plan mode", async () => {
+    const onPermissionRequest = vi.fn(async () => ({ decision: "allow" as const }));
+    const instrumentationEvents: Array<Record<string, unknown>> = [];
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return attachQueryControls((async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown; message?: string }>;
+        const result = await canUseTool("Read", {
+          file_path: "README.md",
+        }, {
+          toolUseID: "tool-read-plan-deny",
+          blockedPath: "/outside-workspace/README.md",
+          decisionReason: "Path requires approval",
+          suggestions: [{ type: "addRules" }],
+        });
+
+        expect(result.behavior).toBe("deny");
+        expect(result.message).toBe("Plan requires user approval before execution.");
+
+        yield { type: "system", subtype: "init", session_id: "session-read-plan-deny" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "plan done" }],
+          },
+        };
+      })());
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "plan readme",
+      sessionId: null,
+      cwd: process.cwd(),
+      permissionMode: "plan",
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onThinking: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest,
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: (event) => {
+        instrumentationEvents.push(event as unknown as Record<string, unknown>);
+      },
+    });
+
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+    expect(instrumentationEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "decision", toolUseId: "tool-read-plan-deny", decision: "plan_deny" }),
+    ]));
+  });
+
   it("allows AskUserQuestion in default (execute) mode", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -875,7 +1155,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "I will proceed." }],
           },
         };
-      })();
+      })());
     });
 
     const onQuestionRequest = vi.fn().mockResolvedValue({ answers: { "0": "React" } });
@@ -900,7 +1180,7 @@ describe("tool instrumentation", () => {
 
   it("allows AskUserQuestion in plan mode", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -924,7 +1204,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "Plan created." }],
           },
         };
-      })();
+      })());
     });
 
     const onQuestionRequest = vi.fn().mockResolvedValue({ answers: { "0": "React" } });
@@ -951,7 +1231,7 @@ describe("tool instrumentation", () => {
 
   it("bridges mismatched task and subagent IDs at start while keeping subagent UUID", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -989,7 +1269,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     const onSubagentStarted = vi.fn();
@@ -1020,7 +1300,7 @@ describe("tool instrumentation", () => {
 
   it("maps overlapping subagents to queued task prompts deterministically", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -1092,7 +1372,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     const onSubagentStarted = vi.fn();
@@ -1137,7 +1417,7 @@ describe("tool instrumentation", () => {
 
   it("cleans bridged task IDs on stop to prevent stale prompt reuse", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -1196,7 +1476,7 @@ describe("tool instrumentation", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     const onSubagentStarted = vi.fn();
@@ -1231,7 +1511,7 @@ describe("tool instrumentation", () => {
 
   it("backfills subagent description from transcript when start mapping is empty", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const hooks = options.hooks as {
           SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
           SubagentStop: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
@@ -1273,7 +1553,7 @@ describe("tool instrumentation", () => {
         );
 
         yield { type: "system", subtype: "init", session_id: "session-subagent-transcript" };
-      })();
+      })());
     });
 
     const onSubagentStarted = vi.fn();
@@ -1308,7 +1588,7 @@ describe("tool instrumentation", () => {
 
   it("maps Agent launcher prompts to subagent starts", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -1338,7 +1618,7 @@ describe("tool instrumentation", () => {
         );
 
         yield { type: "system", subtype: "init", session_id: "session-subagent-agent-launcher" };
-      })();
+      })());
     });
 
     const onSubagentStarted = vi.fn();
@@ -1367,7 +1647,7 @@ describe("tool instrumentation", () => {
 
   it("maps launcher prompts through PreToolUse when canUseTool bridge is absent", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const hooks = options.hooks as {
           PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
           SubagentStart: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<Record<string, unknown>>> }>;
@@ -1396,7 +1676,7 @@ describe("tool instrumentation", () => {
         );
 
         yield { type: "system", subtype: "init", session_id: "session-subagent-pretool" };
-      })();
+      })());
     });
 
     const onSubagentStarted = vi.fn();
@@ -1426,7 +1706,7 @@ describe("tool instrumentation", () => {
 
   it("does not cross-attribute ambiguous child tool to last active subagent", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -1496,7 +1776,7 @@ describe("tool instrumentation", () => {
         );
 
         yield { type: "system", subtype: "init", session_id: "session-subagent-overlap-ambiguous" };
-      })();
+      })());
     });
 
     const onToolStarted = vi.fn();
@@ -1556,7 +1836,7 @@ describe("tool instrumentation", () => {
 
   it("uses skill-name description hints to resolve ownership under overlap", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -1653,7 +1933,7 @@ describe("tool instrumentation", () => {
         );
 
         yield { type: "system", subtype: "init", session_id: "session-subagent-overlap-skill-hinted" };
-      })();
+      })());
     });
 
     const onToolStarted = vi.fn();
@@ -1722,7 +2002,7 @@ describe("tool instrumentation", () => {
 
   it("uses subagent description hints to resolve ownership under overlap", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -1813,7 +2093,7 @@ describe("tool instrumentation", () => {
         );
 
         yield { type: "system", subtype: "init", session_id: "session-subagent-overlap-hinted" };
-      })();
+      })());
     });
 
     const onToolStarted = vi.fn();
@@ -1879,7 +2159,7 @@ describe("tool instrumentation", () => {
 
   it("skips empty summary fallback when unresolved tools span overlapping ownership buckets", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -1943,7 +2223,7 @@ describe("tool instrumentation", () => {
           summary: "Overlap summary with no preceding ids",
           preceding_tool_use_ids: [],
         };
-      })();
+      })());
     });
 
     const onToolFinished = vi.fn();
@@ -1989,7 +2269,7 @@ describe("tool instrumentation", () => {
 
   it("uses empty summary fallback when only one unresolved tool remains", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -2015,7 +2295,7 @@ describe("tool instrumentation", () => {
           summary: "Read README.md",
           preceding_tool_use_ids: [],
         };
-      })();
+      })());
     });
 
     const onToolFinished = vi.fn();
@@ -2056,7 +2336,7 @@ describe("tool instrumentation", () => {
 
   it("propagates ownership metadata for summary-finished child tools", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -2098,7 +2378,7 @@ describe("tool instrumentation", () => {
           summary: "Read README.md",
           preceding_tool_use_ids: ["tool-read-owned"],
         };
-      })();
+      })());
     });
 
     const onToolFinished = vi.fn();
@@ -2136,7 +2416,7 @@ describe("tool instrumentation", () => {
 
   it("propagates ownership metadata for synthetic finish path", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -2173,7 +2453,7 @@ describe("tool instrumentation", () => {
           parent_tool_use_id: "call-task-synth",
           elapsed_time_seconds: 0.2,
         };
-      })();
+      })());
     });
 
     const onToolFinished = vi.fn();
@@ -2211,7 +2491,7 @@ describe("tool instrumentation", () => {
 
   it("propagates ownership metadata for failure hook path", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -2262,7 +2542,7 @@ describe("tool instrumentation", () => {
         );
 
         yield { type: "system", subtype: "init", session_id: "session-owned-failure" };
-      })();
+      })());
     });
 
     const onToolFinished = vi.fn();
@@ -2300,7 +2580,7 @@ describe("tool instrumentation", () => {
 
   it("emits response updates with canonical subagent UUID across post-hook and summary paths", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -2348,7 +2628,7 @@ describe("tool instrumentation", () => {
           summary: "tool_use_summary late response",
           preceding_tool_use_ids: ["call-task-canonical"],
         };
-      })();
+      })());
     });
 
     const onSubagentStopped = vi.fn();
@@ -2380,7 +2660,7 @@ describe("tool instrumentation", () => {
 
   it("skips unresolved response updates instead of emitting call_* fallback owners", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         const canUseTool = options.canUseTool as (
           toolName: string,
           input: Record<string, unknown>,
@@ -2416,7 +2696,7 @@ describe("tool instrumentation", () => {
           summary: "orphan summary response",
           preceding_tool_use_ids: ["call-task-orphan"],
         };
-      })();
+      })());
     });
 
     const onSubagentStopped = vi.fn();
@@ -2453,7 +2733,7 @@ describe("thinking_delta", () => {
 
   it("ignores thinking_delta events and still forwards text deltas", async () => {
     mockQuery.mockImplementation(() => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         yield { type: "system", subtype: "init", session_id: "session-think" };
         yield {
           type: "stream_event",
@@ -2488,7 +2768,7 @@ describe("thinking_delta", () => {
             content: [{ type: "text", text: "Here is the answer." }],
           },
         };
-      })();
+      })());
     });
 
     const thinkingChunks: string[] = [];
@@ -2514,7 +2794,7 @@ describe("thinking_delta", () => {
 
   it("ignores thinking_delta from subagents", async () => {
     mockQuery.mockImplementation(() => {
-      return (async function* () {
+      return attachQueryControls((async function* () {
         yield { type: "system", subtype: "init", session_id: "session-think-sub" };
         yield {
           type: "stream_event",
@@ -2532,7 +2812,7 @@ describe("thinking_delta", () => {
             content: [{ type: "text", text: "done" }],
           },
         };
-      })();
+      })());
     });
 
     const thinkingChunks: string[] = [];

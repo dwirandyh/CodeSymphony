@@ -33,6 +33,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.42
         version: 0.2.42(zod@4.3.6)
+      '@codesymphony/chat-timeline-core':
+        specifier: workspace:*
+        version: link:../../packages/chat-timeline-core
       '@codesymphony/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -79,6 +82,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@codesymphony/chat-timeline-core':
+        specifier: workspace:*
+        version: link:../../packages/chat-timeline-core
       '@codesymphony/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -188,6 +194,22 @@ importers:
       vite:
         specifier: ^6.2.0
         version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.2)
+      vitest:
+        specifier: ^3.0.8
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@22.19.11)(jiti@2.6.1)(jsdom@26.1.0)(tsx@4.21.0)(yaml@2.8.2)
+
+  packages/chat-timeline-core:
+    dependencies:
+      '@codesymphony/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.10
+        version: 22.19.11
+      typescript:
+        specifier: ^5.8.2
+        version: 5.9.3
       vitest:
         specifier: ^3.0.8
         version: 3.2.4(@types/debug@4.1.12)(@types/node@22.19.11)(jiti@2.6.1)(jsdom@26.1.0)(tsx@4.21.0)(yaml@2.8.2)

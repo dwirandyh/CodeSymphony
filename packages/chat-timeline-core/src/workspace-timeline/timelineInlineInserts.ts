@@ -1,6 +1,6 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { AssistantRenderHint } from "@codesymphony/shared-types";
-import { SENTENCE_BOUNDARY_PATTERN } from "../../constants";
+import { SENTENCE_BOUNDARY_PATTERN } from "../constants";
 import {
   hasSentenceBoundary,
   isSentenceAwareInlineInsertKind,
@@ -8,11 +8,11 @@ import {
   stripAssistantControlMarkup,
   splitAtFirstSentenceBoundary,
   splitAtContentBoundary,
-} from "../../textUtils";
-import { parseTimestamp } from "../../eventUtils";
-import { pushRenderDebug } from "../../../../lib/renderDebug";
+} from "../textUtils";
+import { parseTimestamp } from "../eventUtils";
+import { pushRenderDebug } from "../debug";
 import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry } from "./useWorkspaceTimeline.types";
-import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../../types";
+import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types";
 
 export function buildInlineInserts(
   bashRuns: BashRun[],
@@ -552,26 +552,36 @@ export function pushMessageSegment(
     return;
   }
 
-  const segmentMessage: ChatMessage = {
-    ...message,
-    id: `${message.id}:segment:${segmentIdSuffix}`,
-    content,
-  };
-  sortable.push({
-    item: {
-      kind: "message",
-      message: segmentMessage,
-      renderHint: renderHint === "diff" ? "diff" : "markdown",
-      rawFileLanguage: undefined,
-      isCompleted,
-      context: nonBashContext,
-    },
-    anchorIdx: segmentAnchorIdx ?? anchorIdx,
-    timestamp: segmentTimestamp ?? timestamp,
-    rank: 3,
-    stableOrder: message.seq + stableOffset.value,
+  const paragraphSegments = content.includes("\n\n")
+    ? content
+      .split(/\n{2,}/)
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0)
+    : [content];
+  const normalizedSegments = paragraphSegments.length > 0 ? paragraphSegments : [content];
+
+  normalizedSegments.forEach((segmentContent, segmentIndex) => {
+    const segmentMessage: ChatMessage = {
+      ...message,
+      id: `${message.id}:segment:${segmentIdSuffix}:${segmentIndex}`,
+      content: segmentContent,
+    };
+    sortable.push({
+      item: {
+        kind: "message",
+        message: segmentMessage,
+        renderHint: renderHint === "diff" ? "diff" : "markdown",
+        rawFileLanguage: undefined,
+        isCompleted,
+        context: nonBashContext,
+      },
+      anchorIdx: segmentAnchorIdx ?? anchorIdx,
+      timestamp: segmentTimestamp ?? timestamp,
+      rank: 3,
+      stableOrder: message.seq + stableOffset.value,
+    });
+    stableOffset.value += 0.001;
   });
-  stableOffset.value += 0.001;
 }
 
 export function processInlineInsertLoop(
@@ -614,8 +624,7 @@ export function processInlineInsertLoop(
   const deferFirstInsertUntilText =
     !hasLeadingText
     && hasAnyTrailingText
-    && inlineInserts.length > 0
-    && !isSentenceAwareInlineInsertKind(firstInsertKind);
+    && inlineInserts.length > 0;
   const delayFirstInlineInsert = shouldDelayFirstInlineInsert(
     firstInsertKind,
     segmentBuckets[0]?.content ?? "",
@@ -889,8 +898,6 @@ export function processInlineInsertLoop(
       const shouldHoldLeadingSentenceAwareInsert =
         nextInsertIndex === 0
         && isSentenceAwareInlineInsertKind(firstInsertKind)
-        && firstInsertKind !== "subagent-activity"
-        && firstInsertKind !== "explore-activity"
         && hasAnyTrailingText
         && bucketIndex === 0;
       if (shouldHoldLeadingSentenceAwareInsert) {

@@ -407,6 +407,123 @@ describe("chatService snapshot", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps fallback-anchored explore and edit cards ahead of later assistant turns in runtime assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "inspect",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "I checked and updated the UI.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "m3",
+        threadId: "t1",
+        seq: 3,
+        role: "user" as const,
+        content: "thanks",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "m4",
+        threadId: "t1",
+        seq: 4,
+        role: "assistant" as const,
+        content: "done",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+    ];
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 50,
+        type: "tool.started" as const,
+        payload: { toolName: "Glob", toolUseId: "g1", searchParams: "src/**/*.ts" },
+        createdAt: "2026-01-01T00:00:10Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 51,
+        type: "tool.finished" as const,
+        payload: { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] },
+        createdAt: "2026-01-01T00:00:11Z",
+      },
+      {
+        id: "e3",
+        threadId: "t1",
+        idx: 52,
+        type: "tool.started" as const,
+        payload: { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "src/app.ts", old_string: "a", new_string: "b" } },
+        createdAt: "2026-01-01T00:00:12Z",
+      },
+      {
+        id: "e4",
+        threadId: "t1",
+        idx: 53,
+        type: "tool.finished" as const,
+        payload: { toolName: "Edit", summary: "Updated src/app.ts", precedingToolUseIds: ["e1"], changedFiles: ["src/app.ts"], additions: 1, deletions: 1 },
+        createdAt: "2026-01-01T00:00:13Z",
+      },
+      {
+        id: "e5",
+        threadId: "t1",
+        idx: 54,
+        type: "message.delta" as const,
+        payload: { role: "assistant", messageId: "m2", delta: "I checked and updated the UI." },
+        createdAt: "2026-01-01T00:00:14Z",
+      },
+      {
+        id: "e6",
+        threadId: "t1",
+        idx: 200,
+        type: "message.delta" as const,
+        payload: { role: "assistant", messageId: "m4", delta: "done" },
+        createdAt: "2026-01-01T00:00:20Z",
+      },
+      {
+        id: "e7",
+        threadId: "t1",
+        idx: 201,
+        type: "chat.completed" as const,
+        payload: { messageId: "m4" },
+        createdAt: "2026-01-01T00:00:21Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const exploreIndex = assembly.items.findIndex((item) => item.kind === "explore-activity");
+    const editedIndex = assembly.items.findIndex((item) => item.kind === "edited-diff");
+    const laterAssistantIndex = assembly.items.findIndex((item) => item.kind === "message" && item.message.id === "m4");
+
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(editedIndex).toBeGreaterThan(-1);
+    expect(laterAssistantIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeLessThan(laterAssistantIndex);
+    expect(editedIndex).toBeLessThan(laterAssistantIndex);
+    expect(exploreIndex).toBeLessThan(editedIndex);
+  });
+
   it("quarantines overlap-unresolved subagent explore events in runtime snapshot assembly", async () => {
     const messages = [
       {
@@ -530,5 +647,193 @@ describe("chatService snapshot", () => {
       if (item.kind !== "subagent-activity") continue;
       expect(item.steps.some((step) => step.toolUseId.includes("ambiguous-read"))).toBe(false);
     }
+  });
+
+  it("keeps an assistant read-confirmation sentence ahead of a later edit card in runtime snapshot assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "inspect and edit",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "Saya akan membaca kedua file tersebut dan melakukan beberapa edit kecil yang tidak berbahaya.Baik, saya sudah membaca kedua file tersebut. Sekarang saya akan melakukan edit kecil.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "message.delta" as const,
+        payload: { role: "assistant", messageId: "m2", delta: "Saya akan membaca kedua file tersebut dan melakukan beberapa edit kecil yang tidak berbahaya." },
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "e10",
+        threadId: "t1",
+        idx: 10,
+        type: "tool.started" as const,
+        payload: { toolName: "Glob", toolUseId: "g1", searchParams: "**/README.md" },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "e11",
+        threadId: "t1",
+        idx: 11,
+        type: "tool.finished" as const,
+        payload: { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+      {
+        id: "e12",
+        threadId: "t1",
+        idx: 12,
+        type: "tool.started" as const,
+        payload: { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "README.md" } },
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+      {
+        id: "e13",
+        threadId: "t1",
+        idx: 13,
+        type: "tool.finished" as const,
+        payload: { toolName: "Read", summary: "Read README.md", precedingToolUseIds: ["r1"] },
+        createdAt: "2026-01-01T00:00:03Z",
+      },
+      {
+        id: "e14",
+        threadId: "t1",
+        idx: 14,
+        type: "message.delta" as const,
+        payload: { role: "assistant", messageId: "m2", delta: "Baik" },
+        createdAt: "2026-01-01T00:00:04Z",
+      },
+      {
+        id: "e20",
+        threadId: "t1",
+        idx: 20,
+        type: "tool.started" as const,
+        payload: { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "README.md", old_string: "a", new_string: "b" } },
+        createdAt: "2026-01-01T00:00:05Z",
+      },
+      {
+        id: "e21",
+        threadId: "t1",
+        idx: 21,
+        type: "tool.finished" as const,
+        payload: { toolName: "Edit", summary: "Edited README.md", editTarget: "README.md", precedingToolUseIds: ["e1"], changedFiles: ["README.md"], additions: 6, deletions: 5 },
+        createdAt: "2026-01-01T00:00:05Z",
+      },
+      {
+        id: "e22",
+        threadId: "t1",
+        idx: 22,
+        type: "message.delta" as const,
+        payload: { role: "assistant", messageId: "m2", delta: ", saya sudah membaca kedua file tersebut. Sekarang saya akan melakukan edit kecil." },
+        createdAt: "2026-01-01T00:00:06Z",
+      },
+      {
+        id: "e23",
+        threadId: "t1",
+        idx: 23,
+        type: "chat.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:07Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const exploreIndex = assembly.items.findIndex((item) => item.kind === "explore-activity");
+    const confirmationIndex = assembly.items.findIndex(
+      (item) =>
+        item.kind === "message"
+        && item.message.content.includes("Baik, saya sudah membaca kedua file tersebut."),
+    );
+    const editedIndex = assembly.items.findIndex((item) => item.kind === "edited-diff");
+
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(confirmationIndex).toBeGreaterThan(-1);
+    expect(editedIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeLessThan(confirmationIndex);
+    expect(confirmationIndex).toBeLessThan(editedIndex);
+  });
+
+  it("keeps a short pre-edit fragment with the preceding announcement in runtime snapshot assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "inspect and edit",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "Saya akan membaca kedua file tersebut terlebih dahulu. Baik, saya akan membuat perubahan tidak berbahaya pada kedua file tersebut. Mari saya edit:Selesai!",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+    const events = [
+      { id: "e1", threadId: "t1", idx: 1, type: "message.delta" as const, payload: { role: "assistant", messageId: "m2", delta: "Saya akan membaca kedua file tersebut terlebih dahulu." }, createdAt: "2026-01-01T00:00:01Z" },
+      { id: "e10", threadId: "t1", idx: 10, type: "tool.started" as const, payload: { toolName: "Glob", toolUseId: "g1", searchParams: "**/README.md" }, createdAt: "2026-01-01T00:00:02Z" },
+      { id: "e11", threadId: "t1", idx: 11, type: "tool.finished" as const, payload: { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] }, createdAt: "2026-01-01T00:00:02Z" },
+      { id: "e12", threadId: "t1", idx: 12, type: "tool.started" as const, payload: { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "README.md" } }, createdAt: "2026-01-01T00:00:03Z" },
+      { id: "e13", threadId: "t1", idx: 13, type: "tool.finished" as const, payload: { toolName: "Read", summary: "Read README.md", precedingToolUseIds: ["r1"] }, createdAt: "2026-01-01T00:00:03Z" },
+      { id: "e14", threadId: "t1", idx: 14, type: "message.delta" as const, payload: { role: "assistant", messageId: "m2", delta: "Baik, saya akan membuat perubahan tidak berbahaya pada kedua file tersebut. Mari saya" }, createdAt: "2026-01-01T00:00:04Z" },
+      { id: "e20", threadId: "t1", idx: 20, type: "tool.started" as const, payload: { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "README.md", old_string: "a", new_string: "b" } }, createdAt: "2026-01-01T00:00:05Z" },
+      { id: "e21", threadId: "t1", idx: 21, type: "tool.finished" as const, payload: { toolName: "Edit", summary: "Edited README.md", editTarget: "README.md", precedingToolUseIds: ["e1"], changedFiles: ["README.md"], additions: 5, deletions: 4 }, createdAt: "2026-01-01T00:00:05Z" },
+      { id: "e22", threadId: "t1", idx: 22, type: "message.delta" as const, payload: { role: "assistant", messageId: "m2", delta: " edit:" }, createdAt: "2026-01-01T00:00:05Z" },
+      { id: "e23", threadId: "t1", idx: 23, type: "tool.started" as const, payload: { toolName: "Edit", toolUseId: "e2", toolInput: { file_path: "build.gradle", old_string: "a", new_string: "b" } }, createdAt: "2026-01-01T00:00:06Z" },
+      { id: "e24", threadId: "t1", idx: 24, type: "tool.finished" as const, payload: { toolName: "Edit", summary: "Edited build.gradle", editTarget: "build.gradle", precedingToolUseIds: ["e2"], changedFiles: ["build.gradle"], additions: 5, deletions: 0 }, createdAt: "2026-01-01T00:00:06Z" },
+      { id: "e25", threadId: "t1", idx: 25, type: "message.delta" as const, payload: { role: "assistant", messageId: "m2", delta: "Selesai! Saya telah melakukan perubahan tidak berbahaya pada kedua file:" }, createdAt: "2026-01-01T00:00:07Z" },
+      { id: "e26", threadId: "t1", idx: 26, type: "chat.completed" as const, payload: { messageId: "m2" }, createdAt: "2026-01-01T00:00:08Z" },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const firstEditedIndex = assembly.items.findIndex((item) => item.kind === "edited-diff" && item.changedFiles.includes("README.md"));
+    const secondEditedIndex = assembly.items.findIndex((item) => item.kind === "edited-diff" && item.changedFiles.includes("build.gradle"));
+    const preSecondEditMessageIndex = assembly.items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Mari saya edit:"),
+    );
+    const doneMessageIndex = assembly.items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Selesai!"),
+    );
+
+    expect(firstEditedIndex).toBeGreaterThan(-1);
+    expect(secondEditedIndex).toBeGreaterThan(-1);
+    expect(preSecondEditMessageIndex).toBeGreaterThan(-1);
+    expect(doneMessageIndex).toBeGreaterThan(-1);
+    expect(firstEditedIndex).toBeLessThan(preSecondEditMessageIndex);
+    expect(preSecondEditMessageIndex).toBeLessThan(secondEditedIndex);
+    expect(secondEditedIndex).toBeLessThan(doneMessageIndex);
   });
 });

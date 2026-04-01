@@ -169,6 +169,35 @@ describe("useWorkspaceTimeline", () => {
     expect(bashItems.some((item) => item.command === "pwd")).toBe(true);
   });
 
+  it("renders failed read summaries as tool items with failed-read labels", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "read package json"),
+      makeMessage("m2", 2, "assistant", "Saya akan mencoba build aplikasi ini."),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Read",
+        toolUseId: "read-1",
+        toolInput: { file_path: "/tmp/project/package.json" },
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        precedingToolUseIds: ["read-1"],
+        summary: "Failed to read /tmp/project/package.json",
+      }, "m2"),
+      makeEvent(2, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const toolItems = items.filter((item) => item.kind === "tool");
+
+    expect(items.some((item) => item.kind === "tool" || item.kind === "message")).toBe(true);
+    expect(toolItems).toHaveLength(1);
+    if (toolItems[0]?.kind !== "tool") {
+      throw new Error("Expected tool item");
+    }
+    expect(toolItems[0].summary).toContain("Failed to read");
+  });
+
   it("coalesces orphan skill events into a single skill tool item", () => {
     const messages = [makeMessage("m1", 1, "user", "anything")];
     const events = [
@@ -198,6 +227,56 @@ describe("useWorkspaceTimeline", () => {
     }
     expect(skillItems[0].summary).toBe("Using finly-pull-request skill");
     expect(skillItems[0].event?.type).toBe("tool.finished");
+  });
+
+  it("renders ls-based build checks as normal tool items, not explore activity", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "build app"),
+      makeMessage("m2", 2, "assistant", "Saya akan mencoba build aplikasi ini. Ini adalah project Android. Saya bisa melihat file gradlew untuk build. Mari saya coba build dengan Gradle:"),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "ls-1",
+        toolInput: { command: "ls -la" },
+        command: "ls -la",
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        precedingToolUseIds: ["ls-1"],
+        summary: "Ran ls -la",
+        command: "ls -la",
+      }, "m2"),
+      makeEvent(2, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "gradle-1",
+        toolInput: { command: "./gradlew assembleDebug" },
+        command: "./gradlew assembleDebug",
+      }, "m2"),
+      makeEvent(3, "tool.finished", {
+        precedingToolUseIds: ["gradle-1"],
+        summary: "Ran ./gradlew assembleDebug",
+        command: "./gradlew assembleDebug",
+      }, "m2"),
+      makeEvent(4, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "ls-2",
+        toolInput: { command: "ls -lh app/build/outputs/apk/debug/" },
+        command: "ls -lh app/build/outputs/apk/debug/",
+      }, "m2"),
+      makeEvent(5, "tool.finished", {
+        precedingToolUseIds: ["ls-2"],
+        summary: "Ran ls -lh app/build/outputs/apk/debug/",
+        command: "ls -lh app/build/outputs/apk/debug/",
+      }, "m2"),
+      makeEvent(6, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const bashTools = items.filter((item) => item.kind === "tool" && item.shell === "bash");
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+
+    expect(bashTools.length).toBeGreaterThanOrEqual(3);
+    expect(exploreItems).toHaveLength(0);
   });
 
   it("routes mixed bash chains as normal tool items, not explore activity", () => {
@@ -640,6 +719,430 @@ describe("useWorkspaceTimeline", () => {
     expect(firstExploreIndex).toBeLessThan(firstMessageIndex);
   });
 
+  it("keeps fallback-anchored explore and edit cards with their assistant turn instead of drifting to the tail", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect"),
+      makeMessage("m2", 2, "assistant", "I checked and updated the UI."),
+      makeMessage("m3", 3, "user", "thanks"),
+      makeMessage("m4", 4, "assistant", "done"),
+    ];
+    const events = [
+      makeEvent(50, "tool.started", { toolName: "Glob", toolUseId: "g1", searchParams: "src/**/*.ts" }, "m2"),
+      makeEvent(51, "tool.finished", { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] }, "m2"),
+      makeEvent(52, "tool.started", { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "src/app.ts", old_string: "a", new_string: "b" } }, "m2"),
+      makeEvent(53, "tool.finished", { toolName: "Edit", summary: "Updated src/app.ts", precedingToolUseIds: ["e1"], changedFiles: ["src/app.ts"], additions: 1, deletions: 1 }, "m2"),
+      makeEvent(54, "message.delta", { role: "assistant", messageId: "m2", delta: "I checked and updated the UI." }, "m2"),
+      makeEvent(200, "message.delta", { role: "assistant", messageId: "m4", delta: "done" }, "m4"),
+      makeEvent(201, "chat.completed", { messageId: "m4" }, "m4"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreIndex = items.findIndex((item) => item.kind === "explore-activity");
+    const editedIndex = items.findIndex((item) => item.kind === "edited-diff");
+    const laterAssistantIndex = items.findIndex((item) => item.kind === "message" && item.message.id === "m4");
+
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(editedIndex).toBeGreaterThan(-1);
+    expect(laterAssistantIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeLessThan(laterAssistantIndex);
+    expect(editedIndex).toBeLessThan(laterAssistantIndex);
+    expect(exploreIndex).toBeLessThan(editedIndex);
+  });
+
+  it("keeps an assistant read-confirmation sentence ahead of a later edit card even when the sentence spans the edit boundary", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect and edit"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "Saya akan membaca kedua file tersebut dan melakukan beberapa edit kecil yang tidak berbahaya.Baik, saya sudah membaca kedua file tersebut. Sekarang saya akan melakukan edit kecil.",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Saya akan membaca kedua file tersebut dan melakukan beberapa edit kecil yang tidak berbahaya." }, "m2"),
+      makeEvent(10, "tool.started", { toolName: "Glob", toolUseId: "g1", searchParams: "**/README.md" }, "m2"),
+      makeEvent(11, "tool.finished", { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] }, "m2"),
+      makeEvent(12, "tool.started", { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "README.md" } }, "m2"),
+      makeEvent(13, "tool.finished", { toolName: "Read", summary: "Read README.md", precedingToolUseIds: ["r1"] }, "m2"),
+      makeEvent(14, "message.delta", { role: "assistant", messageId: "m2", delta: "Baik" }, "m2"),
+      makeEvent(20, "tool.started", { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "README.md", old_string: "a", new_string: "b" } }, "m2"),
+      makeEvent(21, "tool.finished", { toolName: "Edit", summary: "Edited README.md", editTarget: "README.md", precedingToolUseIds: ["e1"], changedFiles: ["README.md"], additions: 6, deletions: 5 }, "m2"),
+      makeEvent(22, "message.delta", { role: "assistant", messageId: "m2", delta: ", saya sudah membaca kedua file tersebut. Sekarang saya akan melakukan edit kecil." }, "m2"),
+      makeEvent(23, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreIndex = items.findIndex((item) => item.kind === "explore-activity");
+    const confirmationIndex = items.findIndex(
+      (item) =>
+        item.kind === "message"
+        && item.message.content.includes("Baik, saya sudah membaca kedua file tersebut."),
+    );
+    const editedIndex = items.findIndex((item) => item.kind === "edited-diff");
+
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(confirmationIndex).toBeGreaterThan(-1);
+    expect(editedIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeLessThan(confirmationIndex);
+    expect(confirmationIndex).toBeLessThan(editedIndex);
+  });
+
+  it("keeps a short pre-edit fragment with the preceding announcement instead of merging it into post-edit completion text", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "inspect and edit"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "Saya akan membaca kedua file tersebut terlebih dahulu. Baik, saya akan membuat perubahan tidak berbahaya pada kedua file tersebut. Mari saya edit:Selesai!",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Saya akan membaca kedua file tersebut terlebih dahulu." }, "m2"),
+      makeEvent(10, "tool.started", { toolName: "Glob", toolUseId: "g1", searchParams: "**/README.md" }, "m2"),
+      makeEvent(11, "tool.finished", { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] }, "m2"),
+      makeEvent(12, "tool.started", { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "README.md" } }, "m2"),
+      makeEvent(13, "tool.finished", { toolName: "Read", summary: "Read README.md", precedingToolUseIds: ["r1"] }, "m2"),
+      makeEvent(14, "message.delta", { role: "assistant", messageId: "m2", delta: "Baik, saya akan membuat perubahan tidak berbahaya pada kedua file tersebut. Mari saya" }, "m2"),
+      makeEvent(20, "tool.started", { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "README.md", old_string: "a", new_string: "b" } }, "m2"),
+      makeEvent(21, "tool.finished", { toolName: "Edit", summary: "Edited README.md", editTarget: "README.md", precedingToolUseIds: ["e1"], changedFiles: ["README.md"], additions: 5, deletions: 4 }, "m2"),
+      makeEvent(22, "message.delta", { role: "assistant", messageId: "m2", delta: " edit:" }, "m2"),
+      makeEvent(23, "tool.started", { toolName: "Edit", toolUseId: "e2", toolInput: { file_path: "build.gradle", old_string: "a", new_string: "b" } }, "m2"),
+      makeEvent(24, "tool.finished", { toolName: "Edit", summary: "Edited build.gradle", editTarget: "build.gradle", precedingToolUseIds: ["e2"], changedFiles: ["build.gradle"], additions: 5, deletions: 0 }, "m2"),
+      makeEvent(25, "message.delta", { role: "assistant", messageId: "m2", delta: "Selesai! Saya telah melakukan perubahan tidak berbahaya pada kedua file:" }, "m2"),
+      makeEvent(26, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const firstEditedIndex = items.findIndex((item) => item.kind === "edited-diff" && item.changedFiles.includes("README.md"));
+    const secondEditedIndex = items.findIndex((item) => item.kind === "edited-diff" && item.changedFiles.includes("build.gradle"));
+    const preSecondEditMessageIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Mari saya edit:"),
+    );
+    const doneMessageIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Selesai!"),
+    );
+
+    expect(firstEditedIndex).toBeGreaterThan(-1);
+    expect(secondEditedIndex).toBeGreaterThan(-1);
+    expect(preSecondEditMessageIndex).toBeGreaterThan(-1);
+    expect(doneMessageIndex).toBeGreaterThan(-1);
+    expect(firstEditedIndex).toBeLessThan(preSecondEditMessageIndex);
+    expect(preSecondEditMessageIndex).toBeLessThan(secondEditedIndex);
+    expect(secondEditedIndex).toBeLessThan(doneMessageIndex);
+  });
+
+  it("strips leaked think tags and keeps post-edit completion text after both edit cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "update harmless edit"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "Sip, saya akan buat edit kecil/bebas di kedua file tersebut.</think>Selesai! Saya telah melakukan edit kecil/harmless di kedua file:\n\n1. **README.md** - Menambahkan komentar `<!-- Minor update applied -->`\n2. **build.gradle** - Menambahkan komentar `// Build sync completed`",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Glob", toolUseId: "g1", searchParams: "pattern=**/README.md" }, "m2"),
+      makeEvent(2, "tool.started", { toolName: "Glob", toolUseId: "g2", searchParams: "pattern=**/build.gradle" }, "m2"),
+      makeEvent(3, "tool.finished", { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"], searchParams: "pattern=**/README.md" }, "m2"),
+      makeEvent(4, "tool.finished", { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g2"], searchParams: "pattern=**/build.gradle" }, "m2"),
+      makeEvent(5, "tool.started", { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "/repo/README.md" } }, "m2"),
+      makeEvent(6, "tool.started", { toolName: "Read", toolUseId: "r2", toolInput: { file_path: "/repo/build.gradle" } }, "m2"),
+      makeEvent(7, "tool.finished", { toolName: "Read", summary: "Read /repo/README.md", precedingToolUseIds: ["r1"] }, "m2"),
+      makeEvent(8, "tool.finished", { toolName: "Read", summary: "Read /repo/build.gradle", precedingToolUseIds: ["r2"] }, "m2"),
+      makeEvent(9, "message.delta", { role: "assistant", messageId: "m2", delta: "Sip, saya akan buat edit kecil/bebas di kedua file tersebut." }, "m2"),
+      makeEvent(10, "message.delta", { role: "assistant", messageId: "m2", delta: "</think>" }, "m2"),
+      makeEvent(11, "tool.started", { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" } }, "m2"),
+      makeEvent(29, "tool.finished", { toolName: "Edit", summary: "Edited /repo/README.md", precedingToolUseIds: ["e1"], editTarget: "/repo/README.md" }, "m2"),
+      makeEvent(30, "tool.started", { toolName: "Edit", toolUseId: "e2", toolInput: { file_path: "/repo/build.gradle", old_string: "x", new_string: "y" } }, "m2"),
+      makeEvent(31, "tool.finished", { toolName: "Edit", summary: "Edited /repo/build.gradle", precedingToolUseIds: ["e2"], editTarget: "/repo/build.gradle" }, "m2"),
+      makeEvent(32, "message.delta", { role: "assistant", messageId: "m2", delta: "Selesai! Saya telah melakukan edit kecil/harmless di kedua file:\n\n1. **README.md** - Menambahkan komentar `<!-- Minor update applied -->`\n2. **build.gradle** - Menambahkan komentar `// Build sync completed`" }, "m2"),
+      makeEvent(105, "tool.finished", {
+        source: "worktree.diff",
+        summary: "Edited 2 files",
+        changedFiles: ["README.md", "build.gradle"],
+        diff: [
+          "diff --git a/README.md b/README.md",
+          "--- a/README.md",
+          "+++ b/README.md",
+          "@@ -1 +1 @@",
+          "-a",
+          "+b",
+          "diff --git a/build.gradle b/build.gradle",
+          "--- a/build.gradle",
+          "+++ b/build.gradle",
+          "@@ -1 +1 @@",
+          "-x",
+          "+y",
+        ].join("\n"),
+      }, "m2"),
+      makeEvent(106, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const allAssistantText = items
+      .filter((item) => item.kind === "message" && item.message.role === "assistant")
+      .map((item) => item.message.content)
+      .join("\n");
+    const introIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Sip, saya akan buat edit kecil/bebas di kedua file tersebut."),
+    );
+    const completionIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Selesai!"),
+    );
+    const summaryTailIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("README.md"),
+    );
+    const readmeEditIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("README.md")),
+    );
+    const gradleEditIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("build.gradle")),
+    );
+
+    expect(allAssistantText).not.toContain("</think>");
+    expect(introIndex).toBeGreaterThan(-1);
+    expect(readmeEditIndex).toBeGreaterThan(-1);
+    expect(gradleEditIndex).toBeGreaterThan(-1);
+    expect(completionIndex).toBeGreaterThan(-1);
+    expect(summaryTailIndex).toBeGreaterThan(-1);
+    expect(introIndex).toBeLessThan(readmeEditIndex);
+    expect(readmeEditIndex).toBeLessThan(gradleEditIndex);
+    expect(gradleEditIndex).toBeLessThan(completionIndex);
+    expect(summaryTailIndex).toBeGreaterThanOrEqual(completionIndex);
+    expect(items[readmeEditIndex]).toMatchObject({ kind: "edited-diff", diffKind: "actual" });
+    expect(items[gradleEditIndex]).toMatchObject({ kind: "edited-diff", diffKind: "actual" });
+  });
+
+  it("keeps a colon-terminated pre-edit clause ahead of the first edit card instead of splitting it across the edit", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "edit two files"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "I'll make some harmless edits to both files. Let me first read them. Now let me make some harmless edits to both files:Done!",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "I'll make some harmless edits to both files. " }, "m2"),
+      makeEvent(2, "tool.started", { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "/repo/README.md" } }, "m2"),
+      makeEvent(3, "tool.finished", { toolName: "Read", summary: "Read /repo/README.md", precedingToolUseIds: ["r1"] }, "m2"),
+      makeEvent(4, "message.delta", { role: "assistant", messageId: "m2", delta: "Let me first read them. Now let me" }, "m2"),
+      makeEvent(5, "tool.started", { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" } }, "m2"),
+      makeEvent(6, "message.delta", { role: "assistant", messageId: "m2", delta: " make some harmless edits to both files:" }, "m2"),
+      makeEvent(7, "tool.finished", { toolName: "Edit", summary: "Edited /repo/README.md", precedingToolUseIds: ["e1"], editTarget: "/repo/README.md" }, "m2"),
+      makeEvent(8, "tool.started", { toolName: "Edit", toolUseId: "e2", toolInput: { file_path: "/repo/build.gradle", old_string: "x", new_string: "y" } }, "m2"),
+      makeEvent(9, "tool.finished", { toolName: "Edit", summary: "Edited /repo/build.gradle", precedingToolUseIds: ["e2"], editTarget: "/repo/build.gradle" }, "m2"),
+      makeEvent(10, "message.delta", { role: "assistant", messageId: "m2", delta: "Done!" }, "m2"),
+      makeEvent(11, "tool.finished", {
+        source: "worktree.diff",
+        changedFiles: ["README.md", "build.gradle"],
+        diff: [
+          "diff --git a/README.md b/README.md",
+          "--- a/README.md",
+          "+++ b/README.md",
+          "@@ -1 +1 @@",
+          "-a",
+          "+b",
+          "diff --git a/build.gradle b/build.gradle",
+          "--- a/build.gradle",
+          "+++ b/build.gradle",
+          "@@ -1 +1 @@",
+          "-x",
+          "+y",
+        ].join("\n"),
+      }, "m2"),
+      makeEvent(12, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const clauseIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Now let me make some harmless edits to both files:"),
+    );
+    const firstEditedIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("README.md")),
+    );
+
+    expect(clauseIndex).toBeGreaterThan(-1);
+    expect(firstEditedIndex).toBeGreaterThan(-1);
+    expect(clauseIndex).toBeLessThan(firstEditedIndex);
+  });
+
+  it("keeps a single-edit completion message after the edit card when the edit starts mid-sentence", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "yaa perbaiki"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "Baik, saya akan memperbaiki kode tersebut sekarang.Sip! Perbaikan sudah dilakukan.\n\n**Apa yang berubah:**\n\nMetode `openSupportEmail()` sekarang menggunakan `Uri.Builder`.",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Baik, saya akan" }, "m2"),
+      makeEvent(2, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e1",
+        toolInput: { file_path: "/repo/OTPLoginActivity.java", old_string: "a", new_string: "b" },
+      }, "m2"),
+      makeEvent(3, "message.delta", { role: "assistant", messageId: "m2", delta: " memperbaiki kode tersebut sekarang." }, "m2"),
+      makeEvent(4, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/OTPLoginActivity.java",
+        precedingToolUseIds: ["e1"],
+        editTarget: "/repo/OTPLoginActivity.java",
+      }, "m2"),
+      makeEvent(5, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Sip! Perbaikan sudah dilakukan.\n\n**Apa yang berubah:**\n\nMetode `openSupportEmail()` sekarang menggunakan `Uri.Builder`.",
+      }, "m2"),
+      makeEvent(6, "tool.finished", {
+        source: "worktree.diff",
+        changedFiles: ["/repo/OTPLoginActivity.java"],
+        diff: [
+          "diff --git a/OTPLoginActivity.java b/OTPLoginActivity.java",
+          "--- a/OTPLoginActivity.java",
+          "+++ b/OTPLoginActivity.java",
+          "@@ -1 +1 @@",
+          "-a",
+          "+b",
+        ].join("\n"),
+      }, "m2"),
+      makeEvent(7, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const introIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Baik, saya akan memperbaiki kode tersebut sekarang."),
+    );
+    const editIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("OTPLoginActivity.java")),
+    );
+    const completionIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Sip! Perbaikan sudah dilakukan."),
+    );
+
+    expect(introIndex).toBeGreaterThan(-1);
+    expect(editIndex).toBeGreaterThan(-1);
+    expect(completionIndex).toBeGreaterThan(-1);
+    expect(introIndex).toBeLessThan(editIndex);
+    expect(editIndex).toBeLessThan(completionIndex);
+  });
+
+  it("keeps a search announcement ahead of explore activity when the search starts mid-sentence", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "cek activity otp"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "Sekarang mari saya cari Activity Kotlin/Java yang menangani klik tombol bantuan tersebut:Saya menemukan masalahnya!",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Sekarang mari saya cari Activity Kotlin/" }, "m2"),
+      makeEvent(2, "tool.started", { toolName: "Glob", toolUseId: "g1", searchParams: "pattern=**/*OTPLogin*.{kt,java}" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "Grep", toolUseId: "g2", searchParams: "pattern=button_no_otp_help" }, "m2"),
+      makeEvent(4, "message.delta", { role: "assistant", messageId: "m2", delta: "Java yang menangani klik tombol bantuan tersebut:" }, "m2"),
+      makeEvent(5, "tool.finished", { toolName: "Glob", summary: "Completed Glob", precedingToolUseIds: ["g1"] }, "m2"),
+      makeEvent(6, "tool.finished", { toolName: "Grep", summary: "Completed Grep", precedingToolUseIds: ["g2"] }, "m2"),
+      makeEvent(7, "message.delta", { role: "assistant", messageId: "m2", delta: "Saya menemukan masalahnya!" }, "m2"),
+      makeEvent(8, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const announcementIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Sekarang mari saya cari Activity Kotlin/Java yang menangani klik tombol bantuan tersebut:"),
+    );
+    const exploreIndex = items.findIndex((item) => item.kind === "explore-activity");
+    const diagnosisIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Saya menemukan masalahnya!"),
+    );
+
+    expect(announcementIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(diagnosisIndex).toBeGreaterThan(-1);
+    expect(announcementIndex).toBeLessThan(exploreIndex);
+    expect(exploreIndex).toBeLessThan(diagnosisIndex);
+  });
+
+  it("keeps a carried pre-edit sentence ahead of the edit card when an earlier apology sentence already completed before the edit starts", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "email To nya kok malah tidak terisi otomatis?"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "Ah iya, maaf! Ada masalah dengan email To-nya. Mari saya perbaiki lagi:Sip sudah diperbaiki! ✅",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Ah iya" }, "m2"),
+      makeEvent(2, "message.delta", { role: "assistant", messageId: "m2", delta: ", maaf!" }, "m2"),
+      makeEvent(3, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e1",
+        toolInput: { file_path: "/repo/OTPLoginActivity.java", old_string: "a", new_string: "b" },
+      }, "m2"),
+      makeEvent(4, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: " Ada masalah dengan email To-nya. Mari saya perbaiki lagi:",
+      }, "m2"),
+      makeEvent(5, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/OTPLoginActivity.java",
+        precedingToolUseIds: ["e1"],
+        editTarget: "/repo/OTPLoginActivity.java",
+      }, "m2"),
+      makeEvent(6, "message.delta", { role: "assistant", messageId: "m2", delta: "Sip sudah diperbaiki! ✅" }, "m2"),
+      makeEvent(7, "tool.finished", {
+        source: "worktree.diff",
+        changedFiles: ["/repo/OTPLoginActivity.java"],
+        diff: [
+          "diff --git a/OTPLoginActivity.java b/OTPLoginActivity.java",
+          "--- a/OTPLoginActivity.java",
+          "+++ b/OTPLoginActivity.java",
+          "@@ -1 +1 @@",
+          "-a",
+          "+b",
+        ].join("\n"),
+      }, "m2"),
+      makeEvent(8, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const apologyIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Ah iya, maaf!"),
+    );
+    const issueIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Ada masalah dengan email To-nya."),
+    );
+    const announcementIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Mari saya perbaiki lagi:"),
+    );
+    const editIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("OTPLoginActivity.java")),
+    );
+    const completionIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Sip sudah diperbaiki!"),
+    );
+
+    expect(apologyIndex).toBeGreaterThan(-1);
+    expect(issueIndex).toBeGreaterThan(-1);
+    expect(announcementIndex).toBeGreaterThan(-1);
+    expect(editIndex).toBeGreaterThan(-1);
+    expect(completionIndex).toBeGreaterThan(-1);
+    expect(apologyIndex).toBeLessThanOrEqual(issueIndex);
+    expect(issueIndex).toBeLessThanOrEqual(announcementIndex);
+    expect(announcementIndex).toBeLessThan(editIndex);
+    expect(editIndex).toBeLessThan(completionIndex);
+  });
+
   it("suppresses unresolved assistant fallback while semantic hydration is in progress", () => {
     const messages = [
       makeMessage("m1", 1, "user", "inspect"),
@@ -977,5 +1480,65 @@ describe("useWorkspaceTimeline", () => {
 
     expect(first).toBeDefined();
     expect(second).toBeDefined();
+  });
+
+  it("keeps trailing build summary text after a finished bash card without head-tail inversion", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "coba check apakah build berhasil?"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        "Baik, saya akan cek apakah build berhasil:✅ **BUILD SUCCESSFUL!**\n\nBuild berhasil dalam 1 menit 57 detik. Tidak ada error sama sekali, hanya beberapa warnings tentang deprecated API dan unused parameters yang tidak mempengaruhi fungsi aplikasi.\n\nSekarang perbaikan email di halaman OTP login sudah selesai dan siap digunakan! 📧",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Baik, saya akan c" }, "m2"),
+      makeEvent(2, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-build",
+        command: "./gradlew assembleDebug 2>&1 | tail -50",
+        shell: "bash",
+        isBash: true,
+      }, "m2"),
+      makeEvent(3, "tool.finished", {
+        toolName: "Bash",
+        toolUseId: "bash-build",
+        precedingToolUseIds: ["bash-build"],
+        summary: "Ran ./gradlew assembleDebug 2>&1 | tail -50",
+        command: "./gradlew assembleDebug 2>&1 | tail -50",
+        shell: "bash",
+        isBash: true,
+        output: "BUILD SUCCESSFUL",
+      }, "m2"),
+      makeEvent(4, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "ek apakah build berhasil:✅ **BUILD SUCCESSFUL!**\n\nBuild berhasil dalam 1 menit 57 detik. Tidak ada error sama sekali, hanya beberapa warnings tentang deprecated API dan unused parameters yang tidak mempengaruhi fungsi aplikasi.\n\nSekarang perbaikan email di halaman OTP login sudah selesai dan siap digunakan! 📧",
+      }, "m2"),
+      makeEvent(5, "message.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const buildIntroIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Build berhasil dalam 1 menit 57 detik."),
+    );
+    const toolIndex = items.findIndex(
+      (item) => item.kind === "tool" && item.summary === "Ran ./gradlew assembleDebug 2>&1 | tail -50",
+    );
+    const warningIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Tidak ada error sama sekali"),
+    );
+    const summaryIndex = items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Sekarang perbaikan email di halaman OTP login sudah selesai"),
+    );
+
+    expect(buildIntroIndex).toBeGreaterThan(-1);
+    expect(toolIndex).toBeGreaterThan(-1);
+    expect(warningIndex).toBeGreaterThan(-1);
+    expect(summaryIndex).toBeGreaterThan(-1);
+    expect(buildIntroIndex).toBeLessThan(toolIndex);
+    expect(toolIndex).toBeLessThan(warningIndex);
+    expect(warningIndex).toBeLessThan(summaryIndex);
   });
 });

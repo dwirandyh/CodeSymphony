@@ -96,4 +96,5 @@ export type SegmentBucket = {
   content: string;
   anchorIdx: number | null;
   timestamp: number | null;
+  hasLeadingCarry: boolean;
 };

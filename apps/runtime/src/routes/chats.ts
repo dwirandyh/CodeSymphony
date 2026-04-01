@@ -12,8 +12,6 @@ const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
 const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
-const STREAM_PREFLUSH_BUFFER_LIMIT = 1000;
-
 const inFlightSnapshotRequests = new Map<string, Promise<ChatThreadSnapshot>>();
 const inFlightTimelineSnapshotRequests = new Map<string, Promise<ChatTimelineSnapshot>>();
 
@@ -364,82 +362,101 @@ export async function registerChatRoutes(app: FastifyInstance) {
       reply.raw.setHeader("Connection", "keep-alive");
       reply.raw.setHeader("X-Accel-Buffering", "no");
 
-      // Subscribe FIRST to avoid gaps between history fetch and live subscription
-      const buffer: ChatEvent[] = [];
-      let flushed = false;
-      const unsubscribe = app.eventHub.subscribe(params.id, (event) => {
-        if (!flushed) {
-          if (buffer.length >= STREAM_PREFLUSH_BUFFER_LIMIT) {
-            buffer.shift();
-          }
-          buffer.push(event);
-          return;
-        }
-        reply.raw.write(formatSseEvent(event));
-      });
-
-      const history = await app.chatService.listEvents(params.id, startCursor);
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.sse.historyFlushed",
-        data: {
-          requestId: streamRequestId,
-          threadId: params.id,
-          startCursor: startCursor ?? null,
-          historyCount: history.length,
-          oldestHistoryIdx: history[0]?.idx ?? null,
-          newestHistoryIdx: history[history.length - 1]?.idx ?? null,
-          bufferedCountBeforeFlush: buffer.length,
-        },
-      });
-      const seenIdx = new Set<number>();
-      for (const event of history) {
-        seenIdx.add(event.idx);
-        reply.raw.write(formatSseEvent(event));
-      }
-
-      let bufferedDeliveredCount = 0;
-      for (const event of buffer) {
-        if (!seenIdx.has(event.idx)) {
-          reply.raw.write(formatSseEvent(event));
-          bufferedDeliveredCount += 1;
-        }
-      }
-      flushed = true;
-      appendRuntimeDebugLog({
-        source: "runtime.chats",
-        message: "chat.backend.sse.bufferFlushed",
-        data: {
-          requestId: streamRequestId,
-          threadId: params.id,
-          bufferedCountBeforeFlush: buffer.length,
-          bufferedDeliveredCount,
-        },
-      });
-
+      let closed = false;
+      let historyFlushed = false;
+      let unsubscribe: (() => void) | null = null;
+      const bufferedEvents: ChatEvent[] = [];
       const heartbeat = setInterval(() => {
-        reply.raw.write(": ping\n\n");
+        if (!closed) {
+          reply.raw.write(": ping\n\n");
+        }
       }, 15000);
 
-      request.raw.on("close", () => {
+      const cleanup = () => {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        clearInterval(heartbeat);
+        unsubscribe?.();
         appendRuntimeDebugLog({
           source: "runtime.chats",
           message: "chat.backend.sse.closed",
           data: {
             requestId: streamRequestId,
             threadId: params.id,
-            bufferedCountAtClose: buffer.length,
+            bufferedCountAtClose: bufferedEvents.length,
           },
         });
-        clearInterval(heartbeat);
-        unsubscribe();
+      };
+
+      unsubscribe = app.eventHub.subscribe(params.id, (event) => {
+        if (closed) {
+          return;
+        }
+        if (typeof startCursor === "number" && event.idx <= startCursor) {
+          return;
+        }
+        if (!historyFlushed) {
+          bufferedEvents.push(event);
+          return;
+        }
+        reply.raw.write(formatSseEvent(event));
       });
 
-      await new Promise<void>((resolve) => {
-        request.raw.on("close", () => resolve());
-      });
+      try {
+        const history = await app.chatService.listEvents(params.id, startCursor);
+        appendRuntimeDebugLog({
+          source: "runtime.chats",
+          message: "chat.backend.sse.historyFlushed",
+          data: {
+            requestId: streamRequestId,
+            threadId: params.id,
+            startCursor: startCursor ?? null,
+            historyCount: history.length,
+            oldestHistoryIdx: history[0]?.idx ?? null,
+            newestHistoryIdx: history[history.length - 1]?.idx ?? null,
+            bufferedCountBeforeFlush: bufferedEvents.length,
+          },
+        });
+        const seenIdx = new Set<number>();
+        for (const event of history) {
+          seenIdx.add(event.idx);
+          reply.raw.write(formatSseEvent(event));
+        }
 
-      return reply;
+        let bufferedDeliveredCount = 0;
+        for (const event of bufferedEvents) {
+          if (!seenIdx.has(event.idx)) {
+            reply.raw.write(formatSseEvent(event));
+            bufferedDeliveredCount += 1;
+          }
+        }
+        historyFlushed = true;
+        appendRuntimeDebugLog({
+          source: "runtime.chats",
+          message: "chat.backend.sse.bufferFlushed",
+          data: {
+            requestId: streamRequestId,
+            threadId: params.id,
+            bufferedCountBeforeFlush: bufferedEvents.length,
+            bufferedDeliveredCount,
+          },
+        });
+
+        request.raw.on("close", cleanup);
+        reply.raw.on("error", cleanup);
+        reply.raw.on("close", cleanup);
+
+        await new Promise<void>((resolve) => {
+          request.raw.on("close", () => resolve());
+        });
+
+        return reply;
+      } catch (error) {
+        cleanup();
+        throw error;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to stream events";
       return reply.code(400).send({ error: message });

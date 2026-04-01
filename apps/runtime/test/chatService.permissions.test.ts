@@ -203,7 +203,7 @@ describe("chatService permission flow", () => {
     const completed = events.find((event) => event.type === "chat.completed");
 
     expect(completed).toBeDefined();
-    expect(completed?.payload.threadTitle).toBeUndefined();
+    expect(completed?.payload.threadTitle).toBe("Summarize README.md");
 
     const titleEvent = await waitForEvent(
       chatService,
@@ -694,13 +694,15 @@ describe("chatService permission flow", () => {
       decision: "allow",
     });
 
-    // Already-resolved requestId should resolve gracefully (emit dismissal event, not throw)
+    // Already-resolved requestId should be ignored silently (no second resolution event)
     await chatService.resolvePermission(threadId, {
       requestId: "perm-3",
       decision: "deny",
     });
 
-    await waitForTerminalEvent(chatService, threadId);
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const resolvedEvents = events.filter((event) => event.type === "permission.resolved" && event.payload.requestId === "perm-3");
+    expect(resolvedEvents).toHaveLength(1);
   });
 
   it("treats duplicate permission callback for same requestId as idempotent", async () => {

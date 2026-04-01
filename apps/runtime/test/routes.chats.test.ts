@@ -423,6 +423,283 @@ describe("chat routes", () => {
       expect(activityItems).toHaveLength(0);
       expect(subagentItems).toHaveLength(2);
     });
+
+    it("keeps explore diagnosis and single-edit completion ordered around mid-sentence tool starts", async () => {
+      const suffix = uniqueSuffix();
+      const repository = await prisma.repository.create({
+        data: {
+          name: `repo-${suffix}`,
+          rootPath: `/tmp/routes-chat-${suffix}`,
+          defaultBranch: "main",
+        },
+      });
+      const worktree = await prisma.worktree.create({
+        data: {
+          repositoryId: repository.id,
+          branch: "main",
+          baseBranch: "main",
+          path: repository.rootPath,
+          status: "active",
+        },
+      });
+      const thread = await prisma.chatThread.create({
+        data: {
+          worktreeId: worktree.id,
+          title: "OTP support email fix",
+        },
+      });
+      await prisma.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          seq: 0,
+          role: "user",
+          content: "kenapa subject email kosong?",
+        },
+      });
+      const diagnosisMessage = await prisma.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          seq: 1,
+          role: "assistant",
+          content: "Sekarang mari saya cari Activity Kotlin/Java yang menangani klik tombol bantuan tersebut:Saya menemukan masalahnya!",
+        },
+      });
+      await prisma.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          seq: 2,
+          role: "user",
+          content: "yaa perbaiki",
+        },
+      });
+      const editMessage = await prisma.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          seq: 3,
+          role: "assistant",
+          content: "Baik, saya akan memperbaiki kode tersebut sekarang.Sip! Perbaikan sudah dilakukan.",
+        },
+      });
+
+      const hub = createEventHub(prisma);
+      await hub.emit(thread.id, "message.delta", {
+        messageId: diagnosisMessage.id,
+        role: "assistant",
+        delta: "Sekarang mari saya cari Activity Kotlin/",
+      });
+      await hub.emit(thread.id, "tool.started", {
+        toolName: "Glob",
+        toolUseId: "glob-otp",
+        searchParams: "pattern=**/*OTPLogin*.{kt,java}",
+      });
+      await hub.emit(thread.id, "message.delta", {
+        messageId: diagnosisMessage.id,
+        role: "assistant",
+        delta: "Java yang menangani klik tombol bantuan tersebut:",
+      });
+      await hub.emit(thread.id, "tool.finished", {
+        toolName: "Glob",
+        summary: "Completed Glob",
+        precedingToolUseIds: ["glob-otp"],
+      });
+      await hub.emit(thread.id, "message.delta", {
+        messageId: diagnosisMessage.id,
+        role: "assistant",
+        delta: "Saya menemukan masalahnya!",
+      });
+      await hub.emit(thread.id, "chat.completed", { messageId: diagnosisMessage.id });
+
+      await hub.emit(thread.id, "message.delta", {
+        messageId: editMessage.id,
+        role: "assistant",
+        delta: "Baik, saya akan",
+      });
+      await hub.emit(thread.id, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "edit-otp",
+        toolInput: {
+          file_path: `${repository.rootPath}/OTPLoginActivity.java`,
+          old_string: "a",
+          new_string: "b",
+        },
+      });
+      await hub.emit(thread.id, "message.delta", {
+        messageId: editMessage.id,
+        role: "assistant",
+        delta: " memperbaiki kode tersebut sekarang.",
+      });
+      await hub.emit(thread.id, "tool.finished", {
+        toolName: "Edit",
+        summary: `Edited ${repository.rootPath}/OTPLoginActivity.java`,
+        precedingToolUseIds: ["edit-otp"],
+        editTarget: `${repository.rootPath}/OTPLoginActivity.java`,
+      });
+      await hub.emit(thread.id, "message.delta", {
+        messageId: editMessage.id,
+        role: "assistant",
+        delta: "Sip! Perbaikan sudah dilakukan.",
+      });
+      await hub.emit(thread.id, "tool.finished", {
+        source: "worktree.diff",
+        summary: "Edited 1 file",
+        changedFiles: [`${repository.rootPath}/OTPLoginActivity.java`],
+        diff: [
+          "diff --git a/OTPLoginActivity.java b/OTPLoginActivity.java",
+          "--- a/OTPLoginActivity.java",
+          "+++ b/OTPLoginActivity.java",
+          "@@ -1 +1 @@",
+          "-a",
+          "+b",
+        ].join("\n"),
+      });
+      await hub.emit(thread.id, "chat.completed", { messageId: editMessage.id });
+
+      const realChatService = createChatService({
+        prisma,
+        eventHub: hub,
+        claudeRunner: vi.fn(),
+        modelProviderService: { getActiveProvider: async () => null },
+      });
+      app.chatService = realChatService as never;
+
+      const res = await app.inject({ method: "GET", url: `/api/threads/${thread.id}/timeline` });
+      expect(res.statusCode).toBe(200);
+
+      const timelineItems = res.json().data.timelineItems as Array<Record<string, any>>;
+      const announcementIndex = timelineItems.findIndex(
+        (item) => item.kind === "message" && item.message?.content?.includes("Sekarang mari saya cari Activity Kotlin/Java yang menangani klik tombol bantuan tersebut:"),
+      );
+      const exploreIndex = timelineItems.findIndex((item) => item.kind === "explore-activity");
+      const diagnosisIndex = timelineItems.findIndex(
+        (item) => item.kind === "message" && item.message?.content?.includes("Saya menemukan masalahnya!"),
+      );
+      const preEditIndex = timelineItems.findIndex(
+        (item) => item.kind === "message" && item.message?.content?.includes("Baik, saya akan memperbaiki kode tersebut sekarang."),
+      );
+      const editIndex = timelineItems.findIndex(
+        (item) => item.kind === "edited-diff" && item.changedFiles?.some((file: string) => file.includes("OTPLoginActivity.java")),
+      );
+      const completionIndex = timelineItems.findIndex(
+        (item) => item.kind === "message" && item.message?.content?.includes("Sip! Perbaikan sudah dilakukan."),
+      );
+
+      expect(announcementIndex).toBeGreaterThan(-1);
+      expect(exploreIndex).toBeGreaterThan(-1);
+      expect(diagnosisIndex).toBeGreaterThan(-1);
+      expect(preEditIndex).toBeGreaterThan(-1);
+      expect(editIndex).toBeGreaterThan(-1);
+      expect(completionIndex).toBeGreaterThan(-1);
+      expect(announcementIndex).toBeLessThan(exploreIndex);
+      expect(exploreIndex).toBeLessThan(diagnosisIndex);
+      expect(preEditIndex).toBeLessThan(editIndex);
+      expect(editIndex).toBeLessThan(completionIndex);
+      expect(timelineItems[editIndex]).toMatchObject({ kind: "edited-diff", diffKind: "actual" });
+    });
+
+    it("keeps warning text after a finished bash card in chronological order", async () => {
+      const suffix = uniqueSuffix();
+      const repository = await prisma.repository.create({
+        data: {
+          name: `repo-${suffix}`,
+          rootPath: `/tmp/routes-chat-${suffix}`,
+          defaultBranch: "main",
+        },
+      });
+      const worktree = await prisma.worktree.create({
+        data: {
+          repositoryId: repository.id,
+          branch: "main",
+          baseBranch: "main",
+          path: repository.rootPath,
+          status: "active",
+        },
+      });
+      const thread = await prisma.chatThread.create({
+        data: {
+          worktreeId: worktree.id,
+          title: "Build check",
+        },
+      });
+      await prisma.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          seq: 0,
+          role: "user",
+          content: "coba check apakah build berhasil?",
+        },
+      });
+      const assistantMessage = await prisma.chatMessage.create({
+        data: {
+          threadId: thread.id,
+          seq: 1,
+          role: "assistant",
+          content: "Baik, saya akan cek apakah build berhasil:✅ **BUILD SUCCESSFUL!**\n\nBuild berhasil dalam 1 menit 57 detik. Tidak ada error sama sekali, hanya beberapa warnings tentang deprecated API dan unused parameters yang tidak mempengaruhi fungsi aplikasi.\n\nSekarang perbaikan email di halaman OTP login sudah selesai dan siap digunakan! 📧",
+        },
+      });
+
+      const hub = createEventHub(prisma);
+      await hub.emit(thread.id, "message.delta", {
+        messageId: assistantMessage.id,
+        role: "assistant",
+        delta: "Baik, saya akan c",
+      });
+      await hub.emit(thread.id, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-build",
+        command: "./gradlew assembleDebug 2>&1 | tail -50",
+        shell: "bash",
+        isBash: true,
+      });
+      await hub.emit(thread.id, "tool.finished", {
+        toolName: "Bash",
+        toolUseId: "bash-build",
+        precedingToolUseIds: ["bash-build"],
+        summary: "Ran ./gradlew assembleDebug 2>&1 | tail -50",
+        command: "./gradlew assembleDebug 2>&1 | tail -50",
+        shell: "bash",
+        isBash: true,
+        output: "BUILD SUCCESSFUL in 1m 57s",
+      });
+      await hub.emit(thread.id, "message.delta", {
+        messageId: assistantMessage.id,
+        role: "assistant",
+        delta: "ek apakah build berhasil:✅ **BUILD SUCCESSFUL!**\n\nBuild berhasil dalam 1 menit 57 detik. Tidak ada error sama sekali, hanya beberapa warnings tentang deprecated API dan unused parameters yang tidak mempengaruhi fungsi aplikasi.\n\nSekarang perbaikan email di halaman OTP login sudah selesai dan siap digunakan! 📧",
+      });
+      await hub.emit(thread.id, "chat.completed", { messageId: assistantMessage.id });
+
+      const realChatService = createChatService({
+        prisma,
+        eventHub: hub,
+        claudeRunner: vi.fn(),
+        modelProviderService: { getActiveProvider: async () => null },
+      });
+      app.chatService = realChatService as never;
+
+      const res = await app.inject({ method: "GET", url: `/api/threads/${thread.id}/timeline` });
+      expect(res.statusCode).toBe(200);
+
+      const timelineItems = res.json().data.timelineItems as Array<Record<string, any>>;
+      const buildIntroIndex = timelineItems.findIndex(
+        (item) => item.kind === "message" && item.message?.content?.includes("Build berhasil dalam 1 menit 57 detik."),
+      );
+      const toolIndex = timelineItems.findIndex(
+        (item) => item.kind === "tool" && item.summary === "Ran ./gradlew assembleDebug 2>&1 | tail -50",
+      );
+      const warningIndex = timelineItems.findIndex(
+        (item) => item.kind === "message" && item.message?.content?.includes("Tidak ada error sama sekali"),
+      );
+      const summaryIndex = timelineItems.findIndex(
+        (item) => item.kind === "message" && item.message?.content?.includes("Sekarang perbaikan email di halaman OTP login sudah selesai"),
+      );
+
+      expect(buildIntroIndex).toBeGreaterThan(-1);
+      expect(toolIndex).toBeGreaterThan(-1);
+      expect(warningIndex).toBeGreaterThan(-1);
+      expect(summaryIndex).toBeGreaterThan(-1);
+      expect(buildIntroIndex).toBeLessThan(toolIndex);
+      expect(toolIndex).toBeLessThan(warningIndex);
+      expect(warningIndex).toBeLessThan(summaryIndex);
+    });
   });
 
   describe("POST /api/repositories/:id/threads", () => {

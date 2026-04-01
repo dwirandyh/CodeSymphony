@@ -84,7 +84,7 @@ export function hasSentenceBoundary(text: string): boolean {
 }
 
 export function isSentenceAwareInlineInsertKind(kind: string | null): boolean {
-  return kind === "edited" || kind === "bash" || kind === "subagent-activity" || kind === "explore-activity";
+  return kind === "edited";
 }
 
 export function shouldDelayFirstInlineInsert(

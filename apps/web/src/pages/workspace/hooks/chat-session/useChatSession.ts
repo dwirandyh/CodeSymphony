@@ -14,6 +14,7 @@ import type {
   ChatMode,
   ChatThread,
   ChatTimelineItem,
+  ChatTimelineSnapshot,
   ChatTimelineSummary,
 } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
@@ -256,9 +257,12 @@ export function useChatSession(
     }
 
     if (queriedThreads.length > 0) {
-      if (requestedThreadIdChanged) {
-        const nextThreadId = requestedThreadId != null
-          ? queriedThreads.find((thread) => thread.id === requestedThreadId)?.id ?? resolvePreferredThreadId(queriedThreads)
+      const requestedThreadExists =
+        requestedThreadId != null && queriedThreads.some((thread) => thread.id === requestedThreadId);
+
+      if (requestedThreadIdChanged || (requestedThreadExists && selectedThreadId !== requestedThreadId)) {
+        const nextThreadId = requestedThreadExists
+          ? requestedThreadId
           : resolvePreferredThreadId(queriedThreads);
 
         if (selectedThreadId !== nextThreadId) {
@@ -374,6 +378,9 @@ export function useChatSession(
       return;
     }
 
+    const shouldReplaceSnapshotSeed = threadChanged
+      || (queriedThreadSnapshot.messages.length === 0 && queriedThreadSnapshot.events.length === 0);
+
     applySnapshotSeed({
       snapshot: queriedThreadSnapshot,
       selectedThreadId,
@@ -385,7 +392,7 @@ export function useChatSession(
       lastEventIdxByThreadRef,
       activeThreadIdRef,
       onBranchRenamed,
-      mode: threadChanged ? "replace" : "merge",
+      mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
     });
     lastAppliedSnapshotKeyByThreadRef.current.set(selectedThreadId, seedDecision.snapshotKey);
   }, [hasPendingUserGate, messages.length, onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId]);
@@ -800,10 +807,14 @@ export function useChatSession(
   const timelineSeedMatchesLiveState =
     selectedThreadId != null
     && queriedThreadSnapshot != null
-    && queriedThreadSnapshot.messages.length === messages.length
-    && queriedThreadSnapshot.events.length === events.length
-    && queriedThreadSnapshot.newestIdx === (events[events.length - 1]?.idx ?? null)
-    && queriedThreadSnapshot.newestSeq === (messages[messages.length - 1]?.seq ?? null);
+    && buildSnapshotKey(queriedThreadSnapshot) === buildSnapshotKey({
+      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
+      summary: queriedThreadSnapshot.summary,
+      newestIdx: events[events.length - 1]?.idx ?? null,
+      newestSeq: messages[messages.length - 1]?.seq ?? null,
+      messages,
+      events,
+    });
 
   const derivedTimeline = useWorkspaceTimeline(messages, events, selectedThreadId, {
     streamingMessageIds: streamingMessageIdsRef.current,
@@ -816,7 +827,30 @@ export function useChatSession(
     disabled: !timelineEnabled,
   });
 
-  const useServerTimeline = timelineEnabled && timelineSeedMatchesLiveState && serverTimelineSummary != null;
+  const timelineComparison = useMemo(() => {
+    const server = summarizeTimelineItems(serverTimelineItems);
+    const derived = summarizeTimelineItems(derivedTimeline.items);
+    const hasSuspiciousSubagentOrExploreState =
+      server.exploreCards > 0
+      || derived.exploreCards > 0
+      || server.subagentCards > 0
+      || derived.subagentCards > 0;
+    const signaturesMatch = JSON.stringify(server.signatures) === JSON.stringify(derived.signatures);
+    const preferDerivedBecauseServerLooksStale = derivedTimeline.items.length === 0 && serverTimelineItems.length > 0;
+
+    return {
+      server,
+      derived,
+      hasSuspiciousSubagentOrExploreState,
+      signaturesMatch,
+      preferDerivedBecauseServerLooksStale,
+    };
+  }, [derivedTimeline.items, serverTimelineItems]);
+
+  const useServerTimeline = timelineEnabled
+    && timelineSeedMatchesLiveState
+    && serverTimelineSummary != null
+    && !timelineComparison.preferDerivedBecauseServerLooksStale;
 
   const timelineData: {
     items: ChatTimelineItem[];
@@ -830,24 +864,6 @@ export function useChatSession(
         items: derivedTimeline.items,
         summary: derivedTimeline.summary,
       };
-
-  const timelineComparison = useMemo(() => {
-    const server = summarizeTimelineItems(serverTimelineItems);
-    const derived = summarizeTimelineItems(derivedTimeline.items);
-    const hasSuspiciousSubagentOrExploreState =
-      server.exploreCards > 0
-      || derived.exploreCards > 0
-      || server.subagentCards > 0
-      || derived.subagentCards > 0;
-    const signaturesMatch = JSON.stringify(server.signatures) === JSON.stringify(derived.signatures);
-
-    return {
-      server,
-      derived,
-      hasSuspiciousSubagentOrExploreState,
-      signaturesMatch,
-    };
-  }, [derivedTimeline.items, serverTimelineItems]);
 
   useEffect(() => {
     if (!timelineComparison.hasSuspiciousSubagentOrExploreState) {
@@ -864,6 +880,7 @@ export function useChatSession(
         timelineSeedMatchesLiveState,
         useServerTimeline,
         signaturesMatch: timelineComparison.signaturesMatch,
+        preferDerivedBecauseServerLooksStale: timelineComparison.preferDerivedBecauseServerLooksStale,
         server: timelineComparison.server,
         derived: timelineComparison.derived,
       },

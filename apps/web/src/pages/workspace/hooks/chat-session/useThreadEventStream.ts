@@ -1,6 +1,7 @@
 import {
   startTransition,
   useEffect,
+  useRef,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
@@ -31,7 +32,6 @@ const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["
   "permission.requested",
   "question.requested",
   "plan.created",
-  "chat.completed",
 ]);
 
 export interface UseThreadEventStreamParams {
@@ -82,6 +82,13 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
   } = params;
 
   const queryClient = useQueryClient();
+  const repositoryIdRef = useRef(repositoryId);
+  const selectedThreadIsPrMrRef = useRef(selectedThreadIsPrMr);
+
+  useEffect(() => {
+    repositoryIdRef.current = repositoryId;
+    selectedThreadIsPrMrRef.current = selectedThreadIsPrMr;
+  }, [repositoryId, selectedThreadIsPrMr]);
 
   function ensureSeenEventIds(threadId: string): Set<string> {
     const existing = seenEventIdsByThreadRef.current.get(threadId);
@@ -228,8 +235,8 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             },
           );
         }
-        if (repositoryId && selectedThreadIsPrMr) {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
+        if (repositoryIdRef.current && selectedThreadIsPrMrRef.current) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryIdRef.current) });
         }
       }
 
@@ -396,5 +403,5 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         stream.close();
       }
     };
-  }, [queryClient, repositoryId, selectedThreadId, selectedThreadIsPrMr, selectedWorktreeId]);
+  }, [queryClient, selectedThreadId, selectedWorktreeId]);
 }

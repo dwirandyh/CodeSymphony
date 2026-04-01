@@ -1,8 +1,10 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ClaudeRunner } from "../types.js";
+import { areLikelySameFsPath } from "../services/repositoryService.js";
 
 import { extractBashToolResult } from "./bashResult.js";
 import { sanitizeForLog } from "./sanitize.js";
@@ -36,6 +38,14 @@ export const __testing = {
   extractBashToolResult,
   sanitizeForLog,
 };
+
+function shouldResumeSession(sessionId: string | null, sessionWorktreePath: string | null | undefined, cwd: string): boolean {
+  if (!sessionId || !sessionWorktreePath) {
+    return false;
+  }
+
+  return areLikelySameFsPath(sessionWorktreePath, cwd);
+}
 
 export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
@@ -97,6 +107,8 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     finalOutput: "",
     planFileDetected: false,
     queryStartTimestamp,
+    promptSuggestions: [],
+    resultSummary: null,
   };
 
   const callbacks: HookCallbacks = {
@@ -162,14 +174,17 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     }
   }
 
+  let stream: Query | null = null;
+
   try {
-    const stream = query({
+    stream = query({
       prompt,
       options: {
         model: effectiveModel,
         abortController,
         includePartialMessages: true,
-        resume: sessionId && sessionWorktreePath === cwd ? sessionId : undefined,
+        resume: shouldResumeSession(sessionId, sessionWorktreePath, cwd) ? (sessionId ?? undefined) : undefined,
+        forkSession: false,
         permissionMode: permissionMode ?? "default",
         canUseTool,
         tools: {
@@ -214,7 +229,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     });
 
     const latestSessionId = await processStreamMessages(
-      stream as AsyncIterable<Record<string, unknown>>,
+      stream as AsyncIterable<SDKMessage>,
       {
         callbacks,
         emitInstrumentation,
@@ -235,8 +250,30 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     return {
       output: state.finalOutput.trim(),
       sessionId: latestSessionId ?? sessionId,
+      promptSuggestions: state.promptSuggestions,
+      resultSummary: state.resultSummary ?? undefined,
     };
   } catch (error) {
+    if (abortController?.signal.aborted && stream) {
+      try {
+        await stream.interrupt();
+      } catch {
+        // Best effort.
+      }
+      try {
+        stream.close();
+      } catch {
+        // Best effort.
+      }
+    }
     throw withClaudeSetupHint(error, recentStderr, claudeExecutable);
+  } finally {
+    if (abortController?.signal.aborted && stream) {
+      try {
+        stream.close();
+      } catch {
+        // Best effort.
+      }
+    }
   }
 };

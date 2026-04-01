@@ -160,4 +160,11 @@ describe("mergeThreadMessages", () => {
     const result = mergeThreadMessages(queried, local);
     expect(result.map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
   });
+
+  it("prefers local message when it has longer content even if the text is repetitive", () => {
+    const queried = [makeMessage({ id: "m1", content: "SayaSaya perlu perlu melihat melihat error error aslinyaya.." })];
+    const local = [makeMessage({ id: "m1", content: "SayaSaya perlu perlu melihat melihat error error aslinyaya.. Mari Mari saya saya jalankanankan dengan dengan stack stacktracetrace untuk untuk mel melihatihat error error leng lengkapkapnyanya.." })];
+    const result = mergeThreadMessages(queried, local);
+    expect(result[0].content).toBe(local[0].content);
+  });
 });

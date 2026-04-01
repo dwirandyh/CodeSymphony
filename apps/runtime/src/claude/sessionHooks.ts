@@ -639,6 +639,17 @@ export type SessionState = {
   finalOutput: string;
   planFileDetected: boolean;
   queryStartTimestamp: number;
+  promptSuggestions: string[];
+  resultSummary: {
+    subtype: string;
+    isError: boolean;
+    durationMs: number;
+    durationApiMs: number;
+    totalCostUsd: number;
+    stopReason: string | null;
+    permissionDenialCount: number;
+    errorCount: number;
+  } | null;
 };
 
 const REVIEW_GIT_COMMAND_PATTERN = /^(git|gh|glab)(\s|$)/;
@@ -865,6 +876,20 @@ export function createCanUseTool(
       return {
         behavior: "allow" as const,
         updatedInput: { ...input, answers: result.answers },
+      };
+    }
+
+    if (isReadOrSearchToolName(toolName)) {
+      await emitDecision(toolUseId, "auto_allow", toolName, permissionParentToolUseId, {
+        ...(command ? { command } : {}),
+        input: sanitizeForLog(input),
+        blockedPath: options.blockedPath ?? null,
+        decisionReason: options.decisionReason ?? null,
+        suggestionsCount: options.suggestions?.length ?? 0,
+      });
+      return {
+        behavior: "allow" as const,
+        updatedInput: input,
       };
     }
 
