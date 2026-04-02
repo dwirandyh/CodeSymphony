@@ -1,6 +1,7 @@
 import { type FastifyInstance } from "fastify";
 import { appendFileSync, writeFileSync } from "node:fs";
 import path, { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const LOG_PATH = join(process.cwd(), "debug.log");
 
@@ -12,6 +13,17 @@ type RuntimeDatabaseInfo = {
   resolvedPath: string | null;
   urlPreview: string | null;
 };
+
+const defaultSchemaPath = path.resolve(fileURLToPath(new URL("../../prisma/schema.prisma", import.meta.url)));
+
+function getPrismaSchemaDirectory(): string {
+  const schemaPath = process.env.PRISMA_SCHEMA_PATH;
+  if (schemaPath && schemaPath.trim().length > 0) {
+    return path.dirname(path.resolve(schemaPath));
+  }
+
+  return path.dirname(defaultSchemaPath);
+}
 
 export type DebugLogPayload = {
   source: string;
@@ -75,7 +87,7 @@ export function resolveDatabaseInfo(databaseUrl: string | undefined): RuntimeDat
   const normalizedRawPath = rawPath.startsWith("//") ? rawPath.slice(2) : rawPath;
   const resolvedPath = path.isAbsolute(normalizedRawPath)
     ? path.normalize(normalizedRawPath)
-    : path.resolve(process.cwd(), normalizedRawPath);
+    : path.resolve(getPrismaSchemaDirectory(), normalizedRawPath);
 
   return {
     urlKind: "file",

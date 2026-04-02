@@ -58,6 +58,19 @@ describe("system routes", () => {
     expect(openInApp).toHaveBeenCalledWith("Cursor", "/home/project");
   });
 
+  it("POST /api/system/open-in-app opens Finder from installed apps list", async () => {
+    getInstalledApps.mockResolvedValue([{ id: "finder", name: "Finder" }]);
+    openInApp.mockResolvedValue(undefined);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/system/open-in-app",
+      payload: { appId: "finder", targetPath: "/home/project" },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(getInstalledApps).toHaveBeenCalledTimes(1);
+    expect(openInApp).toHaveBeenCalledWith("Finder", "/home/project");
+  });
+
   it("POST /api/system/open-in-app returns 404 for unknown app", async () => {
     getInstalledApps.mockResolvedValue([]);
     const res = await app.inject({

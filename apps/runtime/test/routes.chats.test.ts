@@ -50,7 +50,7 @@ describe("formatSseEvent", () => {
 const TEST_DATABASE_URL =
   process.env.DATABASE_URL && process.env.DATABASE_URL.includes("test.db")
     ? process.env.DATABASE_URL
-    : "file:./prisma/test.db";
+    : "file:./test.db";
 
 const prisma = new PrismaClient({
   datasources: {

@@ -6,6 +6,7 @@ import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { ZodError } from "zod";
 import { prisma } from "./db/prisma.js";
+import { assertDatabaseReady, DatabaseNotReadyError } from "./db/databaseReadiness.js";
 import { createEventHub } from "./events/eventHub.js";
 import { runClaudeWithStreaming } from "./claude/sessionRunner.js";
 import { createRepositoryService } from "./services/repositoryService.js";
@@ -163,38 +164,49 @@ function createApp() {
 }
 
 async function main() {
-  // Run Prisma migrations in production before starting the server
-  if (process.env.NODE_ENV === "production") {
-    const { runPrismaMigrations } = await import("./migrate.js");
-    try {
+  try {
+    // Run Prisma migrations in production before starting the server
+    if (process.env.NODE_ENV === "production") {
+      const { runPrismaMigrations } = await import("./migrate.js");
       runPrismaMigrations();
-    } catch (error) {
-      console.error("Failed to run Prisma migrations — the runtime will start but the database may be out of date.", error);
     }
-  }
 
-  const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
-  const port = Number(process.env.RUNTIME_PORT ?? "4331");
+    await assertDatabaseReady(prisma);
 
-  const app = createApp();
+    const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
+    const port = Number(process.env.RUNTIME_PORT ?? "4331");
 
-  const database = resolveDatabaseInfo(process.env.DATABASE_URL);
+    const app = createApp();
 
-  app
-    .listen({ host, port })
-    .then(() => {
-      app.log.info({
-        databaseUrl: database.urlPreview,
-        databasePath: database.resolvedPath,
-      }, `Runtime listening on http://${host}:${port}`);
-      void app.chatService.recoverStuckThreads().then((count) => {
+    const database = resolveDatabaseInfo(process.env.DATABASE_URL);
+
+    await app.listen({ host, port });
+    app.log.info({
+      databaseUrl: database.urlPreview,
+      databasePath: database.resolvedPath,
+    }, `Runtime listening on http://${host}:${port}`);
+    void app.chatService.recoverStuckThreads()
+      .then((count) => {
         if (count > 0) app.logService.log("info", "runtime", `Recovered ${count} stuck thread(s)`);
+      })
+      .catch((error) => {
+        app.log.error(error, "Failed to recover stuck threads during startup");
       });
-    })
-    .catch((error) => {
-      app.log.error(error);
-      process.exit(1);
-    });
+  } catch (error) {
+    if (error instanceof DatabaseNotReadyError) {
+      console.error(error.message);
+    } else {
+      console.error("Failed to start runtime.", error);
+    }
+
+    try {
+      await prisma.$disconnect();
+    } catch {
+      // Ignore disconnect errors during startup failure.
+    }
+
+    process.exit(1);
+  }
 }
 
 main();

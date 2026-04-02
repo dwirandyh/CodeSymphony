@@ -25,7 +25,7 @@ describe("GET /api/debug/runtime-info", () => {
   it("returns process identity and resolved file database path", async () => {
     process.env.RUNTIME_HOST = "0.0.0.0";
     process.env.RUNTIME_PORT = "4331";
-    process.env.DATABASE_URL = "file:./prisma/dev.db";
+    process.env.DATABASE_URL = "file:./dev.db";
 
     const response = await app.inject({
       method: "GET",
@@ -49,7 +49,7 @@ describe("GET /api/debug/runtime-info", () => {
     expect(payload.data.runtimePort).toBe(4331);
     expect(payload.data.database.urlKind).toBe("file");
     expect(payload.data.database.resolvedPath).toBe(path.resolve(process.cwd(), "prisma/dev.db"));
-    expect(payload.data.database.urlPreview).toBe("file:./prisma/dev.db");
+    expect(payload.data.database.urlPreview).toBe("file:./dev.db");
   });
 
   it("redacts non-file database URLs", async () => {

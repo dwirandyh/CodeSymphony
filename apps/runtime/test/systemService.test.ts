@@ -77,6 +77,7 @@ describe("systemService", () => {
 
       const apps = await service.getInstalledApps();
       expect(apps.length).toBeGreaterThan(0);
+      expect(apps.some((app) => app.id === "finder" && app.name === "Finder")).toBe(true);
       expect(apps[0]).toHaveProperty("id");
       expect(apps[0]).toHaveProperty("name");
       expect(apps[0]).toHaveProperty("path");

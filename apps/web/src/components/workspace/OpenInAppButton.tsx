@@ -99,11 +99,11 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
           <button
             type="button"
             className="flex h-full items-center gap-1.5 rounded-l-md px-2.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-            title="Select editor"
+            title="Select app"
             onClick={(e) => e.stopPropagation()}
           >
             {AppIcon && <AppIcon className="h-3.5 w-3.5" />}
-            <span className="max-w-[80px] truncate">{selectedApp?.name ?? "Editor"}</span>
+            <span className="max-w-[80px] truncate">{selectedApp?.name ?? "App"}</span>
             <ChevronDown className="h-3 w-3 opacity-50" />
           </button>
         </PopoverTrigger>
@@ -138,7 +138,7 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
       <button
         type="button"
         className="flex h-full items-center rounded-r-md px-2.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
-        title={`Open in ${selectedApp?.name ?? "editor"}`}
+        title={`Open in ${selectedApp?.name ?? "app"}`}
         disabled={opening || !selectedApp}
         onClick={handleOpen}
       >

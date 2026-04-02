@@ -17,7 +17,7 @@ function git(args: string, cwd = repoDir) {
 }
 
 beforeAll(async () => {
-  prisma = new PrismaClient({ datasources: { db: { url: "file:./prisma/test.db" } } });
+  prisma = new PrismaClient({ datasources: { db: { url: "file:./test.db" } } });
   await prisma.$connect();
 
   repoDir = await mkdtemp(join(tmpdir(), "cs-wt-svc-test-"));
@@ -86,7 +86,7 @@ describe("isDefaultBranchName", () => {
 });
 
 describe("worktreeService", () => {
-  const service = createWorktreeService(new PrismaClient({ datasources: { db: { url: "file:./prisma/test.db" } } }));
+  const service = createWorktreeService(new PrismaClient({ datasources: { db: { url: "file:./test.db" } } }));
   const createdWorktreeIds: string[] = [];
 
   afterEach(async () => {
@@ -164,6 +164,18 @@ describe("worktreeService", () => {
       await service.remove(created.worktree.id);
       const found = await service.getById(created.worktree.id);
       expect(found).toBeNull();
+    });
+
+    it("force-removes a worktree with broken gitdir metadata", async () => {
+      const created = await service.create(repositoryId, { branch: "broken-gitdir-test" });
+      const brokenGitdir = join(repoDir, ".git", "worktrees", "broken-gitdir-test-missing");
+      await writeFile(join(created.worktree.path, ".git"), `gitdir: ${brokenGitdir}\n`);
+
+      await service.remove(created.worktree.id);
+
+      const found = await service.getById(created.worktree.id);
+      expect(found).toBeNull();
+      await expect(stat(created.worktree.path)).rejects.toThrow();
     });
 
     it("throws when trying to remove primary worktree", async () => {

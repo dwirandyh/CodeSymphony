@@ -26,6 +26,15 @@ const KNOWN_APPS = [
   { id: "ghostty", name: "Ghostty", bundleId: "com.mitchellh.ghostty" },
 ];
 
+const MACOS_SYSTEM_APPS: ExternalApp[] = [
+  {
+    id: "finder",
+    name: "Finder",
+    bundleId: "com.apple.finder",
+    path: "/System/Library/CoreServices/Finder.app",
+  },
+];
+
 export function createSystemService() {
   let cachedApps: ExternalApp[] | null = null;
   let cacheTimestamp = 0;
@@ -74,7 +83,7 @@ export function createSystemService() {
       return cachedApps;
     }
 
-    const results: ExternalApp[] = [];
+    const results: ExternalApp[] = [...MACOS_SYSTEM_APPS];
 
     await Promise.allSettled(
       KNOWN_APPS.map(async (app) => {
