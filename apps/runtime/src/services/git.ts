@@ -1,3 +1,5 @@
+import path from "node:path";
+import { readdir, readFile, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { execFile as execFileRaw } from "node:child_process";
 import type { ReviewProvider, ReviewState } from "@codesymphony/shared-types";
@@ -75,6 +77,74 @@ async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Pr
     timeoutMs: options?.timeoutMs,
     allowedExitCodes: options?.allowedExitCodes,
   });
+}
+
+function isPathInsideRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function parseGitdirFile(content: string): string | null {
+  const match = content.trim().match(/^gitdir:\s*(.+)$/);
+  return match?.[1]?.trim() ?? null;
+}
+
+async function readGitdirPointer(
+  filePath: string,
+  relativeBase: string,
+  options?: { allowPlainPath?: boolean },
+): Promise<string | null> {
+  const content = await readFile(filePath, "utf8");
+  const gitdir = parseGitdirFile(content) ?? (options?.allowPlainPath ? content.trim() : null);
+  if (!gitdir) {
+    return null;
+  }
+
+  return path.resolve(relativeBase, gitdir);
+}
+
+async function resolveGitCommonDir(repositoryPath: string): Promise<string> {
+  const gitCommonDir = await runGit(["-C", repositoryPath, "rev-parse", "--git-common-dir"]);
+  return path.resolve(repositoryPath, gitCommonDir || ".git");
+}
+
+async function forceForgetBrokenGitWorktree(args: { repositoryPath: string; worktreePath: string }): Promise<void> {
+  const gitCommonDir = await resolveGitCommonDir(args.repositoryPath);
+  const worktreesDir = path.join(gitCommonDir, "worktrees");
+  const targetGitFile = path.resolve(args.worktreePath, ".git");
+  const candidateAdminDirs = new Set<string>();
+
+  const dotGitPointer = await readGitdirPointer(targetGitFile, args.worktreePath).catch(() => null);
+  if (dotGitPointer && isPathInsideRoot(worktreesDir, dotGitPointer)) {
+    candidateAdminDirs.add(dotGitPointer);
+  }
+
+  const entries = await readdir(worktreesDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const adminDir = path.join(worktreesDir, entry.name);
+    const adminGitdir = await readGitdirPointer(path.join(adminDir, "gitdir"), adminDir, { allowPlainPath: true }).catch(() => null);
+    if (adminGitdir === targetGitFile) {
+      candidateAdminDirs.add(adminDir);
+    }
+  }
+
+  for (const adminDir of candidateAdminDirs) {
+    await rm(adminDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  await runGit(["-C", args.repositoryPath, "worktree", "prune"]).catch(() => undefined);
+
+  if (candidateAdminDirs.size === 0) {
+    throw new Error(`Unable to remove broken worktree metadata for ${args.worktreePath}`);
+  }
+}
+
+function isBrokenWorktreeMetadataError(message: string): boolean {
+  return message.includes("validation failed") || message.includes("does not point back to");
 }
 
 function parseJsonOutput<T>(output: string, label: string): T {
@@ -166,6 +236,27 @@ export async function removeGitWorktree(args: { repositoryPath: string; worktree
       await runGit(["-C", args.repositoryPath, "worktree", "prune"]);
       return;
     }
+
+    if (isBrokenWorktreeMetadataError(message)) {
+      await runGit(["-C", args.repositoryPath, "worktree", "repair", args.worktreePath]).catch(() => undefined);
+
+      try {
+        await runGit(["-C", args.repositoryPath, "worktree", "remove", "--force", args.worktreePath]);
+        return;
+      } catch (repairError) {
+        const repairMessage = repairError instanceof Error ? repairError.message : "";
+        if (repairMessage.includes("is not a working tree")) {
+          await runGit(["-C", args.repositoryPath, "worktree", "prune"]);
+          return;
+        }
+        if (isBrokenWorktreeMetadataError(repairMessage)) {
+          await forceForgetBrokenGitWorktree(args);
+          return;
+        }
+        throw repairError;
+      }
+    }
+
     throw error;
   }
 }

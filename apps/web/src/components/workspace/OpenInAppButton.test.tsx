@@ -2,12 +2,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../../lib/api";
 import { OpenInAppButton } from "./OpenInAppButton";
 
 vi.mock("../../hooks/queries/useInstalledApps", () => ({
   useInstalledApps: vi.fn().mockReturnValue({
     data: [
       { id: "cursor", name: "Cursor", bundleId: "com.cursor", path: "/Applications/Cursor.app" },
+      { id: "finder", name: "Finder", bundleId: "com.apple.finder", path: "/System/Library/CoreServices/Finder.app" },
       { id: "vscode", name: "VS Code", bundleId: "com.vscode", path: "/Applications/Code.app" },
     ],
     isLoading: false,
@@ -34,6 +36,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  localStorage.clear();
+  vi.clearAllMocks();
 });
 
 describe("OpenInAppButton", () => {
@@ -70,5 +74,30 @@ describe("OpenInAppButton", () => {
     });
     const text = container.textContent || "";
     expect(text.length).toBeGreaterThan(0);
+  });
+
+  it("opens the preferred Finder option for the current worktree", async () => {
+    localStorage.setItem("codesymphony:preferred-editor", "finder");
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OpenInAppButton targetPath="/project" />
+        </QueryClientProvider>
+      );
+    });
+
+    const buttons = container.querySelectorAll<HTMLButtonElement>("button");
+    const openButton = buttons[1];
+    if (!openButton) {
+      throw new Error("Open button not found");
+    }
+
+    await act(async () => {
+      openButton.click();
+      await Promise.resolve();
+    });
+
+    expect(api.openInApp).toHaveBeenCalledWith({ appId: "finder", targetPath: "/project" });
   });
 });
