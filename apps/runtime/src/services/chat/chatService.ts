@@ -1193,7 +1193,9 @@ export function createChatService(deps: RuntimeDeps) {
           delta: input.content,
         });
 
-        const prompt = buildPromptWithAttachments(input.content, attachmentRecords);
+        const prompt = buildPromptWithAttachments(input.content, attachmentRecords, {
+          workspaceRoot: thread.worktree.path,
+        });
         scheduleAssistant(threadId, prompt, input.mode);
 
         const messageWithAttachments = await deps.prisma.chatMessage.findUnique({

@@ -6,7 +6,7 @@ import {
   derivePendingPermissionRequests,
   derivePendingPlan,
   derivePendingQuestionRequests,
-  isRunCompletedAfterPlan,
+  isPlanReviewReady,
 } from "./worktreeThreadStatus";
 
 export interface PendingGatesDeps {
@@ -165,10 +165,10 @@ export function usePendingGates(
 
   const pendingPlan = useMemo<PendingPlan | null>(() => derivePendingPlan(events), [events]);
 
-  // Only show the plan decision composer after the run has completed.
-  // `plan.created` fires mid-run (inside `canUseTool`), but Claude SDK
-  // continues trying more tools (all denied) before `chat.completed`.
-  const isPlanRunCompleted = useMemo(() => isRunCompletedAfterPlan(events, pendingPlan), [events, pendingPlan]);
+  // Only show the plan decision composer after Claude has fully exited
+  // plan mode. Older histories may only have chat completion, so keep a
+  // completion fallback for those snapshots.
+  const isPlanReadyForReview = useMemo(() => isPlanReviewReady(events, pendingPlan), [events, pendingPlan]);
 
   async function handleApprovePlan() {
     if (!selectedThreadId) return;
@@ -227,7 +227,11 @@ export function usePendingGates(
     closedPlanDecision?.threadId === selectedThreadId &&
     closedPlanDecision.createdIdx === pendingPlan!.createdIdx;
 
-  const showPlanDecisionComposer = hasPendingPlan && !hidePlanDecisionByOptimisticClose && !hasPendingQuestionRequests && !hasPendingPermissionRequests && isPlanRunCompleted;
+  const showPlanDecisionComposer = hasPendingPlan
+    && !hidePlanDecisionByOptimisticClose
+    && !hasPendingQuestionRequests
+    && !hasPendingPermissionRequests
+    && isPlanReadyForReview;
 
   const isWaitingForUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || showPlanDecisionComposer;
 

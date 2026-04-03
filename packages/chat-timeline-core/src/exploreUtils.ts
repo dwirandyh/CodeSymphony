@@ -188,7 +188,6 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
   const groups: ExploreActivityGroup[] = [];
   const failedReadToolUseIds = new Set<string>();
-  const successfulReadToolUseIds = new Set<string>();
   for (const event of ordered) {
     if (event.type !== "tool.finished") {
       continue;
@@ -197,9 +196,6 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
     for (const runId of finishedToolUseIds(event)) {
       if (summary.startsWith("failed to read")) {
         failedReadToolUseIds.add(runId);
-      }
-      if (summary.startsWith("read ")) {
-        successfulReadToolUseIds.add(runId);
       }
     }
   }
@@ -341,7 +337,7 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
 
     if (event.type === "tool.started" || event.type === "tool.output") {
       const runId = toolUseId ?? `${event.type}:${event.id}`;
-      if (failedReadToolUseIds.has(runId) || successfulReadToolUseIds.has(runId)) {
+      if (failedReadToolUseIds.has(runId)) {
         continue;
       }
       const existing = currentRuns.get(runId);
@@ -364,7 +360,7 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
     }
 
     const runIds = finishedToolUseIds(event);
-    if (runIds.some((runId) => failedReadToolUseIds.has(runId) || successfulReadToolUseIds.has(runId))) {
+    if (runIds.some((runId) => failedReadToolUseIds.has(runId))) {
       continue;
     }
     for (const runId of runIds) {

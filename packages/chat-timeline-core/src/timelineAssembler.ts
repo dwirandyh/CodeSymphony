@@ -73,7 +73,63 @@ type PlanFileOutput = {
   filePath: string;
   idx: number;
   createdAt: string;
+  revealIdx: number;
+  revealedAt: string;
 };
+
+function getFinishedToolNames(
+  event: ChatEvent,
+  toolNameByUseId: Map<string, string>,
+): string[] {
+  if (event.type !== "tool.finished") {
+    return [];
+  }
+
+  const directToolName = payloadStringOrNull(event.payload.toolName)?.trim().toLowerCase() ?? "";
+  if (directToolName.length > 0) {
+    return [directToolName];
+  }
+
+  return finishedToolUseIds(event)
+    .map((toolUseId) => toolNameByUseId.get(toolUseId) ?? "")
+    .filter((toolName) => toolName.length > 0);
+}
+
+function findPlanRevealEvent(
+  orderedEventsByIdx: ChatEvent[],
+  createdIdx: number,
+): ChatEvent | null {
+  const toolNameByUseId = new Map<string, string>();
+  let fallbackCompletionEvent: ChatEvent | null = null;
+
+  for (const event of orderedEventsByIdx) {
+    if (event.type === "tool.started") {
+      const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+      const toolName = payloadStringOrNull(event.payload.toolName)?.trim().toLowerCase() ?? "";
+      if (toolUseId && toolName.length > 0) {
+        toolNameByUseId.set(toolUseId, toolName);
+      }
+    }
+
+    if (event.idx <= createdIdx) {
+      continue;
+    }
+
+    if (event.type === "tool.finished") {
+      const finishedToolNames = getFinishedToolNames(event, toolNameByUseId);
+      if (finishedToolNames.some((toolName) => toolName === "exitplanmode")) {
+        return event;
+      }
+      continue;
+    }
+
+    if ((event.type === "chat.completed" || event.type === "chat.failed") && fallbackCompletionEvent == null) {
+      fallbackCompletionEvent = event;
+    }
+  }
+
+  return fallbackCompletionEvent;
+}
 
 function rebalanceMultiFileEditAnnouncements(sortable: SortableEntry[]): void {
   for (let index = 1; index < sortable.length - 1; index += 1) {
@@ -196,6 +252,7 @@ export function buildTimelineFromSeed(params: {
     }
   }
 
+  const normalizedPlanByMessageId = new Map<string, ReturnType<typeof normalizePlanCreatedEvent>>();
   const planFileOutputByMessageId = new Map<string, PlanFileOutput>();
   for (const event of orderedEventsByIdx) {
     const normalizedPlan = normalizePlanCreatedEvent(event, orderedEventsByIdx);
@@ -203,7 +260,17 @@ export function buildTimelineFromSeed(params: {
       continue;
     }
 
-    planFileOutputByMessageId.set(normalizedPlan.messageId, normalizedPlan);
+    normalizedPlanByMessageId.set(normalizedPlan.messageId, normalizedPlan);
+    const revealEvent = findPlanRevealEvent(orderedEventsByIdx, normalizedPlan.idx);
+    if (!revealEvent) {
+      continue;
+    }
+
+    planFileOutputByMessageId.set(normalizedPlan.messageId, {
+      ...normalizedPlan,
+      revealIdx: revealEvent.idx,
+      revealedAt: revealEvent.createdAt,
+    });
   }
 
   const messageAnchorIdxById = computeMessageAnchorIdxById(
@@ -280,7 +347,7 @@ export function buildTimelineFromSeed(params: {
     const nextAssistantStartIdx = nextAssistantStartIdxByMessageId.get(message.id);
     const lowerBoundaryIdx =
       typeof messageStartIdx === "number"
-        ? messageStartIdx - 1
+        ? Math.min(previousAssistantBoundaryIdx, messageStartIdx - 1)
         : previousAssistantBoundaryIdx;
     const upperBoundaryIdx =
       typeof completedIdx === "number"
@@ -317,12 +384,13 @@ export function buildTimelineFromSeed(params: {
     const isReadResponseContext = hasReadContext || looksLikeFileRead;
     const hasMessageDelta = firstMessageEventIdxById.has(message.id);
     const isCompleted = message.role === "assistant" ? completedMessageIds.has(message.id) : false;
+    const normalizedPlan = message.role === "assistant" ? normalizedPlanByMessageId.get(message.id) ?? undefined : undefined;
     const planFileOutput = message.role === "assistant" ? planFileOutputByMessageId.get(message.id) : undefined;
     const shouldSkipMessageBecausePlanCard =
       message.role === "assistant"
-      && !!planFileOutput
+      && !!normalizedPlan
       && message.content.trim().length > 0
-      && message.content.trim() === planFileOutput.content.trim();
+      && message.content.trim() === normalizedPlan.content.trim();
 
     const hasToolEventsInContext = message.role === "assistant"
       && (assistantContextById.get(message.id)?.length ?? 0) > 0;
@@ -667,10 +735,10 @@ export function buildTimelineFromSeed(params: {
         filePath: planFileOutput.filePath,
         createdAt: planFileOutput.createdAt,
       },
-      anchorIdx: planFileOutput.idx,
-      timestamp: parseTimestamp(planFileOutput.createdAt),
+      anchorIdx: planFileOutput.revealIdx,
+      timestamp: parseTimestamp(planFileOutput.revealedAt),
       rank: 3,
-      stableOrder: planFileOutput.idx + 0.0005,
+      stableOrder: planFileOutput.revealIdx + 0.0005,
     });
   }
 

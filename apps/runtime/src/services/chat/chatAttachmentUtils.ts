@@ -1,17 +1,49 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import type { PrismaClient } from "@prisma/client";
 import type { ClaudeToolInstrumentationEvent, PlanDetectionSource } from "../../types.js";
 
 const CLAUDE_SETTINGS_DIR = ".claude";
 const CLAUDE_LOCAL_SETTINGS_FILE = "settings.local.json";
+const MENTION_TOKEN_REGEX = /@(file|dir):([\w./_-][\w./_-]*[\w._-])/g;
+
+function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+  const normalizedRoot = resolve(rootPath);
+  const normalizedCandidate = resolve(candidatePath);
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${sep}`);
+}
+
+export function normalizeMentionTokensForPrompt(content: string, workspaceRoot?: string): string {
+  if (!workspaceRoot || workspaceRoot.trim().length === 0) {
+    return content;
+  }
+
+  return content.replace(MENTION_TOKEN_REGEX, (_match, _typeTag: string, rawPath: string) => {
+    const normalizedPath = rawPath.trim();
+    if (normalizedPath.length === 0 || isAbsolute(normalizedPath)) {
+      return normalizedPath || rawPath;
+    }
+
+    const resolvedPath = resolve(workspaceRoot, normalizedPath);
+    if (!isPathWithinRoot(workspaceRoot, resolvedPath)) {
+      return rawPath;
+    }
+
+    return resolvedPath;
+  });
+}
 
 export function isImageMimeType(mimeType: string): boolean {
   return mimeType.startsWith("image/");
 }
 
-export function buildPromptWithAttachments(content: string, attachments: Array<{ filename: string; mimeType: string; content: string; storagePath: string | null }>): string {
-  const cleanContent = content.replace(/\{\{attachment:[^}]+\}\}/g, "").trim();
+export function buildPromptWithAttachments(
+  content: string,
+  attachments: Array<{ filename: string; mimeType: string; content: string; storagePath: string | null }>,
+  options?: { workspaceRoot?: string },
+): string {
+  const normalizedContent = normalizeMentionTokensForPrompt(content, options?.workspaceRoot);
+  const cleanContent = normalizedContent.replace(/\{\{attachment:[^}]+\}\}/g, "").trim();
 
   if (attachments.length === 0) return cleanContent;
 

@@ -232,7 +232,7 @@ describe("usePendingGates", () => {
     expect(hookResult.pendingPermissionRequests).toHaveLength(0);
   });
 
-  it("does not show plan decision before chat.completed", () => {
+  it("does not show plan decision before ExitPlanMode completes", () => {
     const events = [
       makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
     ];
@@ -240,7 +240,17 @@ describe("usePendingGates", () => {
     expect(hookResult.showPlanDecisionComposer).toBe(false);
   });
 
-  it("shows plan decision after chat.completed", () => {
+  it("shows plan decision after ExitPlanMode completes", () => {
+    const events = [
+      makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
+      makeEvent(1, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }),
+      makeEvent(2, "tool.finished", { precedingToolUseIds: ["exit-1"] }),
+    ];
+    render(events);
+    expect(hookResult.showPlanDecisionComposer).toBe(true);
+  });
+
+  it("falls back to chat.completed when older histories do not include ExitPlanMode", () => {
     const events = [
       makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
       makeEvent(1, "chat.completed", {}),

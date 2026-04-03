@@ -230,6 +230,21 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
     return true;
   }
 
+  function selectBestRunForChangedFile(
+    changedFile: string,
+    candidates: EditedRun[],
+  ): EditedRun | null {
+    for (const run of candidates) {
+      if (run.changedFiles.length === 0) {
+        continue;
+      }
+      if (filterDiffByFiles(`diff --git a/${changedFile} b/${changedFile}\n`, run.changedFiles).trim().length > 0) {
+        return run;
+      }
+    }
+    return null;
+  }
+
   for (const event of ordered) {
     if (event.type === "permission.requested") {
       if (!isEditToolLifecycleEvent(event)) {
@@ -369,10 +384,17 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
       .filter((run) => run.startIdx <= event.idx && (run.diffKind === "none" || run.diffKind === "proposed") && run.status !== "failed")
       .sort((a, b) => b.startIdx - a.startIdx);
 
-    const matchedRuns = eligibleRuns.filter((run) =>
-      run.changedFiles.length > 0
-      && filterDiffByFiles(diff, run.changedFiles).trim().length > 0,
-    );
+    const assignedRuns = new Set<EditedRun>();
+    const matchedRuns: EditedRun[] = [];
+    for (const changedFile of changedFiles) {
+      const candidateRuns = eligibleRuns.filter((run) => !assignedRuns.has(run));
+      const matchedRun = selectBestRunForChangedFile(changedFile, candidateRuns);
+      if (!matchedRun) {
+        continue;
+      }
+      assignedRuns.add(matchedRun);
+      matchedRuns.push(matchedRun);
+    }
 
     if (matchedRuns.length > 0) {
       matchedRuns.forEach((run) => {

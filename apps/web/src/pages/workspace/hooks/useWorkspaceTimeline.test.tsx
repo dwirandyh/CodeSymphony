@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
+import { buildTimelineFromSeed } from "@codesymphony/chat-timeline-core";
 import { useWorkspaceTimeline, type TimelineRefs, type WorkspaceTimelineResult } from "./workspace-timeline";
 import { extractSubagentExploreGroups } from "./workspace-timeline/subagentExploreExtraction";
 
@@ -167,6 +168,43 @@ describe("useWorkspaceTimeline", () => {
     const bashItems = toolItems.filter((item) => item.kind === "tool" && item.shell === "bash");
     expect(bashItems.length).toBeGreaterThan(0);
     expect(bashItems.some((item) => item.command === "pwd")).toBe(true);
+  });
+
+  it("routes successful top-level read summaries into explore activity with open path metadata", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "read the readme"),
+      makeMessage("m2", 2, "assistant", "Saya cek dulu filenya."),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Read",
+        toolUseId: "read-1",
+        toolInput: { file_path: "/Users/dwirandyh/Work/likearthstudio/finly_app/README.md" },
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        precedingToolUseIds: ["read-1"],
+        summary: "Read /Users/dwirandyh/Work/likearthstudio/finly_app/README.md",
+      }, "m2"),
+      makeEvent(2, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+    const toolItems = items.filter((item) => item.kind === "tool");
+
+    expect(exploreItems).toHaveLength(1);
+    expect(toolItems).toHaveLength(0);
+    if (exploreItems[0]?.kind !== "explore-activity") {
+      throw new Error("Expected explore-activity item");
+    }
+    expect(exploreItems[0].fileCount).toBe(1);
+    expect(exploreItems[0].entries).toHaveLength(1);
+    expect(exploreItems[0].entries[0]).toMatchObject({
+      kind: "read",
+      label: "README.md",
+      openPath: "/Users/dwirandyh/Work/likearthstudio/finly_app/README.md",
+      pending: false,
+    });
   });
 
   it("renders failed read summaries as tool items with failed-read labels", () => {
@@ -470,7 +508,7 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items.length).toBeGreaterThan(0);
   });
 
-  it("processes plan events", () => {
+  it("does not render a plan card before ExitPlanMode completes", () => {
     const messages = [makeMessage("m1", 1, "user", "Plan"), makeMessage("m2", 2, "assistant", "Here's the plan")];
     const events = [
       makeEvent(0, "plan.created", { messageId: "m2", content: "# My Plan", filePath: ".claude/plans/my-plan.md" }, "m2"),
@@ -479,7 +517,22 @@ describe("useWorkspaceTimeline", () => {
       root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
     });
     const planItems = hookResult.items.filter((i) => i.kind === "plan-file-output");
+    expect(planItems).toHaveLength(0);
+  });
+
+  it("renders a plan card at the bottom once ExitPlanMode completes", () => {
+    const messages = [makeMessage("m1", 1, "user", "Plan"), makeMessage("m2", 2, "assistant", "Here's the plan")];
+    const events = [
+      makeEvent(0, "plan.created", { messageId: "m2", content: "# My Plan", filePath: ".claude/plans/my-plan.md" }, "m2"),
+      makeEvent(1, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }, "m2"),
+      makeEvent(2, "tool.finished", { precedingToolUseIds: ["exit-1"] }, "m2"),
+    ];
+    act(() => {
+      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
+    });
+    const planItems = hookResult.items.filter((i) => i.kind === "plan-file-output");
     expect(planItems).toHaveLength(1);
+    expect(hookResult.items[hookResult.items.length - 1]?.kind).toBe("plan-file-output");
   });
 
   it("skips bogus streaming fallback plan events without a real plan write", () => {
@@ -511,6 +564,8 @@ describe("useWorkspaceTimeline", () => {
         editTarget: ".claude/plans/real-plan.md",
         toolInput: { content: "# Real Plan\n- Step 1" },
       }, "m2"),
+      makeEvent(2, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }, "m2"),
+      makeEvent(3, "tool.finished", { precedingToolUseIds: ["exit-1"] }, "m2"),
     ];
 
     const items = getTimelineItems(messages, events);
@@ -693,6 +748,7 @@ describe("useWorkspaceTimeline", () => {
     expect(firstExploreIndex).toBeLessThan(firstMessageIndex);
   });
 
+
   it("keeps first tool insert before fallback text when deltas are incomplete", () => {
     const messages = [
       makeMessage("m1", 1, "user", "inspect"),
@@ -831,6 +887,54 @@ describe("useWorkspaceTimeline", () => {
     expect(firstEditedIndex).toBeLessThan(preSecondEditMessageIndex);
     expect(preSecondEditMessageIndex).toBeLessThan(secondEditedIndex);
     expect(secondEditedIndex).toBeLessThan(doneMessageIndex);
+  });
+
+  it("renders a single README edited diff when pre-delta edit events and worktree diff belong to the same assistant turn", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "update readme"),
+      makeMessage("m2", 2, "assistant", "Selesai. README sudah diupdate."),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e1",
+        toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/README.md",
+        editTarget: "/repo/README.md",
+        precedingToolUseIds: ["e1"],
+      }, "m2"),
+      makeEvent(2, "message.delta", { role: "assistant", messageId: "m2", delta: "Selesai. README sudah diupdate." }, "m2"),
+      makeEvent(3, "tool.finished", {
+        source: "worktree.diff",
+        summary: "Edited 1 file",
+        changedFiles: ["README.md"],
+        diff: [
+          "diff --git a/README.md b/README.md",
+          "--- a/README.md",
+          "+++ b/README.md",
+          "@@ -1 +1 @@",
+          "-a",
+          "+b",
+        ].join("\n"),
+      }, "m2"),
+      makeEvent(4, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+    const readmeEditedItems = result.items.filter(
+      (item) => item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("README.md")),
+    );
+
+    expect(readmeEditedItems).toHaveLength(1);
+    expect(readmeEditedItems[0]).toMatchObject({ kind: "edited-diff", diffKind: "actual" });
   });
 
   it("strips leaked think tags and keeps post-edit completion text after both edit cards", () => {

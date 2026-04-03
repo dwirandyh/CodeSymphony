@@ -95,7 +95,7 @@ export function buildSegmentBuckets(
       return insert.run.endIdx;
     }
     if (insert.kind === "explore-activity") {
-      return insert.group.endIdx;
+      return insert.group.startIdx;
     }
     return insert.startIdx;
   }
@@ -624,7 +624,8 @@ export function processInlineInsertLoop(
   const deferFirstInsertUntilText =
     !hasLeadingText
     && hasAnyTrailingText
-    && inlineInserts.length > 0;
+    && inlineInserts.length > 0
+    && !isSentenceAwareInlineInsertKind(firstInsertKind);
   const delayFirstInlineInsert = shouldDelayFirstInlineInsert(
     firstInsertKind,
     segmentBuckets[0]?.content ?? "",
@@ -748,6 +749,39 @@ export function processInlineInsertLoop(
       let segmentRendered = false;
       if (
         nextInsertIndex === 0
+        && firstInsertKind === "explore-activity"
+        && inlineInserts.length > 0
+      ) {
+        const textIsAfterInsert = (bucket.anchorIdx ?? 0) > inlineInserts[0].startIdx;
+        if (textIsAfterInsert && !hasAnyTrailingText) {
+          const splitSegment = splitAtContentBoundary(bucket.content)
+            ?? (hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null);
+          if (splitSegment && splitSegment.tail.length > 0) {
+            doPushMessageSegment(
+              splitSegment.head,
+              `${bucketIndex}:explore-head`,
+              inlineInserts[0].startIdx - 0.5,
+              bucket.timestamp,
+            );
+            doPushInlineInsert(inlineInserts[0], bucket.timestamp);
+            doPushMessageSegment(
+              splitSegment.tail,
+              `${bucketIndex}:explore-tail`,
+              bucket.anchorIdx,
+              bucket.timestamp,
+            );
+          } else {
+            doPushInlineInsert(inlineInserts[0], bucket.timestamp);
+            doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
+          }
+          nextInsertIndex = 1;
+          shouldDelayFirstInsert = false;
+          segmentRendered = true;
+        }
+      }
+      if (
+        !segmentRendered
+        && nextInsertIndex === 0
         && isSentenceAwareInlineInsertKind(firstInsertKind)
         && hasAnyTrailingText
         && inlineInserts.length > 0
@@ -898,6 +932,8 @@ export function processInlineInsertLoop(
       const shouldHoldLeadingSentenceAwareInsert =
         nextInsertIndex === 0
         && isSentenceAwareInlineInsertKind(firstInsertKind)
+        && firstInsertKind !== "subagent-activity"
+        && firstInsertKind !== "explore-activity"
         && hasAnyTrailingText
         && bucketIndex === 0;
       if (shouldHoldLeadingSentenceAwareInsert) {
