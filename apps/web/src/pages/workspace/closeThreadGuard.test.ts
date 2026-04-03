@@ -62,6 +62,20 @@ describe("shouldConfirmCloseThread", () => {
     expect(result).toBe(false);
   });
 
+  it("returns true for selected thread when thread.active is still true", () => {
+    const thread = createThread({ active: true });
+
+    const result = shouldConfirmCloseThread({
+      threadId: thread.id,
+      selectedThreadId: thread.id,
+      showStopAction: false,
+      waitingAssistantThreadId: null,
+      threads: [thread],
+    });
+
+    expect(result).toBe(true);
+  });
+
   it("returns true for non-selected thread when thread.active is true", () => {
     const selectedThread = createThread({ id: "thread-1" });
     const targetThread = createThread({ id: "thread-2", active: true });

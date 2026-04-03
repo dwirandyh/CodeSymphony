@@ -30,11 +30,19 @@ export function mapRepository(repository: DbRepository & { worktrees: DbWorktree
   };
 }
 
+function normalizeChatThreadTitle(title: string): string {
+  const normalized = title.trim();
+  if (normalized === "New Thread" || normalized === "Main Thread" || /^Thread\s+\d+$/.test(normalized)) {
+    return "New Thread";
+  }
+  return title;
+}
+
 export function mapChatThread(thread: DbChatThread, isActive = false): ChatThread {
   return {
     id: thread.id,
     worktreeId: thread.worktreeId,
-    title: thread.title,
+    title: normalizeChatThreadTitle(thread.title),
     kind: thread.kind,
     permissionProfile: thread.permissionProfile,
     mode: thread.mode,

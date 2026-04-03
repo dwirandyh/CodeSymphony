@@ -12,7 +12,7 @@ const threads: ChatThread[] = [
   {
     id: "thread-1",
     worktreeId: "wt-1",
-    title: "Main Thread",
+    title: "New Thread",
     kind: "default",
     permissionProfile: "default",
     mode: "default",
@@ -67,6 +67,7 @@ describe("WorkspaceHeader", () => {
       disabled: false,
       createThreadDisabled: false,
       closingThreadId: null,
+      protectedThreadId: null,
       onSelectThread: noop,
       onCreateThread: noop,
       onCloseThread: noop,
@@ -188,6 +189,42 @@ describe("WorkspaceHeader", () => {
     });
 
     expect(onCreateThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps unselected close buttons non-interactive until hovered", () => {
+    renderHeader({ selectedThreadId: "thread-1" });
+
+    const closeButton = container.querySelector<HTMLButtonElement>('button[aria-label="Close session Secondary Thread"]');
+    if (!closeButton) {
+      throw new Error("Unselected close button not found");
+    }
+
+    expect(closeButton.className).toContain("pointer-events-none");
+    expect(closeButton.disabled).toBe(false);
+  });
+
+  it("disables all close buttons while a thread is closing", () => {
+    renderHeader({ closingThreadId: "thread-1" });
+
+    const selectedCloseButton = container.querySelector<HTMLButtonElement>('button[aria-label="Close session New Thread"]');
+    const secondaryCloseButton = container.querySelector<HTMLButtonElement>('button[aria-label="Close session Secondary Thread"]');
+    if (!selectedCloseButton || !secondaryCloseButton) {
+      throw new Error("Close buttons not found");
+    }
+
+    expect(selectedCloseButton.disabled).toBe(true);
+    expect(secondaryCloseButton.disabled).toBe(true);
+  });
+
+  it("disables the close button for a protected running thread", () => {
+    renderHeader({ protectedThreadId: "thread-1" });
+
+    const selectedCloseButton = container.querySelector<HTMLButtonElement>('button[aria-label="Close session New Thread"]');
+    if (!selectedCloseButton) {
+      throw new Error("Selected close button not found");
+    }
+
+    expect(selectedCloseButton.disabled).toBe(true);
   });
 
 });

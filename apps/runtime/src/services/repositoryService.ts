@@ -63,7 +63,7 @@ export function createRepositoryService(prisma: PrismaClient) {
     await prisma.chatThread.create({
       data: {
         worktreeId,
-        title: "Main Thread",
+        title: "New Thread",
       },
     });
   }
@@ -240,7 +240,7 @@ export function createRepositoryService(prisma: PrismaClient) {
           await tx.chatThread.create({
             data: {
               worktreeId: primaryWorktree.id,
-              title: "Main Thread",
+              title: "New Thread",
             },
           });
 

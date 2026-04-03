@@ -62,6 +62,7 @@ vi.mock("../../../../lib/api", () => ({
 }));
 
 const invalidateQueriesMock = vi.fn();
+const cancelQueriesMock = vi.fn();
 
 let container: HTMLDivElement;
 let root: Root;
@@ -134,7 +135,10 @@ beforeEach(() => {
   });
   invalidateQueriesMock.mockReset();
   invalidateQueriesMock.mockResolvedValue(undefined);
+  cancelQueriesMock.mockReset();
+  cancelQueriesMock.mockResolvedValue(undefined);
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
+  queryClient.cancelQueries = cancelQueriesMock as typeof queryClient.cancelQueries;
 });
 
 afterEach(() => {
@@ -155,6 +159,21 @@ afterEach(() => {
 });
 
 describe("useChatSession", () => {
+  it("keeps a locally selected thread while URL state catches up", () => {
+    renderHook("thread-a");
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+
+    act(() => {
+      hookResult.setSelectedThreadId("thread-b");
+    });
+
+    renderHook("thread-a");
+    expect(hookResult.selectedThreadId).toBe("thread-b");
+
+    renderHook("thread-b");
+    expect(hookResult.selectedThreadId).toBe("thread-b");
+  });
+
   it("creates or reuses dedicated PR/MR thread, sends message, and invalidates repository reviews", async () => {
     vi.mocked(api.updateThreadMode).mockResolvedValue({ ...makeThread("thread-a"), mode: "plan" });
     const prMrThread = {
@@ -213,7 +232,23 @@ describe("useChatSession", () => {
     });
 
     expect(api.deleteThread).toHaveBeenCalledWith("pr-mr-thread");
+    expect(hookResult.selectedThreadId).toBe("thread-b");
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
+  });
+
+  it("cancels thread timeline queries before deleting the thread", async () => {
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b")];
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    expect(cancelQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot("thread-a") });
+    expect(cancelQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.messages("thread-a") });
+    expect(cancelQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.events("thread-a") });
   });
 
   it("respects desiredThreadId on first render", () => {
@@ -248,6 +283,60 @@ describe("useChatSession", () => {
     renderHook("thread-a");
 
     expect(hookResult.selectedThreadId).toBe("thread-a");
+  });
+
+  it("reuses an existing titled thread instead of creating a duplicate", async () => {
+    threadsState.data = [
+      {
+        ...makeThread("thread-a"),
+        title: "New Thread",
+      },
+    ];
+    vi.mocked(api.createThread).mockClear();
+    vi.mocked(api.sendMessage).mockClear();
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "message-hello",
+      threadId: "thread-a",
+      seq: 1,
+      role: "user",
+      content: "Hello",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.createThreadAndSendMessage("New Thread", "Hello");
+    });
+
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(api.sendMessage).toHaveBeenCalledWith("thread-a", {
+      content: "Hello",
+      mode: "default",
+      attachments: [],
+      expectedWorktreeId: "wt-1",
+    });
+  });
+
+  it("creates a new thread with the default title", async () => {
+    threadsState.data = [
+      { ...makeThread("thread-a"), title: "New Thread" },
+      { ...makeThread("thread-b"), title: "Investigate bug" },
+    ];
+    vi.mocked(api.createThread).mockClear();
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.createAdditionalThread();
+    });
+
+    expect(api.createThread).toHaveBeenCalledWith("wt-1", { title: "New Thread" });
   });
 
   it("prefers derived timeline when server snapshot contains stale cards but derived timeline is empty", () => {

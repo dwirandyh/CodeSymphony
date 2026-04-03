@@ -105,6 +105,17 @@ function makeMessageItem(id: string, seq: number, content = `message-${id}`): Ch
   };
 }
 
+function makeToolItem(id: string, summary = "summary", output = "output"): ChatTimelineItem {
+  return {
+    kind: "tool",
+    id,
+    event: null,
+    summary,
+    output,
+    status: "running",
+  };
+}
+
 function getTimelineRowWrappers(): HTMLDivElement[] {
   return Array.from(container.querySelectorAll("[data-testid='vlist'] > div")) as HTMLDivElement[];
 }
@@ -178,6 +189,33 @@ describe("MarkdownBody", () => {
 });
 
 describe("ChatMessageList", () => {
+  it("keeps timeline keys stable while message content streams", () => {
+    const item = {
+      ...makeMessageItem("msg-1", 1, "hello"),
+      isCompleted: false,
+    } satisfies ChatTimelineItem;
+
+    const streamed = {
+      ...item,
+      message: { ...item.message, content: "hello world" },
+      isCompleted: true,
+    } satisfies ChatTimelineItem;
+
+    expect(getTimelineItemKey(item)).toBe(getTimelineItemKey(streamed));
+  });
+
+  it("keeps tool timeline keys stable while output changes", () => {
+    const item = makeToolItem("tool-1", "summary", "one");
+    const updated = {
+      ...item,
+      summary: "summary expanded",
+      output: "output expanded",
+      status: "success",
+    } satisfies ChatTimelineItem;
+
+    expect(getTimelineItemKey(item)).toBe(getTimelineItemKey(updated));
+  });
+
   const baseProps = {
     items: [] as ChatTimelineItem[],
   };
@@ -239,7 +277,7 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Hi back!");
   });
 
-  it("changes the render key when an assistant message grows in place", () => {
+  it("keeps the render key stable when an assistant message grows in place", () => {
     const initialKey = getTimelineItemKey({
       kind: "message",
       message: makeMessage("m2", "assistant", "Start", 2),
@@ -253,7 +291,7 @@ describe("ChatMessageList", () => {
       isCompleted: false,
     });
 
-    expect(updatedKey).not.toBe(initialKey);
+    expect(updatedKey).toBe(initialKey);
   });
 
   it("renders error item", () => {

@@ -177,7 +177,17 @@ describe("chat routes", () => {
       expect(res.statusCode).toBe(200);
     });
 
-    it("returns 400 on error", async () => {
+    it("returns 404 when thread is missing", async () => {
+      mockChatService.renameThreadTitle.mockRejectedValue(new Error("Chat thread not found"));
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/threads/t1/title",
+        payload: { title: "New" },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns 400 on other errors", async () => {
       mockChatService.renameThreadTitle.mockRejectedValue(new Error("bad"));
       const res = await app.inject({
         method: "PATCH",
@@ -200,7 +210,17 @@ describe("chat routes", () => {
       expect(mockChatService.updateThreadMode).toHaveBeenCalledWith("t1", { mode: "plan" });
     });
 
-    it("returns 400 on error", async () => {
+    it("returns 404 when thread is missing", async () => {
+      mockChatService.updateThreadMode.mockRejectedValue(new Error("Chat thread not found"));
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/threads/t1/mode",
+        payload: { mode: "plan" },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns 400 on other errors", async () => {
       mockChatService.updateThreadMode.mockRejectedValue(new Error("bad"));
       const res = await app.inject({
         method: "PATCH",
@@ -216,6 +236,18 @@ describe("chat routes", () => {
       mockChatService.deleteThread.mockResolvedValue(undefined);
       const res = await app.inject({ method: "DELETE", url: "/api/threads/t1" });
       expect(res.statusCode).toBe(204);
+    });
+
+    it("returns 404 when thread is missing", async () => {
+      mockChatService.deleteThread.mockRejectedValue(new Error("Chat thread not found"));
+      const res = await app.inject({ method: "DELETE", url: "/api/threads/t1" });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("returns 409 when thread is still running", async () => {
+      mockChatService.deleteThread.mockRejectedValue(new Error("Cannot delete a thread while assistant is processing"));
+      const res = await app.inject({ method: "DELETE", url: "/api/threads/t1" });
+      expect(res.statusCode).toBe(409);
     });
   });
 
@@ -311,6 +343,12 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/messages" });
       expect(res.statusCode).toBe(200);
     });
+
+    it("returns 404 when thread is missing", async () => {
+      mockChatService.listMessages.mockRejectedValue(new Error("Chat thread not found"));
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/messages" });
+      expect(res.statusCode).toBe(404);
+    });
   });
 
   describe("GET /api/threads/:id/events", () => {
@@ -318,6 +356,12 @@ describe("chat routes", () => {
       mockChatService.listEvents.mockResolvedValue([]);
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/events" });
       expect(res.statusCode).toBe(200);
+    });
+
+    it("returns 404 when thread is missing", async () => {
+      mockChatService.listEvents.mockRejectedValue(new Error("Chat thread not found"));
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/events" });
+      expect(res.statusCode).toBe(404);
     });
   });
 
@@ -344,6 +388,20 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/snapshot" });
       expect(res.statusCode).toBe(200);
     });
+
+    it("returns 404 when thread is missing", async () => {
+      mockChatService.listThreadSnapshot.mockRejectedValue(new Error("Chat thread not found"));
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/snapshot" });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("GET /api/threads/:id/events/stream", () => {
+    it("returns 404 when thread is missing before opening SSE", async () => {
+      mockChatService.getThreadById.mockResolvedValue(null);
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/events/stream" });
+      expect(res.statusCode).toBe(404);
+    });
   });
 
   describe("GET /api/threads/:id/timeline", () => {
@@ -368,7 +426,7 @@ describe("chat routes", () => {
       const thread = await prisma.chatThread.create({
         data: {
           worktreeId: worktree.id,
-          title: "Main Thread",
+          title: "New Thread",
         },
       });
       const assistantMessage = await prisma.chatMessage.create({

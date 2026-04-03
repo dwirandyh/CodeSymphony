@@ -208,7 +208,7 @@ export function createWorktreeService(prisma: PrismaClient) {
           await prisma.chatThread.create({
             data: {
               worktreeId: created.id,
-              title: "Main Thread",
+              title: "New Thread",
             },
           });
 
