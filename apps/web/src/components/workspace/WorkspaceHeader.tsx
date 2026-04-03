@@ -14,6 +14,7 @@ type WorkspaceHeaderProps = {
   disabled: boolean;
   createThreadDisabled?: boolean;
   closingThreadId: string | null;
+  protectedThreadId?: string | null;
   showReviewTab?: boolean;
   reviewTabActive?: boolean;
   onSelectThread: (threadId: string | null) => void;
@@ -52,6 +53,7 @@ export function WorkspaceHeader({
   disabled,
   createThreadDisabled,
   closingThreadId,
+  protectedThreadId,
   showReviewTab,
   reviewTabActive,
   onSelectThread,
@@ -159,7 +161,8 @@ export function WorkspaceHeader({
           <div className="flex w-max min-w-full items-center gap-0.5 whitespace-nowrap">
             {threads.map((thread) => {
               const isSelected = thread.id === selectedThreadId && !reviewTabActive;
-              const isClosing = closingThreadId === thread.id;
+              const isAnyThreadClosing = closingThreadId !== null;
+              const isProtected = protectedThreadId === thread.id;
               const isEditing = editingThreadId === thread.id;
 
               return (
@@ -214,10 +217,10 @@ export function WorkspaceHeader({
                     title={`Close ${thread.title}`}
                     className={cn(
                       "rounded-sm p-1 text-muted-foreground transition-opacity hover:text-destructive disabled:opacity-50",
-                      isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+                      isSelected ? "opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
                     )}
                     onClick={() => onCloseThread(thread.id)}
-                    disabled={disabled || isClosing || isEditing}
+                    disabled={disabled || isAnyThreadClosing || isEditing || isProtected}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

@@ -166,6 +166,98 @@ describe("chatService snapshot", () => {
     expect(snapshot.timeline.newestSeq).toBeNull();
   });
 
+  it("throws when loading a snapshot for a deleted thread", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId } = await seedThreadWithMessages(0);
+    await prisma.chatThread.delete({ where: { id: threadId } });
+
+    await expect(chatService.listThreadSnapshot(threadId)).rejects.toThrow("Chat thread not found");
+    await expect(chatService.listMessages(threadId)).rejects.toThrow("Chat thread not found");
+    await expect(chatService.listEvents(threadId)).rejects.toThrow("Chat thread not found");
+  });
+
+  it("reuses the default thread when createThread is called without a title", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const suffix = uniqueSuffix();
+    const repository = await prisma.repository.create({
+      data: {
+        name: `snapshot-duplicate-${suffix}`,
+        rootPath: `/tmp/snapshot-duplicate-${suffix}`,
+        defaultBranch: "main",
+      },
+    });
+    const worktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "main",
+        baseBranch: "main",
+        path: repository.rootPath,
+        status: "active",
+      },
+    });
+    const existing = await prisma.chatThread.create({
+      data: {
+        worktreeId: worktree.id,
+        title: "New Thread",
+      },
+    });
+
+    const returned = await chatService.createThread(worktree.id, {});
+
+    expect(returned.id).toBe(existing.id);
+    expect(await prisma.chatThread.count({ where: { worktreeId: worktree.id, title: "New Thread" } })).toBe(1);
+  });
+
+  it("allows multiple explicitly created threads with the default display title", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const suffix = uniqueSuffix();
+    const repository = await prisma.repository.create({
+      data: {
+        name: `snapshot-duplicate-explicit-${suffix}`,
+        rootPath: `/tmp/snapshot-duplicate-explicit-${suffix}`,
+        defaultBranch: "main",
+      },
+    });
+    const worktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "main",
+        baseBranch: "main",
+        path: repository.rootPath,
+        status: "active",
+      },
+    });
+    await prisma.chatThread.create({
+      data: {
+        worktreeId: worktree.id,
+        title: "New Thread",
+      },
+    });
+
+    const returned = await chatService.createThread(worktree.id, { title: "New Thread" });
+
+    expect(returned.title).toBe("New Thread");
+    expect(await prisma.chatThread.count({ where: { worktreeId: worktree.id, title: "New Thread" } })).toBe(2);
+  });
+
   it("returns snapshot with messages and no events when unknown event enum values exist", async () => {
     const chatService = createChatService({
       prisma,

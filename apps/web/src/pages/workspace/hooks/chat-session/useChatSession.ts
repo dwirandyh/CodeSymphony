@@ -47,6 +47,8 @@ import { prependUniqueMessages, prependUniqueEvents } from "./messageEventMerge"
 import { applySnapshotSeed, applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { useThreadEventStream } from "./useThreadEventStream";
 
+const DEFAULT_THREAD_TITLE = "New Thread";
+
 function resolvePreferredThreadId(threads: ChatThread[]): string | null {
   for (let index = threads.length - 1; index >= 0; index -= 1) {
     if (threads[index]?.active) {
@@ -173,7 +175,7 @@ export function useChatSession(
   const timelineEnabled = options?.timelineEnabled !== false;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [selectedThreadId, setSelectedThreadIdState] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<ChatEvent[]>([]);
 
@@ -191,11 +193,14 @@ export function useChatSession(
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
+  const threadsRef = useRef<ChatThread[]>([]);
   const creatingThreadRef = useRef(false);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
+  const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
   const prevThreadIdRef = useRef<string | null>(null);
   const prevSeedThreadRef = useRef<string | null>(null);
   const prevRequestedThreadIdRef = useRef<string | null>(null);
+  const prevRequestedThreadExistsRef = useRef(false);
   const restoredActiveThreadIdsRef = useRef<Set<string>>(new Set());
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
@@ -203,10 +208,17 @@ export function useChatSession(
   const lastAppliedSnapshotKeyByThreadRef = useRef<Map<string, string>>(new Map());
 
   activeThreadIdRef.current = selectedThreadId;
+  threadsRef.current = threads;
 
   const { data: queriedThreads } = useThreads(selectedWorktreeId);
 
   const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
+
+  const setSelectedThreadId = useCallback((threadId: string | null) => {
+    startTransition(() => {
+      setSelectedThreadIdState(threadId);
+    });
+  }, []);
 
   useEffect(() => {
     const worktreeChanged = selectedWorktreeId !== prevWorktreeIdRef2.current;
@@ -235,8 +247,9 @@ export function useChatSession(
 
     setThreads((current) => {
       const optimisticCreatedThreadIds = optimisticCreatedThreadIdsRef.current;
+      const locallyDeletedThreadIds = locallyDeletedThreadIdsRef.current;
       const optimisticThreads = current.filter((thread) => optimisticCreatedThreadIds.has(thread.id));
-      const mergedThreads = [...queriedThreads];
+      const mergedThreads = queriedThreads.filter((thread) => !locallyDeletedThreadIds.has(thread.id));
       for (const optimisticThread of optimisticThreads) {
         if (!mergedThreads.some((thread) => thread.id === optimisticThread.id)) {
           mergedThreads.push(optimisticThread);
@@ -256,37 +269,13 @@ export function useChatSession(
       prevRequestedThreadIdRef.current = requestedThreadId;
     }
 
-    if (queriedThreads.length > 0) {
-      const requestedThreadExists =
-        requestedThreadId != null && queriedThreads.some((thread) => thread.id === requestedThreadId);
-
-      if (requestedThreadIdChanged || (requestedThreadExists && selectedThreadId !== requestedThreadId)) {
-        const nextThreadId = requestedThreadExists
-          ? requestedThreadId
-          : resolvePreferredThreadId(queriedThreads);
-
-        if (selectedThreadId !== nextThreadId) {
-          setSelectedThreadId(nextThreadId);
-        }
-        return;
-      }
-
-      const selectedThreadStillExists =
-        selectedThreadId != null && queriedThreads.some((thread) => thread.id === selectedThreadId);
-
-      if (selectedThreadStillExists) return;
-
-      const nextThreadId = resolvePreferredThreadId(queriedThreads);
-      if (selectedThreadId !== nextThreadId) {
-        setSelectedThreadId(nextThreadId);
-      }
-    } else {
+    if (queriedThreads.length === 0) {
       if (creatingThreadRef.current) return;
       let cancelled = false;
       creatingThreadRef.current = true;
       void (async () => {
         try {
-          const created = await api.createThread(selectedWorktreeId, { title: "Main Thread" });
+          const created = await api.createThread(selectedWorktreeId, {});
           if (cancelled) return;
           setThreads([created]);
           setSelectedThreadId(created.id);
@@ -298,6 +287,39 @@ export function useChatSession(
         }
       })();
       return () => { cancelled = true; };
+    }
+
+    const requestedThreadExists =
+      requestedThreadId != null && queriedThreads.some((thread) => thread.id === requestedThreadId);
+    const selectedThreadStillExists =
+      selectedThreadId != null && queriedThreads.some((thread) => thread.id === selectedThreadId);
+    const requestedThreadReappeared =
+      requestedThreadId != null && requestedThreadExists && !prevRequestedThreadExistsRef.current;
+
+    prevRequestedThreadExistsRef.current = requestedThreadExists;
+
+    if (requestedThreadIdChanged || requestedThreadReappeared) {
+      const nextThreadId = requestedThreadExists
+        ? requestedThreadId
+        : resolvePreferredThreadId(queriedThreads);
+      if (selectedThreadId !== nextThreadId) {
+        setSelectedThreadId(nextThreadId);
+      }
+      return;
+    }
+
+    if (selectedThreadStillExists) {
+      return;
+    }
+
+    if (requestedThreadExists) {
+      setSelectedThreadId(requestedThreadId);
+      return;
+    }
+
+    const nextThreadId = resolvePreferredThreadId(queriedThreads);
+    if (selectedThreadId !== nextThreadId) {
+      setSelectedThreadId(nextThreadId);
     }
   }, [options?.desiredThreadId, queriedThreads, selectedThreadId, selectedWorktreeId]);
 
@@ -335,8 +357,12 @@ export function useChatSession(
   const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
     (thread) => thread.id === selectedThreadId && thread.kind === "review",
   );
+  const selectedThreadIdForData =
+    selectedThreadId != null && !locallyDeletedThreadIdsRef.current.has(selectedThreadId)
+      ? selectedThreadId
+      : null;
 
-  const { data: queriedThreadSnapshot } = useThreadSnapshot(selectedThreadId);
+  const { data: queriedThreadSnapshot } = useThreadSnapshot(selectedThreadIdForData);
 
   useEffect(() => {
     const threadChanged = prevSeedThreadRef.current !== selectedThreadId;
@@ -447,10 +473,12 @@ export function useChatSession(
   }, [selectedThreadId]);
 
   useThreadEventStream({
-    selectedThreadId,
+    selectedThreadId: selectedThreadIdForData,
     selectedWorktreeId,
     repositoryId,
     selectedThreadIsPrMr,
+    locallyDeletedThreadIdsRef,
+    activeThreadIdRef,
     setMessages,
     setEvents,
     setThreads,
@@ -484,24 +512,38 @@ export function useChatSession(
     });
   }, [events, selectedThreadId]);
 
-  async function createThreadInCurrentContext(title: string): Promise<{ created: ChatThread; worktreeId: string } | null> {
+  async function createThreadInCurrentContext(
+    title: string,
+    options?: { reuseExisting?: boolean; sendDefaultTitle?: boolean },
+  ): Promise<{ created: ChatThread; worktreeId: string } | null> {
     if (!selectedWorktreeId) {
       return null;
     }
 
-    const created = await api.createThread(selectedWorktreeId, { title });
+    const trimmedTitle = title.trim();
+    if (options?.reuseExisting) {
+      const existingThread = threadsRef.current.find((thread) => thread.title.trim() === trimmedTitle) ?? null;
+      if (existingThread) {
+        return { created: existingThread, worktreeId: selectedWorktreeId };
+      }
+    }
+
+    const created = options?.sendDefaultTitle === false
+      ? await api.createThread(selectedWorktreeId, {})
+      : await api.createThread(selectedWorktreeId, { title: trimmedTitle });
     return { created, worktreeId: selectedWorktreeId };
   }
 
   async function createAdditionalThread() {
     onError(null);
     try {
-      const result = await createThreadInCurrentContext(`Thread ${threads.length + 1}`);
+      const result = await createThreadInCurrentContext(DEFAULT_THREAD_TITLE);
       if (!result) return null;
       const { created, worktreeId } = result;
       optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
+        locallyDeletedThreadIdsRef.current.delete(created.id);
         return [...current, created];
       });
       setSelectedThreadId(created.id);
@@ -516,12 +558,13 @@ export function useChatSession(
   async function createThreadAndSendMessage(title: string, content: string, mode: ChatMode = "default") {
     onError(null);
     try {
-      const result = await createThreadInCurrentContext(title);
+      const result = await createThreadInCurrentContext(title, { reuseExisting: true });
       if (!result) return;
       const { created, worktreeId } = result;
       optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
+        locallyDeletedThreadIdsRef.current.delete(created.id);
         return [...current, created];
       });
       setSelectedThreadId(created.id);
@@ -564,6 +607,7 @@ export function useChatSession(
       optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         const existingIndex = current.findIndex((thread) => thread.id === created.id);
+        locallyDeletedThreadIdsRef.current.delete(created.id);
         if (existingIndex === -1) {
           return [...current, created];
         }
@@ -612,22 +656,43 @@ export function useChatSession(
   async function closeThread(threadId: string) {
     onError(null);
     setClosingThreadId(threadId);
+    const currentThreads = threadsRef.current;
+    const closedThreadWasPrMr = currentThreads.some((thread) => thread.id === threadId && thread.kind === "review");
+    const wasSelected = activeThreadIdRef.current === threadId;
+    const previousSelectedThreadId = activeThreadIdRef.current;
+    const previousMessages = messages;
+    const previousEvents = events;
+    const updatedThreads = currentThreads.filter((thread) => thread.id !== threadId);
+    const nextThreadId = wasSelected ? resolvePreferredThreadId(updatedThreads) : previousSelectedThreadId;
+
+    locallyDeletedThreadIdsRef.current.add(threadId);
+    setThreads(updatedThreads);
+
+    if (selectedWorktreeId) {
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(selectedWorktreeId),
+        updatedThreads,
+      );
+    }
+
+    if (wasSelected) {
+      setWaitingAssistant(null);
+      setSelectedThreadId(nextThreadId);
+      if (!nextThreadId) {
+        setMessages([]);
+        setEvents([]);
+      }
+    }
+
     try {
-      const closedThreadWasPrMr = threads.some((thread) => thread.id === threadId && thread.kind === "review");
+      await queryClient.cancelQueries({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+      await queryClient.cancelQueries({ queryKey: queryKeys.threads.messages(threadId) });
+      await queryClient.cancelQueries({ queryKey: queryKeys.threads.events(threadId) });
+      queryClient.removeQueries({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+      queryClient.removeQueries({ queryKey: queryKeys.threads.messages(threadId) });
+      queryClient.removeQueries({ queryKey: queryKeys.threads.events(threadId) });
       await api.deleteThread(threadId);
-      setThreads((current) => {
-        const updated = current.filter((t) => t.id !== threadId);
-        if (selectedThreadId === threadId) {
-          const nextThreadId = resolvePreferredThreadId(updated);
-          setWaitingAssistant(null);
-          setSelectedThreadId(nextThreadId);
-          if (!nextThreadId) {
-            setMessages([]);
-            setEvents([]);
-          }
-        }
-        return updated;
-      });
+
       if (selectedWorktreeId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
       }
@@ -636,6 +701,19 @@ export function useChatSession(
       }
       clearThreadTrackingState(threadId);
     } catch (e) {
+      locallyDeletedThreadIdsRef.current.delete(threadId);
+      setThreads(currentThreads);
+      if (selectedWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(selectedWorktreeId),
+          currentThreads,
+        );
+      }
+      if (wasSelected) {
+        setSelectedThreadId(previousSelectedThreadId);
+        setMessages(previousMessages);
+        setEvents(previousEvents);
+      }
       onError(e instanceof Error ? e.message : "Failed to close session");
     } finally {
       setClosingThreadId(null);
@@ -764,9 +842,9 @@ export function useChatSession(
     }
   }
 
-  async function stopAssistantRun() {
-    if (!selectedThreadId) return;
-    const threadId = selectedThreadId;
+  async function stopAssistantRun(targetThreadId?: string) {
+    const threadId = targetThreadId ?? selectedThreadId;
+    if (!threadId) return;
     if (stopRequestedThreadId === threadId) return;
 
     setStopRequestedThreadId(threadId);
@@ -899,6 +977,7 @@ export function useChatSession(
   return {
     threads,
     selectedThreadId,
+    selectedThreadIdForData,
     setSelectedThreadId,
     messages,
     events,

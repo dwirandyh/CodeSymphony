@@ -555,15 +555,28 @@ export function WorkspacePage() {
   const handleConfirmCloseThread = useCallback(async () => {
     if (!confirmCloseThreadId) return;
     const threadId = confirmCloseThreadId;
+    const targetThread = chat.threads.find((thread) => thread.id === threadId) ?? null;
+    const shouldStopFirst = !!targetThread?.active || waitingAssistantThreadId === threadId;
+
+    if (shouldStopFirst) {
+      await chat.stopAssistantRun(threadId);
+      return;
+    }
+
     await chat.closeThread(threadId);
     setConfirmCloseThreadId(null);
-  }, [chat.closeThread, confirmCloseThreadId]);
+  }, [chat.closeThread, chat.stopAssistantRun, chat.threads, confirmCloseThreadId, waitingAssistantThreadId]);
 
   const confirmCloseThread = confirmCloseThreadId
     ? chat.threads.find((thread) => thread.id === confirmCloseThreadId) ?? null
     : null;
   const closingConfirmedThread =
     confirmCloseThreadId !== null && chat.closingThreadId === confirmCloseThreadId;
+  const confirmCloseNeedsStop =
+    confirmCloseThreadId !== null && (
+      waitingAssistantThreadId === confirmCloseThreadId
+      || chat.threads.some((thread) => thread.id === confirmCloseThreadId && thread.active)
+    );
 
   return (
     <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-0">
@@ -633,6 +646,7 @@ export function WorkspacePage() {
               disabled={!repos.selectedWorktreeId}
               createThreadDisabled={!repos.selectedWorktreeId || chat.sendingMessage}
               closingThreadId={chat.closingThreadId}
+              protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
               showReviewTab={reviewTabOpen}
               reviewTabActive={activeView === "review"}
               onSelectThread={handleSelectThread}
@@ -942,7 +956,7 @@ export function WorkspacePage() {
       <BackgroundWorktreeStatusStreamBridge
         repositories={repos.repositories}
         selectedWorktreeId={repos.selectedWorktreeId}
-        selectedThreadId={chat.selectedThreadId}
+        selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
       />
 
       <Dialog
@@ -955,9 +969,13 @@ export function WorkspacePage() {
           <DialogHeader>
             <DialogTitle>Close session?</DialogTitle>
             <DialogDescription>
-              {confirmCloseThread
-                ? `AI is still responding in "${confirmCloseThread.title}". Closing now will end this session.`
-                : "AI is still responding in this session. Closing now will end this session."}
+              {confirmCloseNeedsStop
+                ? (confirmCloseThread
+                  ? `AI is still responding in "${confirmCloseThread.title}". Stop the run first before closing this session.`
+                  : "AI is still responding in this session. Stop the run first before closing it.")
+                : (confirmCloseThread
+                  ? `AI is still responding in "${confirmCloseThread.title}". Closing now will end this session.`
+                  : "AI is still responding in this session. Closing now will end this session.")}
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2">
@@ -972,9 +990,9 @@ export function WorkspacePage() {
               variant="destructive"
               size="sm"
               onClick={() => void handleConfirmCloseThread()}
-              disabled={closingConfirmedThread}
+              disabled={closingConfirmedThread || chat.stoppingRun}
             >
-              Close session
+              {confirmCloseNeedsStop ? "Stop run" : "Close session"}
             </Button>
           </div>
         </DialogContent>

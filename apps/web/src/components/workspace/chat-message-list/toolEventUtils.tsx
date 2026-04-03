@@ -294,44 +294,23 @@ export function editedSummaryLabel({
 export function getTimelineItemKey(item: ChatTimelineItem): string {
   switch (item.kind) {
     case "message":
-      return [
-        "message",
-        item.message.id,
-        item.message.role,
-        item.renderHint ?? "none",
-        item.rawFileLanguage ?? "lang:none",
-        item.isCompleted ? "done" : "stream",
-        `len:${item.message.content.length}`,
-      ].join(":");
+      return `message:${item.message.id}`;
     case "plan-file-output":
-      return `plan-file-output:${item.id}:len:${item.content.length}`;
+      return `plan-file-output:${item.id}`;
     case "activity":
-      return `activity:${item.messageId}:steps:${item.steps?.length ?? 0}`;
+      return `activity:${item.messageId}`;
     case "tool":
-      return [
-        "tool",
-        item.id,
-        item.status ?? "unknown",
-        `summary:${item.summary?.length ?? 0}`,
-        `output:${item.output?.length ?? 0}`,
-        `error:${item.error?.length ?? 0}`,
-      ].join(":");
+      return `tool:${item.id}`;
     case "edited-diff":
-      return `edited-diff:${item.id}:${item.status}:len:${item.diff.length}`;
+      return `edited-diff:${item.id}`;
     case "subagent-activity":
-      return [
-        "subagent-activity",
-        item.id,
-        item.status,
-        `steps:${item.steps?.length ?? 0}`,
-        `last:${item.lastMessage?.length ?? 0}`,
-      ].join(":");
+      return `subagent-activity:${item.id}`;
     case "explore-activity":
-      return `explore-activity:${item.id}:${item.status}:entries:${item.entries?.length ?? 0}`;
+      return `explore-activity:${item.id}`;
     case "error":
-      return `error:${item.id}:len:${item.message.length}`;
+      return `error:${item.id}`;
     default:
-      return "unknown";
+      return `unknown:${JSON.stringify(item)}`;
   }
 }
 

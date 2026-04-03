@@ -82,7 +82,7 @@ describe("PATCH /api/threads/:id/title", () => {
       payload: { title: "Anything" },
     });
 
-    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: "Chat thread not found" });
   });
 });
@@ -165,7 +165,7 @@ describe("PATCH /api/threads/:id/mode", () => {
       payload: { mode: "plan" },
     });
 
-    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: "Chat thread not found" });
   });
 });

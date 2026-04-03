@@ -23,7 +23,7 @@ export function shouldConfirmCloseThread({
   const waitingForTargetThread = waitingAssistantThreadId === threadId;
 
   if (threadId === selectedThreadId) {
-    return showStopAction || waitingForTargetThread;
+    return showStopAction || waitingForTargetThread || targetThread.active;
   }
 
   return waitingForTargetThread || targetThread.active;

@@ -13,6 +13,7 @@ import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreadEventStream } from "./useThreadEventStream";
 
 const invalidateQueriesMock = vi.fn();
+const cancelQueriesMock = vi.fn();
 
 
 vi.mock("../../../../lib/logService", () => ({
@@ -149,12 +150,17 @@ function HookHarness({
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef([]);
   const rafIdRef = useRef<number | null>(null);
+  const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
+  const activeThreadIdRef = useRef<string | null>(selectedThreadId);
+  activeThreadIdRef.current = selectedThreadId;
 
   useThreadEventStream({
     selectedThreadId,
     selectedWorktreeId: "wt-1",
     repositoryId,
     selectedThreadIsPrMr,
+    locallyDeletedThreadIdsRef,
+    activeThreadIdRef,
     setMessages,
     setEvents,
     setThreads,
@@ -206,9 +212,12 @@ beforeEach(() => {
   });
   latestWaitingAssistant = null;
   invalidateQueriesMock.mockReset();
+  cancelQueriesMock.mockReset();
+  cancelQueriesMock.mockResolvedValue(undefined);
   getTimelineSnapshotMock.mockReset();
   getTimelineSnapshotMock.mockResolvedValue(makeSnapshot());
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
+  queryClient.cancelQueries = cancelQueriesMock as typeof queryClient.cancelQueries;
 
   originalEventSource = globalThis.EventSource;
   vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
@@ -558,6 +567,20 @@ describe("useThreadEventStream", () => {
     });
 
     expect(latestWaitingAssistant).toEqual({ threadId, afterIdx: 12 });
+  });
+
+  it("keeps bootstrap fetch cancellation wired before thread deletion cleanup", async () => {
+    const threadId = "selected-thread";
+    getTimelineSnapshotMock.mockResolvedValueOnce(makeSnapshot());
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(getTimelineSnapshotMock).toHaveBeenCalledWith(threadId);
+    expect(cancelQueriesMock).not.toHaveBeenCalled();
   });
 
   it("still invalidates the selected thread snapshot on gate resolution events", async () => {

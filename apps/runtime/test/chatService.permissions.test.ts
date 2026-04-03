@@ -40,7 +40,7 @@ async function resetDatabase(): Promise<void> {
 }
 
 async function seedThread(
-  title = "Main Thread",
+  title = "New Thread",
   options?: { kind?: "default" | "review"; permissionProfile?: ChatThreadPermissionProfile },
 ): Promise<{ threadId: string; worktreePath: string }> {
   const suffix = uniqueSuffix();

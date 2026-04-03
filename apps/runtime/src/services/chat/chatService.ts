@@ -72,6 +72,7 @@ const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
 const REVIEW_THREAD_LEGACY_TITLE = "PR / MR";
+const DEFAULT_THREAD_TITLE = "New Thread";
 
 function getAttachmentStorageDir(worktreeId: string, messageId: string): string {
   return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, messageId);
@@ -118,6 +119,16 @@ async function resolveReviewThreadTitle(worktreePath: string): Promise<string> {
 
 function isLegacyReviewThreadTitle(title: string): boolean {
   return title.trim() === REVIEW_THREAD_LEGACY_TITLE;
+}
+
+async function requireThreadExists(deps: RuntimeDeps, threadId: string) {
+  const thread = await deps.prisma.chatThread.findUnique({
+    where: { id: threadId },
+  });
+  if (!thread) {
+    throw new Error("Chat thread not found");
+  }
+  return thread;
 }
 
 export function createChatService(deps: RuntimeDeps) {
@@ -700,10 +711,29 @@ export function createChatService(deps: RuntimeDeps) {
       const kind = normalizeThreadKind(input.kind);
       const permissionProfile = normalizePermissionProfile(kind);
       const reviewTitle = kind === "review" && !input.title ? await resolveReviewThreadTitle(worktree.path) : null;
+      const normalizedTitle = input.title?.trim() ?? reviewTitle ?? DEFAULT_THREAD_TITLE;
+
+      if (input.title == null) {
+        const existingThread = await deps.prisma.chatThread.findFirst({
+          where: {
+            worktreeId,
+            kind,
+            title: normalizedTitle,
+          },
+          orderBy: [
+            { updatedAt: "desc" },
+            { createdAt: "desc" },
+          ],
+        });
+        if (existingThread) {
+          return mapChatThread(existingThread, isThreadActive(existingThread.id));
+        }
+      }
+
       const thread = await deps.prisma.chatThread.create({
         data: {
           worktreeId,
-          title: input.title ?? reviewTitle ?? "Main Thread",
+          title: normalizedTitle,
           kind,
           permissionProfile,
           mode: "default",
@@ -778,6 +808,7 @@ export function createChatService(deps: RuntimeDeps) {
     },
 
     async listMessages(threadId: string): Promise<ChatMessage[]> {
+      await requireThreadExists(deps, threadId);
       const messages = await deps.prisma.chatMessage.findMany({
         where: { threadId },
         orderBy: { seq: "asc" },
@@ -788,10 +819,12 @@ export function createChatService(deps: RuntimeDeps) {
     },
 
     async listEvents(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
+      await requireThreadExists(deps, threadId);
       return deps.eventHub.list(threadId, afterIdx);
     },
 
     async listThreadSnapshot(threadId: string): Promise<ChatThreadSnapshot> {
+      await requireThreadExists(deps, threadId);
       const [messageRows, eventRows] = await Promise.all([
         deps.prisma.chatMessage.findMany({
           where: { threadId },

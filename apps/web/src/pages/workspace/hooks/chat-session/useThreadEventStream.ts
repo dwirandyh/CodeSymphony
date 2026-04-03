@@ -39,6 +39,8 @@ export interface UseThreadEventStreamParams {
   selectedWorktreeId: string | null;
   repositoryId: string | null;
   selectedThreadIsPrMr: boolean;
+  locallyDeletedThreadIdsRef: MutableRefObject<Set<string>>;
+  activeThreadIdRef: MutableRefObject<string | null>;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setEvents: Dispatch<SetStateAction<ChatEvent[]>>;
   setThreads: Dispatch<SetStateAction<ChatThread[]>>;
@@ -63,6 +65,8 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     selectedWorktreeId,
     repositoryId,
     selectedThreadIsPrMr,
+    locallyDeletedThreadIdsRef,
+    activeThreadIdRef,
     setMessages,
     setEvents,
     setThreads,
@@ -368,11 +372,16 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
     void (async () => {
       try {
+        const bootstrapThreadId = selectedThreadId;
         const snapshot = await queryClient.fetchQuery({
-          queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId),
-          queryFn: () => api.getTimelineSnapshot(selectedThreadId),
+          queryKey: queryKeys.threads.timelineSnapshot(bootstrapThreadId),
+          queryFn: () => api.getTimelineSnapshot(bootstrapThreadId),
         });
-        if (disposed) return;
+        if (
+          disposed
+          || locallyDeletedThreadIdsRef.current.has(bootstrapThreadId)
+          || activeThreadIdRef.current !== bootstrapThreadId
+        ) return;
         if (snapshot.events.length > 0) {
           const seenEventIds = ensureSeenEventIds(selectedThreadId);
           for (const e of snapshot.events) {
