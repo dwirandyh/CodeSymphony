@@ -8,6 +8,7 @@ import { createChatService } from "../src/services/chat";
 import { createLogService } from "../src/services/logService";
 import type { ClaudeRunner } from "../src/types";
 import * as gitService from "../src/services/git.js";
+import { buildPromptWithAttachments } from "../src/services/chat/chatAttachmentUtils";
 
 const stubModelProviderService = {
   getActiveProvider: async () => null,
@@ -1190,6 +1191,47 @@ describe("chatService permission flow", () => {
     );
 
     expect(staleDismissed.payload.resolver).toBe("system");
+  });
+
+  it("normalizes relative file mentions against the selected worktree root before scheduling the assistant", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, cwd, onText }) => {
+      expect(cwd).toContain("codesymphony-worktree-");
+      expect(prompt).toContain(`${cwd}/packages/design_system/widgetbook/README.md`);
+      expect(prompt).not.toContain("@file:packages/design_system/widgetbook/README.md");
+      await onText("Siap.");
+      return {
+        output: "Siap.",
+        sessionId: "session-mention-normalized",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId, worktreePath } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "coba baca file @file:packages/design_system/widgetbook/README.md jelaskan",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+    expect(claudeRunner).toHaveBeenCalledWith(expect.objectContaining({
+      cwd: worktreePath,
+    }));
+  });
+
+  it("preserves filename-only chip rendering while expanding prompt mentions for the agent", () => {
+    const prompt = buildPromptWithAttachments(
+      "coba baca file @file:packages/design_system/widgetbook/README.md jelaskan",
+      [],
+      { workspaceRoot: "/Users/dwirandyh/Work/likearthstudio/finly_app" },
+    );
+
+    expect(prompt).toContain("/Users/dwirandyh/Work/likearthstudio/finly_app/packages/design_system/widgetbook/README.md");
+    expect(prompt).not.toContain("@file:packages/design_system/widgetbook/README.md");
   });
 
   it("stores image attachments outside the worktree", async () => {

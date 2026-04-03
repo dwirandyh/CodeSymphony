@@ -166,15 +166,78 @@ export function derivePendingPlan(events: ChatEvent[]): PendingPlan | null {
   return latestPlan;
 }
 
-export function isRunCompletedAfterPlan(events: ChatEvent[], pendingPlan: PendingPlan | null): boolean {
+function getFinishedToolNames(
+  event: ChatEvent,
+  toolNameByUseId: Map<string, string>,
+): string[] {
+  if (event.type !== "tool.finished") {
+    return [];
+  }
+
+  const directToolName = typeof event.payload.toolName === "string"
+    ? event.payload.toolName.trim().toLowerCase()
+    : "";
+  if (directToolName.length > 0) {
+    return [directToolName];
+  }
+
+  const precedingToolUseIds = Array.isArray(event.payload.precedingToolUseIds)
+    ? event.payload.precedingToolUseIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
+
+  return precedingToolUseIds
+    .map((toolUseId) => toolNameByUseId.get(toolUseId) ?? "")
+    .filter((toolName) => toolName.length > 0);
+}
+
+export function findPlanReviewReadyIdx(events: ChatEvent[], pendingPlan: PendingPlan | null): number | null {
   if (!pendingPlan || pendingPlan.status !== "pending") {
-    return true;
+    return null;
   }
 
   const orderedEvents = toOrderedEvents(events);
-  return orderedEvents.some((event) =>
-    event.idx > pendingPlan.createdIdx
-    && (event.type === "chat.completed" || event.type === "chat.failed"));
+  const toolNameByUseId = new Map<string, string>();
+  let fallbackCompletionIdx: number | null = null;
+
+  for (const event of orderedEvents) {
+    if (event.idx <= pendingPlan.createdIdx) {
+      if (event.type === "tool.started") {
+        const toolUseId = typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : "";
+        const toolName = typeof event.payload.toolName === "string" ? event.payload.toolName.trim().toLowerCase() : "";
+        if (toolUseId.length > 0 && toolName.length > 0) {
+          toolNameByUseId.set(toolUseId, toolName);
+        }
+      }
+      continue;
+    }
+
+    if (event.type === "tool.started") {
+      const toolUseId = typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : "";
+      const toolName = typeof event.payload.toolName === "string" ? event.payload.toolName.trim().toLowerCase() : "";
+      if (toolUseId.length > 0 && toolName.length > 0) {
+        toolNameByUseId.set(toolUseId, toolName);
+      }
+      continue;
+    }
+
+    if (event.type === "tool.finished") {
+      const finishedToolNames = getFinishedToolNames(event, toolNameByUseId);
+      if (finishedToolNames.some((toolName) => toolName === "exitplanmode")) {
+        return event.idx;
+      }
+      continue;
+    }
+
+    if ((event.type === "chat.completed" || event.type === "chat.failed") && fallbackCompletionIdx == null) {
+      fallbackCompletionIdx = event.idx;
+    }
+  }
+
+  return fallbackCompletionIdx;
+}
+
+export function isPlanReviewReady(events: ChatEvent[], pendingPlan: PendingPlan | null): boolean {
+  return findPlanReviewReadyIdx(events, pendingPlan) != null;
 }
 
 export function deriveThreadUiStatusFromEvents(
@@ -189,7 +252,7 @@ export function deriveThreadUiStatusFromEvents(
   }
 
   const pendingPlan = derivePendingPlan(events);
-  if (pendingPlan?.status === "pending" && isRunCompletedAfterPlan(events, pendingPlan)) {
+  if (pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan)) {
     return "review_plan";
   }
 

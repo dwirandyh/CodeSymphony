@@ -1,6 +1,33 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { PendingMessageMutation } from "./useChatSession.types";
 
+function computeAssistantDeltaSuffix(existingContent: string, incomingDelta: string): string {
+  if (incomingDelta.length === 0) {
+    return "";
+  }
+
+  if (existingContent.length === 0) {
+    return incomingDelta;
+  }
+
+  if (existingContent.endsWith(incomingDelta)) {
+    return "";
+  }
+
+  if (incomingDelta.startsWith(existingContent)) {
+    return incomingDelta.slice(existingContent.length);
+  }
+
+  const maxOverlap = Math.min(existingContent.length, incomingDelta.length);
+  for (let overlapLength = maxOverlap; overlapLength > 0; overlapLength -= 1) {
+    if (existingContent.endsWith(incomingDelta.slice(0, overlapLength))) {
+      return incomingDelta.slice(overlapLength);
+    }
+  }
+
+  return incomingDelta;
+}
+
 export function prependUniqueMessages(current: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
   if (incoming.length === 0) return current;
   const seen = new Set<string>();
@@ -54,7 +81,9 @@ export function applyMessageMutations(
 ): ChatMessage[] {
   if (mutations.length === 0) return current;
   const knownIds = new Set<string>();
+  const contentById = new Map<string, string>();
   for (const m of current) knownIds.add(m.id);
+  for (const m of current) contentById.set(m.id, m.content);
   const toCreate: ChatMessage[] = [];
   const appendedDeltas = new Map<string, string>();
 
@@ -71,6 +100,7 @@ export function applyMessageMutations(
           attachments: [],
           createdAt: new Date().toISOString(),
         });
+        contentById.set(mut.id, "");
       }
     } else {
       if (!knownIds.has(mut.id)) {
@@ -84,20 +114,16 @@ export function applyMessageMutations(
           attachments: [],
           createdAt: new Date().toISOString(),
         });
+        contentById.set(mut.id, mut.delta);
       } else if (mut.role !== "user" && mut.delta.length > 0) {
-        const existingContent = current.find((message) => message.id === mut.id)?.content ?? "";
-        const pendingContent = appendedDeltas.get(mut.id) ?? "";
-        const effectiveContent = existingContent + pendingContent;
-        if (effectiveContent.length > 0) {
-          if (effectiveContent.endsWith(mut.delta)) {
-            continue;
-          }
-          if (mut.delta.includes(effectiveContent)) {
-            appendedDeltas.set(mut.id, mut.delta.slice(effectiveContent.length));
-            continue;
-          }
+        const effectiveContent = contentById.get(mut.id) ?? "";
+        const suffix = computeAssistantDeltaSuffix(effectiveContent, mut.delta);
+        if (suffix.length === 0) {
+          continue;
         }
-        appendedDeltas.set(mut.id, pendingContent + mut.delta);
+        const pendingContent = appendedDeltas.get(mut.id) ?? "";
+        appendedDeltas.set(mut.id, pendingContent + suffix);
+        contentById.set(mut.id, effectiveContent + suffix);
       }
     }
   }

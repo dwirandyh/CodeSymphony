@@ -407,6 +407,7 @@ describe("chatService snapshot", () => {
     ).toHaveLength(1);
   });
 
+
   it("keeps fallback-anchored explore and edit cards ahead of later assistant turns in runtime assembly", async () => {
     const messages = [
       {

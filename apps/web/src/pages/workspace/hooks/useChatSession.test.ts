@@ -407,13 +407,14 @@ describe("deriveSelectedThreadUiState", () => {
     expect(state.composerDisabled).toBe(false);
   });
 
-  it("returns review_plan over running once a pending plan run has completed", () => {
+  it("returns review_plan over running once ExitPlanMode has completed", () => {
     const state = deriveSelectedThreadUiState({
       selectedThreadId: "thread-1",
       threads: [{ ...makeThread("Main Thread"), active: true }],
       events: [
         makeEvent(1, "plan.created", { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" }),
-        makeEvent(2, "chat.completed", {}),
+        makeEvent(2, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }),
+        makeEvent(3, "tool.finished", { precedingToolUseIds: ["exit-1"] }),
       ],
       sendingMessage: false,
       waitingAssistant: { threadId: "thread-1", afterIdx: 0 },

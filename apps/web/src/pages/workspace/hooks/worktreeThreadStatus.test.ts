@@ -85,7 +85,36 @@ describe("worktreeThreadStatus", () => {
     expect(deriveThreadUiStatus(thread, snapshot)).toBe("waiting_approval");
   });
 
-  it("returns review_plan when plan is pending after run completion", () => {
+  it("returns review_plan when plan is pending after ExitPlanMode completes", () => {
+    const thread = makeThread();
+    const snapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: thread.id,
+        idx: 1,
+        type: "plan.created",
+        payload: { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: thread.id,
+        idx: 2,
+        type: "tool.started",
+        payload: { toolName: "ExitPlanMode", toolUseId: "exit-1" },
+      }),
+      makeEvent({
+        id: "e3",
+        threadId: thread.id,
+        idx: 3,
+        type: "tool.finished",
+        payload: { precedingToolUseIds: ["exit-1"] },
+      }),
+    ]);
+
+    expect(deriveThreadUiStatus(thread, snapshot)).toBe("review_plan");
+  });
+
+  it("falls back to review_plan after chat completion for older plan histories", () => {
     const thread = makeThread();
     const snapshot = makeSnapshot([
       makeEvent({

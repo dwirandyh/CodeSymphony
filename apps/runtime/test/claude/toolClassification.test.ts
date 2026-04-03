@@ -11,6 +11,7 @@ import {
     searchParamsFromUnknownToolInput,
     formatSearchParamValue,
 } from "../../src/claude/toolClassification";
+import { normalizeMentionTokensForPrompt } from "../../src/services/chat/chatAttachmentUtils";
 
 describe("isBashTool", () => {
     it("returns true for 'Bash' (case-insensitive)", () => {
@@ -162,6 +163,37 @@ describe("formatSearchParamValue", () => {
     it("returns undefined for objects and empty arrays", () => {
         expect(formatSearchParamValue({})).toBeUndefined();
         expect(formatSearchParamValue([])).toBeUndefined();
+    });
+});
+
+describe("normalizeMentionTokensForPrompt", () => {
+    it("resolves relative file mentions against the workspace root", () => {
+        expect(
+            normalizeMentionTokensForPrompt(
+                "coba baca file @file:packages/design_system/widgetbook/README.md jelaskan",
+                "/Users/dwirandyh/Work/likearthstudio/finly_app",
+            ),
+        ).toBe(
+            "coba baca file /Users/dwirandyh/Work/likearthstudio/finly_app/packages/design_system/widgetbook/README.md jelaskan",
+        );
+    });
+
+    it("keeps absolute mentions unchanged", () => {
+        expect(
+            normalizeMentionTokensForPrompt(
+                "baca @file:/tmp/project/README.md",
+                "/Users/dwirandyh/Work/likearthstudio/finly_app",
+            ),
+        ).toBe("baca /tmp/project/README.md");
+    });
+
+    it("does not resolve mentions outside the workspace root", () => {
+        expect(
+            normalizeMentionTokensForPrompt(
+                "baca @file:../../README.md",
+                "/Users/dwirandyh/Work/likearthstudio/finly_app",
+            ),
+        ).toBe("baca ../../README.md");
     });
 });
 

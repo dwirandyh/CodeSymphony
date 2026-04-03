@@ -31,7 +31,7 @@ import {
   derivePendingPlan,
   derivePendingQuestionRequests,
   deriveThreadUiStatusFromEvents,
-  isRunCompletedAfterPlan,
+  isPlanReviewReady,
   type WorktreeThreadUiStatus,
 } from "../worktreeThreadStatus";
 import type {
@@ -315,7 +315,7 @@ export function useChatSession(
   const hasPendingPermissionRequests = derivePendingPermissionRequests(events).length > 0;
   const hasPendingQuestionRequests = derivePendingQuestionRequests(events).length > 0;
   const pendingPlan = derivePendingPlan(events);
-  const hasPendingPlan = pendingPlan?.status === "pending" && isRunCompletedAfterPlan(events, pendingPlan);
+  const hasPendingPlan = pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan);
   const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
   const { selectedThreadUiStatus, composerDisabled } = deriveSelectedThreadUiState({
     selectedThreadId,

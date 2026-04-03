@@ -291,6 +291,67 @@ describe("extractEditedRuns", () => {
     expect(runs[1].diff).not.toContain("README.md");
   });
 
+  it("keeps a single actual run when duplicate candidates target the same changed file", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "permission.requested",
+        idx: 1,
+        payload: {
+          toolName: "Edit",
+          requestId: "perm-1",
+          editTarget: "/repo/README.md",
+          toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "tool.started",
+        idx: 2,
+        payload: {
+          toolName: "Edit",
+          toolUseId: "t1",
+          toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+        },
+      }),
+      makeEvent({
+        id: "e3",
+        type: "tool.finished",
+        idx: 3,
+        payload: {
+          summary: "Edited /repo/README.md",
+          precedingToolUseIds: ["t1"],
+          editTarget: "/repo/README.md",
+        },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "tool.finished",
+        idx: 4,
+        payload: {
+          source: "worktree.diff",
+          changedFiles: ["README.md"],
+          diff: [
+            "diff --git a/README.md b/README.md",
+            "--- a/README.md",
+            "+++ b/README.md",
+            "@@ -1 +1 @@",
+            "-a",
+            "+b",
+          ].join("\n"),
+        },
+      }),
+    ];
+
+    const runs = extractEditedRuns(events);
+    const readmeRuns = runs.filter((run) => run.changedFiles.some((file) => file.includes("README.md")));
+    const actualReadmeRuns = readmeRuns.filter((run) => run.diffKind === "actual");
+
+    expect(readmeRuns).toHaveLength(2);
+    expect(actualReadmeRuns).toHaveLength(1);
+    expect(actualReadmeRuns[0]?.diff).toContain("README.md");
+  });
+
   it("creates proposed diff from tool input on permission request", () => {
     const events = [
       makeEvent({
