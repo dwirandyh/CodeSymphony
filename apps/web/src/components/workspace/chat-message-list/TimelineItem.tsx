@@ -141,6 +141,7 @@ export const TimelineItem = memo(function TimelineItem({
     const skillTool = parseSkillTool(item);
     const isSkillTool = skillTool !== null;
     const isBashTool = !isSkillTool && (item.shell === "bash" || item.toolName?.toLowerCase() === "bash");
+    const isMcpTool = !isSkillTool && !isBashTool && (item.toolName?.toLowerCase().startsWith("mcp__") ?? false);
     const title = isSkillTool
       ? (skillTool.skillName ? `Skill(${skillTool.skillName})` : "Skill")
       : isBashTool
@@ -171,7 +172,9 @@ export const TimelineItem = memo(function TimelineItem({
           : shortCommandLabel
             ? `Ran ${shortCommandLabel}`
             : "Ran command"
-        : `${title} · ${subtitle}`;
+        : isMcpTool
+          ? title
+          : `${title} · ${subtitle}`;
     const summaryLabel = !isSkillTool && item.command && durationLabel ? `${summaryPrefix} for ${durationLabel}` : summaryPrefix;
 
     return (
@@ -317,26 +320,6 @@ export const TimelineItem = memo(function TimelineItem({
               </details>
             ) : null}
 
-            {!isSkillTool && sourceEvents.length > 0 ? (
-              <details className="border-t border-border/25 px-4 py-3" data-testid="timeline-tool-payload-details">
-                <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  Raw payload
-                </summary>
-                <div className="mt-2 space-y-2">
-                  {sourceEvents.map((sourceEvent) => (
-                    <details key={sourceEvent.id} className="border-l border-border/50 pl-2 text-xs" open={sourceEvent.type === "chat.failed"}>
-                      <summary className="flex cursor-pointer items-center gap-1.5 font-medium text-foreground">
-                        <span className="text-[10px] text-muted-foreground">#{sourceEvent.idx}</span>
-                        <span>{isBashTool ? "Bash" : sourceEvent.type}</span>
-                      </summary>
-                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-xs text-muted-foreground">
-                        {JSON.stringify(sourceEvent.payload, null, 2)}
-                      </pre>
-                    </details>
-                  ))}
-                </div>
-              </details>
-            ) : null}
           </div>
         </details>
       </article>

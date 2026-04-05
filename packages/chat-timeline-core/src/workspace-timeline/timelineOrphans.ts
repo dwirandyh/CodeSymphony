@@ -34,14 +34,15 @@ function isExplicitSkillToolEvent(event: ChatEvent): boolean {
     && payloadStringOrNull(event.payload.toolName)?.toLowerCase() === "skill";
 }
 
+function toolRunId(event: ChatEvent): string | null {
+  const runIds = event.type === "tool.finished"
+    ? finishedToolUseIds(event)
+    : [payloadStringOrNull(event.payload.toolUseId)].filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  return runIds[0] ?? null;
+}
+
 function skillToolRunId(event: ChatEvent): string | null {
-  const precedingToolUseIds = Array.isArray(event.payload.precedingToolUseIds)
-    ? event.payload.precedingToolUseIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
-    : [];
-  if (precedingToolUseIds.length > 0) {
-    return precedingToolUseIds[0] ?? null;
-  }
-  return payloadStringOrNull(event.payload.toolUseId);
+  return toolRunId(event);
 }
 
 export function processOrphanSubagentGroups(
@@ -364,6 +365,67 @@ export function processOrphanToolEvents(
       timestamp: parseTimestamp(run.createdAt),
       rank: 0,
       stableOrder: run.startIdx,
+    });
+  }
+
+  const genericToolEventsByRunId = new Map<string, ChatEvent[]>();
+  for (const event of orphanToolEvents) {
+    if (assignedToolEventIds.has(event.id)) {
+      continue;
+    }
+    if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
+      continue;
+    }
+    const runId = toolRunId(event);
+    if (!runId) {
+      continue;
+    }
+    const existing = genericToolEventsByRunId.get(runId) ?? [];
+    existing.push(event);
+    genericToolEventsByRunId.set(runId, existing);
+  }
+
+  for (const [runId, events] of genericToolEventsByRunId.entries()) {
+    const sortedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
+      ?? sortedEvents.find((event) => event.type === "tool.output")
+      ?? sortedEvents[sortedEvents.length - 1]
+      ?? null;
+    if (!primaryEvent) {
+      continue;
+    }
+
+    const outputEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.output === "string") ?? null;
+    const errorEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.error === "string") ?? null;
+    const durationEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.elapsedTimeSeconds === "number") ?? null;
+    const hasFinishedEvent = sortedEvents.some((event) => event.type === "tool.finished");
+    const resolvedError = errorEvent && typeof errorEvent.payload.error === "string" ? errorEvent.payload.error : null;
+    const resolvedStatus = resolvedError
+      ? "failed"
+      : hasFinishedEvent
+        ? "success"
+        : "running";
+
+    sortedEvents.forEach((event) => assignedToolEventIds.add(event.id));
+    sortable.push({
+      item: {
+        kind: "tool",
+        id: `orphan:tool:${runId}`,
+        event: primaryEvent,
+        sourceEvents: sortedEvents,
+        toolUseId: runId,
+        toolName: payloadStringOrNull(primaryEvent.payload.toolName),
+        summary: payloadStringOrNull(primaryEvent.payload.summary),
+        output: outputEvent && typeof outputEvent.payload.output === "string" ? outputEvent.payload.output : null,
+        error: resolvedError,
+        truncated: (outputEvent?.payload.truncated === true) || (errorEvent?.payload.truncated === true),
+        durationSeconds: durationEvent && typeof durationEvent.payload.elapsedTimeSeconds === "number" ? durationEvent.payload.elapsedTimeSeconds : null,
+        status: resolvedStatus,
+      },
+      anchorIdx: primaryEvent.idx,
+      timestamp: parseTimestamp(primaryEvent.createdAt),
+      rank: 0,
+      stableOrder: primaryEvent.idx,
     });
   }
 

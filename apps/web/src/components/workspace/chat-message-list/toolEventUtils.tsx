@@ -2,6 +2,16 @@ import type { ChatEvent } from "@codesymphony/shared-types";
 import type { ChatTimelineItem } from "./ChatMessageList.types";
 
 const WHITESPACE_REGEX = /\s/;
+const MCP_TOOL_PREFIX = "mcp__";
+
+function isMcpToolName(value: unknown): value is string {
+  return typeof value === "string" && value.toLowerCase().startsWith(MCP_TOOL_PREFIX);
+}
+
+function mcpToolNameFromEvent(event: ChatEvent): string | null {
+  const toolName = event.payload.toolName;
+  return isMcpToolName(toolName) ? toolName : null;
+}
 
 export function eventPayloadText(event: ChatEvent): string {
   return JSON.stringify(event.payload ?? {}).toLowerCase();
@@ -10,6 +20,18 @@ export function eventPayloadText(event: ChatEvent): string {
 export function toolTitle(event: ChatEvent): string {
   if (event.payload.source === "worktree.diff") {
     return "Edited files";
+  }
+
+  const mcpToolName = mcpToolNameFromEvent(event);
+  if (mcpToolName) {
+    const hasError = typeof event.payload.error === "string" && event.payload.error.length > 0;
+    if (event.type === "tool.started") {
+      return `Running ${mcpToolName}`;
+    }
+    if (hasError) {
+      return `Failed ${mcpToolName}`;
+    }
+    return `Ran ${mcpToolName}`;
   }
 
   const payload = eventPayloadText(event);
@@ -51,6 +73,14 @@ export function toolSubtitle(event: ChatEvent): string {
   if (event.payload.source === "worktree.diff") {
     const summary = event.payload.summary;
     return typeof summary === "string" && summary.length > 0 ? summary : "Detected file edits";
+  }
+
+  const mcpToolName = mcpToolNameFromEvent(event);
+  if (mcpToolName) {
+    if (event.type === "tool.finished") {
+      return String(event.payload.summary ?? mcpToolName);
+    }
+    return mcpToolName;
   }
 
   if (event.type === "permission.requested") {

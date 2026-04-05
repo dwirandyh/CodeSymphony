@@ -483,6 +483,7 @@ export async function processStreamMessages(
       const bashToolUseId = pendingToolUseIds.find((toolUseId) => maps.toolMetadataByUseId.get(toolUseId)?.isBash);
       const bashToolMetadata = bashToolUseId ? maps.toolMetadataByUseId.get(bashToolUseId) : undefined;
       const bashToolResult = bashToolUseId ? maps.bashResultByToolUseId.get(bashToolUseId) : undefined;
+      const primaryToolMetadata = maps.toolMetadataByUseId.get(pendingToolUseIds[0] ?? "") ?? undefined;
       const editToolUseId = pendingToolUseIds.find((toolUseId) => {
         const editTarget = maps.toolMetadataByUseId.get(toolUseId)?.editTarget;
         return typeof editTarget === "string" && editTarget.length > 0;
@@ -535,6 +536,7 @@ export async function processStreamMessages(
       await callbacks.onToolFinished({
         summary: msg.summary,
         precedingToolUseIds: pendingToolUseIds,
+        ...(primaryToolMetadata?.toolName ? { toolName: primaryToolMetadata.toolName } : {}),
         ...(summarySubagentResponse
           ? { subagentResponse: summarySubagentResponse }
           : {}),
@@ -552,7 +554,14 @@ export async function processStreamMessages(
             truncated: bashToolResult?.truncated ?? false,
             outputBytes: bashToolResult?.outputBytes ?? 0,
           }
-          : {}),
+          : primaryToolMetadata?.output !== undefined || primaryToolMetadata?.error !== undefined
+            ? {
+              output: primaryToolMetadata.output,
+              error: primaryToolMetadata.error,
+              truncated: primaryToolMetadata.truncated ?? false,
+              outputBytes: primaryToolMetadata.outputBytes ?? 0,
+            }
+            : {}),
       });
 
       if (subagentSummaryOwnerToolUseId && summaryText) {

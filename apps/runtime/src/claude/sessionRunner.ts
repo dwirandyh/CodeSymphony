@@ -1,8 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import type { ClaudeRunner } from "../types.js";
 import { areLikelySameFsPath } from "../services/repositoryService.js";
 
@@ -156,13 +153,6 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   const runtimeEnv = { ...baseEnv };
   let effectiveModel = model || undefined;
   if (providerApiKey && providerBaseUrl) {
-    const providerConfigDir = join(tmpdir(), "codesymphony-claude-provider");
-    if (!existsSync(providerConfigDir)) {
-      mkdirSync(providerConfigDir, { recursive: true });
-      writeFileSync(join(providerConfigDir, "settings.json"), "{}", "utf-8");
-    }
-    runtimeEnv.CLAUDE_CONFIG_DIR = providerConfigDir;
-
     runtimeEnv.ANTHROPIC_API_KEY = providerApiKey;
     runtimeEnv.ANTHROPIC_AUTH_TOKEN = providerApiKey;
     runtimeEnv.ANTHROPIC_BASE_URL = providerBaseUrl;

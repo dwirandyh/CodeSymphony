@@ -352,6 +352,120 @@ describe("ChatMessageList", () => {
     expect(container.querySelector("details")).toBeTruthy();
   });
 
+  it("renders collapsible MCP tool item with output", () => {
+    const event: ChatEvent = {
+      id: "ev-mcp",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.finished",
+      payload: {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "mcp-1",
+        summary: "Completed mcp__filesystem__read_file",
+        output: "# README",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "tool",
+        id: "tool-mcp-1",
+        event,
+        sourceEvents: [event],
+        toolUseId: "mcp-1",
+        toolName: "mcp__filesystem__read_file",
+        output: "# README",
+        truncated: false,
+        durationSeconds: 0.4,
+        status: "success",
+      },
+    ];
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+    expect(container.textContent).toContain("Ran mcp__filesystem__read_file");
+    expect(container.textContent).not.toContain("Ran mcp__filesystem__read_file · Completed mcp__filesystem__read_file");
+    expect(container.textContent).toContain("# README");
+    expect(container.textContent).not.toContain("tool.finished");
+    expect(container.textContent).not.toContain("Raw payload");
+    expect(container.querySelector("[data-testid='timeline-tool-payload-details']")).toBeNull();
+    expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
+    expect(container.querySelector("details")).toBeTruthy();
+  });
+
+  it("renders running MCP tool item with running label", () => {
+    const event: ChatEvent = {
+      id: "ev-mcp-running",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.started",
+      payload: {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "mcp-run-1",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "tool",
+        id: "tool-mcp-run-1",
+        event,
+        sourceEvents: [event],
+        toolUseId: "mcp-run-1",
+        toolName: "mcp__filesystem__read_file",
+        durationSeconds: 0.2,
+        status: "running",
+      },
+    ];
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+    expect(container.textContent).toContain("Running mcp__filesystem__read_file");
+    expect(container.textContent).not.toContain("tool.started");
+    expect(container.textContent).not.toContain("Raw payload");
+    expect(container.querySelector("[data-testid='timeline-tool-payload-details']")).toBeNull();
+  });
+
+  it("renders failed MCP tool item like failed command cards", () => {
+    const event: ChatEvent = {
+      id: "ev-mcp-failed",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.finished",
+      payload: {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "mcp-failed-1",
+        summary: "Failed mcp__filesystem__read_file",
+        error: "Exit code 1\n\nMCP request failed",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "tool",
+        id: "tool-mcp-failed-1",
+        event,
+        sourceEvents: [event],
+        toolUseId: "mcp-failed-1",
+        toolName: "mcp__filesystem__read_file",
+        error: "Exit code 1\n\nMCP request failed",
+        truncated: false,
+        durationSeconds: 1,
+        status: "failed",
+      },
+    ];
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+    expect(container.textContent).toContain("Failed mcp__filesystem__read_file");
+    expect(container.textContent).toContain("Failed");
+    expect(container.textContent).toContain("Failed mcp__filesystem__read_file");
+    expect(container.textContent).toContain("Exit code 1");
+    expect(container.textContent).toContain("MCP request failed");
+    expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
+    expect(container.querySelector("svg.lucide-circle-x")).toBeTruthy();
+  });
+
   it("renders edited-diff item", () => {
     const items: ChatTimelineItem[] = [
       {

@@ -254,9 +254,15 @@ export function buildToolFinishedPayload(
   bashResult?: BashToolResult,
   subagentResponse?: string,
 ) {
+  const resolvedOutput = metadata.isBash ? bashResult?.output : metadata.output;
+  const resolvedError = metadata.isBash ? bashResult?.error : metadata.error;
+  const resolvedTruncated = metadata.isBash ? (bashResult?.truncated ?? false) : (metadata.truncated ?? false);
+  const resolvedOutputBytes = metadata.isBash ? (bashResult?.outputBytes ?? 0) : (metadata.outputBytes ?? 0);
+
   return {
     summary,
     precedingToolUseIds: toolUseIds,
+    toolName: metadata.toolName,
     ...(subagentResponse ? { subagentResponse } : {}),
     ...(metadata.skillName ? { skillName: metadata.skillName } : {}),
     ...(metadata.editTarget
@@ -267,13 +273,17 @@ export function buildToolFinishedPayload(
         command: metadata.command,
         shell: "bash" as const,
         isBash: true as const,
-        output: bashResult?.output,
-        error: bashResult?.error,
-        truncated: bashResult?.truncated ?? false,
-        outputBytes: bashResult?.outputBytes ?? 0,
       }
       : metadata.searchParams
         ? { searchParams: metadata.searchParams }
         : {}),
+    ...(resolvedOutput !== undefined ? { output: resolvedOutput } : {}),
+    ...(resolvedError !== undefined ? { error: resolvedError } : {}),
+    ...(resolvedOutput !== undefined || resolvedError !== undefined
+      ? {
+        truncated: resolvedTruncated,
+        outputBytes: resolvedOutputBytes,
+      }
+      : {}),
   };
 }
