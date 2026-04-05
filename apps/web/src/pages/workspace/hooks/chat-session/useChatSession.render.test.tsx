@@ -339,6 +339,26 @@ describe("useChatSession", () => {
     expect(api.createThread).toHaveBeenCalledWith("wt-1", { title: "New Thread" });
   });
 
+  it("keeps a newly created thread selected while the query list is still stale", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.createAdditionalThread();
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+
+    renderHook("thread-new");
+
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+  });
+
   it("prefers derived timeline when server snapshot contains stale cards but derived timeline is empty", () => {
     const staleServerItems: ChatTimelineItem[] = [
       {
