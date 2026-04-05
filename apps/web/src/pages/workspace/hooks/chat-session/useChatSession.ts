@@ -102,6 +102,14 @@ function findThreadForWorktree(
   return thread;
 }
 
+function allMessagesBelongToThread(messages: ChatMessage[], threadId: string): boolean {
+  return messages.length > 0 && messages.every((message) => message.threadId === threadId);
+}
+
+function allEventsBelongToThread(events: ChatEvent[], threadId: string): boolean {
+  return events.length > 0 && events.every((event) => event.threadId === threadId);
+}
+
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
   total: number;
   signatures: string[];
@@ -424,8 +432,12 @@ export function useChatSession(
     if (!queriedThreadSnapshot || seedDecision.snapshotKey == null) {
       if (threadChanged) {
         lastAppliedSnapshotKeyByThreadRef.current.delete(selectedThreadId);
-        setMessages([]);
-        setEvents([]);
+        setMessages((current) => (
+          allMessagesBelongToThread(current, selectedThreadId) ? current : []
+        ));
+        setEvents((current) => (
+          allEventsBelongToThread(current, selectedThreadId) ? current : []
+        ));
       }
       return;
     }
@@ -492,6 +504,20 @@ export function useChatSession(
     }
 
     void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
+  }
+
+  function mergeReturnedMessageIntoVisibleState(
+    threadId: string,
+    sentMessage: ChatMessage,
+    options?: { force?: boolean },
+  ) {
+    if (!options?.force && activeThreadIdRef.current !== threadId) {
+      return;
+    }
+
+    startTransition(() => {
+      setMessages((current) => prependUniqueMessages(current, [sentMessage]));
+    });
   }
 
   function syncThreadIntoCache(worktreeId: string, thread: ChatThread) {
@@ -626,12 +652,13 @@ export function useChatSession(
           queryKeys.threads.list(worktreeId),
           (current) => current ? applyThreadModeUpdate(current, created.id, mode) : current,
         );
-        await api.sendMessage(created.id, {
+        const sentMessage = await api.sendMessage(created.id, {
           content,
           mode,
           attachments: [],
           expectedWorktreeId: worktreeId,
         });
+        mergeReturnedMessageIntoVisibleState(created.id, sentMessage, { force: true });
       } catch (e) {
         setWaitingAssistant(null);
         throw e;
@@ -685,12 +712,13 @@ export function useChatSession(
         queryKeys.threads.list(selectedWorktreeId),
         (current) => current ? applyThreadModeUpdate(current, created.id, mode) : current,
       );
-      await api.sendMessage(created.id, {
+      const sentMessage = await api.sendMessage(created.id, {
         content,
         mode,
         attachments: [],
         expectedWorktreeId: created.worktreeId,
       });
+      mergeReturnedMessageIntoVisibleState(created.id, sentMessage, { force: true });
       invalidateRepositoryReviews();
       return created;
     } catch (e) {
@@ -872,12 +900,13 @@ export function useChatSession(
           (current) => current ? applyThreadModeUpdate(current, activeThread.id, mode) : current,
         );
       }
-      await api.sendMessage(activeThread.id, {
+      const sentMessage = await api.sendMessage(activeThread.id, {
         content,
         mode,
         attachments: attachmentsToSend,
         expectedWorktreeId: activeThread.worktreeId,
       });
+      mergeReturnedMessageIntoVisibleState(activeThread.id, sentMessage);
       if (shouldInvalidateSnapshot) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(activeThread.id) });
       }

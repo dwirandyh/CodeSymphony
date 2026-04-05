@@ -149,7 +149,8 @@ export async function maybeAutoRenameThreadAfterFirstAssistantReply(
       return null;
     }
 
-    if (!isDefaultThreadTitle(thread.title)) {
+    const originalTitle = thread.title;
+    if (!isDefaultThreadTitle(originalTitle)) {
       return null;
     }
 
@@ -204,16 +205,20 @@ export async function maybeAutoRenameThreadAfterFirstAssistantReply(
       firstAssistantMessage.content,
       providerOptions,
     );
-    if (!nextTitle || nextTitle === thread.title) {
+    if (!nextTitle || nextTitle === originalTitle) {
       return null;
     }
 
-    const updated = await deps.prisma.chatThread.update({
-      where: { id: threadId },
+    const updated = await deps.prisma.chatThread.updateMany({
+      where: {
+        id: threadId,
+        titleEditedManually: false,
+        title: originalTitle,
+      },
       data: { title: nextTitle },
-      select: { title: true },
     });
-    return updated.title;
+
+    return updated.count > 0 ? nextTitle : null;
   } catch (error) {
     deps.logService?.log(
       "warn",

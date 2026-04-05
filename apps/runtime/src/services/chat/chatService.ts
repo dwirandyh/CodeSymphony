@@ -185,6 +185,72 @@ export function createChatService(deps: RuntimeDeps) {
     return true;
   }
 
+  async function emitPostCompletionMetadata(params: {
+    threadId: string;
+    assistantMessageId: string;
+    mode: ChatMode;
+    activeProvider: ActiveModelProvider | null;
+    hasFileChanges: boolean;
+  }): Promise<void> {
+    const { threadId, assistantMessageId, mode, activeProvider, hasFileChanges } = params;
+
+    try {
+      const completedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(
+        deps,
+        threadId,
+        assistantMessageId,
+        {
+          model: activeProvider?.modelId,
+          providerApiKey: activeProvider?.apiKey,
+          providerBaseUrl: activeProvider?.baseUrl,
+        },
+      );
+      if (completedThreadTitle) {
+        try {
+          await deps.eventHub.emit(threadId, "tool.finished", {
+            source: "chat.thread.metadata",
+            summary: "Updated thread title",
+            threadTitle: completedThreadTitle,
+            mode,
+            precedingToolUseIds: [],
+          });
+        } catch (error) {
+          deps.logService?.log("debug", "chat.lifecycle", "Skipped late thread title metadata emit", {
+            threadId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      if (!hasFileChanges) {
+        return;
+      }
+
+      const completedWorktreeBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(deps, threadId, assistantMessageId);
+      if (completedWorktreeBranch) {
+        try {
+          await deps.eventHub.emit(threadId, "tool.finished", {
+            source: "chat.thread.metadata",
+            summary: "Updated worktree branch",
+            worktreeBranch: completedWorktreeBranch,
+            mode,
+            precedingToolUseIds: [],
+          });
+        } catch (error) {
+          deps.logService?.log("debug", "chat.lifecycle", "Skipped late worktree branch metadata emit", {
+            threadId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } catch (postError) {
+      deps.logService?.log("warn", "chat.lifecycle", "Post-completion enrichment failed", {
+        threadId,
+        error: postError instanceof Error ? postError.message : String(postError),
+      });
+    }
+  }
+
   async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
     deps.logService?.log("debug", "chat.lifecycle", "runAssistant started", {
       threadId,
@@ -477,62 +543,27 @@ export function createChatService(deps: RuntimeDeps) {
         });
       }
 
-      let completedThreadTitle: string | null = null;
-      let completedWorktreeBranch: string | null = null;
-      try {
-        completedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(
-          deps,
-          threadId,
-          assistantMessage.id,
-          {
-            model: activeProvider?.modelId,
-            providerApiKey: activeProvider?.apiKey,
-            providerBaseUrl: activeProvider?.baseUrl,
-          },
-        );
-        if (completedThreadTitle) {
-          await deps.eventHub.emit(threadId, "tool.finished", {
-            source: "chat.thread.metadata",
-            summary: "Updated thread title",
-            threadTitle: completedThreadTitle,
-            mode,
-            precedingToolUseIds: [],
-          });
-        }
-
-        const hasFileChanges = (diffSnapshot?.changedFiles.length ?? 0) > 0;
-        if (hasFileChanges) {
-          completedWorktreeBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(deps, threadId, assistantMessage.id);
-          if (completedWorktreeBranch) {
-            await deps.eventHub.emit(threadId, "tool.finished", {
-              source: "chat.thread.metadata",
-              summary: "Updated worktree branch",
-              worktreeBranch: completedWorktreeBranch,
-              mode,
-              precedingToolUseIds: [],
-            });
-          }
-        }
-      } catch (postError) {
-        deps.logService?.log("warn", "chat.lifecycle", "Post-completion enrichment failed", {
-          threadId,
-          error: postError instanceof Error ? postError.message : String(postError),
-        });
-      }
-
+      const hasFileChanges = (diffSnapshot?.changedFiles.length ?? 0) > 0;
       deps.logService?.log("debug", "chat.lifecycle", "run about to emit chat.completed", {
         threadId,
         assistantMessageId: assistantMessage.id,
-        completedThreadTitle,
-        completedWorktreeBranch,
+        hasFileChanges,
       });
       await deps.eventHub.emit(threadId, "chat.completed", {
         messageId: assistantMessage.id,
         threadMode: mode,
-        ...(completedThreadTitle ? { threadTitle: completedThreadTitle } : {}),
-        ...(completedWorktreeBranch ? { worktreeBranch: completedWorktreeBranch } : {}),
       });
       completionEmitted = true;
+
+      queueMicrotask(() => {
+        void emitPostCompletionMetadata({
+          threadId,
+          assistantMessageId: assistantMessage.id,
+          mode,
+          activeProvider,
+          hasFileChanges,
+        });
+      });
     } catch (error) {
       deps.logService?.log("error", "chat.lifecycle", "runAssistant failed", {
         threadId,

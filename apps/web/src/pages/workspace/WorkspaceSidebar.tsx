@@ -64,13 +64,13 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
       <div className="hidden relative w-0 lg:block" aria-hidden="true">
         <button
           type="button"
-          className={`absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors hover:bg-primary/20 ${sidebarDragging ? "bg-primary/30" : ""
+          className={`group absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors ${sidebarDragging ? "bg-primary/10" : ""
             }`}
           onMouseDown={handleSidebarMouseDown}
           aria-label="Resize sidebar"
         >
           <span
-            className={`h-8 w-[2px] rounded-full transition-colors ${sidebarDragging ? "bg-primary/60" : "bg-border/30"
+            className={`h-8 w-[2px] rounded-full transition-colors ${sidebarDragging ? "bg-primary/60" : "bg-border/30 group-hover:bg-primary/40"
               }`}
           />
         </button>

@@ -137,7 +137,7 @@ export function BottomPanel({
     }, [openSignal]);
 
     return (
-        <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-4">
+        <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-3">
             <Tabs.Root
                 value={activeTab}
                 onValueChange={(val) => {
