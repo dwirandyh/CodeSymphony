@@ -207,6 +207,17 @@ describe("useChatSession", () => {
       attachments: [],
       expectedWorktreeId: "wt-1",
     });
+    expect(hookResult.messages).toEqual([
+      {
+        id: "message-1",
+        threadId: prMrThread.id,
+        seq: 1,
+        role: "user",
+        content: "Create PR",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]);
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.repositories.reviews("repo-1") });
     expect(
       invalidateQueriesMock.mock.calls.filter(
@@ -436,5 +447,67 @@ describe("useChatSession", () => {
 
     expect(hookResult.messages).toEqual([]);
     expect(hookResult.events).toEqual([]);
+  });
+
+  it("shows a submitted follow-up user message immediately from the send response", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Initial reply",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "user-2",
+      threadId: "thread-a",
+      seq: 2,
+      role: "user",
+      content: "Follow up",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:02Z",
+    });
+
+    renderHook("thread-a");
+    expect(hookResult.messages.map((message) => message.id)).toEqual(["assistant-1"]);
+
+    await act(async () => {
+      const submitted = await hookResult.submitMessage("Follow up", "default", []);
+      expect(submitted).toBe(true);
+    });
+
+    expect(hookResult.messages).toEqual([
+      {
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Initial reply",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "user-2",
+        threadId: "thread-a",
+        seq: 2,
+        role: "user",
+        content: "Follow up",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+    ]);
   });
 });

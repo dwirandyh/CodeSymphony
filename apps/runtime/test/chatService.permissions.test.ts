@@ -204,7 +204,7 @@ describe("chatService permission flow", () => {
     const completed = events.find((event) => event.type === "chat.completed");
 
     expect(completed).toBeDefined();
-    expect(completed?.payload.threadTitle).toBe("Summarize README.md");
+    expect(completed?.payload.threadTitle).toBeUndefined();
 
     const titleEvent = await waitForEvent(
       chatService,
@@ -311,6 +311,137 @@ describe("chatService permission flow", () => {
 
     const thread = await chatService.getThreadById(threadId);
     expect(thread?.title).toBe("Session Integrasi API");
+  });
+
+  it("emits chat.completed before delayed auto title metadata and allows immediate next message", async () => {
+    let releaseTitleGeneration: (() => void) | null = null;
+    const titleGenerationStarted = new Promise<void>((resolve) => {
+      releaseTitleGeneration = resolve;
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await titleGenerationStarted;
+        await onText("Async title");
+        return {
+          output: "Async title",
+          sessionId: null,
+        };
+      }
+
+      await onText("First reply.");
+      return {
+        output: "First reply.",
+        sessionId: "session-async-title",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "please summarize this thread",
+    });
+
+    const completed = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "chat.completed",
+    );
+    expect(completed.payload.threadTitle).toBeUndefined();
+
+    const threadAfterCompletion = await chatService.getThreadById(threadId);
+    expect(threadAfterCompletion?.active).toBe(false);
+
+    const secondMessage = await chatService.sendMessage(threadId, {
+      content: "second message right away",
+    });
+    expect(secondMessage.role).toBe("user");
+
+    releaseTitleGeneration?.();
+
+    const titleEvent = await waitForEvent(
+      chatService,
+      threadId,
+      (event) =>
+        event.type === "tool.finished"
+        && String(event.payload.source ?? "") === "chat.thread.metadata"
+        && String(event.payload.threadTitle ?? "") === "Async title",
+    );
+    expect(titleEvent.payload.threadTitle).toBe("Async title");
+
+    const eventsAfterSecondMessage = await waitForTerminalEvent(
+      chatService,
+      threadId,
+      4000,
+      completed.idx,
+    );
+    expect(eventsAfterSecondMessage.some((event) => event.type === "chat.completed")).toBe(true);
+  });
+
+  it("does not overwrite a manual thread title if delayed auto rename finishes later", async () => {
+    let releaseTitleGeneration: (() => void) | null = null;
+    const titleGenerationStarted = new Promise<void>((resolve) => {
+      releaseTitleGeneration = resolve;
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await titleGenerationStarted;
+        await onText("Delayed auto title");
+        return {
+          output: "Delayed auto title",
+          sessionId: null,
+        };
+      }
+
+      await onText("First reply.");
+      return {
+        output: "First reply.",
+        sessionId: "session-manual-wins",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "please rename this thread",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "chat.completed",
+    );
+
+    const renamed = await chatService.renameThreadTitle(threadId, { title: "Manual title" });
+    expect(renamed.title).toBe("Manual title");
+
+    releaseTitleGeneration?.();
+    await waitForTerminalEvent(chatService, threadId, 4000);
+
+    const events = await chatService.listEvents(threadId);
+    const metadataTitleEvent = events.find(
+      (event) =>
+        event.type === "tool.finished"
+        && String(event.payload.source ?? "") === "chat.thread.metadata"
+        && String(event.payload.threadTitle ?? "") === "Delayed auto title",
+    );
+    expect(metadataTitleEvent).toBeUndefined();
+
+    const thread = await chatService.getThreadById(threadId);
+    expect(thread?.title).toBe("Manual title");
   });
 
   it("emits permission requested and proceeds after approve", async () => {

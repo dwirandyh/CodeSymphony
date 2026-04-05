@@ -52,8 +52,8 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
           <button
             type="button"
             className={cn(
-              "absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors hover:bg-primary/20",
-              rightDragging && "bg-primary/30",
+              "group absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors",
+              rightDragging && "bg-primary/10",
             )}
             onMouseDown={handleRightPanelMouseDown}
             aria-label="Resize right panel"
@@ -61,7 +61,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
             <span
               className={cn(
                 "h-8 w-[2px] rounded-full transition-colors",
-                rightDragging ? "bg-primary/60" : "bg-border/30",
+                rightDragging ? "bg-primary/60" : "bg-border/30 group-hover:bg-primary/40",
               )}
             />
           </button>
