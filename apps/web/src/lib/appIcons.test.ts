@@ -3,7 +3,7 @@ import { getAppIcon } from "./appIcons";
 
 describe("getAppIcon", () => {
   it("returns an icon for known editor ids", () => {
-    for (const id of ["vscode", "cursor", "zed", "intellij", "webstorm", "sublime", "xcode", "fleet", "nova"]) {
+    for (const id of ["vscode", "cursor", "zed", "android-studio", "intellij", "webstorm", "sublime", "xcode", "fleet", "nova"]) {
       expect(getAppIcon(id)).toBeDefined();
     }
   });

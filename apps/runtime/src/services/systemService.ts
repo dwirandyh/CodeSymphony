@@ -1,11 +1,67 @@
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import { access, mkdir, readFile, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { ExternalApp } from "@codesymphony/shared-types";
 
 const execFile = promisify(execFileCallback);
+const APP_ICON_CACHE_DIR = path.join(os.tmpdir(), "codesymphony-app-icons");
 
 function normalizeSelectedPath(output: string): string {
   return output.trim().replace(/\/$/, "");
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveBundleIconPath(appPath: string): Promise<string> {
+  const plistPath = path.join(appPath, "Contents", "Info.plist");
+  const { stdout } = await execFile(
+    "plutil",
+    ["-extract", "CFBundleIconFile", "raw", "-o", "-", plistPath],
+    { encoding: "utf8", timeout: 5_000 },
+  );
+
+  const iconFile = stdout.trim();
+  if (!iconFile) {
+    throw new Error("App bundle does not declare an icon");
+  }
+
+  const iconFileName = path.extname(iconFile) ? iconFile : `${iconFile}.icns`;
+  const iconPath = path.join(appPath, "Contents", "Resources", iconFileName);
+
+  if (!(await pathExists(iconPath))) {
+    throw new Error(`App icon file not found: ${iconFileName}`);
+  }
+
+  return iconPath;
+}
+
+async function resolveCachedPngPath(iconPath: string): Promise<string> {
+  await mkdir(APP_ICON_CACHE_DIR, { recursive: true });
+
+  const iconStat = await stat(iconPath);
+  const cacheKey = createHash("sha1")
+    .update(`${iconPath}:${iconStat.mtimeMs}`)
+    .digest("hex");
+  const outputPath = path.join(APP_ICON_CACHE_DIR, `${cacheKey}.png`);
+
+  if (!(await pathExists(outputPath))) {
+    await execFile("sips", ["-s", "format", "png", iconPath, "--out", outputPath], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+  }
+
+  return outputPath;
 }
 
 const KNOWN_APPS = [
@@ -13,6 +69,7 @@ const KNOWN_APPS = [
   { id: "vscode", name: "Visual Studio Code", bundleId: "com.microsoft.VSCode" },
   { id: "cursor", name: "Cursor", bundleId: "com.todesktop.230313mzl4w4u92" },
   { id: "zed", name: "Zed", bundleId: "dev.zed.Zed" },
+  { id: "android-studio", name: "Android Studio", bundleId: "com.google.android.studio" },
   { id: "intellij", name: "IntelliJ IDEA", bundleId: "com.jetbrains.intellij" },
   { id: "webstorm", name: "WebStorm", bundleId: "com.jetbrains.WebStorm" },
   { id: "sublime", name: "Sublime Text", bundleId: "com.sublimetext.4" },
@@ -107,12 +164,32 @@ export function createSystemService() {
       }),
     );
 
-    results.sort((a, b) => a.name.localeCompare(b.name));
+    const apps = results
+      .map((app) => ({
+        ...app,
+        iconUrl: `/api/system/installed-apps/${app.id}/icon`,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
 
-    cachedApps = results;
+    cachedApps = apps;
     cacheTimestamp = Date.now();
 
-    return results;
+    return apps;
+  }
+
+  async function getAppIcon(appPath: string): Promise<{ buffer: Buffer; contentType: string }> {
+    if (process.platform !== "darwin") {
+      throw new Error("App icons are currently supported on macOS only");
+    }
+
+    const iconPath = await resolveBundleIconPath(appPath);
+    const pngPath = await resolveCachedPngPath(iconPath);
+    const buffer = await readFile(pngPath);
+
+    return {
+      buffer,
+      contentType: "image/png",
+    };
   }
 
   async function openInApp(appName: string, targetPath: string): Promise<void> {
@@ -156,6 +233,7 @@ export function createSystemService() {
     },
     openFileDefaultApp,
     getInstalledApps,
+    getAppIcon,
     openInApp,
   };
 }

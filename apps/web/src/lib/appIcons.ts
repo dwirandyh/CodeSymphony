@@ -6,6 +6,7 @@ const APP_ICONS: Record<string, LucideIcon> = {
   vscode: Code2,
   cursor: Code2,
   zed: Braces,
+  "android-studio": Code2,
   intellij: Code2,
   webstorm: Code2,
   sublime: Code2,
