@@ -22,6 +22,25 @@ export async function registerSystemRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get<{ Params: { appId: string } }>("/system/installed-apps/:appId/icon", async (request, reply) => {
+    try {
+      const apps = await app.systemService.getInstalledApps();
+      const appEntry = apps.find((entry) => entry.id === request.params.appId);
+      if (!appEntry) {
+        return reply.code(404).send({ error: `App not found: ${request.params.appId}` });
+      }
+
+      const icon = await app.systemService.getAppIcon(appEntry.path);
+      return reply
+        .header("Cache-Control", "public, max-age=3600")
+        .type(icon.contentType)
+        .send(icon.buffer);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to load app icon";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.post("/system/open-in-app", async (request, reply) => {
     try {
       const input = OpenInAppInputSchema.parse(request.body);

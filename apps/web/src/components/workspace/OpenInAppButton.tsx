@@ -28,6 +28,38 @@ function setPreferredAppId(targetPath: string, appId: string) {
   }
 }
 
+function resolveAppIconSrc(iconUrl?: string): string | null {
+  if (!iconUrl) {
+    return null;
+  }
+
+  if (iconUrl.startsWith("http://") || iconUrl.startsWith("https://") || iconUrl.startsWith("data:")) {
+    return iconUrl;
+  }
+
+  return `${api.runtimeBaseUrl}${iconUrl.startsWith("/") ? iconUrl : `/${iconUrl}`}`;
+}
+
+function AppIconGlyph({ app, className }: { app: ExternalApp; className?: string }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const FallbackIcon = getAppIcon(app.id);
+  const iconSrc = imageFailed ? null : resolveAppIconSrc(app.iconUrl);
+
+  if (iconSrc) {
+    return (
+      <img
+        src={iconSrc}
+        alt=""
+        aria-hidden="true"
+        className={cn("shrink-0 rounded-sm object-contain", className)}
+        onError={() => setImageFailed(true)}
+      />
+    );
+  }
+
+  return <FallbackIcon className={className} />;
+}
+
 interface OpenInAppButtonProps {
   targetPath: string;
   className?: string;
@@ -83,8 +115,6 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
     return null;
   }
 
-  const AppIcon = selectedApp ? getAppIcon(selectedApp.id) : null;
-
   return (
     <div
       className={cn(
@@ -102,7 +132,7 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
             title="Select app"
             onClick={(e) => e.stopPropagation()}
           >
-            {AppIcon && <AppIcon className="h-3.5 w-3.5" />}
+            {selectedApp ? <AppIconGlyph app={selectedApp} className="h-3.5 w-3.5" /> : null}
             <span className="max-w-[80px] truncate">{selectedApp?.name ?? "App"}</span>
             <ChevronDown className="h-3 w-3 opacity-50" />
           </button>
@@ -110,7 +140,6 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
         <PopoverContent align="start" className="w-[220px] p-1">
           <div className="space-y-0.5">
             {apps.map((app) => {
-              const Icon = getAppIcon(app.id);
               const isSelected = app.id === selectedApp?.id;
               return (
                 <button
@@ -122,7 +151,7 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
                   )}
                   onClick={() => handleSelectApp(app)}
                 >
-                  <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <AppIconGlyph app={app} className="h-3.5 w-3.5 text-muted-foreground" />
                   <span className="truncate">{app.name}</span>
                 </button>
               );

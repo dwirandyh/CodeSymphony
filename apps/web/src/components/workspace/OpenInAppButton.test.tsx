@@ -8,9 +8,9 @@ import { OpenInAppButton } from "./OpenInAppButton";
 vi.mock("../../hooks/queries/useInstalledApps", () => ({
   useInstalledApps: vi.fn().mockReturnValue({
     data: [
-      { id: "cursor", name: "Cursor", bundleId: "com.cursor", path: "/Applications/Cursor.app" },
-      { id: "finder", name: "Finder", bundleId: "com.apple.finder", path: "/System/Library/CoreServices/Finder.app" },
-      { id: "vscode", name: "VS Code", bundleId: "com.vscode", path: "/Applications/Code.app" },
+      { id: "cursor", name: "Cursor", bundleId: "com.cursor", path: "/Applications/Cursor.app", iconUrl: "/api/system/installed-apps/cursor/icon" },
+      { id: "finder", name: "Finder", bundleId: "com.apple.finder", path: "/System/Library/CoreServices/Finder.app", iconUrl: "/api/system/installed-apps/finder/icon" },
+      { id: "vscode", name: "VS Code", bundleId: "com.vscode", path: "/Applications/Code.app", iconUrl: "/api/system/installed-apps/vscode/icon" },
     ],
     isLoading: false,
   }),
@@ -19,6 +19,7 @@ vi.mock("../../hooks/queries/useInstalledApps", () => ({
 vi.mock("../../lib/api", () => ({
   api: {
     openInApp: vi.fn().mockResolvedValue(undefined),
+    runtimeBaseUrl: "http://127.0.0.1:4331",
   },
 }));
 
@@ -74,6 +75,20 @@ describe("OpenInAppButton", () => {
     });
     const text = container.textContent || "";
     expect(text.length).toBeGreaterThan(0);
+  });
+
+  it("renders the original app icon when iconUrl is available", () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OpenInAppButton targetPath="/project" />
+        </QueryClientProvider>
+      );
+    });
+
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("http://127.0.0.1:4331/api/system/installed-apps/cursor/icon");
   });
 
   it("opens the preferred Finder option for the current worktree", async () => {

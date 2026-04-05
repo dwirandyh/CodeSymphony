@@ -511,6 +511,7 @@ export const ExternalAppSchema = z.object({
   name: z.string(),
   bundleId: z.string(),
   path: z.string(),
+  iconUrl: z.string().trim().min(1).optional(),
 });
 export type ExternalApp = z.infer<typeof ExternalAppSchema>;
 
