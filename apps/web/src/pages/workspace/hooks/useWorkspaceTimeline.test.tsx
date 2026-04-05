@@ -267,6 +267,115 @@ describe("useWorkspaceTimeline", () => {
     expect(skillItems[0].event?.type).toBe("tool.finished");
   });
 
+  it("coalesces orphan MCP events into a single tool item", () => {
+    const messages = [makeMessage("m1", 1, "user", "use mcp")];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "mcp-1",
+      }, null),
+      makeEvent(1, "tool.output", {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "mcp-1",
+        elapsedTimeSeconds: 0.4,
+      }, null),
+      makeEvent(2, "tool.finished", {
+        toolName: "mcp__filesystem__read_file",
+        precedingToolUseIds: ["mcp-1"],
+        summary: "Read README.md via MCP",
+        output: "# README",
+      }, null),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const toolItems = items.filter((item) => item.kind === "tool");
+    const mcpItems = toolItems.filter(
+      (item) => item.kind === "tool" && item.toolName === "mcp__filesystem__read_file",
+    );
+    const groupedMcpItem = mcpItems.find((item) => (item.sourceEvents?.length ?? 0) > 1);
+
+    expect(mcpItems.length).toBeGreaterThan(0);
+    expect(groupedMcpItem).toBeDefined();
+    if (!groupedMcpItem || groupedMcpItem.kind !== "tool") {
+      throw new Error("Expected grouped MCP tool item");
+    }
+    expect(groupedMcpItem.toolUseId).toBe("mcp-1");
+    expect(groupedMcpItem.sourceEvents?.length).toBeGreaterThan(1);
+  });
+
+  it("renders skill and MCP as separate tool cards instead of one fallback activity card", () => {
+    const assistantAnswer = "Bisa — saya berhasil akses node itu lewat Figma MCP. Detail yang dipakai dari URL kamu lengkap dan saya juga sudah berhasil baca isi nodenya.";
+    const messages = [
+      makeMessage("m1", 1, "user", "use figma mcp"),
+      makeMessage("m2", 2, "assistant", assistantAnswer),
+    ];
+    const events = [
+      makeEvent(0, "tool.finished", {
+        toolName: "Skill",
+        precedingToolUseIds: ["call-skill-1"],
+        summary: "Completed Skill",
+        skillName: "playwright-cli",
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        toolName: "mcp__Framelink_Figma_MCP__get_figma_data",
+        precedingToolUseIds: ["mcp-figma-1"],
+        summary: "Completed mcp__Framelink_Figma_MCP__get_figma_data",
+      }, "m2"),
+      makeEvent(2, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const activityItems = items.filter((item) => item.kind === "activity");
+    const toolItems = items.filter((item) => item.kind === "tool");
+    const skillItem = toolItems.find((item) => item.kind === "tool" && item.toolName === "Skill");
+    const mcpItem = toolItems.find((item) => item.kind === "tool" && item.toolName === "mcp__Framelink_Figma_MCP__get_figma_data");
+    const assistantItem = items.find((item) => item.kind === "message" && item.message.role === "assistant");
+
+    expect(activityItems).toHaveLength(0);
+    expect(skillItem).toBeDefined();
+    expect(mcpItem).toBeDefined();
+    if (!skillItem || skillItem.kind !== "tool") {
+      throw new Error("Expected skill tool item");
+    }
+    if (!mcpItem || mcpItem.kind !== "tool") {
+      throw new Error("Expected MCP tool item");
+    }
+    expect(skillItem.summary).toBe("Using playwright-cli skill");
+    expect(mcpItem.summary).toBe("Completed mcp__Framelink_Figma_MCP__get_figma_data");
+    expect(mcpItem.status).toBe("success");
+
+    expect(assistantItem).toBeDefined();
+    if (!assistantItem || assistantItem.kind !== "message") {
+      throw new Error("Expected assistant message item");
+    }
+    expect(assistantItem.message.content).toContain("Bisa — saya berhasil akses node itu lewat Figma MCP.");
+  });
+
+  it("keeps grouped MCP tool items running until a finish event exists", () => {
+    const messages = [makeMessage("m1", 1, "user", "use mcp")];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "mcp-running-1",
+      }, null),
+      makeEvent(1, "tool.output", {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "mcp-running-1",
+        elapsedTimeSeconds: 0.4,
+      }, null),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const mcpItem = items.find((item) => item.kind === "tool" && item.toolUseId === "mcp-running-1");
+
+    expect(mcpItem).toBeDefined();
+    if (!mcpItem || mcpItem.kind !== "tool") {
+      throw new Error("Expected MCP tool item");
+    }
+    expect(mcpItem.status).toBe("running");
+    expect(mcpItem.sourceEvents?.length).toBe(2);
+  });
+
   it("renders ls-based build checks as normal tool items, not explore activity", () => {
     const messages = [
       makeMessage("m1", 1, "user", "build app"),

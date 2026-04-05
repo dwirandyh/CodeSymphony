@@ -625,16 +625,22 @@ export function buildTimelineFromSeed(params: {
       || !!planFileOutput;
 
     if (message.role === "assistant" && activityContext.length > 0 && !hasInlineActivityCards) {
-      const steps = buildActivitySteps(activityContext);
-      const contextTimestamp = parseTimestamp(activityContext[0]?.createdAt ?? message.createdAt);
+      const fallbackActivityContext = activityContext.filter((event) =>
+        event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished",
+      );
+      const steps = buildActivitySteps(fallbackActivityContext);
+      const contextTimestamp = parseTimestamp(fallbackActivityContext[0]?.createdAt ?? message.createdAt);
       if (steps.length > 0) {
-        activityContext.forEach((event) => assignedToolEventIds.add(event.id));
+        const activityIntroSource = steps.find((step) => step.detail.trim().length > 0)?.detail
+          ?? steps.find((step) => step.label.trim().length > 0)?.label
+          ?? null;
+        fallbackActivityContext.forEach((event) => assignedToolEventIds.add(event.id));
         sortable.push({
           item: {
             kind: "activity",
             messageId: message.id,
-            durationSeconds: computeDurationSecondsFromEvents(activityContext),
-            introText: buildActivityIntroText(message.content),
+            durationSeconds: computeDurationSecondsFromEvents(fallbackActivityContext),
+            introText: activityIntroSource ? buildActivityIntroText(activityIntroSource) : null,
             steps,
             defaultExpanded: isStreamingMessage,
           },

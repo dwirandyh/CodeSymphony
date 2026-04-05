@@ -2833,4 +2833,118 @@ describe("thinking_delta", () => {
 
     expect(thinkingChunks).toEqual([]);
   });
+
+  it("preserves Claude settings sources for custom providers", async () => {
+    mockQuery.mockImplementation(() => {
+      return attachQueryControls((async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-provider-mcp" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })());
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "use my MCP tools",
+      sessionId: null,
+      cwd: process.cwd(),
+      model: "claude-3-7-sonnet",
+      providerApiKey: "provider-key",
+      providerBaseUrl: "https://provider.example.com/v1",
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    const options = (mockQuery.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
+    const env = options.env as NodeJS.ProcessEnv;
+
+    expect(options.settingSources).toEqual(["local", "project", "user"]);
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(env.ANTHROPIC_API_KEY).toBe("provider-key");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("provider-key");
+    expect(env.ANTHROPIC_BASE_URL).toBe("https://provider.example.com/v1");
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("claude-3-7-sonnet");
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-3-7-sonnet");
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("claude-3-7-sonnet");
+    expect(options.model).toBe("opus");
+  });
+
+  it("includes toolName on finished payloads for generic tools", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return attachQueryControls((async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("mcp__filesystem__read_file", { path: "README.md" }, {
+          toolUseID: "tool-mcp-finished",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+        };
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-mcp-finished",
+            tool_name: "mcp__filesystem__read_file",
+            tool_input: { path: "README.md" },
+            tool_response: "# README",
+          },
+          "tool-mcp-finished",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-mcp-finished" };
+      })());
+    });
+
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "use mcp",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    const finishedPayload = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        toolName?: string;
+        precedingToolUseIds: string[];
+        summary: string;
+        output?: string;
+        truncated?: boolean;
+      })
+      .find((payload) => payload.precedingToolUseIds.includes("tool-mcp-finished"));
+
+    expect(finishedPayload).toBeDefined();
+    expect(finishedPayload?.toolName).toBe("mcp__filesystem__read_file");
+    expect(finishedPayload?.output).toBe("# README");
+    expect(finishedPayload?.truncated).toBe(false);
+  });
 });

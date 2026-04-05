@@ -1115,7 +1115,20 @@ export function createPostToolUseHook(
     const bashResult = extractBashToolResult(hookInput.tool_response);
     if (metadata.isBash && bashResult) {
       maps.bashResultByToolUseId.set(hookToolUseId, bashResult);
+      metadata.output = bashResult.output;
+      metadata.error = bashResult.error;
+      metadata.truncated = bashResult.truncated;
+      metadata.outputBytes = bashResult.outputBytes;
+    } else if (!metadata.isBash) {
+      const responseText = extractSubagentResponse(hookInput.tool_response);
+      if (responseText) {
+        metadata.output = responseText;
+        metadata.error = undefined;
+        metadata.truncated = false;
+        metadata.outputBytes = Buffer.byteLength(responseText, "utf8");
+      }
     }
+    maps.toolMetadataByUseId.set(hookToolUseId, metadata);
 
     if (isSubagentLauncherToolName(hookInput.tool_name as string)) {
       const responseText = extractSubagentResponse(hookInput.tool_response);

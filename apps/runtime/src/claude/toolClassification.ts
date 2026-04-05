@@ -10,6 +10,10 @@ export type ToolMetadata = {
     editTarget?: string;
     skillName?: string;
     isBash: boolean;
+    output?: string;
+    error?: string;
+    truncated?: boolean;
+    outputBytes?: number;
 };
 
 export function isBashTool(toolName: string): boolean {
