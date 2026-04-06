@@ -6,6 +6,12 @@ import { QuestionCard } from "./QuestionCard";
 let container: HTMLDivElement;
 let root: Root;
 
+function setTextInputValue(input: HTMLInputElement, value: string) {
+  const descriptor = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
+  descriptor?.set?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -74,6 +80,7 @@ describe("QuestionCard", () => {
     expect(container.textContent).toContain("Option A");
     expect(container.textContent).toContain("Option B");
     expect(container.textContent).toContain("B description");
+    expect(container.querySelectorAll("input[type='text']")).toHaveLength(1);
   });
 
   it("renders free text input when no options", () => {
@@ -154,6 +161,89 @@ describe("QuestionCard", () => {
     if (alphaBtn) {
       act(() => alphaBtn.click());
     }
+  });
+
+  it("allows manual input for single-select questions with options", () => {
+    const onAnswer = vi.fn();
+    act(() => {
+      root.render(
+        <QuestionCard
+          {...baseProps}
+          onAnswer={onAnswer}
+          questions={[{
+            question: "Pick one",
+            options: [{ label: "Alpha" }, { label: "Beta" }],
+          }]}
+        />
+      );
+    });
+
+    const input = container.querySelector("input[type='text']");
+    expect(input).toBeTruthy();
+    if (!input) {
+      return;
+    }
+
+    act(() => {
+      input.dispatchEvent(new Event("focus", { bubbles: true }));
+      setTextInputValue(input, "Gamma");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("aria-label")?.includes("Submit answer"),
+    );
+    expect(submitButton?.hasAttribute("disabled")).toBe(false);
+
+    if (submitButton) {
+      act(() => submitButton.click());
+    }
+
+    expect(onAnswer).toHaveBeenCalledWith("q-1", {
+      "Pick one": "Gamma",
+    });
+  });
+
+  it("combines manual input with selected options for multi-select questions", () => {
+    const onAnswer = vi.fn();
+    act(() => {
+      root.render(
+        <QuestionCard
+          {...baseProps}
+          onAnswer={onAnswer}
+          questions={[{
+            question: "Pick many",
+            multiSelect: true,
+            options: [{ label: "Alpha" }, { label: "Beta" }],
+          }]}
+        />
+      );
+    });
+
+    const alphaBtn = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Alpha"));
+    if (alphaBtn) {
+      act(() => alphaBtn.click());
+    }
+
+    const input = container.querySelector("input[type='text']");
+    expect(input).toBeTruthy();
+    if (!input) {
+      return;
+    }
+
+    act(() => {
+      setTextInputValue(input, "Gamma");
+    });
+
+    const submitButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("aria-label")?.includes("Submit answer"),
+    );
+    if (submitButton) {
+      act(() => submitButton.click());
+    }
+
+    expect(onAnswer).toHaveBeenCalledWith("q-1", {
+      "Pick many": "Alpha, Gamma",
+    });
   });
 
   it("disables interactions when busy", () => {

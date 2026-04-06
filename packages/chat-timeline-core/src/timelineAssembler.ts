@@ -51,6 +51,10 @@ const MULTI_FILE_EDIT_ANNOUNCEMENT_PATTERN = /\b(both files|two files|2 files?|k
 const SINGLE_EDIT_ANNOUNCEMENT_PATTERN = /\b(mari saya|let me|i'?ll|saya akan|now let me)\b/i;
 const COMPLETION_MESSAGE_PATTERN = /^(sip|selesai|done|fixed|beres|sudah)/i;
 
+function isQuestionLifecycleEvent(event: ChatEvent): boolean {
+  return event.type === "question.requested" || event.type === "question.answered" || event.type === "question.dismissed";
+}
+
 type TimelineRefs = {
   streamingMessageIds: Set<string>;
   stickyRawFallbackMessageIds: Set<string>;
@@ -591,7 +595,11 @@ export function buildTimelineFromSeed(params: {
     }
 
     const activityContext = message.role === "assistant"
-      ? context.filter((event) => !claimedContextEventIds.has(event.id) && !failedReadEventIds.has(event.id))
+      ? context.filter((event) =>
+        !claimedContextEventIds.has(event.id)
+        && !failedReadEventIds.has(event.id)
+        && !isQuestionLifecycleEvent(event)
+      )
       : context;
     overlapUnclaimedEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
 
