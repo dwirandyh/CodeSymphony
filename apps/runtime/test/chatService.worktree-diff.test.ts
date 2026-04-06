@@ -136,8 +136,25 @@ describe("chatService worktree diff delta", () => {
     });
     writeFileSync(join(worktreePath, "src/a.ts"), "export const a = 2;\n", "utf8");
 
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      await onToolStarted({
+        toolName: "Edit",
+        toolUseId: "edit-b",
+        parentToolUseId: null,
+        editTarget: "src/b.ts",
+      });
       writeFileSync(join(worktreePath, "src/b.ts"), "export const b = 2;\n", "utf8");
+      await onToolFinished({
+        toolName: "Edit",
+        summary: "Edited src/b.ts",
+        precedingToolUseIds: ["edit-b"],
+        editTarget: "src/b.ts",
+        toolInput: {
+          file_path: "src/b.ts",
+          old_string: "export const b = 1;\n",
+          new_string: "export const b = 2;\n",
+        },
+      });
       await onText("Updated src/b.ts");
       return {
         output: "Updated src/b.ts",
@@ -197,6 +214,36 @@ describe("chatService worktree diff delta", () => {
     expect(worktreeDiffEvent(events)).toBeUndefined();
   });
 
+  it("does not emit worktree diff for read-only runs when unrelated files change during the run", async () => {
+    const worktreePath = createGitWorktree({
+      "src/main.ts": "export const main = () => 1;\n",
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+      writeFileSync(join(worktreePath, "src/main.ts"), "export const main = () => 2;\n", "utf8");
+      await onText("Inspected the codebase.");
+      return {
+        output: "Inspected the codebase.",
+        sessionId: "session-worktree-readonly-external-change",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree Read Only");
+
+    await chatService.sendMessage(threadId, {
+      content: "analyze only",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(worktreeDiffEvent(events)).toBeUndefined();
+  });
+
   it("rejects sends when expected worktree id does not match the thread worktree", async () => {
     const worktreePath = createGitWorktree({
       "src/main.ts": "export const main = () => 1;\n",
@@ -232,8 +279,25 @@ describe("chatService worktree diff delta", () => {
     });
     writeFileSync(join(worktreePath, "src/value.ts"), "export const value = 2;\n", "utf8");
 
-    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      await onToolStarted({
+        toolName: "Edit",
+        toolUseId: "edit-value",
+        parentToolUseId: null,
+        editTarget: "src/value.ts",
+      });
       writeFileSync(join(worktreePath, "src/value.ts"), original, "utf8");
+      await onToolFinished({
+        toolName: "Edit",
+        summary: "Edited src/value.ts",
+        precedingToolUseIds: ["edit-value"],
+        editTarget: "src/value.ts",
+        toolInput: {
+          file_path: "src/value.ts",
+          old_string: "export const value = 2;\n",
+          new_string: original,
+        },
+      });
       await onText("Reverted file to clean state.");
       return {
         output: "Reverted file to clean state.",
@@ -259,5 +323,101 @@ describe("chatService worktree diff delta", () => {
     expect(diffEvent?.payload.changedFiles).toEqual(["src/value.ts"]);
     expect(diffEvent?.payload.diff).toBe("");
     expect(diffEvent?.payload.diffTruncated).toBe(false);
+  });
+
+  it("emits bash-owned worktree diffs even without explicit file targets", async () => {
+    const worktreePath = createGitWorktree({
+      "src/main.ts": "export const main = () => 1;\n",
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      await onToolStarted({
+        toolName: "Bash",
+        toolUseId: "bash-1",
+        parentToolUseId: null,
+        command: "python - <<'PY'",
+        shell: "bash",
+        isBash: true,
+      });
+      writeFileSync(join(worktreePath, "src/main.ts"), "export const main = () => 2;\n", "utf8");
+      await onToolFinished({
+        toolName: "Bash",
+        summary: "Ran python - <<'PY'",
+        precedingToolUseIds: ["bash-1"],
+        command: "python - <<'PY'",
+        shell: "bash",
+        isBash: true,
+      });
+      await onText("Updated src/main.ts through bash.");
+      return {
+        output: "Updated src/main.ts through bash.",
+        sessionId: "session-worktree-bash-fallback",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree Bash Fallback");
+
+    await chatService.sendMessage(threadId, {
+      content: "update src/main.ts with bash",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const diffEvent = worktreeDiffEvent(events);
+    expect(diffEvent).toBeDefined();
+    expect(diffEvent?.payload.changedFiles).toEqual(["src/main.ts"]);
+    expect(diffEvent?.payload.diff).toContain("diff --git a/src/main.ts b/src/main.ts");
+  });
+
+  it("ignores plan-file targets outside the worktree when deciding whether to emit a diff", async () => {
+    const worktreePath = createGitWorktree({
+      "src/main.ts": "export const main = () => 1;\n",
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      await onToolStarted({
+        toolName: "Write",
+        toolUseId: "write-plan-1",
+        parentToolUseId: null,
+        editTarget: ".claude/plans/fix.md",
+      });
+      await onToolFinished({
+        toolName: "Write",
+        summary: "Edited .claude/plans/fix.md",
+        precedingToolUseIds: ["write-plan-1"],
+        editTarget: ".claude/plans/fix.md",
+        toolInput: {
+          file_path: ".claude/plans/fix.md",
+          content: "# Fix plan",
+        },
+      });
+      writeFileSync(join(worktreePath, "src/main.ts"), "export const main = () => 2;\n", "utf8");
+      await onText("Drafted a plan.");
+      return {
+        output: "Drafted a plan.",
+        sessionId: "session-worktree-plan-target",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree Plan Target");
+
+    await chatService.sendMessage(threadId, {
+      content: "write a plan",
+      mode: "plan",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(worktreeDiffEvent(events)).toBeUndefined();
   });
 });

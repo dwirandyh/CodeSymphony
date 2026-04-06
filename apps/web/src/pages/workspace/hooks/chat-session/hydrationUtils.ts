@@ -1,18 +1,13 @@
 import type { ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import type { SnapshotSeedDecision } from "./useChatSession.types";
+import { buildSnapshotKey as buildSnapshotStateKey } from "../timelineStateFingerprint";
 
 export function shouldInvalidateSnapshotImmediatelyAfterSubmit(): boolean {
   return false;
 }
 
 export function buildSnapshotKey(snapshot: ChatTimelineSnapshot): string {
-  return [
-    snapshot.newestSeq ?? "null",
-    snapshot.newestIdx ?? "null",
-    snapshot.messages.length,
-    snapshot.events.length,
-    snapshot.timelineItems.length,
-  ].join(":");
+  return buildSnapshotStateKey(snapshot);
 }
 
 export function resolveSnapshotSeedDecision(params: {

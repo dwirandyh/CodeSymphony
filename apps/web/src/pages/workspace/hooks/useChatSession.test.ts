@@ -510,6 +510,19 @@ describe("snapshot seed decision helpers", () => {
     expect(buildSnapshotKey(snapshotA)).not.toBe(buildSnapshotKey(snapshotB));
   });
 
+  it("treats same-length content changes as a new snapshot key", () => {
+    const snapshotA = makeSnapshot();
+    const snapshotB: ChatTimelineSnapshot = makeSnapshot();
+
+    snapshotB.messages = [{
+      ...snapshotB.messages[0],
+      content: "n-1",
+    }];
+
+    expect(snapshotA.messages[0]?.content.length).toBe(snapshotB.messages[0]?.content.length);
+    expect(buildSnapshotKey(snapshotA)).not.toBe(buildSnapshotKey(snapshotB));
+  });
+
   it("applies on thread change even with same lengths", () => {
     const snapshotA = makeSnapshot({ newestSeq: 1, newestIdx: 100 });
     const snapshotB = makeSnapshot({ newestSeq: 2, newestIdx: 110 });

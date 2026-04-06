@@ -126,6 +126,43 @@ describe("useWorkspaceTimeline", () => {
     expect(assistantItems.length).toBeGreaterThan(0);
   });
 
+  it("recomputes when message content changes without changing counts", () => {
+    const initialMessages = [
+      makeMessage("m1", 1, "user", "Hello"),
+      makeMessage("m2", 2, "assistant", "Plan A"),
+    ];
+    const updatedMessages = [
+      makeMessage("m1", 1, "user", "Hello"),
+      makeMessage("m2", 2, "assistant", "Tool run"),
+    ];
+
+    act(() => {
+      root.render(<TestComponent messages={initialMessages} events={[]} threadId="t1" refs={makeRefs()} />);
+    });
+
+    let assistantItem = hookResult.items.find(
+      (item) => item.kind === "message" && item.message.id === "m2",
+    );
+    expect(assistantItem?.kind).toBe("message");
+    if (!assistantItem || assistantItem.kind !== "message") {
+      throw new Error("Expected assistant message item");
+    }
+    expect(assistantItem.message.content).toBe("Plan A");
+
+    act(() => {
+      root.render(<TestComponent messages={updatedMessages} events={[]} threadId="t1" refs={makeRefs()} />);
+    });
+
+    assistantItem = hookResult.items.find(
+      (item) => item.kind === "message" && item.message.id === "m2",
+    );
+    expect(assistantItem?.kind).toBe("message");
+    if (!assistantItem || assistantItem.kind !== "message") {
+      throw new Error("Expected assistant message item");
+    }
+    expect(assistantItem.message.content).toBe("Tool run");
+  });
+
   it("processes message.delta events", () => {
     const messages = [makeMessage("m1", 1, "user", "Hi")];
     const events = [
@@ -234,6 +271,32 @@ describe("useWorkspaceTimeline", () => {
       throw new Error("Expected tool item");
     }
     expect(toolItems[0].summary).toContain("Failed to read");
+  });
+
+  it("skips TodoWrite generic tool cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "do the task"),
+      makeMessage("m2", 2, "assistant", "Saya lanjut eksekusi task."),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "TodoWrite",
+        toolUseId: "todo-1",
+      }, "m2"),
+      makeEvent(1, "tool.finished", {
+        toolName: "TodoWrite",
+        precedingToolUseIds: ["todo-1"],
+        summary: "Updated todo list",
+      }, "m2"),
+      makeEvent(2, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const toolItems = items.filter((item) => item.kind === "tool");
+    const assistantItem = items.find((item) => item.kind === "message" && item.message.id === "m2");
+
+    expect(toolItems).toHaveLength(0);
+    expect(assistantItem).toBeDefined();
   });
 
   it("coalesces orphan skill events into a single skill tool item", () => {
@@ -505,6 +568,38 @@ describe("useWorkspaceTimeline", () => {
 
     expect(exploreItems).toHaveLength(0);
     expect(assistantMessages).toHaveLength(1);
+  });
+
+  it("renders orphan worktree diff events as edited-diff instead of generic tool cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "update readme"),
+      makeMessage("m2", 2, "assistant", "Done."),
+    ];
+    const events = [
+      makeEvent(0, "tool.finished", {
+        source: "worktree.diff",
+        summary: "Edited 1 file",
+        changedFiles: ["README.md"],
+        diff: [
+          "diff --git a/README.md b/README.md",
+          "--- a/README.md",
+          "+++ b/README.md",
+          "@@ -1 +1 @@",
+          "-before",
+          "+after",
+        ].join("\n"),
+      }, "m2"),
+      makeEvent(1, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const editedItems = items.filter((item) => item.kind === "edited-diff");
+    const genericToolItems = items.filter(
+      (item) => item.kind === "tool" && item.summary === "Edited 1 file",
+    );
+
+    expect(editedItems).toHaveLength(1);
+    expect(genericToolItems).toHaveLength(0);
   });
 
   it("keeps pure explore bash chains in subagent activity", () => {
@@ -1041,9 +1136,13 @@ describe("useWorkspaceTimeline", () => {
     const readmeEditedItems = result.items.filter(
       (item) => item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("README.md")),
     );
+    const genericWorktreeDiffItems = result.items.filter(
+      (item) => item.kind === "tool" && item.summary === "Edited 1 file",
+    );
 
     expect(readmeEditedItems).toHaveLength(1);
     expect(readmeEditedItems[0]).toMatchObject({ kind: "edited-diff", diffKind: "actual" });
+    expect(genericWorktreeDiffItems).toHaveLength(0);
   });
 
   it("strips leaked think tags and keeps post-edit completion text after both edit cards", () => {

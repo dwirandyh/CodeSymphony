@@ -1,6 +1,6 @@
 import { execFile as execFileRaw } from "node:child_process";
 import { promisify } from "node:util";
-import type { ParsedDiffSections, WorktreeStateSnapshot } from "./chatService.types.js";
+import type { ParsedDiffSections, WorktreeDiffDelta, WorktreeStateSnapshot } from "./chatService.types.js";
 
 const execFile = promisify(execFileRaw);
 const MAX_DIFF_PREVIEW_CHARS = 20000;
@@ -108,6 +108,14 @@ export function appendUnique(items: string[], seen: Set<string>, candidate: stri
   items.push(candidate);
 }
 
+function matchesTargetFile(filePath: string, targetFiles: string[]): boolean {
+  return targetFiles.some((target) => (
+    filePath === target
+    || filePath.endsWith(`/${target}`)
+    || target.endsWith(`/${filePath}`)
+  ));
+}
+
 export function symmetricStatusDelta(before: string[], after: string[]): string[] {
   const beforeSet = new Set(before);
   const afterSet = new Set(after);
@@ -126,6 +134,55 @@ export function symmetricStatusDelta(before: string[], after: string[]): string[
   }
 
   return delta;
+}
+
+export function filterDiffByFiles(diff: string, targetFiles: string[]): string {
+  if (targetFiles.length === 0 || diff.length === 0) {
+    return diff;
+  }
+
+  const sections: string[] = [];
+  let currentLines: string[] = [];
+  let include = false;
+
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      if (include && currentLines.length > 0) {
+        sections.push(currentLines.join("\n"));
+      }
+      currentLines = [line];
+      const match = line.match(/diff --git a\/(.+?) b\/(.+)/);
+      const filePath = match?.[2] ?? null;
+      include = filePath != null && matchesTargetFile(filePath, targetFiles);
+      continue;
+    }
+
+    currentLines.push(line);
+  }
+
+  if (include && currentLines.length > 0) {
+    sections.push(currentLines.join("\n"));
+  }
+
+  return sections.join("\n");
+}
+
+export function filterChangedFilesByTargets(changedFiles: string[], targetFiles: string[]): string[] {
+  if (targetFiles.length === 0) {
+    return changedFiles;
+  }
+
+  return changedFiles.filter((filePath) => matchesTargetFile(filePath, targetFiles));
+}
+
+export function truncateDiffPreview(diff: string): { diff: string; diffTruncated: boolean } {
+  const diffTruncated = diff.length > MAX_DIFF_PREVIEW_CHARS;
+  return {
+    diff: diffTruncated
+      ? `${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}\n\n... [diff truncated]`
+      : diff,
+    diffTruncated,
+  };
 }
 
 export async function captureWorktreeState(worktreePath: string): Promise<WorktreeStateSnapshot | null> {
@@ -147,11 +204,7 @@ export async function captureWorktreeState(worktreePath: string): Promise<Worktr
   }
 }
 
-export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeStateSnapshot): {
-  changedFiles: string[];
-  diff: string;
-  diffTruncated: boolean;
-} | null {
+export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeStateSnapshot): WorktreeDiffDelta | null {
   const beforeCombinedDiff = [before.unstagedDiff, before.stagedDiff].filter((part) => part.length > 0).join("\n\n");
   const afterCombinedDiff = [after.unstagedDiff, after.stagedDiff].filter((part) => part.length > 0).join("\n\n");
 
@@ -219,13 +272,11 @@ export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeSta
     return null;
   }
 
-  const diffTruncated = diffDelta.length > MAX_DIFF_PREVIEW_CHARS;
-  const diff = diffTruncated
-    ? `${diffDelta.slice(0, MAX_DIFF_PREVIEW_CHARS)}\n\n... [diff truncated]`
-    : diffDelta;
+  const { diff, diffTruncated } = truncateDiffPreview(diffDelta);
 
   return {
     changedFiles,
+    fullDiff: diffDelta,
     diff,
     diffTruncated,
   };

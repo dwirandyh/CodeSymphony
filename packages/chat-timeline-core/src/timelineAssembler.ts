@@ -16,6 +16,7 @@ import {
   isLikelyDiffContent,
   isPlanFilePath,
   isReadToolEvent,
+  isTodoWriteToolEvent,
   normalizePlanCreatedEvent,
   parseTimestamp,
   payloadStringOrNull,
@@ -291,11 +292,14 @@ export function buildTimelineFromSeed(params: {
     }
   }
 
-  const inlineToolEvents = orderedEventsByIdx.filter((event) => INLINE_TOOL_EVENT_TYPES.has(event.type));
+  const inlineToolEvents = orderedEventsByIdx.filter((event) =>
+    INLINE_TOOL_EVENT_TYPES.has(event.type) && !isTodoWriteToolEvent(event),
+  );
   const semanticContextEvents = orderedEventsByIdx.filter((event) =>
-    event.type === "tool.started"
-    || event.type === "tool.output"
-    || event.type === "tool.finished"
+    ((event.type === "tool.started"
+      || event.type === "tool.output"
+      || event.type === "tool.finished")
+      && !isTodoWriteToolEvent(event))
     || event.type === "subagent.started"
     || event.type === "subagent.finished"
     || event.type === "plan.created"
