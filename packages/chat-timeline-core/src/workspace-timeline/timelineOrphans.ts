@@ -35,6 +35,23 @@ function isExplicitSkillToolEvent(event: ChatEvent): boolean {
     && payloadStringOrNull(event.payload.toolName)?.toLowerCase() === "skill";
 }
 
+function isAskUserQuestionToolEvent(event: ChatEvent): boolean {
+  return (event.type === "tool.started" || event.type === "tool.output" || event.type === "tool.finished")
+    && payloadStringOrNull(event.payload.toolName)?.toLowerCase() === "askuserquestion";
+}
+
+function askUserQuestionRunId(event: ChatEvent): string | null {
+  if (event.type === "question.requested" || event.type === "question.answered" || event.type === "question.dismissed") {
+    return payloadStringOrNull(event.payload.requestId);
+  }
+
+  if (isAskUserQuestionToolEvent(event)) {
+    return toolRunId(event);
+  }
+
+  return null;
+}
+
 function toolRunId(event: ChatEvent): string | null {
   const runIds = event.type === "tool.finished"
     ? finishedToolUseIds(event)
@@ -292,6 +309,73 @@ export function processOrphanToolEvents(
         truncated: primaryEvent.payload.truncated === true,
         durationSeconds: typeof primaryEvent.payload.elapsedTimeSeconds === "number" ? primaryEvent.payload.elapsedTimeSeconds : null,
         status: primaryEvent.type === "tool.started" ? "running" : typeof primaryEvent.payload.error === "string" && primaryEvent.payload.error.length > 0 ? "failed" : "success",
+      },
+      anchorIdx: primaryEvent.idx,
+      timestamp: parseTimestamp(primaryEvent.createdAt),
+      rank: 0,
+      stableOrder: primaryEvent.idx,
+    });
+  }
+
+  const askUserQuestionEvents = orphanToolEvents.filter((event) => askUserQuestionRunId(event) !== null);
+  const askUserQuestionEventsByRunId = new Map<string, ChatEvent[]>();
+  for (const event of askUserQuestionEvents) {
+    const runId = askUserQuestionRunId(event);
+    if (!runId) {
+      continue;
+    }
+    const existing = askUserQuestionEventsByRunId.get(runId) ?? [];
+    existing.push(event);
+    askUserQuestionEventsByRunId.set(runId, existing);
+  }
+
+  for (const [runId, events] of askUserQuestionEventsByRunId.entries()) {
+    const sortedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
+      ?? [...sortedEvents].reverse().find((event) => event.type === "question.answered")
+      ?? [...sortedEvents].reverse().find((event) => event.type === "question.dismissed")
+      ?? sortedEvents.find((event) => event.type === "question.requested")
+      ?? sortedEvents.find((event) => event.type === "tool.started")
+      ?? sortedEvents[sortedEvents.length - 1]
+      ?? null;
+    if (!primaryEvent) {
+      continue;
+    }
+
+    const questionRequestedEvent = [...sortedEvents].reverse().find((event) => event.type === "question.requested") ?? null;
+    const rawQuestions = Array.isArray(questionRequestedEvent?.payload.questions) ? questionRequestedEvent.payload.questions : [];
+    const questionCount = rawQuestions.length > 0
+      ? rawQuestions.length
+      : sortedEvents.some((event) => event.type === "question.answered")
+        ? Math.max(...sortedEvents
+          .filter((event) => event.type === "question.answered")
+          .map((event) => {
+            const answers = event.payload.answers;
+            return answers && typeof answers === "object" ? Object.keys(answers as Record<string, unknown>).length : 0;
+          }), 0)
+        : 0;
+    const summary = `Asked ${questionCount} Question${questionCount === 1 ? "" : "s"}`;
+    const hasError = sortedEvents.some((event) => typeof event.payload.error === "string" && event.payload.error.length > 0);
+    const isRunning = !sortedEvents.some((event) =>
+      event.type === "tool.finished" || event.type === "question.answered" || event.type === "question.dismissed",
+    );
+    const resolvedStatus = hasError ? "failed" : isRunning ? "running" : "success";
+
+    sortedEvents.forEach((event) => assignedToolEventIds.add(event.id));
+    sortable.push({
+      item: {
+        kind: "tool",
+        id: `orphan:ask-user-question:${runId}`,
+        event: primaryEvent,
+        sourceEvents: sortedEvents,
+        toolUseId: runId,
+        toolName: "AskUserQuestion",
+        summary,
+        output: null,
+        error: typeof primaryEvent.payload.error === "string" ? primaryEvent.payload.error : null,
+        truncated: false,
+        durationSeconds: null,
+        status: resolvedStatus,
       },
       anchorIdx: primaryEvent.idx,
       timestamp: parseTimestamp(primaryEvent.createdAt),

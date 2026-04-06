@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { ChevronLeft, ChevronRight, MessageCircleQuestion } from "lucide-react";
 import { Button } from "../ui/button";
 
@@ -22,6 +22,13 @@ type QuestionCardProps = {
   onDismiss: (requestId: string) => void;
 };
 
+function normalizeAnswerParts(parts: string[]): string {
+  return parts
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .join(", ");
+}
+
 export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }: QuestionCardProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [selectedByQuestion, setSelectedByQuestion] = useState<Map<string, Set<string>>>(() => new Map());
@@ -35,6 +42,8 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
 
   const hasOptions = question.options && question.options.length > 0;
   const selected = selectedByQuestion.get(question.question) ?? new Set<string>();
+  const freeText = freeTextByQuestion.get(question.question) ?? "";
+  const trimmedFreeText = freeText.trim();
 
   function toggleOption(questionText: string, label: string, multiSelect: boolean) {
     setSelectedByQuestion((current) => {
@@ -57,6 +66,10 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
       return next;
     });
 
+    if (!multiSelect) {
+      setFreeText(questionText, "");
+    }
+
     if (!multiSelect && !isLastStep) {
       setTimeout(() => setCurrentStep((s) => s + 1), 200);
     }
@@ -74,11 +87,15 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
     const answers: Record<string, string> = {};
     for (const q of questions) {
       const qHasOptions = q.options && q.options.length > 0;
+      const textAnswer = (freeTextByQuestion.get(q.question) ?? "").trim();
       if (qHasOptions) {
         const sel = selectedByQuestion.get(q.question);
-        answers[q.question] = sel ? Array.from(sel).join(", ") : "";
+        const selectedLabels = sel ? Array.from(sel) : [];
+        answers[q.question] = q.multiSelect
+          ? normalizeAnswerParts([...selectedLabels, textAnswer])
+          : normalizeAnswerParts(selectedLabels.length > 0 ? selectedLabels : [textAnswer]);
       } else {
-        answers[q.question] = freeTextByQuestion.get(q.question) ?? "";
+        answers[q.question] = textAnswer;
       }
     }
     return answers;
@@ -86,20 +103,19 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
 
   function isCurrentStepAnswered(): boolean {
     if (hasOptions) {
-      return selected.size > 0;
+      return selected.size > 0 || trimmedFreeText.length > 0;
     }
-    const text = freeTextByQuestion.get(question.question) ?? "";
-    return text.trim().length > 0;
+    return trimmedFreeText.length > 0;
   }
 
   const allAnswered = questions.every((q) => {
     const qHasOptions = q.options && q.options.length > 0;
+    const text = (freeTextByQuestion.get(q.question) ?? "").trim();
     if (qHasOptions) {
       const sel = selectedByQuestion.get(q.question);
-      return sel && sel.size > 0;
+      return (sel && sel.size > 0) || text.length > 0;
     }
-    const text = freeTextByQuestion.get(q.question) ?? "";
-    return text.trim().length > 0;
+    return text.length > 0;
   });
 
   const isLastStep = currentStep === total - 1;
@@ -115,6 +131,18 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
   function handlePrev() {
     if (currentStep > 0) {
       setCurrentStep((s) => s - 1);
+    }
+  }
+
+  function handleFreeTextKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter" || event.shiftKey || busy) {
+      return;
+    }
+    event.preventDefault();
+    if (isLastStep && allAnswered) {
+      onAnswer(requestId, buildAnswers());
+    } else if (canGoNext) {
+      handleNext();
     }
   }
 
@@ -204,24 +232,79 @@ export function QuestionCard({ requestId, questions, busy, onAnswer, onDismiss }
                   </button>
                 );
               })}
+              <label
+                className={`flex w-full items-start gap-2.5 rounded-md border px-3 py-2 text-left text-xs transition-colors ${
+                  trimmedFreeText.length > 0
+                    ? "border-blue-500/50 bg-blue-500/15 text-blue-300"
+                    : "border-border/35 bg-background/35 text-muted-foreground hover:border-border/60 hover:text-foreground"
+                }`}
+              >
+                {question.multiSelect ? (
+                  <span
+                    className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[3px] border transition-colors ${
+                      trimmedFreeText.length > 0
+                        ? "border-blue-400 bg-blue-500/30"
+                        : "border-muted-foreground/40 bg-transparent"
+                    }`}
+                  >
+                    {trimmedFreeText.length > 0 ? (
+                      <svg width="8" height="8" viewBox="0 0 8 8" fill="none" className="text-blue-300">
+                        <path d="M1.5 4L3.2 5.8L6.5 2.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : null}
+                  </span>
+                ) : (
+                  <span
+                    className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                      trimmedFreeText.length > 0
+                        ? "border-blue-400 bg-blue-500/30"
+                        : "border-muted-foreground/40 bg-transparent"
+                    }`}
+                  >
+                    {trimmedFreeText.length > 0 ? (
+                      <span className="h-1.5 w-1.5 rounded-full bg-blue-300" />
+                    ) : null}
+                  </span>
+                )}
+                <span className="min-w-0 flex-1">
+                  <input
+                    type="text"
+                    disabled={busy}
+                    value={freeText}
+                    onChange={(event) => {
+                      if (!(question.multiSelect ?? false)) {
+                        setSelectedByQuestion((current) => {
+                          const next = new Map(current);
+                          next.set(question.question, new Set());
+                          return next;
+                        });
+                      }
+                      setFreeText(question.question, event.target.value);
+                    }}
+                    onFocus={() => {
+                      if (!(question.multiSelect ?? false)) {
+                        setSelectedByQuestion((current) => {
+                          const next = new Map(current);
+                          next.set(question.question, new Set());
+                          return next;
+                        });
+                      }
+                    }}
+                    onKeyDown={handleFreeTextKeyDown}
+                    placeholder="Type your answer..."
+                    className="w-full bg-transparent text-sm text-inherit placeholder:text-muted-foreground/60 focus:outline-none"
+                  />
+                </span>
+              </label>
             </div>
           </div>
         ) : (
           <input
             type="text"
             disabled={busy}
-            value={freeTextByQuestion.get(question.question) ?? ""}
+            value={freeText}
             onChange={(event) => setFreeText(question.question, event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !busy) {
-                event.preventDefault();
-                if (isLastStep && allAnswered) {
-                  onAnswer(requestId, buildAnswers());
-                } else if (canGoNext) {
-                  handleNext();
-                }
-              }
-            }}
+            onKeyDown={handleFreeTextKeyDown}
             placeholder="Type your answer..."
             className="mt-2 w-full rounded-md border border-border/35 bg-background/35 px-3 py-2 text-left text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
           />

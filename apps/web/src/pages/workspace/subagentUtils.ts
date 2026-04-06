@@ -241,6 +241,15 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
   const pendingTaskStarts: Array<{ taskToolUseId: string; event: ChatEvent }> = [];
   const permissionOwnerByRequestId = new Map<string, string>();
 
+  const removePendingTaskStart = (taskToolUseId: string): { taskToolUseId: string; event: ChatEvent } | null => {
+    const pendingIndex = pendingTaskStarts.findIndex((entry) => entry.taskToolUseId === taskToolUseId);
+    if (pendingIndex < 0) {
+      return null;
+    }
+    const [removed] = pendingTaskStarts.splice(pendingIndex, 1);
+    return removed ?? null;
+  };
+
   const activeSubagents = new Map<
     string,
     {
@@ -454,6 +463,32 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         const tid = payloadStringOrNull(event.payload.toolUseId) ?? "";
         if (tid) {
           pendingTaskStarts.push({ taskToolUseId: tid, event });
+        }
+      }
+    }
+
+    if (event.type === "tool.finished") {
+      const subagentResponse = payloadStringOrNull(event.payload.subagentResponse);
+      const summary = payloadStringOrNull(event.payload.summary)?.trim().toLowerCase() ?? "";
+      const error = payloadStringOrNull(event.payload.error);
+      const precedingIds = Array.isArray(event.payload.precedingToolUseIds)
+        ? event.payload.precedingToolUseIds.filter((id: unknown): id is string => typeof id === "string")
+        : [];
+
+      if (!subagentResponse && (error || summary.includes("failed"))) {
+        for (const precedingId of precedingIds) {
+          const removedPendingTaskStart = removePendingTaskStart(precedingId);
+          if (!removedPendingTaskStart) {
+            continue;
+          }
+
+          debugLog.push({
+            phase: "pendingTaskStartRemoved",
+            taskToolId: precedingId,
+            eventId: event.id,
+            idx: event.idx,
+            reason: error ? "failed_tool" : "failed_summary",
+          });
         }
       }
     }
@@ -813,4 +848,3 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
 
   return sortedGroups;
 }
-

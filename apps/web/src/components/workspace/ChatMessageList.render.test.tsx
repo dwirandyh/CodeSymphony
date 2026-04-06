@@ -190,28 +190,36 @@ describe("MarkdownBody", () => {
 
 describe("ChatMessageList", () => {
   it("keeps timeline keys stable while message content streams", () => {
-    const item = {
-      ...makeMessageItem("msg-1", 1, "hello"),
+    const item: Extract<ChatTimelineItem, { kind: "message" }> = {
+      kind: "message",
+      message: makeMessage("msg-1", "user", "hello", 1),
       isCompleted: false,
-    } satisfies ChatTimelineItem;
+    };
 
-    const streamed = {
+    const streamed: Extract<ChatTimelineItem, { kind: "message" }> = {
       ...item,
       message: { ...item.message, content: "hello world" },
       isCompleted: true,
-    } satisfies ChatTimelineItem;
+    };
 
     expect(getTimelineItemKey(item)).toBe(getTimelineItemKey(streamed));
   });
 
   it("keeps tool timeline keys stable while output changes", () => {
-    const item = makeToolItem("tool-1", "summary", "one");
-    const updated = {
+    const item: Extract<ChatTimelineItem, { kind: "tool" }> = {
+      kind: "tool",
+      id: "tool-1",
+      event: null,
+      summary: "summary",
+      output: "one",
+      status: "running",
+    };
+    const updated: Extract<ChatTimelineItem, { kind: "tool" }> = {
       ...item,
       summary: "summary expanded",
       output: "output expanded",
       status: "success",
-    } satisfies ChatTimelineItem;
+    };
 
     expect(getTimelineItemKey(item)).toBe(getTimelineItemKey(updated));
   });
@@ -849,6 +857,87 @@ describe("ChatMessageList", () => {
     expect(container.textContent).not.toContain("tool.finished · Completed Skill");
     expect(container.textContent).not.toContain("Raw payload");
     expect(container.querySelector("[data-testid='timeline-tool-payload-details']")).toBeNull();
+  });
+
+  it("renders AskUserQuestion tool items with paired question and answer content", () => {
+    const askStartedEvent: ChatEvent = {
+      id: "ev-ask-started",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.started",
+      payload: {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-1",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const questionRequestedEvent: ChatEvent = {
+      id: "ev-question-requested",
+      threadId: "t1",
+      idx: 2,
+      type: "question.requested",
+      payload: {
+        requestId: "ask-1",
+        questions: [
+          { question: "Avatar URL?" },
+          { question: "Retry upload?" },
+        ],
+      },
+      createdAt: "2026-01-01T00:00:01Z",
+    };
+    const questionAnsweredEvent: ChatEvent = {
+      id: "ev-question-answered",
+      threadId: "t1",
+      idx: 3,
+      type: "question.answered",
+      payload: {
+        requestId: "ask-1",
+        answers: {
+          "Avatar URL?": "Use upload_url",
+          "Retry upload?": "No retry",
+        },
+      },
+      createdAt: "2026-01-01T00:00:02Z",
+    };
+    const askFinishedEvent: ChatEvent = {
+      id: "ev-ask-finished",
+      threadId: "t1",
+      idx: 4,
+      type: "tool.finished",
+      payload: {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-1",
+        summary: "Asked 2 Questions",
+      },
+      createdAt: "2026-01-01T00:00:03Z",
+    };
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "tool",
+        id: "tool-ask",
+        event: askFinishedEvent,
+        sourceEvents: [askStartedEvent, questionRequestedEvent, questionAnsweredEvent, askFinishedEvent],
+        toolUseId: "ask-1",
+        toolName: "AskUserQuestion",
+        summary: "Asked 2 Questions",
+        output: null,
+        error: null,
+        truncated: false,
+        durationSeconds: 1,
+        status: "success",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Asked 2 Questions");
+    expect(container.textContent).toContain("Avatar URL?");
+    expect(container.textContent).toContain("Use upload_url");
+    expect(container.textContent).toContain("Retry upload?");
+    expect(container.textContent).toContain("No retry");
+    expect(container.textContent).not.toContain("AskUserQuestion · Completed AskUserQuestion");
   });
 
   it("uses denser spacing for compact running timeline rows", () => {

@@ -414,6 +414,44 @@ describe("extractSubagentGroups", () => {
     expect(groups[0].eventIds.has("e5")).toBe(true);
   });
 
+  it("skips failed Agent launchers when pairing the next subagent", () => {
+    const events = [
+      makeEvent({ id: "e1", type: "tool.started", idx: 1, payload: { toolName: "Agent", toolUseId: "call_failed" } }),
+      makeEvent({ id: "e2", type: "tool.started", idx: 2, payload: { toolName: "Agent", toolUseId: "call_success" } }),
+      makeEvent({
+        id: "e3",
+        type: "tool.finished",
+        idx: 3,
+        payload: {
+          summary: "Agent failed",
+          precedingToolUseIds: ["call_failed"],
+          error: "Failed to create worktree",
+        },
+      }),
+      makeEvent({ id: "e4", type: "subagent.started", idx: 4, payload: { agentId: "a1", agentType: "Explore", toolUseId: "sa-1", description: "Explore profile flow" } }),
+      makeEvent({ id: "e5", type: "subagent.finished", idx: 5, payload: { toolUseId: "sa-1", description: "Explore profile flow", lastMessage: "" } }),
+      makeEvent({
+        id: "e6",
+        type: "tool.finished",
+        idx: 6,
+        payload: {
+          toolName: "Agent",
+          summary: "Completed Agent",
+          precedingToolUseIds: ["call_success"],
+          subagentResponse: "final response",
+        },
+      }),
+    ];
+
+    const groups = extractSubagentGroups(events);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].eventIds.has("e1")).toBe(false);
+    expect(groups[0].eventIds.has("e2")).toBe(true);
+    expect(groups[0].eventIds.has("e6")).toBe(true);
+    expect(groups[0].lastMessage).toBe("final response");
+  });
+
   it("records claimed_parent_lineage reason when parent lineage resolves ownership", () => {
     const events = [
       makeEvent({ id: "e1", type: "subagent.started", idx: 1, payload: { agentId: "a1", agentType: "explore", toolUseId: "sa-1", description: "First" } }),

@@ -87,6 +87,71 @@ function parseSkillTool(item: Extract<ChatTimelineItem, { kind: "tool" }>): {
   return { skillName, allowedToolsCount };
 }
 
+function parseAskUserQuestionTool(item: Extract<ChatTimelineItem, { kind: "tool" }>): {
+  questionCount: number;
+  pairs: Array<{ question: string; answer: string | null }>;
+} | null {
+  const sourceEvents = item.sourceEvents ?? (item.event ? [item.event] : []);
+  const toolNames = [
+    item.toolName,
+    item.event?.payload.toolName,
+    ...sourceEvents.map((event) => typeof event.payload.toolName === "string" ? event.payload.toolName : null),
+  ]
+    .map((value) => value?.trim().toLowerCase() ?? null)
+    .filter((value): value is string => !!value);
+  const hasAskUserQuestionTool = toolNames.includes("askuserquestion");
+  const questionLifecycleEvents = sourceEvents.filter((event) =>
+    event.type === "question.requested" || event.type === "question.answered" || event.type === "question.dismissed",
+  );
+
+  if (!hasAskUserQuestionTool && questionLifecycleEvents.length === 0) {
+    return null;
+  }
+
+  const latestQuestionRequestedEvent = [...questionLifecycleEvents].reverse().find((event) => event.type === "question.requested") ?? null;
+  const requestedQuestions = Array.isArray(latestQuestionRequestedEvent?.payload.questions)
+    ? latestQuestionRequestedEvent.payload.questions
+    : [];
+  const questionTexts = requestedQuestions
+    .map((entry) => entry && typeof entry === "object" ? (entry as { question?: unknown }).question : null)
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+
+  const answersByQuestion = new Map<string, string | null>();
+  for (const event of questionLifecycleEvents) {
+    if (event.type !== "question.answered") {
+      continue;
+    }
+
+    const answers = event.payload.answers;
+    if (!answers || typeof answers !== "object") {
+      continue;
+    }
+
+    for (const [question, answer] of Object.entries(answers as Record<string, unknown>)) {
+      if (typeof question !== "string" || question.trim().length === 0) {
+        continue;
+      }
+      answersByQuestion.set(question, typeof answer === "string" && answer.trim().length > 0 ? answer : null);
+    }
+  }
+
+  const pairs = questionTexts.map((question) => ({
+    question,
+    answer: answersByQuestion.get(question) ?? null,
+  }));
+  for (const [question, answer] of answersByQuestion.entries()) {
+    if (pairs.some((pair) => pair.question === question)) {
+      continue;
+    }
+    pairs.push({ question, answer });
+  }
+
+  return {
+    questionCount: pairs.length,
+    pairs,
+  };
+}
+
 export const ThinkingPlaceholder = memo(function ThinkingPlaceholder() {
   return (
     <article className="flex w-full justify-start" data-testid="thinking-placeholder">
@@ -130,6 +195,8 @@ export const TimelineItem = memo(function TimelineItem({
     const durationLabel = formatCompactDurationSeconds(item.durationSeconds ?? null);
     const status = item.status
       ?? (item.rejectedByUser ? "failed" : primaryEvent?.type === "tool.started" ? "running" : "success");
+    const askUserQuestionTool = parseAskUserQuestionTool(item);
+    const isAskUserQuestionTool = askUserQuestionTool !== null;
     const isFailed = status === "failed" || item.rejectedByUser === true;
     const statusLabel = item.rejectedByUser
       ? "Rejected by user"
@@ -139,17 +206,21 @@ export const TimelineItem = memo(function TimelineItem({
           ? "Running"
           : "Success";
     const skillTool = parseSkillTool(item);
-    const isSkillTool = skillTool !== null;
+    const isSkillTool = !isAskUserQuestionTool && skillTool !== null;
     const isBashTool = !isSkillTool && (item.shell === "bash" || item.toolName?.toLowerCase() === "bash");
     const isMcpTool = !isSkillTool && !isBashTool && (item.toolName?.toLowerCase().startsWith("mcp__") ?? false);
-    const title = isSkillTool
+    const title = isAskUserQuestionTool
+      ? `Asked ${askUserQuestionTool.questionCount} Question${askUserQuestionTool.questionCount === 1 ? "" : "s"}`
+      : isSkillTool
       ? (skillTool.skillName ? `Skill(${skillTool.skillName})` : "Skill")
       : isBashTool
         ? "Bash"
         : primaryEvent
           ? toolTitle(primaryEvent)
           : item.toolName ?? "Tool";
-    const subtitle = isSkillTool
+    const subtitle = isAskUserQuestionTool
+      ? "Question and answer flow"
+      : isSkillTool
       ? status === "running"
         ? "Loading skill"
         : "Successfully loaded skill"
@@ -164,7 +235,9 @@ export const TimelineItem = memo(function TimelineItem({
             ?? shortCommandLabel
             ?? item.command
             ?? "Tool activity";
-    const summaryPrefix = isSkillTool
+    const summaryPrefix = isAskUserQuestionTool
+      ? title
+      : isSkillTool
       ? title
       : item.command
         ? expanded
@@ -193,7 +266,9 @@ export const TimelineItem = memo(function TimelineItem({
           <summary
             className={cn(
               "group/tool-summary inline-flex list-none cursor-pointer items-center gap-1 rounded-md text-[12px] transition-colors [&::-webkit-details-marker]:hidden",
-              isSkillTool
+              isAskUserQuestionTool
+                ? "text-muted-foreground hover:text-foreground"
+                : isSkillTool
                 ? "text-muted-foreground hover:text-foreground"
                 : isFailed && !expanded
                   ? "text-destructive"
@@ -205,7 +280,9 @@ export const TimelineItem = memo(function TimelineItem({
             <span
               className={cn(
                 "inline-flex shrink-0 text-[11px] leading-none transition-transform duration-150",
-                isSkillTool
+                isAskUserQuestionTool
+                  ? (expanded ? "rotate-90 text-muted-foreground" : "text-muted-foreground")
+                  : isSkillTool
                   ? (expanded ? "rotate-90 text-muted-foreground" : "text-muted-foreground")
                   : expanded
                     ? "rotate-90 text-muted-foreground"
@@ -217,10 +294,28 @@ export const TimelineItem = memo(function TimelineItem({
           </summary>
 
           <div className={cn(
-            "mt-2 overflow-hidden",
-            isSkillTool ? "rounded-xl border border-border/25 bg-background/40" : "rounded-2xl border border-border/35 bg-secondary/20",
+            isAskUserQuestionTool ? "mt-1.5" : "mt-2 overflow-hidden",
+            !isAskUserQuestionTool && (isSkillTool
+              ? "rounded-xl border border-border/25 bg-background/40"
+              : "rounded-2xl border border-border/35 bg-secondary/20"),
           )}>
-            {isSkillTool ? (
+            {isAskUserQuestionTool ? (
+              <div className="flex flex-col gap-2 pr-1 text-sm">
+                {askUserQuestionTool.pairs.map((pair, index) => (
+                  <div
+                    key={`${pair.question}:${index}`}
+                    className="flex flex-col gap-0.5"
+                  >
+                    <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-muted-foreground">
+                      {pair.question}
+                    </p>
+                    <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-foreground">
+                      {pair.answer && pair.answer.trim().length > 0 ? pair.answer : "No answer provided"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : isSkillTool ? (
               <div className="px-3 py-2.5 text-sm">
                 <div className="text-foreground">Successfully loaded skill</div>
                 {typeof skillTool.allowedToolsCount === "number" && skillTool.allowedToolsCount > 0 ? (
