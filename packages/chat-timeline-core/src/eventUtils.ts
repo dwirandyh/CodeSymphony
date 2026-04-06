@@ -139,6 +139,14 @@ export function isPlanModeToolEvent(event: ChatEvent): boolean {
   return false;
 }
 
+export function isTodoWriteToolEvent(event: ChatEvent): boolean {
+  if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
+    return false;
+  }
+
+  return payloadStringOrNull(event.payload.toolName)?.trim().toLowerCase() === "todowrite";
+}
+
 export function isBashPayload(payload: Record<string, unknown>): boolean {
   if (payload.isBash === true || payload.shell === "bash") {
     return true;

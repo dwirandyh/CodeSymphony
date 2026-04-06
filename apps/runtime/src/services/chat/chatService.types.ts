@@ -7,6 +7,19 @@ export type WorktreeStateSnapshot = {
   changedFiles: string[];
 };
 
+export type WorktreeDiffDelta = {
+  changedFiles: string[];
+  fullDiff: string;
+  diff: string;
+  diffTruncated: boolean;
+};
+
+export type WorktreeMutationTracker = {
+  sawMutatingTool: boolean;
+  sawBashTool: boolean;
+  ownedPaths: Set<string>;
+};
+
 export type ActiveModelProvider = {
   apiKey: string;
   baseUrl: string;

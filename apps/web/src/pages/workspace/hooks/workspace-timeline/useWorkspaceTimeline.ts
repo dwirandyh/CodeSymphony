@@ -2,6 +2,10 @@ import { useMemo, useRef } from "react";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import { buildTimelineFromSeed, setTimelineDebugLogger } from "@codesymphony/chat-timeline-core";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
+import {
+  buildEventsStateFingerprint,
+  buildMessagesStateFingerprint,
+} from "../timelineStateFingerprint";
 import type {
   TimelineRefs,
   WorkspaceTimelineResult,
@@ -45,10 +49,8 @@ export function useWorkspaceTimeline(
   options?: UseWorkspaceTimelineOptions,
 ): WorkspaceTimelineResult {
   const prevFingerprintRef = useRef<{
-    messageCount: number;
-    eventCount: number;
-    lastEventIdx: number;
-    firstEventIdx: number;
+    messagesFingerprint: string;
+    eventsFingerprint: string;
     threadId: string | null;
     semanticHydrationInProgress: boolean;
   } | null>(null);
@@ -67,23 +69,17 @@ export function useWorkspaceTimeline(
   return useMemo<WorkspaceTimelineResult>(() => {
     const semanticHydrationInProgress = options?.semanticHydrationInProgress === true;
     const disabled = options?.disabled === true;
-    const lastEventIdx = events.length > 0 ? events[events.length - 1].idx : -1;
-    const firstEventIdx = events.length > 0 ? events[0].idx : -1;
     const fingerprint = {
-      messageCount: messages.length,
-      eventCount: events.length,
-      lastEventIdx,
-      firstEventIdx,
+      messagesFingerprint: buildMessagesStateFingerprint(messages),
+      eventsFingerprint: buildEventsStateFingerprint(events),
       threadId: selectedThreadId,
       semanticHydrationInProgress,
     };
     const prev = prevFingerprintRef.current;
     if (
       prev !== null
-      && prev.messageCount === fingerprint.messageCount
-      && prev.eventCount === fingerprint.eventCount
-      && prev.lastEventIdx === fingerprint.lastEventIdx
-      && prev.firstEventIdx === fingerprint.firstEventIdx
+      && prev.messagesFingerprint === fingerprint.messagesFingerprint
+      && prev.eventsFingerprint === fingerprint.eventsFingerprint
       && prev.threadId === fingerprint.threadId
       && prev.semanticHydrationInProgress === fingerprint.semanticHydrationInProgress
       && prevResultRef.current.items.length > 0

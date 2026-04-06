@@ -573,6 +573,7 @@ export type HookCallbacks = {
     isBash?: true;
   }) => Promise<void> | void;
   onToolFinished: (payload: {
+    toolName?: string;
     summary: string;
     precedingToolUseIds: string[];
     subagentResponse?: string;

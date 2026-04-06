@@ -7,6 +7,7 @@ import {
   isBashToolEvent,
   isMetadataToolEvent,
   isPlanModeToolEvent,
+  isTodoWriteToolEvent,
   isWorktreeDiffEvent,
   parseTimestamp,
   payloadStringArray,
@@ -153,6 +154,7 @@ export function processOrphanToolEvents(
   const orphanToolEvents = inlineToolEvents
     .filter((event) => !assignedToolEventIds.has(event.id))
     .filter((event) => !isOverlapUnclaimedSubagentEvent(event.id))
+    .filter((event) => !isTodoWriteToolEvent(event))
     .filter((event) =>
       event.type !== "permission.requested"
       && event.type !== "permission.resolved"
