@@ -368,9 +368,39 @@ export function processOrphanToolEvents(
     });
   }
 
+  const orphanEditedRuns = extractEditedRuns(
+    orphanToolEvents.filter((event) => !assignedToolEventIds.has(event.id)),
+  );
+  for (const run of orphanEditedRuns) {
+    run.eventIds.forEach((id) => assignedToolEventIds.add(id));
+    sortable.push({
+      item: {
+        kind: "edited-diff",
+        id: `orphan:${run.id}`,
+        eventId: run.eventId,
+        status: run.status,
+        diffKind: run.diffKind,
+        changedFiles: run.changedFiles,
+        diff: run.diff,
+        diffTruncated: run.diffTruncated,
+        additions: run.additions,
+        deletions: run.deletions,
+        rejectedByUser: run.rejectedByUser,
+        createdAt: run.createdAt,
+      },
+      anchorIdx: run.anchorIdx,
+      timestamp: parseTimestamp(run.createdAt),
+      rank: 0,
+      stableOrder: run.startIdx,
+    });
+  }
+
   const genericToolEventsByRunId = new Map<string, ChatEvent[]>();
   for (const event of orphanToolEvents) {
     if (assignedToolEventIds.has(event.id)) {
+      continue;
+    }
+    if (isWorktreeDiffEvent(event)) {
       continue;
     }
     if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
@@ -426,33 +456,6 @@ export function processOrphanToolEvents(
       timestamp: parseTimestamp(primaryEvent.createdAt),
       rank: 0,
       stableOrder: primaryEvent.idx,
-    });
-  }
-
-  const orphanEditedRuns = extractEditedRuns(
-    orphanToolEvents.filter((event) => !assignedToolEventIds.has(event.id)),
-  );
-  for (const run of orphanEditedRuns) {
-    run.eventIds.forEach((id) => assignedToolEventIds.add(id));
-    sortable.push({
-      item: {
-        kind: "edited-diff",
-        id: `orphan:${run.id}`,
-        eventId: run.eventId,
-        status: run.status,
-        diffKind: run.diffKind,
-        changedFiles: run.changedFiles,
-        diff: run.diff,
-        diffTruncated: run.diffTruncated,
-        additions: run.additions,
-        deletions: run.deletions,
-        rejectedByUser: run.rejectedByUser,
-        createdAt: run.createdAt,
-      },
-      anchorIdx: run.anchorIdx,
-      timestamp: parseTimestamp(run.createdAt),
-      rank: 0,
-      stableOrder: run.startIdx,
     });
   }
 
