@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.5.0",
   "scripts": {
-    "dev": "turbo run dev --parallel --filter=@codesymphony/runtime --filter=@codesymphony/web",
-    "dev:web": "pnpm --filter @codesymphony/web dev",
-    "dev:runtime": "pnpm --filter @codesymphony/runtime dev",
+    "dev": "turbo run dev --parallel --filter=@codesymphony/chat-timeline-core --filter=@codesymphony/runtime --filter=@codesymphony/web",
+    "dev:web": "turbo run dev --parallel --filter=@codesymphony/chat-timeline-core --filter=@codesymphony/web",
+    "dev:runtime": "turbo run dev --parallel --filter=@codesymphony/chat-timeline-core --filter=@codesymphony/runtime",
     "dev:desktop": "DATABASE_URL='file:./desktop.db' pnpm --filter @codesymphony/desktop dev",
     "build": "turbo run build",
     "test": "turbo run test",
