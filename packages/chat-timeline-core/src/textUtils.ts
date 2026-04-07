@@ -1,4 +1,4 @@
-import { SENTENCE_BOUNDARY_PATTERN, SENTENCE_BOUNDARY_SCAN_LIMIT } from "./constants";
+import { SENTENCE_BOUNDARY_PATTERN, SENTENCE_BOUNDARY_SCAN_LIMIT } from "./constants.js";
 
 const THINK_BLOCK_PATTERN = /<think\b[^>]*>[\s\S]*?<\/think>/gi;
 const THINK_TAG_PATTERN = /<\/?think\b[^>]*>/gi;

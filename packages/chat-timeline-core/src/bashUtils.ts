@@ -1,6 +1,6 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { isBashPayload, isBashToolEvent, isRecord, payloadStringOrNull } from "./eventUtils";
-import type { BashRun } from "./types";
+import { isBashPayload, isBashToolEvent, isRecord, payloadStringOrNull } from "./eventUtils.js";
+import type { BashRun } from "./types.js";
 
 function getBashCommand(event: ChatEvent): string | null {
   const directCommand = payloadStringOrNull(event.payload.command);

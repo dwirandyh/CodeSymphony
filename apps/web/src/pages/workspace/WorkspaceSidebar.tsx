@@ -8,13 +8,17 @@ type RepoManager = ReturnType<typeof useRepositoryManager>;
 
 export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   repos,
+  expandedByRepo,
   onOpenSettings,
   onSelectRepository,
+  onToggleRepositoryExpand,
   onSelectWorktree,
 }: {
   repos: RepoManager;
+  expandedByRepo: Record<string, boolean>;
   onOpenSettings: () => void;
   onSelectRepository: (repositoryId: string) => void;
+  onToggleRepositoryExpand: (repositoryId: string, nextExpanded: boolean) => void;
   onSelectWorktree: (repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => void;
 }) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
@@ -36,11 +40,13 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
             repositories={repos.repositories}
             selectedRepositoryId={repos.selectedRepositoryId}
             selectedWorktreeId={repos.selectedWorktreeId}
+            expandedByRepo={expandedByRepo}
             loadingRepos={repos.loadingRepos}
             submittingRepo={repos.submittingRepo}
             submittingWorktree={repos.submittingWorktree}
             onAttachRepository={repos.openFileBrowser}
             onSelectRepository={onSelectRepository}
+            onToggleRepositoryExpand={onToggleRepositoryExpand}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
             onSelectWorktree={onSelectWorktree}
             onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}

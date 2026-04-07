@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && tauri build"
+    "build": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && tauri build",
+    "build:app": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && tauri build -b app && bash scripts/resign-app.sh",
+    "resign:app": "bash scripts/resign-app.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "2.2.0"

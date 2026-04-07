@@ -8,8 +8,8 @@ import {
   READ_TOOL_PATTERN,
   SEARCH_TOOL_PATTERN,
   TRIM_FILE_TOKEN_PATTERN,
-} from "./constants";
-import type { StepCandidate } from "./types";
+} from "./constants.js";
+import type { StepCandidate } from "./types.js";
 
 export type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "explore-activity" | "edited-diff" | "fallback-tool";
 

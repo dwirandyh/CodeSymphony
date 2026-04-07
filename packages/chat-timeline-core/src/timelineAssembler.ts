@@ -1,8 +1,8 @@
 import type { AssistantRenderHint, ChatEvent, ChatMessage, ChatTimelineItem, ChatTimelineSummary } from "@codesymphony/shared-types";
-import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "./constants";
-import { extractBashRuns } from "./bashUtils";
-import { extractEditedRuns } from "./editUtils";
-import { extractSubagentExploreGroups } from "./workspace-timeline/subagentExploreExtraction";
+import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "./constants.js";
+import { extractBashRuns } from "./bashUtils.js";
+import { extractEditedRuns } from "./editUtils.js";
+import { extractSubagentExploreGroups } from "./workspace-timeline/subagentExploreExtraction.js";
 import {
   buildActivityIntroText,
   buildActivitySteps,
@@ -21,8 +21,8 @@ import {
   parseTimestamp,
   payloadStringOrNull,
   promptLooksLikeFileRead,
-} from "./eventUtils";
-import { computeMessageAnchorIdxById } from "./workspace-timeline/timelineAnchorUtils";
+} from "./eventUtils.js";
+import { computeMessageAnchorIdxById } from "./workspace-timeline/timelineAnchorUtils.js";
 import {
   buildInlineInserts,
   buildSegmentBuckets,
@@ -32,16 +32,16 @@ import {
   fixPunctuationSplits,
   processInlineInsertLoop,
   filterPostPlanDeltaEvents,
-} from "./workspace-timeline/timelineInlineInserts";
+} from "./workspace-timeline/timelineInlineInserts.js";
 import {
   processOrphanSubagentGroups,
   processOrphanExploreGroups,
   processOrphanToolEvents,
   processUnassignedSemanticEvents,
   processFailedEvents,
-} from "./workspace-timeline/timelineOrphans";
-import { sanitizeAssistantVisibleText } from "./textUtils";
-import { pushRenderDebug } from "./debug";
+} from "./workspace-timeline/timelineOrphans.js";
+import { sanitizeAssistantVisibleText } from "./textUtils.js";
+import { pushRenderDebug } from "./debug.js";
 
 const SUBAGENT_SUMMARY_REGEX = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
 const MAIN_SUMMARY_REGEX = /###main(?:\s+agent)? summary(?:\s+start)?\n?[\s\S]*?###main(?:\s+agent)? summary end\n?/g;

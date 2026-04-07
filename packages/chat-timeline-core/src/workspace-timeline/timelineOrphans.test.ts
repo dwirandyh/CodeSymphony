@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { processOrphanToolEvents } from "./timelineOrphans";
+import { processOrphanToolEvents } from "./timelineOrphans.js";
 
 function makeEvent(
   idx: number,

@@ -35,12 +35,33 @@ import type {
   Worktree,
 } from "@codesymphony/shared-types";
 import { resolveRuntimeApiBases } from "./runtimeUrl";
+import { logService } from "./logService";
 
-const API_BASES = resolveRuntimeApiBases();
-let activeApiBase = API_BASES[0] ?? "http://127.0.0.1:4331/api";
+const DEFAULT_API_BASE = "http://127.0.0.1:4331/api";
+const RETRY_DELAYS_MS = [150, 400];
+
+let activeApiBase: string | null = null;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function getConfiguredApiBases(): string[] {
+  const resolved = resolveRuntimeApiBases();
+  return resolved.length > 0 ? resolved : [DEFAULT_API_BASE];
+}
 
 function getCandidateApiBases(): string[] {
-  return [activeApiBase, ...API_BASES.filter((base) => base !== activeApiBase)];
+  const configuredBases = getConfiguredApiBases();
+  const preferredBase = activeApiBase && configuredBases.includes(activeApiBase)
+    ? activeApiBase
+    : (configuredBases[0] ?? DEFAULT_API_BASE);
+
+  activeApiBase = preferredBase;
+
+  return [preferredBase, ...configuredBases.filter((base) => base !== preferredBase)];
 }
 
 function toApiUrl(apiBase: string, path: string): string {
@@ -62,18 +83,39 @@ async function runtimeFetch(path: string, init?: RequestInit): Promise<Response>
   let lastError: unknown = null;
 
   for (const apiBase of getCandidateApiBases()) {
-    try {
-      const response = await fetch(toApiUrl(apiBase, path), init);
-      if (activeApiBase !== apiBase) {
-        activeApiBase = apiBase;
+    const url = toApiUrl(apiBase, path);
+
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+      try {
+        const response = await fetch(url, init);
+        if (activeApiBase !== apiBase) {
+          activeApiBase = apiBase;
+        }
+        return response;
+      } catch (error) {
+        // Abort errors should propagate as-is.
+        if (error instanceof DOMException && error.name === "AbortError") {
+          throw error;
+        }
+
+        lastError = error;
+
+        logService.log("warn", "runtime.fetch", "Runtime fetch failed", {
+          apiBase,
+          path,
+          method: init?.method ?? "GET",
+          attempt: attempt + 1,
+          maxAttempts: RETRY_DELAYS_MS.length + 1,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
+        const retryDelay = RETRY_DELAYS_MS[attempt];
+        if (retryDelay == null) {
+          break;
+        }
+
+        await wait(retryDelay);
       }
-      return response;
-    } catch (error) {
-      // Abort errors should propagate as-is.
-      if (error instanceof DOMException && error.name === "AbortError") {
-        throw error;
-      }
-      lastError = error;
     }
   }
 
@@ -81,7 +123,7 @@ async function runtimeFetch(path: string, init?: RequestInit): Promise<Response>
 }
 
 function createEventSource(path: string): EventSource {
-  return new EventSource(toApiUrl(activeApiBase, path));
+  return new EventSource(toApiUrl(getCandidateApiBases()[0] ?? DEFAULT_API_BASE, path));
 }
 
 async function readResponseDebugInfo(response: Response): Promise<{
@@ -464,7 +506,7 @@ export const api = {
     }
   },
   get runtimeBaseUrl() {
-    return activeApiBase.replace(/\/api$/, "");
+    return (activeApiBase ?? getCandidateApiBases()[0] ?? DEFAULT_API_BASE).replace(/\/api$/, "");
   },
   browseFilesystem: (path?: string) => {
     const params = path ? `?path=${encodeURIComponent(path)}` : "";

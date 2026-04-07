@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { extractSubagentGroups } from "./subagentUtils";
+import { extractSubagentGroups } from "./subagentUtils.js";
 
 function makeEvent(overrides: Partial<ChatEvent> & { type: ChatEvent["type"] }): ChatEvent {
   return {

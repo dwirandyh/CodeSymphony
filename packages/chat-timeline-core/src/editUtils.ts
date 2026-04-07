@@ -1,5 +1,5 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { EDIT_TOOL_NAME_PATTERN } from "./constants";
+import { EDIT_TOOL_NAME_PATTERN } from "./constants.js";
 import {
   countDiffStats,
   filterDiffByFiles,
@@ -8,8 +8,8 @@ import {
   isWorktreeDiffEvent,
   payloadStringArray,
   payloadStringOrNull,
-} from "./eventUtils";
-import type { EditedRun } from "./types";
+} from "./eventUtils.js";
+import type { EditedRun } from "./types.js";
 
 export function isEditToolName(toolName: string | null): boolean {
   if (!toolName) {

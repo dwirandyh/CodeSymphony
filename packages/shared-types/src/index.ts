@@ -1,5 +1,7 @@
 export * from "./workflow.js";
 export type {
+  WorkspaceSyncEvent,
+  WorkspaceSyncEventType,
   ChatTimelineActivityStep as ActivityTraceStep,
   ChatTimelineExploreActivityEntry as ExploreActivityEntry,
   ChatTimelineReadFileEntry as ReadFileTimelineEntry,

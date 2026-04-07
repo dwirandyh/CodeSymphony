@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -140,11 +140,13 @@ const baseProps = {
   repositories: [] as Repository[],
   selectedRepositoryId: null as string | null,
   selectedWorktreeId: null as string | null,
+  expandedByRepo: {} as Record<string, boolean>,
   loadingRepos: false,
   submittingRepo: false,
   submittingWorktree: false,
   onAttachRepository: vi.fn(),
   onSelectRepository: vi.fn(),
+  onToggleRepositoryExpand: vi.fn(),
   onCreateWorktree: vi.fn(),
   onSelectWorktree: vi.fn(),
   onDeleteWorktree: vi.fn(),
@@ -202,6 +204,55 @@ describe("RepositoryPanel", () => {
     expect(featureRow).toBeTruthy();
     act(() => featureRow?.click());
     expect(onSelectWorktree).toHaveBeenCalledWith("r1", "wt-feat", null);
+  });
+
+  it("collapses the selected repository on the first toggle after initial render", () => {
+    function Harness() {
+      const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>({});
+
+      return (
+        <QueryClientProvider client={queryClient}>
+          <RepositoryPanel
+            {...baseProps}
+            repositories={[makeRepo()]}
+            selectedRepositoryId="r1"
+            selectedWorktreeId="wt-feat"
+            expandedByRepo={expandedByRepo}
+            onToggleRepositoryExpand={(repositoryId, nextExpanded) => {
+              setExpandedByRepo((current) => ({
+                ...current,
+                [repositoryId]: nextExpanded,
+              }));
+            }}
+          />
+        </QueryClientProvider>
+      );
+    }
+
+    act(() => {
+      root.render(<Harness />);
+    });
+
+    expect(container.querySelector("[data-worktree-id='wt-feat']")).toBeTruthy();
+
+    const repoToggle = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("test-repo"));
+    expect(repoToggle).toBeTruthy();
+
+    act(() => repoToggle?.click());
+
+    expect(container.querySelector("[data-worktree-id='wt-feat']")).toBeNull();
+  });
+
+  it("keeps the repository chevron from shrinking in tight layouts", () => {
+    renderPanel({
+      repositories: [makeRepo({ name: "repository-name-that-is-long-enough-to-compete-with-the-count" })],
+      selectedRepositoryId: "r1",
+    });
+
+    const repoToggle = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("repository-name-that-is-long-enough"));
+    const chevronSlot = repoToggle?.querySelector("span");
+
+    expect(chevronSlot?.className).toContain("shrink-0");
   });
 
   it("shows loading state", () => {

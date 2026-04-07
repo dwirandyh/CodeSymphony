@@ -10,8 +10,6 @@ function getWsBase(): string {
   return apiBase.replace(/^http/, "ws");
 }
 
-const WS_BASE = getWsBase();
-
 const XTERM_THEME: Record<string, string> = {
     background: "#0f1218",
     foreground: "#d4d8e0",
@@ -101,7 +99,7 @@ export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps)
                 params.set("cwd", cwd);
             }
 
-            const ws = new WebSocket(`${WS_BASE}/terminal/ws?${params.toString()}`);
+            const ws = new WebSocket(`${getWsBase()}/terminal/ws?${params.toString()}`);
             wsRef.current = ws;
 
             ws.onopen = () => {

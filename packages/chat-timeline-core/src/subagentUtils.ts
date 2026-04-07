@@ -1,13 +1,13 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { pushRenderDebug } from "./debug";
-import { isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
+import { pushRenderDebug } from "./debug.js";
+import { isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils.js";
 import {
   extractReadFileEntry,
   extractSearchEntryLabel,
   searchContextFromEvent,
   shortenReadTargetForDisplay,
-} from "./exploreUtils";
-import type { SubagentGroup, SubagentStep } from "./types";
+} from "./exploreUtils.js";
+import type { SubagentGroup, SubagentStep } from "./types.js";
 
 export type SubagentAttributionReasonCode =
   | "claimed_explicit_owner"

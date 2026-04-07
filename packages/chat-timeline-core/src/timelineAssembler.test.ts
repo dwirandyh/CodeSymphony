@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatMessage, ChatTimelineItem } from "@codesymphony/shared-types";
-import { buildTimelineFromSeed } from "./timelineAssembler";
+import { buildTimelineFromSeed } from "./timelineAssembler.js";
 
 function makeMessage(id: string, seq: number, role: "user" | "assistant", content: string): ChatMessage {
   return {

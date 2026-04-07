@@ -67,6 +67,23 @@ describe("resolveRuntimeApiBase", () => {
     expect(mod.resolveRuntimeApiBases()).toEqual(["http://127.0.0.1:4999/api"]);
   });
 
+  it("uses the injected desktop runtime port inside a tauri window", async () => {
+    vi.stubGlobal("window", {
+      __CS_RUNTIME_PORT: 4327,
+      __TAURI_INTERNALS__: {},
+      location: {
+        protocol: "http:",
+        hostname: "127.0.0.1",
+        origin: "http://127.0.0.1:5174",
+        port: "5174",
+      },
+    } as Window);
+
+    const mod = await import("./runtimeUrl");
+    expect(mod.resolveRuntimeApiBase()).toBe("http://127.0.0.1:4327/api");
+    expect(mod.resolveRuntimeApiBases()).toEqual(["http://127.0.0.1:4327/api"]);
+  });
+
   it("uses runtime port for non-default vite dev ports in dev mode", async () => {
     vi.stubGlobal("window", {
       location: {

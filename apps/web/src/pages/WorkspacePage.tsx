@@ -30,6 +30,7 @@ import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
+import { useWorkspaceSyncStream } from "./workspace/hooks/useWorkspaceSyncStream";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { useQueryClient } from "@tanstack/react-query";
@@ -46,6 +47,32 @@ import {
 
 export { resolveChatMessageListKey } from "./workspace/workspacePageUtils";
 
+const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
+
+function loadRepositoryPanelExpandedState(): Record<string, boolean> {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(REPOSITORY_PANEL_EXPANDED_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[0] === "string" && typeof entry[1] === "boolean"),
+    );
+  } catch {
+    return {};
+  }
+}
+
 function BackgroundWorktreeStatusStreamBridge({
   repositories,
   selectedWorktreeId,
@@ -59,12 +86,18 @@ function BackgroundWorktreeStatusStreamBridge({
   return null;
 }
 
+function WorkspaceSyncStreamBridge() {
+  useWorkspaceSyncStream();
+  return null;
+}
+
 export function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const { search, updateSearch } = useWorkspaceSearchParams();
 
   const prevWorktreeIdRef = useRef<string | undefined>(search.worktreeId);
 
+  const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>(() => loadRepositoryPanelExpandedState());
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [activeBottomTab, setActiveBottomTab] = useState("terminal");
   const [bottomPanelOpenSignal, setBottomPanelOpenSignal] = useState(0);
@@ -85,6 +118,14 @@ export function WorkspacePage() {
   useEffect(() => {
     refreshModelProviders();
   }, [refreshModelProviders]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(REPOSITORY_PANEL_EXPANDED_STORAGE_KEY, JSON.stringify(expandedByRepo));
+  }, [expandedByRepo]);
 
   const handleSelectProvider = useCallback(async (id: string | null) => {
     try {
@@ -206,6 +247,13 @@ export function WorkspacePage() {
       file: undefined,
     });
   }, [repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
+
+  const handleToggleRepositoryExpand = useCallback((repositoryId: string, nextExpanded: boolean) => {
+    setExpandedByRepo((current) => ({
+      ...current,
+      [repositoryId]: nextExpanded,
+    }));
+  }, []);
 
   const selectedIsRootWorkspace = !!(
     repos.selectedRepository &&
@@ -585,8 +633,10 @@ export function WorkspacePage() {
       <div className="flex min-h-0 w-full">
         <WorkspaceSidebar
           repos={repos}
+          expandedByRepo={expandedByRepo}
           onOpenSettings={() => setSettingsOpen(true)}
           onSelectRepository={handleSelectRepository}
+          onToggleRepositoryExpand={handleToggleRepositoryExpand}
           onSelectWorktree={handleSelectWorktree}
         />
 
@@ -860,11 +910,13 @@ export function WorkspacePage() {
             repositories={repos.repositories}
             selectedRepositoryId={repos.selectedRepositoryId}
             selectedWorktreeId={repos.selectedWorktreeId}
+            expandedByRepo={expandedByRepo}
             loadingRepos={repos.loadingRepos}
             submittingRepo={repos.submittingRepo}
             submittingWorktree={repos.submittingWorktree}
             onAttachRepository={repos.openFileBrowser}
             onSelectRepository={handleSelectRepository}
+            onToggleRepositoryExpand={handleToggleRepositoryExpand}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
             onSelectWorktree={(repositoryId, worktreeId, preferredThreadId) => {
               handleSelectWorktree(repositoryId, worktreeId, preferredThreadId);
@@ -964,6 +1016,8 @@ export function WorkspacePage() {
         selectedWorktreeId={repos.selectedWorktreeId}
         selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
       />
+
+      <WorkspaceSyncStreamBridge />
 
       <Dialog
         open={confirmCloseThreadId !== null}

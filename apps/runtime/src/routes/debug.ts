@@ -1,12 +1,29 @@
 import { type FastifyInstance } from "fastify";
-import { appendFileSync, writeFileSync } from "node:fs";
-import path, { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const LOG_PATH = join(process.cwd(), "debug.log");
+function resolveDebugLogPath(): string {
+  const configuredPath = process.env.CODESYMPHONY_DEBUG_LOG_PATH?.trim();
+  if (configuredPath) {
+    return path.resolve(configuredPath);
+  }
 
-// Clear log file on startup
-writeFileSync(LOG_PATH, "", "utf-8");
+  return path.join(os.tmpdir(), "codesymphony", "debug.log");
+}
+
+const LOG_PATH = resolveDebugLogPath();
+const LOG_DIR = path.dirname(LOG_PATH);
+
+try {
+  if (!existsSync(LOG_DIR)) {
+    mkdirSync(LOG_DIR, { recursive: true });
+  }
+  writeFileSync(LOG_PATH, "", "utf-8");
+} catch (error) {
+  console.error(`Failed to initialize debug log at ${LOG_PATH}:`, error);
+}
 
 type RuntimeDatabaseInfo = {
   urlKind: "missing" | "file" | "non-file";
@@ -49,7 +66,11 @@ export function appendDebugLogEntries(entries: Array<{
     )
     .join("\n");
 
-  appendFileSync(LOG_PATH, lines + "\n", "utf-8");
+  try {
+    appendFileSync(LOG_PATH, lines + "\n", "utf-8");
+  } catch (error) {
+    console.error(`Failed to append debug log at ${LOG_PATH}:`, error);
+  }
   return entries.length;
 }
 

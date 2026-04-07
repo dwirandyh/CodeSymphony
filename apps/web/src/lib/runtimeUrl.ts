@@ -1,5 +1,7 @@
 declare global {
   interface Window {
+    __CS_RUNTIME_API_BASE?: string;
+    __CS_RUNTIME_PORT?: number;
     __TAURI_INTERNALS__?: unknown;
   }
 }
@@ -12,6 +14,24 @@ function isDesktopRuntimeWindow(windowRef: Window): boolean {
 
 const WEB_RUNTIME_PORT = 4331;
 const DESKTOP_RUNTIME_PORT = 4321;
+
+function getInjectedDesktopRuntimePort(windowRef: Window): number | null {
+  const port = windowRef.__CS_RUNTIME_PORT;
+  if (typeof port !== "number" || !Number.isInteger(port) || port <= 0) {
+    return null;
+  }
+
+  return port;
+}
+
+function getInjectedDesktopRuntimeApiBase(windowRef: Window): string | null {
+  const apiBase = windowRef.__CS_RUNTIME_API_BASE;
+  if (typeof apiBase !== "string" || apiBase.length === 0) {
+    return null;
+  }
+
+  return apiBase;
+}
 
 function getViteEnv(): {
   VITE_RUNTIME_URL?: string;
@@ -55,6 +75,12 @@ export function resolveRuntimeApiBase(): string {
   const viteEnv = getViteEnv();
   if (viteEnv.VITE_RUNTIME_URL) return viteEnv.VITE_RUNTIME_URL;
   if (typeof window === "undefined") return `http://127.0.0.1:${WEB_RUNTIME_PORT}/api`;
+  const injectedDesktopRuntimeApiBase = getInjectedDesktopRuntimeApiBase(window);
+  if (injectedDesktopRuntimeApiBase) return injectedDesktopRuntimeApiBase;
+  const injectedDesktopRuntimePort = getInjectedDesktopRuntimePort(window);
+  if (isDesktopRuntimeWindow(window) && injectedDesktopRuntimePort != null) {
+    return `http://127.0.0.1:${injectedDesktopRuntimePort}/api`;
+  }
   if (isDesktopRuntimeWindow(window)) return `http://127.0.0.1:${DESKTOP_RUNTIME_PORT}/api`;
   if (isDesktopDevFallbackWindow(window, viteEnv)) {
     return `${window.location.protocol}//${window.location.hostname}:${DESKTOP_RUNTIME_PORT}/api`;
@@ -76,6 +102,10 @@ export function resolveRuntimeApiBases(): string[] {
   }
 
   if (viteEnv.VITE_RUNTIME_URL) {
+    return [primary];
+  }
+
+  if (getInjectedDesktopRuntimeApiBase(window) || getInjectedDesktopRuntimePort(window) != null) {
     return [primary];
   }
 

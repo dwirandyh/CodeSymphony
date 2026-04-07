@@ -1,5 +1,5 @@
 import type { ChatEvent, ChatMessage, ChatTimelineItem } from "@codesymphony/shared-types";
-import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types";
+import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types.js";
 
 export type TimelineRefs = {
   streamingMessageIds: Set<string>;
