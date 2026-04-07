@@ -97,6 +97,15 @@ describe("Composer", () => {
     return permissionButton;
   }
 
+  function getPermissionOptionButton(label: string): HTMLButtonElement {
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+    const optionButton = buttons.find((button) => button.getAttribute("aria-label")?.startsWith(label));
+    if (!optionButton) {
+      throw new Error(`${label} option not found`);
+    }
+    return optionButton;
+  }
+
   function typeInEditor(editor: HTMLDivElement, text: string) {
     act(() => {
       editor.textContent = text;
@@ -366,6 +375,32 @@ describe("Composer", () => {
     });
 
     expect(onPermissionModeChange).toHaveBeenCalledWith("full_access");
+  });
+
+  it("shows permission icons and only reveals descriptions on hover", () => {
+    renderComposer();
+
+    const permissionButton = getPermissionSelectorButton();
+    expect(permissionButton.querySelector("svg")).not.toBeNull();
+
+    act(() => {
+      permissionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const defaultOption = getPermissionOptionButton("Default");
+    const fullAccessOption = getPermissionOptionButton("Full Access");
+
+    expect(defaultOption.querySelector("svg")).not.toBeNull();
+    expect(fullAccessOption.querySelector("svg")).not.toBeNull();
+    expect(container.textContent).not.toContain("Ask before approval-gated actions");
+    expect(container.textContent).not.toContain("Always allow approval-gated actions");
+
+    act(() => {
+      fullAccessOption.focus();
+    });
+
+    expect(container.textContent).toContain("Always allow approval-gated actions");
+    expect(container.textContent).not.toContain("Ask before approval-gated actions");
   });
 
   it("filters out already-mentioned files from suggestions", async () => {

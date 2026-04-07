@@ -1,5 +1,6 @@
-import type { ChatMode, ChatThreadPermissionProfile } from "@codesymphony/shared-types";
+import type { ChatThreadPermissionProfile } from "@codesymphony/shared-types";
 import type {
+  ClaudeSessionPermissionMode,
   ClaudeOwnershipDiagnostics,
   ClaudeToolInstrumentationDecision,
   ClaudeToolInstrumentationEvent,
@@ -20,7 +21,7 @@ import type { BashToolResult } from "./bashResult.js";
 export type InstrumentContext = {
   cwd: string;
   sessionId: string | null;
-  permissionMode: ChatMode;
+  permissionMode: ClaudeSessionPermissionMode;
   autoAcceptTools: boolean;
   permissionProfile: ChatThreadPermissionProfile;
 };

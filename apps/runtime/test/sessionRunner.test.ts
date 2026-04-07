@@ -71,6 +71,84 @@ describe("tool instrumentation", () => {
     process.env.CLAUDE_CODE_EXECUTABLE = "node";
   });
 
+  it("maps full access threads to SDK bypass permissions", async () => {
+    mockQuery.mockImplementation(() => {
+      return attachQueryControls((async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-bypass-1" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })());
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "run tests",
+      sessionId: null,
+      cwd: process.cwd(),
+      permissionMode: "default",
+      threadPermissionMode: "full_access",
+      autoAcceptTools: true,
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+      }),
+    }));
+  });
+
+  it("keeps SDK plan mode even when the thread has full access", async () => {
+    mockQuery.mockImplementation(() => {
+      return attachQueryControls((async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-plan-priority-1" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })());
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "plan this change",
+      sessionId: null,
+      cwd: process.cwd(),
+      permissionMode: "plan",
+      threadPermissionMode: "full_access",
+      autoAcceptTools: true,
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        permissionMode: "plan",
+        allowDangerouslySkipPermissions: false,
+      }),
+    }));
+  });
+
   it("sanitizes sensitive keys and truncates long nested strings", () => {
     const sanitized = __testing.sanitizeForLog({
       apiKey: "top-secret",
