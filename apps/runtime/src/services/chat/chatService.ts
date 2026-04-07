@@ -10,6 +10,7 @@ import {
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   UpdateChatThreadModeInputSchema,
+  UpdateChatThreadPermissionModeInputSchema,
   type AnswerQuestionInput,
   type AttachmentInput,
   type ChatEvent,
@@ -17,6 +18,7 @@ import {
   type ChatMode,
   type ChatThread,
   type ChatThreadKind,
+  type ChatThreadPermissionMode,
   type ChatThreadPermissionProfile,
   type ChatThreadSnapshot,
   type CreateChatThreadInput,
@@ -27,6 +29,7 @@ import {
   type ReviewProvider,
   type SendChatMessageInput,
   type UpdateChatThreadModeInput,
+  type UpdateChatThreadPermissionModeInput,
 } from "@codesymphony/shared-types";
 import type { RuntimeDeps } from "../../types.js";
 import { mapChatMessage, mapChatThread } from "../mappers.js";
@@ -216,6 +219,10 @@ function filterWorktreeDiffDelta(diffSnapshot: WorktreeDiffDelta, ownedPaths: st
 
 function normalizePermissionProfile(kind: ChatThreadKind): ChatThreadPermissionProfile {
   return kind === "review" ? "review_git" : "default";
+}
+
+function normalizePermissionMode(permissionMode: ChatThreadPermissionMode | undefined): ChatThreadPermissionMode {
+  return permissionMode === "full_access" ? "full_access" : "default";
 }
 
 function getReviewThreadTitle(provider: ReviewProvider): string {
@@ -408,6 +415,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const worktreePath = thread.worktree.path;
       threadWorktreePath = worktreePath;
+      const autoAcceptTools = options?.autoAcceptTools ?? thread.permissionMode === "full_access";
       if (!existsSync(worktreePath)) {
         throw new Error(`Worktree path not found: ${worktreePath}. Create a new worktree from Repository panel.`);
       }
@@ -457,8 +465,9 @@ export function createChatService(deps: RuntimeDeps) {
         cwd: worktreePath,
         abortController,
         permissionMode: mode,
+        threadPermissionMode: thread.permissionMode,
         permissionProfile: thread.permissionProfile,
-        autoAcceptTools: options?.autoAcceptTools,
+        autoAcceptTools,
         model: activeProvider?.modelId || undefined,
         providerApiKey: activeProvider?.apiKey,
         providerBaseUrl: activeProvider?.baseUrl,
@@ -822,11 +831,13 @@ export function createChatService(deps: RuntimeDeps) {
       return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
     },
 
-    async getOrCreatePrMrThread(worktreeId: string): Promise<ChatThread> {
+    async getOrCreatePrMrThread(worktreeId: string, rawInput?: unknown): Promise<ChatThread> {
+      const input: CreateChatThreadInput = CreateChatThreadInputSchema.parse(rawInput ?? {});
       const worktree = await deps.prisma.worktree.findUnique({ where: { id: worktreeId } });
       if (!worktree) {
         throw new Error("Worktree not found");
       }
+      const permissionMode = normalizePermissionMode(input.permissionMode);
 
       const existingCandidates = await deps.prisma.chatThread.findMany({
         where: {
@@ -845,13 +856,14 @@ export function createChatService(deps: RuntimeDeps) {
       if (existing) {
         const shouldUpgradePermissionProfile = existing.permissionProfile !== "review_git";
         const shouldUpgradeLegacyTitle = !existing.titleEditedManually && isLegacyReviewThreadTitle(existing.title);
-        if (!shouldUpgradePermissionProfile && !shouldUpgradeLegacyTitle) {
+        const shouldUpgradePermissionMode = existing.permissionMode !== permissionMode;
+        if (!shouldUpgradePermissionProfile && !shouldUpgradeLegacyTitle && !shouldUpgradePermissionMode) {
           return mapChatThread(existing, isThreadActive(existing.id));
         }
 
         const reviewTitle = shouldUpgradeLegacyTitle ? await resolveReviewThreadTitle(worktree.path) : null;
         const shouldUpgradeTitle = reviewTitle !== null && reviewTitle !== existing.title;
-        if (!shouldUpgradePermissionProfile && !shouldUpgradeTitle) {
+        if (!shouldUpgradePermissionProfile && !shouldUpgradeTitle && !shouldUpgradePermissionMode) {
           return mapChatThread(existing, isThreadActive(existing.id));
         }
 
@@ -860,6 +872,7 @@ export function createChatService(deps: RuntimeDeps) {
           data: {
             ...(shouldUpgradePermissionProfile ? { permissionProfile: "review_git" } : {}),
             ...(shouldUpgradeTitle ? { title: reviewTitle } : {}),
+            ...(shouldUpgradePermissionMode ? { permissionMode } : {}),
           },
         });
         return mapChatThread(updated, isThreadActive(updated.id));
@@ -872,6 +885,7 @@ export function createChatService(deps: RuntimeDeps) {
           title: reviewTitle,
           kind: "review",
           permissionProfile: "review_git",
+          permissionMode,
           mode: "default",
         },
       });
@@ -889,6 +903,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const kind = normalizeThreadKind(input.kind);
       const permissionProfile = normalizePermissionProfile(kind);
+      const permissionMode = normalizePermissionMode(input.permissionMode);
       const reviewTitle = kind === "review" && !input.title ? await resolveReviewThreadTitle(worktree.path) : null;
       const normalizedTitle = input.title?.trim() ?? reviewTitle ?? DEFAULT_THREAD_TITLE;
 
@@ -915,6 +930,7 @@ export function createChatService(deps: RuntimeDeps) {
           title: normalizedTitle,
           kind,
           permissionProfile,
+          permissionMode,
           mode: "default",
         },
       });
@@ -962,6 +978,25 @@ export function createChatService(deps: RuntimeDeps) {
         where: { id: threadId },
         data: {
           mode: input.mode,
+        },
+      });
+
+      return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
+    },
+
+    async updateThreadPermissionMode(threadId: string, rawInput: unknown): Promise<ChatThread> {
+      const input: UpdateChatThreadPermissionModeInput = UpdateChatThreadPermissionModeInputSchema.parse(rawInput);
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      const updatedThread = await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: {
+          permissionMode: input.permissionMode,
         },
       });
 

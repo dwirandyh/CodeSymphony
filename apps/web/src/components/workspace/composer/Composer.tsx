@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Paperclip, Square, X, Zap } from "lucide-react";
-import type { ChatMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
+import type { ChatMode, ChatThreadPermissionMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
 import { serializeMention } from "../../../lib/mentions";
 import type { PendingAttachment } from "../../../lib/attachments";
@@ -30,11 +30,13 @@ type ComposerProps = {
   fileIndex: FileEntry[];
   fileIndexLoading: boolean;
   providers: ModelProvider[];
+  permissionMode: ChatThreadPermissionMode;
   hasMessages: boolean;
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onModeChange: (mode: ChatMode) => void;
   onStop: () => void;
   onSelectProvider: (id: string | null) => void;
+  onPermissionModeChange: (permissionMode: ChatThreadPermissionMode) => void;
 };
 
 export function Composer({
@@ -49,16 +51,20 @@ export function Composer({
   fileIndex,
   fileIndexLoading,
   providers,
+  permissionMode,
   hasMessages,
   onSubmitMessage,
   onModeChange,
   onStop,
   onSelectProvider,
+  onPermissionModeChange,
 }: ComposerProps) {
   const [draftText, setDraftText] = useState("");
   const isPlan = mode === "plan";
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
+  const [permissionPopoverOpen, setPermissionPopoverOpen] = useState(false);
+  const permissionPopoverRef = useRef<HTMLDivElement>(null);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return false;
@@ -83,18 +89,22 @@ export function Composer({
   }, []);
 
   useEffect(() => {
-    if (!modelPopoverOpen) return;
+    if (!modelPopoverOpen && !permissionPopoverOpen) return;
     const handleClick = (e: MouseEvent) => {
       if (modelPopoverRef.current && !modelPopoverRef.current.contains(e.target as Node)) {
         setModelPopoverOpen(false);
       }
+      if (permissionPopoverRef.current && !permissionPopoverRef.current.contains(e.target as Node)) {
+        setPermissionPopoverOpen(false);
+      }
     };
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [modelPopoverOpen]);
+  }, [modelPopoverOpen, permissionPopoverOpen]);
 
   const activeProvider = useMemo(() => providers.find((p) => p.isActive) ?? null, [providers]);
   const modelLabel = activeProvider ? `${activeProvider.modelId} · ${activeProvider.name}` : "CLI";
+  const permissionModeLabel = permissionMode === "full_access" ? "Full Access" : "Default";
 
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -668,10 +678,6 @@ export function Composer({
               {isPlan ? <Lightbulb className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
               {isPlan ? "Plan" : "Execute"}
             </button>
-            <kbd className="hidden text-[10px] text-muted-foreground/50 sm:inline">Shift+Tab</kbd>
-          </div>
-
-          <div className="absolute bottom-2 right-2.5 flex items-center gap-2 lg:bottom-3 lg:right-3">
             <div className="relative" ref={modelPopoverRef}>
               <button
                 type="button"
@@ -683,13 +689,14 @@ export function Composer({
                     ? "cursor-not-allowed opacity-50"
                     : "hover:bg-secondary/70 hover:text-foreground"
                 }`}
+                aria-label="Select model"
               >
                 <span className="max-w-[180px] truncate">{modelLabel}</span>
                 <ChevronDown className="h-3 w-3 shrink-0" />
               </button>
 
               {modelPopoverOpen && (
-                <div className="absolute bottom-full right-0 z-50 mb-1.5 w-[240px] rounded-lg border border-border/60 bg-popover p-1 shadow-lg">
+                <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[240px] rounded-lg border border-border/60 bg-popover p-1 shadow-lg">
                   <div className="max-h-48 overflow-y-auto">
                     <button
                       type="button"
@@ -731,6 +738,50 @@ export function Composer({
               )}
             </div>
 
+            <div className="relative" ref={permissionPopoverRef}>
+              <button
+                type="button"
+                onClick={() => setPermissionPopoverOpen((open) => !open)}
+                disabled={disabled}
+                className="flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Select permission mode"
+              >
+                <span className="max-w-[160px] truncate">{permissionModeLabel}</span>
+                <ChevronDown className="h-3 w-3 shrink-0" />
+              </button>
+
+              {permissionPopoverOpen && (
+                <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[220px] rounded-lg border border-border/60 bg-popover p-1 shadow-lg">
+                  <div className="max-h-48 overflow-y-auto">
+                    {[
+                      { value: "default" as const, label: "Default", description: "Ask before approval-gated actions" },
+                      { value: "full_access" as const, label: "Full Access", description: "Always allow approval-gated actions" },
+                    ].map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
+                          permissionMode === option.value
+                            ? "bg-accent text-accent-foreground"
+                            : "text-foreground hover:bg-accent/50"
+                        }`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          onPermissionModeChange(option.value);
+                          setPermissionPopoverOpen(false);
+                        }}
+                      >
+                        <span>{option.label}</span>
+                        <span className="text-[11px] text-muted-foreground">{option.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="absolute bottom-2 right-2.5 flex items-center gap-2 lg:bottom-3 lg:right-3">
             <Button
               type="button"
               onClick={showStop ? onStop : handleSubmit}

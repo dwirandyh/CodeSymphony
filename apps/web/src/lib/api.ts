@@ -10,6 +10,7 @@ import type {
   CreateRepositoryInput,
   CreateWorktreeInput,
   DismissQuestionInput,
+  UpdateChatThreadPermissionModeInput,
   UpdateChatThreadModeInput,
   ExternalApp,
   FileEntry,
@@ -198,10 +199,10 @@ export const api = {
     request<string[]>(`/repositories/${repositoryId}/branches`),
   getRepositoryReviews: (repositoryId: string) =>
     request<RepositoryReviewState>(`/repositories/${repositoryId}/reviews`),
-  getOrCreatePrMrThread: (worktreeId: string) =>
+  getOrCreatePrMrThread: (worktreeId: string, input: CreateChatThreadInput = {}) =>
     request<ChatThread>(`/worktrees/${worktreeId}/pr-mr-thread`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(input),
     }),
   deleteRepository: async (repositoryId: string) => {
     const response = await runtimeFetch(`/repositories/${repositoryId}`, {
@@ -310,6 +311,11 @@ export const api = {
     }),
   updateThreadMode: (threadId: string, input: UpdateChatThreadModeInput) =>
     request<ChatThread>(`/threads/${threadId}/mode`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  updateThreadPermissionMode: (threadId: string, input: UpdateChatThreadPermissionModeInput) =>
+    request<ChatThread>(`/threads/${threadId}/permission-mode`, {
       method: "PATCH",
       body: JSON.stringify(input),
     }),

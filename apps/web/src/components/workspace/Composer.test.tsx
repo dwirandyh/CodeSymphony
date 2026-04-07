@@ -25,11 +25,13 @@ const defaultProps = {
   fileIndex: sampleFileIndex,
   fileIndexLoading: false,
   providers: [],
+  permissionMode: "default" as const,
   hasMessages: false,
   onSubmitMessage: vi.fn().mockResolvedValue(true),
   onModeChange: vi.fn(),
   onStop: vi.fn(),
   onSelectProvider: vi.fn(),
+  onPermissionModeChange: vi.fn(),
 };
 
 describe("Composer", () => {
@@ -84,6 +86,15 @@ describe("Composer", () => {
       throw new Error("Model selector button not found");
     }
     return modelButton;
+  }
+
+  function getPermissionSelectorButton(): HTMLButtonElement {
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+    const permissionButton = buttons.find((button) => button.textContent?.trim() === "Default");
+    if (!permissionButton) {
+      throw new Error("Permission selector button not found");
+    }
+    return permissionButton;
   }
 
   function typeInEditor(editor: HTMLDivElement, text: string) {
@@ -290,19 +301,40 @@ describe("Composer", () => {
     expect(loadingText?.textContent).toContain("Loading files...");
   });
 
-  it("keeps model selector next to send button in right action row", () => {
+  it("keeps model selector next to the mode toggle in the left action row", () => {
     renderComposer();
 
-    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
-    if (!sendButton) {
-      throw new Error("Send button not found");
+    const modeToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Switch to plan mode"]');
+    if (!modeToggle) {
+      throw new Error("Mode toggle not found");
     }
 
     const modelButton = getModelSelectorButton();
-    const rightActionRow = sendButton.closest("div");
-    expect(rightActionRow).not.toBeNull();
-    expect(rightActionRow?.className).toContain("bottom-2 right-2.5");
-    expect(rightActionRow?.contains(modelButton)).toBe(true);
+    const leftActionRow = modeToggle.closest("div");
+    expect(leftActionRow).not.toBeNull();
+    expect(leftActionRow?.className).toContain("bottom-2 left-2.5");
+    expect(leftActionRow?.contains(modelButton)).toBe(true);
+  });
+
+  it("keeps permission selector next to the model selector in the left action row", () => {
+    renderComposer();
+
+    const modeToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Switch to plan mode"]');
+    if (!modeToggle) {
+      throw new Error("Mode toggle not found");
+    }
+    const modelButton = getModelSelectorButton();
+    const permissionButton = getPermissionSelectorButton();
+    const leftActionRow = modeToggle.closest("div");
+    expect(leftActionRow).not.toBeNull();
+    expect(leftActionRow?.contains(modelButton)).toBe(true);
+    expect(leftActionRow?.contains(permissionButton)).toBe(true);
+  });
+
+  it("does not show the shift-tab shortcut hint", () => {
+    renderComposer();
+
+    expect(container.textContent).not.toContain("Shift+Tab");
   });
 
   it("locks model selector when thread already has messages", () => {
@@ -311,6 +343,29 @@ describe("Composer", () => {
     const modelButton = getModelSelectorButton();
     expect(modelButton.disabled).toBe(true);
     expect(modelButton.title).toContain("Model is locked for this thread");
+  });
+
+  it("changes permission mode from the selector", () => {
+    const onPermissionModeChange = vi.fn();
+    renderComposer({ onPermissionModeChange });
+
+    const permissionButton = getPermissionSelectorButton();
+    act(() => {
+      permissionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const fullAccessButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.includes("Full Access"),
+    );
+    if (!fullAccessButton) {
+      throw new Error("Full Access option not found");
+    }
+
+    act(() => {
+      fullAccessButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(onPermissionModeChange).toHaveBeenCalledWith("full_access");
   });
 
   it("filters out already-mentioned files from suggestions", async () => {

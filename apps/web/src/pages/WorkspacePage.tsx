@@ -772,6 +772,7 @@ export function WorkspacePage() {
                     fileIndex={fileIndex.entries}
                     fileIndexLoading={fileIndex.loading}
                     providers={modelProviders}
+                    permissionMode={chat.composerPermissionMode}
                     hasMessages={chat.messages.length > 0}
                     onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
                     onModeChange={(mode) => {
@@ -781,6 +782,9 @@ export function WorkspacePage() {
                     }}
                     onStop={() => void chat.stopAssistantRun()}
                     onSelectProvider={(id) => void handleSelectProvider(id)}
+                    onPermissionModeChange={(permissionMode) => {
+                      void chat.setComposerPermissionMode(permissionMode);
+                    }}
                   />
                 ) : null}
               </>

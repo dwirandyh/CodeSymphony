@@ -55,6 +55,7 @@ vi.mock("../../../../lib/api", () => ({
     getOrCreatePrMrThread: vi.fn(),
     renameThreadTitle: vi.fn(),
     updateThreadMode: vi.fn(),
+    updateThreadPermissionMode: vi.fn(),
     deleteThread: vi.fn(),
     sendMessage: vi.fn(),
     stopRun: vi.fn(),
@@ -76,6 +77,7 @@ function makeThread(id: string, active = false): ChatThread {
     title: id,
     kind: "default",
     permissionProfile: "default",
+    permissionMode: "default",
     mode: "default",
     titleEditedManually: false,
     claudeSessionId: null,
@@ -174,6 +176,26 @@ describe("useChatSession", () => {
     expect(hookResult.selectedThreadId).toBe("thread-b");
   });
 
+  it("updates composer permission mode for the selected thread", async () => {
+    vi.mocked(api.updateThreadPermissionMode).mockResolvedValue({
+      ...makeThread("thread-a"),
+      permissionMode: "full_access",
+    });
+
+    renderHook("thread-a");
+
+    expect(hookResult.composerPermissionMode).toBe("default");
+
+    await act(async () => {
+      await hookResult.setComposerPermissionMode("full_access");
+    });
+
+    expect(api.updateThreadPermissionMode).toHaveBeenCalledWith("thread-a", {
+      permissionMode: "full_access",
+    });
+    expect(hookResult.composerPermissionMode).toBe("full_access");
+  });
+
   it("creates or reuses dedicated PR/MR thread, sends message, and invalidates repository reviews", async () => {
     vi.mocked(api.updateThreadMode).mockResolvedValue({ ...makeThread("thread-a"), mode: "plan" });
     const prMrThread = {
@@ -200,7 +222,7 @@ describe("useChatSession", () => {
       expect(created?.id).toBe(prMrThread.id);
     });
 
-    expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1");
+    expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1", { permissionMode: "default" });
     expect(api.sendMessage).toHaveBeenCalledWith(prMrThread.id, {
       content: "Create PR",
       mode: "default",
@@ -347,7 +369,10 @@ describe("useChatSession", () => {
       await hookResult.createAdditionalThread();
     });
 
-    expect(api.createThread).toHaveBeenCalledWith("wt-1", { title: "New Thread" });
+    expect(api.createThread).toHaveBeenCalledWith("wt-1", {
+      title: "New Thread",
+      permissionMode: "default",
+    });
   });
 
   it("keeps a newly created thread selected while the query list is still stale", async () => {

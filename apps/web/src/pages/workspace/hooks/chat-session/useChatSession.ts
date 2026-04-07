@@ -13,6 +13,7 @@ import type {
   ChatMessage,
   ChatMode,
   ChatThread,
+  ChatThreadPermissionMode,
   ChatTimelineItem,
   ChatTimelineSnapshot,
   ChatTimelineSummary,
@@ -44,7 +45,12 @@ import {
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
 } from "./hydrationUtils";
 import { prependUniqueMessages, prependUniqueEvents } from "./messageEventMerge";
-import { applySnapshotSeed, applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
+import {
+  applySnapshotSeed,
+  applyThreadModeUpdate,
+  applyThreadPermissionModeUpdate,
+  applyThreadTitleUpdate,
+} from "./snapshotSeed";
 import { useThreadEventStream } from "./useThreadEventStream";
 
 const DEFAULT_THREAD_TITLE = "New Thread";
@@ -218,6 +224,7 @@ export function useChatSession(
   const [stopRequestedThreadId, setStopRequestedThreadId] = useState<string | null>(null);
   const [closingThreadId, setClosingThreadId] = useState<string | null>(null);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
+  const [pendingComposerPermissionMode, setPendingComposerPermissionMode] = useState<ChatThreadPermissionMode>("default");
 
   const seenEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const lastEventIdxByThreadRef = useRef<Map<string, number>>(new Map());
@@ -264,6 +271,7 @@ export function useChatSession(
       setSelectedThreadId(null);
       setMessages([]);
       setEvents([]);
+      setPendingComposerPermissionMode("default");
       return;
     }
 
@@ -273,6 +281,7 @@ export function useChatSession(
       setSelectedThreadId(null);
       setMessages([]);
       setEvents([]);
+      setPendingComposerPermissionMode("default");
     }
 
     if (!queriedThreads) return;
@@ -287,7 +296,7 @@ export function useChatSession(
         locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
       });
 
-      if (current.length === mergedThreads.length && current.every((t, i) => t.id === mergedThreads[i].id && t.title === mergedThreads[i].title && t.mode === mergedThreads[i].mode && t.claudeSessionId === mergedThreads[i].claudeSessionId && t.active === mergedThreads[i].active && t.updatedAt === mergedThreads[i].updatedAt)) {
+      if (current.length === mergedThreads.length && current.every((t, i) => t.id === mergedThreads[i].id && t.title === mergedThreads[i].title && t.mode === mergedThreads[i].mode && t.permissionMode === mergedThreads[i].permissionMode && t.claudeSessionId === mergedThreads[i].claudeSessionId && t.active === mergedThreads[i].active && t.updatedAt === mergedThreads[i].updatedAt)) {
         return current;
       }
       return mergedThreads;
@@ -313,7 +322,9 @@ export function useChatSession(
       creatingThreadRef.current = true;
       void (async () => {
         try {
-          const created = await api.createThread(selectedWorktreeId, {});
+          const created = await api.createThread(selectedWorktreeId, {
+            permissionMode: pendingComposerPermissionMode,
+          });
           if (cancelled) return;
           setThreads([created]);
           setSelectedThreadId(created.id);
@@ -359,7 +370,7 @@ export function useChatSession(
     if (selectedThreadId !== nextThreadId) {
       setSelectedThreadId(nextThreadId);
     }
-  }, [options?.desiredThreadId, queriedThreads, selectedThreadId, selectedWorktreeId]);
+  }, [options?.desiredThreadId, pendingComposerPermissionMode, queriedThreads, selectedThreadId, selectedWorktreeId]);
 
   useEffect(() => {
     if (!selectedThreadId) return;
@@ -391,6 +402,7 @@ export function useChatSession(
   const composerMode = selectedThreadUiStatus === "review_plan"
     ? "plan"
     : selectedThread?.mode ?? "default";
+  const composerPermissionMode = selectedThread?.permissionMode ?? pendingComposerPermissionMode;
   const composerModeLocked = selectedThreadUiStatus !== "idle";
   const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
     (thread) => thread.id === selectedThreadId && thread.kind === "review",
@@ -602,8 +614,8 @@ export function useChatSession(
     }
 
     const created = options?.sendDefaultTitle === false
-      ? await api.createThread(selectedWorktreeId, {})
-      : await api.createThread(selectedWorktreeId, { title: trimmedTitle });
+      ? await api.createThread(selectedWorktreeId, { permissionMode: composerPermissionMode })
+      : await api.createThread(selectedWorktreeId, { title: trimmedTitle, permissionMode: composerPermissionMode });
     return { created, worktreeId: selectedWorktreeId };
   }
 
@@ -679,7 +691,9 @@ export function useChatSession(
     onError(null);
     setSendingMessage(true);
     try {
-      const created = await api.getOrCreatePrMrThread(selectedWorktreeId);
+      const created = await api.getOrCreatePrMrThread(selectedWorktreeId, {
+        permissionMode: composerPermissionMode,
+      });
       optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         const existingIndex = current.findIndex((thread) => thread.id === created.id);
@@ -853,6 +867,50 @@ export function useChatSession(
         queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(cacheWorktreeId), previousThreads);
       }
       onError(e instanceof Error ? e.message : "Failed to update thread mode");
+    }
+  }
+
+  async function setComposerPermissionMode(permissionMode: ChatThreadPermissionMode) {
+    const normalizedMode = permissionMode === "full_access" ? "full_access" : "default";
+    const activeThread = findThreadForWorktree(threads, selectedThreadId, selectedWorktreeId);
+
+    if (!activeThread) {
+      setPendingComposerPermissionMode(normalizedMode);
+      return;
+    }
+
+    if (activeThread.permissionMode === normalizedMode) {
+      return;
+    }
+
+    onError(null);
+    const previousThreads = threads;
+    const cacheWorktreeId = selectedWorktreeId ?? activeThread.worktreeId;
+
+    setThreads((current) => applyThreadPermissionModeUpdate(current, activeThread.id, normalizedMode));
+    if (cacheWorktreeId) {
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(cacheWorktreeId),
+        (current) => current ? applyThreadPermissionModeUpdate(current, activeThread.id, normalizedMode) : current,
+      );
+    }
+
+    try {
+      const updated = await api.updateThreadPermissionMode(activeThread.id, { permissionMode: normalizedMode });
+      setThreads((current) => applyThreadPermissionModeUpdate(current, updated.id, updated.permissionMode));
+      const updatedCacheWorktreeId = selectedWorktreeId ?? updated.worktreeId;
+      if (updatedCacheWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(updatedCacheWorktreeId),
+          (current) => current ? applyThreadPermissionModeUpdate(current, updated.id, updated.permissionMode) : current,
+        );
+      }
+    } catch (e) {
+      setThreads(previousThreads);
+      if (cacheWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(cacheWorktreeId), previousThreads);
+      }
+      onError(e instanceof Error ? e.message : "Failed to update thread permission mode");
     }
   }
 
@@ -1065,6 +1123,7 @@ export function useChatSession(
     waitingAssistant,
     selectedThreadUiStatus,
     composerMode,
+    composerPermissionMode,
     composerModeLocked,
     composerDisabled,
     showStopAction,
@@ -1082,6 +1141,7 @@ export function useChatSession(
     closeThread,
     renameThreadTitle,
     setThreadMode,
+    setComposerPermissionMode,
     submitMessage,
     loadOlderHistory: async () => {},
     stopAssistantRun,

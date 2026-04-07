@@ -171,6 +171,41 @@ describe("chatService permission flow", () => {
     expect(claudeRunner).toHaveBeenCalledTimes(2);
   });
 
+  it("passes autoAcceptTools for full access threads", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ autoAcceptTools, onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Permission test");
+        return {
+          output: "Permission test",
+          sessionId: null,
+        };
+      }
+
+      expect(autoAcceptTools).toBe(true);
+      await onText("Berhasil.");
+      return {
+        output: "Berhasil.",
+        sessionId: "session-full-access",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    await chatService.updateThreadPermissionMode(threadId, { permissionMode: "full_access" });
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan task tanpa prompt approval",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+    expect(claudeRunner).toHaveBeenCalled();
+  });
+
   it("auto renames default thread title after first assistant reply via metadata event", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {

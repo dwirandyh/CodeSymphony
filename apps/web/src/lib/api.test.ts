@@ -193,9 +193,10 @@ describe("api", () => {
 
     it("gets or creates PR/MR thread", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "t1" }));
-      const result = await api.getOrCreatePrMrThread("w1");
+      const result = await api.getOrCreatePrMrThread("w1", { permissionMode: "full_access" });
       expect(result).toEqual({ id: "t1" });
       expect(mockFetch.mock.calls[0]?.[0]).toContain("/worktrees/w1/pr-mr-thread");
+      expect(mockFetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ permissionMode: "full_access" }));
     });
 
     it("gets thread", async () => {
@@ -216,6 +217,15 @@ describe("api", () => {
       expect(url).toContain("/threads/t1/mode");
       expect(init.method).toBe("PATCH");
       expect(init.body).toBe(JSON.stringify({ mode: "plan" }));
+    });
+
+    it("updates thread permission mode", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ id: "t1", permissionMode: "full_access" }));
+      await api.updateThreadPermissionMode("t1", { permissionMode: "full_access" });
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toContain("/threads/t1/permission-mode");
+      expect(init.method).toBe("PATCH");
+      expect(init.body).toBe(JSON.stringify({ permissionMode: "full_access" }));
     });
 
     it("deletes thread", async () => {
