@@ -37,6 +37,7 @@ import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
+import { isBaseBranchSelected, resolveReviewBaseBranch, resolveReviewBranch } from "./workspace/reviewBranch";
 import {
   resolveChatMessageListKey,
   FilledPlayIcon,
@@ -221,14 +222,16 @@ export function WorkspacePage() {
   const selectedDiffFilePath = search.file ?? null;
   const reviewTabOpen = activeView === "review";
   const queryClient = useQueryClient();
+  const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
   const repositoryReviews = useRepositoryReviews(repos.selectedRepositoryId);
-  const selectedWorktreeIsDefaultBranch = !!(
-    repos.selectedWorktree
-    && repos.selectedRepository
-    && repos.selectedWorktree.branch === repos.selectedRepository.defaultBranch
+  const selectedReviewBranch = resolveReviewBranch(gitChanges.branch, repos.selectedWorktree?.branch ?? null);
+  const selectedReviewBaseBranch = resolveReviewBaseBranch(
+    repos.selectedWorktree?.baseBranch ?? null,
+    repos.selectedRepository?.defaultBranch ?? null,
   );
+  const selectedWorktreeIsBaseBranch = isBaseBranchSelected(selectedReviewBranch, selectedReviewBaseBranch);
   const selectedLatestReviewRef = repos.selectedWorktree && repositoryReviews.data
-    ? repositoryReviews.data.reviewsByBranch[repos.selectedWorktree.branch] ?? null
+    ? repositoryReviews.data.reviewsByBranch[selectedReviewBranch ?? repos.selectedWorktree.branch] ?? null
     : null;
   const selectedReviewRef = selectedLatestReviewRef?.state === "open" ? selectedLatestReviewRef : null;
   const reviewKind: ReviewKind = repositoryReviews.data?.kind ?? "pr";
@@ -293,7 +296,6 @@ export function WorkspacePage() {
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
-  const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
 
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
 
@@ -375,14 +377,14 @@ export function WorkspacePage() {
       "Context:",
       `- Repository: ${repos.selectedRepository.name}`,
       `- Provider: ${providerLabel}`,
-      `- Current branch: ${repos.selectedWorktree.branch}`,
-      `- Default branch: ${repos.selectedRepository.defaultBranch}`,
+      `- Current branch: ${selectedReviewBranch ?? repos.selectedWorktree.branch}`,
+      `- Base branch: ${selectedReviewBaseBranch ?? repos.selectedRepository.defaultBranch}`,
       `- Worktree path: ${repos.selectedWorktree.path}`,
       "",
       "Workflow:",
       `1. Check whether an open ${reviewLabel} already exists for this branch and open/return it instead of creating a duplicate.`,
       "2. Check whether the branch needs to be pushed first, and push it if needed.",
-      `3. Use ${reviewTool} to create the ${reviewLabel} targeting ${repos.selectedRepository.defaultBranch}.`,
+      `3. Use ${reviewTool} to create the ${reviewLabel} targeting ${selectedReviewBaseBranch ?? repos.selectedRepository.defaultBranch}.`,
       "4. Report the resulting review number and URL in this thread.",
       "",
       "Constraints:",
@@ -395,18 +397,18 @@ export function WorkspacePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start PR creation flow");
     }
-  }, [chat, repos.selectedRepository, repos.selectedWorktree, repositoryReviews.data?.provider, reviewKind, selectedReviewRef]);
+  }, [chat, repos.selectedRepository, repos.selectedWorktree, repositoryReviews.data?.provider, reviewKind, selectedReviewBaseBranch, selectedReviewBranch, selectedReviewRef]);
 
   const reviewLookupAvailable = !!repositoryReviews.data?.available;
   const prMrActionBusy = !selectedReviewRef && prMrThreadIsActiveOrPending;
   const prMrActionDisabled = (
     !repos.selectedWorktree
-    || selectedWorktreeIsDefaultBranch
+    || selectedWorktreeIsBaseBranch
     || (!selectedReviewRef && !reviewLookupAvailable)
     || (!selectedReviewRef && prMrThreadIsActiveOrPending)
   );
-  const prMrActionTitle = selectedWorktreeIsDefaultBranch
-    ? "Cannot start a PR/MR thread from the default branch"
+  const prMrActionTitle = selectedWorktreeIsBaseBranch
+    ? "Cannot start a PR/MR thread from the base branch"
     : (!selectedReviewRef && prMrThreadIsActiveOrPending)
       ? "PR/MR thread is already active"
       : repositoryReviews.data?.unavailableReason;

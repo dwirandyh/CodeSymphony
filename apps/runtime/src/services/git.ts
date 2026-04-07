@@ -397,8 +397,7 @@ export async function listGitlabMergeRequests(cwd: string, baseBranch: string): 
   const output = await runCommand("glab", [
     "mr",
     "list",
-    "--state",
-    "all",
+    "--all",
     "--target-branch",
     baseBranch,
     "--output",
