@@ -462,6 +462,7 @@ export function pushInlineInsert(
         kind: "edited-diff",
         id: `${message.id}:${run.eventId}:${insert.id}`,
         eventId: run.eventId,
+        changeSource: run.changeSource,
         status: run.status,
         diffKind: run.diffKind,
         changedFiles: run.changedFiles,

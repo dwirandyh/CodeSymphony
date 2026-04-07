@@ -33,6 +33,7 @@ export type EditedRun = {
   startIdx: number;
   anchorIdx: number;
   endIdx: number;
+  changeSource: "edit-tool" | "worktree-diff";
   status: "running" | "success" | "failed";
   diffKind: "proposed" | "actual" | "none";
   changedFiles: string[];

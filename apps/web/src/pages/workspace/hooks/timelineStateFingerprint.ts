@@ -88,6 +88,7 @@ function buildTimelineItemFingerprint(item: ChatTimelineItem): string {
       return [
         "edited-diff",
         item.id,
+        item.changeSource ?? "edit-tool",
         item.status,
         item.diffKind,
         item.changedFiles.join("|"),

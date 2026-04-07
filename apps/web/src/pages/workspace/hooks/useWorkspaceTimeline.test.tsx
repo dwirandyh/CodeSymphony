@@ -600,6 +600,7 @@ describe("useWorkspaceTimeline", () => {
 
     expect(editedItems).toHaveLength(1);
     expect(genericToolItems).toHaveLength(0);
+    expect(editedItems[0]).toMatchObject({ kind: "edited-diff", changeSource: "worktree-diff" });
   });
 
   it("keeps pure explore bash chains in subagent activity", () => {

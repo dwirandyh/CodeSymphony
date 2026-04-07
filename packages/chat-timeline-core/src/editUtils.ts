@@ -169,6 +169,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
       startIdx: nextStartIdx,
       anchorIdx: nextAnchorIdx,
       endIdx: nextStartIdx,
+      changeSource: "edit-tool",
       status: "running",
       diffKind: "none",
       changedFiles: [],
@@ -417,6 +418,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
         startIdx: event.idx,
         anchorIdx: event.idx,
       });
+    run.changeSource = "worktree-diff";
     applyActualDiffToRun(run, event, diff, changedFiles);
   }
 

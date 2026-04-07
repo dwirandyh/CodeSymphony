@@ -69,6 +69,7 @@ export type ChatTimelineItem =
     kind: "edited-diff";
     id: string;
     eventId: string;
+    changeSource?: "edit-tool" | "worktree-diff";
     status: "running" | "success" | "failed";
     diffKind: "proposed" | "actual" | "none";
     changedFiles: string[];

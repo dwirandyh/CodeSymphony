@@ -428,6 +428,7 @@ export const TimelineItem = memo(function TimelineItem({
     const diffFileNames = parsedFiles.map((f) => f.name);
     const resolvedFiles = item.changedFiles.length > 0 ? item.changedFiles : diffFileNames;
     const summaryLabel = editedSummaryLabel({
+      changeSource: item.changeSource,
       status: item.status,
       diffKind: item.diffKind,
       changedFiles: resolvedFiles,
