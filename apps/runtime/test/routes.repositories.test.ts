@@ -201,6 +201,8 @@ describe("repository routes", () => {
         title: "Create Pull Request",
         kind: "review",
         permissionProfile: "review_git",
+        permissionMode: "default",
+        mode: "default",
         titleEditedManually: false,
         claudeSessionId: null,
         active: false,
@@ -210,7 +212,7 @@ describe("repository routes", () => {
 
       const res = await app.inject({ method: "POST", url: "/api/worktrees/w1/pr-mr-thread" });
       expect(res.statusCode).toBe(201);
-      expect(mockChatService.getOrCreatePrMrThread).toHaveBeenCalledWith("w1");
+      expect(mockChatService.getOrCreatePrMrThread).toHaveBeenCalledWith("w1", undefined);
       expect(res.json().data.kind).toBe("review");
       expect(res.json().data.permissionProfile).toBe("review_git");
     });

@@ -4,6 +4,7 @@ import {
   applyMessageMutations,
   applySnapshotSeed,
   applyThreadModeUpdate,
+  applyThreadPermissionModeUpdate,
   applyThreadTitleUpdate,
   buildSnapshotKey,
   deriveSelectedThreadUiState,
@@ -37,6 +38,7 @@ function makeThread(title: string, id = "thread-1"): ChatThread {
     title,
     kind: "default",
     permissionProfile: "default",
+    permissionMode: "default",
     mode: "default",
     titleEditedManually: false,
     claudeSessionId: null,
@@ -449,6 +451,21 @@ describe("applyThreadModeUpdate", () => {
   it("returns same array when mode is unchanged", () => {
     const threads = [makeThread("Thread A", "t-a")];
     const next = applyThreadModeUpdate(threads, "t-a", "default");
+    expect(next).toBe(threads);
+  });
+});
+
+describe("applyThreadPermissionModeUpdate", () => {
+  it("updates only the matching thread permission mode", () => {
+    const threads = [makeThread("Thread A", "t-a"), makeThread("Thread B", "t-b")];
+    const next = applyThreadPermissionModeUpdate(threads, "t-b", "full_access");
+    expect(next[0].permissionMode).toBe("default");
+    expect(next[1].permissionMode).toBe("full_access");
+  });
+
+  it("returns same array when permission mode is unchanged", () => {
+    const threads = [makeThread("Thread A", "t-a")];
+    const next = applyThreadPermissionModeUpdate(threads, "t-a", "default");
     expect(next).toBe(threads);
   });
 });

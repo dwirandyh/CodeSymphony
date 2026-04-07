@@ -180,3 +180,22 @@ export function applyThreadModeUpdate(
   updated[index] = { ...updated[index], mode };
   return updated;
 }
+
+export function applyThreadPermissionModeUpdate(
+  currentThreads: ChatThread[],
+  threadId: string | null,
+  permissionMode: ChatThread["permissionMode"] | null,
+): ChatThread[] {
+  if (!threadId || !permissionMode) {
+    return currentThreads;
+  }
+
+  const index = currentThreads.findIndex((thread) => thread.id === threadId);
+  if (index === -1 || currentThreads[index].permissionMode === permissionMode) {
+    return currentThreads;
+  }
+
+  const updated = [...currentThreads];
+  updated[index] = { ...updated[index], permissionMode };
+  return updated;
+}

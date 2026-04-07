@@ -929,4 +929,76 @@ describe("chatService snapshot", () => {
     expect(preSecondEditMessageIndex).toBeLessThan(secondEditedIndex);
     expect(secondEditedIndex).toBeLessThan(doneMessageIndex);
   });
+
+  it("stores permission mode on thread creation", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const suffix = uniqueSuffix();
+    const repository = await prisma.repository.create({
+      data: {
+        name: `snapshot-permission-mode-${suffix}`,
+        rootPath: `/tmp/snapshot-permission-mode-${suffix}`,
+        defaultBranch: "main",
+      },
+    });
+    const worktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "main",
+        baseBranch: "main",
+        path: repository.rootPath,
+        status: "active",
+      },
+    });
+
+    const returned = await chatService.createThread(worktree.id, { permissionMode: "full_access" });
+
+    expect(returned.permissionMode).toBe("full_access");
+    const persisted = await prisma.chatThread.findUnique({ where: { id: returned.id } });
+    expect(persisted?.permissionMode).toBe("full_access");
+  });
+
+  it("updates thread permission mode", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const suffix = uniqueSuffix();
+    const repository = await prisma.repository.create({
+      data: {
+        name: `snapshot-permission-update-${suffix}`,
+        rootPath: `/tmp/snapshot-permission-update-${suffix}`,
+        defaultBranch: "main",
+      },
+    });
+    const worktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "main",
+        baseBranch: "main",
+        path: repository.rootPath,
+        status: "active",
+      },
+    });
+    const thread = await prisma.chatThread.create({
+      data: {
+        worktreeId: worktree.id,
+        title: "Permission Thread",
+      },
+    });
+
+    const updated = await chatService.updateThreadPermissionMode(thread.id, { permissionMode: "full_access" });
+
+    expect(updated.permissionMode).toBe("full_access");
+    const persisted = await prisma.chatThread.findUnique({ where: { id: thread.id } });
+    expect(persisted?.permissionMode).toBe("full_access");
+  });
 });

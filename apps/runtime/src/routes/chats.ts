@@ -165,6 +165,17 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.patch("/threads/:id/permission-mode", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      const thread = await app.chatService.updateThreadPermissionMode(params.id, request.body);
+      return { data: thread };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to update thread permission mode");
+    }
+  });
+
   app.delete("/threads/:id", async (request, reply) => {
     const params = threadParams.parse(request.params);
 

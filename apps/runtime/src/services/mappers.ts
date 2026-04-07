@@ -45,6 +45,7 @@ export function mapChatThread(thread: DbChatThread, isActive = false): ChatThrea
     title: normalizeChatThreadTitle(thread.title),
     kind: thread.kind,
     permissionProfile: thread.permissionProfile,
+    permissionMode: thread.permissionMode,
     mode: thread.mode,
     titleEditedManually: thread.titleEditedManually,
     claudeSessionId: thread.claudeSessionId,

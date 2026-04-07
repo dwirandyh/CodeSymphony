@@ -57,6 +57,9 @@ export type ChatThreadKind = z.infer<typeof ChatThreadKindSchema>;
 export const ChatThreadPermissionProfileSchema = z.enum(["default", "review_git"]);
 export type ChatThreadPermissionProfile = z.infer<typeof ChatThreadPermissionProfileSchema>;
 
+export const ChatThreadPermissionModeSchema = z.enum(["default", "full_access"]);
+export type ChatThreadPermissionMode = z.infer<typeof ChatThreadPermissionModeSchema>;
+
 export const ChatModeSchema = z.enum(["default", "plan"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
 
@@ -66,6 +69,7 @@ export const ChatThreadSchema = z.object({
   title: z.string().min(1),
   kind: ChatThreadKindSchema,
   permissionProfile: ChatThreadPermissionProfileSchema,
+  permissionMode: ChatThreadPermissionModeSchema,
   mode: ChatModeSchema,
   titleEditedManually: z.boolean(),
   claudeSessionId: z.string().nullable(),
@@ -301,6 +305,7 @@ export const CreateChatThreadInputSchema = z.object({
   title: z.string().trim().min(1).max(MAX_THREAD_TITLE_LENGTH).optional(),
   kind: ChatThreadKindSchema.optional(),
   permissionProfile: ChatThreadPermissionProfileSchema.optional(),
+  permissionMode: ChatThreadPermissionModeSchema.optional(),
 });
 
 export const RenameChatThreadTitleInputSchema = z.object({
@@ -312,6 +317,11 @@ export const UpdateChatThreadModeInputSchema = z.object({
   mode: ChatModeSchema,
 });
 export type UpdateChatThreadModeInput = z.infer<typeof UpdateChatThreadModeInputSchema>;
+
+export const UpdateChatThreadPermissionModeInputSchema = z.object({
+  permissionMode: ChatThreadPermissionModeSchema,
+});
+export type UpdateChatThreadPermissionModeInput = z.infer<typeof UpdateChatThreadPermissionModeInputSchema>;
 
 export const SendChatMessageInputSchema = z.object({
   content: z.string().trim(),

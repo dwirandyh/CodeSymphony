@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import type { ChatEvent, ChatEventType, ChatMode, ChatThreadPermissionProfile, PermissionDecision } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatEventType, ChatMode, ChatThreadPermissionMode, ChatThreadPermissionProfile, PermissionDecision } from "@codesymphony/shared-types";
 
 export type RuntimeEventPayload = Record<string, unknown>;
 
@@ -103,6 +103,7 @@ export type ClaudeRunner = (args: {
   cwd: string;
   abortController?: AbortController;
   permissionMode?: ChatMode;
+  threadPermissionMode?: ChatThreadPermissionMode;
   permissionProfile?: ChatThreadPermissionProfile;
   autoAcceptTools?: boolean;
   model?: string;

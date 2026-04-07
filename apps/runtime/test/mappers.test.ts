@@ -88,6 +88,7 @@ describe("mappers", () => {
         title: "Test Thread",
         kind: "default",
         permissionProfile: "default",
+        permissionMode: "default",
         mode: "plan",
         titleEditedManually: false,
         claudeSessionId: null,
@@ -96,6 +97,7 @@ describe("mappers", () => {
       });
       expect(result.id).toBe("t1");
       expect(result.title).toBe("Test Thread");
+      expect(result.permissionMode).toBe("default");
       expect(result.mode).toBe("plan");
       expect(result.active).toBe(false);
     });
@@ -107,6 +109,7 @@ describe("mappers", () => {
         title: "Test",
         kind: "default",
         permissionProfile: "default",
+        permissionMode: "default",
         mode: "default",
         titleEditedManually: false,
         claudeSessionId: null,

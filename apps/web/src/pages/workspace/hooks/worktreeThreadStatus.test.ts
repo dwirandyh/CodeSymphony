@@ -12,6 +12,7 @@ function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
     title: "Thread",
     kind: "default",
     permissionProfile: "default",
+    permissionMode: "default",
     mode: "default",
     titleEditedManually: false,
     claudeSessionId: null,

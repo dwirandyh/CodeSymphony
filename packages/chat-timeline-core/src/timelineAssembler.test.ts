@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatTimelineItem } from "@codesymphony/shared-types";
 import { buildTimelineFromSeed } from "./timelineAssembler";
 
 function makeMessage(id: string, seq: number, role: "user" | "assistant", content: string): ChatMessage {
@@ -18,12 +18,10 @@ function makeEvent(
   idx: number,
   type: ChatEvent["type"],
   payload: Record<string, unknown>,
-  messageId: string | null = null,
 ): ChatEvent {
   return {
     id: `e-${idx}`,
     threadId: "t1",
-    messageId,
     idx,
     type,
     payload,
@@ -67,8 +65,8 @@ describe("buildTimelineFromSeed", () => {
         role: "assistant",
         messageId: "m2",
         delta: "Understood: concise, speed-focused, and formal.",
-      }, "m2"),
-      makeEvent(5, "chat.completed", { messageId: "m2" }, "m2"),
+      }),
+      makeEvent(5, "chat.completed", { messageId: "m2" }),
     ];
 
     const result = buildTimelineFromSeed({
@@ -78,13 +76,16 @@ describe("buildTimelineFromSeed", () => {
       semanticHydrationInProgress: false,
     });
 
-    const askUserQuestionItem = result.items.find((item) => item.kind === "tool" && item.toolName === "AskUserQuestion");
+    const askUserQuestionItem = result.items.find(
+      (item): item is Extract<ChatTimelineItem, { kind: "tool" }> =>
+        item.kind === "tool" && item.toolName === "AskUserQuestion",
+    );
     expect(askUserQuestionItem).toMatchObject({
       kind: "tool",
       toolName: "AskUserQuestion",
       summary: "Asked 3 Questions",
     });
-    expect(askUserQuestionItem?.sourceEvents?.map((event) => event.type)).toEqual([
+    expect(askUserQuestionItem?.sourceEvents?.map((event: ChatEvent) => event.type)).toEqual([
       "tool.started",
       "question.requested",
       "question.answered",

@@ -53,6 +53,11 @@ enum ChatThreadPermissionProfile {
   review_git
 }
 
+enum ChatThreadPermissionMode {
+  default
+  full_access
+}
+
 model Repository {
   id            String     @id @default(cuid())
   name          String
@@ -90,6 +95,7 @@ model ChatThread {
   title               String
   kind                ChatThreadKind              @default(default)
   permissionProfile   ChatThreadPermissionProfile @default(default)
+  permissionMode      ChatThreadPermissionMode    @default(default)
   mode                ChatMode                    @default(default)
   titleEditedManually Boolean                     @default(false)
   claudeSessionId     String?

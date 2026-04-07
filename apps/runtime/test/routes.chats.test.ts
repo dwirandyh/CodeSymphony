@@ -82,6 +82,7 @@ describe("chat routes", () => {
     getThreadById: vi.fn(),
     renameThreadTitle: vi.fn(),
     updateThreadMode: vi.fn(),
+    updateThreadPermissionMode: vi.fn(),
     sendMessage: vi.fn(),
     resolvePermission: vi.fn(),
     answerQuestion: vi.fn(),
@@ -124,7 +125,7 @@ describe("chat routes", () => {
 
   describe("GET /api/worktrees/:id/threads", () => {
     it("lists threads for a worktree", async () => {
-      mockChatService.listThreads.mockResolvedValue([{ id: "t1", title: "Test", mode: "default" }]);
+      mockChatService.listThreads.mockResolvedValue([{ id: "t1", title: "Test", mode: "default", permissionMode: "default" }]);
       const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/threads" });
       expect(res.statusCode).toBe(200);
       expect(res.json().data).toHaveLength(1);
@@ -139,7 +140,7 @@ describe("chat routes", () => {
 
   describe("POST /api/worktrees/:id/threads", () => {
     it("creates a new thread (201)", async () => {
-      mockChatService.createThread.mockResolvedValue({ id: "t-new", title: "New", mode: "default" });
+      mockChatService.createThread.mockResolvedValue({ id: "t-new", title: "New", mode: "default", permissionMode: "default" });
       const res = await app.inject({ method: "POST", url: "/api/worktrees/w1/threads", payload: {} });
       expect(res.statusCode).toBe(201);
     });
@@ -153,7 +154,7 @@ describe("chat routes", () => {
 
   describe("GET /api/threads/:id", () => {
     it("returns thread data", async () => {
-      mockChatService.getThreadById.mockResolvedValue({ id: "t1", title: "Test", mode: "default" });
+      mockChatService.getThreadById.mockResolvedValue({ id: "t1", title: "Test", mode: "default", permissionMode: "default" });
       const res = await app.inject({ method: "GET", url: "/api/threads/t1" });
       expect(res.statusCode).toBe(200);
       expect(res.json().data.id).toBe("t1");
@@ -168,7 +169,7 @@ describe("chat routes", () => {
 
   describe("PATCH /api/threads/:id/title", () => {
     it("renames thread title", async () => {
-      mockChatService.renameThreadTitle.mockResolvedValue({ id: "t1", title: "New", mode: "default" });
+      mockChatService.renameThreadTitle.mockResolvedValue({ id: "t1", title: "New", mode: "default", permissionMode: "default" });
       const res = await app.inject({
         method: "PATCH",
         url: "/api/threads/t1/title",
@@ -200,7 +201,7 @@ describe("chat routes", () => {
 
   describe("PATCH /api/threads/:id/mode", () => {
     it("updates thread mode", async () => {
-      mockChatService.updateThreadMode.mockResolvedValue({ id: "t1", title: "Test", mode: "plan" });
+      mockChatService.updateThreadMode.mockResolvedValue({ id: "t1", title: "Test", mode: "plan", permissionMode: "default" });
       const res = await app.inject({
         method: "PATCH",
         url: "/api/threads/t1/mode",
@@ -208,6 +209,22 @@ describe("chat routes", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(mockChatService.updateThreadMode).toHaveBeenCalledWith("t1", { mode: "plan" });
+    });
+
+    it("updates thread permission mode", async () => {
+      mockChatService.updateThreadPermissionMode.mockResolvedValue({
+        id: "t1",
+        title: "Test",
+        mode: "default",
+        permissionMode: "full_access",
+      });
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/threads/t1/permission-mode",
+        payload: { permissionMode: "full_access" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.updateThreadPermissionMode).toHaveBeenCalledWith("t1", { permissionMode: "full_access" });
     });
 
     it("returns 404 when thread is missing", async () => {

@@ -68,6 +68,8 @@ describe("POST /api/repositories/:id/threads", () => {
       title: "New Thread",
       kind: "default",
       permissionProfile: "default",
+      permissionMode: "default",
+      mode: "default",
       claudeSessionId: null,
       active: false,
       createdAt: "2026-02-27T00:00:00.000Z",
