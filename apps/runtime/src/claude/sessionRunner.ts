@@ -1,6 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { ClaudeRunner } from "../types.js";
+import type { ChatMode, ChatThreadPermissionMode } from "@codesymphony/shared-types";
+import type { ClaudeRunner, ClaudeSessionPermissionMode } from "../types.js";
 import { areLikelySameFsPath } from "../services/repositoryService.js";
 
 import { extractBashToolResult } from "./bashResult.js";
@@ -44,6 +45,33 @@ function shouldResumeSession(sessionId: string | null, sessionWorktreePath: stri
   return areLikelySameFsPath(sessionWorktreePath, cwd);
 }
 
+function resolveSdkPermissionMode(
+  runPermissionMode: ChatMode | undefined,
+  threadPermissionMode: ChatThreadPermissionMode | undefined,
+): {
+  sdkPermissionMode: ClaudeSessionPermissionMode;
+  allowDangerouslySkipPermissions: boolean;
+} {
+  if (runPermissionMode === "plan") {
+    return {
+      sdkPermissionMode: "plan",
+      allowDangerouslySkipPermissions: false,
+    };
+  }
+
+  if (threadPermissionMode === "full_access") {
+    return {
+      sdkPermissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
+    };
+  }
+
+  return {
+    sdkPermissionMode: runPermissionMode ?? "default",
+    allowDangerouslySkipPermissions: false,
+  };
+}
+
 export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
   sessionId,
@@ -51,6 +79,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   sessionWorktreePath,
   abortController,
   permissionMode,
+  threadPermissionMode,
   permissionProfile,
   autoAcceptTools,
   model,
@@ -69,6 +98,10 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 }) => {
   const recentStderr: string[] = [];
   const queryStartTimestamp = Date.now();
+  const { sdkPermissionMode, allowDangerouslySkipPermissions } = resolveSdkPermissionMode(
+    permissionMode,
+    threadPermissionMode,
+  );
 
   const maps: SessionMaps = {
     startedToolUseIds: new Set<string>(),
@@ -95,7 +128,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   const instrumentContext = {
     cwd,
     sessionId,
-    permissionMode: permissionMode ?? "default",
+    permissionMode: sdkPermissionMode,
     autoAcceptTools: Boolean(autoAcceptTools),
     permissionProfile: permissionProfile ?? "default",
   };
@@ -175,7 +208,8 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         includePartialMessages: true,
         resume: shouldResumeSession(sessionId, sessionWorktreePath, cwd) ? (sessionId ?? undefined) : undefined,
         forkSession: false,
-        permissionMode: permissionMode ?? "default",
+        permissionMode: sdkPermissionMode,
+        allowDangerouslySkipPermissions,
         canUseTool,
         tools: {
           type: "preset",

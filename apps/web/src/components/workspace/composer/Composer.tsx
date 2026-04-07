@@ -1,5 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, FileText, Folder, Lightbulb, Paperclip, Square, X, Zap } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  Clock3,
+  FileText,
+  Folder,
+  Lightbulb,
+  Paperclip,
+  ShieldCheck,
+  Square,
+  X,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
 import type { ChatMode, ChatThreadPermissionMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
 import { serializeMention } from "../../../lib/mentions";
@@ -39,6 +53,28 @@ type ComposerProps = {
   onPermissionModeChange: (permissionMode: ChatThreadPermissionMode) => void;
 };
 
+type PermissionOption = {
+  value: ChatThreadPermissionMode;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+};
+
+const PERMISSION_OPTIONS: PermissionOption[] = [
+  {
+    value: "default",
+    label: "Default",
+    description: "Ask before approval-gated actions",
+    icon: Clock3,
+  },
+  {
+    value: "full_access",
+    label: "Full Access",
+    description: "Always allow approval-gated actions",
+    icon: ShieldCheck,
+  },
+];
+
 export function Composer({
   disabled,
   sending,
@@ -65,6 +101,7 @@ export function Composer({
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const [permissionPopoverOpen, setPermissionPopoverOpen] = useState(false);
   const permissionPopoverRef = useRef<HTMLDivElement>(null);
+  const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return false;
@@ -104,7 +141,15 @@ export function Composer({
 
   const activeProvider = useMemo(() => providers.find((p) => p.isActive) ?? null, [providers]);
   const modelLabel = activeProvider ? `${activeProvider.modelId} · ${activeProvider.name}` : "CLI";
-  const permissionModeLabel = permissionMode === "full_access" ? "Full Access" : "Default";
+  const activePermissionOption = useMemo(
+    () => PERMISSION_OPTIONS.find((option) => option.value === permissionMode) ?? PERMISSION_OPTIONS[0],
+    [permissionMode],
+  );
+  const previewPermissionOption = useMemo(
+    () => PERMISSION_OPTIONS.find((option) => option.value === permissionPreviewMode) ?? null,
+    [permissionPreviewMode],
+  );
+  const permissionTriggerClassName = permissionMode === "full_access" ? "text-orange-500" : "text-muted-foreground";
 
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -741,40 +786,73 @@ export function Composer({
             <div className="relative" ref={permissionPopoverRef}>
               <button
                 type="button"
-                onClick={() => setPermissionPopoverOpen((open) => !open)}
+                onClick={() => {
+                  setPermissionPopoverOpen((open) => {
+                    const nextOpen = !open;
+                    if (!nextOpen) {
+                      setPermissionPreviewMode(null);
+                    }
+                    return nextOpen;
+                  });
+                }}
                 disabled={disabled}
-                className="flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary/70 disabled:cursor-not-allowed disabled:opacity-50 ${permissionTriggerClassName} ${
+                  permissionMode === "full_access" ? "hover:text-orange-400" : "hover:text-foreground"
+                }`}
                 aria-label="Select permission mode"
               >
-                <span className="max-w-[160px] truncate">{permissionModeLabel}</span>
+                <activePermissionOption.icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="max-w-[160px] truncate">{activePermissionOption.label}</span>
                 <ChevronDown className="h-3 w-3 shrink-0" />
               </button>
 
               {permissionPopoverOpen && (
-                <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[220px] rounded-lg border border-border/60 bg-popover p-1 shadow-lg">
-                  <div className="max-h-48 overflow-y-auto">
-                    {[
-                      { value: "default" as const, label: "Default", description: "Ask before approval-gated actions" },
-                      { value: "full_access" as const, label: "Full Access", description: "Always allow approval-gated actions" },
-                    ].map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        className={`flex w-full flex-col items-start rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
-                          permissionMode === option.value
-                            ? "bg-accent text-accent-foreground"
-                            : "text-foreground hover:bg-accent/50"
+                <div className="absolute bottom-full left-0 z-50 mb-1.5">
+                  <div className="relative">
+                    <div
+                      className="w-[220px] rounded-lg border border-border/60 bg-popover p-1 shadow-lg"
+                      onMouseLeave={() => setPermissionPreviewMode(null)}
+                    >
+                      <div className="max-h-48 overflow-y-auto">
+                        {PERMISSION_OPTIONS.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
+                              permissionMode === option.value
+                                ? "bg-accent text-accent-foreground"
+                                : "text-foreground hover:bg-accent/50"
+                            }`}
+                            aria-label={`${option.label}. ${option.description}`}
+                            aria-current={permissionMode === option.value ? "true" : undefined}
+                            onMouseEnter={() => setPermissionPreviewMode(option.value)}
+                            onFocus={() => setPermissionPreviewMode(option.value)}
+                            onBlur={() => setPermissionPreviewMode((current) => (current === option.value ? null : current))}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              onPermissionModeChange(option.value);
+                              setPermissionPreviewMode(null);
+                              setPermissionPopoverOpen(false);
+                            }}
+                          >
+                            <option.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                            {permissionMode === option.value ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {previewPermissionOption ? (
+                      <div
+                        className={`mt-2 w-[220px] rounded-lg border border-border/60 bg-popover/95 p-3 shadow-lg ${
+                          isMobile ? "" : "absolute left-full top-0 ml-2 mt-0"
                         }`}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          onPermissionModeChange(option.value);
-                          setPermissionPopoverOpen(false);
-                        }}
                       >
-                        <span>{option.label}</span>
-                        <span className="text-[11px] text-muted-foreground">{option.description}</span>
-                      </button>
-                    ))}
+                        <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          {previewPermissionOption.description}
+                        </p>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               )}

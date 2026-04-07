@@ -1,3 +1,4 @@
+import type { PermissionMode as ClaudeSdkPermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { PrismaClient } from "@prisma/client";
 import type { ChatEvent, ChatEventType, ChatMode, ChatThreadPermissionMode, ChatThreadPermissionProfile, PermissionDecision } from "@codesymphony/shared-types";
 
@@ -26,6 +27,7 @@ export type ClaudeRunnerResult = {
 };
 
 export type PlanDetectionSource = "claude_plan_file" | "streaming_fallback";
+export type ClaudeSessionPermissionMode = ClaudeSdkPermissionMode;
 
 export type ClaudeOwnershipReason =
   | "resolved_tool_use_id"
@@ -65,7 +67,7 @@ export type ClaudeToolInstrumentationEvent = {
   threadContext?: {
     cwd: string;
     sessionId: string | null;
-    permissionMode: ChatMode | "default";
+    permissionMode: ClaudeSessionPermissionMode;
     autoAcceptTools: boolean;
     permissionProfile: ChatThreadPermissionProfile;
   };
