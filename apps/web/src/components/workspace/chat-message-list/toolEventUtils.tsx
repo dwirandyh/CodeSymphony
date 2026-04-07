@@ -19,7 +19,7 @@ export function eventPayloadText(event: ChatEvent): string {
 
 export function toolTitle(event: ChatEvent): string {
   if (event.payload.source === "worktree.diff") {
-    return "Edited files";
+    return "Worktree changed";
   }
 
   const mcpToolName = mcpToolNameFromEvent(event);
@@ -72,7 +72,7 @@ export function toolTitle(event: ChatEvent): string {
 export function toolSubtitle(event: ChatEvent): string {
   if (event.payload.source === "worktree.diff") {
     const summary = event.payload.summary;
-    return typeof summary === "string" && summary.length > 0 ? summary : "Detected file edits";
+    return typeof summary === "string" && summary.length > 0 ? summary : "Detected worktree changes";
   }
 
   const mcpToolName = mcpToolNameFromEvent(event);
@@ -276,6 +276,7 @@ export function getDiffPreview(event: ChatEvent): string | null {
 }
 
 export function editedSummaryLabel({
+  changeSource,
   status,
   diffKind,
   changedFiles,
@@ -283,6 +284,7 @@ export function editedSummaryLabel({
   deletions,
   rejectedByUser,
 }: {
+  changeSource?: "edit-tool" | "worktree-diff";
   status: "running" | "success" | "failed";
   diffKind: "proposed" | "actual" | "none";
   changedFiles: string[];
@@ -292,20 +294,23 @@ export function editedSummaryLabel({
 }): React.ReactNode {
   const firstFile = basenameFromTokenPath(changedFiles[0] ?? "file");
   const fileCount = changedFiles.length > 1 ? ` (${changedFiles.length} files)` : "";
+  const isWorktreeDiff = changeSource === "worktree-diff";
 
   if (status === "running") {
-    return `Editing ${firstFile}${fileCount}`;
+    return isWorktreeDiff ? `Detecting changes for ${firstFile}${fileCount}` : `Editing ${firstFile}${fileCount}`;
   }
 
   if (status === "failed") {
     if (rejectedByUser) {
       return `Rejected by user: ${firstFile}${fileCount}`;
     }
-    return `Failed editing ${firstFile}${fileCount}`;
+    return isWorktreeDiff ? `Failed detecting changes for ${firstFile}${fileCount}` : `Failed editing ${firstFile}${fileCount}`;
   }
 
   const isDeleteOnly = additions === 0 && deletions > 0;
-  const verb = isDeleteOnly ? "Deleted" : "Edited";
+  const verb = isWorktreeDiff
+    ? (isDeleteOnly ? "Command deleted" : "Command changed")
+    : (isDeleteOnly ? "Deleted" : "Edited");
 
   if (diffKind === "none") {
     return `${verb} ${firstFile}${fileCount}`;

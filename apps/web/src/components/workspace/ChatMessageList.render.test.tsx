@@ -496,6 +496,30 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("index.ts");
   });
 
+  it("renders worktree diff items as command changes instead of manual edits", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "edited-diff",
+        id: "diff-2",
+        eventId: "ev-2",
+        changeSource: "worktree-diff",
+        status: "success",
+        diffKind: "actual",
+        changedFiles: ["app/build.gradle.kts"],
+        diff: "+versionCode = 272\n-versionCode = 271",
+        diffTruncated: false,
+        additions: 1,
+        deletions: 1,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+    expect(container.textContent).toContain("Command changed build.gradle.kts");
+    expect(container.textContent).not.toContain("Edited build.gradle.kts");
+  });
+
   it("renders explore-activity summary", () => {
     const onOpenReadFile = vi.fn();
     const items: ChatTimelineItem[] = [

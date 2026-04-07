@@ -325,6 +325,60 @@ describe("chatService worktree diff delta", () => {
     expect(diffEvent?.payload.diffTruncated).toBe(false);
   });
 
+  it("omits files that became clean when another file remains changed at the end of a bash run", async () => {
+    const originalA = "export const a = 1;\n";
+    const worktreePath = createGitWorktree({
+      "src/a.ts": originalA,
+      "src/b.ts": "export const b = 1;\n",
+    });
+    writeFileSync(join(worktreePath, "src/a.ts"), "export const a = 2;\n", "utf8");
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      await onToolStarted({
+        toolName: "Bash",
+        toolUseId: "bash-omit-cleaned",
+        parentToolUseId: null,
+        command: "make deploy-firebase",
+        shell: "bash",
+        isBash: true,
+      });
+      writeFileSync(join(worktreePath, "src/a.ts"), originalA, "utf8");
+      writeFileSync(join(worktreePath, "src/b.ts"), "export const b = 2;\n", "utf8");
+      await onToolFinished({
+        toolName: "Bash",
+        summary: "Ran make deploy-firebase",
+        precedingToolUseIds: ["bash-omit-cleaned"],
+        command: "make deploy-firebase",
+        shell: "bash",
+        isBash: true,
+      });
+      await onText("Updated src/b.ts and cleaned src/a.ts.");
+      return {
+        output: "Updated src/b.ts and cleaned src/a.ts.",
+        sessionId: "session-worktree-bash-clean-filter",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree Bash Final State");
+
+    await chatService.sendMessage(threadId, {
+      content: "deploy and leave only src/b.ts changed",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const diffEvent = worktreeDiffEvent(events);
+    expect(diffEvent).toBeDefined();
+    expect(diffEvent?.payload.changedFiles).toEqual(["src/b.ts"]);
+    expect(diffEvent?.payload.diff).toContain("diff --git a/src/b.ts b/src/b.ts");
+    expect(diffEvent?.payload.diff).not.toContain("diff --git a/src/a.ts b/src/a.ts");
+  });
+
   it("emits bash-owned worktree diffs even without explicit file targets", async () => {
     const worktreePath = createGitWorktree({
       "src/main.ts": "export const main = () => 1;\n",

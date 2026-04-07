@@ -42,6 +42,23 @@ async function canonicalizeRepositoryPaths(
 }
 
 export function createRepositoryService(prisma: PrismaClient) {
+  type RepositoryWithWorktrees = {
+    id: string;
+    rootPath: string;
+    defaultBranch: string;
+    worktrees: Array<{
+      id: string;
+      branch: string;
+      path: string;
+      baseBranch: string;
+      status: "active" | "archived";
+      branchRenamed: boolean;
+      createdAt: Date;
+      updatedAt: Date;
+      repositoryId: string;
+    }>;
+  };
+
   function resolveUniquePrimaryBranch(
     preferredBranch: string,
     existingBranches: Set<string>,
@@ -69,22 +86,7 @@ export function createRepositoryService(prisma: PrismaClient) {
   }
 
   async function ensurePrimaryWorktreeExists(
-    repository: {
-      id: string;
-      rootPath: string;
-      defaultBranch: string;
-      worktrees: Array<{
-        id: string;
-        branch: string;
-        path: string;
-        baseBranch: string;
-        status: "active" | "archived";
-        branchRenamed: boolean;
-        createdAt: Date;
-        updatedAt: Date;
-        repositoryId: string;
-      }>;
-    },
+    repository: RepositoryWithWorktrees,
   ): Promise<void> {
     const rootWorkspace = repository.worktrees.find((worktree) =>
       areLikelySameFsPath(worktree.path, repository.rootPath),
@@ -143,6 +145,26 @@ export function createRepositoryService(prisma: PrismaClient) {
     });
   }
 
+  async function syncPrimaryWorktreeBaseBranch(repository: RepositoryWithWorktrees): Promise<void> {
+    const rootWorkspace = repository.worktrees.find((worktree) =>
+      areLikelySameFsPath(worktree.path, repository.rootPath),
+    ) ?? null;
+
+    if (!rootWorkspace || rootWorkspace.baseBranch === repository.defaultBranch) {
+      return;
+    }
+
+    const updated = await prisma.worktree.update({
+      where: { id: rootWorkspace.id },
+      data: { baseBranch: repository.defaultBranch },
+    });
+
+    const idx = repository.worktrees.findIndex((worktree) => worktree.id === updated.id);
+    if (idx >= 0) {
+      repository.worktrees[idx] = updated;
+    }
+  }
+
   async function syncWorktreeBranches(
     worktrees: Array<{ id: string; branch: string; path: string; status: "active" | "archived" }>,
   ): Promise<void> {
@@ -179,6 +201,7 @@ export function createRepositoryService(prisma: PrismaClient) {
 
       await Promise.all(repositories.map(async (repository) => {
         await ensurePrimaryWorktreeExists(repository);
+        await syncPrimaryWorktreeBaseBranch(repository);
         await syncWorktreeBranches(repository.worktrees);
         await canonicalizeRepositoryPaths(repository);
       }));
@@ -197,6 +220,7 @@ export function createRepositoryService(prisma: PrismaClient) {
 
       if (repository) {
         await ensurePrimaryWorktreeExists(repository);
+        await syncPrimaryWorktreeBaseBranch(repository);
         await syncWorktreeBranches(repository.worktrees);
         await canonicalizeRepositoryPaths(repository);
       }
@@ -286,6 +310,7 @@ export function createRepositoryService(prisma: PrismaClient) {
       if (input.runScript !== undefined) data.runScript = input.runScript ? JSON.stringify(input.runScript) : null;
       if (input.defaultBranch) data.defaultBranch = input.defaultBranch;
       const updated = await prisma.repository.update({ where: { id }, data, include: { worktrees: true } });
+      await syncPrimaryWorktreeBaseBranch(updated);
       await syncWorktreeBranches(updated.worktrees);
       await canonicalizeRepositoryPaths(updated);
       return mapRepository(updated);

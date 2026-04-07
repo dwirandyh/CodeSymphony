@@ -253,19 +253,34 @@ export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeSta
     }
   }
 
-  const deltaSections = orderedDiffDeltaFiles
+  const currentDiffFiles = orderedDiffDeltaFiles
+    .filter((file) => (afterSections.byFile.get(file) ?? "").length > 0);
+  const deltaSections = currentDiffFiles
     .map((file) => afterSections.byFile.get(file) ?? "")
     .filter((section) => section.length > 0);
   const diffDelta = deltaSections.join("\n\n");
 
+  const statusDeltaFiles = symmetricStatusDelta(before.changedFiles, after.changedFiles);
+  const afterChangedFiles = new Set(after.changedFiles);
   const changedFiles: string[] = [];
   const changedFilesSeen = new Set<string>();
-  for (const file of orderedDiffDeltaFiles) {
+  for (const file of currentDiffFiles) {
     appendUnique(changedFiles, changedFilesSeen, file);
   }
 
-  for (const file of symmetricStatusDelta(before.changedFiles, after.changedFiles)) {
-    appendUnique(changedFiles, changedFilesSeen, file);
+  for (const file of statusDeltaFiles) {
+    if (afterChangedFiles.has(file)) {
+      appendUnique(changedFiles, changedFilesSeen, file);
+    }
+  }
+
+  if (changedFiles.length === 0 && diffDelta.length === 0) {
+    for (const file of orderedDiffDeltaFiles) {
+      appendUnique(changedFiles, changedFilesSeen, file);
+    }
+    for (const file of statusDeltaFiles) {
+      appendUnique(changedFiles, changedFilesSeen, file);
+    }
   }
 
   if (changedFiles.length === 0 && diffDelta.length === 0) {

@@ -196,6 +196,7 @@ export const ChatTimelineEditedDiffItemSchema = z.object({
   kind: z.literal("edited-diff"),
   id: z.string(),
   eventId: z.string(),
+  changeSource: z.enum(["edit-tool", "worktree-diff"]).optional(),
   status: z.enum(["running", "success", "failed"]),
   diffKind: z.enum(["proposed", "actual", "none"]),
   changedFiles: z.array(z.string()),

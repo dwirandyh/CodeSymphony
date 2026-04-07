@@ -680,7 +680,9 @@ export function createChatService(deps: RuntimeDeps) {
           if (shouldEmitWorktreeDiff && scopedDiffSnapshot) {
             diffSnapshot = scopedDiffSnapshot;
             const fileCount = diffSnapshot.changedFiles.length;
-            const summary = fileCount > 0 ? `Edited ${fileCount} file${fileCount === 1 ? "" : "s"}` : "Captured worktree diff";
+            const summary = fileCount > 0
+              ? `Detected worktree changes in ${fileCount} file${fileCount === 1 ? "" : "s"}`
+              : "Captured worktree diff";
             await deps.eventHub.emit(threadId, "tool.finished", {
               summary,
               precedingToolUseIds: [],

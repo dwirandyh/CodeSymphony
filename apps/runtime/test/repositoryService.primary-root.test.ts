@@ -101,6 +101,54 @@ describe("repositoryService primary root workspace", () => {
     expect(persisted?.branch).toBe("feature/root-sync");
   });
 
+  it("syncs root worktree base branch when repository default branch changes", async () => {
+    const repositoryPath = createGitRepository();
+    const canonicalRepositoryPath = realpathSync(repositoryPath);
+    const repositoryService = createRepositoryService(prisma);
+
+    const created = await repositoryService.create({ path: repositoryPath });
+    const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
+    expect(rootWorktree).toBeDefined();
+    expect(rootWorktree?.baseBranch).toBe("main");
+
+    const updated = await repositoryService.updateScripts(created.id, { defaultBranch: "develop" });
+    const updatedRootWorktree = updated.worktrees.find((worktree) => worktree.id === rootWorktree!.id);
+
+    expect(updated.defaultBranch).toBe("develop");
+    expect(updatedRootWorktree?.baseBranch).toBe("develop");
+
+    const persisted = await prisma.worktree.findUnique({
+      where: { id: rootWorktree!.id },
+    });
+    expect(persisted?.baseBranch).toBe("develop");
+  });
+
+  it("repairs a stale root worktree base branch on repository list", async () => {
+    const repositoryPath = createGitRepository();
+    const canonicalRepositoryPath = realpathSync(repositoryPath);
+    const repositoryService = createRepositoryService(prisma);
+
+    const created = await repositoryService.create({ path: repositoryPath });
+    const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
+    expect(rootWorktree).toBeDefined();
+
+    await prisma.repository.update({
+      where: { id: created.id },
+      data: { defaultBranch: "develop" },
+    });
+    await prisma.worktree.update({
+      where: { id: rootWorktree!.id },
+      data: { baseBranch: "main" },
+    });
+
+    const listed = await repositoryService.list();
+    const listedRepository = listed.find((repository) => repository.id === created.id);
+    const listedRootWorktree = listedRepository?.worktrees.find((worktree) => worktree.id === rootWorktree!.id);
+
+    expect(listedRepository?.defaultBranch).toBe("develop");
+    expect(listedRootWorktree?.baseBranch).toBe("develop");
+  });
+
   it("blocks deleting the primary root worktree", async () => {
     const repositoryPath = createGitRepository();
     const canonicalRepositoryPath = realpathSync(repositoryPath);
