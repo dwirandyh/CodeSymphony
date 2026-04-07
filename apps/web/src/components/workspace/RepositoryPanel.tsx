@@ -16,11 +16,13 @@ type RepositoryPanelProps = {
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
+  expandedByRepo: Record<string, boolean>;
   loadingRepos: boolean;
   submittingRepo: boolean;
   submittingWorktree: boolean;
   onAttachRepository: () => void;
   onSelectRepository: (repositoryId: string) => void;
+  onToggleRepositoryExpand: (repositoryId: string, nextExpanded: boolean) => void;
   onCreateWorktree: (repositoryId: string) => void;
   onSelectWorktree: (repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => void;
   onDeleteWorktree: (worktreeId: string) => void;
@@ -200,17 +202,18 @@ export function RepositoryPanel({
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
+  expandedByRepo,
   loadingRepos,
   submittingRepo,
   submittingWorktree,
   onAttachRepository,
   onSelectRepository,
+  onToggleRepositoryExpand,
   onCreateWorktree,
   onSelectWorktree,
   onDeleteWorktree,
   onRenameWorktreeBranch,
 }: RepositoryPanelProps) {
-  const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>({});
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(null);
   const [editingBranchValue, setEditingBranchValue] = useState("");
 
@@ -254,10 +257,8 @@ export function RepositoryPanel({
   }, [activeWorktreeSummaries, gitBranchDiffQueries]);
 
   function toggleRepository(repositoryId: string) {
-    setExpandedByRepo((current) => ({
-      ...current,
-      [repositoryId]: !current[repositoryId],
-    }));
+    const nextExpanded = !(expandedByRepo[repositoryId] ?? selectedRepositoryId === repositoryId);
+    onToggleRepositoryExpand(repositoryId, nextExpanded);
     onSelectRepository(repositoryId);
   }
 
@@ -320,11 +321,13 @@ export function RepositoryPanel({
                     )}
                     onClick={() => toggleRepository(repository.id)}
                   >
-                    {isExpanded ? (
-                      <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-                    ) : (
-                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-                    )}
+                    <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                      {isExpanded ? (
+                        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                      )}
+                    </span>
                     <span className="truncate text-left text-xs font-medium">{repository.name}</span>
                     <span className="ml-auto text-[11px] text-muted-foreground">{branchWorktrees.length} worktrees</span>
                   </Button>

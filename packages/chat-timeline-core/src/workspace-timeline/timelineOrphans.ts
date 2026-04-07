@@ -1,6 +1,6 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
-import { extractExploreActivityGroups } from "../exploreUtils";
-import { extractSubagentGroups, getSubagentAttributionReason, isOverlapUnclaimedSubagentEvent } from "../subagentUtils";
+import { extractExploreActivityGroups } from "../exploreUtils.js";
+import { extractSubagentGroups, getSubagentAttributionReason, isOverlapUnclaimedSubagentEvent } from "../subagentUtils.js";
 import {
   countDiffStats,
   finishedToolUseIds,
@@ -13,12 +13,12 @@ import {
   parseTimestamp,
   payloadStringArray,
   payloadStringOrNull,
-} from "../eventUtils";
-import { extractBashRuns } from "../bashUtils";
-import { extractEditedRuns } from "../editUtils";
-import { pushRenderDebug } from "../debug";
-import { logTimelineWarning } from "../logger";
-import type { SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types";
+} from "../eventUtils.js";
+import { extractBashRuns } from "../bashUtils.js";
+import { extractEditedRuns } from "../editUtils.js";
+import { pushRenderDebug } from "../debug.js";
+import { logTimelineWarning } from "../logger.js";
+import type { SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types.js";
 
 function explicitSkillNameFromEvents(events: ChatEvent[]): string | null {
   for (const event of events) {

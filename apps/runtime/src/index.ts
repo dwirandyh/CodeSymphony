@@ -8,6 +8,7 @@ import { ZodError } from "zod";
 import { prisma } from "./db/prisma.js";
 import { assertDatabaseReady, DatabaseNotReadyError } from "./db/databaseReadiness.js";
 import { createEventHub } from "./events/eventHub.js";
+import { createWorkspaceEventHub } from "./events/workspaceEventHub.js";
 import { runClaudeWithStreaming } from "./claude/sessionRunner.js";
 import { createRepositoryService } from "./services/repositoryService.js";
 import { createWorktreeService } from "./services/worktreeService.js";
@@ -28,11 +29,13 @@ import { registerLogRoutes } from "./routes/logs.js";
 import { registerFilesystemRoutes } from "./routes/filesystem.js";
 import { registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
 import { registerModelRoutes } from "./routes/models.js";
+import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
 
 declare module "fastify" {
   interface FastifyInstance {
     prisma: typeof prisma;
     eventHub: ReturnType<typeof createEventHub>;
+    workspaceEventHub: ReturnType<typeof createWorkspaceEventHub>;
     repositoryService: ReturnType<typeof createRepositoryService>;
     worktreeService: ReturnType<typeof createWorktreeService>;
     chatService: ReturnType<typeof createChatService>;
@@ -50,6 +53,7 @@ declare module "fastify" {
 function createApp() {
   const app = Fastify({ logger: true });
   const eventHub = createEventHub(prisma);
+  const workspaceEventHub = createWorkspaceEventHub();
   const repositoryService = createRepositoryService(prisma);
   const worktreeService = createWorktreeService(prisma);
   const systemService = createSystemService();
@@ -70,6 +74,7 @@ function createApp() {
 
   app.decorate("prisma", prisma);
   app.decorate("eventHub", eventHub);
+  app.decorate("workspaceEventHub", workspaceEventHub);
   app.decorate("repositoryService", repositoryService);
   app.decorate("worktreeService", worktreeService);
   app.decorate("chatService", chatService);
@@ -121,6 +126,7 @@ function createApp() {
   app.register(registerFilesystemRoutes, { prefix: "/api" });
   app.register(registerDebugRoutes, { prefix: "/api" });
   app.register(registerModelRoutes, { prefix: "/api" });
+  app.register(registerWorkspaceEventRoutes, { prefix: "/api" });
 
   // Serve web frontend static files when WEB_DIST_PATH is set (production)
   const webDistPath = process.env.WEB_DIST_PATH;
@@ -129,7 +135,6 @@ function createApp() {
     if (existsSync(resolvedDistPath)) {
       app.register(fastifyStatic, {
         root: resolvedDistPath,
-        wildcard: false,
         setHeaders(res, filePath) {
           if (filePath.includes("/assets/")) {
             res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
@@ -140,10 +145,15 @@ function createApp() {
       });
 
       app.setNotFoundHandler((request, reply) => {
+        const pathname = request.url.split("?")[0] ?? request.url;
+        const lastPathSegment = pathname.split("/").filter(Boolean).pop() ?? "";
+        const looksLikeStaticAsset = lastPathSegment.includes(".");
+
         // API misses → JSON 404
         if (
           request.url.startsWith("/api/") ||
           request.url === "/health" ||
+          looksLikeStaticAsset ||
           request.method !== "GET" ||
           request.headers.accept?.includes("application/json")
         ) {

@@ -68,6 +68,19 @@ function respondForChatRouteError(reply: { code: (statusCode: number) => { send:
   return reply.code(400).send({ error: message });
 }
 
+async function emitThreadWorkspaceEvent(
+  app: FastifyInstance,
+  type: "thread.created" | "thread.updated" | "thread.deleted",
+  thread: { id: string; worktreeId: string },
+): Promise<void> {
+  const worktree = await app.worktreeService.getById(thread.worktreeId);
+  app.workspaceEventHub.emit(type, {
+    repositoryId: worktree?.repositoryId ?? null,
+    worktreeId: thread.worktreeId,
+    threadId: thread.id,
+  });
+}
+
 export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/worktrees/:id/threads", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
@@ -86,6 +99,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
     try {
       const thread = await app.chatService.createThread(params.id, request.body);
+      await emitThreadWorkspaceEvent(app, "thread.created", thread);
       return reply.code(201).send({ data: thread });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to create thread";
@@ -125,6 +139,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       );
 
       const thread = await app.chatService.createThread(targetWorktree.id, request.body);
+      await emitThreadWorkspaceEvent(app, "thread.created", thread);
       return reply.code(201).send({ data: thread });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to create thread";
@@ -148,6 +163,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
     try {
       const thread = await app.chatService.renameThreadTitle(params.id, request.body);
+      await emitThreadWorkspaceEvent(app, "thread.updated", thread);
       return { data: thread };
     } catch (error) {
       return respondForChatRouteError(reply, error, "Unable to rename thread title");
@@ -159,6 +175,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
     try {
       const thread = await app.chatService.updateThreadMode(params.id, request.body);
+      await emitThreadWorkspaceEvent(app, "thread.updated", thread);
       return { data: thread };
     } catch (error) {
       return respondForChatRouteError(reply, error, "Unable to update thread mode");
@@ -170,6 +187,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
     try {
       const thread = await app.chatService.updateThreadPermissionMode(params.id, request.body);
+      await emitThreadWorkspaceEvent(app, "thread.updated", thread);
       return { data: thread };
     } catch (error) {
       return respondForChatRouteError(reply, error, "Unable to update thread permission mode");
@@ -180,7 +198,12 @@ export async function registerChatRoutes(app: FastifyInstance) {
     const params = threadParams.parse(request.params);
 
     try {
+      const thread = await app.chatService.getThreadById(params.id);
+      if (!thread) {
+        return reply.code(404).send({ error: "Thread not found" });
+      }
       await app.chatService.deleteThread(params.id);
+      await emitThreadWorkspaceEvent(app, "thread.deleted", thread);
       return reply.code(204).send();
     } catch (error) {
       return respondForChatRouteError(reply, error, "Unable to delete thread");

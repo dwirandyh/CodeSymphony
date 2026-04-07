@@ -19,9 +19,6 @@ const MIRROR_DEBOUNCE_MS = 200;
 const MIRROR_INITIAL_RETRY_MS = 500;
 const MIRROR_MAX_RETRY_MS = 8000;
 
-const RUNTIME_API_BASE = resolveRuntimeApiBase();
-
-const CLIENT_LOG_ENDPOINT = `${RUNTIME_API_BASE}/logs/client`;
 const SESSION_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
 const entries: LogEntry[] = [];
@@ -85,14 +82,14 @@ function scheduleMirrorFlush(delayMs: number) {
 }
 
 async function postMirrorBatch(batch: LogEntry[]): Promise<void> {
-    if (typeof fetch !== "function") {
-        return;
-    }
+  if (typeof fetch !== "function") {
+    return;
+  }
 
-    const response = await fetch(CLIENT_LOG_ENDPOINT, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
+  const response = await fetch(`${resolveRuntimeApiBase()}/logs/client`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
         },
         body: JSON.stringify({ entries: batch }),
     });

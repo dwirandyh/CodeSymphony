@@ -1,6 +1,6 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { AssistantRenderHint } from "@codesymphony/shared-types";
-import { SENTENCE_BOUNDARY_PATTERN } from "../constants";
+import { SENTENCE_BOUNDARY_PATTERN } from "../constants.js";
 import {
   hasSentenceBoundary,
   isSentenceAwareInlineInsertKind,
@@ -8,11 +8,11 @@ import {
   stripAssistantControlMarkup,
   splitAtFirstSentenceBoundary,
   splitAtContentBoundary,
-} from "../textUtils";
-import { parseTimestamp } from "../eventUtils";
-import { pushRenderDebug } from "../debug";
-import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry } from "./useWorkspaceTimeline.types";
-import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types";
+} from "../textUtils.js";
+import { parseTimestamp } from "../eventUtils.js";
+import { pushRenderDebug } from "../debug.js";
+import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry } from "./useWorkspaceTimeline.types.js";
+import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types.js";
 
 export function buildInlineInserts(
   bashRuns: BashRun[],

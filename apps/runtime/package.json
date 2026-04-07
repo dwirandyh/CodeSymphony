@@ -6,6 +6,7 @@
   "scripts": {
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true",
     "predev": "pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
+    "prebuild": "pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
     "dev": "tsx watch --env-file .env src/index.ts",
     "prestart": "pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
     "start": "tsx --env-file .env src/index.ts",

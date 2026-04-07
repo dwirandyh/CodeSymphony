@@ -1,6 +1,6 @@
 import type { ChatEvent, ExploreActivityEntry, ReadFileTimelineEntry } from "@codesymphony/shared-types";
-import { finishedToolUseIds, isExploreLikeBashEvent, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils";
-import type { ExploreActivityGroup, ExploreRunKind, ExploreRunState } from "./types";
+import { finishedToolUseIds, isExploreLikeBashEvent, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils.js";
+import type { ExploreActivityGroup, ExploreRunKind, ExploreRunState } from "./types.js";
 
 export function shortenReadTargetForDisplay(target: string): string {
   const cleaned = target.trim().replace(/^["'`]+|["'`]+$/g, "");

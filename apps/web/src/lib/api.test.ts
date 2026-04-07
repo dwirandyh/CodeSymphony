@@ -531,6 +531,24 @@ describe("api", () => {
       await expect(api.listRepositories()).rejects.toThrow("Runtime API unavailable");
     });
 
+    it("resolves the runtime base lazily after the module loads", async () => {
+      vi.stubGlobal("window", {
+        __CS_RUNTIME_PORT: 4322,
+        __TAURI_INTERNALS__: {},
+        location: {
+          protocol: "http:",
+          hostname: "127.0.0.1",
+          origin: "http://127.0.0.1:5174",
+          port: "5174",
+        },
+      } as Window);
+
+      mockFetch.mockReturnValueOnce(mockOk([]));
+      await api.listRepositories();
+
+      expect(String(mockFetch.mock.calls[0]?.[0])).toContain("http://127.0.0.1:4322/api/repositories");
+    });
+
     it("rethrows AbortError as-is", async () => {
       const abortError = new DOMException("Aborted", "AbortError");
       mockFetch.mockRejectedValue(abortError);

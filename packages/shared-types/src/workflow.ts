@@ -124,6 +124,28 @@ export const ChatEventSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+export const WorkspaceSyncEventTypeSchema = z.enum([
+  "repository.created",
+  "repository.updated",
+  "repository.deleted",
+  "worktree.created",
+  "worktree.updated",
+  "worktree.deleted",
+  "thread.created",
+  "thread.updated",
+  "thread.deleted",
+]);
+export type WorkspaceSyncEventType = z.infer<typeof WorkspaceSyncEventTypeSchema>;
+
+export const WorkspaceSyncEventSchema = z.object({
+  id: z.string(),
+  type: WorkspaceSyncEventTypeSchema,
+  repositoryId: z.string().nullable().optional(),
+  worktreeId: z.string().nullable().optional(),
+  threadId: z.string().nullable().optional(),
+  createdAt: z.string().datetime(),
+});
+
 
 export const AssistantRenderHintSchema = z.enum(["markdown", "raw-file", "raw-fallback", "diff"]);
 export type AssistantRenderHint = z.infer<typeof AssistantRenderHintSchema>;
@@ -391,6 +413,7 @@ export type Worktree = z.infer<typeof WorktreeSchema>;
 export type ChatThread = z.infer<typeof ChatThreadSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type ChatEvent = z.infer<typeof ChatEventSchema>;
+export type WorkspaceSyncEvent = z.infer<typeof WorkspaceSyncEventSchema>;
 export type ChatTimelineItemKind = z.infer<typeof ChatTimelineItemKindSchema>;
 export type ChatTimelineMessageItem = z.infer<typeof ChatTimelineMessageItemSchema>;
 export type ChatTimelinePlanFileOutputItem = z.infer<typeof ChatTimelinePlanFileOutputItemSchema>;

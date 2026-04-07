@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "predev": "pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
+    "prebuild": "pnpm --filter @codesymphony/shared-types build && pnpm --filter @codesymphony/chat-timeline-core build",
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview",

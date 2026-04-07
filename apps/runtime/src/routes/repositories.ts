@@ -150,6 +150,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
   app.post("/repositories", async (request, reply) => {
     try {
       const repository = await app.repositoryService.create(request.body);
+      app.workspaceEventHub.emit("repository.created", { repositoryId: repository.id });
       return reply.code(201).send({ data: repository });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to create repository";
@@ -162,6 +163,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       const repository = await app.repositoryService.updateScripts(params.id, request.body);
+      app.workspaceEventHub.emit("repository.updated", { repositoryId: repository.id });
       return { data: repository };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to update scripts";
@@ -218,6 +220,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     }
 
     await app.repositoryService.remove(params.id);
+    app.workspaceEventHub.emit("repository.deleted", { repositoryId: params.id });
     return reply.code(204).send();
   });
 
@@ -226,6 +229,10 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       const { worktree, scriptResult } = await app.worktreeService.create(params.id, request.body);
+      app.workspaceEventHub.emit("worktree.created", {
+        repositoryId: worktree.repositoryId,
+        worktreeId: worktree.id,
+      });
       return reply.code(201).send({ data: worktree, scriptResult });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to create worktree";
@@ -250,7 +257,15 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const force = query.force === "true";
 
     try {
+      const worktree = await app.worktreeService.getById(params.id);
+      if (!worktree) {
+        return reply.code(404).send({ error: "Worktree not found" });
+      }
       await app.worktreeService.remove(params.id, { force });
+      app.workspaceEventHub.emit("worktree.deleted", {
+        repositoryId: worktree.repositoryId,
+        worktreeId: worktree.id,
+      });
       return reply.code(204).send();
     } catch (error) {
       if (error instanceof TeardownError) {
@@ -267,6 +282,10 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       const worktree = await app.worktreeService.renameBranch(params.id, input.branch, { isManualRename: true });
+      app.workspaceEventHub.emit("worktree.updated", {
+        repositoryId: worktree.repositoryId,
+        worktreeId: worktree.id,
+      });
       return { data: worktree };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to rename branch";
@@ -280,6 +299,12 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       const thread = await app.chatService.getOrCreatePrMrThread(params.id, request.body);
+      const worktree = await app.worktreeService.getById(thread.worktreeId);
+      app.workspaceEventHub.emit("thread.created", {
+        repositoryId: worktree?.repositoryId ?? null,
+        worktreeId: thread.worktreeId,
+        threadId: thread.id,
+      });
       return reply.code(201).send({ data: thread });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to get PR/MR thread";

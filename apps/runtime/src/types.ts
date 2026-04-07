@@ -1,6 +1,15 @@
 import type { PermissionMode as ClaudeSdkPermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { PrismaClient } from "@prisma/client";
-import type { ChatEvent, ChatEventType, ChatMode, ChatThreadPermissionMode, ChatThreadPermissionProfile, PermissionDecision } from "@codesymphony/shared-types";
+import type {
+  ChatEvent,
+  ChatEventType,
+  ChatMode,
+  ChatThreadPermissionMode,
+  ChatThreadPermissionProfile,
+  PermissionDecision,
+  WorkspaceSyncEvent,
+  WorkspaceSyncEventType,
+} from "@codesymphony/shared-types";
 
 export type RuntimeEventPayload = Record<string, unknown>;
 
@@ -8,6 +17,18 @@ export type RuntimeEventHub = {
   emit: (threadId: string, type: ChatEventType, payload: RuntimeEventPayload) => Promise<ChatEvent>;
   list: (threadId: string, afterIdx?: number) => Promise<ChatEvent[]>;
   subscribe: (threadId: string, listener: (event: ChatEvent) => void) => () => void;
+};
+
+export type WorkspaceSyncEventHub = {
+  emit: (
+    type: WorkspaceSyncEventType,
+    payload?: {
+      repositoryId?: string | null;
+      worktreeId?: string | null;
+      threadId?: string | null;
+    },
+  ) => WorkspaceSyncEvent;
+  subscribe: (listener: (event: WorkspaceSyncEvent) => void) => () => void;
 };
 
 export type ClaudeRunnerResult = {

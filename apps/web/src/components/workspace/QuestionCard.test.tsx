@@ -178,7 +178,7 @@ describe("QuestionCard", () => {
       );
     });
 
-    const input = container.querySelector("input[type='text']");
+    const input = container.querySelector<HTMLInputElement>("input[type='text']");
     expect(input).toBeTruthy();
     if (!input) {
       return;
@@ -224,7 +224,7 @@ describe("QuestionCard", () => {
       act(() => alphaBtn.click());
     }
 
-    const input = container.querySelector("input[type='text']");
+    const input = container.querySelector<HTMLInputElement>("input[type='text']");
     expect(input).toBeTruthy();
     if (!input) {
       return;

@@ -1,7 +1,7 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
-import { extractExploreActivityGroups } from "../exploreUtils";
-import { extractSubagentGroups, isOverlapUnclaimedSubagentEvent } from "../subagentUtils";
-import type { ExploreActivityGroup, SubagentGroup } from "../types";
+import { extractExploreActivityGroups } from "../exploreUtils.js";
+import { extractSubagentGroups, isOverlapUnclaimedSubagentEvent } from "../subagentUtils.js";
+import type { ExploreActivityGroup, SubagentGroup } from "../types.js";
 
 export type SubagentExploreExtractionResult = {
   subagentGroups: SubagentGroup[];
