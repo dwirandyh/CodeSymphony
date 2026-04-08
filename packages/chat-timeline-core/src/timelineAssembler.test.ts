@@ -147,4 +147,76 @@ describe("buildTimelineFromSeed", () => {
     ]);
     expect(result.items.some((item) => item.kind === "activity")).toBe(false);
   });
+
+  it("keeps streaming fenced markdown in markdown mode without raw fallback", () => {
+    const content = [
+      "Here is the plan:",
+      "",
+      "```ts",
+      "const value = 1;",
+    ].join("\n");
+    const messages = [
+      makeMessage("m1", 0, "user", "Show code example."),
+      makeMessage("m2", 1, "assistant", content),
+    ];
+    const events = [
+      makeEvent(0, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: content,
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const messageItems = result.items.filter(
+      (item): item is Extract<ChatTimelineItem, { kind: "message" }> => item.kind === "message" && item.message.role === "assistant",
+    );
+    expect(messageItems).toHaveLength(1);
+    expect(messageItems[0]?.renderHint).toBe("markdown");
+    expect(messageItems[0]?.message.content).toBe(content);
+  });
+
+  it("does not split fenced markdown content into multiple assistant segments", () => {
+    const content = [
+      "Intro paragraph.",
+      "",
+      "```ts",
+      "const value = 1;",
+      "```",
+      "",
+      "Closing paragraph.",
+    ].join("\n");
+    const messages = [
+      makeMessage("m1", 0, "user", "Show code example."),
+      makeMessage("m2", 1, "assistant", content),
+    ];
+    const events = [
+      makeEvent(0, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: content,
+      }),
+      makeEvent(1, "chat.completed", { messageId: "m2" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const messageItems = result.items.filter(
+      (item): item is Extract<ChatTimelineItem, { kind: "message" }> => item.kind === "message" && item.message.role === "assistant",
+    );
+    expect(messageItems).toHaveLength(1);
+    expect(messageItems[0]?.message.content).toBe(content);
+    expect(messageItems[0]?.renderHint).toBe("markdown");
+  });
 });

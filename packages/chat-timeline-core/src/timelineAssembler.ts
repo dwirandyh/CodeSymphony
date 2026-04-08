@@ -425,16 +425,15 @@ export function buildTimelineFromSeed(params: {
     if (message.role === "assistant" && !isCompleted && hasUnclosedFence && !isReadResponseContext) {
       refs.stickyRawFallbackMessageIds.add(message.id);
     }
-    if (message.role === "assistant" && isCompleted) {
+    if (message.role === "assistant" && (isCompleted || !hasUnclosedFence)) {
       refs.stickyRawFallbackMessageIds.delete(message.id);
     }
 
     const shouldRenderRawFallback =
       message.role === "assistant"
-      && !isCompleted
+      && isCompleted
       && !isReadResponseContext
       && refs.stickyRawFallbackMessageIds.has(message.id);
-    const isStreamingMessage = message.role === "assistant" && refs.streamingMessageIds.has(message.id) && !isCompleted;
 
     let renderHint: AssistantRenderHint | undefined;
     let rawFileLanguage: string | undefined;
@@ -442,7 +441,7 @@ export function buildTimelineFromSeed(params: {
       if (isLikelyDiffContent(message.content)) {
         renderHint = "diff";
       } else if (shouldRenderRawFallback) {
-        renderHint = isStreamingMessage ? "markdown" : "raw-fallback";
+        renderHint = "raw-fallback";
       } else {
         renderHint = "markdown";
       }

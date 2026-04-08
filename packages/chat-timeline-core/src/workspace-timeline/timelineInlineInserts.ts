@@ -553,7 +553,8 @@ export function pushMessageSegment(
     return;
   }
 
-  const paragraphSegments = content.includes("\n\n")
+  const shouldPreserveAsSingleSegment = renderHint === "raw-fallback" || content.includes("```");
+  const paragraphSegments = !shouldPreserveAsSingleSegment && content.includes("\n\n")
     ? content
       .split(/\n{2,}/)
       .map((segment) => segment.trim())
@@ -571,7 +572,7 @@ export function pushMessageSegment(
       item: {
         kind: "message",
         message: segmentMessage,
-        renderHint: renderHint === "diff" ? "diff" : "markdown",
+        renderHint: renderHint ?? "markdown",
         rawFileLanguage: undefined,
         isCompleted,
         context: nonBashContext,

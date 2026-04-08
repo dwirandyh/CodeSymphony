@@ -111,7 +111,7 @@ export const AssistantContent = memo(function AssistantContent({
       return "raw-fallback";
     }
 
-    if (!renderHint && hasUnclosedCodeFence(content)) {
+    if (!renderHint && isCompleted && hasUnclosedCodeFence(content)) {
       return "raw-fallback";
     }
 
