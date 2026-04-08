@@ -37,7 +37,7 @@ interface SettingsDialogProps {
   onClose: () => void;
   repositories: Repository[];
   onRemoveRepository: (id: string) => void;
-  onProvidersChanged?: () => void;
+  onProvidersChanged?: (providers: ModelProvider[]) => void;
 }
 
 export function SettingsDialog({ open, onClose, repositories, onRemoveRepository, onProvidersChanged }: SettingsDialogProps) {
@@ -142,11 +142,18 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     let cancelled = false;
     setLoadingModels(true);
     api.listModelProviders()
-      .then((data) => { if (!cancelled) setProviders(data); })
+      .then((data) => {
+        if (cancelled) {
+          return;
+        }
+
+        setProviders(data);
+        onProvidersChanged?.(data);
+      })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoadingModels(false); });
     return () => { cancelled = true; };
-  }, [open, activeTab]);
+  }, [open, activeTab, onProvidersChanged]);
 
   const parseScriptLines = useCallback((scriptText: string): string[] | null => {
     const lines = scriptText.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
@@ -222,7 +229,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     try {
       const data = await api.listModelProviders();
       setProviders(data);
-      onProvidersChanged?.();
+      onProvidersChanged?.(data);
     } catch {}
   }, [onProvidersChanged]);
 

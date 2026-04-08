@@ -12,6 +12,7 @@ import {
   mergeEventsWithCurrent,
   prependUniqueEvents,
   prependUniqueMessages,
+  prunePendingStreamUpdatesForSnapshot,
   resolveSnapshotSeedDecision,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
 } from "./chat-session";
@@ -616,6 +617,63 @@ describe("applyMessageMutations", () => {
     }]);
 
     expect(result[0]?.content).toBe("Saya akan cek struktur project terlebih dahulu untuk menentukan perintah build yang tepat.");
+  });
+
+  it("does not re-append queued historical deltas after a newer snapshot has already seeded the full message", () => {
+    const snapshotSeededMessages = [{
+      id: "m1",
+      threadId: "thread-1",
+      seq: 1,
+      role: "assistant" as const,
+      content: "build berhasil",
+      attachments: [],
+      createdAt: "2026-02-28T00:00:00.000Z",
+    }];
+    const pendingEvents = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m1", delta: "build" }),
+    ];
+    const pendingMutations = [{
+      kind: "message-delta" as const,
+      id: "m1",
+      threadId: "thread-1",
+      role: "assistant" as const,
+      delta: "build",
+      eventIdx: 1,
+    }];
+
+    const pruned = prunePendingStreamUpdatesForSnapshot({
+      pendingEvents,
+      pendingMutations,
+      snapshotNewestIdx: 1,
+    });
+    const result = applyMessageMutations(snapshotSeededMessages, pruned.pendingMutations);
+
+    expect(pruned.pendingEvents).toEqual([]);
+    expect(pruned.pendingMutations).toEqual([]);
+    expect(result[0]?.content).toBe("build berhasil");
+  });
+
+  it("keeps queued stream updates that are newer than the applied snapshot", () => {
+    const pendingEvents = [
+      makeEvent(2, "message.delta", { role: "assistant", messageId: "m1", delta: " lanjutan" }),
+    ];
+    const pendingMutations = [{
+      kind: "message-delta" as const,
+      id: "m1",
+      threadId: "thread-1",
+      role: "assistant" as const,
+      delta: " lanjutan",
+      eventIdx: 2,
+    }];
+
+    const pruned = prunePendingStreamUpdatesForSnapshot({
+      pendingEvents,
+      pendingMutations,
+      snapshotNewestIdx: 1,
+    });
+
+    expect(pruned.pendingEvents).toEqual(pendingEvents);
+    expect(pruned.pendingMutations).toEqual(pendingMutations);
   });
 });
 

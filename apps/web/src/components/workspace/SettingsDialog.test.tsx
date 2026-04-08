@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Repository } from "@codesymphony/shared-types";
+import type { ModelProvider, Repository } from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
 
 const apiMocks = vi.hoisted(() => ({
@@ -78,7 +78,11 @@ function makeRepo(overrides: Partial<Repository> = {}): Repository {
   };
 }
 
-function renderDialog(repositories: Repository[], onClose = vi.fn()) {
+function renderDialog(
+  repositories: Repository[],
+  onClose = vi.fn(),
+  onProvidersChanged?: (providers: ModelProvider[]) => void,
+) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -87,6 +91,7 @@ function renderDialog(repositories: Repository[], onClose = vi.fn()) {
           onClose={onClose}
           repositories={repositories}
           onRemoveRepository={vi.fn()}
+          onProvidersChanged={onProvidersChanged}
         />
       </QueryClientProvider>,
     );
@@ -244,5 +249,33 @@ describe("SettingsDialog", () => {
 
     expect(nextRepoSelect.value).toBe("r1");
     expect(runScriptTextarea.value).toBe("");
+  });
+
+  it("syncs fetched model providers back to the parent when the Models tab opens", async () => {
+    const providers = [{
+      id: "provider-1",
+      name: "Custom",
+      modelId: "claude-custom",
+      baseUrl: "https://example.com",
+      apiKeyMasked: "••••",
+      isActive: true,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }];
+    apiMocks.listModelProviders.mockResolvedValueOnce(providers);
+    const onProvidersChanged = vi.fn();
+
+    renderDialog([makeRepo()], vi.fn(), onProvidersChanged);
+
+    const modelsButton = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Models");
+    expect(modelsButton).toBeDefined();
+
+    await act(async () => {
+      modelsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(onProvidersChanged).toHaveBeenCalledWith(providers);
+    expect(document.body.textContent).toContain("claude-custom");
   });
 });

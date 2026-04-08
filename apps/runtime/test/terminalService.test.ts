@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { EventEmitter } from "node:events";
+import * as pty from "node-pty";
 
 const mockPtyProcess = () => {
   const emitter = new EventEmitter();
@@ -72,6 +73,30 @@ describe("terminalService", () => {
       const oldPty = currentMockPty;
       service.spawn("s1", "/tmp", { replace: true });
       expect(oldPty.kill).toHaveBeenCalled();
+    });
+
+    it("starts interactive shells as login shells", () => {
+      service.spawn("s1", "/tmp");
+
+      expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
+        expect.any(String),
+        ["-l"],
+        expect.objectContaining({
+          cwd: "/tmp",
+        }),
+      );
+    });
+
+    it("keeps exec mode on login shell command execution", () => {
+      service.spawn("s1", "/tmp", { mode: "exec", command: "pwd", replace: true });
+
+      expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
+        expect.any(String),
+        ["-lc", "pwd"],
+        expect.objectContaining({
+          cwd: "/tmp",
+        }),
+      );
     });
   });
 

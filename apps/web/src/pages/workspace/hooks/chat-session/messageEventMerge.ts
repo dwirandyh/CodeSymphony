@@ -143,6 +143,32 @@ export function applyMessageMutations(
   return result;
 }
 
+export function prunePendingStreamUpdatesForSnapshot(params: {
+  pendingEvents: ChatEvent[];
+  pendingMutations: PendingMessageMutation[];
+  snapshotNewestIdx: number | null;
+}): {
+  pendingEvents: ChatEvent[];
+  pendingMutations: PendingMessageMutation[];
+} {
+  const { pendingEvents, pendingMutations, snapshotNewestIdx } = params;
+  if (snapshotNewestIdx == null) {
+    return { pendingEvents, pendingMutations };
+  }
+
+  const nextPendingEvents = pendingEvents.filter((event) => event.idx > snapshotNewestIdx);
+  const nextPendingMutations = pendingMutations.filter((mutation) => (
+    mutation.kind !== "message-delta"
+    || mutation.eventIdx == null
+    || mutation.eventIdx > snapshotNewestIdx
+  ));
+
+  return {
+    pendingEvents: nextPendingEvents,
+    pendingMutations: nextPendingMutations,
+  };
+}
+
 export function mergeEventsWithCurrent(queriedEvents: ChatEvent[], current: ChatEvent[]): ChatEvent[] {
   if (current.length > 0 && queriedEvents.length > 0) {
     const currentLastIdx = current[current.length - 1].idx;

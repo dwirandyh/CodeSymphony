@@ -109,8 +109,18 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     }
   }
 
+  function clearPendingStreamBuffers() {
+    pendingEventsRef.current = [];
+    pendingMessageMutationsRef.current = [];
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+  }
+
   useEffect(() => {
     if (!selectedThreadId) {
+      clearPendingStreamBuffers();
       setWaitingAssistant(null);
       setStoppingThreadId(null);
       setStopRequestedThreadId(null);
@@ -121,6 +131,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       return;
     }
 
+    clearPendingStreamBuffers();
     streamingMessageIdsRef.current = new Set();
     stickyRawFallbackMessageIdsRef.current = new Set();
     renderDecisionByMessageIdRef.current = new Map();
@@ -189,6 +200,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             threadId: selectedThreadId,
             role,
             delta,
+            eventIdx: payload.idx,
           });
         }
       }
@@ -395,6 +407,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
     return () => {
       disposed = true;
+      clearPendingStreamBuffers();
       if (reconnectTimer !== null) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;

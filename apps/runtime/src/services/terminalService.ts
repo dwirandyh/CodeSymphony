@@ -41,6 +41,17 @@ interface SpawnOptions {
     replace?: boolean;
 }
 
+function buildShellArgs(options?: SpawnOptions): string[] {
+    const mode = options?.mode ?? "shell";
+    if (mode === "exec") {
+        return ["-lc", options?.command ?? ""];
+    }
+
+    // Match macOS Terminal/iTerm login-shell behavior so PATH and shell init files
+    // resolve tools the same way as an interactive terminal window.
+    return ["-l"];
+}
+
 export function createTerminalService() {
     const sessions = new Map<string, TerminalSession>();
 
@@ -60,8 +71,7 @@ export function createTerminalService() {
         const shellCandidates = resolveShellCandidates();
         const cwdCandidates = resolveCwdCandidates(cwd);
         let lastError: unknown = new Error("Unable to spawn terminal process");
-        const mode = options?.mode ?? "shell";
-        const command = options?.command;
+        const args = buildShellArgs(options);
 
         for (const shell of shellCandidates) {
             if (!existsSync(shell)) {
@@ -70,7 +80,6 @@ export function createTerminalService() {
 
             for (const candidateCwd of cwdCandidates) {
                 try {
-                    const args = mode === "exec" ? ["-lc", command ?? ""] : [];
                     return pty.spawn(shell, args, {
                         name: "xterm-256color",
                         cols: 80,

@@ -3,7 +3,14 @@ import type { WorktreeThreadUiStatus } from "../worktreeThreadStatus";
 
 export type PendingMessageMutation =
   | { kind: "ensure-placeholder"; id: string; threadId: string }
-  | { kind: "message-delta"; id: string; threadId: string; role: "assistant" | "user"; delta: string };
+  | {
+    kind: "message-delta";
+    id: string;
+    threadId: string;
+    role: "assistant" | "user";
+    delta: string;
+    eventIdx?: number;
+  };
 
 export type SnapshotSeedMode = "replace" | "merge";
 
