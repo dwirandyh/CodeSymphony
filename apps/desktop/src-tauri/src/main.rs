@@ -14,6 +14,16 @@ struct RuntimeProcess(Mutex<Option<Child>>);
 const WEB_RUNTIME_PORT: u16 = 4331;
 const DESKTOP_DEV_RUNTIME_PORT: u16 = 4321;
 const DESKTOP_PROD_RUNTIME_PORT: u16 = 4322;
+const LOCALHOST_RUNTIME_HOST: &str = "127.0.0.1";
+const LAN_RUNTIME_HOST: &str = "0.0.0.0";
+
+fn desktop_runtime_host(is_dev: bool) -> &'static str {
+    if is_dev {
+        LOCALHOST_RUNTIME_HOST
+    } else {
+        LAN_RUNTIME_HOST
+    }
+}
 
 fn find_node_candidate(dir: &Path) -> Option<PathBuf> {
     if !dir.is_dir() {
@@ -64,7 +74,7 @@ fn resolve_node_binary(resource_dir: &Path) -> Option<PathBuf> {
 
 fn desktop_runtime_init_script(port: u16) -> String {
     format!(
-        "window.__CS_RUNTIME_PORT = {port}; window.__CS_RUNTIME_API_BASE = 'http://127.0.0.1:{port}/api';"
+        "window.__CS_RUNTIME_PORT = {port}; window.__CS_RUNTIME_API_BASE = 'http://{LOCALHOST_RUNTIME_HOST}:{port}/api';"
     )
 }
 
@@ -77,7 +87,7 @@ fn spawn_runtime_dev(port: u16) -> Option<Child> {
 
     let mut cmd = Command::new("pnpm");
     cmd.args(["--filter", "@codesymphony/runtime", "dev"])
-        .env("RUNTIME_HOST", "127.0.0.1")
+        .env("RUNTIME_HOST", desktop_runtime_host(true))
         .env("RUNTIME_PORT", port.to_string())
         .current_dir(workspace_root);
 
@@ -157,7 +167,7 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         .env("DATABASE_URL", format!("file:{}", db_path.display()))
         .env("PRISMA_SCHEMA_PATH", prisma_dir.join("schema.prisma"))
         .env("PRISMA_MIGRATIONS_DIR", prisma_dir.join("migrations"))
-        .env("RUNTIME_HOST", "127.0.0.1")
+        .env("RUNTIME_HOST", desktop_runtime_host(false))
         .env("RUNTIME_PORT", port.to_string())
         .env("CODESYMPHONY_DEBUG_LOG_PATH", &debug_log_path)
         .env(
@@ -282,4 +292,19 @@ fn main() {
                 stop_managed_runtime(app_handle);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::desktop_runtime_host;
+
+    #[test]
+    fn desktop_dev_runtime_stays_localhost() {
+        assert_eq!(desktop_runtime_host(true), "127.0.0.1");
+    }
+
+    #[test]
+    fn desktop_prod_runtime_binds_to_lan() {
+        assert_eq!(desktop_runtime_host(false), "0.0.0.0");
+    }
 }

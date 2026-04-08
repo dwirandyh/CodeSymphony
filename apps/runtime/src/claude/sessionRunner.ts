@@ -13,6 +13,7 @@ import {
   captureStderrLine,
   withClaudeSetupHint,
 } from "./executableResolver.js";
+import { buildClaudeRuntimeEnv } from "./shellEnv.js";
 import type { SessionMaps } from "./sessionInstrumentation.js";
 import { createEmitInstrumentation, createEmitDecision, createMarkStarted } from "./sessionInstrumentation.js";
 import {
@@ -35,6 +36,7 @@ import {
 export const __testing = {
   extractBashToolResult,
   sanitizeForLog,
+  buildClaudeRuntimeEnv,
 };
 
 function shouldResumeSession(sessionId: string | null, sessionWorktreePath: string | null | undefined, cwd: string): boolean {
@@ -169,9 +171,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
   const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;
 
-  const baseEnv = {
+  const baseEnv = buildClaudeRuntimeEnv({
     ...process.env,
-  } as NodeJS.ProcessEnv;
+  } as NodeJS.ProcessEnv);
   delete baseEnv.CLAUDECODE;
   delete baseEnv.ANTHROPIC_API_KEY;
   delete baseEnv.ANTHROPIC_BASE_URL;

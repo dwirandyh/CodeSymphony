@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitBranch, Menu, Settings, X } from "lucide-react";
-import type { ModelProvider, ReviewKind } from "@codesymphony/shared-types";
+import type { ReviewKind } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -30,6 +30,7 @@ import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
+import { useModelProviders } from "./workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "./workspace/hooks/useWorkspaceSyncStream";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
@@ -105,19 +106,12 @@ export function WorkspacePage() {
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
   const runScriptWorktreeIdRef = useRef<string | null>(null);
 
-  // ── Model/Provider state ──
-  const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
-
-  const refreshModelProviders = useCallback(() => {
-    api.listModelProviders()
-      .then(setModelProviders)
-      .catch(() => {});
-  }, []);
-
-  // Fetch model providers on mount
-  useEffect(() => {
-    refreshModelProviders();
-  }, [refreshModelProviders]);
+  const {
+    providers: modelProviders,
+    refreshProviders: refreshModelProviders,
+    replaceProviders: replaceModelProviders,
+    selectProvider,
+  } = useModelProviders();
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -129,14 +123,9 @@ export function WorkspacePage() {
 
   const handleSelectProvider = useCallback(async (id: string | null) => {
     try {
-      if (id === null) {
-        await api.deactivateAllProviders();
-      } else {
-        await api.activateModelProvider(id);
-      }
-      refreshModelProviders();
+      await selectProvider(id);
     } catch {}
-  }, [refreshModelProviders]);
+  }, [selectProvider]);
 
   const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
     setScriptOutputs((prev) => {
@@ -999,7 +988,7 @@ export function WorkspacePage() {
           setSettingsOpen(false);
           void repos.removeRepository(id);
         }}
-        onProvidersChanged={refreshModelProviders}
+        onProvidersChanged={replaceModelProviders}
       />
 
       <TeardownErrorDialog

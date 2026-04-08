@@ -19,6 +19,7 @@ export {
   prependUniqueEvents,
   insertAllEvents,
   applyMessageMutations,
+  prunePendingStreamUpdatesForSnapshot,
   mergeEventsWithCurrent,
 } from "./messageEventMerge";
 

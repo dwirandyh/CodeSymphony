@@ -44,7 +44,11 @@ import {
   buildSnapshotKey,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
 } from "./hydrationUtils";
-import { prependUniqueMessages, prependUniqueEvents } from "./messageEventMerge";
+import {
+  prependUniqueMessages,
+  prependUniqueEvents,
+  prunePendingStreamUpdatesForSnapshot,
+} from "./messageEventMerge";
 import {
   applySnapshotSeed,
   applyThreadModeUpdate,
@@ -474,6 +478,23 @@ export function useChatSession(
       onBranchRenamed,
       mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
     });
+
+    const prunedPendingStreamState = prunePendingStreamUpdatesForSnapshot({
+      pendingEvents: pendingEventsRef.current,
+      pendingMutations: pendingMessageMutationsRef.current,
+      snapshotNewestIdx: queriedThreadSnapshot.newestIdx ?? null,
+    });
+    pendingEventsRef.current = prunedPendingStreamState.pendingEvents;
+    pendingMessageMutationsRef.current = prunedPendingStreamState.pendingMutations;
+    if (
+      rafIdRef.current !== null
+      && prunedPendingStreamState.pendingEvents.length === 0
+      && prunedPendingStreamState.pendingMutations.length === 0
+    ) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+
     lastAppliedSnapshotKeyByThreadRef.current.set(selectedThreadId, seedDecision.snapshotKey);
   }, [hasPendingUserGate, messages.length, onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId]);
 
