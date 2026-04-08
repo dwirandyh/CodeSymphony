@@ -92,5 +92,5 @@ endif
 	sed -i '' "s/^RUNTIME_PORT=.*/RUNTIME_PORT=$$RUNTIME_PORT/" apps/runtime/.env; \
 	printf "VITE_DEV_PORT=%s\n" "$$WEB_PORT" > apps/web/.env; \
 	echo "Generating route tree..."; \
-	npx --prefix apps/web @tanstack/router-cli generate; \
+	(cd apps/web && npx @tanstack/router-cli generate); \
 	echo "Done! Run 'make dev' to start."
