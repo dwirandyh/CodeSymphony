@@ -1,0 +1,194 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e6]:
+      - heading "CodeSymphony" [level=1] [ref=e7]
+      - paragraph [ref=e8]: Multi-agent orchestrator
+    - generic [ref=e10]:
+      - generic [ref=e11]:
+        - heading "Workspace (4)" [level=2] [ref=e12]
+        - button "Attach repository" [ref=e13] [cursor=pointer]:
+          - img [ref=e14]
+      - generic [ref=e16]:
+        - article [ref=e17]:
+          - generic [ref=e18]:
+            - button "winkatsu-backend 0 worktrees" [ref=e19] [cursor=pointer]:
+              - img [ref=e21]
+              - generic [ref=e23]: winkatsu-backend
+              - generic [ref=e24]: 0 worktrees
+            - button "Add worktree for winkatsu-backend" [ref=e25] [cursor=pointer]:
+              - img [ref=e26]
+          - button "dev Idle" [ref=e30] [cursor=pointer]:
+            - generic [ref=e32]:
+              - generic [ref=e33]:
+                - img [ref=e35]
+                - generic [ref=e40]: dev
+              - generic [ref=e41]:
+                - generic: Idle
+        - article [ref=e43]:
+          - generic [ref=e44]:
+            - button "winkatsu-flutter 0 worktrees" [ref=e45] [cursor=pointer]:
+              - img [ref=e47]
+              - generic [ref=e49]: winkatsu-flutter
+              - generic [ref=e50]: 0 worktrees
+            - button "Add worktree for winkatsu-flutter" [ref=e51] [cursor=pointer]:
+              - img [ref=e52]
+        - article [ref=e53]:
+          - generic [ref=e54]:
+            - button "philips-marketing-2019-android 1 worktrees" [ref=e55] [cursor=pointer]:
+              - img [ref=e57]
+              - generic [ref=e59]: philips-marketing-2019-android
+              - generic [ref=e60]: 1 worktrees
+            - button "Add worktree for philips-marketing-2019-android" [ref=e61] [cursor=pointer]:
+              - img [ref=e62]
+        - article [ref=e63]:
+          - generic [ref=e64]:
+            - button "finly_app 0 worktrees" [ref=e65] [cursor=pointer]:
+              - img [ref=e67]
+              - generic [ref=e69]: finly_app
+              - generic [ref=e70]: 0 worktrees
+            - button "Add worktree for finly_app" [ref=e71] [cursor=pointer]:
+              - img [ref=e72]
+    - button "Settings" [ref=e74] [cursor=pointer]:
+      - img [ref=e75]
+      - text: Settings
+  - button [ref=e78]
+  - main [ref=e80]:
+    - generic [ref=e81]:
+      - generic [ref=e82]:
+        - generic [ref=e83]:
+          - generic [ref=e84]: Session·winkatsu-backend·Root Workspace
+          - generic [ref=e85]:
+            - generic [ref=e86]:
+              - button "Android Studio" [ref=e149] [cursor=pointer]:
+                - img [ref=e150]
+                - generic [ref=e151]: Android Studio
+                - img [ref=e152]
+              - button "Open in Android Studio" [ref=e155] [cursor=pointer]:
+                - img [ref=e156]
+            - button "Run script" [ref=e89] [cursor=pointer]:
+              - img [ref=e90]
+        - generic [ref=e92]:
+          - tablist "Sessions" [ref=e160]:
+            - generic [ref=e161]:
+              - generic [ref=e162]:
+                - tab "New Thread" [ref=e163] [cursor=pointer]
+                - button "Close session New Thread":
+                  - img
+              - generic [ref=e164]:
+                - tab "Create Merge Request" [selected] [ref=e165] [cursor=pointer]
+                - button "Close session Create Merge Request" [ref=e166] [cursor=pointer]:
+                  - img [ref=e167]
+          - button "Add session" [ref=e93] [cursor=pointer]:
+            - img [ref=e94]
+      - generic [ref=e172]:
+        - article [ref=e175]:
+          - group [ref=e176]:
+            - generic "Ran git -C winkatsu-backend status --short for 1s" [ref=e177] [cursor=pointer]:
+              - generic [ref=e178]: Ran git -C winkatsu-backend status --short for 1s
+              - img [ref=e180]
+        - article [ref=e184]:
+          - group [ref=e185]:
+            - generic "Ran git -C winkatsu-backend push -u origin show-reset-time for 4s" [ref=e186] [cursor=pointer]:
+              - generic [ref=e187]: Ran git -C winkatsu-backend push -u origin show-reset-time for 4s
+              - img [ref=e189]
+        - article [ref=e193]:
+          - group [ref=e194]:
+            - generic "Ran git -C winkatsu-backend rev-parse --verify show-reset-time for 1s" [ref=e195] [cursor=pointer]:
+              - generic [ref=e196]: Ran git -C winkatsu-backend rev-parse --verify show-reset-time for 1s
+              - img [ref=e198]
+        - article [ref=e202]:
+          - group [ref=e203]:
+            - 'generic "Ran git -C winkatsu-backend rev-parse --abbrev-ref --symbolic-full-name @{u} for 1s" [ref=e204] [cursor=pointer]':
+              - img [ref=e205]
+              - generic [ref=e209]: "Ran git -C winkatsu-backend rev-parse --abbrev-ref --symbolic-full-name @{u} for 1s"
+              - img [ref=e211]
+        - article [ref=e215]:
+          - group [ref=e216]:
+            - generic "Ran git -C winkatsu-backend push -u origin show-reset-time for 3s" [ref=e217] [cursor=pointer]:
+              - generic [ref=e218]: Ran git -C winkatsu-backend push -u origin show-reset-time for 3s
+              - img [ref=e220]
+        - article [ref=e224]:
+          - group [ref=e225]:
+            - 'generic "Ran git -C winkatsu-backend rev-parse --abbrev-ref --symbolic-full-name @{u} for 1s" [ref=e226] [cursor=pointer]':
+              - img [ref=e227]
+              - generic [ref=e231]: "Ran git -C winkatsu-backend rev-parse --abbrev-ref --symbolic-full-name @{u} for 1s"
+              - img [ref=e233]
+        - article [ref=e237]:
+          - group [ref=e238]:
+            - generic "Ran git -C winkatsu-backend config --get show-reset-time.remote for 1s" [ref=e239] [cursor=pointer]:
+              - img [ref=e240]
+              - generic [ref=e244]: Ran git -C winkatsu-backend config --get show-reset-time.remote for 1s
+              - img [ref=e246]
+        - article [ref=e250]:
+          - group [ref=e251]:
+            - generic "Ran git -C winkatsu-backend branch --set-upstream-to=show-reset-time show-reset-time for 1s" [ref=e252] [cursor=pointer]:
+              - generic [ref=e253]: Ran git -C winkatsu-backend branch --set-upstream-to=show-reset-time show-reset-time for 1s
+              - img [ref=e255]
+        - article [ref=e259]:
+          - group [ref=e260]:
+            - 'generic "Ran git -C winkatsu-backend rev-parse --abbrev-ref --symbolic-full-name @{u} for 1s" [ref=e261] [cursor=pointer]':
+              - generic [ref=e262]: "Ran git -C winkatsu-backend rev-parse --abbrev-ref --symbolic-full-name @{u} for 1s"
+              - img [ref=e264]
+        - article [ref=e268]:
+          - group [ref=e269]:
+            - generic "Ran glab mr list --repo winkatsu-backend --source-branch show-reset-time --target-branch de... for 1s" [ref=e270] [cursor=pointer]:
+              - generic [ref=e271]: Ran glab mr list --repo winkatsu-backend --source-branch show-reset-time --target-branch de... for 1s
+              - img [ref=e273]
+        - article [ref=e277]:
+          - group [ref=e278]:
+            - generic "Ran glab mr create --repo winkatsu-backend --source-branch show-reset-time --target-branch... for 5s" [ref=e279] [cursor=pointer]:
+              - generic [ref=e280]: Ran glab mr create --repo winkatsu-backend --source-branch show-reset-time --target-branch... for 5s
+              - img [ref=e282]
+        - article [ref=e286]:
+          - group [ref=e287]:
+            - generic "Ran glab mr view 165 --repo winkatsu-backend --output json for 1s" [ref=e288] [cursor=pointer]:
+              - generic [ref=e289]: Ran glab mr view 165 --repo winkatsu-backend --output json for 1s
+              - img [ref=e291]
+        - article [ref=e295]:
+          - paragraph [ref=e299]:
+            - text: "Created MR !165:"
+            - link "https://gitlab.com/pakwin.dev/winkatsu-backend/-/merge_requests/165" [ref=e300] [cursor=pointer]:
+              - /url: https://gitlab.com/pakwin.dev/winkatsu-backend/-/merge_requests/165
+        - article [ref=e303]:
+          - generic [ref=e306]:
+            - paragraph [ref=e307]: "Details:"
+            - list [ref=e308]:
+              - listitem [ref=e309]: "Review number: !165"
+              - listitem [ref=e310]: "Title: feat: add daily quest reset metadata to API response"
+        - article [ref=e313]:
+          - paragraph [ref=e317]:
+            - text: I also confirmed there was no existing open MR for
+            - code [ref=e318]: feat/daily-mission/show-reset-time
+            - text: targeting
+            - code [ref=e319]: dev
+            - text: before creating it.
+      - generic [ref=e101]:
+        - textbox [ref=e102]: Message CodeSymphony... (type @ to mention files)
+        - generic [ref=e103]:
+          - button "Attach files" [ref=e104] [cursor=pointer]:
+            - img [ref=e105]
+          - button "Switch to plan mode" [ref=e107] [cursor=pointer]:
+            - img [ref=e108]
+            - text: Execute
+          - button "Select model" [disabled] [ref=e111]:
+            - generic [ref=e112]: CLI
+            - img [ref=e113]
+          - button "Select permission mode" [ref=e116] [cursor=pointer]:
+            - img [ref=e117]
+            - generic [ref=e120]: Default
+            - img [ref=e121]
+        - generic [ref=e123]:
+          - button "Send message" [disabled]:
+            - img
+            - generic: Send message
+    - generic [ref=e128]:
+      - tablist [ref=e129]:
+        - tab "Setup Script" [ref=e130] [cursor=pointer]: Setup Script
+        - tab "Terminal" [selected] [ref=e132] [cursor=pointer]: Terminal
+        - tab "Run" [ref=e134] [cursor=pointer]: Run
+        - tab "Debug Console" [ref=e136] [cursor=pointer]: Debug Console
+      - button "Expand panel" [ref=e138] [cursor=pointer]:
+        - img [ref=e140]
+  - navigation [ref=e143]:
+    - button "Source Control" [ref=e144] [cursor=pointer]:
+      - img [ref=e145]

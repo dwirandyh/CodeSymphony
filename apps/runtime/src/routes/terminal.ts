@@ -58,12 +58,13 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
                 app.terminalService.spawn(sessionId, cwd);
             } catch (spawnError) {
                 const message = spawnError instanceof Error ? spawnError.message : "Failed to spawn terminal";
-                app.logService.log("error", "terminal", `Failed to spawn PTY: ${message}`);
+                app.logService.log("error", "terminal", `Failed to spawn PTY: ${message}`, { cwd });
                 socket.close(1011, message);
                 return;
             }
 
-            app.logService.log("info", "terminal", `Terminal session connected: ${sessionId}`, { cwd });
+            const worktreeId = sessionId.includes(":") ? sessionId.split(":", 1)[0] : undefined;
+            app.logService.log("info", "terminal", `Terminal session connected: ${sessionId}`, { cwd, sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
 
             const removeListener = app.terminalService.addListener(
                 sessionId,
@@ -116,11 +117,11 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
             socket.on("close", () => {
                 removeListener();
                 removeExitListener();
-                app.logService.log("info", "terminal", `Terminal session disconnected: ${sessionId}`);
+                app.logService.log("info", "terminal", `Terminal session disconnected: ${sessionId}`, { sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
             });
 
             socket.on("error", (error: Error) => {
-                app.logService.log("error", "terminal", `Terminal WebSocket error: ${error.message}`);
+                app.logService.log("error", "terminal", `Terminal WebSocket error: ${error.message}`, { sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
                 removeListener();
                 removeExitListener();
             });

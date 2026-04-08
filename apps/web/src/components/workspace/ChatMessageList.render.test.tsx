@@ -781,6 +781,73 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Explored 1 search");
   });
 
+  it("renders successful non-explore subagent steps without a status icon", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "sub-success-step",
+        agentId: "agent-4",
+        agentType: "Task",
+        toolUseId: "tu-4",
+        status: "success",
+        description: "Check repository state",
+        lastMessage: null,
+        steps: [
+          {
+            toolUseId: "step-success",
+            toolName: "Bash",
+            label: "Ran git status",
+            openPath: null,
+            status: "success",
+          },
+        ],
+        durationSeconds: 1,
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Ran git status");
+    expect(container.querySelector(".lucide-circle-check")).toBeNull();
+    expect(container.querySelector(".lucide-loader-2")).toBeNull();
+    expect(container.querySelector(".lucide-circle-x")).toBeNull();
+  });
+
+  it("renders failed non-explore subagent steps with the same failure icon style as main tools", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "subagent-activity",
+        id: "sub-failed-step",
+        agentId: "agent-5",
+        agentType: "Task",
+        toolUseId: "tu-5",
+        status: "success",
+        description: "Check repository state",
+        lastMessage: null,
+        steps: [
+          {
+            toolUseId: "step-failed",
+            toolName: "Bash",
+            label: "Ran git status",
+            openPath: null,
+            status: "failed",
+          },
+        ],
+        durationSeconds: 1,
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Ran git status");
+    expect(container.querySelector(".lucide-circle-x")).toBeTruthy();
+    expect(container.querySelector(".lucide-loader-2")).toBeNull();
+  });
+
   it("renders activity items in the timeline", () => {
     const items: ChatTimelineItem[] = [
       {

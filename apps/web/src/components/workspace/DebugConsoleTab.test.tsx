@@ -120,7 +120,7 @@ describe("DebugConsoleTab", () => {
 
   it("hydrates logs, backfills on reconnect, dedupes ids, and logs debug.console lifecycle events", async () => {
     await act(async () => {
-      root.render(<DebugConsoleTab selectedThreadId={null} />);
+      root.render(<DebugConsoleTab worktreeId={null} selectedThreadId={null} />);
     });
     await flushEffects();
 
@@ -167,13 +167,14 @@ describe("DebugConsoleTab", () => {
   });
 
   it("filters log entries by selectedThreadId", async () => {
-    // Seed entries: one matching thread, one different thread, one global (no threadId)
-    logService.log("info", "runtime", "thread-A log", { threadId: "thread-A" });
-    logService.log("info", "runtime", "thread-B log", { threadId: "thread-B" });
-    logService.log("info", "runtime", "global log");
+    // Seed entries: one matching thread, one different thread, one global (no threadId), and one different worktree
+    logService.log("info", "runtime", "thread-A log", { threadId: "thread-A" }, { worktreeId: "wt-1", threadId: "thread-A" });
+    logService.log("info", "runtime", "thread-B log", { threadId: "thread-B" }, { worktreeId: "wt-1", threadId: "thread-B" });
+    logService.log("info", "runtime", "other worktree log", undefined, { worktreeId: "wt-2" });
+    logService.log("info", "runtime", "global log", undefined, { worktreeId: "wt-1" });
 
     await act(async () => {
-      root.render(<DebugConsoleTab selectedThreadId="thread-A" />);
+      root.render(<DebugConsoleTab worktreeId="wt-1" selectedThreadId="thread-A" />);
     });
     await flushEffects();
 
@@ -183,5 +184,6 @@ describe("DebugConsoleTab", () => {
     expect(texts.some((t) => t.includes("thread-A log"))).toBe(true);
     expect(texts.some((t) => t.includes("global log"))).toBe(true);
     expect(texts.some((t) => t.includes("thread-B log"))).toBe(false);
+    expect(texts.some((t) => t.includes("other worktree log"))).toBe(false);
   });
 });

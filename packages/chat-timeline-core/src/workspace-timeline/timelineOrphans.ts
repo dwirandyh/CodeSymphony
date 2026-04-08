@@ -63,6 +63,64 @@ function skillToolRunId(event: ChatEvent): string | null {
   return toolRunId(event);
 }
 
+function subagentLeakReason(event: ChatEvent): string | null {
+  if (isOverlapUnclaimedSubagentEvent(event.id)) {
+    return getSubagentAttributionReason(event.id) ?? "overlap-unclaimed-subagent";
+  }
+
+  const explicitSubagentOwner = payloadStringOrNull(event.payload.subagentOwnerToolUseId);
+  if (explicitSubagentOwner) {
+    return "explicit-subagent-owner";
+  }
+
+  const launcherToolUseId = payloadStringOrNull(event.payload.launcherToolUseId);
+  if (launcherToolUseId) {
+    return "launcher-tool-use-id";
+  }
+
+  const ownershipReason = payloadStringOrNull(event.payload.ownershipReason);
+  if (
+    ownershipReason === "unresolved_overlap_no_lineage"
+    || ownershipReason === "unresolved_ambiguous_candidates"
+  ) {
+    return ownershipReason;
+  }
+
+  const attributionReason = getSubagentAttributionReason(event.id);
+  if (
+    attributionReason === "unclaimed_overlap_no_lineage"
+    || attributionReason === "unclaimed_ambiguous_parent_candidates"
+    || attributionReason === "unclaimed_ambiguous_preceding_candidates"
+  ) {
+    return attributionReason;
+  }
+
+  return null;
+}
+
+function isSubagentLeakCandidate(event: ChatEvent): boolean {
+  return subagentLeakReason(event) !== null;
+}
+
+function logQuarantinedSubagentEvents(source: string, events: ChatEvent[]): void {
+  if (events.length === 0) {
+    return;
+  }
+
+  pushRenderDebug({
+    source: "timelineOrphans",
+    event: source,
+    details: {
+      eventIds: events.map((event) => event.id),
+      reasons: events.map((event) => ({
+        eventId: event.id,
+        reason: subagentLeakReason(event),
+        reasonCode: getSubagentAttributionReason(event.id),
+      })),
+    },
+  });
+}
+
 export function processOrphanSubagentGroups(
   inlineToolEvents: ChatEvent[],
   assignedToolEventIds: Set<string>,
@@ -109,6 +167,8 @@ export function processOrphanExploreGroups(
   const unassignedInlineEvents = inlineToolEvents.filter(
     (event) => !assignedToolEventIds.has(event.id),
   );
+  const quarantinedExploreEvents = unassignedInlineEvents.filter(isSubagentLeakCandidate);
+  logQuarantinedSubagentEvents("quarantinedSubagentExploreEvents", quarantinedExploreEvents);
   const excludedToolUseIds = new Set<string>();
   for (const event of unassignedInlineEvents) {
     if (event.type !== "tool.finished") {
@@ -122,22 +182,8 @@ export function processOrphanExploreGroups(
       }
     }
   }
-  const quarantinedExploreEvents = unassignedInlineEvents.filter((event) => isOverlapUnclaimedSubagentEvent(event.id));
-  if (quarantinedExploreEvents.length > 0) {
-    pushRenderDebug({
-      source: "timelineOrphans",
-      event: "quarantinedOverlapSubagentExploreEvents",
-      details: {
-        eventIds: quarantinedExploreEvents.map((event) => event.id),
-        reasonCodes: quarantinedExploreEvents.map((event) => ({
-          eventId: event.id,
-          reasonCode: getSubagentAttributionReason(event.id),
-        })),
-      },
-    });
-  }
   const orphanExploreCandidates = unassignedInlineEvents
-    .filter((event) => !isOverlapUnclaimedSubagentEvent(event.id))
+    .filter((event) => !isSubagentLeakCandidate(event))
     .filter((event) => {
       const summary = payloadStringOrNull(event.payload.summary)?.trim().toLowerCase() ?? "";
       if (summary.startsWith("ran ls") || summary.startsWith("failed to read")) {
@@ -210,9 +256,14 @@ export function processOrphanToolEvents(
     }
   }
 
+  const quarantinedToolEvents = inlineToolEvents
+    .filter((event) => !assignedToolEventIds.has(event.id))
+    .filter(isSubagentLeakCandidate);
+  logQuarantinedSubagentEvents("quarantinedSubagentToolEvents", quarantinedToolEvents);
+
   const orphanToolEvents = inlineToolEvents
     .filter((event) => !assignedToolEventIds.has(event.id))
-    .filter((event) => !isOverlapUnclaimedSubagentEvent(event.id))
+    .filter((event) => !isSubagentLeakCandidate(event))
     .filter((event) => !isTodoWriteToolEvent(event))
     .filter((event) =>
       event.type !== "permission.requested"

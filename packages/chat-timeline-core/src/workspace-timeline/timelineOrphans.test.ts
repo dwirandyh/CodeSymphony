@@ -18,6 +18,121 @@ function makeEvent(
 }
 
 describe("processOrphanToolEvents", () => {
+  it("quarantines orphan tool events with explicit subagent owner metadata", () => {
+    const inlineToolEvents: ChatEvent[] = [
+      makeEvent(1, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-1",
+        subagentOwnerToolUseId: "subagent-1",
+        toolInput: { command: "ls" },
+      }),
+      makeEvent(2, "tool.finished", {
+        toolName: "Bash",
+        summary: "Ran ls",
+        subagentOwnerToolUseId: "subagent-1",
+        precedingToolUseIds: ["bash-1"],
+      }),
+    ];
+
+    const sortable: Array<{ item: { kind: string; [key: string]: unknown } }> = [];
+    processOrphanToolEvents(
+      inlineToolEvents,
+      new Set<string>(),
+      false,
+      [],
+      sortable as never,
+      "t1",
+      {
+        streamingMessageIds: new Set<string>(),
+        stickyRawFallbackMessageIds: new Set<string>(),
+        renderDecisionByMessageId: new Map<string, string>(),
+        loggedOrphanEventIdsByThread: new Map<string, Set<string>>(),
+      },
+    );
+
+    expect(sortable.filter((entry) => entry.item.kind === "tool")).toHaveLength(0);
+  });
+
+  it("quarantines orphan tool events with launcher linkage or unresolved overlap ownership", () => {
+    const inlineToolEvents: ChatEvent[] = [
+      makeEvent(1, "tool.started", {
+        toolName: "Glob",
+        toolUseId: "glob-1",
+        launcherToolUseId: "task-1",
+      }),
+      makeEvent(2, "tool.finished", {
+        toolName: "Glob",
+        summary: "Found files",
+        launcherToolUseId: "task-1",
+        precedingToolUseIds: ["glob-1"],
+      }),
+      makeEvent(3, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-2",
+        ownershipReason: "unresolved_overlap_no_lineage",
+      }),
+      makeEvent(4, "tool.finished", {
+        toolName: "Bash",
+        summary: "Ran pwd",
+        ownershipReason: "unresolved_overlap_no_lineage",
+        precedingToolUseIds: ["bash-2"],
+      }),
+    ];
+
+    const sortable: Array<{ item: { kind: string; [key: string]: unknown } }> = [];
+    processOrphanToolEvents(
+      inlineToolEvents,
+      new Set<string>(),
+      false,
+      [],
+      sortable as never,
+      "t1",
+      {
+        streamingMessageIds: new Set<string>(),
+        stickyRawFallbackMessageIds: new Set<string>(),
+        renderDecisionByMessageId: new Map<string, string>(),
+        loggedOrphanEventIdsByThread: new Map<string, Set<string>>(),
+      },
+    );
+
+    expect(sortable.filter((entry) => entry.item.kind === "tool")).toHaveLength(0);
+  });
+
+  it("still renders normal orphan tool events without subagent markers", () => {
+    const inlineToolEvents: ChatEvent[] = [
+      makeEvent(1, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-1",
+        toolInput: { command: "pwd" },
+      }),
+      makeEvent(2, "tool.finished", {
+        toolName: "Bash",
+        summary: "Ran pwd",
+        precedingToolUseIds: ["bash-1"],
+      }),
+    ];
+
+    const sortable: Array<{ item: { kind: string; [key: string]: unknown } }> = [];
+    processOrphanToolEvents(
+      inlineToolEvents,
+      new Set<string>(),
+      false,
+      [],
+      sortable as never,
+      "t1",
+      {
+        streamingMessageIds: new Set<string>(),
+        stickyRawFallbackMessageIds: new Set<string>(),
+        renderDecisionByMessageId: new Map<string, string>(),
+        loggedOrphanEventIdsByThread: new Map<string, Set<string>>(),
+      },
+    );
+
+    const toolItems = sortable.filter((entry) => entry.item.kind === "tool");
+    expect(toolItems).toHaveLength(1);
+    expect(toolItems[0]?.item.toolName).toBe("Bash");
+  });
+
   it("prioritizes orphan edit runs before generic tool fallback", () => {
     const inlineToolEvents: ChatEvent[] = [
       makeEvent(1, "tool.started", {

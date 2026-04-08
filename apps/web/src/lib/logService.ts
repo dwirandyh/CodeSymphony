@@ -9,6 +9,8 @@ export interface LogEntry {
     source: string;
     message: string;
     data?: unknown;
+    worktreeId?: string;
+    threadId?: string;
 }
 
 type LogSubscriber = (entries: LogEntry[]) => void;
@@ -134,6 +136,7 @@ export const logService = {
         source: string,
         message: string,
         data?: unknown,
+        scope?: Pick<LogEntry, "worktreeId" | "threadId">,
     ): void {
         idCounter += 1;
         const entry: LogEntry = {
@@ -143,6 +146,8 @@ export const logService = {
             source,
             message,
             data,
+            ...(scope?.worktreeId ? { worktreeId: scope.worktreeId } : {}),
+            ...(scope?.threadId ? { threadId: scope.threadId } : {}),
         };
 
         if (addEntries([entry]) > 0) {

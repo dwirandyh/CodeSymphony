@@ -414,6 +414,7 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       const worktreePath = thread.worktree.path;
+      const threadWorktreeId = thread.worktreeId;
       threadWorktreePath = worktreePath;
       const autoAcceptTools = options?.autoAcceptTools ?? thread.permissionMode === "full_access";
       if (!existsSync(worktreePath)) {
@@ -523,7 +524,12 @@ export function createChatService(deps: RuntimeDeps) {
             instrumentationMessage(event),
             {
               threadId,
+              worktreeId: threadWorktreeId,
               ...event,
+            },
+            {
+              threadId,
+              worktreeId: threadWorktreeId,
             },
           );
         },

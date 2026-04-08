@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Bot, CheckCircle2, ChevronRight, Loader2, XCircle } from "lucide-react";
+import { Bot, ChevronRight, Loader2, XCircle } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { isExploreLikeBashCommand } from "../../../pages/workspace/eventUtils";
 import { parsePatchFiles } from "@pierre/diffs";
@@ -809,16 +809,29 @@ export const TimelineItem = memo(function TimelineItem({
                     </div>
                   )}
 
-                  {otherSteps.map((step, idx) => (
-                    <div key={`tool:${idx}`} className="px-1 text-xs text-muted-foreground flex items-center gap-1.5">
-                      {step.status === "success"
-                        ? <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500/70" />
-                        : <Loader2 className="h-3 w-3 shrink-0 text-muted-foreground/50 animate-spin" />}
-                      <span>
-                        {step.label}
-                      </span>
-                    </div>
-                  ))}
+                  {otherSteps.map((step, idx) => {
+                    const isFailedStep = step.status === "failed";
+                    const isRunningStep = step.status === "running";
+
+                    return (
+                      <div
+                        key={`tool:${idx}`}
+                        className={cn(
+                          "px-1 text-xs flex items-center gap-1.5",
+                          isFailedStep ? "text-destructive" : "text-muted-foreground",
+                        )}
+                      >
+                        {isFailedStep
+                          ? <XCircle className="h-3.5 w-3.5 shrink-0" />
+                          : isRunningStep
+                            ? <Loader2 className="h-3 w-3 shrink-0 text-muted-foreground/50 animate-spin" />
+                            : null}
+                        <span>
+                          {step.label}
+                        </span>
+                      </div>
+                    );
+                  })}
 
                   {item.lastMessage && (
                     <div className="px-1 text-sm text-foreground">

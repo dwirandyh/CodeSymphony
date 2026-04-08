@@ -10,8 +10,26 @@ import type {
   WorkspaceSyncEvent,
   WorkspaceSyncEventType,
 } from "@codesymphony/shared-types";
+import type { LogLevel } from "./services/logService.js";
 
 export type RuntimeEventPayload = Record<string, unknown>;
+
+export type RuntimeLogEntry = {
+  id: string;
+  timestamp: string;
+  level: LogLevel;
+  source: string;
+  message: string;
+  data?: unknown;
+  worktreeId?: string;
+  threadId?: string;
+};
+
+export type RuntimeLogFilter = {
+  since?: string;
+  worktreeId?: string;
+  threadId?: string;
+};
 
 export type RuntimeEventHub = {
   emit: (threadId: string, type: ChatEventType, payload: RuntimeEventPayload) => Promise<ChatEvent>;
@@ -230,7 +248,13 @@ export type RuntimeDeps = {
   eventHub: RuntimeEventHub;
   claudeRunner: ClaudeRunner;
   logService?: {
-    log: (level: "debug" | "info" | "warn" | "error", source: string, message: string, data?: unknown) => void;
+    log: (
+      level: LogLevel,
+      source: string,
+      message: string,
+      data?: unknown,
+      scope?: Pick<RuntimeLogEntry, "worktreeId" | "threadId">,
+    ) => void;
   };
   modelProviderService: {
     getActiveProvider: () => Promise<{ apiKey: string; baseUrl: string; name: string; modelId: string } | null>;
