@@ -49,6 +49,32 @@ import {
 export { resolveChatMessageListKey } from "./workspace/workspacePageUtils";
 
 const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
+const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
+
+type BottomPanelWorktreeState = {
+  activeTab: string;
+  openSignal: number;
+  runScriptActive: boolean;
+};
+
+function getBottomPanelState(
+  state: Record<string, BottomPanelWorktreeState>,
+  worktreeId: string | null | undefined,
+): BottomPanelWorktreeState {
+  if (!worktreeId) {
+    return {
+      activeTab: DEFAULT_BOTTOM_PANEL_TAB,
+      openSignal: 0,
+      runScriptActive: false,
+    };
+  }
+
+  return state[worktreeId] ?? {
+    activeTab: DEFAULT_BOTTOM_PANEL_TAB,
+    openSignal: 0,
+    runScriptActive: false,
+  };
+}
 
 function loadRepositoryPanelExpandedState(): Record<string, boolean> {
   if (typeof window === "undefined") {
@@ -100,11 +126,8 @@ export function WorkspacePage() {
 
   const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>(() => loadRepositoryPanelExpandedState());
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
-  const [activeBottomTab, setActiveBottomTab] = useState("terminal");
-  const [bottomPanelOpenSignal, setBottomPanelOpenSignal] = useState(0);
-  const [runScriptActive, setRunScriptActive] = useState(false);
+  const [bottomPanelStateByWorktreeId, setBottomPanelStateByWorktreeId] = useState<Record<string, BottomPanelWorktreeState>>({});
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
-  const runScriptWorktreeIdRef = useRef<string | null>(null);
 
   const {
     providers: modelProviders,
@@ -126,6 +149,17 @@ export function WorkspacePage() {
       await selectProvider(id);
     } catch {}
   }, [selectProvider]);
+
+  const updateBottomPanelState = useCallback((worktreeId: string | null | undefined, updater: (current: BottomPanelWorktreeState) => BottomPanelWorktreeState) => {
+    if (!worktreeId) {
+      return;
+    }
+
+    setBottomPanelStateByWorktreeId((prev) => ({
+      ...prev,
+      [worktreeId]: updater(getBottomPanelState(prev, worktreeId)),
+    }));
+  }, []);
 
   const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
     setScriptOutputs((prev) => {
@@ -151,16 +185,22 @@ export function WorkspacePage() {
       return [...prev, entry];
     });
     if (event.type === "run") {
-      setActiveBottomTab("run");
-      setBottomPanelOpenSignal((prev) => prev + 1);
+      updateBottomPanelState(event.worktreeId, (current) => ({
+        ...current,
+        activeTab: "run",
+        openSignal: current.openSignal + 1,
+      }));
       return;
     }
 
     if (event.type === "setup" || event.type === "teardown") {
-      setActiveBottomTab("setup-script");
-      setBottomPanelOpenSignal((prev) => prev + 1);
+      updateBottomPanelState(event.worktreeId, (current) => ({
+        ...current,
+        activeTab: "setup-script",
+        openSignal: current.openSignal + 1,
+      }));
     }
-  }, []);
+  }, [updateBottomPanelState]);
 
   const handleTeardownError = useCallback((state: TeardownErrorState) => {
     setTeardownError(state);
@@ -174,20 +214,20 @@ export function WorkspacePage() {
     ));
   }, []);
 
-  const handleRunScriptTerminalExit = useCallback(({ exitCode }: { exitCode: number; signal: number }) => {
-    const targetWorktreeId = runScriptWorktreeIdRef.current;
-    setRunScriptActive(false);
+  const handleRunScriptTerminalExit = useCallback((event: { exitCode: number; signal: number }, targetWorktreeId: string | null) => {
+    updateBottomPanelState(targetWorktreeId, (current) => ({
+      ...current,
+      runScriptActive: false,
+    }));
 
     if (targetWorktreeId) {
       setScriptOutputs((prev) => prev.map((entry) =>
         entry.worktreeId === targetWorktreeId && entry.type === "run" && entry.status === "running"
-          ? { ...entry, status: "completed", success: exitCode === 0 }
+          ? { ...entry, status: "completed", success: event.exitCode === 0 }
           : entry,
       ));
     }
-
-    runScriptWorktreeIdRef.current = null;
-  }, []);
+  }, [updateBottomPanelState]);
 
   const repos = useRepositoryManager(setError, {
     desiredRepoId: search.repoId,
@@ -468,19 +508,17 @@ export function WorkspacePage() {
 
   const handleRerunSetup = useCallback(() => {
     if (!repos.selectedWorktreeId) return;
-    setActiveBottomTab("setup-script");
-    setBottomPanelOpenSignal((prev) => prev + 1);
+    updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
+      ...current,
+      activeTab: "setup-script",
+      openSignal: current.openSignal + 1,
+    }));
     void repos.rerunSetup(repos.selectedWorktreeId);
-  }, [repos.rerunSetup, repos.selectedWorktreeId]);
+  }, [repos.rerunSetup, repos.selectedWorktreeId, updateBottomPanelState]);
 
   const resolveRunScriptSessionId = useCallback(() => {
     if (!repos.selectedWorktreeId) return null;
     return `${repos.selectedWorktreeId}:script-runner`;
-  }, [repos.selectedWorktreeId]);
-
-  useEffect(() => {
-    setRunScriptActive(false);
-    runScriptWorktreeIdRef.current = null;
   }, [repos.selectedWorktreeId]);
 
   const handleRunScript = useCallback(async () => {
@@ -497,10 +535,12 @@ export function WorkspacePage() {
     if (!sessionId) return;
 
     try {
-      setActiveBottomTab("run");
-      setBottomPanelOpenSignal((prev) => prev + 1);
-      setRunScriptActive(true);
-      runScriptWorktreeIdRef.current = repos.selectedWorktreeId;
+      updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
+        ...current,
+        activeTab: "run",
+        openSignal: current.openSignal + 1,
+        runScriptActive: true,
+      }));
       await api.runTerminalCommand({
         sessionId,
         command: shellScript,
@@ -508,33 +548,42 @@ export function WorkspacePage() {
         mode: "exec",
       });
     } catch (e) {
-      runScriptWorktreeIdRef.current = null;
-      setRunScriptActive(false);
+      updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
+        ...current,
+        runScriptActive: false,
+      }));
       setError(e instanceof Error ? e.message : "Failed to run script");
     }
-  }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, resolveRunScriptSessionId]);
+  }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, resolveRunScriptSessionId, updateBottomPanelState]);
 
   const handleStopRunScript = useCallback(async () => {
     const sessionId = resolveRunScriptSessionId();
     if (!sessionId) return;
     try {
-      setActiveBottomTab("run");
-      setBottomPanelOpenSignal((prev) => prev + 1);
+      updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
+        ...current,
+        activeTab: "run",
+        openSignal: current.openSignal + 1,
+      }));
       await api.interruptTerminalSession(sessionId);
-      setRunScriptActive(false);
-      runScriptWorktreeIdRef.current = null;
+      updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
+        ...current,
+        runScriptActive: false,
+      }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to stop script");
     }
-  }, [resolveRunScriptSessionId]);
+  }, [repos.selectedWorktreeId, resolveRunScriptSessionId, updateBottomPanelState]);
+
+  const selectedBottomPanelState = getBottomPanelState(bottomPanelStateByWorktreeId, repos.selectedWorktreeId);
 
   const handleToggleRunScript = useCallback(() => {
-    if (runScriptActive) {
+    if (selectedBottomPanelState.runScriptActive) {
       void handleStopRunScript();
       return;
     }
     void handleRunScript();
-  }, [handleRunScript, handleStopRunScript, runScriptActive]);
+  }, [handleRunScript, handleStopRunScript, selectedBottomPanelState.runScriptActive]);
 
   const handleShowPreviousPermission = useCallback(() => {
     if (activePermissionIndex <= 0) {
@@ -654,9 +703,9 @@ export function WorkspacePage() {
               type="button"
               onClick={handleToggleRunScript}
               className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
-              aria-label={runScriptActive ? "Stop script" : "Run script"}
+              aria-label={selectedBottomPanelState.runScriptActive ? "Stop script" : "Run script"}
             >
-              {runScriptActive ? (
+              {selectedBottomPanelState.runScriptActive ? (
                 <FilledPauseIcon className="h-4 w-4" />
               ) : (
                 <FilledPlayIcon className="h-4 w-4" />
@@ -696,7 +745,7 @@ export function WorkspacePage() {
               onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
               onSelectReviewTab={() => updateSearch({ view: "review" })}
               onCloseReviewTab={handleCloseReview}
-              runScriptRunning={runScriptActive}
+              runScriptRunning={selectedBottomPanelState.runScriptActive}
               onToggleRunScript={handleToggleRunScript}
             />
 
@@ -837,12 +886,15 @@ export function WorkspacePage() {
             worktreePath={repos.selectedWorktree?.path ?? null}
             selectedThreadId={chat.selectedThreadId}
             scriptOutputs={scriptOutputs}
-            activeTab={activeBottomTab}
-            onTabChange={setActiveBottomTab}
+            activeTab={selectedBottomPanelState.activeTab}
+            onTabChange={(tab) => updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
+              ...current,
+              activeTab: tab,
+            }))}
             onRerunSetup={handleRerunSetup}
-            runScriptActive={runScriptActive}
-            onRunScriptExit={handleRunScriptTerminalExit}
-            openSignal={bottomPanelOpenSignal}
+            runScriptActive={selectedBottomPanelState.runScriptActive}
+            onRunScriptExit={(event) => handleRunScriptTerminalExit(event, repos.selectedWorktreeId)}
+            openSignal={selectedBottomPanelState.openSignal}
           />
         </main>
 

@@ -709,9 +709,13 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
         existingStep = subagent.steps.find((s) => precedingIds.includes(s.toolUseId));
       }
 
+      const resolvedStepStatus = event.type === "tool.finished"
+        ? (payloadStringOrNull(event.payload.error) ? "failed" : "success")
+        : "running";
+
       if (existingStep) {
         if (event.type === "tool.finished") {
-          existingStep.status = "success";
+          existingStep.status = resolvedStepStatus;
           const info = buildStepInfo(event);
           existingStep.label = info.label;
           existingStep.openPath = info.openPath;
@@ -729,7 +733,7 @@ export function extractSubagentGroups(events: ChatEvent[]): SubagentGroup[] {
           toolName: payloadStringOrNull(event.payload.toolName) ?? "Tool",
           label: info.label,
           openPath: info.openPath,
-          status: event.type === "tool.finished" ? "success" : "running",
+          status: resolvedStepStatus,
         });
       }
       continue;

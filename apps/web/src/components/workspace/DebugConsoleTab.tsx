@@ -34,6 +34,7 @@ function formatTime(timestamp: string): string {
 }
 
 interface DebugConsoleTabProps {
+    worktreeId: string | null;
     selectedThreadId: string | null;
 }
 
@@ -50,7 +51,7 @@ function extractThreadId(data: unknown): string | null {
     return null;
 }
 
-export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
+export function DebugConsoleTab({ worktreeId, selectedThreadId }: DebugConsoleTabProps) {
     const [entries, setEntries] = useState<LogEntry[]>(() => logService.getEntries());
     const [activeFilters, setActiveFilters] = useState<Set<LogLevel>>(
         () => new Set(["debug", "info", "warn", "error"]),
@@ -100,6 +101,9 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
     }, []);
 
     useEffect(() => {
+        lastRemoteTimestampRef.current = null;
+        setEntries(logService.getEntries().filter((entry) => worktreeId == null || entry.worktreeId === worktreeId));
+
         let eventSource: EventSource | null = null;
         let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
         let disposed = false;
@@ -127,6 +131,9 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
             if (since) {
                 url.searchParams.set("since", since);
             }
+            if (worktreeId) {
+                url.searchParams.set("worktreeId", worktreeId);
+            }
 
             const response = await fetch(url.toString());
             if (!response.ok) {
@@ -145,7 +152,8 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
             logService.log("debug", "debug.console", "Backfilled runtime logs", {
                 since: since ?? null,
                 count: remoteEntries.length,
-            });
+                worktreeId,
+            }, worktreeId ? { worktreeId } : undefined);
         }
 
         async function connect(isReconnect = false): Promise<void> {
@@ -156,17 +164,23 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
                 logService.log("warn", "debug.console", "Failed to backfill runtime logs", {
                     since: since ?? null,
                     error: error instanceof Error ? error.message : String(error),
-                });
+                    worktreeId,
+                }, worktreeId ? { worktreeId } : undefined);
             }
 
             if (disposed) {
                 return;
             }
 
-            eventSource = new EventSource(`${RUNTIME_BASE}/logs/stream`);
+            const streamUrl = new URL(`${RUNTIME_BASE}/logs/stream`);
+            if (worktreeId) {
+                streamUrl.searchParams.set("worktreeId", worktreeId);
+            }
+            eventSource = new EventSource(streamUrl.toString());
             logService.log("info", "debug.console", "Connected to runtime log stream", {
                 reconnect: isReconnect,
-            });
+                worktreeId,
+            }, worktreeId ? { worktreeId } : undefined);
 
             eventSource.onmessage = (event) => {
                 try {
@@ -174,7 +188,7 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
                     logService.addRemoteEntry(entry);
                     rememberRemoteTimestamp(entry.timestamp);
                 } catch {
-                    logService.log("warn", "debug.console", "Failed to parse log stream entry");
+                    logService.log("warn", "debug.console", "Failed to parse log stream entry", undefined, worktreeId ? { worktreeId } : undefined);
                 }
             };
 
@@ -192,7 +206,8 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
                 const delayMs = 3000;
                 logService.log("warn", "debug.console", "Runtime log stream disconnected; scheduling reconnect", {
                     delayMs,
-                });
+                    worktreeId,
+                }, worktreeId ? { worktreeId } : undefined);
                 reconnectTimer = setTimeout(() => {
                     reconnectTimer = null;
                     void connect(true);
@@ -209,7 +224,7 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
                 clearTimeout(reconnectTimer);
             }
         };
-    }, []);
+    }, [worktreeId]);
 
     // Fix 3: Pause auto-scroll during text selection
     useEffect(() => {
@@ -221,12 +236,13 @@ export function DebugConsoleTab({ selectedThreadId }: DebugConsoleTabProps) {
     const filteredEntries = useMemo(() => {
         return entries.filter((entry) => {
             if (!activeFilters.has(entry.level)) return false;
+            if (worktreeId != null && entry.worktreeId !== worktreeId) return false;
             if (selectedThreadId == null) return true;
-            const entryThreadId = extractThreadId(entry.data);
+            const entryThreadId = entry.threadId ?? extractThreadId(entry.data);
             if (entryThreadId == null) return true;
             return entryThreadId === selectedThreadId;
         });
-    }, [entries, activeFilters, selectedThreadId]);
+    }, [entries, activeFilters, selectedThreadId, worktreeId]);
 
     function toggleFilter(level: LogLevel) {
         setActiveFilters((prev) => {

@@ -13,6 +13,8 @@ const ClientLogEntrySchema = z.object({
     source: z.string().trim().min(1),
     message: z.string(),
     data: z.unknown().optional(),
+    worktreeId: z.string().trim().min(1).optional(),
+    threadId: z.string().trim().min(1).optional(),
 });
 const ClientLogBatchSchema = z.object({
     entries: z.array(ClientLogEntrySchema).max(MAX_CLIENT_LOG_BATCH),
@@ -47,6 +49,8 @@ export function normalizeClientLogEntry(entry: ClientLogEntry, nowIso?: string):
         source: normalizeSource(entry.source),
         message: normalizeMessage(entry.message),
         ...(entry.data !== undefined ? { data: entry.data } : {}),
+        ...(entry.worktreeId ? { worktreeId: entry.worktreeId } : {}),
+        ...(entry.threadId ? { threadId: entry.threadId } : {}),
     };
 }
 
@@ -61,7 +65,9 @@ export async function registerLogRoutes(app: FastifyInstance) {
     app.get("/logs", async (request) => {
         const query = request.query as Record<string, string>;
         const since = query.since || undefined;
-        return { data: app.logService.getEntries(since) };
+        const worktreeId = query.worktreeId || undefined;
+        const threadId = query.threadId || undefined;
+        return { data: app.logService.getEntries({ since, worktreeId, threadId }) };
     });
 
     app.post("/logs/client", async (request) => {
@@ -80,6 +86,10 @@ export async function registerLogRoutes(app: FastifyInstance) {
     });
 
     app.get("/logs/stream", async (request, reply) => {
+        const query = request.query as Record<string, string>;
+        const worktreeId = query.worktreeId || undefined;
+        const threadId = query.threadId || undefined;
+
         reply.raw.writeHead(200, {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
@@ -91,7 +101,7 @@ export async function registerLogRoutes(app: FastifyInstance) {
 
         const unsubscribe = app.logService.subscribe((entry) => {
             reply.raw.write(`data: ${JSON.stringify(entry)}\n\n`);
-        });
+        }, { worktreeId, threadId });
 
         request.raw.on("close", () => {
             unsubscribe();

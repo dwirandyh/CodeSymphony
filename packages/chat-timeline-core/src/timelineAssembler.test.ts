@@ -30,6 +30,60 @@ function makeEvent(
 }
 
 describe("buildTimelineFromSeed", () => {
+  it("does not leak orphan subagent-linked tool events into the main timeline", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Investigate this project."),
+      makeMessage("m2", 1, "assistant", "Done."),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Task",
+        toolUseId: "task-1",
+      }),
+      makeEvent(1, "subagent.started", {
+        agentId: "agent-1",
+        agentType: "Explore",
+        toolUseId: "subagent-1",
+        description: "Inspecting files",
+      }),
+      makeEvent(2, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-1",
+        launcherToolUseId: "task-1",
+        ownershipReason: "unresolved_ambiguous_candidates",
+        toolInput: { command: "ls" },
+      }),
+      makeEvent(3, "tool.finished", {
+        toolName: "Bash",
+        summary: "Ran ls",
+        launcherToolUseId: "task-1",
+        ownershipReason: "unresolved_ambiguous_candidates",
+        precedingToolUseIds: ["bash-1"],
+      }),
+      makeEvent(4, "subagent.finished", {
+        toolUseId: "subagent-1",
+        description: "Inspecting files",
+        lastMessage: "Found the relevant files.",
+      }),
+      makeEvent(5, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Done.",
+      }),
+      makeEvent(6, "chat.completed", { messageId: "m2" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(result.items.some((item) => item.kind === "tool" && item.toolName === "Bash")).toBe(false);
+    expect(result.items.some((item) => item.kind === "subagent-activity")).toBe(true);
+  });
+
   it("keeps AskUserQuestion question lifecycle events attached to the orphan tool card", () => {
     const messages = [
       makeMessage("m1", 0, "user", "Ask me 3 questions first."),

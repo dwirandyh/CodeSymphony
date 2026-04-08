@@ -1,15 +1,11 @@
 import { randomUUID } from "node:crypto";
+import type { RuntimeLogEntry, RuntimeLogFilter } from "../types.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
-export interface LogEntry {
-    id: string;
-    timestamp: string;
-    level: LogLevel;
-    source: string;
-    message: string;
-    data?: unknown;
-}
+export type LogEntry = RuntimeLogEntry;
+
+type LogFilter = RuntimeLogFilter;
 
 type LogSubscriber = (entry: LogEntry) => void;
 
@@ -54,11 +50,35 @@ export function createLogService() {
         return true;
     }
 
+    function matchesFilter(entry: LogEntry, filter?: LogFilter): boolean {
+        if (!filter) {
+            return true;
+        }
+
+        if (filter.worktreeId && entry.worktreeId !== filter.worktreeId) {
+            return false;
+        }
+
+        if (filter.threadId && entry.threadId !== filter.threadId) {
+            return false;
+        }
+
+        if (filter.since) {
+            const sinceTime = new Date(filter.since).getTime();
+            if (new Date(entry.timestamp).getTime() <= sinceTime) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     function log(
         level: LogLevel,
         source: string,
         message: string,
         data?: unknown,
+        scope?: Pick<LogEntry, "worktreeId" | "threadId">,
     ): void {
         const entry: LogEntry = {
             id: randomUUID(),
@@ -67,6 +87,8 @@ export function createLogService() {
             source,
             message,
             data,
+            ...(scope?.worktreeId ? { worktreeId: scope.worktreeId } : {}),
+            ...(scope?.threadId ? { threadId: scope.threadId } : {}),
         };
 
         appendEntry(entry);
@@ -76,21 +98,19 @@ export function createLogService() {
         return appendEntry(entry);
     }
 
-    function getEntries(since?: string): LogEntry[] {
-        if (!since) {
-            return [...entries];
-        }
-
-        const sinceTime = new Date(since).getTime();
-        return entries.filter(
-            (entry) => new Date(entry.timestamp).getTime() > sinceTime,
-        );
+    function getEntries(filter?: LogFilter): LogEntry[] {
+        return entries.filter((entry) => matchesFilter(entry, filter));
     }
 
-    function subscribe(callback: LogSubscriber): () => void {
-        subscribers.add(callback);
+    function subscribe(callback: LogSubscriber, filter?: LogFilter): () => void {
+        const subscriber: LogSubscriber = (entry) => {
+            if (matchesFilter(entry, filter)) {
+                callback(entry);
+            }
+        };
+        subscribers.add(subscriber);
         return () => {
-            subscribers.delete(callback);
+            subscribers.delete(subscriber);
         };
     }
 

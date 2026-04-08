@@ -235,7 +235,7 @@ export function BottomPanel({
 
                     <Tabs.Content value="terminal" className="min-h-0 flex-1 data-[state=inactive]:hidden">
                         <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-                            <TerminalTab sessionId={worktreeId && selectedThreadId ? `${worktreeId}:${selectedThreadId}` : worktreeId ?? "default"} cwd={worktreePath} />
+                            <TerminalTab sessionId={worktreeId ? `${worktreeId}:terminal` : "default"} cwd={worktreePath} />
                         </Suspense>
                     </Tabs.Content>
 
@@ -256,7 +256,7 @@ export function BottomPanel({
                     </Tabs.Content>
 
                     <Tabs.Content value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                        <DebugConsoleTab selectedThreadId={selectedThreadId} />
+                        <DebugConsoleTab worktreeId={worktreeId} selectedThreadId={selectedThreadId} />
                     </Tabs.Content>
                 </div>
             </Tabs.Root>
