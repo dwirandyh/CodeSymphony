@@ -93,6 +93,7 @@ describe("chat routes", () => {
     listMessages: vi.fn(),
     listEvents: vi.fn(),
     listThreadSnapshot: vi.fn(),
+    listSlashCommands: vi.fn(),
   };
 
   const mockEventHub = {
@@ -104,6 +105,14 @@ describe("chat routes", () => {
     getById: vi.fn(),
   };
 
+  const mockWorktreeService = {
+    getById: vi.fn(),
+  };
+
+  const mockWorkspaceEventHub = {
+    emit: vi.fn(),
+  };
+
   beforeEach(async () => {
     vi.resetAllMocks();
     await resetDatabase();
@@ -111,6 +120,8 @@ describe("chat routes", () => {
     app.decorate("chatService", mockChatService as never);
     app.decorate("eventHub", mockEventHub as never);
     app.decorate("repositoryService", mockRepositoryService as never);
+    app.decorate("worktreeService", mockWorktreeService as never);
+    app.decorate("workspaceEventHub", mockWorkspaceEventHub as never);
     await app.register(registerChatRoutes, { prefix: "/api" });
     await app.ready();
   });
@@ -149,6 +160,27 @@ describe("chat routes", () => {
       mockChatService.createThread.mockRejectedValue(new Error("fail"));
       const res = await app.inject({ method: "POST", url: "/api/worktrees/w1/threads", payload: {} });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe("GET /api/worktrees/:id/slash-commands", () => {
+    it("lists slash commands for a worktree", async () => {
+      mockChatService.listSlashCommands.mockResolvedValue({
+        commands: [{ name: "commit", description: "Create a commit", argumentHint: "" }],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/slash-commands" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.commands).toHaveLength(1);
+      expect(mockChatService.listSlashCommands).toHaveBeenCalledWith("w1");
+    });
+
+    it("returns 404 when worktree is missing", async () => {
+      mockChatService.listSlashCommands.mockRejectedValue(new Error("Worktree not found"));
+
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/missing/slash-commands" });
+      expect(res.statusCode).toBe(404);
     });
   });
 
@@ -250,18 +282,20 @@ describe("chat routes", () => {
 
   describe("DELETE /api/threads/:id", () => {
     it("deletes a thread (204)", async () => {
+      mockChatService.getThreadById.mockResolvedValue({ id: "t1", worktreeId: "w1" });
       mockChatService.deleteThread.mockResolvedValue(undefined);
       const res = await app.inject({ method: "DELETE", url: "/api/threads/t1" });
       expect(res.statusCode).toBe(204);
     });
 
     it("returns 404 when thread is missing", async () => {
-      mockChatService.deleteThread.mockRejectedValue(new Error("Chat thread not found"));
+      mockChatService.getThreadById.mockResolvedValue(null);
       const res = await app.inject({ method: "DELETE", url: "/api/threads/t1" });
       expect(res.statusCode).toBe(404);
     });
 
     it("returns 409 when thread is still running", async () => {
+      mockChatService.getThreadById.mockResolvedValue({ id: "t1", worktreeId: "w1" });
       mockChatService.deleteThread.mockRejectedValue(new Error("Cannot delete a thread while assistant is processing"));
       const res = await app.inject({ method: "DELETE", url: "/api/threads/t1" });
       expect(res.statusCode).toBe(409);

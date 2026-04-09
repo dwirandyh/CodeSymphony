@@ -393,6 +393,14 @@ describe("api", () => {
       await api.getFileIndex("w1");
     });
 
+    it("gets slash commands", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        commands: [{ name: "commit", description: "Create a commit", argumentHint: "" }],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }));
+      await api.getSlashCommands("w1");
+    });
+
     it("opens worktree file", async () => {
       mockFetch.mockReturnValueOnce(mock204());
       await api.openWorktreeFile("w1", { path: "src/a.ts" });

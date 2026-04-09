@@ -17,6 +17,7 @@ import { useFileContents } from "./useFileContents";
 import { useFileIndexQuery } from "./useFileIndexQuery";
 import { useWorktreeStatuses } from "./useWorktreeStatuses";
 import { useRepositoryReviews } from "./useRepositoryReviews";
+import { useSlashCommandsQuery } from "./useSlashCommandsQuery";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -32,6 +33,7 @@ vi.mock("../../lib/api", () => ({
     getInstalledApps: vi.fn().mockResolvedValue([]),
     getFileContents: vi.fn().mockResolvedValue({ oldContent: "", newContent: "" }),
     getFileIndex: vi.fn().mockResolvedValue([]),
+    getSlashCommands: vi.fn().mockResolvedValue({ commands: [], updatedAt: "2026-01-01T00:00:00.000Z" }),
     getRepositoryReviews: vi.fn().mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} }),
   },
 }));
@@ -155,6 +157,11 @@ describe("query hooks", () => {
 
   it("useFileIndexQuery renders", () => {
     renderHook(useFileIndexQuery as (...a: unknown[]) => unknown, ["wt-1"]);
+    expect(container.textContent).toBe("ok");
+  });
+
+  it("useSlashCommandsQuery renders", () => {
+    renderHook(useSlashCommandsQuery as (...a: unknown[]) => unknown, ["wt-1"]);
     expect(container.textContent).toBe("ok");
   });
 

@@ -2,12 +2,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useFileIndex } from "./useFileIndex";
+import { useSlashCommands } from "./useSlashCommands";
 
 vi.mock("../../../lib/api", () => ({
   api: {
-    getFileIndex: vi.fn().mockResolvedValue([]),
-    getSlashCommands: vi.fn().mockResolvedValue({ commands: [], updatedAt: "2026-01-01T00:00:00.000Z" }),
+    getSlashCommands: vi.fn().mockResolvedValue({
+      commands: [{ name: "commit", description: "Create a commit", argumentHint: "" }],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }),
   },
 }));
 
@@ -26,12 +28,12 @@ afterEach(() => {
 });
 
 function TestComponent({ worktreeId }: { worktreeId: string | null }) {
-  const { entries, loading } = useFileIndex(worktreeId);
-  return <div>{loading ? "loading" : `count:${entries.length}`}</div>;
+  const { commands, loading } = useSlashCommands(worktreeId);
+  return <div>{loading ? "loading" : `count:${commands.length}`}</div>;
 }
 
-describe("useFileIndex", () => {
-  it("returns empty entries initially", () => {
+describe("useSlashCommands", () => {
+  it("returns commands for an active worktree", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     act(() => {
       root.render(
@@ -43,7 +45,7 @@ describe("useFileIndex", () => {
     expect(container.textContent).toMatch(/loading|count:\d+/);
   });
 
-  it("returns empty entries for null worktreeId", () => {
+  it("returns empty commands for null worktreeId", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     act(() => {
       root.render(

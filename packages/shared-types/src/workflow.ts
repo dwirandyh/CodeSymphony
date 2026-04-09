@@ -442,6 +442,19 @@ export const FileEntrySchema = z.object({
 });
 export type FileEntry = z.infer<typeof FileEntrySchema>;
 
+export const SlashCommandSchema = z.object({
+  name: z.string().trim().min(1),
+  description: z.string(),
+  argumentHint: z.string(),
+});
+export type SlashCommand = z.infer<typeof SlashCommandSchema>;
+
+export const SlashCommandCatalogSchema = z.object({
+  commands: z.array(SlashCommandSchema),
+  updatedAt: z.string().datetime(),
+});
+export type SlashCommandCatalog = z.infer<typeof SlashCommandCatalogSchema>;
+
 // ── Git Types ──
 
 export const GitChangeStatusSchema = z.enum(["modified", "added", "deleted", "renamed", "untracked"]);

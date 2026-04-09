@@ -29,6 +29,7 @@ import { useChatSession } from "./workspace/hooks/chat-session";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
+import { useSlashCommands } from "./workspace/hooks/useSlashCommands";
 import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
 import { useModelProviders } from "./workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "./workspace/hooks/useWorkspaceSyncStream";
@@ -375,6 +376,7 @@ export function WorkspacePage() {
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
 
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
+  const slashCommands = useSlashCommands(repos.selectedWorktreeId);
 
   // Close mobile drawer on Escape key
   useEffect(() => {
@@ -861,6 +863,8 @@ export function WorkspacePage() {
                     modeLocked={chat.composerModeLocked}
                     fileIndex={fileIndex.entries}
                     fileIndexLoading={fileIndex.loading}
+                    slashCommands={slashCommands.commands}
+                    slashCommandsLoading={slashCommands.loading}
                     providers={modelProviders}
                     permissionMode={chat.composerPermissionMode}
                     hasMessages={chat.messages.length > 0}

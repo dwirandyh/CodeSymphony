@@ -15,6 +15,7 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
     void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(event.worktreeId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(event.worktreeId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileIndex(event.worktreeId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.slashCommands(event.worktreeId) });
   }
 
   if (!event.threadId) {
