@@ -1,4 +1,4 @@
-import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatTimelineSubagentStep } from "@codesymphony/shared-types";
 import { extractExploreActivityGroups } from "../exploreUtils.js";
 import { extractSubagentGroups, getSubagentAttributionReason, isOverlapUnclaimedSubagentEvent } from "../subagentUtils.js";
 import {
@@ -134,7 +134,7 @@ export function processOrphanSubagentGroups(
   for (const group of orphanSubagentGroups) {
     group.eventIds.forEach((id) => assignedToolEventIds.add(id));
     const resolvedStatus = group.status === "running" && chatTerminated ? "success" : group.status;
-    const resolvedSteps = chatTerminated
+    const resolvedSteps: ChatTimelineSubagentStep[] = chatTerminated
       ? group.steps.map((s) => s.status === "running" ? { ...s, status: "success" as const } : s)
       : group.steps;
     sortable.push({

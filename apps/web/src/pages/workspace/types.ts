@@ -80,7 +80,7 @@ export type SubagentStep = {
   toolName: string;
   label: string;
   openPath: string | null;
-  status: "running" | "success";
+  status: "running" | "success" | "failed";
 };
 
 export type SubagentGroup = {

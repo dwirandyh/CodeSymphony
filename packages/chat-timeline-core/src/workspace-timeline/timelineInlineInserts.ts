@@ -1,4 +1,4 @@
-import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatTimelineSubagentStep } from "@codesymphony/shared-types";
 import type { AssistantRenderHint } from "@codesymphony/shared-types";
 import { SENTENCE_BOUNDARY_PATTERN } from "../constants.js";
 import {
@@ -485,7 +485,7 @@ export function pushInlineInsert(
   if (insert.kind === "subagent-activity") {
     const group = insert.group;
     const resolvedStatus = group.status === "running" && isCompleted ? "success" : group.status;
-    const resolvedSteps = isCompleted
+    const resolvedSteps: ChatTimelineSubagentStep[] = isCompleted
       ? group.steps.map((s) => s.status === "running" ? { ...s, status: "success" as const } : s)
       : group.steps;
     sortable.push({
