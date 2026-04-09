@@ -278,4 +278,32 @@ describe("SettingsDialog", () => {
     expect(onProvidersChanged).toHaveBeenCalledWith(providers);
     expect(document.body.textContent).toContain("claude-custom");
   });
+
+  it("does not show active or inactive controls in the Models tab", async () => {
+    const providers = [{
+      id: "provider-1",
+      name: "Custom",
+      modelId: "claude-custom",
+      baseUrl: "https://example.com",
+      apiKeyMasked: "••••",
+      isActive: true,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }];
+    apiMocks.listModelProviders.mockResolvedValueOnce(providers);
+
+    renderDialog([makeRepo()]);
+
+    const modelsButton = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Models");
+    expect(modelsButton).toBeDefined();
+
+    await act(async () => {
+      modelsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(document.body.textContent).not.toContain("Active");
+    expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.title === "Activate" || button.title === "Deactivate")).toBe(false);
+    expect(document.body.textContent).toContain("choose the model you want from the composer");
+  });
 });

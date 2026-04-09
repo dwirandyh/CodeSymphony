@@ -8,6 +8,7 @@ import { pushRenderDebug } from "../../../lib/renderDebug";
 import type { ChatTimelineItem, TimelineCtx } from "./ChatMessageList.types";
 import { TerminalOutputPre } from "./ansiUtils";
 import { SafePatchDiff } from "./diffUtils";
+import { setBooleanMapEntry } from "./toggleMapState";
 import {
   toolTitle,
   toolSubtitle,
@@ -256,11 +257,7 @@ export const TimelineItem = memo(function TimelineItem({
           open={expanded}
           onToggle={(event) => {
             const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setToolExpandedById((current) => {
-              const next = new Map(current);
-              next.set(item.id, nextOpen);
-              return next;
-            });
+            ctx.setToolExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
           }}
         >
           <summary
@@ -462,11 +459,7 @@ export const TimelineItem = memo(function TimelineItem({
           open={expanded}
           onToggle={(event) => {
             const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setEditedExpandedById((current) => {
-              const next = new Map(current);
-              next.set(item.id, nextOpen);
-              return next;
-            });
+            ctx.setEditedExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
           }}
         >
           <summary
@@ -560,11 +553,7 @@ export const TimelineItem = memo(function TimelineItem({
           open={expanded}
           onToggle={(event) => {
             const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setExploreActivityExpandedById((current) => {
-              const next = new Map(current);
-              next.set(item.id, nextOpen);
-              return next;
-            });
+            ctx.setExploreActivityExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
           }}
         >
           <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
@@ -696,11 +685,7 @@ export const TimelineItem = memo(function TimelineItem({
           open={expanded}
           onToggle={(event) => {
             const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setSubagentExpandedById((current) => {
-              const next = new Map(current);
-              next.set(item.id, nextOpen);
-              return next;
-            });
+            ctx.setSubagentExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
           }}
         >
           <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
@@ -738,11 +723,7 @@ export const TimelineItem = memo(function TimelineItem({
                         open={ctx.subagentPromptExpandedById.get(item.id) === true}
                         onToggle={(event) => {
                           const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-                          ctx.setSubagentPromptExpandedById((current) => {
-                            const next = new Map(current);
-                            next.set(item.id, nextOpen);
-                            return next;
-                          });
+                          ctx.setSubagentPromptExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
                         }}
                       >
                         <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
@@ -764,11 +745,7 @@ export const TimelineItem = memo(function TimelineItem({
                         open={ctx.subagentExploreExpandedById.get(item.id) === true}
                         onToggle={(event) => {
                           const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-                          ctx.setSubagentExploreExpandedById((current) => {
-                            const next = new Map(current);
-                            next.set(item.id, nextOpen);
-                            return next;
-                          });
+                          ctx.setSubagentExploreExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
                         }}
                       >
                         <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
@@ -886,11 +863,7 @@ export const TimelineItem = memo(function TimelineItem({
           open={expanded}
           onToggle={(event) => {
             const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setExploreActivityExpandedById((current) => {
-              const next = new Map(current);
-              next.set(`activity:${item.messageId}`, nextOpen);
-              return next;
-            });
+            ctx.setExploreActivityExpandedById((current) => setBooleanMapEntry(current, `activity:${item.messageId}`, nextOpen));
           }}
         >
           <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
