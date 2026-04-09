@@ -14,7 +14,7 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
-import type { ChatMode, ChatThreadPermissionMode, FileEntry, ModelProvider } from "@codesymphony/shared-types";
+import type { ChatMode, ChatThreadPermissionMode, FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
 import { serializeMention } from "../../../lib/mentions";
 import type { PendingAttachment } from "../../../lib/attachments";
@@ -25,6 +25,7 @@ import {
 import { createAttachmentChipElement } from "./composerChipUtils";
 import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
+import { useComposerSlashCommand } from "./useComposerSlashCommand";
 
 type ComposerSubmitPayload = {
   content: string;
@@ -43,6 +44,8 @@ type ComposerProps = {
   modeLocked: boolean;
   fileIndex: FileEntry[];
   fileIndexLoading: boolean;
+  slashCommands: SlashCommand[];
+  slashCommandsLoading: boolean;
   providers: ModelProvider[];
   permissionMode: ChatThreadPermissionMode;
   hasMessages: boolean;
@@ -86,6 +89,8 @@ export function Composer({
   modeLocked,
   fileIndex,
   fileIndexLoading,
+  slashCommands,
+  slashCommandsLoading,
   providers,
   permissionMode,
   hasMessages,
@@ -196,6 +201,23 @@ export function Composer({
     editorRef,
   });
 
+  const {
+    slashCommand,
+    selectedIndex: selectedSlashCommandIndex,
+    setSelectedIndex: setSelectedSlashCommandIndex,
+    suggestions: slashCommandSuggestions,
+    slashCommandsLoading: slashCommandLoading,
+    closeSlashCommand,
+    selectSuggestion: selectSlashCommandSuggestion,
+    detectSlashCommand,
+  } = useComposerSlashCommand({
+    editorRef,
+    popoverRef,
+    slashCommands,
+    slashCommandsLoading,
+    onChange: setDraftText,
+  });
+
   const cannotSend = disabled
     || pendingAttachmentReads > 0
     || (draftText.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
@@ -281,9 +303,10 @@ export function Composer({
     queueMicrotask(() => {
       if (editor) {
         detectMention();
+        detectSlashCommand();
       }
     });
-  }, [syncValueFromEditor, applyAttachmentsChange, detectMention]);
+  }, [syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
@@ -316,12 +339,13 @@ export function Composer({
     }
     mentionedFilesRef.current = [];
     closeMention();
+    closeSlashCommand();
     applyAttachmentsChange([]);
     setDraftText("");
     lastStableHTMLRef.current = "";
     prevContentLenRef.current = 0;
     afterChipHTMLRef.current = null;
-  }, [applyAttachmentsChange, closeMention]);
+  }, [applyAttachmentsChange, closeMention, closeSlashCommand]);
 
   const handleSubmit = useCallback(async () => {
     if (cannotSend) return;
@@ -482,6 +506,29 @@ export function Composer({
         }
       }
 
+      if (slashCommand.active && slashCommandSuggestions.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setSelectedSlashCommandIndex((prev) => (prev + 1) % slashCommandSuggestions.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setSelectedSlashCommandIndex((prev) => (prev - 1 + slashCommandSuggestions.length) % slashCommandSuggestions.length);
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          selectSlashCommandSuggestion(slashCommandSuggestions[selectedSlashCommandIndex]);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeSlashCommand();
+          return;
+        }
+      }
+
       if (event.key === "Backspace") {
         const sel = window.getSelection();
         const editor = editorRef.current;
@@ -494,7 +541,7 @@ export function Composer({
             anchorNode.nodeType === Node.TEXT_NODE &&
             anchorOffset === 0 &&
             anchorNode.previousSibling instanceof HTMLElement &&
-            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId)
+            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId || anchorNode.previousSibling.dataset.slashCommand)
           ) {
             event.preventDefault();
             const chip = anchorNode.previousSibling;
@@ -512,7 +559,8 @@ export function Composer({
             anchorOffset > 0 &&
             editor.childNodes[anchorOffset - 1] instanceof HTMLElement &&
             ((editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.mentionPath ||
-             (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.attachmentId)
+             (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.attachmentId ||
+             (editor.childNodes[anchorOffset - 1] as HTMLElement).dataset.slashCommand)
           ) {
             event.preventDefault();
             const chip = editor.childNodes[anchorOffset - 1] as HTMLElement;
@@ -531,7 +579,7 @@ export function Composer({
             anchorOffset === 1 &&
             anchorNode.textContent === "\u00A0" &&
             anchorNode.previousSibling instanceof HTMLElement &&
-            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId)
+            (anchorNode.previousSibling.dataset.mentionPath || anchorNode.previousSibling.dataset.attachmentId || anchorNode.previousSibling.dataset.slashCommand)
           ) {
             event.preventDefault();
             const chip = anchorNode.previousSibling;
@@ -570,7 +618,7 @@ export function Composer({
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {
@@ -644,6 +692,51 @@ export function Composer({
             </div>
           )}
 
+          {slashCommand.active && (slashCommandSuggestions.length > 0 || slashCommandLoading) && (
+            <div
+              ref={popoverRef}
+              className="absolute bottom-full left-0 z-50 mb-2 w-full max-h-60 overflow-y-auto rounded-xl border border-border/60 bg-popover shadow-lg"
+            >
+              {slashCommandLoading && slashCommandSuggestions.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">Loading commands...</div>
+              ) : (
+                slashCommandSuggestions.map((entry, index) => (
+                  <button
+                    key={entry.name}
+                    type="button"
+                    data-index={index}
+                    className={`flex w-full items-start px-3 py-2 text-left text-sm transition-colors ${
+                      index === selectedSlashCommandIndex
+                        ? "bg-accent text-accent-foreground"
+                        : "text-foreground hover:bg-accent/50"
+                    }`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      selectSlashCommandSuggestion(entry);
+                    }}
+                    onMouseEnter={() => setSelectedSlashCommandIndex(index)}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5">
+                        {entry.highlighted ? (
+                          <span className="font-medium" dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
+                        ) : (
+                          <span className="font-medium">/{entry.name}</span>
+                        )}
+                        {entry.argumentHint ? (
+                          <span className="truncate text-xs text-muted-foreground">{entry.argumentHint}</span>
+                        ) : null}
+                      </span>
+                      {entry.shortDescription ? (
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{entry.shortDescription}</span>
+                      ) : null}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+
           {barAttachments.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {barAttachments.map((att) => (
@@ -678,7 +771,7 @@ export function Composer({
             ref={editorRef}
             role="textbox"
             aria-multiline="true"
-            aria-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type @ to mention files)"}
+            aria-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type / for commands, @ to mention files)"}
             contentEditable={!disabled}
             suppressContentEditableWarning
             onInput={handleInput}
@@ -689,7 +782,7 @@ export function Composer({
               isComposingRef.current = false;
               handleInput();
             }}
-            data-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type @ to mention files)"}
+            data-placeholder={isPlan ? "Describe what you want to plan..." : "Message CodeSymphony... (type / for commands, @ to mention files)"}
             className={`min-h-[60px] max-h-[140px] w-full overflow-y-auto resize-none border-none bg-transparent p-0 text-sm text-foreground shadow-none outline-none focus-visible:ring-0 focus-visible:ring-offset-0 empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground empty:before:pointer-events-none md:min-h-[74px] md:max-h-[400px] ${
               disabled ? "cursor-not-allowed opacity-50" : ""
             }`}

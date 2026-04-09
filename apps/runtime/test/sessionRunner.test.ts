@@ -131,13 +131,14 @@ describe("tool instrumentation", () => {
       threadPermissionMode: "full_access",
       autoAcceptTools: true,
       onText: () => { },
-      onThinking: () => { },
       onToolStarted: () => { },
       onToolOutput: () => { },
       onToolFinished: () => { },
       onQuestionRequest: async () => ({ answers: {} }),
       onPermissionRequest: async () => ({ decision: "allow" }),
       onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
       onToolInstrumentation: () => { },
     });
 
@@ -147,6 +148,39 @@ describe("tool instrumentation", () => {
         allowDangerouslySkipPermissions: false,
       }),
     }));
+  });
+
+  it("lists slash commands without streaming the session", async () => {
+    const supportedCommands = vi.fn(async () => [
+      { name: "commit", description: "Create a commit", argumentHint: "" },
+    ]);
+
+    mockQuery.mockImplementation(() => {
+      return Object.assign((async function* () {})(), {
+        supportedCommands,
+        interrupt: vi.fn(async () => {}),
+        close: vi.fn(() => {}),
+      });
+    });
+
+    const result = await runClaudeWithStreaming({
+      prompt: "ignored",
+      sessionId: null,
+      listSlashCommandsOnly: true,
+      cwd: process.cwd(),
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "deny" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+    });
+
+    expect(supportedCommands).toHaveBeenCalledTimes(1);
+    expect(result.slashCommands).toEqual([{ name: "commit", description: "Create a commit", argumentHint: "" }]);
   });
 
   it("sanitizes sensitive keys and truncates long nested strings", () => {

@@ -24,6 +24,7 @@ import type {
   OpenInAppInput,
   OpenWorktreeFileInput,
   PlanRevisionInput,
+  SlashCommandCatalog,
   RenameChatThreadTitleInput,
   RenameWorktreeBranchInput,
   ResolvePermissionInput,
@@ -493,6 +494,8 @@ export const api = {
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`, { signal }),
   getFileIndex: (worktreeId: string, signal?: AbortSignal) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files/index`, { signal }),
+  getSlashCommands: (worktreeId: string, signal?: AbortSignal) =>
+    request<SlashCommandCatalog>(`/worktrees/${worktreeId}/slash-commands`, { signal }),
   openWorktreeFile: async (worktreeId: string, input: OpenWorktreeFileInput) => {
     const response = await runtimeFetch(`/worktrees/${worktreeId}/files/open`, {
       method: "POST",

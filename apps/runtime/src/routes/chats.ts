@@ -94,6 +94,21 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get("/worktrees/:id/slash-commands", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+
+    try {
+      const slashCommands = await app.chatService.listSlashCommands(params.id);
+      return { data: slashCommands };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list slash commands";
+      if (message === "Worktree not found") {
+        return reply.code(404).send({ error: message });
+      }
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.post("/worktrees/:id/threads", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
 

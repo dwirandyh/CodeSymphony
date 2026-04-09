@@ -7,6 +7,7 @@ import type {
   ChatThreadPermissionMode,
   ChatThreadPermissionProfile,
   PermissionDecision,
+  SlashCommand,
   WorkspaceSyncEvent,
   WorkspaceSyncEventType,
 } from "@codesymphony/shared-types";
@@ -53,6 +54,7 @@ export type ClaudeRunnerResult = {
   output: string;
   sessionId: string | null;
   promptSuggestions?: string[];
+  slashCommands?: SlashCommand[];
   resultSummary?: {
     subtype: string;
     isError: boolean;
@@ -140,6 +142,7 @@ export type ClaudeToolInstrumentationEvent = {
 export type ClaudeRunner = (args: {
   prompt: string;
   sessionId: string | null;
+  listSlashCommandsOnly?: boolean;
   sessionWorktreePath?: string | null;
   cwd: string;
   abortController?: AbortController;

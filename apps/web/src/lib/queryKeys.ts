@@ -10,6 +10,7 @@ export const queryKeys = {
     gitDiff: (worktreeId: string, filePath?: string) =>
       ["worktrees", worktreeId, "gitDiff", filePath ?? "__all__"] as const,
     fileIndex: (worktreeId: string) => ["worktrees", worktreeId, "fileIndex"] as const,
+    slashCommands: (worktreeId: string) => ["worktrees", worktreeId, "slashCommands"] as const,
     fileContents: (worktreeId: string, filePath: string) =>
       ["worktrees", worktreeId, "fileContents", filePath] as const,
   },
