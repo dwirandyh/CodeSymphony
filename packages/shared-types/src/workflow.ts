@@ -244,7 +244,7 @@ export const ChatTimelineSubagentStepSchema = z.object({
   toolName: z.string(),
   label: z.string(),
   openPath: z.string().nullable(),
-  status: z.enum(["running", "success"]),
+  status: z.enum(["running", "success", "failed"]),
 });
 
 export const ChatTimelineSubagentActivityItemSchema = z.object({

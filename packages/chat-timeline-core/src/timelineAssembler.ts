@@ -392,6 +392,10 @@ export function buildTimelineFromSeed(params: {
     const isReadResponseContext = hasReadContext || looksLikeFileRead;
     const hasMessageDelta = firstMessageEventIdxById.has(message.id);
     const isCompleted = message.role === "assistant" ? completedMessageIds.has(message.id) : false;
+    const isStreamingMessage =
+      message.role === "assistant"
+      && !isCompleted
+      && (refs.streamingMessageIds.has(message.id) || hasMessageDelta);
     const normalizedPlan = message.role === "assistant" ? normalizedPlanByMessageId.get(message.id) ?? undefined : undefined;
     const planFileOutput = message.role === "assistant" ? planFileOutputByMessageId.get(message.id) : undefined;
     const shouldSkipMessageBecausePlanCard =
