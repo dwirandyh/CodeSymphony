@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
@@ -273,17 +273,6 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     } catch {}
   }, [refreshProviders]);
 
-  const handleToggleProvider = useCallback(async (provider: ModelProvider) => {
-    try {
-      if (provider.isActive) {
-        await api.deactivateAllProviders();
-      } else {
-        await api.activateModelProvider(provider.id);
-      }
-      await refreshProviders();
-    } catch {}
-  }, [refreshProviders]);
-
   const handleEditProvider = useCallback((provider: ModelProvider) => {
     setEditingProviderId(provider.id);
     setProviderName(provider.name);
@@ -516,32 +505,15 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                         {providers.map((provider) => (
                           <div
                             key={provider.id}
-                            className={`rounded-lg border p-2.5 text-xs ${
-                              provider.isActive
-                                ? "border-primary/40 bg-primary/5"
-                                : "border-border/50 bg-secondary/20"
-                            }`}
+                            className="rounded-lg border border-border/50 bg-secondary/20 p-2.5 text-xs"
                           >
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                 <span className="font-medium">{provider.modelId}</span>
                                 <span className="text-muted-foreground">·</span>
                                 <span className="text-muted-foreground">{provider.name}</span>
-                                {provider.isActive && (
-                                  <span className="rounded-full bg-primary/20 px-1.5 py-0.5 text-[9px] font-medium text-primary">
-                                    Active
-                                  </span>
-                                )}
                               </div>
                               <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  className="rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                                  title={provider.isActive ? "Deactivate" : "Activate"}
-                                  onClick={() => void handleToggleProvider(provider)}
-                                >
-                                  <Check className={`h-3 w-3 ${provider.isActive ? "text-primary" : ""}`} />
-                                </button>
                                 <button
                                   type="button"
                                   className="rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
@@ -665,7 +637,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                     <p className="mt-3 text-[10px] text-muted-foreground">
                       Providers must use the Anthropic Messages API format (/v1/messages).
                       OpenAI-compatible providers (x.ai, OpenAI, etc.) are not supported.
-                      Only one entry can be active at a time. When none is active, Claude CLI authentication is used.
+                      Add and edit providers here, then choose the model you want from the composer.
                     </p>
                   </div>
                 )}

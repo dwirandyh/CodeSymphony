@@ -4,6 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 import { createQueryClient } from "./lib/queryClient";
+import { AppCrashFallback } from "./components/error/AppCrashFallback";
 import "./styles.css";
 
 const queryClient = createQueryClient();
@@ -16,22 +17,28 @@ declare module "@tanstack/react-router" {
   }
 }
 
-class RootErrorBoundary extends React.Component<React.PropsWithChildren, { hasError: boolean }> {
+type RootErrorBoundaryState = {
+  error: Error | null;
+};
+
+class RootErrorBoundary extends React.Component<React.PropsWithChildren, RootErrorBoundaryState> {
   constructor(props: React.PropsWithChildren) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { error: null };
   }
 
-  static getDerivedStateFromError() {
-    return { hasError: true };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
   }
 
   render() {
-    if (this.state.hasError) {
+    if (this.state.error) {
       return (
-        <div className="flex min-h-screen items-center justify-center px-4 text-center text-sm text-destructive">
-          The app hit an unexpected rendering error.
-        </div>
+        <AppCrashFallback
+          error={this.state.error}
+          onReload={() => window.location.reload()}
+          onResetHome={() => window.location.assign("/")}
+        />
       );
     }
 
