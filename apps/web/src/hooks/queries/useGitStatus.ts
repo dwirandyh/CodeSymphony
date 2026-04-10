@@ -2,9 +2,9 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 
-export const GIT_STATUS_REFETCH_MS = 30_000;
+const GIT_STATUS_REFETCH_MS = 30_000;
 
-export function gitStatusQueryOptions(worktreeId: string) {
+function gitStatusQueryOptions(worktreeId: string) {
   return queryOptions({
     queryKey: queryKeys.worktrees.gitStatus(worktreeId),
     queryFn: () => api.getGitStatus(worktreeId),

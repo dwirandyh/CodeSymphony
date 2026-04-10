@@ -4,8 +4,6 @@ import {
   type TimelineAssemblyResult,
 } from "@codesymphony/chat-timeline-core";
 
-export type { TimelineAssemblyResult };
-
 export function buildTimelineFromSeed(params: {
   messages: ChatMessage[];
   events: ChatEvent[];

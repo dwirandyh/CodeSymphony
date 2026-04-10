@@ -1,13 +1,5 @@
 export { deriveSelectedThreadUiState, useChatSession } from "./useChatSession";
 
-export type {
-  PendingMessageMutation,
-  SnapshotSeedDecision,
-  ThreadMetadataSnapshot,
-  UseChatSessionOptions,
-  SelectedThreadUiState,
-} from "./useChatSession.types";
-
 export {
   buildSnapshotKey,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
@@ -17,7 +9,6 @@ export {
 export {
   prependUniqueMessages,
   prependUniqueEvents,
-  insertAllEvents,
   applyMessageMutations,
   prunePendingStreamUpdatesForSnapshot,
   mergeEventsWithCurrent,

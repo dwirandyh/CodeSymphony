@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { buildExecShellArgs, resolveShellCandidates } from "./terminalService.js";
 
-export interface ScriptResult {
+interface ScriptResult {
   success: boolean;
   output: string;
 }

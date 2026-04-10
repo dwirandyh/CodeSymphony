@@ -190,7 +190,7 @@ function getFinishedToolNames(
     .filter((toolName) => toolName.length > 0);
 }
 
-export function findPlanReviewReadyIdx(events: ChatEvent[], pendingPlan: PendingPlan | null): number | null {
+function findPlanReviewReadyIdx(events: ChatEvent[], pendingPlan: PendingPlan | null): number | null {
   if (!pendingPlan || pendingPlan.status !== "pending") {
     return null;
   }

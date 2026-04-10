@@ -26,7 +26,7 @@ function fixSpawnHelperPermissions(): void {
 
 fixSpawnHelperPermissions();
 
-export interface TerminalSession {
+interface TerminalSession {
     id: string;
     ptyProcess: pty.IPty;
     requestedCwd?: string;

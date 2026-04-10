@@ -9,7 +9,7 @@ export type TimelineRefs = {
   claimedContextEventIdsByThreadMessage?: Map<string, Set<string>>;
 };
 
-export type WorkspaceTimelineResult = {
+type WorkspaceTimelineResult = {
   items: ChatTimelineItem[];
   hasIncompleteCoverage: boolean;
   summary: {
@@ -21,12 +21,12 @@ export type WorkspaceTimelineResult = {
   };
 };
 
-export type UseWorkspaceTimelineOptions = {
+type UseWorkspaceTimelineOptions = {
   semanticHydrationInProgress?: boolean;
   disabled?: boolean;
 };
 
-export type ThinkingRound = {
+type ThinkingRound = {
   content: string;
   firstIdx: number;
   lastIdx: number;

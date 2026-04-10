@@ -99,7 +99,7 @@ export type SubagentGroup = {
   eventIds: Set<string>;
 };
 
-export type PendingPermissionRequest = {
+type PendingPermissionRequest = {
   requestId: string;
   toolName: string;
   command: string | null;
@@ -109,25 +109,25 @@ export type PendingPermissionRequest = {
   idx: number;
 };
 
-export type QuestionOption = {
+type QuestionOption = {
   label: string;
   description?: string;
 };
 
-export type QuestionItem = {
+type QuestionItem = {
   question: string;
   header?: string;
   options?: QuestionOption[];
   multiSelect?: boolean;
 };
 
-export type PendingQuestionRequest = {
+type PendingQuestionRequest = {
   requestId: string;
   questions: QuestionItem[];
   idx: number;
 };
 
-export type PendingPlan = {
+type PendingPlan = {
   content: string;
   filePath: string;
   createdIdx: number;

@@ -9,7 +9,7 @@ import { runScripts } from "./scriptRunner.js";
 
 const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
 
-export interface CreateWorktreeResult {
+interface CreateWorktreeResult {
   worktree: Worktree;
   scriptResult?: ScriptResult;
 }
