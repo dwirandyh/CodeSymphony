@@ -94,7 +94,7 @@ export async function nextMessageSeq(prisma: PrismaClient, threadId: string): Pr
   return (result._max.seq ?? -1) + 1;
 }
 
-export function toStringArray(value: unknown): string[] {
+function toStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
   }

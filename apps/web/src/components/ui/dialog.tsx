@@ -67,4 +67,4 @@ function DialogDescription({
   return <DialogPrimitive.Description className={cn("text-sm text-muted-foreground", className)} {...props} />;
 }
 
-export { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose, DialogOverlay, DialogPortal };
+export { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription };

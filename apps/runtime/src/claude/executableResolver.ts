@@ -8,7 +8,7 @@ let cachedClaudeExecutable: string | null = null;
 
 export { DEFAULT_CLAUDE_EXECUTABLE };
 
-export function resolveExecutablePath(commandOrPath: string): string {
+function resolveExecutablePath(commandOrPath: string): string {
     function findCommonInstalledPath(): string | null {
         for (const candidate of COMMON_CLAUDE_EXECUTABLE_PATHS) {
             if (existsSync(candidate)) {

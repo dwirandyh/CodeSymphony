@@ -42,13 +42,13 @@ function getPrismaSchemaDirectory(): string {
   return path.dirname(defaultSchemaPath);
 }
 
-export type DebugLogPayload = {
+type DebugLogPayload = {
   source: string;
   message: string;
   data?: unknown;
 };
 
-export function appendDebugLogEntries(entries: Array<{
+function appendDebugLogEntries(entries: Array<{
   seq: number;
   ts: number;
   source: string;

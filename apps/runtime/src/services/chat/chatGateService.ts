@@ -60,7 +60,7 @@ export function ensureThreadQuestionMap(
   return created;
 }
 
-export function rejectPendingQuestions(
+function rejectPendingQuestions(
   pendingQuestionsByThread: Map<string, Map<string, PendingQuestionEntry>>,
   threadId: string,
   message: string,

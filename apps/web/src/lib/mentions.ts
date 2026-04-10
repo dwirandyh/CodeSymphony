@@ -10,7 +10,7 @@
 export const MENTION_TOKEN_REGEX = /@(file|dir):([\w./_-][\w./_-]*[\w._-])/g;
 export const SLASH_COMMAND_TOKEN_REGEX = /\/(\w[\w-]*)/g;
 
-export type MentionSegment =
+type MentionSegment =
   | { kind: "text"; value: string }
   | { kind: "mention"; path: string; name: string; isDirectory: boolean }
   | { kind: "slash-command"; name: string };

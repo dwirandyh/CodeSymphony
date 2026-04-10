@@ -24,7 +24,7 @@ const ANSI_BASIC_FG_COLORS: Record<number, string> = {
 
 const ANSI_COLOR_LEVELS = [0, 95, 135, 175, 215, 255];
 
-export function ansi256ToColor(code: number): string | null {
+function ansi256ToColor(code: number): string | null {
   if (!Number.isInteger(code) || code < 0 || code > 255) {
     return null;
   }
@@ -46,7 +46,7 @@ export function ansi256ToColor(code: number): string | null {
   return `rgb(${gray}, ${gray}, ${gray})`;
 }
 
-export function applyAnsiCodes(state: AnsiStyleState, rawCodes: number[]): AnsiStyleState {
+function applyAnsiCodes(state: AnsiStyleState, rawCodes: number[]): AnsiStyleState {
   const nextState: AnsiStyleState = { ...state };
   const codes = rawCodes.length > 0 ? rawCodes : [0];
 
@@ -116,7 +116,7 @@ export function applyAnsiCodes(state: AnsiStyleState, rawCodes: number[]): AnsiS
   return nextState;
 }
 
-export function toAnsiSegments(input: string): AnsiSegment[] {
+function toAnsiSegments(input: string): AnsiSegment[] {
   const segments: AnsiSegment[] = [];
   ANSI_ESCAPE_REGEX.lastIndex = 0;
   let state: AnsiStyleState = {

@@ -1,7 +1,7 @@
 import * as pty from "node-pty";
 import { chmodSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const MAX_SCROLLBACK_BYTES = 50_000;
 
@@ -26,9 +26,11 @@ function fixSpawnHelperPermissions(): void {
 
 fixSpawnHelperPermissions();
 
-export interface TerminalSession {
+interface TerminalSession {
     id: string;
     ptyProcess: pty.IPty;
+    requestedCwd?: string;
+    resolvedCwd: string;
     listeners: Set<(data: string) => void>;
     exitListeners: Set<(event: { exitCode: number; signal: number }) => void>;
     scrollback: string[];
@@ -41,10 +43,10 @@ interface SpawnOptions {
     replace?: boolean;
 }
 
-function buildShellArgs(options?: SpawnOptions): string[] {
+function buildShellArgs(shell: string | undefined, options?: SpawnOptions): string[] {
     const mode = options?.mode ?? "shell";
     if (mode === "exec") {
-        return ["-lc", options?.command ?? ""];
+        return buildExecShellArgs(shell, options?.command ?? "");
     }
 
     // Match macOS Terminal/iTerm login-shell behavior so PATH and shell init files
@@ -52,45 +54,68 @@ function buildShellArgs(options?: SpawnOptions): string[] {
     return ["-l"];
 }
 
+function normalizeCwd(cwd?: string): string | undefined {
+    const trimmed = cwd?.trim();
+    return trimmed ? trimmed : undefined;
+}
+
+export function resolveShellCandidates(): string[] {
+    const candidates = [process.env.SHELL, "/bin/zsh", "/bin/bash", "/bin/sh"]
+        .filter((value): value is string => Boolean(value));
+    return Array.from(new Set(candidates));
+}
+
+export function buildExecShellArgs(shell: string | undefined, command: string): string[] {
+    const shellName = shell ? basename(shell) : "";
+    if (shellName === "zsh" || shellName === "bash") {
+        return ["-lic", command];
+    }
+
+    return ["-lc", command];
+}
+
 export function createTerminalService() {
     const sessions = new Map<string, TerminalSession>();
 
-    function resolveShellCandidates(): string[] {
-        const candidates = [process.env.SHELL, "/bin/zsh", "/bin/bash", "/bin/sh"]
-            .filter((value): value is string => Boolean(value));
-        return Array.from(new Set(candidates));
-    }
-
     function resolveCwdCandidates(cwd?: string): string[] {
-        const candidates = [cwd, process.env.HOME, "/"]
+        const normalizedCwd = normalizeCwd(cwd);
+        if (normalizedCwd) {
+            return [normalizedCwd];
+        }
+
+        const candidates = [process.env.HOME, "/"]
             .filter((value): value is string => Boolean(value));
         return Array.from(new Set(candidates));
     }
 
-    function spawnProcess(cwd?: string, options?: SpawnOptions): pty.IPty {
+    function spawnProcess(cwd?: string, options?: SpawnOptions): { ptyProcess: pty.IPty; resolvedCwd: string } {
         const shellCandidates = resolveShellCandidates();
         const cwdCandidates = resolveCwdCandidates(cwd);
         let lastError: unknown = new Error("Unable to spawn terminal process");
-        const args = buildShellArgs(options);
 
         for (const shell of shellCandidates) {
             if (!existsSync(shell)) {
                 continue;
             }
 
+            const args = buildShellArgs(shell, options);
+
             for (const candidateCwd of cwdCandidates) {
                 try {
-                    return pty.spawn(shell, args, {
-                        name: "xterm-256color",
-                        cols: 80,
-                        rows: 24,
-                        cwd: candidateCwd,
-                        env: {
-                            ...process.env,
-                            TERM: "xterm-256color",
-                            COLORTERM: "truecolor",
-                        } as Record<string, string>,
-                    });
+                    return {
+                        ptyProcess: pty.spawn(shell, args, {
+                            name: "xterm-256color",
+                            cols: 80,
+                            rows: 24,
+                            cwd: candidateCwd,
+                            env: {
+                                ...process.env,
+                                TERM: "xterm-256color",
+                                COLORTERM: "truecolor",
+                            } as Record<string, string>,
+                        }),
+                        resolvedCwd: candidateCwd,
+                    };
                 } catch (error) {
                     lastError = error;
                 }
@@ -105,8 +130,12 @@ export function createTerminalService() {
         cwd?: string,
         options?: SpawnOptions,
     ): TerminalSession {
+        const normalizedCwd = normalizeCwd(cwd);
         const existing = sessions.get(sessionId);
-        if (existing && !options?.replace) {
+        const shouldReuseExisting = existing
+            && !options?.replace
+            && existing.requestedCwd === normalizedCwd;
+        if (shouldReuseExisting) {
             return existing;
         }
 
@@ -117,11 +146,13 @@ export function createTerminalService() {
             existing.ptyProcess.kill();
         }
 
-        const ptyProcess = spawnProcess(cwd, options);
+        const { ptyProcess, resolvedCwd } = spawnProcess(normalizedCwd, options);
 
         const session: TerminalSession = {
             id: sessionId,
             ptyProcess,
+            requestedCwd: normalizedCwd,
+            resolvedCwd,
             listeners: inheritedListeners,
             exitListeners: inheritedExitListeners,
             scrollback: [],

@@ -5,7 +5,7 @@ import type { ParsedDiffSections, WorktreeDiffDelta, WorktreeStateSnapshot } fro
 const execFile = promisify(execFileRaw);
 const MAX_DIFF_PREVIEW_CHARS = 20000;
 
-export async function runGit(cwd: string, args: string[]): Promise<string> {
+async function runGit(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFile("git", args, {
     cwd,
     encoding: "utf8",
@@ -14,7 +14,7 @@ export async function runGit(cwd: string, args: string[]): Promise<string> {
   return stdout.trim();
 }
 
-export function parseChangedFiles(statusOutput: string): string[] {
+function parseChangedFiles(statusOutput: string): string[] {
   if (statusOutput.length === 0) {
     return [];
   }
@@ -49,7 +49,7 @@ export function parseChangedFiles(statusOutput: string): string[] {
   return Array.from(files);
 }
 
-export function parseDiffSections(diffOutput: string): ParsedDiffSections {
+function parseDiffSections(diffOutput: string): ParsedDiffSections {
   const byFile = new Map<string, string>();
   const order: string[] = [];
 
@@ -100,7 +100,7 @@ export function parseDiffSections(diffOutput: string): ParsedDiffSections {
   return { byFile, order };
 }
 
-export function appendUnique(items: string[], seen: Set<string>, candidate: string): void {
+function appendUnique(items: string[], seen: Set<string>, candidate: string): void {
   if (seen.has(candidate)) {
     return;
   }
@@ -116,7 +116,7 @@ function matchesTargetFile(filePath: string, targetFiles: string[]): boolean {
   ));
 }
 
-export function symmetricStatusDelta(before: string[], after: string[]): string[] {
+function symmetricStatusDelta(before: string[], after: string[]): string[] {
   const beforeSet = new Set(before);
   const afterSet = new Set(after);
   const delta: string[] = [];

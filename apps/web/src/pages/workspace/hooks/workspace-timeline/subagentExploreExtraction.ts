@@ -3,7 +3,7 @@ import { extractExploreActivityGroups } from "../../exploreUtils";
 import { extractSubagentGroups, isOverlapUnclaimedSubagentEvent } from "../../subagentUtils";
 import type { ExploreActivityGroup, SubagentGroup } from "../../types";
 
-export type SubagentExploreExtractionResult = {
+type SubagentExploreExtractionResult = {
   subagentGroups: SubagentGroup[];
   exploreActivityGroups: ExploreActivityGroup[];
   subagentEventIds: Set<string>;

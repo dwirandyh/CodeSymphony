@@ -3,7 +3,7 @@ import fuzzysort from "fuzzysort";
 import type { SlashCommand } from "@codesymphony/shared-types";
 import { detectSlashCommandInEditor } from "./composerEditorUtils";
 
-export type SlashCommandSuggestion = SlashCommand & { highlighted?: string; shortDescription?: string };
+type SlashCommandSuggestion = SlashCommand & { highlighted?: string; shortDescription?: string };
 
 function toShortDescription(description: string): string {
   const compact = description.replace(/\s+/g, " ").trim();

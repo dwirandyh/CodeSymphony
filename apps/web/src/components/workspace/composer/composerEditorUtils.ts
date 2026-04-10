@@ -9,7 +9,7 @@ type TriggerState = {
 
 export type MentionState = TriggerState;
 
-export type SlashCommandState = TriggerState;
+type SlashCommandState = TriggerState;
 
 export type MentionedFile = FileEntry & { id: string };
 

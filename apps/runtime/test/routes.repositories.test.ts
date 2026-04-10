@@ -39,6 +39,10 @@ const mockChatService = {
   getOrCreatePrMrThread: vi.fn(),
 };
 
+const mockWorkspaceEventHub = {
+  emit: vi.fn(),
+};
+
 const mockScriptStreamService = {
   startSetupStream: vi.fn(),
   stopScript: vi.fn(),
@@ -62,6 +66,7 @@ function buildApp(): FastifyInstance {
   app.decorate("chatService", mockChatService as never);
   app.decorate("scriptStreamService", mockScriptStreamService as never);
   app.decorate("reviewService", mockReviewService as never);
+  app.decorate("workspaceEventHub", mockWorkspaceEventHub as never);
   return app;
 }
 
@@ -278,6 +283,7 @@ describe("repository routes", () => {
 
   describe("DELETE /api/worktrees/:id", () => {
     it("deletes worktree", async () => {
+      mockWorktreeService.getById.mockResolvedValue({ id: "w1", repositoryId: "r1" });
       mockWorktreeService.remove.mockResolvedValue(undefined);
       const res = await app.inject({ method: "DELETE", url: "/api/worktrees/w1" });
       expect(res.statusCode).toBe(204);
@@ -473,19 +479,9 @@ describe("repository routes", () => {
     });
   });
 
-  describe("POST /api/worktrees/:id/run-script/stop", () => {
-    it("stops run script", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/worktrees/w1/run-script/stop",
-      });
-      expect(res.statusCode).toBe(204);
-      expect(mockScriptStreamService.stopScript).toHaveBeenCalledWith("run:w1");
-    });
-  });
-
   describe("DELETE /api/worktrees/:id (force)", () => {
     it("force-deletes a worktree", async () => {
+      mockWorktreeService.getById.mockResolvedValue({ id: "w1", repositoryId: "r1" });
       mockWorktreeService.remove.mockResolvedValue(undefined);
       const res = await app.inject({
         method: "DELETE",

@@ -47,8 +47,6 @@ import {
   FilledPauseIcon,
 } from "./workspace/workspacePageUtils";
 
-export { resolveChatMessageListKey } from "./workspace/workspacePageUtils";
-
 const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
 const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
 

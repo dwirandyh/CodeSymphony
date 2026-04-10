@@ -3,7 +3,7 @@ import { extractExploreActivityGroups } from "../exploreUtils.js";
 import { extractSubagentGroups, isOverlapUnclaimedSubagentEvent } from "../subagentUtils.js";
 import type { ExploreActivityGroup, SubagentGroup } from "../types.js";
 
-export type SubagentExploreExtractionResult = {
+type SubagentExploreExtractionResult = {
   subagentGroups: SubagentGroup[];
   exploreActivityGroups: ExploreActivityGroup[];
   subagentEventIds: Set<string>;

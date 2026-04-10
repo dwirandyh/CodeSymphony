@@ -84,19 +84,11 @@ const mockRunSetupStream = vi.fn().mockReturnValue({
   onerror: null,
 });
 
-const mockRunScriptStream = vi.fn().mockReturnValue({
-  addEventListener: vi.fn(),
-  close: vi.fn(),
-  onerror: null,
-});
-
 vi.mock("../../../lib/api", () => ({
   api: {
     pickDirectory: vi.fn().mockResolvedValue({ path: "/selected/path" }),
     runSetupStream: (...args: unknown[]) => mockRunSetupStream(...args),
     stopSetupScript: vi.fn().mockResolvedValue(undefined),
-    runScriptStream: (...args: unknown[]) => mockRunScriptStream(...args),
-    stopRunScript: vi.fn().mockResolvedValue(undefined),
   },
   TeardownFailedError: class extends Error {
     output: string;
@@ -286,7 +278,6 @@ describe("useRepositoryManager", () => {
     expect(hookResult.submittingRepo).toBe(false);
     expect(hookResult.submittingWorktree).toBe(false);
     expect(hookResult.setupRunning).toBe(false);
-    expect(hookResult.runScriptRunning).toBe(false);
   });
 
   it("allows setting selection state", () => {
@@ -435,29 +426,6 @@ describe("useRepositoryManager", () => {
     });
   });
 
-  describe("runSavedScript", () => {
-    it("starts run script stream", () => {
-      render();
-      act(() => {
-        hookResult.runSavedScript("wt-feat");
-      });
-      expect(mockRunScriptStream).toHaveBeenCalledWith("wt-feat", undefined);
-      expect(mockOptions.onScriptUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({ worktreeId: "wt-feat", type: "run", status: "running" })
-      );
-    });
-  });
-
-  describe("runAdHocCommand", () => {
-    it("starts run script stream with command", () => {
-      render();
-      act(() => {
-        hookResult.runAdHocCommand("wt-feat", "npm test");
-      });
-      expect(mockRunScriptStream).toHaveBeenCalledWith("wt-feat", "npm test");
-    });
-  });
-
   describe("stopSetup", () => {
     it("stops the active setup stream", async () => {
       const { api } = await import("../../../lib/api");
@@ -471,24 +439,6 @@ describe("useRepositoryManager", () => {
         await hookResult.stopSetup();
       });
       expect(api.stopSetupScript).toHaveBeenCalledWith("wt-feat");
-    });
-  });
-
-  describe("stopRunScript", () => {
-    it("stops the active run script stream", async () => {
-      const { api } = await import("../../../lib/api");
-      render();
-      act(() => {
-        hookResult.runSavedScript("wt-feat");
-      });
-
-      await act(async () => {
-        await hookResult.stopRunScript();
-      });
-      expect(api.stopRunScript).toHaveBeenCalledWith("wt-feat");
-      expect(mockOptions.onScriptUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({ worktreeId: "wt-feat", type: "run", status: "completed" })
-      );
     });
   });
 
@@ -570,85 +520,6 @@ describe("useRepositoryManager", () => {
       });
       expect(mockClose).toHaveBeenCalled();
       expect(hookResult.setupRunning).toBe(false);
-    });
-  });
-
-  describe("run script streaming events", () => {
-    it("handles output/done events from run script stream", () => {
-      const listeners: Record<string, (e: { data: string }) => void> = {};
-      const mockClose = vi.fn();
-      mockRunScriptStream.mockReturnValue({
-        addEventListener: (type: string, cb: (e: { data: string }) => void) => { listeners[type] = cb; },
-        close: mockClose,
-        onerror: null,
-      });
-
-      render();
-      act(() => {
-        hookResult.runSavedScript("wt-feat");
-      });
-      expect(hookResult.runScriptRunning).toBe(true);
-
-      act(() => {
-        listeners["output"]?.({ data: JSON.stringify({ chunk: "test output" }) });
-      });
-      expect(mockOptions.onScriptOutputChunk).toHaveBeenCalledWith({ worktreeId: "wt-feat", chunk: "test output" });
-
-      act(() => {
-        listeners["done"]?.({ data: JSON.stringify({ success: true }) });
-      });
-      expect(mockClose).toHaveBeenCalled();
-      expect(hookResult.runScriptRunning).toBe(false);
-    });
-
-    it("handles error from run script stream", () => {
-      let onerrorHandler: (() => void) | null = null;
-      const mockClose = vi.fn();
-      mockRunScriptStream.mockReturnValue({
-        addEventListener: vi.fn(),
-        close: mockClose,
-        set onerror(fn: (() => void) | null) { onerrorHandler = fn; },
-        get onerror() { return onerrorHandler; },
-      });
-
-      render();
-      act(() => {
-        hookResult.runSavedScript("wt-feat");
-      });
-
-      act(() => {
-        onerrorHandler?.();
-      });
-      expect(mockClose).toHaveBeenCalled();
-      expect(hookResult.runScriptRunning).toBe(false);
-    });
-
-    it("closes existing run script stream when starting new one", () => {
-      const mockClose1 = vi.fn();
-      const mockClose2 = vi.fn();
-
-      mockRunScriptStream
-        .mockReturnValueOnce({
-          addEventListener: vi.fn(),
-          close: mockClose1,
-          onerror: null,
-        })
-        .mockReturnValueOnce({
-          addEventListener: vi.fn(),
-          close: mockClose2,
-          onerror: null,
-        });
-
-      render();
-      act(() => {
-        hookResult.runSavedScript("wt-feat");
-      });
-
-      act(() => {
-        hookResult.runAdHocCommand("wt-feat", "echo hello");
-      });
-
-      expect(mockClose1).toHaveBeenCalled();
     });
   });
 });

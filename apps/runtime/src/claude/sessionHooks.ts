@@ -83,7 +83,7 @@ function withoutDuplicateStrings(values: Array<string | null | undefined>): stri
   return [...set];
 }
 
-export function isReadOrSearchToolName(toolName: string): boolean {
+function isReadOrSearchToolName(toolName: string): boolean {
   const normalized = toolName.trim().toLowerCase();
   if (normalized === "read") {
     return true;
