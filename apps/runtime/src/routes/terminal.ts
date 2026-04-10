@@ -11,6 +11,105 @@ const interruptTerminalInputSchema = z.object({
     sessionId: z.string().min(1),
 });
 
+export function handleTerminalWebSocket(
+    app: FastifyInstance,
+    socket: {
+        close: (code?: number, reason?: string) => void;
+        send: (data: string) => void;
+        on: (event: string, listener: (...args: any[]) => void) => void;
+        readyState: number;
+    },
+    request: { query: Record<string, string> },
+) {
+    const query = request.query as Record<string, string>;
+    const sessionId = query.sessionId || "default";
+    const cwd = query.cwd || undefined;
+
+    let session;
+    try {
+        session = app.terminalService.spawn(sessionId, cwd);
+    } catch (spawnError) {
+        const message = spawnError instanceof Error ? spawnError.message : "Failed to spawn terminal";
+        app.logService.log("error", "terminal", `Failed to spawn PTY: ${message}`, { cwd, sessionId });
+        socket.close(1011, message);
+        return;
+    }
+
+    const worktreeId = sessionId.includes(":") ? sessionId.split(":", 1)[0] : undefined;
+    app.logService.log(
+        "info",
+        "terminal",
+        `Terminal session connected: ${sessionId}`,
+        {
+            cwd,
+            resolvedCwd: session.resolvedCwd,
+            sessionId,
+            worktreeId,
+        },
+        worktreeId ? { worktreeId } : undefined,
+    );
+
+    const removeListener = app.terminalService.addListener(
+        sessionId,
+        (data: string) => {
+            try {
+                if (socket.readyState === 1) {
+                    socket.send(data);
+                }
+            } catch {
+                // ignore send errors
+            }
+        },
+    );
+    const removeExitListener = app.terminalService.addExitListener(
+        sessionId,
+        (event) => {
+            try {
+                if (socket.readyState === 1) {
+                    socket.send(JSON.stringify({
+                        kind: "cs-terminal-event",
+                        type: "exit",
+                        exitCode: event.exitCode,
+                        signal: event.signal,
+                    }));
+                }
+            } catch {
+                // ignore send errors
+            }
+        },
+    );
+
+    socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
+        const message = raw.toString();
+
+        try {
+            const parsed = JSON.parse(message) as Record<string, unknown>;
+            if (parsed.type === "resize") {
+                const cols = Number(parsed.cols) || 80;
+                const rows = Number(parsed.rows) || 24;
+                app.terminalService.resize(sessionId, cols, rows);
+                return;
+            }
+        } catch {
+            // Not JSON — treat as raw terminal input
+        }
+
+        app.terminalService.write(sessionId, message);
+    });
+
+    socket.on("close", () => {
+        removeListener();
+        removeExitListener();
+        app.logService.log("info", "terminal", `Terminal session disconnected: ${sessionId}`, { sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
+    });
+
+    socket.on("error", (error: Error) => {
+        app.logService.log("error", "terminal", `Terminal WebSocket error: ${error.message}`, { sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
+        removeListener();
+        removeExitListener();
+    });
+}
+
 export async function registerTerminalRoutes(app: FastifyInstance) {
     app.post("/terminal/run", async (request, reply) => {
         try {
@@ -50,81 +149,7 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
         "/terminal/ws",
         { websocket: true },
         (socket, request) => {
-            const query = request.query as Record<string, string>;
-            const sessionId = query.sessionId || "default";
-            const cwd = query.cwd || undefined;
-
-            try {
-                app.terminalService.spawn(sessionId, cwd);
-            } catch (spawnError) {
-                const message = spawnError instanceof Error ? spawnError.message : "Failed to spawn terminal";
-                app.logService.log("error", "terminal", `Failed to spawn PTY: ${message}`, { cwd });
-                socket.close(1011, message);
-                return;
-            }
-
-            const worktreeId = sessionId.includes(":") ? sessionId.split(":", 1)[0] : undefined;
-            app.logService.log("info", "terminal", `Terminal session connected: ${sessionId}`, { cwd, sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
-
-            const removeListener = app.terminalService.addListener(
-                sessionId,
-                (data: string) => {
-                    try {
-                        if (socket.readyState === 1) {
-                            socket.send(data);
-                        }
-                    } catch {
-                        // ignore send errors
-                    }
-                },
-            );
-            const removeExitListener = app.terminalService.addExitListener(
-                sessionId,
-                (event) => {
-                    try {
-                        if (socket.readyState === 1) {
-                            socket.send(JSON.stringify({
-                                kind: "cs-terminal-event",
-                                type: "exit",
-                                exitCode: event.exitCode,
-                                signal: event.signal,
-                            }));
-                        }
-                    } catch {
-                        // ignore send errors
-                    }
-                },
-            );
-
-            socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
-                const message = raw.toString();
-
-                try {
-                    const parsed = JSON.parse(message) as Record<string, unknown>;
-                    if (parsed.type === "resize") {
-                        const cols = Number(parsed.cols) || 80;
-                        const rows = Number(parsed.rows) || 24;
-                        app.terminalService.resize(sessionId, cols, rows);
-                        return;
-                    }
-                } catch {
-                    // Not JSON — treat as raw terminal input
-                }
-
-                app.terminalService.write(sessionId, message);
-            });
-
-            socket.on("close", () => {
-                removeListener();
-                removeExitListener();
-                app.logService.log("info", "terminal", `Terminal session disconnected: ${sessionId}`, { sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
-            });
-
-            socket.on("error", (error: Error) => {
-                app.logService.log("error", "terminal", `Terminal WebSocket error: ${error.message}`, { sessionId, worktreeId }, worktreeId ? { worktreeId } : undefined);
-                removeListener();
-                removeExitListener();
-            });
+            handleTerminalWebSocket(app, socket, { query: request.query as Record<string, string> });
         },
     );
 }

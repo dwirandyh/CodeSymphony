@@ -28,10 +28,17 @@ describe("runScripts", () => {
     expect(result.output).toContain("second");
   });
 
+  it("preserves shell state across commands", async () => {
+    const result = await runScripts(["export MY_VAR=hello", "echo $MY_VAR"], tempDir, {});
+    expect(result.success).toBe(true);
+    expect(result.output).toContain("hello");
+  });
+
   it("stops on first failure", async () => {
     const result = await runScripts(["echo ok", "exit 1", "echo never"], tempDir, {});
     expect(result.success).toBe(false);
     expect(result.output).toContain("ok");
+    expect(result.output).not.toContain("never");
   });
 
   it("passes custom env variables", async () => {

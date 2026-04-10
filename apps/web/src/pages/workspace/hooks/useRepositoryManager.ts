@@ -58,10 +58,6 @@ export function useRepositoryManager(
   const activeStreamRef = useRef<{ worktreeId: string; eventSource: EventSource } | null>(null);
   const [setupRunning, setSetupRunning] = useState(false);
 
-  // Separate state for run scripts (Run button / ad-hoc commands)
-  const runScriptRef = useRef<{ worktreeId: string; eventSource: EventSource } | null>(null);
-  const [runScriptRunning, setRunScriptRunning] = useState(false);
-
   function runSetupStreaming(worktreeId: string, worktreeName: string) {
     options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "setup", status: "running" });
 
@@ -100,65 +96,6 @@ export function useRepositoryManager(
       stream.eventSource.close();
       activeStreamRef.current = null;
       setSetupRunning(false);
-    }
-  }
-
-  function startRunScriptStream(worktreeId: string, cmd?: string) {
-    // Stop any existing run script stream first
-    if (runScriptRef.current) {
-      runScriptRef.current.eventSource.close();
-      runScriptRef.current = null;
-    }
-
-    const worktreeName = findWorktreeName(worktreeId);
-
-    options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "running" });
-
-    const es = api.runScriptStream(worktreeId, cmd);
-    runScriptRef.current = { worktreeId, eventSource: es };
-    setRunScriptRunning(true);
-
-    es.addEventListener("output", (e) => {
-      const { chunk } = JSON.parse(e.data);
-      options?.onScriptOutputChunk?.({ worktreeId, chunk });
-    });
-
-    es.addEventListener("done", (e) => {
-      const { success } = JSON.parse(e.data);
-      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "completed", result: { success, output: "" } });
-      invalidateGitStatus(worktreeId);
-      es.close();
-      runScriptRef.current = null;
-      setRunScriptRunning(false);
-    });
-
-    es.onerror = () => {
-      options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "Connection lost" } });
-      invalidateGitStatus(worktreeId);
-      es.close();
-      runScriptRef.current = null;
-      setRunScriptRunning(false);
-    };
-  }
-
-  function runSavedScript(worktreeId: string) {
-    startRunScriptStream(worktreeId);
-  }
-
-  function runAdHocCommand(worktreeId: string, cmd: string) {
-    startRunScriptStream(worktreeId, cmd);
-  }
-
-  async function stopRunScript() {
-    const stream = runScriptRef.current;
-    if (stream) {
-      await api.stopRunScript(stream.worktreeId);
-      const worktreeName = findWorktreeName(stream.worktreeId);
-      options?.onScriptUpdate?.({ worktreeId: stream.worktreeId, worktreeName, type: "run", status: "completed", result: { success: false, output: "" } });
-      invalidateGitStatus(stream.worktreeId);
-      stream.eventSource.close();
-      runScriptRef.current = null;
-      setRunScriptRunning(false);
     }
   }
 
@@ -464,12 +401,8 @@ export function useRepositoryManager(
     removeWorktree,
     removeRepository,
     rerunSetup,
-    runSavedScript,
-    runAdHocCommand,
     stopSetup,
-    stopRunScript,
     setupRunning,
-    runScriptRunning,
     renameWorktreeBranch,
     updateWorktreeBranch,
   };
