@@ -36,7 +36,7 @@ export const INLINE_TOOL_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "chat.failed",
 ]);
 
-export const MAX_ORDER_INDEX = Number.MAX_SAFE_INTEGER;
+const MAX_ORDER_INDEX = Number.MAX_SAFE_INTEGER;
 
 export const READ_TOOL_PATTERN = /\b(read|open|cat)\b/i;
 export const SEARCH_TOOL_PATTERN = /\b(glob|grep|search|find|list|scan|ls)\b/i;

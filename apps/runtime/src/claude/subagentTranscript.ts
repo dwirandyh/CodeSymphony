@@ -2,7 +2,7 @@
  * Parsing utilities for subagent transcript JSONL and tool responses.
  */
 
-export type SubagentTranscriptResult = {
+type SubagentTranscriptResult = {
     description: string;
     lastMessage: string;
 };

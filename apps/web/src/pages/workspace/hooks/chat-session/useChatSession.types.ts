@@ -38,7 +38,7 @@ export interface UseChatSessionOptions {
   timelineEnabled?: boolean;
 }
 
-export type SelectedThreadUiState = {
+type SelectedThreadUiState = {
   selectedThreadUiStatus: WorktreeThreadUiStatus;
   composerDisabled: boolean;
 };

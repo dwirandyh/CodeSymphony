@@ -27,13 +27,13 @@ export type UseWorkspaceTimelineOptions = {
   disabled?: boolean;
 };
 
-export type ThinkingRound = {
+type ThinkingRound = {
   content: string;
   firstIdx: number;
   lastIdx: number;
 };
 
-export type SortableEntry = {
+type SortableEntry = {
   item: ChatTimelineItem;
   anchorIdx: number;
   timestamp: number | null;
@@ -41,7 +41,7 @@ export type SortableEntry = {
   stableOrder: number;
 };
 
-export type InlineInsert =
+type InlineInsert =
   | {
     kind: "bash";
     id: string;
@@ -83,7 +83,7 @@ export type InlineInsert =
     planFileOutput: { id: string; messageId: string; content: string; filePath: string; idx: number; createdAt: string };
   };
 
-export type PlanFileOutput = {
+type PlanFileOutput = {
   id: string;
   messageId: string;
   content: string;
@@ -92,7 +92,7 @@ export type PlanFileOutput = {
   createdAt: string;
 };
 
-export type SegmentBucket = {
+type SegmentBucket = {
   content: string;
   anchorIdx: number | null;
   timestamp: number | null;

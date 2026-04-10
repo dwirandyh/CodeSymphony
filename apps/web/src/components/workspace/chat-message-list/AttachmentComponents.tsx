@@ -4,7 +4,7 @@ import { Check, Copy, FileText, Paperclip } from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "../../ui/popover";
 import { formatFileSize } from "./toolEventUtils";
 
-export const AttachmentPopoverContent = memo(function AttachmentPopoverContent({ attachment }: { attachment: ChatAttachment }) {
+const AttachmentPopoverContent = memo(function AttachmentPopoverContent({ attachment }: { attachment: ChatAttachment }) {
   const [copied, setCopied] = useState(false);
   const isImage = attachment.mimeType.startsWith("image/");
   const hasContent = attachment.content.length > 0;

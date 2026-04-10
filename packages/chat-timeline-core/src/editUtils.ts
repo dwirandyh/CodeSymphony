@@ -11,7 +11,7 @@ import {
 } from "./eventUtils.js";
 import type { EditedRun } from "./types.js";
 
-export function isEditToolName(toolName: string | null): boolean {
+function isEditToolName(toolName: string | null): boolean {
   if (!toolName) {
     return false;
   }
@@ -19,7 +19,7 @@ export function isEditToolName(toolName: string | null): boolean {
   return EDIT_TOOL_NAME_PATTERN.test(toolName.trim());
 }
 
-export function extractEditTargetFromUnknownToolInput(input: unknown): string | null {
+function extractEditTargetFromUnknownToolInput(input: unknown): string | null {
   if (!isRecord(input)) {
     return null;
   }
@@ -35,7 +35,7 @@ export function extractEditTargetFromUnknownToolInput(input: unknown): string | 
   return null;
 }
 
-export function extractEditTargetFromSummary(summary: string): string | null {
+function extractEditTargetFromSummary(summary: string): string | null {
   const editedMatch = /^Edited\s+(.+)$/i.exec(summary.trim());
   if (editedMatch?.[1]) {
     const candidate = editedMatch[1].trim();
@@ -53,7 +53,7 @@ export function extractEditTargetFromSummary(summary: string): string | null {
   return null;
 }
 
-export function buildProposedEditDiffFromToolInput(toolInput: unknown, filePath: string): string | null {
+function buildProposedEditDiffFromToolInput(toolInput: unknown, filePath: string): string | null {
   if (!isRecord(toolInput)) {
     return null;
   }
@@ -118,7 +118,7 @@ export function buildProposedEditDiffFromToolInput(toolInput: unknown, filePath:
   return lines.join("\n");
 }
 
-export function isEditToolLifecycleEvent(event: ChatEvent): boolean {
+function isEditToolLifecycleEvent(event: ChatEvent): boolean {
   if (event.type === "tool.started" || event.type === "tool.output") {
     const toolName = payloadStringOrNull(event.payload.toolName);
     return isEditToolName(toolName);

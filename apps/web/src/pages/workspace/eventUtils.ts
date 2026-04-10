@@ -11,9 +11,9 @@ import {
 } from "./constants";
 import type { StepCandidate } from "./types";
 
-export type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "explore-activity" | "edited-diff" | "fallback-tool";
+type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "explore-activity" | "edited-diff" | "fallback-tool";
 
-export type SemanticBoundary = {
+type SemanticBoundary = {
   kind: SemanticBoundaryKind;
   eventId: string;
   eventIdx: number;
@@ -54,7 +54,7 @@ export function isClaudePlanFilePayload(payload: Record<string, unknown>): boole
   return isPlanFilePath(filePath);
 }
 
-export type NormalizedPlanCreatedEvent = {
+type NormalizedPlanCreatedEvent = {
   id: string;
   messageId: string;
   content: string;
@@ -139,7 +139,7 @@ export function isPlanModeToolEvent(event: ChatEvent): boolean {
   return false;
 }
 
-export function isTodoWriteToolEvent(event: ChatEvent): boolean {
+function isTodoWriteToolEvent(event: ChatEvent): boolean {
   if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
     return false;
   }

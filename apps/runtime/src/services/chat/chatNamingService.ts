@@ -8,7 +8,7 @@ const TITLE_GENERATION_TIMEOUT_MS = 15000;
 const MAX_BRANCH_NAME_LENGTH = 60;
 const BRANCH_GENERATION_TIMEOUT_MS = 15000;
 
-export function isDefaultThreadTitle(title: string): boolean {
+function isDefaultThreadTitle(title: string): boolean {
   const normalized = title.trim();
   return normalized === "New Thread" || normalized === "Main Thread" || /^Thread\s+\d+$/.test(normalized);
 }
@@ -28,7 +28,7 @@ export function clampThreadTitle(input: string, maxLength = MAX_THREAD_TITLE_LEN
   return sliced;
 }
 
-export function normalizeGeneratedThreadTitle(raw: string): string | null {
+function normalizeGeneratedThreadTitle(raw: string): string | null {
   const firstLine = raw
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -53,7 +53,7 @@ export function normalizeGeneratedThreadTitle(raw: string): string | null {
   return clamped.length >= 3 ? clamped : null;
 }
 
-export async function buildThreadTitleWithAi(
+async function buildThreadTitleWithAi(
   deps: RuntimeDeps,
   threadId: string,
   worktreePath: string,
@@ -233,7 +233,7 @@ export async function maybeAutoRenameThreadAfterFirstAssistantReply(
   }
 }
 
-export function normalizeGeneratedBranchName(raw: string): string | null {
+function normalizeGeneratedBranchName(raw: string): string | null {
   const firstLine = raw
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -262,7 +262,7 @@ export function normalizeGeneratedBranchName(raw: string): string | null {
   return candidate;
 }
 
-export async function buildBranchNameWithAi(
+async function buildBranchNameWithAi(
   deps: RuntimeDeps,
   threadId: string,
   worktreePath: string,

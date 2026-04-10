@@ -307,15 +307,6 @@ export const api = {
       method: "POST",
     });
   },
-  runScriptStream: (worktreeId: string, cmd?: string): EventSource => {
-    const params = cmd ? `?cmd=${encodeURIComponent(cmd)}` : "";
-    return createEventSource(`/worktrees/${worktreeId}/run-script/stream${params}`);
-  },
-  stopRunScript: async (worktreeId: string): Promise<void> => {
-    await runtimeFetch(`/worktrees/${worktreeId}/run-script/stop`, {
-      method: "POST",
-    });
-  },
   runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string; mode?: "stdin" | "exec" }): Promise<void> => {
     const response = await runtimeFetch("/terminal/run", {
       method: "POST",

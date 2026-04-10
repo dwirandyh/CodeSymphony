@@ -13,7 +13,7 @@ function mcpToolNameFromEvent(event: ChatEvent): string | null {
   return isMcpToolName(toolName) ? toolName : null;
 }
 
-export function eventPayloadText(event: ChatEvent): string {
+function eventPayloadText(event: ChatEvent): string {
   return JSON.stringify(event.payload ?? {}).toLowerCase();
 }
 
@@ -135,7 +135,7 @@ export function formatCompactDurationSeconds(durationSeconds: number | null): st
   return `${Math.max(1, Math.round(value))}s`;
 }
 
-export function tokenizeCommand(command: string): string[] {
+function tokenizeCommand(command: string): string[] {
   const tokens: string[] = [];
   let current = "";
   let quote: "'" | "\"" | null = null;
@@ -194,7 +194,7 @@ export function tokenizeCommand(command: string): string[] {
   return tokens;
 }
 
-export function isPathLikeToken(token: string): boolean {
+function isPathLikeToken(token: string): boolean {
   if (token.length === 0) {
     return false;
   }
@@ -206,7 +206,7 @@ export function isPathLikeToken(token: string): boolean {
   return token.startsWith("~/") || token.startsWith("./") || token.startsWith("../");
 }
 
-export function basenameFromTokenPath(token: string): string {
+function basenameFromTokenPath(token: string): string {
   const normalized = token.replace(/[\\/]+$/g, "");
   const parts = normalized.split(/[\\/]/).filter((part) => part.length > 0);
   if (parts.length === 0) {
@@ -215,7 +215,7 @@ export function basenameFromTokenPath(token: string): string {
   return parts[parts.length - 1];
 }
 
-export function shortenCommandToken(token: string): string {
+function shortenCommandToken(token: string): string {
   const equalIndex = token.indexOf("=");
   if (equalIndex > 0) {
     const key = token.slice(0, equalIndex);
@@ -232,7 +232,7 @@ export function shortenCommandToken(token: string): string {
   return token;
 }
 
-export function truncateSummaryText(text: string, maxLength: number): string {
+function truncateSummaryText(text: string, maxLength: number): string {
   if (text.length <= maxLength) {
     return text;
   }
@@ -349,7 +349,7 @@ export function getTimelineItemKey(item: ChatTimelineItem): string {
   }
 }
 
-export function isExplicitNoGrowthResult(params: {
+function isExplicitNoGrowthResult(params: {
   completionReason: string | null;
   estimatedRenderableGrowth: boolean | null;
   messagesAdded: number;
