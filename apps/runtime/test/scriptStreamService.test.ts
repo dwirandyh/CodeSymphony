@@ -64,6 +64,24 @@ describe("scriptStreamService", () => {
       expect(output).toContain("second");
     });
 
+    it("preserves shell state across multiple commands", async () => {
+      const emitter = service.startSetupStream(
+        "wt-shell-state",
+        ["export MY_VAR=stream_value", 'echo "$MY_VAR"'],
+        "/tmp",
+        {},
+      );
+
+      const chunks: string[] = [];
+      const result = await new Promise<{ success: boolean }>((resolve) => {
+        emitter.on("data", (chunk: string) => chunks.push(chunk));
+        emitter.on("end", (result: { success: boolean }) => resolve(result));
+      });
+
+      expect(result.success).toBe(true);
+      expect(chunks.join("")).toContain("stream_value");
+    });
+
     it("stops on first failure in multi-command sequence", async () => {
       const emitter = service.startSetupStream(
         "wt-5",

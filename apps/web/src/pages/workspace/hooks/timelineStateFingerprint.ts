@@ -143,7 +143,7 @@ export function buildEventsStateFingerprint(events: ChatEvent[]): string {
   return events.map((event) => buildEventFingerprint(event)).join(";");
 }
 
-export function buildTimelineItemsStateFingerprint(items: ChatTimelineItem[]): string {
+function buildTimelineItemsStateFingerprint(items: ChatTimelineItem[]): string {
   return items.map((item) => buildTimelineItemFingerprint(item)).join(";");
 }
 

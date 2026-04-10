@@ -24,6 +24,7 @@ import type {
   OpenInAppInput,
   OpenWorktreeFileInput,
   PlanRevisionInput,
+  SlashCommandCatalog,
   RenameChatThreadTitleInput,
   RenameWorktreeBranchInput,
   ResolvePermissionInput,
@@ -306,15 +307,6 @@ export const api = {
       method: "POST",
     });
   },
-  runScriptStream: (worktreeId: string, cmd?: string): EventSource => {
-    const params = cmd ? `?cmd=${encodeURIComponent(cmd)}` : "";
-    return createEventSource(`/worktrees/${worktreeId}/run-script/stream${params}`);
-  },
-  stopRunScript: async (worktreeId: string): Promise<void> => {
-    await runtimeFetch(`/worktrees/${worktreeId}/run-script/stop`, {
-      method: "POST",
-    });
-  },
   runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string; mode?: "stdin" | "exec" }): Promise<void> => {
     const response = await runtimeFetch("/terminal/run", {
       method: "POST",
@@ -493,6 +485,8 @@ export const api = {
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`, { signal }),
   getFileIndex: (worktreeId: string, signal?: AbortSignal) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files/index`, { signal }),
+  getSlashCommands: (worktreeId: string, signal?: AbortSignal) =>
+    request<SlashCommandCatalog>(`/worktrees/${worktreeId}/slash-commands`, { signal }),
   openWorktreeFile: async (worktreeId: string, input: OpenWorktreeFileInput) => {
     const response = await runtimeFetch(`/worktrees/${worktreeId}/files/open`, {
       method: "POST",

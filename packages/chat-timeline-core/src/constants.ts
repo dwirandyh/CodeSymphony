@@ -1,6 +1,6 @@
 import type { ChatEvent } from "@codesymphony/shared-types";
 
-export const EVENT_TYPES = [
+const EVENT_TYPES = [
   "message.delta",
   "tool.started",
   "tool.output",

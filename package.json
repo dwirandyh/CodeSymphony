@@ -11,6 +11,7 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
+    "knip": "knip -c knip.ts",
     "db:generate": "pnpm --filter @codesymphony/runtime prisma:generate",
     "db:migrate": "pnpm --filter @codesymphony/runtime prisma:migrate",
     "db:seed": "DATABASE_URL=\"file:./dev.db\" pnpm --filter @codesymphony/runtime prisma:seed",
@@ -19,7 +20,7 @@
     "run:runtime": "pnpm --filter @codesymphony/runtime start"
   },
   "devDependencies": {
-    "playwright": "^1.58.2",
+    "knip": "^6.3.1",
     "turbo": "^2.8.8",
     "typescript": "^5.8.2"
   }

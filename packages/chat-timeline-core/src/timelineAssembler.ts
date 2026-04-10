@@ -211,7 +211,7 @@ function normalizeTrailingEditAnnouncementOrder(items: ChatTimelineItem[]): Chat
   return nextItems;
 }
 
-export type TimelineAssemblyResult = {
+type TimelineAssemblyResult = {
   items: ChatTimelineItem[];
   summary: ChatTimelineSummary;
   hasIncompleteCoverage: boolean;

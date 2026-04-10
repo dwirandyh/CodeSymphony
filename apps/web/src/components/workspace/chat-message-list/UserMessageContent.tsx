@@ -15,6 +15,19 @@ function renderMentionSegment(seg: ReturnType<typeof parseUserMentions>[number],
   if (seg.kind === "text") {
     return <span key={key}>{seg.value}</span>;
   }
+
+  if (seg.kind === "slash-command") {
+    return (
+      <span
+        key={key}
+        title={`/${seg.name}`}
+        className="inline-flex items-center rounded-md border border-blue-500/30 bg-blue-500/15 px-1.5 py-0 text-xs align-baseline text-blue-400"
+      >
+        <span className="max-w-[140px] truncate">/{seg.name}</span>
+      </span>
+    );
+  }
+
   return (
     <span
       key={key}

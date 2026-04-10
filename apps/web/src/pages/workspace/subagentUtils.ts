@@ -9,7 +9,7 @@ import {
 } from "./exploreUtils";
 import type { SubagentGroup, SubagentStep } from "./types";
 
-export type SubagentAttributionReasonCode =
+type SubagentAttributionReasonCode =
   | "claimed_explicit_owner"
   | "claimed_parent_lineage"
   | "claimed_preceding_lineage"

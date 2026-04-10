@@ -19,7 +19,7 @@ import {
   type SessionState,
 } from "./sessionHooks.js";
 
-export type StreamProcessorDeps = {
+type StreamProcessorDeps = {
   callbacks: HookCallbacks;
   emitInstrumentation: (event: ClaudeToolInstrumentationEvent) => Promise<void>;
   markStarted: (

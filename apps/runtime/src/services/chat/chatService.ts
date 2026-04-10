@@ -9,6 +9,7 @@ import {
   RenameChatThreadTitleInputSchema,
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
+  SlashCommandCatalogSchema,
   UpdateChatThreadModeInputSchema,
   UpdateChatThreadPermissionModeInputSchema,
   type AnswerQuestionInput,
@@ -28,6 +29,7 @@ import {
   type ResolvePermissionInput,
   type ReviewProvider,
   type SendChatMessageInput,
+  type SlashCommandCatalog,
   type UpdateChatThreadModeInput,
   type UpdateChatThreadPermissionModeInput,
 } from "@codesymphony/shared-types";
@@ -949,6 +951,46 @@ export function createChatService(deps: RuntimeDeps) {
     async getThreadById(threadId: string): Promise<ChatThread | null> {
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
       return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
+    },
+
+    async listSlashCommands(worktreeId: string): Promise<SlashCommandCatalog> {
+      const worktree = await deps.prisma.worktree.findUnique({ where: { id: worktreeId } });
+      if (!worktree) {
+        throw new Error("Worktree not found");
+      }
+
+      try {
+        const result = await deps.claudeRunner({
+          prompt: "",
+          sessionId: null,
+          listSlashCommandsOnly: true,
+          cwd: worktree.path,
+          sessionWorktreePath: worktree.path,
+          onText: () => {},
+          onToolStarted: () => {},
+          onToolOutput: () => {},
+          onToolFinished: () => {},
+          onQuestionRequest: async () => ({ answers: {} }),
+          onPermissionRequest: async () => ({ decision: "deny" }),
+          onPlanFileDetected: () => {},
+          onSubagentStarted: () => {},
+          onSubagentStopped: () => {},
+        });
+
+        return SlashCommandCatalogSchema.parse({
+          commands: result.slashCommands ?? [],
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        deps.logService?.log("warn", "chat.slashCommands", "failed to load slash commands", {
+          worktreeId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return SlashCommandCatalogSchema.parse({
+          commands: [],
+          updatedAt: new Date().toISOString(),
+        });
+      }
     },
 
     async renameThreadTitle(threadId: string, rawInput: unknown): Promise<ChatThread> {

@@ -2,7 +2,7 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 
-export const REPOSITORY_REVIEWS_REFETCH_MS = 30_000;
+const REPOSITORY_REVIEWS_REFETCH_MS = 30_000;
 
 export function repositoryReviewsQueryOptions(repositoryId: string) {
   return queryOptions({

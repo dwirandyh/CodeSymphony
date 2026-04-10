@@ -49,7 +49,7 @@ function dedupePathSegments(pathValue: string): string {
   return ordered.join(":");
 }
 
-export function mergePathValues(preferred?: string, fallback?: string): string | undefined {
+function mergePathValues(preferred?: string, fallback?: string): string | undefined {
   const segments = [preferred, fallback]
     .filter((value): value is string => Boolean(value && value.trim()))
     .join(":");
@@ -124,7 +124,7 @@ export function buildClaudeRuntimeEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.Proces
   return mergedEnv;
 }
 
-export function resetInteractiveShellEnvCache(): void {
+function resetInteractiveShellEnvCache(): void {
   cachedInteractiveShellEnv = null;
 }
 

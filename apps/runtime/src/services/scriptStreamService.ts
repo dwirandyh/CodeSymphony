@@ -1,9 +1,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { EventEmitter } from "node:events";
+import { buildExecShellArgs, resolveShellCandidates } from "./terminalService.js";
 
 interface ActiveScript {
   process: ChildProcess;
   emitter: EventEmitter;
+}
+
+function buildScript(commands: string[]): string {
+  return commands.join("\n");
 }
 
 export function createScriptStreamService() {
@@ -20,15 +26,18 @@ export function createScriptStreamService() {
 
     const emitter = new EventEmitter();
     const mergedEnv = { ...process.env, ...env };
+    const script = buildScript(commands);
 
     let cancelled = false;
 
     async function runSequentially() {
-      for (const command of commands) {
+      for (const shell of resolveShellCandidates()) {
         if (cancelled) return;
+        if (!existsSync(shell)) {
+          continue;
+        }
 
-        const child = spawn(command, {
-          shell: true,
+        const child = spawn(shell, buildExecShellArgs(shell, script), {
           stdio: ["ignore", "pipe", "pipe"],
           cwd,
           env: mergedEnv,
@@ -47,27 +56,40 @@ export function createScriptStreamService() {
           emitter.emit("data", chunk.toString());
         });
 
-        const exitCode = await new Promise<number | null>((resolve) => {
-          child.on("close", (code) => resolve(code));
+        const result = await new Promise<{ success: boolean; spawnError: boolean }>((resolve) => {
+          let settled = false;
+
+          child.on("close", (code) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            resolve({ success: code === 0, spawnError: false });
+          });
           child.on("error", (err) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
             emitter.emit("data", `Error: ${err.message}\n`);
-            resolve(1);
+            resolve({ success: false, spawnError: true });
           });
         });
 
         if (cancelled) return;
 
-        if (exitCode !== 0) {
-          emitter.emit("data", `\nCommand exited with code ${exitCode}: ${command}\n`);
-          active.delete(worktreeId);
-          emitter.emit("end", { success: false });
-          return;
+        if (result.spawnError) {
+          continue;
         }
+
+        active.delete(worktreeId);
+        emitter.emit("end", { success: result.success });
+        return;
       }
 
       if (!cancelled) {
         active.delete(worktreeId);
-        emitter.emit("end", { success: true });
+        emitter.emit("end", { success: false });
       }
     }
 

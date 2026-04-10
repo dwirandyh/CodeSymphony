@@ -2,7 +2,7 @@ import { queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 
-export const GIT_BRANCH_DIFF_SUMMARY_REFETCH_MS = 30_000;
+const GIT_BRANCH_DIFF_SUMMARY_REFETCH_MS = 30_000;
 
 export function gitBranchDiffSummaryQueryOptions(worktreeId: string, baseBranch: string) {
   return queryOptions({

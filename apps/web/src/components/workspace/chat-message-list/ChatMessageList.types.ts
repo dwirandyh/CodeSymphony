@@ -4,7 +4,7 @@ import type { SubagentStep } from "../../../pages/workspace/types";
 
 export type AssistantRenderHint = "markdown" | "raw-file" | "raw-fallback" | "diff";
 
-export type ReadFileTimelineEntry = {
+type ReadFileTimelineEntry = {
   label: string;
   openPath: string | null;
 };
@@ -107,7 +107,7 @@ export type ChatTimelineItem =
     createdAt: string;
   };
 
-export type ChatTimelineSummary = {
+type ChatTimelineSummary = {
   oldestRenderableKey: string | null;
   oldestRenderableKind: ChatTimelineItem["kind"] | null;
   oldestRenderableMessageId: string | null;
