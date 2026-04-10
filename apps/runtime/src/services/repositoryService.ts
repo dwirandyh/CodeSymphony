@@ -7,11 +7,11 @@ import { mapRepository } from "./mappers.js";
 
 const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
 
-export function normalizeFsPath(inputPath: string): string {
+function normalizeFsPath(inputPath: string): string {
   return path.resolve(inputPath.trim());
 }
 
-export function stripPrivatePrefix(input: string): string {
+function stripPrivatePrefix(input: string): string {
   if (input === "/private") return "/";
   if (input.startsWith("/private/")) return input.slice("/private".length);
   return input;

@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { parseUserMentions, serializeMention, serializeMentionPrefix, MENTION_TOKEN_REGEX } from "./mentions";
+import { parseUserMentions, serializeMention, serializeMentionPrefix, MENTION_TOKEN_REGEX, SLASH_COMMAND_TOKEN_REGEX } from "./mentions";
 
 describe("MENTION_TOKEN_REGEX", () => {
   it("matches file mention", () => {
     const match = "@file:src/index.ts".match(new RegExp(MENTION_TOKEN_REGEX.source));
+    expect(match).toBeTruthy();
+  });
+
+  it("matches slash command token", () => {
+    const match = "/commit".match(new RegExp(SLASH_COMMAND_TOKEN_REGEX.source));
     expect(match).toBeTruthy();
   });
 
@@ -54,6 +59,15 @@ describe("parseUserMentions", () => {
     expect(result[0].kind).toBe("mention");
     expect(result[1]).toEqual({ kind: "text", value: " and " });
     expect(result[2].kind).toBe("mention");
+  });
+
+  it("parses slash commands as chip segments", () => {
+    const result = parseUserMentions("run /commit now");
+    expect(result).toEqual([
+      { kind: "text", value: "run " },
+      { kind: "slash-command", name: "commit" },
+      { kind: "text", value: " now" },
+    ]);
   });
 
   it("returns empty array elements for empty string", () => {

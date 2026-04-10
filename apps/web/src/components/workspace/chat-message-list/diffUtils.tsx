@@ -53,7 +53,7 @@ export function hasUnclosedCodeFence(content: string): boolean {
   return fenceCount % 2 !== 0;
 }
 
-export function splitRawFileContentWithMode(
+function splitRawFileContentWithMode(
   content: string,
   requireClosingFence: boolean,
 ): {

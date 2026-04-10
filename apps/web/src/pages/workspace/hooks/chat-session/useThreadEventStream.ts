@@ -34,7 +34,7 @@ const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["
   "plan.created",
 ]);
 
-export interface UseThreadEventStreamParams {
+interface UseThreadEventStreamParams {
   selectedThreadId: string | null;
   selectedWorktreeId: string | null;
   repositoryId: string | null;

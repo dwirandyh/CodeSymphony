@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FileEntry } from "@codesymphony/shared-types";
+import type { FileEntry, SlashCommand } from "@codesymphony/shared-types";
 import { Composer } from "./composer";
 
 const sampleFileIndex: FileEntry[] = [
@@ -11,6 +11,12 @@ const sampleFileIndex: FileEntry[] = [
   { path: "src/b.ts", type: "file" },
   { path: "src/c.ts", type: "file" },
   { path: "src/components.tsx", type: "file" },
+];
+
+const sampleSlashCommands: SlashCommand[] = [
+  { name: "commit", description: "Create a commit", argumentHint: "" },
+  { name: "review-pr", description: "Review a pull request", argumentHint: "<number>" },
+  { name: "simplify", description: "Review changed code for simplification", argumentHint: "" },
 ];
 
 const defaultProps = {
@@ -24,6 +30,8 @@ const defaultProps = {
   modeLocked: false,
   fileIndex: sampleFileIndex,
   fileIndexLoading: false,
+  slashCommands: sampleSlashCommands,
+  slashCommandsLoading: false,
   providers: [],
   permissionMode: "default" as const,
   hasMessages: false,
@@ -165,6 +173,18 @@ describe("Composer", () => {
     expect(buttons.length).toBeGreaterThan(0);
   });
 
+  it("shows slash commands immediately when / is typed", async () => {
+    renderComposer();
+    const editor = getEditor();
+
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+
+    const buttons = container.querySelectorAll("button[data-index]");
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(container.textContent).toContain("Create a commit");
+  });
+
   it("shows no suggestions when worktreeId is null (empty fileIndex)", async () => {
     renderComposer({ worktreeId: null, fileIndex: [], fileIndexLoading: false });
     const editor = getEditor();
@@ -186,6 +206,17 @@ describe("Composer", () => {
     const buttons = container.querySelectorAll("button[data-index]");
     const texts = Array.from(buttons).map((b) => b.textContent);
     expect(texts.some((t) => t?.includes("index.ts"))).toBe(true);
+  });
+
+  it("filters slash commands by query", async () => {
+    renderComposer();
+    const editor = getEditor();
+
+    typeInEditor(editor, "/rev");
+    await flushMicrotasks();
+
+    const texts = Array.from(container.querySelectorAll("button[data-index]")).map((button) => button.textContent);
+    expect(texts.some((text) => text?.includes("review-pr"))).toBe(true);
   });
 
   it("renders suggestion popover when results are available", async () => {
@@ -259,6 +290,32 @@ describe("Composer", () => {
     });
   });
 
+  it("inserts selected slash command with Enter and submits as plain text", async () => {
+    setMobileViewport(false);
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
+    const editor = getEditor();
+
+    typeInEditor(editor, "/com");
+    await flushMicrotasks();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(editor.textContent).toContain("/commit ");
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledWith({
+      content: "/commit",
+      mode: "default",
+      attachments: [],
+    });
+  });
+
   it("does not submit on Enter in mobile viewport", async () => {
     setMobileViewport(true);
     const onSubmitMessage = vi.fn().mockResolvedValue(true);
@@ -308,6 +365,15 @@ describe("Composer", () => {
 
     const loadingText = container.querySelector(".text-muted-foreground");
     expect(loadingText?.textContent).toContain("Loading files...");
+  });
+
+  it("shows loading indicator when slash commands are loading", async () => {
+    renderComposer({ slashCommands: [], slashCommandsLoading: true });
+    const editor = getEditor();
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+
+    expect(container.textContent).toContain("Loading commands...");
   });
 
   it("keeps model selector next to the mode toggle in the left action row", () => {
@@ -483,6 +549,16 @@ describe("Composer", () => {
     // Mention popover should appear even during composition
     const buttons = container.querySelectorAll("button[data-index]");
     expect(buttons.length).toBeGreaterThan(0);
+  });
+
+  it("does not show slash command suggestions inside another token", async () => {
+    renderComposer();
+    const editor = getEditor();
+
+    typeInEditor(editor, "foo/bar");
+    await flushMicrotasks();
+
+    expect(container.querySelectorAll("button[data-index]").length).toBe(0);
   });
 
   it("submits pasted attachment from local composer state", async () => {

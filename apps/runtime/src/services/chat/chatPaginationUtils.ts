@@ -3,7 +3,7 @@ import type { ChatEvent } from "@codesymphony/shared-types";
 import { mapChatMessage } from "../mappers.js";
 import { buildTimelineFromSeed } from "./chatTimelineAssembler.js";
 
-export const chatEventTypeFromDb: Partial<Record<DbChatEventType, ChatEvent["type"]>> = {
+const chatEventTypeFromDb: Partial<Record<DbChatEventType, ChatEvent["type"]>> = {
   message_delta: "message.delta",
   tool_started: "tool.started",
   tool_output: "tool.output",
@@ -26,7 +26,7 @@ export function mapMessages(rows: Array<Parameters<typeof mapChatMessage>[0]>) {
   return rows.map(mapChatMessage);
 }
 
-export function mapEvents(
+function mapEvents(
   rows: Array<{ id: string; threadId: string; idx: number; type: DbChatEventType; payload: unknown; createdAt: Date }>,
 ): ChatEvent[] {
   return rows.flatMap((row) => {

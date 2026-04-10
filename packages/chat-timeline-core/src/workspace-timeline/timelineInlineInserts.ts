@@ -409,7 +409,7 @@ export function fixPunctuationSplits(segmentBuckets: SegmentBucket[]): void {
   }
 }
 
-export function pushInlineInsert(
+function pushInlineInsert(
   insert: InlineInsert,
   sortable: SortableEntry[],
   message: ChatMessage,
@@ -535,7 +535,7 @@ export function pushInlineInsert(
   }
 }
 
-export function pushMessageSegment(
+function pushMessageSegment(
   content: string,
   segmentIdSuffix: string,
   segmentAnchorIdx: number | null,

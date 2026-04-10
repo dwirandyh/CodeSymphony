@@ -25,7 +25,7 @@ export function splitAtFirstSentenceBoundary(text: string): { head: string; tail
   };
 }
 
-export function sanitizeAssistantVisibleText(text: string): string {
+function sanitizeAssistantVisibleText(text: string): string {
   if (text.length === 0) {
     return text;
   }
@@ -37,7 +37,7 @@ export function sanitizeAssistantVisibleText(text: string): string {
     .trim();
 }
 
-export function stripAssistantControlMarkup(text: string): string {
+function stripAssistantControlMarkup(text: string): string {
   if (text.length === 0) {
     return text;
   }

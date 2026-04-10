@@ -11,9 +11,9 @@ import {
 } from "./constants.js";
 import type { StepCandidate } from "./types.js";
 
-export type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "explore-activity" | "edited-diff" | "fallback-tool";
+type SemanticBoundaryKind = "plan-file-output" | "subagent-activity" | "explore-activity" | "edited-diff" | "fallback-tool";
 
-export type SemanticBoundary = {
+type SemanticBoundary = {
   kind: SemanticBoundaryKind;
   eventId: string;
   eventIdx: number;
@@ -44,7 +44,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 // ── Event classification ──
 
-export function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
+function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
   const rawSource = payload.source;
   if (rawSource === "claude_plan_file") {
     return true;
@@ -54,7 +54,7 @@ export function isClaudePlanFilePayload(payload: Record<string, unknown>): boole
   return isPlanFilePath(filePath);
 }
 
-export type NormalizedPlanCreatedEvent = {
+type NormalizedPlanCreatedEvent = {
   id: string;
   messageId: string;
   content: string;
@@ -280,7 +280,7 @@ function extractShellCommandHead(segment: string): string | null {
   return head && head.length > 0 ? head : null;
 }
 
-export function isExploreLikeBashCommand(command: string | null | undefined): boolean {
+function isExploreLikeBashCommand(command: string | null | undefined): boolean {
   if (!command || command.trim().length === 0) {
     return false;
   }
@@ -330,7 +330,7 @@ export function isExploreLikeBashEvent(event: ChatEvent): boolean {
   return isExploreLikeBashCommand(command);
 }
 
-export const GIT_STATUS_INVALIDATION_EVENT_TYPES = new Set<ChatEvent["type"]>([
+const GIT_STATUS_INVALIDATION_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "tool.finished",
   "chat.completed",
   "chat.failed",
@@ -344,7 +344,7 @@ export function isMetadataToolEvent(event: ChatEvent): boolean {
   return event.payload.source === "chat.thread.metadata";
 }
 
-export function eventPayloadText(event: ChatEvent): string {
+function eventPayloadText(event: ChatEvent): string {
   return JSON.stringify(event.payload ?? {}).toLowerCase();
 }
 
@@ -419,7 +419,7 @@ export function isSearchToolEvent(event: ChatEvent): boolean {
 
 // ── Event data extraction ──
 
-export function findRepositoryByWorktree(repositories: Repository[], worktreeId: string | null): Repository | null {
+function findRepositoryByWorktree(repositories: Repository[], worktreeId: string | null): Repository | null {
   if (!worktreeId) {
     return null;
   }
@@ -456,7 +456,7 @@ export function getCompletedMessageId(event: ChatEvent): string | null {
   return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
 }
 
-export function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
+function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
   if (event.type === "chat.completed" || event.type === "chat.failed") {
     return true;
   }
@@ -478,7 +478,7 @@ export function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
 
 // ── Content helpers ──
 
-export function extractFirstFilePath(text: string): string | null {
+function extractFirstFilePath(text: string): string | null {
   const matches = text.match(FILE_PATH_PATTERN);
   if (!matches || matches.length === 0) {
     return null;
@@ -553,7 +553,7 @@ export function countDiffStats(diff: string): { additions: number; deletions: nu
 
 // ── Activity step helpers ──
 
-export function activityStepLabel(event: ChatEvent, detail: string): string {
+function activityStepLabel(event: ChatEvent, detail: string): string {
   const payload = eventPayloadText(event);
   const source = `${payload} ${detail}`.toLowerCase();
   const payloadSource = typeof event.payload.source === "string" ? event.payload.source.toLowerCase() : "";
@@ -589,7 +589,7 @@ export function activityStepLabel(event: ChatEvent, detail: string): string {
   return "Step";
 }
 
-export function toolEventDetail(event: ChatEvent): string {
+function toolEventDetail(event: ChatEvent): string {
   if (event.type === "chat.failed") {
     return String(event.payload.message ?? "Chat failed");
   }
@@ -812,7 +812,7 @@ export function finishedToolUseIds(event: ChatEvent): string[] {
   return [`finished:${event.id}`];
 }
 
-export function detectSemanticBoundaryFromEvents(events: ChatEvent[]): SemanticBoundary | null {
+function detectSemanticBoundaryFromEvents(events: ChatEvent[]): SemanticBoundary | null {
   const ordered = [...events].sort((a, b) => a.idx - b.idx);
 
   for (const event of ordered) {

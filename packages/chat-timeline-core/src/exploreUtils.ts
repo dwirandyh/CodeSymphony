@@ -21,7 +21,7 @@ export function shortenReadTargetForDisplay(target: string): string {
   return basename;
 }
 
-export function extractReadTargetFromSummary(summary: string): string | null {
+function extractReadTargetFromSummary(summary: string): string | null {
   if (/^completed\s+read$/i.test(summary.trim())) {
     return null;
   }
@@ -63,7 +63,7 @@ export function extractReadFileEntry(event: ChatEvent): ReadFileTimelineEntry | 
   return null;
 }
 
-export function normalizeSearchSummary(summary: string): string {
+function normalizeSearchSummary(summary: string): string {
   const normalized = summary.trim();
   if (normalized.length === 0) {
     return "Searched";
@@ -97,7 +97,7 @@ function shortenSearchParams(params: string): string {
   );
 }
 
-export function buildSearchRunningLabel(toolName: string | null, searchParams: string | null): string {
+function buildSearchRunningLabel(toolName: string | null, searchParams: string | null): string {
   const base = `Searching ${toolName && toolName.length > 0 ? toolName : "Search"}`;
   if (searchParams && searchParams.length > 0) {
     return `${base} (${shortenSearchParams(searchParams)})`;
@@ -105,7 +105,7 @@ export function buildSearchRunningLabel(toolName: string | null, searchParams: s
   return base;
 }
 
-export function buildSearchCompletedFallbackLabel(toolName: string | null, searchParams: string | null): string {
+function buildSearchCompletedFallbackLabel(toolName: string | null, searchParams: string | null): string {
   const base = `Searched${toolName && toolName.length > 0 ? ` ${toolName}` : ""}`;
   if (searchParams && searchParams.length > 0) {
     return `${base} (${shortenSearchParams(searchParams)})`;
@@ -152,7 +152,7 @@ function shouldTreatAsExplicitToolRun(event: ChatEvent): boolean {
   return false;
 }
 
-export function extractExploreRunKind(event: ChatEvent): ExploreRunKind | null {
+function extractExploreRunKind(event: ChatEvent): ExploreRunKind | null {
   if (shouldTreatAsExplicitToolRun(event)) {
     return null;
   }

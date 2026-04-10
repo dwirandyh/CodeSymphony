@@ -1,11 +1,15 @@
 import type { FileEntry } from "@codesymphony/shared-types";
 
-export type MentionState = {
+type TriggerState = {
   active: boolean;
   query: string;
   startOffset: number;
   anchorNode: Node | null;
 };
+
+export type MentionState = TriggerState;
+
+type SlashCommandState = TriggerState;
 
 export type MentionedFile = FileEntry & { id: string };
 
@@ -29,6 +33,8 @@ export function getPlainTextFromEditor(el: HTMLElement): string {
         text += `{{attachment:${node.dataset.attachmentId}}}`;
       } else if (node.dataset.mentionPath) {
         text += `@${node.dataset.mentionPath}`;
+      } else if (node.dataset.slashCommand) {
+        text += `/${node.dataset.slashCommand}`;
       } else if (node.tagName === "BR") {
         text += "\n";
       } else {
@@ -52,36 +58,48 @@ export function getMentionedFilesFromEditor(el: HTMLElement): MentionedFile[] {
   return files;
 }
 
-export function detectMentionInEditor(el: HTMLElement): MentionState {
+function inactiveTriggerState(): TriggerState {
+  return { active: false, query: "", startOffset: -1, anchorNode: null };
+}
+
+function detectTriggerInEditor(el: HTMLElement, trigger: "@" | "/"): TriggerState {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
-    return { active: false, query: "", startOffset: -1, anchorNode: null };
+    return inactiveTriggerState();
   }
 
   const anchorNode = sel.anchorNode;
   if (!anchorNode || anchorNode.nodeType !== Node.TEXT_NODE) {
-    return { active: false, query: "", startOffset: -1, anchorNode: null };
+    return inactiveTriggerState();
   }
 
   const text = anchorNode.textContent ?? "";
   const cursorOffset = sel.anchorOffset;
   const textBeforeCursor = text.slice(0, cursorOffset);
 
-  const atIndex = textBeforeCursor.lastIndexOf("@");
-  if (atIndex === -1) {
-    return { active: false, query: "", startOffset: -1, anchorNode: null };
+  const triggerIndex = textBeforeCursor.lastIndexOf(trigger);
+  if (triggerIndex === -1) {
+    return inactiveTriggerState();
   }
 
-  if (atIndex > 0 && !/\s/.test(textBeforeCursor[atIndex - 1])) {
-    return { active: false, query: "", startOffset: -1, anchorNode: null };
+  if (triggerIndex > 0 && !/\s/.test(textBeforeCursor[triggerIndex - 1])) {
+    return inactiveTriggerState();
   }
 
-  const query = textBeforeCursor.slice(atIndex + 1);
+  const query = textBeforeCursor.slice(triggerIndex + 1);
   if (/\s/.test(query) && query.trim().includes(" ")) {
-    return { active: false, query: "", startOffset: -1, anchorNode: null };
+    return inactiveTriggerState();
   }
 
-  return { active: true, query: query.trimEnd(), startOffset: atIndex, anchorNode };
+  return { active: true, query: query.trimEnd(), startOffset: triggerIndex, anchorNode };
+}
+
+export function detectMentionInEditor(el: HTMLElement): MentionState {
+  return detectTriggerInEditor(el, "@");
+}
+
+export function detectSlashCommandInEditor(el: HTMLElement): SlashCommandState {
+  return detectTriggerInEditor(el, "/");
 }
 
 export const FILE_ICON_SVG =

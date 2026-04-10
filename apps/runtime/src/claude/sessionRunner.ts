@@ -1,6 +1,6 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { ChatMode, ChatThreadPermissionMode } from "@codesymphony/shared-types";
+import type { Query, SDKMessage, SlashCommand as SdkSlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import type { ChatMode, ChatThreadPermissionMode, SlashCommand } from "@codesymphony/shared-types";
 import type { ClaudeRunner, ClaudeSessionPermissionMode } from "../types.js";
 import { areLikelySameFsPath } from "../services/repositoryService.js";
 
@@ -47,6 +47,16 @@ function shouldResumeSession(sessionId: string | null, sessionWorktreePath: stri
   return areLikelySameFsPath(sessionWorktreePath, cwd);
 }
 
+function normalizeSlashCommands(commands: SdkSlashCommand[] | undefined | null): SlashCommand[] {
+  return (commands ?? [])
+    .map((command) => ({
+      name: typeof command.name === "string" ? command.name.trim() : "",
+      description: typeof command.description === "string" ? command.description : "",
+      argumentHint: typeof command.argumentHint === "string" ? command.argumentHint : "",
+    }))
+    .filter((command) => command.name.length > 0);
+}
+
 function resolveSdkPermissionMode(
   runPermissionMode: ChatMode | undefined,
   threadPermissionMode: ChatThreadPermissionMode | undefined,
@@ -77,6 +87,7 @@ function resolveSdkPermissionMode(
 export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
   sessionId,
+  listSlashCommandsOnly,
   cwd,
   sessionWorktreePath,
   abortController,
@@ -203,7 +214,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
   try {
     stream = query({
-      prompt,
+      prompt: listSlashCommandsOnly ? "List currently available slash commands." : prompt,
       options: {
         model: effectiveModel,
         abortController,
@@ -253,6 +264,20 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         },
       },
     });
+
+    if (listSlashCommandsOnly) {
+      const slashCommands = normalizeSlashCommands(await stream.supportedCommands());
+      try {
+        stream.close();
+      } catch {
+        // Best effort.
+      }
+      return {
+        output: "",
+        sessionId,
+        slashCommands,
+      };
+    }
 
     const latestSessionId = await processStreamMessages(
       stream as AsyncIterable<SDKMessage>,

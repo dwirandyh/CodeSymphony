@@ -21,7 +21,10 @@ const mockPtyProcess = () => {
 let currentMockPty: ReturnType<typeof mockPtyProcess>;
 
 vi.mock("node-pty", () => ({
-  spawn: vi.fn(() => {
+  spawn: vi.fn((shell: string, args: string[], options: { cwd: string }) => {
+    if (options.cwd === "/missing") {
+      throw new Error("ENOENT: missing cwd");
+    }
     currentMockPty = mockPtyProcess();
     return currentMockPty;
   }),
@@ -38,7 +41,7 @@ vi.mock("node:module", () => ({
   })),
 }));
 
-import { createTerminalService } from "../src/services/terminalService";
+import { buildExecShellArgs, createTerminalService } from "../src/services/terminalService";
 
 describe("terminalService", () => {
   let service: ReturnType<typeof createTerminalService>;
@@ -52,13 +55,27 @@ describe("terminalService", () => {
     it("creates a new session", () => {
       const session = service.spawn("s1", "/tmp");
       expect(session.id).toBe("s1");
+      expect(session.requestedCwd).toBe("/tmp");
+      expect(session.resolvedCwd).toBe("/tmp");
       expect(service.has("s1")).toBe(true);
     });
 
-    it("returns existing session if not replacing", () => {
+    it("returns existing session if not replacing and cwd is unchanged", () => {
       const first = service.spawn("s1", "/tmp");
       const second = service.spawn("s1", "/tmp");
       expect(first).toBe(second);
+    });
+
+    it("replaces the session when cwd changes", () => {
+      const first = service.spawn("s1", "/tmp");
+      const oldPty = currentMockPty;
+
+      const second = service.spawn("s1", "/var/tmp");
+
+      expect(second).not.toBe(first);
+      expect(oldPty.kill).toHaveBeenCalled();
+      expect(second.requestedCwd).toBe("/var/tmp");
+      expect(second.resolvedCwd).toBe("/var/tmp");
     });
 
     it("replaces session when replace option is true", () => {
@@ -88,15 +105,72 @@ describe("terminalService", () => {
     });
 
     it("keeps exec mode on login shell command execution", () => {
-      service.spawn("s1", "/tmp", { mode: "exec", command: "pwd", replace: true });
+      const originalShell = process.env.SHELL;
+      process.env.SHELL = "/bin/zsh";
 
-      expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
-        expect.any(String),
-        ["-lc", "pwd"],
-        expect.objectContaining({
-          cwd: "/tmp",
-        }),
-      );
+      try {
+        service.spawn("s1", "/tmp", { mode: "exec", command: "pwd", replace: true });
+
+        expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
+          "/bin/zsh",
+          ["-lic", "pwd"],
+          expect.objectContaining({
+            cwd: "/tmp",
+          }),
+        );
+      } finally {
+        process.env.SHELL = originalShell;
+      }
+    });
+
+    it("does not fall back to HOME when an explicit cwd fails", () => {
+      expect(() => service.spawn("s1", "/missing")).toThrow("ENOENT: missing cwd");
+      const spawnCalls = vi.mocked(pty.spawn).mock.calls;
+      expect(spawnCalls.length).toBeGreaterThan(0);
+      expect(spawnCalls.every(([, , options]) => options.cwd === "/missing")).toBe(true);
+    });
+
+    it("falls back when no cwd is provided", () => {
+      const originalHome = process.env.HOME;
+      process.env.HOME = "/Users/tester";
+
+      try {
+        const session = service.spawn("s1");
+        expect(session.requestedCwd).toBeUndefined();
+        expect(session.resolvedCwd).toBe("/Users/tester");
+        expect(vi.mocked(pty.spawn)).toHaveBeenCalledWith(
+          expect.any(String),
+          ["-l"],
+          expect.objectContaining({
+            cwd: "/Users/tester",
+          }),
+        );
+      } finally {
+        process.env.HOME = originalHome;
+      }
+    });
+  });
+
+  describe("buildExecShellArgs", () => {
+    it("uses interactive login mode for zsh", () => {
+      expect(buildExecShellArgs("/bin/zsh", "command -v flutter")).toEqual([
+        "-lic",
+        "command -v flutter",
+      ]);
+    });
+
+    it("uses interactive login mode for bash", () => {
+      expect(buildExecShellArgs("/bin/bash", "echo hi")).toEqual([
+        "-lic",
+        "echo hi",
+      ]);
+    });
+
+    it("keeps non-interactive exec mode for sh", () => {
+      expect(buildExecShellArgs("/bin/sh", "echo hi")).toEqual([
+        "-lc",
+        "echo hi",
+      ]);
     });
   });
 
