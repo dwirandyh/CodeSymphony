@@ -1,2 +1,2 @@
-export { buildTimelineFromSeed } from "./timelineAssembler.js";
+export { buildTimelineFromSeed, type TimelineAssemblyResult } from "./timelineAssembler.js";
 export { setTimelineDebugLogger } from "./debug.js";

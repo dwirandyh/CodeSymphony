@@ -21,6 +21,7 @@ const DiffReviewPanel = lazy(() =>
   import("../components/workspace/DiffReviewPanel").then(m => ({ default: m.DiffReviewPanel }))
 );
 import { api } from "../lib/api";
+import { openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
 import { findRootWorktree, isRootWorktree } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
@@ -440,7 +441,7 @@ export function WorkspacePage() {
     }
 
     if (selectedReviewRef) {
-      window.open(selectedReviewRef.url, "_blank", "noopener,noreferrer");
+      void openExternalUrl(selectedReviewRef.url);
       return;
     }
 
@@ -768,6 +769,7 @@ export function WorkspacePage() {
                     <ChatMessageList
                       key={chatMessageListKey}
                       items={chat.timelineItems}
+                      emptyState={chat.messageListEmptyState}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       onOpenReadFile={openReadFile}
                     />

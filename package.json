@@ -7,7 +7,7 @@
     "dev": "turbo run dev --parallel --filter=@codesymphony/chat-timeline-core --filter=@codesymphony/runtime --filter=@codesymphony/web",
     "dev:web": "turbo run dev --parallel --filter=@codesymphony/chat-timeline-core --filter=@codesymphony/web",
     "dev:runtime": "turbo run dev --parallel --filter=@codesymphony/chat-timeline-core --filter=@codesymphony/runtime",
-    "dev:desktop": "DATABASE_URL='file:./desktop.db' pnpm --filter @codesymphony/desktop dev",
+    "dev:desktop": "pnpm --filter @codesymphony/desktop dev",
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",

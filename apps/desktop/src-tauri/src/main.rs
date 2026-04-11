@@ -78,17 +78,74 @@ fn desktop_runtime_init_script(port: u16) -> String {
     )
 }
 
+fn desktop_dev_runtime_db_path(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join("apps")
+        .join("runtime")
+        .join("prisma")
+        .join("desktop.dev.db")
+}
+
+fn ensure_runtime_dev_database(runtime_dir: &Path, db_path: &Path) -> bool {
+    if let Some(parent) = db_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "Failed to create desktop dev database directory ({}): {error}",
+                parent.display()
+            );
+            return false;
+        }
+    }
+
+    let database_url = format!("file:{}", db_path.display());
+    let status = Command::new("pnpm")
+        .args(["exec", "prisma", "migrate", "deploy"])
+        .env("DATABASE_URL", &database_url)
+        .current_dir(runtime_dir)
+        .status();
+
+    match status {
+        Ok(result) if result.success() => true,
+        Ok(result) => {
+            eprintln!(
+                "Failed to apply desktop dev runtime migrations for {} (exit status: {})",
+                db_path.display(),
+                result
+            );
+            false
+        }
+        Err(error) => {
+            eprintln!(
+                "Failed to launch Prisma migrations for desktop dev runtime database {}: {error}",
+                db_path.display()
+            );
+            false
+        }
+    }
+}
+
 fn spawn_runtime_dev(port: u16) -> Option<Child> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_root = std::path::Path::new(manifest_dir)
         .parent()? // src-tauri -> desktop
         .parent()? // desktop -> apps
         .parent()?; // apps -> workspace root
+    let runtime_dir = workspace_root.join("apps").join("runtime");
+    let runtime_db_path = desktop_dev_runtime_db_path(workspace_root);
+
+    if !ensure_runtime_dev_database(&runtime_dir, &runtime_db_path) {
+        return None;
+    }
 
     let mut cmd = Command::new("pnpm");
     cmd.args(["--filter", "@codesymphony/runtime", "dev"])
+        .env(
+            "DATABASE_URL",
+            format!("file:{}", runtime_db_path.display()),
+        )
         .env("RUNTIME_HOST", desktop_runtime_host(true))
         .env("RUNTIME_PORT", port.to_string())
+        .env("CODESYMPHONY_DEBUG_LOG_PATH", runtime_dir.join("debug.log"))
         .current_dir(workspace_root);
 
     #[cfg(unix)]
@@ -247,6 +304,7 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(true).build())
         .append_invoke_initialization_script(desktop_runtime_init_script(runtime_port))
         .setup(move |app| {
             let child = if cfg!(debug_assertions) {

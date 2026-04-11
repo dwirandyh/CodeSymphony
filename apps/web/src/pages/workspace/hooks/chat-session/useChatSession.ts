@@ -330,6 +330,8 @@ export function useChatSession(
             permissionMode: pendingComposerPermissionMode,
           });
           if (cancelled) return;
+          optimisticCreatedThreadIdsRef.current.add(created.id);
+          locallyDeletedThreadIdsRef.current.delete(created.id);
           setThreads([created]);
           setSelectedThreadId(created.id);
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
@@ -416,7 +418,11 @@ export function useChatSession(
       ? selectedThreadId
       : null;
 
-  const { data: queriedThreadSnapshot } = useThreadSnapshot(selectedThreadIdForData);
+  const {
+    data: queriedThreadSnapshot,
+    isLoading: threadSnapshotLoading,
+    isFetching: threadSnapshotFetching,
+  } = useThreadSnapshot(selectedThreadIdForData);
 
   useEffect(() => {
     const threadChanged = prevSeedThreadRef.current !== selectedThreadId;
@@ -426,12 +432,15 @@ export function useChatSession(
     const localLatestEventIdx = selectedThreadId
       ? lastEventIdxByThreadRef.current.get(selectedThreadId) ?? null
       : null;
+    const localLatestMessageSeq = messages[messages.length - 1]?.seq ?? null;
     const seedDecision = resolveSnapshotSeedDecision({
       selectedThreadId,
       queriedThreadSnapshot,
       threadChanged,
       lastAppliedSnapshotKey,
       localLatestEventIdx,
+      localLatestMessageSeq,
+      waitingForAssistant: waitingAssistant?.threadId === selectedThreadId,
       hasPendingUserGate: !threadChanged && activeThreadIdRef.current === selectedThreadId && hasPendingUserGate,
     });
 
@@ -496,7 +505,7 @@ export function useChatSession(
     }
 
     lastAppliedSnapshotKeyByThreadRef.current.set(selectedThreadId, seedDecision.snapshotKey);
-  }, [hasPendingUserGate, messages.length, onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId]);
+  }, [hasPendingUserGate, messages, onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId, waitingAssistant]);
 
   useEffect(() => {
     if (!selectedThreadId) {
@@ -1130,6 +1139,31 @@ export function useChatSession(
 
   const timelineItems = timelineData.items;
   const timelineSummary = timelineData.summary;
+  const selectedThreadCreatedLocally =
+    selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
+  const selectedThreadHasLocalState =
+    selectedThreadId != null && (
+      (allMessagesBelongToThread(messages, selectedThreadId) && messages.length > 0)
+      || (allEventsBelongToThread(events, selectedThreadId) && events.length > 0)
+    );
+  const messageListEmptyState:
+    | "no-thread-selected"
+    | "creating-thread"
+    | "loading-thread"
+    | "new-thread-empty"
+    | "existing-thread-empty"
+    | null =
+    timelineItems.length > 0
+      ? null
+      : selectedThreadId == null
+        ? selectedWorktreeId && queriedThreads?.length === 0
+          ? "creating-thread"
+          : "no-thread-selected"
+        : selectedThreadCreatedLocally
+          ? "new-thread-empty"
+          : (threadSnapshotLoading || (threadSnapshotFetching && queriedThreadSnapshot == null)) && !selectedThreadHasLocalState
+            ? "loading-thread"
+            : "existing-thread-empty";
 
   return {
     threads,
@@ -1155,6 +1189,7 @@ export function useChatSession(
 
     timelineItems,
     timelineSummary,
+    messageListEmptyState,
 
     createAdditionalThread,
     createThreadAndSendMessage,
