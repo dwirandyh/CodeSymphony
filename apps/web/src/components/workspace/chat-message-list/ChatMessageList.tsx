@@ -1,11 +1,74 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { History, Loader2, MessageSquarePlus, MessagesSquare } from "lucide-react";
 import { isRenderDebugEnabled, copyRenderDebugLog } from "../../../lib/renderDebug";
 import { VList, type VListHandle } from "virtua";
-import type { ChatMessageListProps, ChatTimelineItem, TimelineCtx } from "./ChatMessageList.types";
+import type {
+  ChatMessageListEmptyState,
+  ChatMessageListProps,
+  ChatTimelineItem,
+  TimelineCtx,
+} from "./ChatMessageList.types";
 import { getTimelineItemKey } from "./toolEventUtils";
 import { TimelineItem, ThinkingPlaceholder } from "./TimelineItem";
 
 const AT_BOTTOM_THRESHOLD = 48;
+
+function EmptyStateCard({ state }: { state: ChatMessageListEmptyState }) {
+  const content = (() => {
+    switch (state) {
+      case "no-thread-selected":
+        return {
+          icon: MessagesSquare,
+          title: "Select a thread",
+          description: "Open an existing thread or create a new one to continue.",
+          iconClassName: "",
+        };
+      case "creating-thread":
+        return {
+          icon: Loader2,
+          title: "Preparing a new thread",
+          description: "Creating the first thread for this workspace...",
+          iconClassName: "animate-spin",
+        };
+      case "loading-thread":
+        return {
+          icon: History,
+          title: "Loading thread history",
+          description: "Fetching previous messages and activity for this thread...",
+          iconClassName: "animate-pulse",
+        };
+      case "new-thread-empty":
+        return {
+          icon: MessageSquarePlus,
+          title: "New thread ready",
+          description: "Start with a task, bug, or question so the assistant has clear context.",
+          iconClassName: "",
+        };
+      case "existing-thread-empty":
+        return {
+          icon: MessagesSquare,
+          title: "This thread is empty",
+          description: "No messages have been sent in this thread yet.",
+          iconClassName: "",
+        };
+    }
+  })();
+  const Icon = content.icon;
+
+  return (
+    <div className="flex h-full items-center justify-center px-3 py-6">
+      <div className="w-full max-w-xl rounded-3xl border border-border/70 bg-card/80 px-6 py-7 text-center shadow-sm">
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-secondary text-muted-foreground">
+          <Icon className={`h-5 w-5 ${content.iconClassName}`.trim()} />
+        </div>
+        <div className="mt-4 space-y-1.5">
+          <h2 className="text-sm font-semibold text-foreground">{content.title}</h2>
+          <p className="text-xs leading-5 text-muted-foreground">{content.description}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function getTimelineRowClassName(item: ChatTimelineItem): string {
   const isCompactRunningRow =
@@ -19,11 +82,11 @@ function getTimelineRowClassName(item: ChatTimelineItem): string {
 
 export function ChatMessageList({
   items,
+  emptyState = "existing-thread-empty",
   showThinkingPlaceholder = false,
   onOpenReadFile,
 }: ChatMessageListProps) {
   const vlistRef = useRef<VListHandle>(null);
-  const scrollWrapperRef = useRef<HTMLDivElement>(null);
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(() => new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
@@ -37,7 +100,6 @@ export function ChatMessageList({
   const renderDebugEnabled = isRenderDebugEnabled();
 
   const stickyBottomRef = useRef(true);
-  const lastScrollOffsetRef = useRef(0);
 
   const toggleRawOutput = useCallback((id: string) => {
     setRawOutputMessageIds((prev) => {
@@ -72,15 +134,33 @@ export function ChatMessageList({
     return result;
   }, [items, showThinkingPlaceholder]);
 
+  const getAutoFollowTargetIndex = useCallback(() => {
+    if (displayItems.length === 0) {
+      return null;
+    }
+
+    const lastTimelineItem = items[items.length - 1] ?? null;
+    if (
+      showThinkingPlaceholder
+      && lastTimelineItem?.kind === "message"
+      && lastTimelineItem.message.role === "user"
+    ) {
+      return items.length - 1;
+    }
+
+    return displayItems.length - 1;
+  }, [displayItems.length, items, showThinkingPlaceholder]);
+
   const scrollToBottom = useCallback(() => {
     const handle = vlistRef.current;
-    if (!handle || displayItems.length === 0) return;
+    const targetIndex = getAutoFollowTargetIndex();
+    if (!handle || targetIndex == null) return;
     try {
-      handle.scrollToIndex(displayItems.length - 1, { align: "end" });
+      handle.scrollToIndex(targetIndex, { align: "end" });
     } catch {
       // scroll fallback
     }
-  }, [displayItems.length]);
+  }, [getAutoFollowTargetIndex]);
 
   useEffect(() => {
     if (!stickyBottomRef.current || displayItems.length === 0) {
@@ -91,23 +171,28 @@ export function ChatMessageList({
     });
   }, [displayItems, scrollToBottom]);
 
-  const handleScroll = useCallback((offset: number) => {
-    const previousOffset = lastScrollOffsetRef.current;
-    const isScrollingUp = offset < previousOffset;
-
-    if (isScrollingUp) {
-      stickyBottomRef.current = false;
-    } else if (offset - previousOffset > AT_BOTTOM_THRESHOLD) {
-      stickyBottomRef.current = true;
+  const isAtBottom = useCallback((offset: number) => {
+    const handle = vlistRef.current;
+    if (!handle) {
+      return stickyBottomRef.current;
     }
 
-    lastScrollOffsetRef.current = offset;
+    const distanceFromBottom = handle.scrollSize - handle.viewportSize - offset;
+    return distanceFromBottom <= AT_BOTTOM_THRESHOLD;
   }, []);
 
+  const handleScroll = useCallback((offset: number) => {
+    stickyBottomRef.current = isAtBottom(offset);
+  }, [isAtBottom]);
+
   const handleScrollEnd = useCallback(() => {
-    if (!stickyBottomRef.current || displayItems.length === 0) return;
+    const handle = vlistRef.current;
+    if (!handle || displayItems.length === 0) return;
+
+    stickyBottomRef.current = isAtBottom(handle.scrollOffset);
+    if (!stickyBottomRef.current) return;
     scrollToBottom();
-  }, [displayItems.length, scrollToBottom]);
+  }, [displayItems.length, isAtBottom, scrollToBottom]);
 
   const timelineCtx: TimelineCtx = useMemo(
     () => ({
@@ -153,12 +238,11 @@ export function ChatMessageList({
 
   return (
     <div
-      ref={scrollWrapperRef}
       className="relative h-full min-h-0"
       data-testid="chat-scroll"
     >
       {items.length === 0 && !showThinkingPlaceholder ? (
-        <div className="py-10 text-center text-xs text-muted-foreground">No messages yet. Send a prompt to start.</div>
+        emptyState ? <EmptyStateCard state={emptyState} /> : null
       ) : (
         <VList
           ref={vlistRef}

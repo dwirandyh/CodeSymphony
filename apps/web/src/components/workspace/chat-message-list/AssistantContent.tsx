@@ -1,9 +1,33 @@
-import { memo } from "react";
+import { memo, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { openExternalUrl, shouldOpenInExternalApp } from "../../../lib/openExternalUrl";
 import type { AssistantRenderHint } from "./ChatMessageList.types";
 import { isLikelyDiff, SafePatchDiff, hasUnclosedCodeFence, RawFileBlock } from "./diffUtils";
+
+function MarkdownLink({ children, href }: ComponentProps<"a">) {
+  const opensExternally = typeof href === "string" && shouldOpenInExternalApp(href);
+
+  return (
+    <a
+      href={href}
+      className="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+      target={opensExternally ? "_blank" : undefined}
+      rel={opensExternally ? "noreferrer" : undefined}
+      onClick={(event) => {
+        if (!href || !opensExternally) {
+          return;
+        }
+
+        event.preventDefault();
+        void openExternalUrl(href);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
 
 const MARKDOWN_COMPONENTS: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   p: ({ children }) => <p className="leading-6 [&:not(:first-child)]:mt-4 whitespace-pre-wrap break-words">{children}</p>,
@@ -27,7 +51,7 @@ const MARKDOWN_COMPONENTS: React.ComponentProps<typeof ReactMarkdown>["component
   tr: ({ children }) => <tr className="m-0 border-t p-0 even:bg-muted/50">{children}</tr>,
   th: ({ children }) => <th className="border px-3 py-1.5 text-left font-bold [&[align=center]]:text-center [&[align=right]]:text-right">{children}</th>,
   td: ({ children }) => <td className="border px-3 py-1.5 text-left [&[align=center]]:text-center [&[align=right]]:text-right">{children}</td>,
-  a: ({ children, href }) => <a href={href} className="font-medium text-primary underline underline-offset-4 hover:text-primary/80" target="_blank" rel="noreferrer">{children}</a>,
+  a: MarkdownLink,
   strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
   code: ({ className, children }) => {
     const language = className?.replace("language-", "").trim();

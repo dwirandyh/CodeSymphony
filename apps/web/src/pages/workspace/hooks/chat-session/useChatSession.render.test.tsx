@@ -13,6 +13,8 @@ const { threadsState, snapshotState } = vi.hoisted(() => ({
   },
   snapshotState: {
     data: null as ChatTimelineSnapshot | null,
+    isLoading: false,
+    isFetching: false,
   },
 }));
 
@@ -21,7 +23,11 @@ vi.mock("../../../../hooks/queries/useThreads", () => ({
 }));
 
 vi.mock("../../../../hooks/queries/useThreadSnapshot", () => ({
-  useThreadSnapshot: vi.fn(() => ({ data: snapshotState.data })),
+  useThreadSnapshot: vi.fn(() => ({
+    data: snapshotState.data,
+    isLoading: snapshotState.isLoading,
+    isFetching: snapshotState.isFetching,
+  })),
 }));
 
 vi.mock("./useThreadEventStream", () => ({
@@ -126,6 +132,8 @@ function makeSnapshot(overrides?: Partial<ChatTimelineSnapshot>): ChatTimelineSn
 beforeEach(() => {
   threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
   snapshotState.data = null;
+  snapshotState.isLoading = false;
+  snapshotState.isFetching = false;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -393,6 +401,24 @@ describe("useChatSession", () => {
     renderHook("thread-new");
 
     expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
+  });
+
+  it("marks an existing thread as loading while its snapshot is still fetching", () => {
+    snapshotState.isLoading = true;
+    snapshotState.isFetching = true;
+
+    renderHook("thread-a");
+
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+  });
+
+  it("marks an empty fetched thread as empty instead of loading", () => {
+    snapshotState.data = makeSnapshot();
+
+    renderHook("thread-a");
+
+    expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
   });
 
   it("prefers derived timeline when server snapshot contains stale cards but derived timeline is empty", () => {
@@ -513,6 +539,78 @@ describe("useChatSession", () => {
       const submitted = await hookResult.submitMessage("Follow up", "default", []);
       expect(submitted).toBe(true);
     });
+
+    expect(hookResult.messages).toEqual([
+      {
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Initial reply",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "user-2",
+        threadId: "thread-a",
+        seq: 2,
+        role: "user",
+        content: "Follow up",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+    ]);
+  });
+
+  it("does not let a stale snapshot hide a newly submitted user message while waiting for assistant output", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Initial reply",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "user-2",
+      threadId: "thread-a",
+      seq: 2,
+      role: "user",
+      content: "Follow up",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:02Z",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      const submitted = await hookResult.submitMessage("Follow up", "default", []);
+      expect(submitted).toBe(true);
+    });
+
+    snapshotState.data = makeSnapshot({
+      summary: {
+        oldestRenderableKey: "server-stale",
+        oldestRenderableKind: "activity",
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: false,
+      },
+    });
+    renderHook("thread-a");
 
     expect(hookResult.messages).toEqual([
       {

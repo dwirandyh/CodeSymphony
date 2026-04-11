@@ -16,6 +16,8 @@ export function resolveSnapshotSeedDecision(params: {
   threadChanged: boolean;
   lastAppliedSnapshotKey: string | null;
   localLatestEventIdx?: number | null;
+  localLatestMessageSeq?: number | null;
+  waitingForAssistant?: boolean;
   hasPendingUserGate?: boolean;
 }): SnapshotSeedDecision {
   const {
@@ -24,6 +26,8 @@ export function resolveSnapshotSeedDecision(params: {
     threadChanged,
     lastAppliedSnapshotKey,
     localLatestEventIdx = null,
+    localLatestMessageSeq = null,
+    waitingForAssistant = false,
     hasPendingUserGate = false,
   } = params;
   if (!selectedThreadId || !queriedThreadSnapshot) {
@@ -42,6 +46,15 @@ export function resolveSnapshotSeedDecision(params: {
     && localLatestEventIdx > snapshotNewestIdx
   ) {
     return { shouldApply: false, reason: "local-state-ahead", snapshotKey };
+  }
+
+  const snapshotNewestSeq = queriedThreadSnapshot.newestSeq ?? null;
+  if (
+    waitingForAssistant
+    && localLatestMessageSeq != null
+    && (snapshotNewestSeq == null || localLatestMessageSeq > snapshotNewestSeq)
+  ) {
+    return { shouldApply: false, reason: "local-message-ahead-while-waiting", snapshotKey };
   }
 
   if (hasPendingUserGate) {

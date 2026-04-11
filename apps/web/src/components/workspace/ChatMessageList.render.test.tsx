@@ -16,9 +16,16 @@ vi.mock("@pierre/diffs/react", () => ({
   FileDiff: () => <div data-testid="file-diff">FileDiff</div>,
 }));
 
-const { scrollToIndexMock, latestVListPropsRef } = vi.hoisted(() => ({
+const { scrollToIndexMock, latestVListPropsRef, latestScrollStateRef } = vi.hoisted(() => ({
   scrollToIndexMock: vi.fn(),
   latestVListPropsRef: { current: null as Record<string, any> | null },
+  latestScrollStateRef: {
+    current: {
+      scrollOffset: 0,
+      scrollSize: 0,
+      viewportSize: 0,
+    },
+  },
 }));
 
 vi.mock("virtua", () => ({
@@ -26,6 +33,15 @@ vi.mock("virtua", () => ({
     latestVListPropsRef.current = props;
     useImperativeHandle(ref, () => ({
       scrollToIndex: scrollToIndexMock,
+      get scrollOffset() {
+        return latestScrollStateRef.current.scrollOffset;
+      },
+      get scrollSize() {
+        return latestScrollStateRef.current.scrollSize;
+      },
+      get viewportSize() {
+        return latestScrollStateRef.current.viewportSize;
+      },
     }));
     return <div data-testid="vlist">{typeof children === "function" ? null : children}</div>;
   }),
@@ -74,6 +90,11 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   scrollToIndexMock.mockReset();
   latestVListPropsRef.current = null;
+  latestScrollStateRef.current = {
+    scrollOffset: 0,
+    scrollSize: 0,
+    viewportSize: 0,
+  };
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     callback(0);
     return 1;
@@ -144,6 +165,8 @@ function setScrollMetrics({ scrollHeight = 1000, clientHeight = 400 }: { scrollH
   if (!wrapper) {
     throw new Error("chat-scroll wrapper not found");
   }
+  latestScrollStateRef.current.scrollSize = scrollHeight;
+  latestScrollStateRef.current.viewportSize = clientHeight;
   Object.defineProperty(wrapper, "scrollHeight", {
     configurable: true,
     value: scrollHeight,
@@ -158,6 +181,7 @@ function triggerScroll(offset: number) {
   if (!latestVListPropsRef.current?.onScroll) {
     throw new Error("VList onScroll handler not captured");
   }
+  latestScrollStateRef.current.scrollOffset = offset;
   act(() => {
     latestVListPropsRef.current?.onScroll(offset);
   });
@@ -262,7 +286,25 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.querySelector("[data-testid='timeline-edited-diff']")).toBeNull();
-    expect(container.textContent).toContain("No messages yet. Send a prompt to start.");
+    expect(container.textContent).toContain("This thread is empty");
+  });
+
+  it("renders a loading state for existing threads while history is fetching", () => {
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} emptyState="loading-thread" />);
+    });
+
+    expect(container.textContent).toContain("Loading thread history");
+    expect(container.textContent).toContain("Fetching previous messages and activity");
+  });
+
+  it("renders a distinct empty state for a newly created thread", () => {
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} emptyState="new-thread-empty" />);
+    });
+
+    expect(container.textContent).toContain("New thread ready");
+    expect(container.textContent).toContain("Start with a task, bug, or question");
   });
 
   it("renders user message", () => {
@@ -1224,6 +1266,19 @@ describe("ChatMessageList", () => {
     expect(scrollToIndexMock).not.toHaveBeenCalled();
   });
 
+  it("does not snap to bottom when user scrolls down but remains away from bottom", () => {
+    mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)] });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    scrollToIndexMock.mockClear();
+
+    triggerScroll(1560);
+    triggerScroll(1200);
+    triggerScroll(1305);
+    triggerScrollEnd();
+
+    expect(scrollToIndexMock).not.toHaveBeenCalled();
+  });
+
   it("does not auto-follow when thinking placeholder toggles while user is away from bottom", () => {
     mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)] });
     setScrollMetrics();
@@ -1237,6 +1292,23 @@ describe("ChatMessageList", () => {
     });
 
     expect(scrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the latest user bubble in view when thinking placeholder appears", () => {
+    mountChatMessageList({
+      items: [
+        makeMessageItem("m1", 1),
+        {
+          kind: "message",
+          message: makeMessage("m2", "user", "Follow up", 2),
+        },
+      ],
+      showThinkingPlaceholder: true,
+    });
+    setScrollMetrics();
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(1, { align: "end" });
   });
 
   it("auto-follows when the last message content grows without adding items", () => {

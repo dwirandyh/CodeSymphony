@@ -115,8 +115,16 @@ type ChatTimelineSummary = {
   headIdentityStable: boolean;
 };
 
+export type ChatMessageListEmptyState =
+  | "no-thread-selected"
+  | "creating-thread"
+  | "loading-thread"
+  | "new-thread-empty"
+  | "existing-thread-empty";
+
 export type ChatMessageListProps = {
   items: ChatTimelineItem[];
+  emptyState?: ChatMessageListEmptyState | null;
   showThinkingPlaceholder?: boolean;
   onOpenReadFile?: (path: string) => void | Promise<void>;
 };
