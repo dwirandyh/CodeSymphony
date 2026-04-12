@@ -59,6 +59,11 @@ import {
 import { useThreadEventStream } from "./useThreadEventStream";
 
 const DEFAULT_THREAD_TITLE = "New Thread";
+const pendingAutoCreateWorktreeIds = new Set<string>();
+
+export function resetPendingAutoCreateWorktreesForTest() {
+  pendingAutoCreateWorktreeIds.clear();
+}
 
 function mergeTrackedThreads(params: {
   queriedThreads: ChatThread[];
@@ -253,6 +258,7 @@ export function useChatSession(
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
   const rafIdRef = useRef<number | null>(null);
   const lastAppliedSnapshotKeyByThreadRef = useRef<Map<string, string>>(new Map());
+  const mountedRef = useRef(true);
 
   activeThreadIdRef.current = selectedThreadId;
   threadsRef.current = threads;
@@ -265,6 +271,13 @@ export function useChatSession(
     startTransition(() => {
       setSelectedThreadIdState(threadId);
     });
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -315,6 +328,10 @@ export function useChatSession(
       locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
     });
 
+    if (queriedThreads.length > 0 || trackedThreads.length > 0) {
+      pendingAutoCreateWorktreeIds.delete(selectedWorktreeId);
+    }
+
     const requestedThreadId = options?.desiredThreadId ?? null;
     const requestedThreadIdChanged = prevRequestedThreadIdRef.current !== requestedThreadId;
 
@@ -325,30 +342,46 @@ export function useChatSession(
     const shouldAutoCreateInitialThread =
       queriedThreads.length === 0
       && trackedThreads.length === 0
-      && closingThreadId == null;
+      && closingThreadId == null
+      && !pendingAutoCreateWorktreeIds.has(selectedWorktreeId);
 
     if (shouldAutoCreateInitialThread) {
       if (creatingThreadRef.current) return;
-      let cancelled = false;
+      const creationWorktreeId = selectedWorktreeId;
+      const creationPermissionMode = pendingComposerPermissionMode;
+      pendingAutoCreateWorktreeIds.add(creationWorktreeId);
       creatingThreadRef.current = true;
       void (async () => {
         try {
-          const created = await api.createThread(selectedWorktreeId, {
-            permissionMode: pendingComposerPermissionMode,
+          const created = await api.createThread(creationWorktreeId, {
+            permissionMode: creationPermissionMode,
           });
-          if (cancelled) return;
+          if (!mountedRef.current || prevWorktreeIdRef2.current !== creationWorktreeId) {
+            if (prevWorktreeIdRef2.current !== creationWorktreeId) {
+              pendingAutoCreateWorktreeIds.delete(creationWorktreeId);
+            }
+            return;
+          }
           optimisticCreatedThreadIdsRef.current.add(created.id);
           locallyDeletedThreadIdsRef.current.delete(created.id);
-          setThreads([created]);
-          setSelectedThreadId(created.id);
-          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+          setThreads((current) => (
+            current.some((thread) => thread.id === created.id) ? current : [...current, created]
+          ));
+          if (activeThreadIdRef.current == null && threadsRef.current.length === 0) {
+            setSelectedThreadId(created.id);
+          }
+          syncThreadIntoCache(creationWorktreeId, created);
+          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(creationWorktreeId) });
         } catch (e) {
-          if (!cancelled) onError(e instanceof Error ? e.message : "Failed to load threads");
+          pendingAutoCreateWorktreeIds.delete(creationWorktreeId);
+          if (mountedRef.current && prevWorktreeIdRef2.current === creationWorktreeId) {
+            onError(e instanceof Error ? e.message : "Failed to load threads");
+          }
         } finally {
           creatingThreadRef.current = false;
         }
       })();
-      return () => { cancelled = true; };
+      return;
     }
 
     const requestedThreadExists =

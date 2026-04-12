@@ -1,21 +1,24 @@
-import { type ReactNode, useMemo, useState } from "react";
+import { type DragEvent, type ReactNode, useMemo, useState } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, FolderGit2, GitBranch, GitPullRequestArrow, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Filter, FolderGit2, GitBranch, GitPullRequestArrow, Pencil, Plus, Trash2 } from "lucide-react";
 import type { GitBranchDiffSummary, Repository, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../../lib/utils";
 import { isRootWorktree } from "../../lib/worktree";
 import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBranchDiffSummary";
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import type { WorktreeStatusSummary, WorktreeThreadUiStatus } from "../../pages/workspace/hooks/worktreeThreadStatus";
+import type { RepositoryPanelDropPosition } from "../../pages/workspace/repositoryPanelPreferences";
 
 type RepositoryPanelProps = {
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
+  hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
   loadingRepos: boolean;
   submittingRepo: boolean;
@@ -23,6 +26,9 @@ type RepositoryPanelProps = {
   onAttachRepository: () => void;
   onSelectRepository: (repositoryId: string) => void;
   onToggleRepositoryExpand: (repositoryId: string, nextExpanded: boolean) => void;
+  onSetRepositoryVisibility: (repositoryId: string, visible: boolean) => void;
+  onShowAllRepositories: () => void;
+  onReorderRepositories: (draggedRepositoryId: string, targetRepositoryId: string, position: RepositoryPanelDropPosition) => void;
   onCreateWorktree: (repositoryId: string) => void;
   onSelectWorktree: (repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => void;
   onDeleteWorktree: (worktreeId: string) => void;
@@ -202,6 +208,7 @@ export function RepositoryPanel({
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
+  hiddenRepositoryIds,
   expandedByRepo,
   loadingRepos,
   submittingRepo,
@@ -209,6 +216,9 @@ export function RepositoryPanel({
   onAttachRepository,
   onSelectRepository,
   onToggleRepositoryExpand,
+  onSetRepositoryVisibility,
+  onShowAllRepositories,
+  onReorderRepositories,
   onCreateWorktree,
   onSelectWorktree,
   onDeleteWorktree,
@@ -216,6 +226,18 @@ export function RepositoryPanel({
 }: RepositoryPanelProps) {
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(null);
   const [editingBranchValue, setEditingBranchValue] = useState("");
+  const [draggedRepositoryId, setDraggedRepositoryId] = useState<string | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<{
+    repositoryId: string;
+    position: RepositoryPanelDropPosition;
+  } | null>(null);
+
+  const hiddenRepositoryIdSet = useMemo(() => new Set(hiddenRepositoryIds), [hiddenRepositoryIds]);
+  const visibleRepositories = useMemo(
+    () => repositories.filter((repository) => !hiddenRepositoryIdSet.has(repository.id)),
+    [hiddenRepositoryIdSet, repositories],
+  );
+  const hiddenRepositoryCount = repositories.length - visibleRepositories.length;
 
   const activeWorktreeSummaries = useMemo(
     () => repositories.flatMap((repository) => repository.worktrees
@@ -262,22 +284,130 @@ export function RepositoryPanel({
     onSelectRepository(repositoryId);
   }
 
+  function resolveDropPosition(event: DragEvent<HTMLElement>): RepositoryPanelDropPosition {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return event.clientY >= bounds.top + (bounds.height / 2) ? "after" : "before";
+  }
+
+  function handleRepositoryDragStart(event: DragEvent<HTMLElement>, repositoryId: string) {
+    setDraggedRepositoryId(repositoryId);
+    setDropIndicator(null);
+
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", repositoryId);
+    }
+  }
+
+  function handleRepositoryDragOver(event: DragEvent<HTMLElement>, repositoryId: string) {
+    if (!draggedRepositoryId || draggedRepositoryId === repositoryId) {
+      return;
+    }
+
+    event.preventDefault();
+    const position = resolveDropPosition(event);
+    setDropIndicator({ repositoryId, position });
+
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+  }
+
+  function handleRepositoryDrop(event: DragEvent<HTMLElement>, repositoryId: string) {
+    event.preventDefault();
+
+    const sourceRepositoryId = draggedRepositoryId
+      ?? event.dataTransfer?.getData("text/plain")
+      ?? null;
+    const position = resolveDropPosition(event);
+
+    if (sourceRepositoryId && sourceRepositoryId !== repositoryId) {
+      onReorderRepositories(sourceRepositoryId, repositoryId, position);
+    }
+
+    setDraggedRepositoryId(null);
+    setDropIndicator(null);
+  }
+
+  function clearDragState() {
+    setDraggedRepositoryId(null);
+    setDropIndicator(null);
+  }
+
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex items-center justify-between px-2 py-1.5">
-        <h2 className="text-xs font-medium tracking-[0.03em] text-muted-foreground">Workspace ({repositories.length})</h2>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Attach repository"
-          title="Attach repository"
-          disabled={submittingRepo}
-          onClick={onAttachRepository}
-          className="h-7 w-7 text-muted-foreground hover:text-foreground"
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
+        <h2 className="text-xs font-medium tracking-[0.03em] text-muted-foreground">
+          Workspace ({hiddenRepositoryCount > 0 ? `${visibleRepositories.length}/${repositories.length}` : repositories.length})
+        </h2>
+        <div className="flex items-center gap-0.5">
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Filter workspaces"
+                title="Filter workspaces"
+                disabled={repositories.length === 0}
+                className="relative h-7 w-7 text-muted-foreground hover:text-foreground"
+              >
+                <Filter className="h-3.5 w-3.5" />
+                {hiddenRepositoryCount > 0 ? (
+                  <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-primary" aria-hidden="true" />
+                ) : null}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-[220px] p-1">
+              <div className="flex items-center justify-between gap-2 px-1 py-0.5">
+                <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                  Visible
+                </div>
+                <button
+                  type="button"
+                  className="text-[11px] font-medium text-primary disabled:text-muted-foreground"
+                  disabled={hiddenRepositoryCount === 0}
+                  onClick={onShowAllRepositories}
+                >
+                  All
+                </button>
+              </div>
+              <div className="mt-1 space-y-px">
+                {repositories.map((repository) => {
+                  const visible = !hiddenRepositoryIdSet.has(repository.id);
+
+                  return (
+                    <label
+                      key={repository.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs transition-colors hover:bg-secondary/60"
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 rounded border-border"
+                        checked={visible}
+                        onChange={(event) => onSetRepositoryVisibility(repository.id, event.currentTarget.checked)}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{repository.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Attach repository"
+            title="Attach repository"
+            disabled={submittingRepo}
+            onClick={onAttachRepository}
+            className="h-7 w-7 text-muted-foreground hover:text-foreground"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       {loadingRepos ? <div className="px-2 py-2 text-xs text-muted-foreground">Loading repositories...</div> : null}
@@ -289,8 +419,14 @@ export function RepositoryPanel({
           </div>
         ) : null}
 
+        {repositories.length > 0 && visibleRepositories.length === 0 ? (
+          <div className="px-2 py-3 text-xs text-muted-foreground">
+            No workspaces selected in the filter.
+          </div>
+        ) : null}
+
         <div className="space-y-0.5">
-          {repositories.map((repository) => {
+          {visibleRepositories.map((repository) => {
             const isSelected = selectedRepositoryId === repository.id;
             const activeWorktrees = repository.worktrees.filter((worktree) => worktree.status === "active");
             const rootWorkspace = activeWorktrees.find((worktree) => isRootWorktree(worktree, repository)) ?? null;
@@ -307,19 +443,31 @@ export function RepositoryPanel({
             return (
               <article
                 key={repository.id}
-                className={cn("min-w-0 p-0.5", isSelected && "text-foreground")}
+                className={cn(
+                  "min-w-0 rounded-md p-0.5",
+                  isSelected && "text-foreground",
+                  draggedRepositoryId === repository.id && "opacity-60",
+                  dropIndicator?.repositoryId === repository.id && dropIndicator.position === "before" && "border-t border-primary",
+                  dropIndicator?.repositoryId === repository.id && dropIndicator.position === "after" && "border-b border-primary",
+                )}
                 data-testid={`repository-${repository.id}`}
+                onDragOver={(event) => handleRepositoryDragOver(event, repository.id)}
+                onDrop={(event) => handleRepositoryDrop(event, repository.id)}
               >
                 <div className="flex min-w-0 items-center gap-1.5">
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
+                    draggable={repositories.length > 1}
                     className={cn(
-                      "h-8 min-w-0 flex-1 justify-start gap-1.5 overflow-hidden px-2 text-muted-foreground hover:text-foreground",
+                      "h-8 min-w-0 flex-1 cursor-grab justify-start gap-1.5 overflow-hidden px-2 text-muted-foreground hover:text-foreground active:cursor-grabbing",
                       isSelected && "text-foreground",
                     )}
                     onClick={() => toggleRepository(repository.id)}
+                    onDragStart={(event) => handleRepositoryDragStart(event, repository.id)}
+                    onDragEnd={clearDragState}
+                    title={`${repository.name}${repositories.length > 1 ? " · drag to reorder" : ""}`}
                   >
                     <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                       {isExpanded ? (

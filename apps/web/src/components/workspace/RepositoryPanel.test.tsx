@@ -49,22 +49,26 @@ afterEach(() => {
 });
 
 function makeRepo(overrides: Partial<Repository> = {}): Repository {
+  const repositoryId = overrides.id ?? "r1";
+  const defaultName = overrides.name ?? "test-repo";
+  const defaultRootPath = overrides.rootPath ?? `/home/user/${defaultName}`;
+
   return {
-    id: "r1",
-    name: "test-repo",
-    rootPath: "/home/user/test-repo",
+    id: repositoryId,
+    name: defaultName,
+    rootPath: defaultRootPath,
     defaultBranch: "main",
     setupScript: null,
     teardownScript: null,
     runScript: null,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
-    worktrees: [
+    worktrees: overrides.worktrees ?? [
       {
-        id: "wt-root",
-        repositoryId: "r1",
+        id: `${repositoryId}-wt-root`,
+        repositoryId,
         branch: "main",
-        path: "/home/user/test-repo",
+        path: defaultRootPath,
         baseBranch: "main",
         status: "active",
         branchRenamed: false,
@@ -72,10 +76,10 @@ function makeRepo(overrides: Partial<Repository> = {}): Repository {
         updatedAt: "2026-01-01T00:00:00Z",
       },
       {
-        id: "wt-feat",
-        repositoryId: "r1",
+        id: `${repositoryId}-wt-feat`,
+        repositoryId,
         branch: "feature-x",
-        path: "/home/user/.cs/worktrees/test-repo/feature-x",
+        path: `/home/user/.cs/worktrees/${defaultName}/feature-x`,
         baseBranch: "main",
         status: "active",
         branchRenamed: false,
@@ -90,7 +94,7 @@ function makeRepo(overrides: Partial<Repository> = {}): Repository {
 function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
   return {
     id: "t1",
-    worktreeId: "wt-feat",
+    worktreeId: "r1-wt-feat",
     title: "Thread",
     kind: "default",
     permissionProfile: "default",
@@ -140,6 +144,7 @@ const baseProps = {
   repositories: [] as Repository[],
   selectedRepositoryId: null as string | null,
   selectedWorktreeId: null as string | null,
+  hiddenRepositoryIds: [] as string[],
   expandedByRepo: {} as Record<string, boolean>,
   loadingRepos: false,
   submittingRepo: false,
@@ -147,6 +152,9 @@ const baseProps = {
   onAttachRepository: vi.fn(),
   onSelectRepository: vi.fn(),
   onToggleRepositoryExpand: vi.fn(),
+  onSetRepositoryVisibility: vi.fn(),
+  onShowAllRepositories: vi.fn(),
+  onReorderRepositories: vi.fn(),
   onCreateWorktree: vi.fn(),
   onSelectWorktree: vi.fn(),
   onDeleteWorktree: vi.fn(),
@@ -172,7 +180,7 @@ describe("RepositoryPanel", () => {
     renderPanel({
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
-      selectedWorktreeId: "wt-root",
+      selectedWorktreeId: "r1-wt-root",
     });
     expect(container.textContent).toContain("main");
     expect(container.textContent).toContain("feature-x");
@@ -200,10 +208,10 @@ describe("RepositoryPanel", () => {
       selectedRepositoryId: "r1",
       onSelectWorktree,
     });
-    const featureRow = container.querySelector("[data-worktree-id='wt-feat']") as HTMLElement | null;
+    const featureRow = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
     expect(featureRow).toBeTruthy();
     act(() => featureRow?.click());
-    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "wt-feat", null);
+    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "r1-wt-feat", null);
   });
 
   it("collapses the selected repository on the first toggle after initial render", () => {
@@ -216,7 +224,7 @@ describe("RepositoryPanel", () => {
             {...baseProps}
             repositories={[makeRepo()]}
             selectedRepositoryId="r1"
-            selectedWorktreeId="wt-feat"
+            selectedWorktreeId="r1-wt-feat"
             expandedByRepo={expandedByRepo}
             onToggleRepositoryExpand={(repositoryId, nextExpanded) => {
               setExpandedByRepo((current) => ({
@@ -233,14 +241,14 @@ describe("RepositoryPanel", () => {
       root.render(<Harness />);
     });
 
-    expect(container.querySelector("[data-worktree-id='wt-feat']")).toBeTruthy();
+    expect(container.querySelector("[data-worktree-id='r1-wt-feat']")).toBeTruthy();
 
     const repoToggle = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("test-repo"));
     expect(repoToggle).toBeTruthy();
 
     act(() => repoToggle?.click());
 
-    expect(container.querySelector("[data-worktree-id='wt-feat']")).toBeNull();
+    expect(container.querySelector("[data-worktree-id='r1-wt-feat']")).toBeNull();
   });
 
   it("keeps the repository chevron from shrinking in tight layouts", () => {
@@ -272,6 +280,116 @@ describe("RepositoryPanel", () => {
     }
   });
 
+  it("hides repositories excluded by the workspace filter", () => {
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+      hiddenRepositoryIds: ["r2"],
+    });
+
+    expect(container.querySelector('[data-testid="repository-r1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="repository-r2"]')).toBeNull();
+    expect(container.textContent).toContain("Workspace (1/2)");
+  });
+
+  it("updates workspace visibility from the filter popover", () => {
+    const onSetRepositoryVisibility = vi.fn();
+
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      onSetRepositoryVisibility,
+    });
+
+    const filterButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("aria-label") === "Filter workspaces");
+    expect(filterButton).toBeTruthy();
+
+    act(() => filterButton?.click());
+
+    const repoTwoToggle = Array.from(document.querySelectorAll("input"))
+      .find((input) => input instanceof HTMLInputElement && input.nextElementSibling?.textContent === "repo-two") as HTMLInputElement | undefined;
+    expect(repoTwoToggle).toBeTruthy();
+
+    act(() => {
+      repoTwoToggle?.click();
+    });
+
+    expect(onSetRepositoryVisibility).toHaveBeenCalledWith("r2", false);
+  });
+
+  it("forwards repository reorder events from drag and drop", () => {
+    const onReorderRepositories = vi.fn();
+
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+      onReorderRepositories,
+    });
+
+    const dragSource = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("repo-one"));
+    const target = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
+
+    expect(dragSource).toBeTruthy();
+    expect(target).toBeTruthy();
+
+    Object.defineProperty(target, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 100,
+        width: 200,
+        height: 100,
+        toJSON: () => ({}),
+      }),
+    });
+
+    const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStartEvent, "dataTransfer", {
+      value: {
+        effectAllowed: "move",
+        setData: vi.fn(),
+      },
+    });
+
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "clientY", { value: 80 });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      value: {
+        dropEffect: "move",
+      },
+    });
+
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "clientY", { value: 80 });
+    Object.defineProperty(dropEvent, "dataTransfer", {
+      value: {
+        getData: () => "r1",
+      },
+    });
+
+    act(() => {
+      dragSource?.dispatchEvent(dragStartEvent);
+      target?.dispatchEvent(dragOverEvent);
+      target?.dispatchEvent(dropEvent);
+    });
+
+    expect(onReorderRepositories).toHaveBeenCalledWith("r1", "r2", "after");
+  });
+
   it("renders stacked review and diff metadata", async () => {
     getRepositoryReviewsMock.mockResolvedValue({
       provider: "github",
@@ -293,7 +411,7 @@ describe("RepositoryPanel", () => {
     renderPanel({
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
-      selectedWorktreeId: "wt-feat",
+      selectedWorktreeId: "r1-wt-feat",
     });
 
     await act(async () => {
@@ -301,10 +419,10 @@ describe("RepositoryPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.textContent).toContain("#123");
-    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.textContent).not.toContain("PR");
-    expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.textContent).toContain("+24");
-    expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.textContent).toContain("-3");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).toContain("#123");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).not.toContain("PR");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.textContent).toContain("+24");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.textContent).toContain("-3");
   });
 
   it("renders merged and closed review states", async () => {
@@ -318,7 +436,7 @@ describe("RepositoryPanel", () => {
       },
     });
     getGitBranchDiffSummaryMock.mockImplementation(async (worktreeId: string) => {
-      if (worktreeId === "wt-feat") {
+      if (worktreeId === "r1-wt-feat") {
         return { branch: "feature-x", baseBranch: "main", insertions: 24, deletions: 3, filesChanged: 1, available: true };
       }
       return { branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true };
@@ -327,7 +445,7 @@ describe("RepositoryPanel", () => {
     renderPanel({
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
-      selectedWorktreeId: "wt-feat",
+      selectedWorktreeId: "r1-wt-feat",
     });
 
     await act(async () => {
@@ -335,11 +453,11 @@ describe("RepositoryPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.querySelector('[data-testid="worktree-wt-root-review"]')?.textContent).toContain("#9");
-    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.textContent).toContain("#123");
-    expect(container.querySelector('[data-testid="worktree-wt-root-review"]')?.textContent).not.toContain("PR");
-    expect(container.querySelector('[data-testid="worktree-wt-root-review"]')?.getAttribute("title")).toContain("Closed");
-    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.getAttribute("title")).toContain("Merged");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-review"]')?.textContent).toContain("#9");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).toContain("#123");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-review"]')?.textContent).not.toContain("PR");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-review"]')?.getAttribute("title")).toContain("Closed");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.getAttribute("title")).toContain("Merged");
   });
 
   it("keeps review and diff metadata visible on hover-capable worktree rows", async () => {
@@ -352,7 +470,7 @@ describe("RepositoryPanel", () => {
       },
     });
     getGitBranchDiffSummaryMock.mockImplementation(async (worktreeId: string) => {
-      if (worktreeId === "wt-feat") {
+      if (worktreeId === "r1-wt-feat") {
         return { branch: "feature-x", baseBranch: "main", insertions: 24, deletions: 3, filesChanged: 1, available: true };
       }
       return { branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true };
@@ -361,7 +479,7 @@ describe("RepositoryPanel", () => {
     renderPanel({
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
-      selectedWorktreeId: "wt-feat",
+      selectedWorktreeId: "r1-wt-feat",
     });
 
     await act(async () => {
@@ -369,8 +487,8 @@ describe("RepositoryPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.querySelector('[data-testid="worktree-wt-feat-review"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
-    expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
   });
 
   it("hides branch diff when summary is unavailable", async () => {
@@ -387,7 +505,7 @@ describe("RepositoryPanel", () => {
     renderPanel({
       repositories: [makeRepo()],
       selectedRepositoryId: "r1",
-      selectedWorktreeId: "wt-feat",
+      selectedWorktreeId: "r1-wt-feat",
     });
 
     await act(async () => {
@@ -395,16 +513,16 @@ describe("RepositoryPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.querySelector('[data-testid="worktree-wt-feat-diff"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')).toBeNull();
   });
 
   it("renders root and branch status badges", async () => {
     listThreadsMock.mockImplementation(async (worktreeId: string) => {
-      if (worktreeId === "wt-root") {
-        return [makeThread({ id: "t-root", worktreeId: "wt-root", active: true })];
+      if (worktreeId === "r1-wt-root") {
+        return [makeThread({ id: "t-root", worktreeId: "r1-wt-root", active: true })];
       }
-      if (worktreeId === "wt-feat") {
-        return [makeThread({ id: "t-feat", worktreeId: "wt-feat" })];
+      if (worktreeId === "r1-wt-feat") {
+        return [makeThread({ id: "t-feat", worktreeId: "r1-wt-feat" })];
       }
       return [];
     });
@@ -442,13 +560,13 @@ describe("RepositoryPanel", () => {
   it("derives review-plan status from a non-latest inactive thread and forwards that thread on click", async () => {
     const onSelectWorktree = vi.fn();
     listThreadsMock.mockImplementation(async (worktreeId: string) => {
-      if (worktreeId === "wt-root") {
-        return [makeThread({ id: "t-root", worktreeId: "wt-root" })];
+      if (worktreeId === "r1-wt-root") {
+        return [makeThread({ id: "t-root", worktreeId: "r1-wt-root" })];
       }
-      if (worktreeId === "wt-feat") {
+      if (worktreeId === "r1-wt-feat") {
         return [
-          makeThread({ id: "t-plan", worktreeId: "wt-feat", title: "Needs review", updatedAt: "2026-01-01T00:00:00Z" }),
-          makeThread({ id: "t-latest", worktreeId: "wt-feat", title: "Latest idle", updatedAt: "2026-01-02T00:00:00Z" }),
+          makeThread({ id: "t-plan", worktreeId: "r1-wt-feat", title: "Needs review", updatedAt: "2026-01-01T00:00:00Z" }),
+          makeThread({ id: "t-latest", worktreeId: "r1-wt-feat", title: "Latest idle", updatedAt: "2026-01-02T00:00:00Z" }),
         ];
       }
       return [];
@@ -491,10 +609,10 @@ describe("RepositoryPanel", () => {
 
     expect(container.textContent).toContain("Review plan");
 
-    const featureRow = container.querySelector("[data-worktree-id='wt-feat']") as HTMLElement | null;
+    const featureRow = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
     expect(featureRow).toBeTruthy();
     act(() => featureRow?.click());
 
-    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "wt-feat", "t-plan");
+    expect(onSelectWorktree).toHaveBeenCalledWith("r1", "r1-wt-feat", "t-plan");
   });
 });

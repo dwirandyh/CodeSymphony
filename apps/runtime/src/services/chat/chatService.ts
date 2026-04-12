@@ -265,6 +265,7 @@ export function createChatService(deps: RuntimeDeps) {
   const pendingPermissionsByThread = new Map<string, Map<string, PendingPermissionEntry>>();
   const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
   const pendingPlanByThread = new Map<string, PendingPlanEntry>();
+  const pendingThreadCreatesByKey = new Map<string, Promise<ChatThread>>();
 
   function getThreadRun(threadId: string): ThreadRunState | null {
     return threadRuns.get(threadId) ?? null;
@@ -917,35 +918,55 @@ export function createChatService(deps: RuntimeDeps) {
       const reviewTitle = kind === "review" && !input.title ? await resolveReviewThreadTitle(worktree.path) : null;
       const normalizedTitle = input.title?.trim() ?? reviewTitle ?? DEFAULT_THREAD_TITLE;
 
-      if (input.title == null) {
-        const existingThread = await deps.prisma.chatThread.findFirst({
-          where: {
-            worktreeId,
-            kind,
-            title: normalizedTitle,
-          },
-          orderBy: [
-            { updatedAt: "desc" },
-            { createdAt: "desc" },
-          ],
-        });
-        if (existingThread) {
-          return mapChatThread(existingThread, isThreadActive(existingThread.id));
+      const createThreadOperation = async (): Promise<ChatThread> => {
+        if (input.title == null) {
+          const existingThread = await deps.prisma.chatThread.findFirst({
+            where: {
+              worktreeId,
+              kind,
+              title: normalizedTitle,
+            },
+            orderBy: [
+              { updatedAt: "desc" },
+              { createdAt: "desc" },
+            ],
+          });
+          if (existingThread) {
+            return mapChatThread(existingThread, isThreadActive(existingThread.id));
+          }
         }
+
+        const thread = await deps.prisma.chatThread.create({
+          data: {
+            worktreeId,
+            title: normalizedTitle,
+            kind,
+            permissionProfile,
+            permissionMode,
+            mode: "default",
+          },
+        });
+
+        return mapChatThread(thread);
+      };
+
+      if (input.title != null) {
+        return createThreadOperation();
       }
 
-      const thread = await deps.prisma.chatThread.create({
-        data: {
-          worktreeId,
-          title: normalizedTitle,
-          kind,
-          permissionProfile,
-          permissionMode,
-          mode: "default",
-        },
-      });
+      const createKey = `${worktreeId}:${kind}:${normalizedTitle}`;
+      const existingCreate = pendingThreadCreatesByKey.get(createKey);
+      if (existingCreate) {
+        return existingCreate;
+      }
 
-      return mapChatThread(thread);
+      const createPromise = createThreadOperation().finally(() => {
+        if (pendingThreadCreatesByKey.get(createKey) === createPromise) {
+          pendingThreadCreatesByKey.delete(createKey);
+        }
+      });
+      pendingThreadCreatesByKey.set(createKey, createPromise);
+      return createPromise;
     },
 
     async getThreadById(threadId: string): Promise<ChatThread | null> {
