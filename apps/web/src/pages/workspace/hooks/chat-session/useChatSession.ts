@@ -32,6 +32,7 @@ import {
   derivePendingPlan,
   derivePendingQuestionRequests,
   deriveThreadUiStatusFromEvents,
+  hasRunningAssistantActivity,
   isPlanReviewReady,
   type WorktreeThreadUiStatus,
 } from "../worktreeThreadStatus";
@@ -113,11 +114,11 @@ function findThreadForWorktree(
 }
 
 function allMessagesBelongToThread(messages: ChatMessage[], threadId: string): boolean {
-  return messages.length > 0 && messages.every((message) => message.threadId === threadId);
+  return messages.length === 0 || messages.every((message) => message.threadId === threadId);
 }
 
 function allEventsBelongToThread(events: ChatEvent[], threadId: string): boolean {
-  return events.length > 0 && events.every((event) => event.threadId === threadId);
+  return events.length === 0 || events.every((event) => event.threadId === threadId);
 }
 
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
@@ -197,14 +198,15 @@ export function deriveSelectedThreadUiState(params: {
   const optimisticThreadRunning =
     selectedThreadId != null
     && (sendingMessage || waitingAssistant?.threadId === selectedThreadId);
+  const eventDerivedThreadRunning = hasRunningAssistantActivity(events);
   const selectedThreadUiStatus = deriveThreadUiStatusFromEvents(
     events,
-    Boolean(selectedThread?.active) || optimisticThreadRunning,
+    Boolean(selectedThread?.active) || optimisticThreadRunning || eventDerivedThreadRunning,
   );
 
   return {
     selectedThreadUiStatus,
-    composerDisabled: !selectedThreadId || sendingMessage,
+    composerDisabled: !selectedThreadId || sendingMessage || selectedThreadUiStatus !== "idle",
   };
 }
 
@@ -320,7 +322,12 @@ export function useChatSession(
       prevRequestedThreadIdRef.current = requestedThreadId;
     }
 
-    if (queriedThreads.length === 0) {
+    const shouldAutoCreateInitialThread =
+      queriedThreads.length === 0
+      && trackedThreads.length === 0
+      && closingThreadId == null;
+
+    if (shouldAutoCreateInitialThread) {
       if (creatingThreadRef.current) return;
       let cancelled = false;
       creatingThreadRef.current = true;
@@ -376,7 +383,7 @@ export function useChatSession(
     if (selectedThreadId !== nextThreadId) {
       setSelectedThreadId(nextThreadId);
     }
-  }, [options?.desiredThreadId, pendingComposerPermissionMode, queriedThreads, selectedThreadId, selectedWorktreeId]);
+  }, [closingThreadId, options?.desiredThreadId, pendingComposerPermissionMode, queriedThreads, selectedThreadId, selectedWorktreeId]);
 
   useEffect(() => {
     if (!selectedThreadId) return;
@@ -1146,6 +1153,14 @@ export function useChatSession(
       (allMessagesBelongToThread(messages, selectedThreadId) && messages.length > 0)
       || (allEventsBelongToThread(events, selectedThreadId) && events.length > 0)
     );
+  const requestedThreadBootstrapPending =
+    selectedThreadId == null
+    && options?.desiredThreadId != null;
+  const selectedExistingThreadBootstrapPending =
+    selectedThreadId != null
+    && !selectedThreadCreatedLocally
+    && !selectedThreadHasLocalState
+    && queriedThreadSnapshot == null;
   const messageListEmptyState:
     | "no-thread-selected"
     | "creating-thread"
@@ -1158,10 +1173,16 @@ export function useChatSession(
       : selectedThreadId == null
         ? selectedWorktreeId && queriedThreads?.length === 0
           ? "creating-thread"
-          : "no-thread-selected"
+          : requestedThreadBootstrapPending
+            ? "loading-thread"
+            : "no-thread-selected"
         : selectedThreadCreatedLocally
           ? "new-thread-empty"
-          : (threadSnapshotLoading || (threadSnapshotFetching && queriedThreadSnapshot == null)) && !selectedThreadHasLocalState
+          : (
+            threadSnapshotLoading
+            || (threadSnapshotFetching && queriedThreadSnapshot == null)
+            || selectedExistingThreadBootstrapPending
+          ) && !selectedThreadHasLocalState
             ? "loading-thread"
             : "existing-thread-empty";
 

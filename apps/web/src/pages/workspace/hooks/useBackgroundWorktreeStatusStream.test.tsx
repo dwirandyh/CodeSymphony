@@ -247,7 +247,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
     expect(MockEventSource.instances[0]?.url).toContain("/api/threads/background-thread/events/stream");
   });
 
-  it("does not subscribe threads in the selected worktree", async () => {
+  it("subscribes active non-selected threads in the selected worktree", async () => {
     const thread = makeThread({ id: "same-worktree-thread", active: true, worktreeId: "wt-1" });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
     queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
@@ -259,7 +259,8 @@ describe("useBackgroundWorktreeStatusStream", () => {
       await Promise.resolve();
     });
 
-    expect(MockEventSource.instances).toHaveLength(0);
+    expect(MockEventSource.instances).toHaveLength(1);
+    expect(MockEventSource.instances[0]?.url).toContain("/api/threads/same-worktree-thread/events/stream");
   });
 
   it("patches thread.active=true on non-terminal events", async () => {
@@ -283,6 +284,42 @@ describe("useBackgroundWorktreeStatusStream", () => {
 
     const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
     expect(updated?.[0]?.active).toBe(true);
+  });
+
+  it("does not patch thread.active=true for delayed metadata tool.finished", async () => {
+    const thread = makeThread({ id: "background-thread", active: true });
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+
+    renderHook([makeRepository()], null, null);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [{ ...thread, active: false, title: "Thread" }]);
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "tool.finished",
+        makeEvent({
+          id: "e-metadata-finished",
+          threadId: thread.id,
+          idx: 2,
+          type: "tool.finished",
+          payload: {
+            source: "chat.thread.metadata",
+            threadTitle: "Renamed thread",
+          },
+        }),
+      );
+    });
+
+    const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
+    expect(updated?.[0]?.active).toBe(false);
+    expect(updated?.[0]?.title).toBe("Renamed thread");
   });
 
   it("patches thread.active=false on terminal events", async () => {

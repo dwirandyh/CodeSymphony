@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +9,7 @@ import { useChatSession } from "./useChatSession";
 
 const { threadsState, snapshotState } = vi.hoisted(() => ({
   threadsState: {
-    data: [] as ChatThread[],
+    data: undefined as ChatThread[] | undefined,
   },
   snapshotState: {
     data: null as ChatTimelineSnapshot | null,
@@ -76,6 +76,16 @@ let root: Root;
 let queryClient: QueryClient;
 let hookResult: ReturnType<typeof useChatSession>;
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeThread(id: string, active = false): ChatThread {
   return {
     id,
@@ -107,6 +117,18 @@ function renderHook(desiredThreadId?: string, repositoryId?: string | null) {
       <QueryClientProvider client={queryClient}>
         <HookHarness desiredThreadId={desiredThreadId} repositoryId={repositoryId} />
       </QueryClientProvider>,
+    );
+  });
+}
+
+function renderHookInStrictMode(desiredThreadId?: string, repositoryId?: string | null) {
+  act(() => {
+    root.render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <HookHarness desiredThreadId={desiredThreadId} repositoryId={repositoryId} />
+        </QueryClientProvider>
+      </StrictMode>,
     );
   });
 }
@@ -149,6 +171,14 @@ beforeEach(() => {
   cancelQueriesMock.mockResolvedValue(undefined);
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
   queryClient.cancelQueries = cancelQueriesMock as typeof queryClient.cancelQueries;
+  vi.mocked(api.createThread).mockReset();
+  vi.mocked(api.getOrCreatePrMrThread).mockReset();
+  vi.mocked(api.renameThreadTitle).mockReset();
+  vi.mocked(api.updateThreadMode).mockReset();
+  vi.mocked(api.updateThreadPermissionMode).mockReset();
+  vi.mocked(api.deleteThread).mockReset();
+  vi.mocked(api.sendMessage).mockReset();
+  vi.mocked(api.stopRun).mockReset();
 });
 
 afterEach(() => {
@@ -202,6 +232,28 @@ describe("useChatSession", () => {
       permissionMode: "full_access",
     });
     expect(hookResult.composerPermissionMode).toBe("full_access");
+  });
+
+  it("does not hit a render loop when the selected thread has no snapshot yet", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      renderHookInStrictMode("thread-a");
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(
+        consoleErrorSpy.mock.calls.some((call) =>
+          call.some(
+            (arg) => typeof arg === "string" && arg.includes("Maximum update depth exceeded"),
+          ),
+        ),
+      ).toBe(false);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it("creates or reuses dedicated PR/MR thread, sends message, and invalidates repository reviews", async () => {
@@ -290,6 +342,88 @@ describe("useChatSession", () => {
     expect(cancelQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot("thread-a") });
     expect(cancelQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.messages("thread-a") });
     expect(cancelQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.events("thread-a") });
+  });
+
+  it("does not create duplicate replacement threads while the list query is still stale and empty", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    const deleteDeferred = createDeferred<void>();
+    vi.mocked(api.deleteThread).mockReturnValue(deleteDeferred.promise);
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      void hookResult.closeThread("thread-a");
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+
+    await act(async () => {
+      deleteDeferred.resolve();
+      await Promise.resolve();
+    });
+
+    threadsState.data = [];
+    renderHook("thread-new");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+
+    renderHook("thread-new");
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+  });
+
+  it("restores the deleted thread when delete fails instead of creating a replacement", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    const deleteDeferred = createDeferred<void>();
+    vi.mocked(api.deleteThread).mockReturnValue(deleteDeferred.promise);
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+    });
+
+    const onError = vi.fn();
+
+    function ErrorHarness() {
+      hookResult = useChatSession("wt-1", onError);
+      return null;
+    }
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ErrorHarness />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      void hookResult.closeThread("thread-a");
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).not.toHaveBeenCalled();
+
+    await act(async () => {
+      deleteDeferred.reject(new Error("Cannot delete thread"));
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+    expect(onError).toHaveBeenLastCalledWith("Cannot delete thread");
   });
 
   it("respects desiredThreadId on first render", () => {
@@ -404,12 +538,27 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
   });
 
+  it("marks a requested thread as loading while selection bootstrap is unresolved", () => {
+    threadsState.data = undefined;
+
+    renderHook("thread-a");
+
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+  });
+
   it("marks an existing thread as loading while its snapshot is still fetching", () => {
     snapshotState.isLoading = true;
     snapshotState.isFetching = true;
 
     renderHook("thread-a");
 
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+  });
+
+  it("marks an existing selected thread as loading while snapshot bootstrap is unresolved", () => {
+    renderHook("thread-a");
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
     expect(hookResult.messageListEmptyState).toBe("loading-thread");
   });
 

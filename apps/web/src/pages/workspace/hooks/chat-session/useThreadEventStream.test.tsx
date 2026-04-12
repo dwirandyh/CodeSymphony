@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { StrictMode, useRef, useState } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -203,6 +203,30 @@ function renderHook(
   });
 }
 
+function renderHookInStrictMode(
+  selectedThreadId: string | null,
+  options?: {
+    repositoryId?: string | null;
+    selectedThreadIsPrMr?: boolean;
+    initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
+  },
+) {
+  act(() => {
+    root.render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <HookHarness
+            selectedThreadId={selectedThreadId}
+            repositoryId={options?.repositoryId}
+            selectedThreadIsPrMr={options?.selectedThreadIsPrMr}
+            initialWaitingAssistant={options?.initialWaitingAssistant}
+          />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+  });
+}
+
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -248,6 +272,28 @@ afterEach(() => {
 });
 
 describe("useThreadEventStream", () => {
+  it("does not hit a render loop while bootstrapping with no selected thread", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      renderHookInStrictMode(null);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(
+        consoleErrorSpy.mock.calls.some((call) =>
+          call.some(
+            (arg) => typeof arg === "string" && arg.includes("Maximum update depth exceeded"),
+          ),
+        ),
+      ).toBe(false);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
   it("preserves restored waiting state when the selected thread stream initializes", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
@@ -263,7 +309,7 @@ describe("useThreadEventStream", () => {
     expect(latestWaitingAssistant).toEqual({ threadId, afterIdx: 12 });
   });
 
-  it("does not invalidate the selected thread snapshot on active-thread permission requests", async () => {
+  it("invalidates only the selected thread status snapshot on active-thread permission requests", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -287,10 +333,11 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).not.toHaveBeenCalled();
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
-  it("does not invalidate the selected thread snapshot on active-thread plan.created events", async () => {
+  it("invalidates only the selected thread status snapshot on active-thread plan.created events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -314,10 +361,11 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).not.toHaveBeenCalled();
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
-  it("invalidates the selected thread snapshot on active-thread chat.completed events", async () => {
+  it("invalidates both selected thread snapshots on active-thread chat.completed events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -341,7 +389,102 @@ describe("useThreadEventStream", () => {
       );
     });
 
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+  });
+
+  it.each(["tool.started", "tool.output", "tool.finished"] as const)(
+    "patches selected thread as active on %s",
+    async (type) => {
+      const threadId = "selected-thread";
+      queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+      queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+        {
+          id: threadId,
+          worktreeId: "wt-1",
+          title: "Thread",
+          kind: "default",
+          permissionProfile: "default",
+          permissionMode: "default",
+          mode: "default",
+          titleEditedManually: false,
+          claudeSessionId: null,
+          active: false,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        } satisfies ChatThread,
+      ]);
+
+      renderHook(threadId);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const stream = MockEventSource.instances[0]!;
+      act(() => {
+        stream.emit(
+          type,
+          makeEvent({
+            id: `event-${type}`,
+            threadId,
+            idx: 4,
+            type,
+            payload: type === "tool.finished" ? { toolName: "Read" } : {},
+          }),
+        );
+      });
+
+      const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
+      expect(updated?.[0]?.active).toBe(true);
+    },
+  );
+
+  it("does not patch selected thread as active for delayed metadata tool.finished", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Thread",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      } satisfies ChatThread,
+    ]);
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "tool.finished",
+        makeEvent({
+          id: "e-metadata-finished",
+          threadId,
+          idx: 6,
+          type: "tool.finished",
+          payload: {
+            source: "chat.thread.metadata",
+            threadTitle: "Renamed thread",
+          },
+        }),
+      );
+    });
+
+    const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
+    expect(updated?.[0]?.active).toBe(false);
   });
 
   it("patches selected thread as inactive on chat.completed", async () => {

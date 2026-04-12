@@ -12,6 +12,11 @@ describe("MENTION_TOKEN_REGEX", () => {
     expect(match).toBeTruthy();
   });
 
+  it("does not match filesystem path token", () => {
+    const match = "my worktree path is /users/a/b".match(new RegExp(SLASH_COMMAND_TOKEN_REGEX.source));
+    expect(match).toBeNull();
+  });
+
   it("matches dir mention", () => {
     const match = "@dir:src/utils".match(new RegExp(MENTION_TOKEN_REGEX.source));
     expect(match).toBeTruthy();
@@ -68,6 +73,11 @@ describe("parseUserMentions", () => {
       { kind: "slash-command", name: "commit" },
       { kind: "text", value: " now" },
     ]);
+  });
+
+  it("keeps filesystem paths as plain text", () => {
+    const result = parseUserMentions("my worktree path is /users/a/b");
+    expect(result).toEqual([{ kind: "text", value: "my worktree path is /users/a/b" }]);
   });
 
   it("returns empty array elements for empty string", () => {

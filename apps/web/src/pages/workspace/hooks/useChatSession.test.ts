@@ -384,7 +384,7 @@ describe("mergeEventsWithCurrent", () => {
 });
 
 describe("deriveSelectedThreadUiState", () => {
-  it("returns running and keeps composer enabled after refresh for an active selected thread", () => {
+  it("returns running and disables the composer after refresh for an active selected thread", () => {
     const state = deriveSelectedThreadUiState({
       selectedThreadId: "thread-1",
       threads: [{ ...makeThread("New Thread"), active: true }],
@@ -394,6 +394,42 @@ describe("deriveSelectedThreadUiState", () => {
     });
 
     expect(state.selectedThreadUiStatus).toBe("running");
+    expect(state.composerDisabled).toBe(true);
+  });
+
+  it("falls back to running from unresolved subagent activity after refresh", () => {
+    const state = deriveSelectedThreadUiState({
+      selectedThreadId: "thread-1",
+      threads: [{ ...makeThread("New Thread"), active: false }],
+      events: [
+        makeEvent(1, "tool.started", { toolName: "Task", toolUseId: "task-1" }),
+        makeEvent(2, "subagent.started", { toolUseId: "subagent-1", agentId: "agent-1", agentType: "Explore", description: "Inspect repo" }),
+      ],
+      sendingMessage: false,
+      waitingAssistant: null,
+    });
+
+    expect(state.selectedThreadUiStatus).toBe("running");
+    expect(state.composerDisabled).toBe(true);
+  });
+
+  it("does not re-enter running when delayed metadata arrives after completion", () => {
+    const state = deriveSelectedThreadUiState({
+      selectedThreadId: "thread-1",
+      threads: [{ ...makeThread("New Thread"), active: false }],
+      events: [
+        makeEvent(1, "chat.completed", { messageId: "m-1" }),
+        makeEvent(2, "tool.finished", {
+          source: "chat.thread.metadata",
+          summary: "Updated thread title",
+          threadTitle: "Async title",
+        }),
+      ],
+      sendingMessage: false,
+      waitingAssistant: null,
+    });
+
+    expect(state.selectedThreadUiStatus).toBe("idle");
     expect(state.composerDisabled).toBe(false);
   });
 
@@ -407,7 +443,7 @@ describe("deriveSelectedThreadUiState", () => {
     });
 
     expect(state.selectedThreadUiStatus).toBe("waiting_approval");
-    expect(state.composerDisabled).toBe(false);
+    expect(state.composerDisabled).toBe(true);
   });
 
   it("returns review_plan over running once ExitPlanMode has completed", () => {
@@ -424,7 +460,7 @@ describe("deriveSelectedThreadUiState", () => {
     });
 
     expect(state.selectedThreadUiStatus).toBe("review_plan");
-    expect(state.composerDisabled).toBe(false);
+    expect(state.composerDisabled).toBe(true);
   });
 
   it("disables the composer only while a send request is in flight", () => {
