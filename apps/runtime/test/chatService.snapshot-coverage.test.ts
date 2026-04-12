@@ -258,6 +258,43 @@ describe("chatService snapshot", () => {
     expect(await prisma.chatThread.count({ where: { worktreeId: worktree.id, title: "New Thread" } })).toBe(2);
   });
 
+  it("dedupes concurrent implicit default-thread creation requests", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const suffix = uniqueSuffix();
+    const repository = await prisma.repository.create({
+      data: {
+        name: `snapshot-concurrent-implicit-${suffix}`,
+        rootPath: `/tmp/snapshot-concurrent-implicit-${suffix}`,
+        defaultBranch: "main",
+      },
+    });
+    const worktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "main",
+        baseBranch: "main",
+        path: repository.rootPath,
+        status: "active",
+      },
+    });
+
+    const [first, second, third] = await Promise.all([
+      chatService.createThread(worktree.id, {}),
+      chatService.createThread(worktree.id, {}),
+      chatService.createThread(worktree.id, {}),
+    ]);
+
+    expect(first.id).toBe(second.id);
+    expect(second.id).toBe(third.id);
+    expect(await prisma.chatThread.count({ where: { worktreeId: worktree.id, title: "New Thread" } })).toBe(1);
+  });
+
   it("returns snapshot with messages and no events when unknown event enum values exist", async () => {
     const chatService = createChatService({
       prisma,

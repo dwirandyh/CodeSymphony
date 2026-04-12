@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread, ChatTimelineItem, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
-import { useChatSession } from "./useChatSession";
+import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useChatSession";
 
 const { threadsState, snapshotState } = vi.hoisted(() => ({
   threadsState: {
@@ -152,6 +152,7 @@ function makeSnapshot(overrides?: Partial<ChatTimelineSnapshot>): ChatTimelineSn
 }
 
 beforeEach(() => {
+  resetPendingAutoCreateWorktreesForTest();
   threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
   snapshotState.data = null;
   snapshotState.isLoading = false;
@@ -185,6 +186,7 @@ afterEach(() => {
   act(() => root.unmount());
   queryClient.clear();
   container.remove();
+  resetPendingAutoCreateWorktreesForTest();
   useWorkspaceTimelineMock.mockReset();
   useWorkspaceTimelineMock.mockReturnValue({
     items: [],
@@ -382,6 +384,135 @@ describe("useChatSession", () => {
 
     expect(api.createThread).toHaveBeenCalledTimes(1);
     expect(hookResult.selectedThreadId).toBe("thread-new");
+  });
+
+  it("keeps the auto-created replacement thread alive across strict-mode effect replays", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+    const firstCreateDeferred = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(firstCreateDeferred.promise);
+
+    renderHookInStrictMode("thread-a");
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    threadsState.data = [];
+    renderHookInStrictMode();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      firstCreateDeferred.resolve({
+        ...makeThread("thread-new"),
+        title: "New Thread",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+
+    threadsState.data = [{ ...makeThread("thread-new"), title: "New Thread" }];
+    renderHookInStrictMode("thread-new");
+
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-new"]);
+  });
+
+  it("does not issue another auto-create while the replacement thread has only local state", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+    const firstCreateDeferred = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(firstCreateDeferred.promise);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    threadsState.data = [];
+    renderHook();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      firstCreateDeferred.resolve({
+        ...makeThread("thread-new"),
+        title: "New Thread",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-new"]);
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    renderHook();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-new"]);
+  });
+
+  it("does not issue another auto-create when the hook remounts while replacement creation is pending", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+    const firstCreateDeferred = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(firstCreateDeferred.promise);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    threadsState.data = [];
+    renderHook();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+    root = createRoot(container);
+
+    renderHook();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      firstCreateDeferred.resolve({
+        ...makeThread("thread-new"),
+        title: "New Thread",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
   });
 
   it("restores the deleted thread when delete fails instead of creating a replacement", async () => {

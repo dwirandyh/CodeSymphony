@@ -43,6 +43,14 @@ import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import { isBaseBranchSelected, resolveReviewBaseBranch, resolveReviewBranch } from "./workspace/reviewBranch";
 import {
+  loadRepositoryPanelPreferences,
+  normalizeRepositoryPanelPreferences,
+  reorderRepositoryIds,
+  REPOSITORY_PANEL_PREFERENCES_STORAGE_KEY,
+  sortRepositoriesByPreference,
+  type RepositoryPanelDropPosition,
+} from "./workspace/repositoryPanelPreferences";
+import {
   resolveChatMessageListKey,
   FilledPlayIcon,
   FilledPauseIcon,
@@ -100,6 +108,10 @@ function loadRepositoryPanelExpandedState(): Record<string, boolean> {
   }
 }
 
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 function BackgroundWorktreeStatusStreamBridge({
   repositories,
   selectedWorktreeId,
@@ -125,6 +137,7 @@ export function WorkspacePage() {
   const prevWorktreeIdRef = useRef<string | undefined>(search.worktreeId);
 
   const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>(() => loadRepositoryPanelExpandedState());
+  const [repositoryPanelPreferences, setRepositoryPanelPreferences] = useState(() => loadRepositoryPanelPreferences());
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [bottomPanelStateByWorktreeId, setBottomPanelStateByWorktreeId] = useState<Record<string, BottomPanelWorktreeState>>({});
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
@@ -143,6 +156,14 @@ export function WorkspacePage() {
 
     window.localStorage.setItem(REPOSITORY_PANEL_EXPANDED_STORAGE_KEY, JSON.stringify(expandedByRepo));
   }, [expandedByRepo]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(REPOSITORY_PANEL_PREFERENCES_STORAGE_KEY, JSON.stringify(repositoryPanelPreferences));
+  }, [repositoryPanelPreferences]);
 
   const handleSelectProvider = useCallback(async (id: string | null) => {
     try {
@@ -252,6 +273,64 @@ export function WorkspacePage() {
     ? repos.repositoriesError.message
     : null;
   const uiError = error ?? repositoriesLoadError;
+  const normalizedRepositoryPanelPreferences = useMemo(
+    () => normalizeRepositoryPanelPreferences(repos.repositories, repositoryPanelPreferences),
+    [repos.repositories, repositoryPanelPreferences],
+  );
+  const orderedRepositories = useMemo(
+    () => sortRepositoriesByPreference(repos.repositories, normalizedRepositoryPanelPreferences.order),
+    [normalizedRepositoryPanelPreferences.order, repos.repositories],
+  );
+  const hiddenRepositoryIds = normalizedRepositoryPanelPreferences.hidden;
+  const hiddenRepositoryIdSet = useMemo(() => new Set(hiddenRepositoryIds), [hiddenRepositoryIds]);
+  const visibleRepositories = useMemo(
+    () => orderedRepositories.filter((repository) => !hiddenRepositoryIdSet.has(repository.id)),
+    [hiddenRepositoryIdSet, orderedRepositories],
+  );
+
+  useEffect(() => {
+    if (
+      sameIds(normalizedRepositoryPanelPreferences.order, repositoryPanelPreferences.order)
+      && sameIds(normalizedRepositoryPanelPreferences.hidden, repositoryPanelPreferences.hidden)
+    ) {
+      return;
+    }
+
+    setRepositoryPanelPreferences(normalizedRepositoryPanelPreferences);
+  }, [normalizedRepositoryPanelPreferences, repositoryPanelPreferences.hidden, repositoryPanelPreferences.order]);
+
+  useEffect(() => {
+    if (visibleRepositories.length === 0) {
+      if (repos.selectedRepositoryId !== null) {
+        repos.setSelectedRepositoryId(null);
+      }
+      if (repos.selectedWorktreeId !== null) {
+        repos.setSelectedWorktreeId(null);
+      }
+      return;
+    }
+
+    const selectedRepositoryVisible = repos.selectedRepositoryId !== null
+      && visibleRepositories.some((repository) => repository.id === repos.selectedRepositoryId);
+    if (selectedRepositoryVisible) {
+      return;
+    }
+
+    const nextRepository = visibleRepositories[0];
+    if (!nextRepository) {
+      return;
+    }
+
+    const nextRootWorktree = findRootWorktree(nextRepository);
+    repos.setSelectedRepositoryId(nextRepository.id);
+    repos.setSelectedWorktreeId(nextRootWorktree?.id ?? nextRepository.worktrees[0]?.id ?? null);
+  }, [
+    repos.selectedRepositoryId,
+    repos.selectedWorktreeId,
+    repos.setSelectedRepositoryId,
+    repos.setSelectedWorktreeId,
+    visibleRepositories,
+  ]);
 
   const handleSelectRepository = useCallback((repositoryId: string) => {
     repos.setSelectedRepositoryId(repositoryId);
@@ -283,6 +362,53 @@ export function WorkspacePage() {
       [repositoryId]: nextExpanded,
     }));
   }, []);
+
+  const handleSetRepositoryVisibility = useCallback((repositoryId: string, visible: boolean) => {
+    setRepositoryPanelPreferences((current) => {
+      const nextHidden = visible
+        ? current.hidden.filter((id) => id !== repositoryId)
+        : current.hidden.includes(repositoryId)
+          ? current.hidden
+          : [...current.hidden, repositoryId];
+
+      if (sameIds(nextHidden, current.hidden)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        hidden: nextHidden,
+      };
+    });
+  }, []);
+
+  const handleShowAllRepositories = useCallback(() => {
+    setRepositoryPanelPreferences((current) => {
+      if (current.hidden.length === 0) {
+        return current;
+      }
+
+      return {
+        ...current,
+        hidden: [],
+      };
+    });
+  }, []);
+
+  const handleReorderRepositories = useCallback((draggedRepositoryId: string, targetRepositoryId: string, position: RepositoryPanelDropPosition) => {
+    setRepositoryPanelPreferences((current) => {
+      const normalized = normalizeRepositoryPanelPreferences(repos.repositories, current);
+      const nextOrder = reorderRepositoryIds(normalized.order, draggedRepositoryId, targetRepositoryId, position);
+      if (sameIds(nextOrder, normalized.order)) {
+        return normalized === current ? current : normalized;
+      }
+
+      return {
+        ...normalized,
+        order: nextOrder,
+      };
+    });
+  }, [repos.repositories]);
 
   const selectedIsRootWorkspace = !!(
     repos.selectedRepository &&
@@ -672,10 +798,15 @@ export function WorkspacePage() {
       <div className="flex min-h-0 w-full">
         <WorkspaceSidebar
           repos={repos}
+          orderedRepositories={orderedRepositories}
+          hiddenRepositoryIds={hiddenRepositoryIds}
           expandedByRepo={expandedByRepo}
           onOpenSettings={() => setSettingsOpen(true)}
           onSelectRepository={handleSelectRepository}
           onToggleRepositoryExpand={handleToggleRepositoryExpand}
+          onSetRepositoryVisibility={handleSetRepositoryVisibility}
+          onShowAllRepositories={handleShowAllRepositories}
+          onReorderRepositories={handleReorderRepositories}
           onSelectWorktree={handleSelectWorktree}
         />
 
@@ -952,9 +1083,10 @@ export function WorkspacePage() {
         </div>
         <div className="min-h-0 flex-1 overflow-hidden px-2">
           <RepositoryPanel
-            repositories={repos.repositories}
+            repositories={orderedRepositories}
             selectedRepositoryId={repos.selectedRepositoryId}
             selectedWorktreeId={repos.selectedWorktreeId}
+            hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
             loadingRepos={repos.loadingRepos}
             submittingRepo={repos.submittingRepo}
@@ -962,6 +1094,9 @@ export function WorkspacePage() {
             onAttachRepository={repos.openFileBrowser}
             onSelectRepository={handleSelectRepository}
             onToggleRepositoryExpand={handleToggleRepositoryExpand}
+            onSetRepositoryVisibility={handleSetRepositoryVisibility}
+            onShowAllRepositories={handleShowAllRepositories}
+            onReorderRepositories={handleReorderRepositories}
             onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
             onSelectWorktree={(repositoryId, worktreeId, preferredThreadId) => {
               handleSelectWorktree(repositoryId, worktreeId, preferredThreadId);
