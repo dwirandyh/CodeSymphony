@@ -5,7 +5,7 @@ import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@cod
 import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { EVENT_TYPES } from "../constants";
-import { GIT_STATUS_INVALIDATION_EVENT_TYPES, payloadStringOrNull } from "../eventUtils";
+import { GIT_STATUS_INVALIDATION_EVENT_TYPES, isMetadataToolEvent, payloadStringOrNull } from "../eventUtils";
 import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "./snapshotInvalidationEventTypes";
 
@@ -18,6 +18,10 @@ const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "question.requested",
   "plan.created",
 ]);
+
+function isLiveActivityEvent(event: ChatEvent): boolean {
+  return LIVE_ACTIVITY_EVENT_TYPES.has(event.type) && !isMetadataToolEvent(event);
+}
 
 const TERMINAL_EVENT_TYPES = new Set<ChatEvent["type"]>(["chat.completed", "chat.failed"]);
 
@@ -136,7 +140,7 @@ function stopThreadStream(streamsRef: MutableRefObject<Map<string, ThreadStreamS
 
 export function useBackgroundWorktreeStatusStream(
   repositories: Repository[],
-  selectedWorktreeId: string | null,
+  _selectedWorktreeId: string | null,
   selectedThreadId: string | null,
 ) {
   const queryClient = useQueryClient();
@@ -147,9 +151,8 @@ export function useBackgroundWorktreeStatusStream(
 
   const activeWorktreeIds = useMemo(
     () => repositories
-      .flatMap((repository) => repository.worktrees.filter((worktree) => worktree.status === "active").map((worktree) => worktree.id))
-      .filter((worktreeId) => worktreeId !== selectedWorktreeId),
-    [repositories, selectedWorktreeId],
+      .flatMap((repository) => repository.worktrees.filter((worktree) => worktree.status === "active").map((worktree) => worktree.id)),
+    [repositories],
   );
 
   const repositoryIdByWorktreeId = useMemo(() => {
@@ -251,7 +254,7 @@ export function useBackgroundWorktreeStatusStream(
           const nextModeRaw = payloadStringOrNull(payload.payload.threadMode);
           const nextMode = nextModeRaw === "default" || nextModeRaw === "plan" ? nextModeRaw : null;
 
-          if (LIVE_ACTIVITY_EVENT_TYPES.has(payload.type)) {
+          if (isLiveActivityEvent(payload)) {
             patchThreadListCache({
               queryClient,
               worktreeId,

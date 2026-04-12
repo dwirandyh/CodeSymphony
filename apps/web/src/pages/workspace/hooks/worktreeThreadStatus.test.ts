@@ -3,6 +3,7 @@ import type { ChatEvent, ChatThread, ChatThreadSnapshot } from "@codesymphony/sh
 import {
   aggregateWorktreeStatus,
   deriveThreadUiStatus,
+  hasRunningAssistantActivity,
 } from "./worktreeThreadStatus";
 
 function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
@@ -166,6 +167,81 @@ describe("worktreeThreadStatus", () => {
   it("returns running for active thread without gates", () => {
     const thread = makeThread({ active: true });
     expect(deriveThreadUiStatus(thread, makeSnapshot())).toBe("running");
+  });
+
+  it("returns running for inactive thread when an unresolved tool is still active in events", () => {
+    const thread = makeThread({ active: false });
+    const snapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: thread.id,
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Task", toolUseId: "task-1" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: thread.id,
+        idx: 2,
+        type: "subagent.started",
+        payload: { toolUseId: "subagent-1", agentId: "agent-1", agentType: "Explore", description: "Scan files" },
+      }),
+    ]);
+
+    expect(deriveThreadUiStatus(thread, snapshot)).toBe("running");
+  });
+
+  it("clears running fallback after a terminal chat event", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Task", toolUseId: "task-1" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "chat.completed",
+        payload: { messageId: "m-1" },
+      }),
+    ];
+
+    expect(hasRunningAssistantActivity(events)).toBe(false);
+  });
+
+  it("ignores delayed metadata tool.finished after chat completion", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "tool.started",
+        payload: { toolName: "Task", toolUseId: "task-1" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "chat.completed",
+        payload: { messageId: "m-1" },
+      }),
+      makeEvent({
+        id: "e3",
+        threadId: "t1",
+        idx: 3,
+        type: "tool.finished",
+        payload: {
+          source: "chat.thread.metadata",
+          summary: "Updated thread title",
+          threadTitle: "Async title",
+        },
+      }),
+    ];
+
+    expect(hasRunningAssistantActivity(events)).toBe(false);
   });
 
   it("returns idle for inactive thread without gates", () => {

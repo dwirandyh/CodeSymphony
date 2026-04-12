@@ -1,7 +1,7 @@
 import type { ChatEvent, ChatThread, ChatThreadSnapshot } from "@codesymphony/shared-types";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
-import { normalizePlanCreatedEvent } from "../eventUtils";
+import { isMetadataToolEvent, normalizePlanCreatedEvent } from "../eventUtils";
 
 export type WorktreeThreadUiStatus = "waiting_approval" | "review_plan" | "running" | "idle";
 
@@ -40,6 +40,90 @@ function extractEditTarget(toolName: string, toolInput: unknown): string | null 
 
 function toOrderedEvents(events: ChatEvent[]): ChatEvent[] {
   return [...events].sort((a, b) => a.idx - b.idx);
+}
+
+export function hasRunningAssistantActivity(events: ChatEvent[]): boolean {
+  const orderedEvents = toOrderedEvents(events);
+  const activeToolUseIds = new Set<string>();
+  const activeSubagentToolUseIds = new Set<string>();
+  let sawAssistantActivitySinceTerminalEvent = false;
+
+  for (const event of orderedEvents) {
+    if (event.type === "chat.completed" || event.type === "chat.failed") {
+      activeToolUseIds.clear();
+      activeSubagentToolUseIds.clear();
+      sawAssistantActivitySinceTerminalEvent = false;
+      continue;
+    }
+
+    if (event.type === "tool.started") {
+      const toolUseId = typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : "";
+      if (toolUseId.length > 0) {
+        activeToolUseIds.add(toolUseId);
+      }
+      sawAssistantActivitySinceTerminalEvent = true;
+      continue;
+    }
+
+    if (event.type === "tool.finished") {
+      if (isMetadataToolEvent(event)) {
+        continue;
+      }
+
+      const toolUseId = typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : "";
+      if (toolUseId.length > 0) {
+        activeToolUseIds.delete(toolUseId);
+      }
+
+      const precedingToolUseIds = Array.isArray(event.payload.precedingToolUseIds)
+        ? event.payload.precedingToolUseIds.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : [];
+      for (const precedingToolUseId of precedingToolUseIds) {
+        activeToolUseIds.delete(precedingToolUseId);
+      }
+
+      sawAssistantActivitySinceTerminalEvent = true;
+      continue;
+    }
+
+    if (event.type === "subagent.started") {
+      const toolUseId = typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : "";
+      if (toolUseId.length > 0) {
+        activeSubagentToolUseIds.add(toolUseId);
+      }
+      sawAssistantActivitySinceTerminalEvent = true;
+      continue;
+    }
+
+    if (event.type === "subagent.finished") {
+      const toolUseId = typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : "";
+      if (toolUseId.length > 0) {
+        activeSubagentToolUseIds.delete(toolUseId);
+      }
+      sawAssistantActivitySinceTerminalEvent = true;
+      continue;
+    }
+
+    if (event.type === "message.delta" && event.payload.role === "assistant") {
+      sawAssistantActivitySinceTerminalEvent = true;
+      continue;
+    }
+
+    if (
+      event.type === "tool.output"
+      || event.type === "permission.requested"
+      || event.type === "question.requested"
+      || event.type === "plan.created"
+    ) {
+      sawAssistantActivitySinceTerminalEvent = true;
+    }
+  }
+
+  return (
+    activeToolUseIds.size > 0
+    || activeSubagentToolUseIds.size > 0
+    || sawAssistantActivitySinceTerminalEvent
+  );
 }
 
 export function derivePendingPermissionRequests(events: ChatEvent[]): PendingPermissionRequest[] {
@@ -256,7 +340,7 @@ export function deriveThreadUiStatusFromEvents(
     return "review_plan";
   }
 
-  if (isActive) {
+  if (isActive || hasRunningAssistantActivity(events)) {
     return "running";
   }
 

@@ -8,7 +8,7 @@
 
 /** Regex that matches a single mention token such as `@file:src/index.ts` or `@dir:src/utils`. */
 export const MENTION_TOKEN_REGEX = /@(file|dir):([\w./_-][\w./_-]*[\w._-])/g;
-export const SLASH_COMMAND_TOKEN_REGEX = /\/(\w[\w-]*)/g;
+export const SLASH_COMMAND_TOKEN_REGEX = /(?<!\S)\/(\w[\w-]*)(?=$|[\s.,!?;:])/g;
 
 type MentionSegment =
   | { kind: "text"; value: string }

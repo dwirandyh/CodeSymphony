@@ -13,7 +13,35 @@ import { TimelineItem, ThinkingPlaceholder } from "./TimelineItem";
 
 const AT_BOTTOM_THRESHOLD = 48;
 
+function LoadingThreadSkeleton() {
+  return (
+    <div
+      className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-3 py-4"
+      data-testid="loading-thread-skeleton"
+    >
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div
+          key={`loading-thread-skeleton-${index}`}
+          className={`flex ${index % 2 === 0 ? "justify-start" : "justify-end"}`}
+        >
+          <div className="w-full max-w-[85%] space-y-2 rounded-2xl px-3 py-2">
+            <div className="h-3 w-20 animate-pulse rounded-full bg-muted/70" />
+            <div className="space-y-1.5">
+              <div className="h-3 w-full animate-pulse rounded-full bg-muted/60" />
+              <div className="h-3 w-4/5 animate-pulse rounded-full bg-muted/50" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EmptyStateCard({ state }: { state: ChatMessageListEmptyState }) {
+  if (state === "loading-thread") {
+    return <LoadingThreadSkeleton />;
+  }
+
   const content = (() => {
     switch (state) {
       case "no-thread-selected":
@@ -30,13 +58,6 @@ function EmptyStateCard({ state }: { state: ChatMessageListEmptyState }) {
           description: "Creating the first thread for this workspace...",
           iconClassName: "animate-spin",
         };
-      case "loading-thread":
-        return {
-          icon: History,
-          title: "Loading thread history",
-          description: "Fetching previous messages and activity for this thread...",
-          iconClassName: "animate-pulse",
-        };
       case "new-thread-empty":
         return {
           icon: MessageSquarePlus,
@@ -51,19 +72,28 @@ function EmptyStateCard({ state }: { state: ChatMessageListEmptyState }) {
           description: "No messages have been sent in this thread yet.",
           iconClassName: "",
         };
+      default:
+        return {
+          icon: History,
+          title: "Loading thread history",
+          description: "Fetching previous messages and activity for this thread...",
+          iconClassName: "animate-pulse",
+        };
     }
   })();
   const Icon = content.icon;
 
   return (
-    <div className="flex h-full items-center justify-center px-3 py-6">
-      <div className="w-full max-w-xl rounded-3xl border border-border/70 bg-card/80 px-6 py-7 text-center shadow-sm">
-        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-secondary text-muted-foreground">
-          <Icon className={`h-5 w-5 ${content.iconClassName}`.trim()} />
+    <div className="flex h-full items-center justify-center px-4 py-8">
+      <div className="w-full max-w-md text-center">
+        <div className="mx-auto flex h-8 w-8 items-center justify-center text-muted-foreground/80">
+          <Icon className={`h-4 w-4 ${content.iconClassName}`.trim()} />
         </div>
-        <div className="mt-4 space-y-1.5">
-          <h2 className="text-sm font-semibold text-foreground">{content.title}</h2>
-          <p className="text-xs leading-5 text-muted-foreground">{content.description}</p>
+        <div className="mt-3 space-y-1">
+          <h2 className="text-sm font-medium tracking-tight text-foreground">{content.title}</h2>
+          <p className="mx-auto max-w-sm text-xs leading-5 text-muted-foreground">
+            {content.description}
+          </p>
         </div>
       </div>
     </div>
@@ -134,9 +164,13 @@ export function ChatMessageList({
     return result;
   }, [items, showThinkingPlaceholder]);
 
-  const getAutoFollowTargetIndex = useCallback(() => {
+  const getAutoFollowTargetIndex = useCallback((mode: "preserve-user-anchor" | "bottom" = "preserve-user-anchor") => {
     if (displayItems.length === 0) {
       return null;
+    }
+
+    if (mode === "bottom") {
+      return displayItems.length - 1;
     }
 
     const lastTimelineItem = items[items.length - 1] ?? null;
@@ -151,9 +185,9 @@ export function ChatMessageList({
     return displayItems.length - 1;
   }, [displayItems.length, items, showThinkingPlaceholder]);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((mode: "preserve-user-anchor" | "bottom" = "preserve-user-anchor") => {
     const handle = vlistRef.current;
-    const targetIndex = getAutoFollowTargetIndex();
+    const targetIndex = getAutoFollowTargetIndex(mode);
     if (!handle || targetIndex == null) return;
     try {
       handle.scrollToIndex(targetIndex, { align: "end" });
@@ -167,7 +201,7 @@ export function ChatMessageList({
       return;
     }
     requestAnimationFrame(() => {
-      scrollToBottom();
+      scrollToBottom("preserve-user-anchor");
     });
   }, [displayItems, scrollToBottom]);
 
@@ -191,7 +225,7 @@ export function ChatMessageList({
 
     stickyBottomRef.current = isAtBottom(handle.scrollOffset);
     if (!stickyBottomRef.current) return;
-    scrollToBottom();
+    scrollToBottom("bottom");
   }, [displayItems.length, isAtBottom, scrollToBottom]);
 
   const timelineCtx: TimelineCtx = useMemo(

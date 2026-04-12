@@ -294,8 +294,7 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} emptyState="loading-thread" />);
     });
 
-    expect(container.textContent).toContain("Loading thread history");
-    expect(container.textContent).toContain("Fetching previous messages and activity");
+    expect(container.querySelector("[data-testid='loading-thread-skeleton']")).toBeTruthy();
   });
 
   it("renders a distinct empty state for a newly created thread", () => {
@@ -1309,6 +1308,27 @@ describe("ChatMessageList", () => {
 
     expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
     expect(scrollToIndexMock).toHaveBeenCalledWith(1, { align: "end" });
+  });
+
+  it("keeps the placeholder in view when scroll ends at the bottom", () => {
+    mountChatMessageList({
+      items: [
+        makeMessageItem("m1", 1),
+        {
+          kind: "message",
+          message: makeMessage("m2", "user", "Follow up", 2),
+        },
+      ],
+      showThinkingPlaceholder: true,
+    });
+    setScrollMetrics();
+    scrollToIndexMock.mockClear();
+
+    triggerScroll(560);
+    triggerScrollEnd();
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
   });
 
   it("auto-follows when the last message content grows without adding items", () => {

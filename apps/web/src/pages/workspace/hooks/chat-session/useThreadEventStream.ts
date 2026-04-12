@@ -20,6 +20,7 @@ import { pushRenderDebug } from "../../../../lib/renderDebug";
 import { EVENT_TYPES } from "../../constants";
 import {
   GIT_STATUS_INVALIDATION_EVENT_TYPES,
+  isMetadataToolEvent,
   payloadStringOrNull,
   shouldClearWaitingAssistantOnEvent,
 } from "../../eventUtils";
@@ -33,6 +34,20 @@ const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["
   "question.requested",
   "plan.created",
 ]);
+
+const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
+  "message.delta",
+  "tool.started",
+  "tool.output",
+  "tool.finished",
+  "permission.requested",
+  "question.requested",
+  "plan.created",
+]);
+
+function isLiveActivityEvent(event: ChatEvent): boolean {
+  return LIVE_ACTIVITY_EVENT_TYPES.has(event.type) && !isMetadataToolEvent(event);
+}
 
 interface UseThreadEventStreamParams {
   selectedThreadId: string | null;
@@ -126,8 +141,8 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       setStopRequestedThreadId(null);
       streamingMessageIdsRef.current = new Set();
       stickyRawFallbackMessageIdsRef.current = new Set();
-      setMessages([]);
-      setEvents([]);
+      setMessages((current) => (current.length === 0 ? current : []));
+      setEvents((current) => (current.length === 0 ? current : []));
       return;
     }
 
@@ -169,6 +184,24 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           toolName: typeof payload.payload.toolName === "string" ? payload.payload.toolName : null,
           source: typeof payload.payload.source === "string" ? payload.payload.source : null,
         });
+      }
+
+      if (selectedWorktreeId && isLiveActivityEvent(payload)) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(selectedWorktreeId),
+          (current) => {
+            if (!current) {
+              return current;
+            }
+            const index = current.findIndex((thread) => thread.id === selectedThreadId);
+            if (index === -1 || current[index]?.active) {
+              return current;
+            }
+            const updated = [...current];
+            updated[index] = { ...updated[index]!, active: true };
+            return updated;
+          },
+        );
       }
 
       setWaitingAssistant((current) => {
@@ -227,6 +260,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
         const skipInvalidation = ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES.has(payload.type);
         if (!skipInvalidation) {
           void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
