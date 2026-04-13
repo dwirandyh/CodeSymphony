@@ -50,6 +50,7 @@ import {
   sortRepositoriesByPreference,
   type RepositoryPanelDropPosition,
 } from "./workspace/repositoryPanelPreferences";
+import { resolveVisibleRepositorySelection } from "./workspace/visibleRepositorySelection";
 import {
   resolveChatMessageListKey,
   FilledPlayIcon,
@@ -300,33 +301,19 @@ export function WorkspacePage() {
   }, [normalizedRepositoryPanelPreferences, repositoryPanelPreferences.hidden, repositoryPanelPreferences.order]);
 
   useEffect(() => {
-    if (visibleRepositories.length === 0) {
-      if (repos.selectedRepositoryId !== null) {
-        repos.setSelectedRepositoryId(null);
-      }
-      if (repos.selectedWorktreeId !== null) {
-        repos.setSelectedWorktreeId(null);
-      }
+    const nextSelection = resolveVisibleRepositorySelection({
+      visibleRepositories,
+      selectedRepositoryId: repos.selectedRepositoryId,
+    });
+
+    if (!nextSelection) {
       return;
     }
 
-    const selectedRepositoryVisible = repos.selectedRepositoryId !== null
-      && visibleRepositories.some((repository) => repository.id === repos.selectedRepositoryId);
-    if (selectedRepositoryVisible) {
-      return;
-    }
-
-    const nextRepository = visibleRepositories[0];
-    if (!nextRepository) {
-      return;
-    }
-
-    const nextRootWorktree = findRootWorktree(nextRepository);
-    repos.setSelectedRepositoryId(nextRepository.id);
-    repos.setSelectedWorktreeId(nextRootWorktree?.id ?? nextRepository.worktrees[0]?.id ?? null);
+    repos.setSelectedRepositoryId(nextSelection.repositoryId);
+    repos.setSelectedWorktreeId(nextSelection.worktreeId);
   }, [
     repos.selectedRepositoryId,
-    repos.selectedWorktreeId,
     repos.setSelectedRepositoryId,
     repos.setSelectedWorktreeId,
     visibleRepositories,

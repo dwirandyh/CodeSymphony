@@ -390,6 +390,50 @@ describe("RepositoryPanel", () => {
     expect(onReorderRepositories).toHaveBeenCalledWith("r1", "r2", "after");
   });
 
+  it("allows dragover to stay droppable when the drag source only exists in dataTransfer", () => {
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+    });
+
+    const target = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
+    expect(target).toBeTruthy();
+
+    Object.defineProperty(target, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 100,
+        width: 200,
+        height: 100,
+        toJSON: () => ({}),
+      }),
+    });
+
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "clientY", { value: 20 });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      value: {
+        dropEffect: "move",
+        getData: () => "r1",
+      },
+    });
+
+    act(() => {
+      target?.dispatchEvent(dragOverEvent);
+    });
+
+    expect(dragOverEvent.defaultPrevented).toBe(true);
+    expect(target?.className).toContain("border-t");
+  });
+
   it("renders stacked review and diff metadata", async () => {
     getRepositoryReviewsMock.mockResolvedValue({
       provider: "github",
@@ -423,6 +467,9 @@ describe("RepositoryPanel", () => {
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).not.toContain("PR");
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.textContent).toContain("+24");
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.textContent).toContain("-3");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.className).toContain("h-3");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.className).toContain("translate-y-px");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.className).toContain("h-3");
   });
 
   it("renders merged and closed review states", async () => {
@@ -553,8 +600,38 @@ describe("RepositoryPanel", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(container.textContent).toContain("Waiting approval");
-    expect(container.textContent).toContain("Running");
+    expect(container.querySelector('[data-testid="worktree-status-waiting_approval"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Running");
+    expect(container.textContent).not.toContain("Idle");
+  });
+
+  it("does not render an idle status chip", async () => {
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-status-idle"]')).toBeNull();
+    expect(container.textContent).not.toContain("Idle");
+  });
+
+  it("styles the selected worktree as a flat fill without a selection ring", () => {
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+    });
+
+    const featureRow = container.querySelector("[data-worktree-id='r1-wt-feat']") as HTMLElement | null;
+    expect(featureRow).toBeTruthy();
+    expect(featureRow?.className).toContain("bg-secondary/60");
+    expect(featureRow?.className).not.toContain("ring-[0.5px]");
   });
 
   it("derives review-plan status from a non-latest inactive thread and forwards that thread on click", async () => {
