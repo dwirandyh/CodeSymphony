@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { readdir, readFile, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { execFile as execFileRaw } from "node:child_process";
@@ -8,6 +9,10 @@ const execFile = promisify(execFileRaw);
 const DEFAULT_GIT_TIMEOUT_MS = 15_000;
 const STATUS_GIT_TIMEOUT_MS = 4_000;
 const REVIEW_CLI_TIMEOUT_MS = 60_000;
+const COMMON_EXECUTABLE_PATHS: Partial<Record<string, string[]>> = {
+  gh: ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"],
+  glab: ["/opt/homebrew/bin/glab", "/usr/local/bin/glab"],
+};
 
 type RunCommandOptions = {
   cwd?: string;
@@ -36,39 +41,65 @@ export type RemoteReviewRef = {
   updatedAt: string | null;
 };
 
-async function runCommand(command: string, args: string[], options?: RunCommandOptions): Promise<string> {
-  try {
-    const { stdout } = await execFile(command, args, {
-      cwd: options?.cwd,
-      encoding: "utf8",
-      timeout: options?.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-      env: options?.env,
-    });
-
-    return stdout.trimEnd();
-  } catch (error) {
-    const exitCode = typeof (error as { code?: unknown }).code === "number"
-      ? (error as { code: number }).code
-      : null;
-    const stdout = typeof (error as { stdout?: unknown }).stdout === "string"
-      ? (error as { stdout: string }).stdout
-      : "";
-    const stderr = typeof (error as { stderr?: unknown }).stderr === "string"
-      ? (error as { stderr: string }).stderr
-      : "";
-
-    if (exitCode !== null && options?.allowedExitCodes?.includes(exitCode)) {
-      return stdout.trimEnd();
-    }
-
-    if (typeof (error as { code?: unknown }).code === "string" && (error as { code: string }).code === "ENOENT") {
-      throw new Error(`${command} is not installed or not available in PATH`);
-    }
-
-    const message = stderr.trim() || stdout.trim() || (error instanceof Error ? error.message : `${command} command failed`);
-    throw new Error(`${command} ${args.join(" ")} failed: ${message}`);
+function buildCommandCandidates(command: string): string[] {
+  if (command.includes("/") || command.includes("\\")) {
+    return [command];
   }
+
+  const candidates = [command];
+  for (const candidate of COMMON_EXECUTABLE_PATHS[command] ?? []) {
+    if (existsSync(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+
+  return [...new Set(candidates)];
+}
+
+function isCommandNotFound(error: unknown): boolean {
+  return typeof (error as { code?: unknown })?.code === "string"
+    && (error as { code: string }).code === "ENOENT";
+}
+
+async function runCommand(command: string, args: string[], options?: RunCommandOptions): Promise<string> {
+  const candidates = buildCommandCandidates(command);
+
+  for (const candidate of candidates) {
+    try {
+      const { stdout } = await execFile(candidate, args, {
+        cwd: options?.cwd,
+        encoding: "utf8",
+        timeout: options?.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+        maxBuffer: 10 * 1024 * 1024,
+        env: options?.env,
+      });
+
+      return stdout.trimEnd();
+    } catch (error) {
+      const exitCode = typeof (error as { code?: unknown }).code === "number"
+        ? (error as { code: number }).code
+        : null;
+      const stdout = typeof (error as { stdout?: unknown }).stdout === "string"
+        ? (error as { stdout: string }).stdout
+        : "";
+      const stderr = typeof (error as { stderr?: unknown }).stderr === "string"
+        ? (error as { stderr: string }).stderr
+        : "";
+
+      if (exitCode !== null && options?.allowedExitCodes?.includes(exitCode)) {
+        return stdout.trimEnd();
+      }
+
+      if (isCommandNotFound(error)) {
+        continue;
+      }
+
+      const message = stderr.trim() || stdout.trim() || (error instanceof Error ? error.message : `${command} command failed`);
+      throw new Error(`${command} ${args.join(" ")} failed: ${message}`);
+    }
+  }
+
+  throw new Error(`${command} is not installed or not available in PATH`);
 }
 
 async function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {

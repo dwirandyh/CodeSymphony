@@ -65,6 +65,10 @@ export function normalizeRepositoryPanelPreferences(
   repositories: Pick<Repository, "id">[],
   preferences: RepositoryPanelPreferences,
 ): RepositoryPanelPreferences {
+  if (repositories.length === 0) {
+    return preferences;
+  }
+
   const validIds = new Set(repositories.map((repository) => repository.id));
   const nextOrder = uniqueIds(preferences.order.filter((id) => validIds.has(id)));
 

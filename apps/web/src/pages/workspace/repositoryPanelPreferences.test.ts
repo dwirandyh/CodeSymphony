@@ -47,6 +47,15 @@ describe("repositoryPanelPreferences", () => {
     });
   });
 
+  it("preserves stored preferences while repositories are still loading", () => {
+    const preferences = {
+      order: ["repo-2", "repo-1"],
+      hidden: ["repo-3"],
+    };
+
+    expect(normalizeRepositoryPanelPreferences([], preferences)).toBe(preferences);
+  });
+
   it("sorts repositories using the stored workspace order", () => {
     expect(sortRepositoriesByPreference(
       [{ id: "repo-1" }, { id: "repo-2" }, { id: "repo-3" }],
