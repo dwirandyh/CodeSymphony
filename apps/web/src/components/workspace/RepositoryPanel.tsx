@@ -664,9 +664,6 @@ export function RepositoryPanel({
                     <span className="truncate text-left text-xs font-medium">
                       {repository.name}
                     </span>
-                    <span className="ml-auto text-[11px] text-muted-foreground">
-                      {branchWorktrees.length} worktrees
-                    </span>
                   </Button>
 
                   <Button
