@@ -120,18 +120,18 @@ function WorktreeStatusBadge({
   if (status === "running") {
     return (
       <div
-        className="pointer-events-none flex items-center"
+        className="pointer-events-none flex h-4 w-4 items-center justify-center"
         data-testid="worktree-status-running"
         aria-label="Running"
         title="Running"
       >
-        <span className="relative flex h-2.5 w-2.5">
+        <span className="relative flex h-2 w-2">
           <span
-            className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-500/75"
+            className="absolute inset-0 inline-flex animate-ping rounded-full bg-sky-500/75"
             aria-hidden="true"
           />
           <span
-            className="relative inline-flex h-2.5 w-2.5 rounded-full bg-sky-500"
+            className="relative inline-flex h-2 w-2 rounded-full bg-sky-500"
             aria-hidden="true"
           />
         </span>
