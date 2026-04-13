@@ -252,6 +252,8 @@ function WorktreeRowContent({
   testId: string;
   hideStatusOnHover?: boolean;
 }) {
+  const metaIndentClass = review ? "pl-[20px]" : "pl-[14px]";
+
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex min-w-0 items-center justify-between gap-2">
@@ -263,7 +265,7 @@ function WorktreeRowContent({
           <WorktreeStatusBadge status={status} />
         </WorktreeMetaSlot>
       </div>
-      <div className="flex min-w-0 items-center gap-1.5 pl-5 pt-0.5">
+      <div className={cn("flex min-w-0 items-center gap-1.5 pt-0.5", metaIndentClass)}>
         <WorktreeMetaSlot>
           <WorktreeReviewBadge
             review={review}
