@@ -470,6 +470,7 @@ describe("RepositoryPanel", () => {
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.className).toContain("h-3");
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.className).toContain("translate-y-px");
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.className).toContain("h-3");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.parentElement?.parentElement?.className).toContain("pl-[20px]");
   });
 
   it("renders merged and closed review states", async () => {
@@ -561,6 +562,31 @@ describe("RepositoryPanel", () => {
     });
 
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')).toBeNull();
+  });
+
+  it("uses a tighter metadata indent when a worktree has no review badge", async () => {
+    getGitBranchDiffSummaryMock.mockResolvedValue({
+      branch: "feature-x",
+      baseBranch: "main",
+      insertions: 24,
+      deletions: 3,
+      filesChanged: 1,
+      available: true,
+    });
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')).toBeNull();
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.parentElement?.parentElement?.className).toContain("pl-[14px]");
   });
 
   it("renders root and branch status badges", async () => {
