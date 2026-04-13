@@ -778,6 +778,51 @@ describe("tool instrumentation", () => {
     expect(capturedOptions?.resume).toBeUndefined();
   });
 
+  it("emits session id as soon as the stream initializes, even if the run is aborted", async () => {
+    const abortController = new AbortController();
+    const capturedSessionIds: string[] = [];
+
+    mockQuery.mockImplementation(() => {
+      return attachQueryControls((async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-early-abort" };
+
+        await new Promise<void>((resolve) => {
+          if (abortController.signal.aborted) {
+            resolve();
+            return;
+          }
+          abortController.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+
+        throw new Error("Aborted by user.");
+      })());
+    });
+
+    const runPromise = runClaudeWithStreaming({
+      prompt: "abort after init",
+      sessionId: null,
+      cwd: process.cwd(),
+      abortController,
+      onSessionId: (sessionId) => {
+        capturedSessionIds.push(sessionId);
+      },
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    abortController.abort();
+
+    await expect(runPromise).rejects.toThrow("Aborted by user.");
+    expect(capturedSessionIds).toEqual(["session-early-abort"]);
+  });
+
   it("returns result summary metadata", async () => {
     mockQuery.mockImplementation(() => {
       return attachQueryControls((async function* () {

@@ -272,6 +272,15 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       if (payload.type === "chat.completed" || payload.type === "chat.failed") {
+        setThreads((current) => {
+          const index = current.findIndex((thread) => thread.id === selectedThreadId);
+          if (index === -1 || !current[index]?.active) {
+            return current;
+          }
+          const updated = [...current];
+          updated[index] = { ...updated[index]!, active: false };
+          return updated;
+        });
         if (selectedWorktreeId) {
           queryClient.setQueryData<ChatThread[] | undefined>(
             queryKeys.threads.list(selectedWorktreeId),
