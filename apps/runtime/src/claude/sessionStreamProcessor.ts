@@ -34,6 +34,7 @@ type StreamProcessorDeps = {
   instrumentContext: InstrumentContext;
   state: SessionState;
   permissionMode: string | undefined;
+  onSessionId?: (sessionId: string) => Promise<void> | void;
   onText: (chunk: string) => Promise<void> | void;
   onToolOutput: (payload: {
     toolName: string;
@@ -293,6 +294,9 @@ export async function processStreamMessages(
   for await (const message of stream) {
     if (message.type === "system" && message.subtype === "init") {
       latestSessionId = message.session_id;
+      if (typeof latestSessionId === "string" && latestSessionId.length > 0) {
+        await deps.onSessionId?.(latestSessionId);
+      }
       continue;
     }
 

@@ -146,6 +146,7 @@ export type ClaudeRunner = (args: {
   sessionWorktreePath?: string | null;
   cwd: string;
   abortController?: AbortController;
+  onSessionId?: (sessionId: string) => Promise<void> | void;
   permissionMode?: ChatMode;
   threadPermissionMode?: ChatThreadPermissionMode;
   permissionProfile?: ChatThreadPermissionProfile;

@@ -468,6 +468,25 @@ export function createChatService(deps: RuntimeDeps) {
         sessionWorktreePath: thread.claudeSessionId ? worktreePath : null,
         cwd: worktreePath,
         abortController,
+        onSessionId: async (nextSessionId) => {
+          if (!nextSessionId || nextSessionId === thread.claudeSessionId) {
+            return;
+          }
+
+          try {
+            await deps.prisma.chatThread.update({
+              where: { id: threadId },
+              data: { claudeSessionId: nextSessionId },
+            });
+            thread.claudeSessionId = nextSessionId;
+          } catch (error) {
+            deps.logService?.log("warn", "chat.persist", "Failed to persist session id during streaming", {
+              threadId,
+              sessionId: nextSessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        },
         permissionMode: mode,
         threadPermissionMode: thread.permissionMode,
         permissionProfile: thread.permissionProfile,

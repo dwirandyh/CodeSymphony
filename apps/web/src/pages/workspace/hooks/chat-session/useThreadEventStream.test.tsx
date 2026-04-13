@@ -85,6 +85,7 @@ let originalCancelAnimationFrame: typeof cancelAnimationFrame | undefined;
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
+let latestThreads: ChatThread[] = [];
 
 function makeSnapshot(events: ChatEvent[] = []): ChatTimelineSnapshot {
   return {
@@ -121,24 +122,26 @@ function HookHarness({
   repositoryId = null,
   selectedThreadIsPrMr = false,
   initialWaitingAssistant = null,
+  initialThreads = [],
 }: {
   selectedThreadId: string | null;
   repositoryId?: string | null;
   selectedThreadIsPrMr?: boolean;
   initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
+  initialThreads?: ChatThread[];
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<ChatEvent[]>([]);
-  const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [threads, setThreads] = useState<ChatThread[]>(initialThreads);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(initialWaitingAssistant);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
   const [stopRequestedThreadId, setStopRequestedThreadId] = useState<string | null>(null);
 
   latestWaitingAssistant = waitingAssistant;
+  latestThreads = threads;
 
   void messages;
   void events;
-  void threads;
   void stoppingThreadId;
   void stopRequestedThreadId;
 
@@ -187,6 +190,7 @@ function renderHook(
     repositoryId?: string | null;
     selectedThreadIsPrMr?: boolean;
     initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
+    initialThreads?: ChatThread[];
   },
 ) {
   act(() => {
@@ -197,6 +201,7 @@ function renderHook(
           repositoryId={options?.repositoryId}
           selectedThreadIsPrMr={options?.selectedThreadIsPrMr}
           initialWaitingAssistant={options?.initialWaitingAssistant}
+          initialThreads={options?.initialThreads}
         />
       </QueryClientProvider>,
     );
@@ -209,6 +214,7 @@ function renderHookInStrictMode(
     repositoryId?: string | null;
     selectedThreadIsPrMr?: boolean;
     initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
+    initialThreads?: ChatThread[];
   },
 ) {
   act(() => {
@@ -220,6 +226,7 @@ function renderHookInStrictMode(
             repositoryId={options?.repositoryId}
             selectedThreadIsPrMr={options?.selectedThreadIsPrMr}
             initialWaitingAssistant={options?.initialWaitingAssistant}
+            initialThreads={options?.initialThreads}
           />
         </QueryClientProvider>
       </StrictMode>,
@@ -231,6 +238,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  latestThreads = [];
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -489,8 +497,7 @@ describe("useThreadEventStream", () => {
 
   it("patches selected thread as inactive on chat.completed", async () => {
     const threadId = "selected-thread";
-    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
-    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+    const initialThreads: ChatThread[] = [
       {
         id: threadId,
         worktreeId: "wt-1",
@@ -504,10 +511,12 @@ describe("useThreadEventStream", () => {
         active: true,
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
-      } satisfies ChatThread,
-    ]);
+      },
+    ];
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), initialThreads);
 
-    renderHook(threadId);
+    renderHook(threadId, { initialThreads });
 
     await act(async () => {
       await Promise.resolve();
@@ -529,6 +538,7 @@ describe("useThreadEventStream", () => {
 
     const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
     expect(updated?.[0]?.active).toBe(false);
+    expect(latestThreads[0]?.active).toBe(false);
   });
 
   it.each(["chat.completed", "chat.failed"] as const)(
