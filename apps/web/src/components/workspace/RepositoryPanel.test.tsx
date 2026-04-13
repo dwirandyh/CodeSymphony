@@ -357,11 +357,13 @@ describe("RepositoryPanel", () => {
       }),
     });
 
+    const setDragImage = vi.fn();
     const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
     Object.defineProperty(dragStartEvent, "dataTransfer", {
       value: {
         effectAllowed: "move",
         setData: vi.fn(),
+        setDragImage,
       },
     });
 
@@ -384,6 +386,15 @@ describe("RepositoryPanel", () => {
     act(() => {
       dragSource?.dispatchEvent(dragStartEvent);
       target?.dispatchEvent(dragOverEvent);
+    });
+
+    const previewOrder = Array.from(container.querySelectorAll('[data-testid^="repository-"]'))
+      .map((element) => element.getAttribute("data-testid"));
+
+    expect(previewOrder).toEqual(["repository-r2", "repository-r1"]);
+    expect(onReorderRepositories).not.toHaveBeenCalled();
+
+    act(() => {
       target?.dispatchEvent(dropEvent);
     });
 
@@ -431,7 +442,336 @@ describe("RepositoryPanel", () => {
     });
 
     expect(dragOverEvent.defaultPrevented).toBe(true);
-    expect(target?.className).toContain("border-t");
+    const previewOrder = Array.from(container.querySelectorAll('[data-testid^="repository-"]'))
+      .map((element) => element.getAttribute("data-testid"));
+    expect(previewOrder).toEqual(["repository-r1", "repository-r2"]);
+  });
+
+  it("persists the last previewed reorder even if drop lands on the dragged container", () => {
+    const onReorderRepositories = vi.fn();
+
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+      onReorderRepositories,
+    });
+
+    const dragSource = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("repo-one"));
+    const target = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
+
+    expect(dragSource).toBeTruthy();
+    expect(target).toBeTruthy();
+
+    Object.defineProperty(target, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 100,
+        width: 200,
+        height: 100,
+        toJSON: () => ({}),
+      }),
+    });
+
+    const setDragImage = vi.fn();
+    const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStartEvent, "dataTransfer", {
+      value: {
+        effectAllowed: "move",
+        setData: vi.fn(),
+        setDragImage,
+      },
+    });
+
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "clientY", { value: 80 });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      value: {
+        dropEffect: "move",
+      },
+    });
+
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "clientY", { value: 80 });
+    Object.defineProperty(dropEvent, "dataTransfer", {
+      value: {
+        getData: () => "r1",
+      },
+    });
+
+    act(() => {
+      dragSource?.dispatchEvent(dragStartEvent);
+      target?.dispatchEvent(dragOverEvent);
+      dragSource?.dispatchEvent(dropEvent);
+    });
+
+    expect(onReorderRepositories).toHaveBeenCalledWith("r1", "r2", "after");
+  });
+
+  it("shows the brighter repository container only during drag while keeping the workspace row as the drag handle", async () => {
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+    });
+
+    const repositoryCard = container.querySelector('[data-testid="repository-r1"]') as HTMLElement | null;
+    const dragSource = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("repo-one"));
+
+    expect(repositoryCard).toBeTruthy();
+    expect(repositoryCard?.className).toContain("rounded-xl");
+    expect(repositoryCard?.className).not.toContain("bg-secondary/20");
+    expect(repositoryCard?.className).not.toContain("border-border/40");
+    expect(dragSource?.getAttribute("draggable")).toBe("true");
+
+    const setDragImage = vi.fn();
+    const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStartEvent, "dataTransfer", {
+      value: {
+        effectAllowed: "move",
+        setData: vi.fn(),
+        setDragImage,
+      },
+    });
+
+    act(() => {
+      dragSource?.dispatchEvent(dragStartEvent);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const otherRepositoryCard = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
+    expect(setDragImage).toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="repository-r1"]')).toBeNull();
+    expect(otherRepositoryCard?.className).not.toContain("bg-secondary/20");
+    expect(otherRepositoryCard?.className).not.toContain("border-border/40");
+  });
+
+  it("hides the dragged repository from the list until drop finishes", async () => {
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+    });
+
+    const dragSource = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("repo-one"));
+    const target = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
+
+    const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStartEvent, "dataTransfer", {
+      value: {
+        effectAllowed: "move",
+        setData: vi.fn(),
+        setDragImage: vi.fn(),
+      },
+    });
+
+    Object.defineProperty(target, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 100,
+        width: 200,
+        height: 100,
+        toJSON: () => ({}),
+      }),
+    });
+
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "clientY", { value: 80 });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      value: {
+        dropEffect: "move",
+      },
+    });
+
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "clientY", { value: 80 });
+    Object.defineProperty(dropEvent, "dataTransfer", {
+      value: {
+        getData: () => "r1",
+      },
+    });
+
+    act(() => {
+      dragSource?.dispatchEvent(dragStartEvent);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="repository-r1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="repository-placeholder-r1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="repository-r2"]')).toBeTruthy();
+
+    act(() => {
+      target?.dispatchEvent(dragOverEvent);
+      target?.dispatchEvent(dropEvent);
+    });
+
+    expect(container.querySelector('[data-testid="repository-r1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="repository-placeholder-r1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="repository-r2"]')).toBeTruthy();
+  });
+
+  it("moves the empty placeholder to the preview drop position during drag", async () => {
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+    });
+
+    const dragSource = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("repo-one"));
+    const target = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
+
+    Object.defineProperty(target, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 100,
+        width: 200,
+        height: 100,
+        toJSON: () => ({}),
+      }),
+    });
+
+    const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStartEvent, "dataTransfer", {
+      value: {
+        effectAllowed: "move",
+        setData: vi.fn(),
+        setDragImage: vi.fn(),
+      },
+    });
+
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "clientY", { value: 80 });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      value: {
+        dropEffect: "move",
+      },
+    });
+
+    act(() => {
+      dragSource?.dispatchEvent(dragStartEvent);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    act(() => {
+      target?.dispatchEvent(dragOverEvent);
+    });
+
+    const previewOrder = Array.from(container.querySelectorAll('[data-testid^="repository-"]'))
+      .map((element) => element.getAttribute("data-testid"));
+    expect(previewOrder).toEqual(["repository-r2", "repository-placeholder-r1"]);
+  });
+
+  it("commits the reorder when drop lands on the empty placeholder slot", async () => {
+    const onReorderRepositories = vi.fn();
+
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+      onReorderRepositories,
+    });
+
+    const dragSource = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("repo-one"));
+    const target = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
+
+    Object.defineProperty(target, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 100,
+        width: 200,
+        height: 100,
+        toJSON: () => ({}),
+      }),
+    });
+
+    const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStartEvent, "dataTransfer", {
+      value: {
+        effectAllowed: "move",
+        setData: vi.fn(),
+        setDragImage: vi.fn(),
+      },
+    });
+
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "clientY", { value: 80 });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      value: {
+        dropEffect: "move",
+      },
+    });
+
+    act(() => {
+      dragSource?.dispatchEvent(dragStartEvent);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    act(() => {
+      target?.dispatchEvent(dragOverEvent);
+    });
+
+    const placeholder = container.querySelector('[data-testid="repository-placeholder-r1"]') as HTMLElement | null;
+    expect(placeholder).toBeTruthy();
+
+    const placeholderDropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(placeholderDropEvent, "dataTransfer", {
+      value: {
+        getData: () => "r1",
+      },
+    });
+
+    act(() => {
+      placeholder?.dispatchEvent(placeholderDropEvent);
+    });
+
+    expect(onReorderRepositories).toHaveBeenCalledWith("r1", "r2", "after");
   });
 
   it("renders stacked review and diff metadata", async () => {
