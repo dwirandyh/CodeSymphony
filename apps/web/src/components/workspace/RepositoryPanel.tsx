@@ -1,6 +1,7 @@
 import {
   type DragEvent,
   type ReactNode,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -32,6 +33,7 @@ import { isRootWorktree } from "../../lib/worktree";
 import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBranchDiffSummary";
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
+import { isTauriDesktop } from "../../lib/openExternalUrl";
 import type {
   WorktreeStatusSummary,
   WorktreeThreadUiStatus,
@@ -329,6 +331,7 @@ export function RepositoryPanel({
   onDeleteWorktree,
   onRenameWorktreeBranch,
 }: RepositoryPanelProps) {
+  const enableNativeReorderPreview = !isTauriDesktop();
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(
     null,
   );
@@ -473,32 +476,34 @@ export function RepositoryPanel({
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", repositoryId);
 
-      const repositoryCard = event.currentTarget.closest("article");
-      if (repositoryCard instanceof HTMLElement) {
-        setDraggedRepositoryHeight(repositoryCard.getBoundingClientRect().height);
-        const dragPreview = repositoryCard.cloneNode(true);
-        if (dragPreview instanceof HTMLElement) {
-          const repositoryBounds = repositoryCard.getBoundingClientRect();
-          dragPreview.style.position = "fixed";
-          dragPreview.style.top = "-10000px";
-          dragPreview.style.left = "-10000px";
-          dragPreview.style.width = `${repositoryBounds.width}px`;
-          dragPreview.style.pointerEvents = "none";
-          dragPreview.style.margin = "0";
-          dragPreview.style.zIndex = "9999";
-          dragPreview.classList.add("bg-secondary/35", "shadow-lg");
-          document.body.appendChild(dragPreview);
-          dragPreviewElementRef.current = dragPreview;
+      if (enableNativeReorderPreview) {
+        const repositoryCard = event.currentTarget.closest("article");
+        if (repositoryCard instanceof HTMLElement) {
+          setDraggedRepositoryHeight(repositoryCard.getBoundingClientRect().height);
+          const dragPreview = repositoryCard.cloneNode(true);
+          if (dragPreview instanceof HTMLElement) {
+            const repositoryBounds = repositoryCard.getBoundingClientRect();
+            dragPreview.style.position = "fixed";
+            dragPreview.style.top = "-10000px";
+            dragPreview.style.left = "-10000px";
+            dragPreview.style.width = `${repositoryBounds.width}px`;
+            dragPreview.style.pointerEvents = "none";
+            dragPreview.style.margin = "0";
+            dragPreview.style.zIndex = "9999";
+            dragPreview.classList.add("bg-secondary/35", "shadow-lg");
+            document.body.appendChild(dragPreview);
+            dragPreviewElementRef.current = dragPreview;
 
-          const offsetX = Math.max(12, event.clientX - repositoryBounds.left);
-          const offsetY = Math.max(12, event.clientY - repositoryBounds.top);
-          event.dataTransfer.setDragImage(dragPreview, offsetX, offsetY);
+            const offsetX = Math.max(12, event.clientX - repositoryBounds.left);
+            const offsetY = Math.max(12, event.clientY - repositoryBounds.top);
+            event.dataTransfer.setDragImage(dragPreview, offsetX, offsetY);
+          }
         }
       }
     }
 
     dragActivationTimeoutRef.current = window.setTimeout(() => {
-      if (draggedRepositoryIdRef.current !== repositoryId) {
+      if (!enableNativeReorderPreview || draggedRepositoryIdRef.current !== repositoryId) {
         return;
       }
 
@@ -521,10 +526,13 @@ export function RepositoryPanel({
     event.preventDefault();
     const position = resolveDropPosition(event);
     pendingDropTargetRef.current = { repositoryId, position };
-    const currentOrder = previewVisibleRepositoryIds ?? visibleRepositoryIds;
-    const nextOrder = reorderRepositoryIds(currentOrder, sourceRepositoryId, repositoryId, position);
-    if (!sameIds(currentOrder, nextOrder)) {
-      setPreviewVisibleRepositoryIds(nextOrder);
+
+    if (enableNativeReorderPreview) {
+      const currentOrder = previewVisibleRepositoryIds ?? visibleRepositoryIds;
+      const nextOrder = reorderRepositoryIds(currentOrder, sourceRepositoryId, repositoryId, position);
+      if (!sameIds(currentOrder, nextOrder)) {
+        setPreviewVisibleRepositoryIds(nextOrder);
+      }
     }
 
     if (event.dataTransfer) {
@@ -583,7 +591,7 @@ export function RepositoryPanel({
     clearDragState();
   }
 
-  function clearDragState() {
+  function disposeDragResources() {
     draggedRepositoryIdRef.current = null;
     if (dragActivationTimeoutRef.current !== null) {
       window.clearTimeout(dragActivationTimeoutRef.current);
@@ -594,10 +602,33 @@ export function RepositoryPanel({
       dragPreviewElementRef.current = null;
     }
     pendingDropTargetRef.current = null;
+  }
+
+  function clearDragState() {
+    disposeDragResources();
     setDraggedRepositoryId(null);
     setDraggedRepositoryHeight(null);
     setPreviewVisibleRepositoryIds(null);
   }
+
+  useEffect(() => {
+    function handleWindowDragTermination() {
+      if (!draggedRepositoryIdRef.current) {
+        return;
+      }
+
+      clearDragState();
+    }
+
+    window.addEventListener("dragend", handleWindowDragTermination);
+    window.addEventListener("drop", handleWindowDragTermination);
+
+    return () => {
+      window.removeEventListener("dragend", handleWindowDragTermination);
+      window.removeEventListener("drop", handleWindowDragTermination);
+      disposeDragResources();
+    };
+  }, []);
 
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden">

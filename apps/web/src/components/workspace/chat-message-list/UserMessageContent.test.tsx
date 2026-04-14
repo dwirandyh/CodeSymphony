@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PlanInlineMessage } from "./UserMessageContent";
+import { PlanInlineMessage, UserMessageContent } from "./UserMessageContent";
 
 vi.mock("./AssistantContent", () => ({
   MarkdownBody: ({ content, testId }: { content: string; testId?: string }) => (
@@ -149,5 +149,74 @@ describe("PlanInlineMessage", () => {
     expect(cancelAnimationFrameSpy).toHaveBeenCalledWith(1);
 
     root = createRoot(container);
+  });
+});
+
+describe("UserMessageContent", () => {
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("renders clipboard text attachments with a line-based chip label", () => {
+    act(() => {
+      root.render(
+        <UserMessageContent
+          content="Here is pasted text"
+          attachments={[{
+            id: "att-1",
+            messageId: "msg-1",
+            filename: "pasted-1",
+            mimeType: "text/plain",
+            sizeBytes: 12,
+            content: "line 1\nline 2\nline 3",
+            storagePath: null,
+            source: "clipboard_text",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }]}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Paste text 3 lines");
+    expect(container.textContent).not.toContain("pasted-1");
+  });
+
+  it("opens clipboard text attachment details from the user message chip", () => {
+    act(() => {
+      root.render(
+        <UserMessageContent
+          content="Here is pasted text"
+          attachments={[{
+            id: "att-1",
+            messageId: "msg-1",
+            filename: "pasted-1",
+            mimeType: "text/plain",
+            sizeBytes: 12,
+            content: "line 1\nline 2\nline 3",
+            storagePath: null,
+            source: "clipboard_text",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }]}
+        />,
+      );
+    });
+
+    const chip = container.querySelector("button");
+    expect(chip?.textContent).toContain("Paste text 3 lines");
+
+    act(() => {
+      chip?.click();
+    });
+
+    expect(document.body.textContent).toContain("line 1");
+    expect(document.body.textContent).toContain("pasted-1");
   });
 });

@@ -11,6 +11,7 @@ const { listThreadsMock, getThreadSnapshotMock, getGitBranchDiffSummaryMock, get
   getGitBranchDiffSummaryMock: vi.fn().mockResolvedValue({ branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true }),
   getRepositoryReviewsMock: vi.fn().mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} }),
 }));
+const isTauriDesktopMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -20,6 +21,14 @@ vi.mock("../../lib/api", () => ({
     getRepositoryReviews: getRepositoryReviewsMock,
   },
 }));
+vi.mock("../../lib/openExternalUrl", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/openExternalUrl")>("../../lib/openExternalUrl");
+
+  return {
+    ...actual,
+    isTauriDesktop: isTauriDesktopMock,
+  };
+});
 
 let container: HTMLDivElement;
 let root: Root;
@@ -36,10 +45,12 @@ beforeEach(() => {
   getThreadSnapshotMock.mockReset();
   getGitBranchDiffSummaryMock.mockReset();
   getRepositoryReviewsMock.mockReset();
+  isTauriDesktopMock.mockReset();
   listThreadsMock.mockResolvedValue([]);
   getThreadSnapshotMock.mockResolvedValue(makeSnapshot());
   getGitBranchDiffSummaryMock.mockResolvedValue({ branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true });
   getRepositoryReviewsMock.mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} });
+  isTauriDesktopMock.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -769,6 +780,97 @@ describe("RepositoryPanel", () => {
 
     act(() => {
       placeholder?.dispatchEvent(placeholderDropEvent);
+    });
+
+    expect(onReorderRepositories).toHaveBeenCalledWith("r1", "r2", "after");
+  });
+
+  it("keeps native drag stable in tauri desktop while still committing reorder on drop", async () => {
+    isTauriDesktopMock.mockReturnValue(true);
+
+    const onReorderRepositories = vi.fn();
+
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+      onReorderRepositories,
+    });
+
+    const dragSource = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("repo-one"));
+    const target = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
+
+    expect(dragSource).toBeTruthy();
+    expect(target).toBeTruthy();
+
+    Object.defineProperty(target, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 100,
+        width: 200,
+        height: 100,
+        toJSON: () => ({}),
+      }),
+    });
+
+    const setDragImage = vi.fn();
+    const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragStartEvent, "dataTransfer", {
+      value: {
+        effectAllowed: "move",
+        setData: vi.fn(),
+        setDragImage,
+      },
+    });
+
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "clientY", { value: 80 });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      value: {
+        dropEffect: "move",
+      },
+    });
+
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "clientY", { value: 80 });
+    Object.defineProperty(dropEvent, "dataTransfer", {
+      value: {
+        getData: () => "r1",
+      },
+    });
+
+    act(() => {
+      dragSource?.dispatchEvent(dragStartEvent);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(setDragImage).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="repository-r1"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="repository-placeholder-r1"]')).toBeNull();
+
+    act(() => {
+      target?.dispatchEvent(dragOverEvent);
+    });
+
+    expect(dragOverEvent.defaultPrevented).toBe(true);
+    expect(
+      Array.from(container.querySelectorAll('[data-testid^="repository-"]'))
+        .map((element) => element.getAttribute("data-testid")),
+    ).toEqual(["repository-r1", "repository-r2"]);
+
+    act(() => {
+      target?.dispatchEvent(dropEvent);
     });
 
     expect(onReorderRepositories).toHaveBeenCalledWith("r1", "r2", "after");

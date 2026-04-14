@@ -1,10 +1,24 @@
 import { memo, useState, useCallback } from "react";
 import type { ChatAttachment } from "@codesymphony/shared-types";
 import { Check, Copy, FileText, Paperclip } from "lucide-react";
+import { getAttachmentDisplayLabel } from "../../../lib/attachments";
 import { Popover, PopoverTrigger, PopoverContent } from "../../ui/popover";
 import { formatFileSize } from "./toolEventUtils";
 
-const AttachmentPopoverContent = memo(function AttachmentPopoverContent({ attachment }: { attachment: ChatAttachment }) {
+type AttachmentPreviewAttachment = {
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  content: string;
+  source: ChatAttachment["source"];
+  storagePath?: string | null;
+};
+
+export const AttachmentPreviewPanel = memo(function AttachmentPreviewPanel({
+  attachment,
+}: {
+  attachment: AttachmentPreviewAttachment;
+}) {
   const [copied, setCopied] = useState(false);
   const isImage = attachment.mimeType.startsWith("image/");
   const hasContent = attachment.content.length > 0;
@@ -17,12 +31,7 @@ const AttachmentPopoverContent = memo(function AttachmentPopoverContent({ attach
   }, [attachment.content]);
 
   return (
-    <PopoverContent
-      side="top"
-      align="start"
-      className="w-80 max-w-[90vw] p-0"
-      onOpenAutoFocus={(e) => e.preventDefault()}
-    >
+    <div className="w-80 max-w-[90vw] overflow-hidden rounded-lg border border-border/30 bg-popover">
       <div className="flex items-center gap-2 border-b border-border/30 px-3 py-2">
         <Paperclip className="h-3 w-3 shrink-0 text-purple-400" />
         <span className="truncate text-xs font-medium">{attachment.filename}</span>
@@ -55,6 +64,19 @@ const AttachmentPopoverContent = memo(function AttachmentPopoverContent({ attach
           </button>
         </div>
       )}
+    </div>
+  );
+});
+
+const AttachmentPopoverContent = memo(function AttachmentPopoverContent({ attachment }: { attachment: ChatAttachment }) {
+  return (
+    <PopoverContent
+      side="top"
+      align="start"
+      className="w-auto border-none bg-transparent p-0 shadow-none"
+      onOpenAutoFocus={(e) => e.preventDefault()}
+    >
+      <AttachmentPreviewPanel attachment={attachment} />
     </PopoverContent>
   );
 });
@@ -88,6 +110,8 @@ export const AttachmentBlock = memo(function AttachmentBlock({ attachment }: { a
 });
 
 export const InlineAttachmentChip = memo(function InlineAttachmentChip({ attachment }: { attachment: ChatAttachment }) {
+  const label = getAttachmentDisplayLabel(attachment);
+
   return (
     <span className="inline-flex align-baseline mx-0.5">
       <Popover>
@@ -98,7 +122,7 @@ export const InlineAttachmentChip = memo(function InlineAttachmentChip({ attachm
             title={`${attachment.filename} (${formatFileSize(attachment.sizeBytes)})`}
           >
             <Paperclip className="h-3 w-3 shrink-0 inline-block" />
-            <span className="max-w-[140px] truncate">{attachment.filename}</span>
+            <span className="max-w-[140px] truncate">{label}</span>
           </button>
         </PopoverTrigger>
         <AttachmentPopoverContent attachment={attachment} />

@@ -16,12 +16,14 @@ import {
 } from "lucide-react";
 import type { ChatMode, ChatThreadPermissionMode, FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../ui/dialog";
 import { serializeMention } from "../../../lib/mentions";
 import type { PendingAttachment } from "../../../lib/attachments";
 import {
   generateAttachmentId,
   generateClipboardFilename,
 } from "../../../lib/attachments";
+import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
 import { createAttachmentChipElement } from "./composerChipUtils";
 import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
@@ -78,6 +80,30 @@ const PERMISSION_OPTIONS: PermissionOption[] = [
   },
 ];
 
+function AttachmentPreviewDialog({
+  attachment,
+  open,
+  onOpenChange,
+}: {
+  attachment: PendingAttachment | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  if (!attachment) {
+    return null;
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-fit border-none bg-transparent p-0 shadow-none">
+        <DialogTitle className="sr-only">Attachment preview</DialogTitle>
+        <DialogDescription className="sr-only">{attachment.filename}</DialogDescription>
+        <AttachmentPreviewPanel attachment={attachment} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function Composer({
   disabled,
   sending,
@@ -101,6 +127,7 @@ export function Composer({
   onPermissionModeChange,
 }: ComposerProps) {
   const [draftText, setDraftText] = useState("");
+  const [attachmentPreviewId, setAttachmentPreviewId] = useState<string | null>(null);
   const isPlan = mode === "plan";
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
@@ -221,6 +248,16 @@ export function Composer({
   const cannotSend = disabled
     || pendingAttachmentReads > 0
     || (draftText.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
+  const selectedAttachmentPreview = useMemo(
+    () => attachments.find((attachment) => attachment.id === attachmentPreviewId) ?? null,
+    [attachmentPreviewId, attachments],
+  );
+
+  useEffect(() => {
+    if (attachmentPreviewId && !selectedAttachmentPreview) {
+      setAttachmentPreviewId(null);
+    }
+  }, [attachmentPreviewId, selectedAttachmentPreview]);
 
   const handleInput = useCallback(() => {
     if (suppressInputRef.current) return;
@@ -341,6 +378,7 @@ export function Composer({
     closeMention();
     closeSlashCommand();
     applyAttachmentsChange([]);
+    setAttachmentPreviewId(null);
     setDraftText("");
     lastStableHTMLRef.current = "";
     prevContentLenRef.current = 0;
@@ -382,6 +420,29 @@ export function Composer({
       resetDraft();
     }
   }, [cannotSend, buildFinalContent, onSubmitMessage, mode, resetDraft]);
+
+  const handleEditorAttachmentPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLElement>("[data-attachment-id]")
+      : null;
+    if (!target) {
+      return;
+    }
+
+    event.preventDefault();
+  }, []);
+
+  const handleEditorAttachmentClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target instanceof HTMLElement
+      ? event.target.closest<HTMLElement>("[data-attachment-id]")
+      : null;
+    if (!target?.dataset.attachmentId) {
+      return;
+    }
+
+    event.preventDefault();
+    setAttachmentPreviewId(target.dataset.attachmentId);
+  }, []);
 
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLDivElement>) => {
@@ -777,6 +838,8 @@ export function Composer({
             onInput={handleInput}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
+            onPointerDownCapture={handleEditorAttachmentPointerDown}
+            onClick={handleEditorAttachmentClick}
             onCompositionStart={() => { isComposingRef.current = true; }}
             onCompositionEnd={() => {
               isComposingRef.current = false;
@@ -969,6 +1032,15 @@ export function Composer({
           </div>
         </div>
       </div>
+      <AttachmentPreviewDialog
+        attachment={selectedAttachmentPreview}
+        open={selectedAttachmentPreview !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAttachmentPreviewId(null);
+          }
+        }}
+      />
     </section>
   );
 }
