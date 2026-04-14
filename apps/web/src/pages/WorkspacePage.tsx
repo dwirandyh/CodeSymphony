@@ -43,6 +43,11 @@ import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import { isBaseBranchSelected, resolveReviewBaseBranch, resolveReviewBranch } from "./workspace/reviewBranch";
 import {
+  appendScriptOutputChunk,
+  clearLifecycleScriptOutputs,
+  upsertScriptOutputEntry,
+} from "./workspace/scriptOutputState";
+import {
   loadRepositoryPanelPreferences,
   normalizeRepositoryPanelPreferences,
   reorderRepositoryIds,
@@ -64,6 +69,7 @@ type BottomPanelWorktreeState = {
   activeTab: string;
   openSignal: number;
   runScriptActive: boolean;
+  collapsed: boolean;
 };
 
 function getBottomPanelState(
@@ -75,6 +81,7 @@ function getBottomPanelState(
       activeTab: DEFAULT_BOTTOM_PANEL_TAB,
       openSignal: 0,
       runScriptActive: false,
+      collapsed: true,
     };
   }
 
@@ -82,6 +89,7 @@ function getBottomPanelState(
     activeTab: DEFAULT_BOTTOM_PANEL_TAB,
     openSignal: 0,
     runScriptActive: false,
+    collapsed: true,
   };
 }
 
@@ -184,28 +192,7 @@ export function WorkspacePage() {
   }, []);
 
   const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
-    setScriptOutputs((prev) => {
-      const entryId = `${event.worktreeId}-${event.type}`;
-      const entry: ScriptOutputEntry = {
-        id: entryId,
-        worktreeId: event.worktreeId,
-        worktreeName: event.worktreeName,
-        type: event.type,
-        timestamp: Date.now(),
-        output: event.result?.output ?? "",
-        success: event.result?.success ?? false,
-        status: event.status,
-      };
-      const idx = prev.findIndex((e) => e.id === entryId);
-      if (idx >= 0) {
-        const existing = prev[idx];
-        const copy = [...prev];
-        // Preserve accumulated output when transitioning to completed
-        copy[idx] = { ...entry, output: entry.output || existing.output, timestamp: existing.timestamp };
-        return copy;
-      }
-      return [...prev, entry];
-    });
+    setScriptOutputs((prev) => upsertScriptOutputEntry(prev, event));
     if (event.type === "run") {
       updateBottomPanelState(event.worktreeId, (current) => ({
         ...current,
@@ -229,11 +216,7 @@ export function WorkspacePage() {
   }, []);
 
   const handleScriptOutputChunk = useCallback(({ worktreeId, chunk }: { worktreeId: string; chunk: string }) => {
-    setScriptOutputs((prev) => prev.map((entry) =>
-      entry.worktreeId === worktreeId && entry.status === "running"
-        ? { ...entry, output: entry.output + chunk }
-        : entry
-    ));
+    setScriptOutputs((prev) => appendScriptOutputChunk(prev, { worktreeId, chunk }));
   }, []);
 
   const handleRunScriptTerminalExit = useCallback((event: { exitCode: number; signal: number }, targetWorktreeId: string | null) => {
@@ -621,13 +604,15 @@ export function WorkspacePage() {
   }, [repos.selectedWorktreeId, repos.setSelectedWorktreeId, forceDeleteQueryClient]);
 
   const handleRerunSetup = useCallback(() => {
-    if (!repos.selectedWorktreeId) return;
-    updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
+    const worktreeId = repos.selectedWorktreeId;
+    if (!worktreeId) return;
+    setScriptOutputs((prev) => clearLifecycleScriptOutputs(prev, worktreeId));
+    updateBottomPanelState(worktreeId, (current) => ({
       ...current,
       activeTab: "setup-script",
       openSignal: current.openSignal + 1,
     }));
-    void repos.rerunSetup(repos.selectedWorktreeId);
+    void repos.rerunSetup(worktreeId);
   }, [repos.rerunSetup, repos.selectedWorktreeId, updateBottomPanelState]);
 
   const resolveRunScriptSessionId = useCallback(() => {
@@ -1009,9 +994,14 @@ export function WorkspacePage() {
             selectedThreadId={chat.selectedThreadId}
             scriptOutputs={scriptOutputs}
             activeTab={selectedBottomPanelState.activeTab}
+            collapsed={selectedBottomPanelState.collapsed}
             onTabChange={(tab) => updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
               ...current,
               activeTab: tab,
+            }))}
+            onCollapsedChange={(collapsed) => updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
+              ...current,
+              collapsed,
             }))}
             onRerunSetup={handleRerunSetup}
             runScriptActive={selectedBottomPanelState.runScriptActive}

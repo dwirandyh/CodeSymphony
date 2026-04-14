@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry, SlashCommand } from "@codesymphony/shared-types";
 import { Composer } from "./composer";
+import { getPlainTextFromEditor } from "./composer/composerEditorUtils";
 
 const sampleFileIndex: FileEntry[] = [
   { path: "src/index.ts", type: "file" },
@@ -303,7 +304,8 @@ describe("Composer", () => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
 
-    expect(editor.textContent).toContain("/commit ");
+    expect(editor.querySelector("[data-slash-command=\"commit\"]")).toBeTruthy();
+    expect(getPlainTextFromEditor(editor).replace(/\u00A0/g, " ")).toContain("/commit");
 
     await act(async () => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -566,12 +568,14 @@ describe("Composer", () => {
     renderComposer({ onSubmitMessage });
 
     const editor = getEditor();
-    const longText = "x".repeat(400);
+    const longText = "alpha\nbeta\ngamma\n".repeat(120);
 
     act(() => {
       dispatchPasteWithText(editor, longText);
     });
     await flushMicrotasks();
+
+    expect(editor.textContent).toContain("Paste text 360 lines");
 
     await act(async () => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -586,6 +590,30 @@ describe("Composer", () => {
     expect(payload.attachments).toHaveLength(1);
     expect(payload.attachments[0].source).toBe("clipboard_text");
     expect(payload.attachments[0].content).toBe(longText);
+  });
+
+  it("opens pasted text chip details from the composer before sending", async () => {
+    renderComposer();
+
+    const editor = getEditor();
+    const longText = "first line\nsecond line\nthird line\n".repeat(120);
+
+    act(() => {
+      dispatchPasteWithText(editor, longText);
+    });
+    await flushMicrotasks();
+
+    const attachmentChip = editor.querySelector("[data-attachment-id]") as HTMLElement | null;
+    expect(attachmentChip).toBeTruthy();
+    expect(editor.textContent).toContain("Paste text 360 lines");
+
+    act(() => {
+      attachmentChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("Paste text 360 lines");
+    expect(document.body.textContent).toContain("first line");
+    expect(document.body.textContent).toContain("pasted-");
   });
 
   it("resets local draft when thread changes", async () => {

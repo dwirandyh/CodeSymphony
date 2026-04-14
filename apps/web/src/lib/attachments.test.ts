@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
+  countTextLines,
   generateAttachmentId,
+  getAttachmentDisplayLabel,
+  getClipboardTextDisplayLabel,
   resetClipboardCounter,
   isImageMimeType,
   validateAttachmentSize,
@@ -134,9 +137,35 @@ describe("generateClipboardFilename", () => {
     resetClipboardCounter();
   });
 
-  it("generates sequential filenames with detected extension", () => {
-    expect(generateClipboardFilename('{"key": "value"}')).toBe("pasted-1.json");
-    expect(generateClipboardFilename("plain text")).toBe("pasted-2.txt");
-    expect(generateClipboardFilename("SELECT * FROM users")).toBe("pasted-3.sql");
+  it("generates sequential filenames without extensions", () => {
+    expect(generateClipboardFilename('{"key": "value"}')).toBe("pasted-1");
+    expect(generateClipboardFilename("plain text")).toBe("pasted-2");
+    expect(generateClipboardFilename("SELECT * FROM users")).toBe("pasted-3");
+  });
+});
+
+describe("clipboard text labels", () => {
+  it("counts text lines", () => {
+    expect(countTextLines("one line")).toBe(1);
+    expect(countTextLines("one\ntwo\nthree")).toBe(3);
+  });
+
+  it("formats clipboard text labels from line counts", () => {
+    expect(getClipboardTextDisplayLabel("hello")).toBe("Paste text 1 line");
+    expect(getClipboardTextDisplayLabel("a\nb\nc")).toBe("Paste text 3 lines");
+  });
+
+  it("uses clipboard text labels for clipboard attachments", () => {
+    expect(getAttachmentDisplayLabel({
+      filename: "pasted-1",
+      source: "clipboard_text",
+      content: "a\nb",
+    })).toBe("Paste text 2 lines");
+
+    expect(getAttachmentDisplayLabel({
+      filename: "notes.md",
+      source: "file_picker",
+      content: "hello",
+    })).toBe("notes.md");
   });
 });

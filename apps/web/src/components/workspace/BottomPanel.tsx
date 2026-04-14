@@ -34,7 +34,9 @@ interface BottomPanelProps {
     selectedThreadId: string | null;
     scriptOutputs: ScriptOutputEntry[];
     activeTab: string;
+    collapsed: boolean;
     onTabChange: (tab: string) => void;
+    onCollapsedChange: (collapsed: boolean) => void;
     onRerunSetup?: () => void;
     runScriptActive: boolean;
     onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
@@ -47,18 +49,20 @@ export function BottomPanel({
     selectedThreadId,
     scriptOutputs,
     activeTab,
+    collapsed,
     onTabChange,
+    onCollapsedChange,
     onRerunSetup,
     runScriptActive,
     onRunScriptExit,
     openSignal,
 }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
-    const [collapsed, setCollapsed] = useState(true);
     const [isDragging, setIsDragging] = useState(false);
     const panelRef = useRef<HTMLDivElement>(null);
     const startYRef = useRef(0);
     const startHeightRef = useRef(0);
+    const prevWorktreeIdRef = useRef<string | null>(worktreeId);
     const prevOpenSignalRef = useRef<number | undefined>(openSignal);
 
     const filteredOutputs = useMemo(
@@ -69,6 +73,11 @@ export function BottomPanel({
         () => filteredOutputs.filter((entry) => entry.type === "setup" || entry.type === "teardown"),
         [filteredOutputs],
     );
+    const latestSetupOutput = setupOutputs[setupOutputs.length - 1] ?? null;
+    const showSetupStatusChip = latestSetupOutput !== null;
+    const setupStatusChipClassName = latestSetupOutput?.status === "completed" && !latestSetupOutput.success
+        ? "bg-destructive/20 text-destructive"
+        : "bg-primary/20 text-primary";
     const scriptRunnerSessionId = useMemo(
         () => (worktreeId && runScriptActive ? `${worktreeId}:script-runner` : null),
         [worktreeId, runScriptActive],
@@ -127,14 +136,20 @@ export function BottomPanel({
     }, [isDragging]);
 
     useEffect(() => {
+        if (prevWorktreeIdRef.current !== worktreeId) {
+            prevWorktreeIdRef.current = worktreeId;
+            prevOpenSignalRef.current = openSignal;
+            return;
+        }
+
         if (openSignal === undefined) {
             return;
         }
         if (prevOpenSignalRef.current !== openSignal) {
-            setCollapsed(false);
+            onCollapsedChange(false);
             prevOpenSignalRef.current = openSignal;
         }
-    }, [openSignal]);
+    }, [onCollapsedChange, openSignal, worktreeId]);
 
     return (
         <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-3">
@@ -142,7 +157,7 @@ export function BottomPanel({
                 value={activeTab}
                 onValueChange={(val) => {
                     onTabChange(val);
-                    if (collapsed) setCollapsed(false);
+                    if (collapsed) onCollapsedChange(false);
                 }}
                 className="flex min-h-0 flex-1 flex-col"
             >
@@ -169,9 +184,12 @@ export function BottomPanel({
                             className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
                             Setup Script
-                            {setupOutputs.length > 0 && (
-                                <span className="ml-1 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary/20 px-1 text-[9px] font-bold leading-none text-primary">
-                                    {setupOutputs.length}
+                            {showSetupStatusChip && (
+                                <span
+                                    data-testid="setup-script-status-chip"
+                                    className={`ml-1 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full px-1 text-[9px] font-bold leading-none ${setupStatusChipClassName}`}
+                                >
+                                    •
                                 </span>
                             )}
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
@@ -210,7 +228,7 @@ export function BottomPanel({
                     <button
                         type="button"
                         className="mr-1 rounded p-2 text-muted-foreground/50 transition-colors hover:bg-secondary/40 hover:text-foreground md:p-1"
-                        onClick={() => setCollapsed((prev) => !prev)}
+                        onClick={() => onCollapsedChange(!collapsed)}
                         title={collapsed ? "Expand panel" : "Collapse panel"}
                     >
                         <span className={`inline-block transition-transform ${collapsed ? "rotate-180" : ""}`}>

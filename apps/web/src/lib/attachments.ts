@@ -112,7 +112,36 @@ export function detectClipboardTextLanguage(text: string): string {
 }
 
 export function generateClipboardFilename(text: string): string {
+  void text;
   clipboardCounter++;
-  const ext = detectClipboardTextLanguage(text);
-  return `pasted-${clipboardCounter}.${ext}`;
+  return `pasted-${clipboardCounter}`;
+}
+
+export function countTextLines(text: string): number {
+  if (text.length === 0) {
+    return 1;
+  }
+
+  const lines = text.split(/\r\n|\r|\n/);
+  if (lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return Math.max(1, lines.length);
+}
+
+export function getClipboardTextDisplayLabel(text: string): string {
+  const lineCount = countTextLines(text);
+  return `Paste text ${lineCount} ${lineCount === 1 ? "line" : "lines"}`;
+}
+
+export function getAttachmentDisplayLabel(attachment: {
+  filename: string;
+  source: PendingAttachment["source"];
+  content: string;
+}): string {
+  if (attachment.source === "clipboard_text") {
+    return getClipboardTextDisplayLabel(attachment.content);
+  }
+
+  return attachment.filename;
 }

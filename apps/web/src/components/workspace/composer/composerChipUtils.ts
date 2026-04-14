@@ -1,4 +1,5 @@
 import type { PendingAttachment } from "../../../lib/attachments";
+import { getAttachmentDisplayLabel } from "../../../lib/attachments";
 import { fileName, FILE_ICON_SVG, FOLDER_ICON_SVG, PAPERCLIP_ICON_SVG } from "./composerEditorUtils";
 import type { MentionedFile } from "./composerEditorUtils";
 
@@ -39,8 +40,10 @@ export function createAttachmentChipElement(attachment: PendingAttachment): HTML
   chip.contentEditable = "false";
   chip.dataset.attachmentId = attachment.id;
   chip.className =
-    "inline-flex items-center gap-1 rounded-md border border-purple-500/30 bg-purple-500/15 px-1.5 py-0 text-xs text-purple-400 mx-0.5 align-baseline cursor-default select-none";
+    "inline-flex items-center gap-1 rounded-md border border-purple-500/30 bg-purple-500/15 px-1.5 py-0 text-xs text-purple-400 mx-0.5 align-baseline cursor-pointer select-none hover:bg-purple-500/25";
   chip.setAttribute("title", attachment.filename);
+  chip.setAttribute("role", "button");
+  chip.setAttribute("tabindex", "-1");
 
   const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   icon.setAttribute("viewBox", "0 0 24 24");
@@ -54,7 +57,7 @@ export function createAttachmentChipElement(attachment: PendingAttachment): HTML
 
   const label = document.createElement("span");
   label.className = "max-w-[140px] truncate";
-  label.textContent = attachment.filename;
+  label.textContent = getAttachmentDisplayLabel(attachment);
 
   chip.appendChild(icon);
   chip.appendChild(label);
