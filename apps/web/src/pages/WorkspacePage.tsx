@@ -83,6 +83,14 @@ type EditorFileState = {
   error: string | null;
 };
 
+type EditorGitBaselineState = {
+  headContent: string | null;
+  loading: boolean;
+  loaded: boolean;
+  error: string | null;
+  versionKey: string;
+};
+
 type OpenFileTab = {
   path: string;
   pinned: boolean;
@@ -96,6 +104,16 @@ function createInitialEditorFileState(): EditorFileState {
     loaded: false,
     saving: false,
     error: null,
+  };
+}
+
+function createInitialEditorGitBaselineState(): EditorGitBaselineState {
+  return {
+    headContent: null,
+    loading: false,
+    loaded: false,
+    error: null,
+    versionKey: "",
   };
 }
 
@@ -178,6 +196,7 @@ export function WorkspacePage() {
   const [bottomPanelStateByWorktreeId, setBottomPanelStateByWorktreeId] = useState<Record<string, BottomPanelWorktreeState>>({});
   const [openFileTabsByWorktreeId, setOpenFileTabsByWorktreeId] = useState<Record<string, OpenFileTab[]>>({});
   const [editorFileStateByWorktreeId, setEditorFileStateByWorktreeId] = useState<Record<string, Record<string, EditorFileState>>>({});
+  const [editorGitBaselineStateByWorktreeId, setEditorGitBaselineStateByWorktreeId] = useState<Record<string, Record<string, EditorGitBaselineState>>>({});
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
 
   const {
@@ -510,6 +529,9 @@ export function WorkspacePage() {
   const activeWorktreeEditorStates = repos.selectedWorktreeId
     ? editorFileStateByWorktreeId[repos.selectedWorktreeId] ?? {}
     : {};
+  const activeWorktreeGitBaselines = repos.selectedWorktreeId
+    ? editorGitBaselineStateByWorktreeId[repos.selectedWorktreeId] ?? {}
+    : {};
   const workspaceFileTabs = useMemo<WorkspaceFileTab[]>(
     () => activeWorktreeFileTabs.map((tab) => {
       const state = activeWorktreeEditorStates[tab.path] ?? createInitialEditorFileState();
@@ -522,6 +544,16 @@ export function WorkspacePage() {
     [activeWorktreeEditorStates, activeWorktreeFileTabs],
   );
   const activeEditorFileState = activeFilePath ? activeWorktreeEditorStates[activeFilePath] ?? null : null;
+  const activeGitChangeEntry = activeFilePath
+    ? gitChanges.entries.find((entry) => entry.path === activeFilePath) ?? null
+    : null;
+  const activeGitBaselineVersionKey = [
+    gitChanges.branch,
+    activeGitChangeEntry?.status ?? "clean",
+    activeGitChangeEntry?.insertions ?? 0,
+    activeGitChangeEntry?.deletions ?? 0,
+  ].join(":");
+  const activeEditorGitBaselineState = activeFilePath ? activeWorktreeGitBaselines[activeFilePath] ?? null : null;
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     desiredThreadId: search.threadId,
@@ -587,11 +619,16 @@ export function WorkspacePage() {
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
   const slashCommands = useSlashCommands(repos.selectedWorktreeId);
   const editorFileStateRef = useRef(editorFileStateByWorktreeId);
+  const editorGitBaselineStateRef = useRef(editorGitBaselineStateByWorktreeId);
   const closingActiveFileRef = useRef<{ worktreeId: string; filePath: string } | null>(null);
 
   useEffect(() => {
     editorFileStateRef.current = editorFileStateByWorktreeId;
   }, [editorFileStateByWorktreeId]);
+
+  useEffect(() => {
+    editorGitBaselineStateRef.current = editorGitBaselineStateByWorktreeId;
+  }, [editorGitBaselineStateByWorktreeId]);
 
   const updateEditorFileState = useCallback((
     worktreeId: string,
@@ -605,6 +642,23 @@ export function WorkspacePage() {
         [worktreeId]: {
           ...worktreeState,
           [filePath]: updater(worktreeState[filePath] ?? createInitialEditorFileState()),
+        },
+      };
+    });
+  }, []);
+
+  const updateEditorGitBaselineState = useCallback((
+    worktreeId: string,
+    filePath: string,
+    updater: (current: EditorGitBaselineState) => EditorGitBaselineState,
+  ) => {
+    setEditorGitBaselineStateByWorktreeId((current) => {
+      const worktreeState = current[worktreeId] ?? {};
+      return {
+        ...current,
+        [worktreeId]: {
+          ...worktreeState,
+          [filePath]: updater(worktreeState[filePath] ?? createInitialEditorGitBaselineState()),
         },
       };
     });
@@ -673,6 +727,18 @@ export function WorkspacePage() {
         ),
       }));
       setEditorFileStateByWorktreeId((current) => {
+        const worktreeState = current[worktreeId] ?? {};
+        if (!(previewTab.path in worktreeState)) {
+          return current;
+        }
+
+        const { [previewTab.path]: _removed, ...rest } = worktreeState;
+        return {
+          ...current,
+          [worktreeId]: rest,
+        };
+      });
+      setEditorGitBaselineStateByWorktreeId((current) => {
         const worktreeState = current[worktreeId] ?? {};
         if (!(previewTab.path in worktreeState)) {
           return current;
@@ -769,6 +835,71 @@ export function WorkspacePage() {
     };
   }, [updateEditorFileState]);
 
+  const loadEditorGitBaseline = useCallback((worktreeId: string, filePath: string, versionKey: string) => {
+    const currentBaselineState = editorGitBaselineStateRef.current[worktreeId]?.[filePath] ?? createInitialEditorGitBaselineState();
+    if (
+      (currentBaselineState.loading && currentBaselineState.versionKey === versionKey)
+      || (currentBaselineState.loaded && currentBaselineState.versionKey === versionKey)
+    ) {
+      return () => {};
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      updateEditorGitBaselineState(worktreeId, filePath, (current) => ({
+        ...current,
+        loading: false,
+        loaded: false,
+        error: "Loading git baseline took too long. Please retry.",
+      }));
+    }, 15_000);
+
+    let cancelled = false;
+
+    updateEditorGitBaselineState(worktreeId, filePath, (current) => ({
+      ...current,
+      loading: true,
+      loaded: false,
+      error: null,
+      versionKey,
+    }));
+
+    void api.getFileContents(worktreeId, filePath)
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+
+        window.clearTimeout(timeoutId);
+        updateEditorGitBaselineState(worktreeId, filePath, () => ({
+          headContent: result.oldContent ?? null,
+          loading: false,
+          loaded: true,
+          error: null,
+          versionKey,
+        }));
+      })
+      .catch((e) => {
+        if (cancelled) {
+          return;
+        }
+
+        window.clearTimeout(timeoutId);
+        updateEditorGitBaselineState(worktreeId, filePath, (current) => ({
+          ...current,
+          headContent: current.headContent ?? null,
+          loading: false,
+          loaded: false,
+          error: e instanceof Error ? e.message : "Unable to load git baseline",
+          versionKey,
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [updateEditorGitBaselineState]);
+
   // Close mobile drawer on Escape key
   useEffect(() => {
     if (!mobilePanelOpen) return;
@@ -821,6 +952,20 @@ export function WorkspacePage() {
 
     return loadEditorFile(repos.selectedWorktreeId, activeFilePath);
   }, [activeFilePath, activeView, loadEditorFile, repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    if (!repos.selectedWorktreeId || activeView !== "file" || !activeFilePath) {
+      return;
+    }
+
+    return loadEditorGitBaseline(repos.selectedWorktreeId, activeFilePath, activeGitBaselineVersionKey);
+  }, [
+    activeFilePath,
+    activeGitBaselineVersionKey,
+    activeView,
+    loadEditorGitBaseline,
+    repos.selectedWorktreeId,
+  ]);
 
   useEffect(() => {
     const hasDirtyFiles = Object.entries(editorFileStateByWorktreeId).some(([, files]) =>
@@ -1147,6 +1292,18 @@ export function WorkspacePage() {
         [currentWorktreeId]: rest,
       };
     });
+    setEditorGitBaselineStateByWorktreeId((current) => {
+      const worktreeState = current[currentWorktreeId] ?? {};
+      if (!(filePath in worktreeState)) {
+        return current;
+      }
+
+      const { [filePath]: _removed, ...rest } = worktreeState;
+      return {
+        ...current,
+        [currentWorktreeId]: rest,
+      };
+    });
 
     if (activeFilePath !== filePath) {
       return;
@@ -1337,9 +1494,21 @@ export function WorkspacePage() {
         />
 
         {/* ── Main content area (chat + bottom panel) ── */}
-        <main className="workspace-main flex min-h-0 min-w-0 flex-1 flex-col p-1.5 pb-0 sm:p-2.5 sm:pb-0 lg:p-3 lg:pb-0">
+        <main
+          className={cn(
+            "workspace-main flex min-h-0 min-w-0 flex-1 flex-col pb-0",
+            activeView === "file"
+              ? "px-0 pt-0"
+              : "p-1.5 sm:p-2.5 lg:p-3",
+          )}
+        >
           {/* ── Mobile top bar ── */}
-          <div className="flex items-center gap-2 pb-1.5 lg:hidden">
+          <div
+            className={cn(
+              "flex items-center gap-2 pb-1.5 lg:hidden",
+              activeView === "file" && "px-1.5 pt-1.5 sm:px-2.5 sm:pt-2.5",
+            )}
+          >
             <button
               type="button"
               onClick={() => setMobilePanelOpen("repos")}
@@ -1396,7 +1565,6 @@ export function WorkspacePage() {
             className={cn(
               "flex min-h-0 min-w-0 flex-1 flex-col gap-1 lg:gap-2",
               activeView === "file" && "gap-0",
-              activeView === "file" && "-mx-1.5 sm:-mx-2.5 lg:-mx-3",
             )}
           >
             <WorkspaceHeader
@@ -1450,12 +1618,17 @@ export function WorkspacePage() {
                 </Suspense>
               </section>
             ) : activeView === "file" && activeFilePath ? (
-              <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                 <CodeEditorPanel
                   key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
                   filePath={activeFilePath}
                   fileEntries={fileIndex.entries}
                   content={activeEditorFileState?.draftContent ?? ""}
+                  gitHeadContent={activeEditorGitBaselineState?.headContent ?? null}
+                  gitBaselineReady={activeEditorGitBaselineState?.loaded ?? false}
+                  gitBaselineLoading={activeEditorGitBaselineState?.loading ?? false}
+                  gitBranch={gitChanges.branch}
+                  gitStatus={activeGitChangeEntry?.status ?? null}
                   loading={activeEditorFileState?.loading ?? false}
                   saving={activeEditorFileState?.saving ?? false}
                   dirty={!!(

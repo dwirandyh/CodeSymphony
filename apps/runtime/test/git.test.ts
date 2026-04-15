@@ -186,6 +186,15 @@ describe("git utilities", () => {
       expect(content).toBe("# Hello");
     });
 
+    it("preserves trailing newlines in HEAD content", async () => {
+      await writeFile(join(repoDir, "newline.txt"), "alpha\nbeta\n");
+      git("add newline.txt");
+      git("commit -m \"Add newline fixture\"");
+
+      const content = await getFileAtHead(repoDir, "newline.txt");
+      expect(content).toBe("alpha\nbeta\n");
+    });
+
     it("returns null for non-existent file", async () => {
       const content = await getFileAtHead(repoDir, "nonexistent.txt");
       expect(content).toBeNull();

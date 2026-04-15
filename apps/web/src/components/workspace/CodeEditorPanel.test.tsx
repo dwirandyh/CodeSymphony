@@ -164,4 +164,18 @@ describe("CodeEditorPanel", () => {
     renderEditor({ filePath: "ios/AppDelegate.swift" });
     expect(container.textContent).toContain("Swift");
   });
+
+  it("uses simplified git controls for new untracked files", () => {
+    renderEditor({
+      filePath: "src/new-file.ts",
+      content: "const created = true;\n",
+      gitHeadContent: null,
+      gitBaselineReady: true,
+      gitStatus: "untracked",
+    });
+
+    expect(container.textContent).toContain("New File");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.title === "Previous change")).toBe(false);
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.title === "Next change")).toBe(false);
+  });
 });

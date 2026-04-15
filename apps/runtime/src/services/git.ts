@@ -19,6 +19,7 @@ type RunCommandOptions = {
   timeoutMs?: number;
   allowedExitCodes?: number[];
   env?: NodeJS.ProcessEnv;
+  trimStdout?: boolean;
 };
 
 type RunGitOptions = {
@@ -74,7 +75,7 @@ async function runCommand(command: string, args: string[], options?: RunCommandO
         env: options?.env,
       });
 
-      return stdout.trimEnd();
+      return options?.trimStdout === false ? stdout : stdout.trimEnd();
     } catch (error) {
       const exitCode = typeof (error as { code?: unknown }).code === "number"
         ? (error as { code: number }).code
@@ -87,7 +88,7 @@ async function runCommand(command: string, args: string[], options?: RunCommandO
         : "";
 
       if (exitCode !== null && options?.allowedExitCodes?.includes(exitCode)) {
-        return stdout.trimEnd();
+        return options?.trimStdout === false ? stdout : stdout.trimEnd();
       }
 
       if (isCommandNotFound(error)) {
@@ -685,7 +686,10 @@ export async function getGitDiff(cwd: string, filePath?: string): Promise<string
 
 export async function getFileAtHead(cwd: string, filePath: string): Promise<string | null> {
   try {
-    return await runGit(["show", `HEAD:${filePath}`], cwd);
+    return await runCommand("git", ["show", `HEAD:${filePath}`], {
+      cwd,
+      trimStdout: false,
+    });
   } catch {
     return null;
   }

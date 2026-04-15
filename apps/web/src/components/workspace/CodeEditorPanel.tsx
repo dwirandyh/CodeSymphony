@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { basicSetup } from "codemirror";
 import { indentLess, indentMore } from "@codemirror/commands";
-import { EditorState, type Extension, type StateCommand } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { Compartment, EditorSelection, EditorState, RangeSetBuilder, type Extension, type StateCommand } from "@codemirror/state";
+import { Decoration, EditorView, GutterMarker, WidgetType, gutter, keymap } from "@codemirror/view";
 import { css } from "@codemirror/lang-css";
 import { html } from "@codemirror/lang-html";
 import { java } from "@codemirror/lang-java";
@@ -26,12 +27,26 @@ import { rust } from "@codemirror/legacy-modes/mode/rust";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { swift } from "@codemirror/legacy-modes/mode/swift";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
-import type { FileEntry } from "@codesymphony/shared-types";
-import { ChevronRight, FileCode2, Folder, Loader2 } from "lucide-react";
+import type { FileEntry, GitChangeStatus } from "@codesymphony/shared-types";
+import { FileDiff } from "@pierre/diffs/react";
+import { ArrowDown, ArrowUp, ChevronRight, Eye, FileCode2, Folder, GitBranch, Loader2, Undo2, X } from "lucide-react";
 import { vscodeDarkInit } from "@uiw/codemirror-theme-vscode";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../../lib/utils";
+import { SafePatchDiff } from "./chat-message-list/diffUtils";
+import {
+  buildEditorGitModel,
+  buildEditorGitPeekPatch,
+  deriveEditorGitStatus,
+  findCurrentGitHunkIndex,
+  revertEditorGitHunk,
+  type EditorGitChangeKind,
+  type EditorGitHunk,
+  type EditorGitLineDecoration,
+} from "./codeEditorGit";
+
+type GitPeekWidgetHost = HTMLElement & { __gitPeekRoot?: Root };
 
 function fileExtension(filePath: string): string {
   const filename = filePath.split("/").pop() ?? filePath;
@@ -298,6 +313,9 @@ const EDITOR_BORDER = "hsl(var(--border))";
 const EDITOR_GUTTER_TEXT = "hsl(var(--muted-foreground))";
 const EDITOR_FOREGROUND = "hsl(var(--foreground))";
 const EDITOR_CARET = "hsl(var(--foreground) / 0.78)";
+const GIT_ADDED = "#2ea043";
+const GIT_MODIFIED = "#4cc2ff";
+const GIT_DELETED = "#f85149";
 
 const editorTheme = EditorView.theme({
   "&": {
@@ -323,12 +341,73 @@ const editorTheme = EditorView.theme({
     color: EDITOR_GUTTER_TEXT,
     minWidth: "48px",
   },
+  ".cm-git-gutter": {
+    width: "10px",
+    minWidth: "10px",
+  },
+  ".cm-git-gutter .cm-gutterElement": {
+    padding: 0,
+  },
+  ".cm-git-marker": {
+    display: "block",
+    width: "3px",
+    height: "100%",
+    marginLeft: "3px",
+    borderRadius: "999px",
+  },
+  ".cm-git-marker-deleted": {
+    width: 0,
+    height: 0,
+    marginLeft: "2px",
+    marginTop: "5px",
+    borderTop: "5px solid transparent",
+    borderBottom: "5px solid transparent",
+    borderLeft: `7px solid ${GIT_DELETED}`,
+    borderRadius: 0,
+  },
+  ".cm-git-marker-added": {
+    backgroundColor: GIT_ADDED,
+  },
+  ".cm-git-marker-modified": {
+    backgroundColor: GIT_MODIFIED,
+  },
+  ".cm-git-marker-active": {
+    width: "4px",
+    marginLeft: "2px",
+  },
+  ".cm-git-marker-active.cm-git-marker-deleted": {
+    marginLeft: "1px",
+    borderLeftWidth: "8px",
+  },
   ".cm-activeLineGutter": {
     backgroundColor: EDITOR_ACTIVE_LINE,
     color: EDITOR_FOREGROUND,
   },
   ".cm-activeLine": {
     backgroundColor: EDITOR_ACTIVE_LINE,
+  },
+  ".cm-line.cm-git-line-added": {
+    backgroundColor: "rgba(46, 160, 67, 0.12)",
+  },
+  ".cm-line.cm-git-line-modified": {
+    backgroundColor: "rgba(76, 194, 255, 0.11)",
+  },
+  ".cm-line.cm-git-line-deleted": {
+    backgroundColor: "rgba(248, 81, 73, 0.08)",
+  },
+  ".cm-line.cm-git-line-active-added": {
+    backgroundColor: "rgba(46, 160, 67, 0.18)",
+  },
+  ".cm-line.cm-git-line-active-modified": {
+    backgroundColor: "rgba(76, 194, 255, 0.18)",
+  },
+  ".cm-line.cm-git-line-active-deleted": {
+    backgroundColor: "rgba(248, 81, 73, 0.14)",
+  },
+  ".cm-git-peek-widget": {
+    display: "block",
+    width: "100%",
+    boxSizing: "border-box",
   },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, .cm-selectionLayer .cm-selectionBackground, ::selection": {
     backgroundColor: "rgba(38, 79, 120, 0.72)",
@@ -373,6 +452,349 @@ const vscodeDarkModern = vscodeDarkInit({
 
 const SOFT_TAB = "  ";
 
+const EMPTY_GIT_EXTENSION: Extension = [];
+
+type GitPeekState = {
+  hunkIndex: number;
+};
+
+function gitStatusLabel(status: GitChangeStatus | null): string {
+  switch (status) {
+    case "added":
+      return "Added";
+    case "deleted":
+      return "Deleted";
+    case "modified":
+      return "Modified";
+    case "renamed":
+      return "Renamed";
+    case "untracked":
+      return "Untracked";
+    default:
+      return "Clean";
+  }
+}
+
+function gitStatusColor(status: GitChangeStatus | null): string {
+  switch (status) {
+    case "added":
+      return GIT_ADDED;
+    case "deleted":
+      return GIT_DELETED;
+    case "modified":
+    case "renamed":
+    case "untracked":
+      return GIT_MODIFIED;
+    default:
+      return EDITOR_GUTTER_TEXT;
+  }
+}
+
+function fileNameLabel(filePath: string): string {
+  return filePath.split("/").pop() ?? filePath;
+}
+
+function buildGitDecorations(
+  state: EditorState,
+  lines: EditorGitLineDecoration[],
+  activeHunkIndex: number,
+  peek: {
+    hunk: EditorGitHunk | null;
+    patch: string | null;
+    totalHunks: number;
+    viewportWidth: number;
+    loading: boolean;
+    saving: boolean;
+    gitBaselineReady: boolean;
+    onClose: () => void;
+    onNext: () => void;
+    onPrevious: () => void;
+    onRevert: () => void;
+  } | null,
+) {
+  const builder = new RangeSetBuilder<Decoration>();
+  const entries: Array<{
+    from: number;
+    to: number;
+    side: number;
+    decoration: Decoration;
+  }> = [];
+
+  for (const line of lines) {
+    const lineInfo = state.doc.line(Math.min(Math.max(line.lineNumber, 1), state.doc.lines));
+    const className = [
+      `cm-git-line-${line.kind}`,
+      line.hunkIndex === activeHunkIndex ? `cm-git-line-active-${line.kind}` : "",
+    ].filter(Boolean).join(" ");
+
+    entries.push({
+      from: lineInfo.from,
+      to: lineInfo.from,
+      side: 0,
+      decoration: Decoration.line({
+        attributes: { class: className },
+      }),
+    });
+  }
+
+  if (peek?.hunk && peek.patch) {
+    const peekWidgetState = {
+      hunk: peek.hunk,
+      patch: peek.patch,
+      totalHunks: peek.totalHunks,
+      viewportWidth: peek.viewportWidth,
+      loading: peek.loading,
+      saving: peek.saving,
+      gitBaselineReady: peek.gitBaselineReady,
+      onClose: peek.onClose,
+      onNext: peek.onNext,
+      onPrevious: peek.onPrevious,
+      onRevert: peek.onRevert,
+    };
+    const widgetLine = state.doc.line(Math.min(Math.max(peek.hunk.endLine, 1), state.doc.lines));
+    entries.push({
+      from: widgetLine.to,
+      to: widgetLine.to,
+      side: 1,
+      decoration: Decoration.widget({
+        widget: new GitPeekWidget(peekWidgetState),
+        block: true,
+        side: 1,
+      }),
+    });
+  }
+
+  entries.sort((left, right) => {
+    if (left.from !== right.from) {
+      return left.from - right.from;
+    }
+
+    return left.side - right.side;
+  });
+
+  for (const entry of entries) {
+    builder.add(entry.from, entry.to, entry.decoration);
+  }
+
+  return builder.finish();
+}
+
+class GitPeekWidget extends WidgetType {
+  constructor(
+    private readonly peek: {
+      hunk: EditorGitHunk;
+      patch: string;
+      totalHunks: number;
+      viewportWidth: number;
+      loading: boolean;
+      saving: boolean;
+      gitBaselineReady: boolean;
+      onClose: () => void;
+      onNext: () => void;
+      onPrevious: () => void;
+      onRevert: () => void;
+    },
+  ) {
+    super();
+  }
+
+  eq(other: GitPeekWidget) {
+    return other.peek.hunk.index === this.peek.hunk.index
+      && other.peek.patch === this.peek.patch
+      && other.peek.totalHunks === this.peek.totalHunks
+      && other.peek.viewportWidth === this.peek.viewportWidth
+      && other.peek.loading === this.peek.loading
+      && other.peek.saving === this.peek.saving
+      && other.peek.gitBaselineReady === this.peek.gitBaselineReady;
+  }
+
+  toDOM() {
+    const wrap = document.createElement("div");
+    wrap.className = "cm-git-peek-widget";
+    wrap.style.width = "100%";
+    wrap.style.boxSizing = "border-box";
+    const root = createRoot(wrap);
+    root.render(
+      <div
+        className="mx-3 my-2 overflow-hidden border border-[#2b87d1] bg-[#1f1f1f] shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
+        style={{ width: "calc(100% - 1.5rem)", maxWidth: "calc(100% - 1.5rem)" }}
+      >
+        <div className="flex h-8 min-w-0 items-center justify-between gap-3 border-b border-[#2b87d1]/60 px-3 text-xs text-slate-200">
+          <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
+            <span className="shrink-0 text-slate-400">Git local changes</span>
+            <span className="shrink-0 text-slate-500">
+              {this.peek.hunk.index + 1}/{this.peek.totalHunks}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!this.peek.gitBaselineReady || this.peek.saving || this.peek.loading}
+              onClick={this.peek.onRevert}
+              title="Revert hunk"
+              aria-label="Revert hunk"
+            >
+              <Undo2 className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+              onClick={this.peek.onNext}
+              title="Next change"
+              aria-label="Next change"
+            >
+              <ArrowDown className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+              onClick={this.peek.onPrevious}
+              title="Previous change"
+              aria-label="Previous change"
+            >
+              <ArrowUp className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-white/5 hover:text-slate-100"
+              onClick={this.peek.onClose}
+              title="Close change peek"
+              aria-label="Close change peek"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+        <div className="max-h-[320px] overflow-auto bg-[#1e1e1e]">
+          <SafePatchDiff
+            patch={this.peek.patch}
+            options={{
+              diffStyle: "unified",
+              overflow: "scroll",
+              theme: "pierre-dark",
+              themeType: "dark",
+              disableFileHeader: true,
+              expandUnchanged: false,
+              expansionLineCount: 8,
+            }}
+          />
+        </div>
+      </div>,
+    );
+    (wrap as GitPeekWidgetHost).__gitPeekRoot = root;
+    return wrap;
+  }
+
+  destroy(dom: HTMLElement) {
+    (dom as GitPeekWidgetHost).__gitPeekRoot?.unmount();
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
+class GitChangeMarker extends GutterMarker {
+  constructor(
+    private readonly kind: EditorGitChangeKind,
+    private readonly active: boolean,
+    private readonly hidden = false,
+  ) {
+    super();
+  }
+
+  toDOM() {
+    const marker = document.createElement("span");
+    marker.className = [
+      "cm-git-marker",
+      `cm-git-marker-${this.kind}`,
+      this.active ? "cm-git-marker-active" : "",
+    ].filter(Boolean).join(" ");
+
+    if (this.hidden) {
+      marker.style.opacity = "0";
+    }
+
+    return marker;
+  }
+}
+
+function createGitEditorExtensions(args: {
+  state: EditorState;
+  hunks: EditorGitHunk[];
+  lines: EditorGitLineDecoration[];
+  activeHunkIndex: number;
+  peekHunk: EditorGitHunk | null;
+  peekPatch: string | null;
+  viewportWidth: number;
+  loading: boolean;
+  saving: boolean;
+  gitBaselineReady: boolean;
+  onClosePeek: () => void;
+  onNextPeek: () => void;
+  onPreviousPeek: () => void;
+  onRevertPeek: () => void;
+  onMarkerClick: (hunkIndex: number) => void;
+}) {
+  if (args.hunks.length === 0) {
+    return EMPTY_GIT_EXTENSION;
+  }
+
+  const hunkByLine = new Map<number, EditorGitHunk>();
+  for (const hunk of args.hunks) {
+    const markerLines = hunk.lineNumbers.length > 0 ? hunk.lineNumbers : [hunk.anchorLine];
+    for (const lineNumber of markerLines) {
+      hunkByLine.set(lineNumber, hunk);
+    }
+  }
+
+  return [
+    EditorView.decorations.of(buildGitDecorations(
+      args.state,
+      args.lines,
+      args.activeHunkIndex,
+      args.peekHunk && args.peekPatch
+        ? {
+          hunk: args.peekHunk,
+          patch: args.peekPatch,
+          totalHunks: args.hunks.length,
+          viewportWidth: args.viewportWidth,
+          loading: args.loading,
+          saving: args.saving,
+          gitBaselineReady: args.gitBaselineReady,
+          onClose: args.onClosePeek,
+          onNext: args.onNextPeek,
+          onPrevious: args.onPreviousPeek,
+          onRevert: args.onRevertPeek,
+        }
+        : null,
+    )),
+    gutter({
+      class: "cm-git-gutter",
+      initialSpacer: () => new GitChangeMarker("modified", false, true),
+      lineMarker(view, line) {
+        const lineNumber = view.state.doc.lineAt(line.from).number;
+        const hunk = hunkByLine.get(lineNumber);
+        return hunk ? new GitChangeMarker(hunk.kind, hunk.index === args.activeHunkIndex) : null;
+      },
+      domEventHandlers: {
+        mousedown(view, line, event) {
+          const lineNumber = view.state.doc.lineAt(line.from).number;
+          const hunk = hunkByLine.get(lineNumber);
+          if (!hunk) {
+            return false;
+          }
+
+          event.preventDefault();
+          args.onMarkerClick(hunk.index);
+          return true;
+        },
+      },
+    }),
+  ];
+}
+
 export const insertSoftTabOrIndentSelection: StateCommand = ({ state, dispatch }) => {
   if (state.selection.ranges.some((range) => !range.empty)) {
     return indentMore({ state, dispatch });
@@ -389,6 +811,11 @@ export interface CodeEditorPanelProps {
   filePath: string;
   fileEntries?: FileEntry[];
   content: string;
+  gitHeadContent?: string | null;
+  gitBaselineReady?: boolean;
+  gitBaselineLoading?: boolean;
+  gitBranch?: string;
+  gitStatus?: GitChangeStatus | null;
   loading?: boolean;
   saving?: boolean;
   dirty?: boolean;
@@ -481,6 +908,11 @@ export function CodeEditorPanel({
   filePath,
   fileEntries = [],
   content,
+  gitHeadContent = null,
+  gitBaselineReady = false,
+  gitBaselineLoading = false,
+  gitBranch = "",
+  gitStatus = null,
   loading = false,
   saving = false,
   dirty = false,
@@ -494,6 +926,13 @@ export function CodeEditorPanel({
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
+  const languageCompartmentRef = useRef(new Compartment());
+  const gitCompartmentRef = useRef(new Compartment());
+  const deferredContent = useDeferredValue(content);
+  const [cursorLine, setCursorLine] = useState(1);
+  const [compareMode, setCompareMode] = useState(false);
+  const [gitPeek, setGitPeek] = useState<GitPeekState | null>(null);
+  const [editorViewportWidth, setEditorViewportWidth] = useState(0);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -502,6 +941,51 @@ export function CodeEditorPanel({
   useEffect(() => {
     onSaveRef.current = onSave;
   }, [onSave]);
+
+  const gitModel = useMemo(() => (
+    gitBaselineReady
+      ? buildEditorGitModel(filePath, gitHeadContent, deferredContent)
+      : { diff: null, hunks: [], lines: [] }
+  ), [deferredContent, filePath, gitBaselineReady, gitHeadContent]);
+  const effectiveGitStatus = useMemo(
+    () => deriveEditorGitStatus(gitStatus, gitModel.diff),
+    [gitModel.diff, gitStatus],
+  );
+  const isNewFileGitMode = useMemo(() => (
+    gitBaselineReady
+    && gitHeadContent === null
+    && (
+      effectiveGitStatus === "untracked"
+      || effectiveGitStatus === "added"
+      || (gitModel.diff?.oldLines?.length ?? 0) === 0
+    )
+  ), [effectiveGitStatus, gitBaselineReady, gitHeadContent, gitModel.diff]);
+  const inlineGitModel = useMemo(() => (
+    isNewFileGitMode
+      ? { ...gitModel, hunks: [], lines: [] }
+      : gitModel
+  ), [gitModel, isNewFileGitMode]);
+  const currentGitHunkIndex = useMemo(
+    () => findCurrentGitHunkIndex(inlineGitModel.hunks, cursorLine),
+    [cursorLine, inlineGitModel.hunks],
+  );
+  const activeGitHunkIndex = gitPeek?.hunkIndex ?? currentGitHunkIndex;
+  const activeGitHunk = activeGitHunkIndex >= 0 ? inlineGitModel.hunks[activeGitHunkIndex] ?? null : null;
+  const peekPatch = useMemo(
+    () => buildEditorGitPeekPatch(activeGitHunk),
+    [activeGitHunk],
+  );
+  const compareDiff = useMemo(() => {
+    if (!gitBaselineReady) {
+      return null;
+    }
+
+    if (!compareMode) {
+      return gitModel.diff;
+    }
+
+    return buildEditorGitModel(filePath, gitHeadContent, content).diff;
+  }, [compareMode, content, filePath, gitBaselineReady, gitHeadContent, gitModel.diff]);
 
   const extensions = useMemo<Extension[]>(() => ([
     basicSetup,
@@ -538,11 +1022,95 @@ export function CodeEditorPanel({
       if (update.docChanged) {
         onChangeRef.current(update.state.doc.toString());
       }
+
+      if (update.selectionSet || update.docChanged) {
+        const nextCursorLine = update.state.doc.lineAt(update.state.selection.main.head).number;
+        setCursorLine((current) => current === nextCursorLine ? current : nextCursorLine);
+      }
+
+      if (update.viewportChanged || update.geometryChanged) {
+        const nextWidth = update.view.scrollDOM.clientWidth;
+        setEditorViewportWidth((current) => current === nextWidth ? current : nextWidth);
+      }
+
     }),
     vscodeDarkModern,
     editorTheme,
-    languageExtensionForFile(filePath),
+    languageCompartmentRef.current.of(languageExtensionForFile(filePath)),
+    gitCompartmentRef.current.of(EMPTY_GIT_EXTENSION),
   ]), [filePath]);
+
+  const focusGitHunk = (hunkIndex: number) => {
+    const view = viewRef.current;
+    const hunk = inlineGitModel.hunks[hunkIndex];
+    if (!view || !hunk) {
+      return;
+    }
+
+    const lineNumber = Math.min(Math.max(hunk.anchorLine, 1), view.state.doc.lines);
+    const line = view.state.doc.line(lineNumber);
+    view.dispatch({
+      selection: EditorSelection.cursor(line.from),
+      scrollIntoView: true,
+    });
+    view.focus();
+    setCursorLine(line.number);
+  };
+
+  const navigateGitChange = (direction: -1 | 1) => {
+    if (inlineGitModel.hunks.length === 0) {
+      return;
+    }
+
+    const startIndex = activeGitHunkIndex >= 0 ? activeGitHunkIndex : 0;
+    const nextIndex = (startIndex + direction + inlineGitModel.hunks.length) % inlineGitModel.hunks.length;
+    focusGitHunk(nextIndex);
+    if (gitPeek !== null) {
+      setGitPeek({ hunkIndex: nextIndex });
+    }
+  };
+
+  const openGitPeek = (hunkIndex: number) => {
+    focusGitHunk(hunkIndex);
+    setCompareMode(false);
+    setGitPeek({ hunkIndex });
+  };
+
+  const closeGitPeek = () => {
+    setGitPeek(null);
+  };
+
+  const handleRevertGitHunk = (hunkIndex: number) => {
+    if (!gitBaselineReady) {
+      return;
+    }
+
+    const nextContent = revertEditorGitHunk(content, inlineGitModel.hunks[hunkIndex] ?? null);
+    onChangeRef.current(nextContent);
+  };
+
+  useEffect(() => {
+    if (gitPeek === null) {
+      return;
+    }
+
+    if (!inlineGitModel.hunks[gitPeek.hunkIndex]) {
+      setGitPeek(null);
+    }
+  }, [gitPeek, inlineGitModel.hunks]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setGitPeek(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -561,11 +1129,73 @@ export function CodeEditorPanel({
     });
 
     viewRef.current = view;
+    setCursorLine(view.state.doc.lineAt(view.state.selection.main.head).number);
+    setEditorViewportWidth(view.scrollDOM.clientWidth);
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver((entries) => {
+        const nextWidth = Math.round(entries[0]?.contentRect.width ?? view.scrollDOM.clientWidth);
+        setEditorViewportWidth((current) => current === nextWidth ? current : nextWidth);
+      });
+    resizeObserver?.observe(view.scrollDOM);
     return () => {
+      resizeObserver?.disconnect();
       view.destroy();
       viewRef.current = null;
     };
   }, [extensions]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    view.dispatch({
+      effects: languageCompartmentRef.current.reconfigure(languageExtensionForFile(filePath)),
+    });
+  }, [filePath]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    view.dispatch({
+      effects: gitCompartmentRef.current.reconfigure(createGitEditorExtensions({
+        state: view.state,
+        hunks: inlineGitModel.hunks,
+        lines: inlineGitModel.lines,
+        activeHunkIndex: activeGitHunkIndex,
+        peekHunk: gitPeek ? activeGitHunk : null,
+        peekPatch: gitPeek ? peekPatch : null,
+        viewportWidth: editorViewportWidth,
+        loading,
+        saving,
+        gitBaselineReady,
+        onClosePeek: closeGitPeek,
+        onNextPeek: () => navigateGitChange(1),
+        onPreviousPeek: () => navigateGitChange(-1),
+        onRevertPeek: () => handleRevertGitHunk(activeGitHunkIndex),
+        onMarkerClick: (hunkIndex) => {
+          openGitPeek(hunkIndex);
+        },
+      })),
+    });
+  }, [
+    activeGitHunk,
+    activeGitHunkIndex,
+    closeGitPeek,
+    editorViewportWidth,
+    gitBaselineReady,
+    gitPeek,
+    inlineGitModel.hunks,
+    inlineGitModel.lines,
+    loading,
+    peekPatch,
+    saving,
+  ]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -584,7 +1214,7 @@ export function CodeEditorPanel({
   }, [content]);
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border bg-background">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t border-border bg-background">
       {error ? (
         <div className="flex flex-1 items-center justify-center px-6 py-10">
           <div className="max-w-sm text-center">
@@ -600,7 +1230,7 @@ export function CodeEditorPanel({
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
           <div className="flex h-8 shrink-0 items-center border-b border-border bg-background/95 px-3 text-[11px] text-muted-foreground">
             <div
               className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -627,14 +1257,38 @@ export function CodeEditorPanel({
               })}
             </div>
           </div>
-          <div
-            className="relative min-h-0 flex-1 overflow-hidden bg-background"
-          >
+          <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
             <div
               ref={containerRef}
-              className={cn("h-full", loading && "opacity-40")}
+              className={cn("h-full w-full min-w-0 overflow-hidden", (loading || compareMode) && "pointer-events-none opacity-0")}
               aria-label={`Code editor for ${filePath}`}
             />
+            {compareMode ? (
+              <div className="absolute inset-0 min-w-0 overflow-auto bg-background">
+                {gitBaselineLoading && !gitBaselineReady ? (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    Loading comparison...
+                  </div>
+                ) : compareDiff && compareDiff.hunks.length > 0 ? (
+                  <FileDiff
+                    fileDiff={compareDiff}
+                    options={{
+                      diffStyle: "split",
+                      overflow: "scroll",
+                      theme: "pierre-dark",
+                      themeType: "dark",
+                      disableFileHeader: true,
+                      expandUnchanged: false,
+                      expansionLineCount: 20,
+                    }}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    No changes against HEAD.
+                  </div>
+                )}
+              </div>
+            ) : null}
             {loading ? (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background/80">
                 <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
@@ -645,11 +1299,61 @@ export function CodeEditorPanel({
       )}
 
       {!error ? (
-        <div className="flex h-7 items-center justify-between gap-3 border-t border-border bg-background px-3 text-[11px] text-muted-foreground">
-          <div className="min-w-0 truncate">
-            {saving ? "Saving..." : loading ? "Loading file..." : dirty ? "Unsaved changes" : "Saved"}
+        <div className="flex h-7 min-w-0 items-center justify-between gap-3 border-t border-border bg-background px-3 text-[11px] text-muted-foreground">
+          <div className="flex min-w-0 items-center gap-3 truncate">
+            <span className="truncate">
+              {saving ? "Saving..." : loading ? "Loading file..." : dirty ? "Unsaved changes" : "Saved"}
+            </span>
+            <span className="inline-flex shrink-0 items-center gap-1">
+              <GitBranch className="h-3 w-3" />
+              <span className="truncate">{gitBranch || "No branch"}</span>
+            </span>
+            <span className="shrink-0" style={{ color: gitStatusColor(effectiveGitStatus) }}>
+              {gitBaselineLoading && !gitBaselineReady
+                ? "Git..."
+                : isNewFileGitMode
+                  ? "New File"
+                  : gitStatusLabel(effectiveGitStatus)}
+            </span>
+            {inlineGitModel.hunks.length > 0 ? (
+              <>
+                <button
+                  type="button"
+                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+                  onClick={() => navigateGitChange(-1)}
+                  aria-label="Previous change"
+                  title="Previous change"
+                >
+                  <ArrowUp className="h-3 w-3" />
+                </button>
+                <span className="shrink-0">
+                  {activeGitHunkIndex + 1}/{inlineGitModel.hunks.length}
+                </span>
+                <button
+                  type="button"
+                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+                  onClick={() => navigateGitChange(1)}
+                  aria-label="Next change"
+                  title="Next change"
+                >
+                  <ArrowDown className="h-3 w-3" />
+                </button>
+              </>
+            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-3">
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={() => {
+                closeGitPeek();
+                setCompareMode((current) => !current);
+              }}
+              disabled={!gitBaselineReady && gitBaselineLoading}
+            >
+              <Eye className="h-3 w-3" />
+              <span>{compareMode ? "Editor" : "Compare"}</span>
+            </button>
             <span className="text-[#9cdcfe]">{languageLabel(filePath)}</span>
             <span>{navigator.platform.toLowerCase().includes("mac") ? "Cmd+S" : "Ctrl+S"}</span>
           </div>
