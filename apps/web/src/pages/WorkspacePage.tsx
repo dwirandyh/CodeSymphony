@@ -1,15 +1,17 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, Menu, Settings, X } from "lucide-react";
+import { FolderTree, GitBranch, Menu, Settings, X } from "lucide-react";
 import type { ReviewKind } from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
+import { CodeEditorPanel } from "../components/workspace/CodeEditorPanel";
 import { GitChangesPanel } from "../components/workspace/GitChangesPanel";
+import { WorkspaceExplorerPanel } from "../components/workspace/WorkspaceExplorerPanel";
 import { PermissionPromptCard } from "../components/workspace/PermissionPromptCard";
 import { PlanDecisionComposer } from "../components/workspace/PlanDecisionComposer";
 import { QuestionCard } from "../components/workspace/QuestionCard";
-import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
+import { WorkspaceHeader, type WorkspaceFileTab } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
 import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
@@ -71,6 +73,31 @@ type BottomPanelWorktreeState = {
   runScriptActive: boolean;
   collapsed: boolean;
 };
+
+type EditorFileState = {
+  savedContent: string;
+  draftContent: string;
+  loading: boolean;
+  loaded: boolean;
+  saving: boolean;
+  error: string | null;
+};
+
+type OpenFileTab = {
+  path: string;
+  pinned: boolean;
+};
+
+function createInitialEditorFileState(): EditorFileState {
+  return {
+    savedContent: "",
+    draftContent: "",
+    loading: false,
+    loaded: false,
+    saving: false,
+    error: null,
+  };
+}
 
 function getBottomPanelState(
   state: Record<string, BottomPanelWorktreeState>,
@@ -149,6 +176,8 @@ export function WorkspacePage() {
   const [repositoryPanelPreferences, setRepositoryPanelPreferences] = useState(() => loadRepositoryPanelPreferences());
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [bottomPanelStateByWorktreeId, setBottomPanelStateByWorktreeId] = useState<Record<string, BottomPanelWorktreeState>>({});
+  const [openFileTabsByWorktreeId, setOpenFileTabsByWorktreeId] = useState<Record<string, OpenFileTab[]>>({});
+  const [editorFileStateByWorktreeId, setEditorFileStateByWorktreeId] = useState<Record<string, Record<string, EditorFileState>>>({});
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
 
   const {
@@ -342,7 +371,28 @@ export function WorkspacePage() {
     visibleRepositories,
   ]);
 
+  function canDiscardDirtyWorktreeFiles(worktreeId: string | null) {
+    if (!worktreeId) {
+      return true;
+    }
+
+    const fileStates = editorFileStateByWorktreeId[worktreeId] ?? {};
+    const dirtyCount = Object.values(fileStates).filter((state) => state.loaded && state.draftContent !== state.savedContent).length;
+    if (dirtyCount === 0) {
+      return true;
+    }
+
+    const message = dirtyCount === 1
+      ? "Switch worktrees with an unsaved file open?"
+      : `Switch worktrees with ${dirtyCount} unsaved files open?`;
+    return window.confirm(message);
+  }
+
   const handleSelectRepository = useCallback((repositoryId: string) => {
+    if (!canDiscardDirtyWorktreeFiles(repos.selectedWorktreeId)) {
+      return;
+    }
+
     repos.setSelectedRepositoryId(repositoryId);
     const repository = repos.repositories.find((entry) => entry.id === repositoryId);
     if (!repository) {
@@ -352,9 +402,13 @@ export function WorkspacePage() {
 
     const primaryWorktree = findRootWorktree(repository);
     repos.setSelectedWorktreeId(primaryWorktree?.id ?? null);
-  }, [repos.repositories, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
+  }, [editorFileStateByWorktreeId, repos.repositories, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
 
   const handleSelectWorktree = useCallback((repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => {
+    if (!canDiscardDirtyWorktreeFiles(repos.selectedWorktreeId)) {
+      return;
+    }
+
     repos.setSelectedRepositoryId(repositoryId);
     repos.setSelectedWorktreeId(worktreeId);
     updateSearch({
@@ -364,7 +418,7 @@ export function WorkspacePage() {
       view: undefined,
       file: undefined,
     });
-  }, [repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
+  }, [editorFileStateByWorktreeId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
 
   const handleToggleRepositoryExpand = useCallback((repositoryId: string, nextExpanded: boolean) => {
     setExpandedByRepo((current) => ({
@@ -432,6 +486,7 @@ export function WorkspacePage() {
     : "Choose a workspace";
 
   const activeView = search.view ?? "chat";
+  const activeFilePath = activeView === "file" ? search.file ?? null : null;
   const selectedDiffFilePath = search.file ?? null;
   const reviewTabOpen = activeView === "review";
   const queryClient = useQueryClient();
@@ -448,6 +503,25 @@ export function WorkspacePage() {
     : null;
   const selectedReviewRef = selectedLatestReviewRef?.state === "open" ? selectedLatestReviewRef : null;
   const reviewKind: ReviewKind = repositoryReviews.data?.kind ?? "pr";
+  const activeWorktreeFileTabs = useMemo(
+    () => (repos.selectedWorktreeId ? openFileTabsByWorktreeId[repos.selectedWorktreeId] ?? [] : []),
+    [openFileTabsByWorktreeId, repos.selectedWorktreeId],
+  );
+  const activeWorktreeEditorStates = repos.selectedWorktreeId
+    ? editorFileStateByWorktreeId[repos.selectedWorktreeId] ?? {}
+    : {};
+  const workspaceFileTabs = useMemo<WorkspaceFileTab[]>(
+    () => activeWorktreeFileTabs.map((tab) => {
+      const state = activeWorktreeEditorStates[tab.path] ?? createInitialEditorFileState();
+      return {
+        path: tab.path,
+        dirty: state.loaded && state.draftContent !== state.savedContent,
+        pinned: tab.pinned,
+      };
+    }),
+    [activeWorktreeEditorStates, activeWorktreeFileTabs],
+  );
+  const activeEditorFileState = activeFilePath ? activeWorktreeEditorStates[activeFilePath] ?? null : null;
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
     desiredThreadId: search.threadId,
@@ -506,12 +580,194 @@ export function WorkspacePage() {
     : null;
   const hasMultiplePendingPermissions = gates.pendingPermissionRequests.length > 1;
   const rightPanelId = search.panel ?? null;
-  const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "git" | null>(null);
+  const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "explorer" | "git" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
 
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
   const slashCommands = useSlashCommands(repos.selectedWorktreeId);
+  const editorFileStateRef = useRef(editorFileStateByWorktreeId);
+  const closingActiveFileRef = useRef<{ worktreeId: string; filePath: string } | null>(null);
+
+  useEffect(() => {
+    editorFileStateRef.current = editorFileStateByWorktreeId;
+  }, [editorFileStateByWorktreeId]);
+
+  const updateEditorFileState = useCallback((
+    worktreeId: string,
+    filePath: string,
+    updater: (current: EditorFileState) => EditorFileState,
+  ) => {
+    setEditorFileStateByWorktreeId((current) => {
+      const worktreeState = current[worktreeId] ?? {};
+      return {
+        ...current,
+        [worktreeId]: {
+          ...worktreeState,
+          [filePath]: updater(worktreeState[filePath] ?? createInitialEditorFileState()),
+        },
+      };
+    });
+  }, []);
+
+  const closeFileTabState = useCallback((worktreeId: string, filePath: string) => {
+    setOpenFileTabsByWorktreeId((current) => {
+      const existingTabs = current[worktreeId] ?? [];
+      if (!existingTabs.some((tab) => tab.path === filePath)) {
+        return current;
+      }
+      return {
+        ...current,
+        [worktreeId]: existingTabs.filter((tab) => tab.path !== filePath),
+      };
+    });
+  }, []);
+
+  const getEditorFileState = useCallback((worktreeId: string, filePath: string) => {
+    return editorFileStateByWorktreeId[worktreeId]?.[filePath] ?? createInitialEditorFileState();
+  }, [editorFileStateByWorktreeId]);
+
+  const isFileDirty = useCallback((worktreeId: string, filePath: string) => {
+    const state = getEditorFileState(worktreeId, filePath);
+    return state.loaded && state.draftContent !== state.savedContent;
+  }, [getEditorFileState]);
+
+  const confirmDiscardDirtyFile = useCallback((worktreeId: string, filePath: string) => {
+    if (!isFileDirty(worktreeId, filePath)) {
+      return true;
+    }
+
+    const filename = filePath.split("/").pop() ?? filePath;
+    return window.confirm(`Close ${filename} without saving its changes?`);
+  }, [isFileDirty]);
+
+  const ensureFileTab = useCallback((worktreeId: string, filePath: string, options?: { pin?: boolean }) => {
+    const shouldPin = options?.pin ?? false;
+    const existingTabs = openFileTabsByWorktreeId[worktreeId] ?? [];
+    const existingTab = existingTabs.find((tab) => tab.path === filePath) ?? null;
+    const previewTab = existingTabs.find((tab) => !tab.pinned) ?? null;
+
+    if (existingTab) {
+      if (!shouldPin || existingTab.pinned) {
+        return { ok: true as const };
+      }
+
+      setOpenFileTabsByWorktreeId((current) => ({
+        ...current,
+        [worktreeId]: (current[worktreeId] ?? []).map((tab) =>
+          tab.path === filePath ? { ...tab, pinned: true } : tab
+        ),
+      }));
+      return { ok: true as const };
+    }
+
+    if (!shouldPin && previewTab && previewTab.path !== filePath) {
+      if (!confirmDiscardDirtyFile(worktreeId, previewTab.path)) {
+        return { ok: false as const };
+      }
+
+      setOpenFileTabsByWorktreeId((current) => ({
+        ...current,
+        [worktreeId]: (current[worktreeId] ?? []).map((tab) =>
+          tab.path === previewTab.path ? { path: filePath, pinned: false } : tab
+        ),
+      }));
+      setEditorFileStateByWorktreeId((current) => {
+        const worktreeState = current[worktreeId] ?? {};
+        if (!(previewTab.path in worktreeState)) {
+          return current;
+        }
+
+        const { [previewTab.path]: _removed, ...rest } = worktreeState;
+        return {
+          ...current,
+          [worktreeId]: rest,
+        };
+      });
+      return { ok: true as const };
+    }
+
+    setOpenFileTabsByWorktreeId((current) => ({
+      ...current,
+      [worktreeId]: [...(current[worktreeId] ?? []), { path: filePath, pinned: shouldPin }],
+    }));
+    return { ok: true as const };
+  }, [confirmDiscardDirtyFile, openFileTabsByWorktreeId]);
+
+  const confirmSwitchAwayFromActiveFile = useCallback(() => {
+    if (!repos.selectedWorktreeId || !activeFilePath) {
+      return true;
+    }
+
+    if (!isFileDirty(repos.selectedWorktreeId, activeFilePath)) {
+      return true;
+    }
+
+    const filename = activeFilePath.split("/").pop() ?? activeFilePath;
+    return window.confirm(`Switch away from ${filename} without saving yet?`);
+  }, [activeFilePath, isFileDirty, repos.selectedWorktreeId]);
+
+  const loadEditorFile = useCallback((worktreeId: string, filePath: string) => {
+    const currentFileState = editorFileStateRef.current[worktreeId]?.[filePath] ?? createInitialEditorFileState();
+    if (currentFileState.loading || currentFileState.loaded) {
+      return () => {};
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort(new DOMException("File load timed out", "AbortError"));
+    }, 15_000);
+
+    let cancelled = false;
+
+    updateEditorFileState(worktreeId, filePath, (current) => ({
+      ...current,
+      loading: true,
+      error: null,
+    }));
+
+    void api.getWorktreeFileContent(worktreeId, filePath, controller.signal)
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+
+        window.clearTimeout(timeoutId);
+        updateEditorFileState(worktreeId, filePath, () => ({
+          savedContent: result.content,
+          draftContent: result.content,
+          loading: false,
+          loaded: true,
+          saving: false,
+          error: null,
+        }));
+      })
+      .catch((e) => {
+        if (cancelled) {
+          return;
+        }
+
+        window.clearTimeout(timeoutId);
+        const message = e instanceof DOMException && e.name === "AbortError"
+          ? "Loading this file took too long. Please retry."
+          : e instanceof Error
+            ? e.message
+            : "Unable to open file";
+        updateEditorFileState(worktreeId, filePath, (current) => ({
+          ...current,
+          loading: false,
+          loaded: false,
+          saving: false,
+          error: message,
+        }));
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [updateEditorFileState]);
 
   // Close mobile drawer on Escape key
   useEffect(() => {
@@ -526,6 +782,65 @@ export function WorkspacePage() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [mobilePanelOpen]);
+
+  useEffect(() => {
+    if (!repos.selectedWorktreeId || !activeFilePath) {
+      return;
+    }
+
+    if (
+      closingActiveFileRef.current
+      && closingActiveFileRef.current.worktreeId === repos.selectedWorktreeId
+      && closingActiveFileRef.current.filePath === activeFilePath
+    ) {
+      return;
+    }
+
+    void ensureFileTab(repos.selectedWorktreeId, activeFilePath);
+  }, [activeFilePath, ensureFileTab, repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    if (!closingActiveFileRef.current) {
+      return;
+    }
+
+    if (
+      !repos.selectedWorktreeId
+      || !activeFilePath
+      || closingActiveFileRef.current.worktreeId !== repos.selectedWorktreeId
+      || closingActiveFileRef.current.filePath !== activeFilePath
+    ) {
+      closingActiveFileRef.current = null;
+    }
+  }, [activeFilePath, repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    if (!repos.selectedWorktreeId || activeView !== "file" || !activeFilePath) {
+      return;
+    }
+
+    return loadEditorFile(repos.selectedWorktreeId, activeFilePath);
+  }, [activeFilePath, activeView, loadEditorFile, repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    const hasDirtyFiles = Object.entries(editorFileStateByWorktreeId).some(([, files]) =>
+      Object.values(files).some((state) => state.loaded && state.draftContent !== state.savedContent),
+    );
+
+    if (!hasDirtyFiles) {
+      return;
+    }
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [editorFileStateByWorktreeId]);
 
   useEffect(() => {
     if (gates.pendingPermissionRequests.length === 0) {
@@ -558,18 +873,32 @@ export function WorkspacePage() {
         setError("Worktree is not selected");
         return;
       }
-      try {
-        await api.openWorktreeFile(repos.selectedWorktreeId, { path: filePath });
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Unable to open file");
+
+      if (
+        activeView === "file"
+        && activeFilePath
+        && activeFilePath !== filePath
+        && !confirmSwitchAwayFromActiveFile()
+      ) {
+        return;
       }
+
+      const result = ensureFileTab(repos.selectedWorktreeId, filePath, { pin: false });
+      if (!result.ok) {
+        return;
+      }
+      updateSearch({ view: "file", file: filePath });
+      setError(null);
     },
-    [repos.selectedWorktreeId],
+    [activeFilePath, activeView, confirmSwitchAwayFromActiveFile, ensureFileTab, repos.selectedWorktreeId, updateSearch],
   );
 
   const handleOpenReview = useCallback(() => {
+    if (!confirmSwitchAwayFromActiveFile()) {
+      return;
+    }
     updateSearch({ file: undefined, view: "review" });
-  }, [updateSearch]);
+  }, [confirmSwitchAwayFromActiveFile, updateSearch]);
 
   const handlePrMrAction = useCallback(async () => {
     if (!repos.selectedRepository || !repos.selectedWorktree) {
@@ -747,8 +1076,11 @@ export function WorkspacePage() {
   }, [activePermissionIndex, gates.pendingPermissionRequests]);
 
   const handleSelectDiffFile = useCallback((filePath: string) => {
+    if (!confirmSwitchAwayFromActiveFile()) {
+      return;
+    }
     updateSearch({ file: filePath, view: "review" });
-  }, [updateSearch]);
+  }, [confirmSwitchAwayFromActiveFile, updateSearch]);
 
   const handleCloseReview = useCallback(() => {
     updateSearch({ view: undefined, file: undefined });
@@ -756,11 +1088,193 @@ export function WorkspacePage() {
 
   const handleSelectThread = useCallback(
     (threadId: string | null) => {
+      if (!confirmSwitchAwayFromActiveFile()) {
+        return;
+      }
       chat.setSelectedThreadId(threadId);
-      updateSearch({ view: undefined, threadId: threadId ?? undefined });
+      updateSearch({ view: undefined, file: undefined, threadId: threadId ?? undefined });
     },
-    [chat.setSelectedThreadId, updateSearch],
+    [chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, updateSearch],
   );
+
+  const handleSelectFileTab = useCallback((filePath: string) => {
+    if (
+      activeView === "file"
+      && activeFilePath
+      && activeFilePath !== filePath
+      && !confirmSwitchAwayFromActiveFile()
+    ) {
+      return;
+    }
+
+    updateSearch({ view: "file", file: filePath });
+  }, [activeFilePath, activeView, confirmSwitchAwayFromActiveFile, updateSearch]);
+
+  const handlePinFileTab = useCallback((filePath: string) => {
+    if (!repos.selectedWorktreeId) {
+      return;
+    }
+
+    const result = ensureFileTab(repos.selectedWorktreeId, filePath, { pin: true });
+    if (!result.ok) {
+      return;
+    }
+
+    updateSearch({ view: "file", file: filePath });
+  }, [ensureFileTab, repos.selectedWorktreeId, updateSearch]);
+
+  const handleCloseFileTab = useCallback((filePath: string) => {
+    const currentWorktreeId = repos.selectedWorktreeId;
+    if (!currentWorktreeId) {
+      return;
+    }
+
+    if (!confirmDiscardDirtyFile(currentWorktreeId, filePath)) {
+      return;
+    }
+
+    const nextTabs = activeWorktreeFileTabs.filter((tab) => tab.path !== filePath);
+    closeFileTabState(currentWorktreeId, filePath);
+    setEditorFileStateByWorktreeId((current) => {
+      const worktreeState = current[currentWorktreeId] ?? {};
+      if (!(filePath in worktreeState)) {
+        return current;
+      }
+
+      const { [filePath]: _removed, ...rest } = worktreeState;
+      return {
+        ...current,
+        [currentWorktreeId]: rest,
+      };
+    });
+
+    if (activeFilePath !== filePath) {
+      return;
+    }
+
+    closingActiveFileRef.current = { worktreeId: currentWorktreeId, filePath };
+
+    const currentIndex = activeWorktreeFileTabs.findIndex((tab) => tab.path === filePath);
+    const nextActivePath = nextTabs[Math.min(currentIndex, nextTabs.length - 1)]?.path
+      ?? nextTabs[currentIndex - 1]?.path
+      ?? null;
+    if (nextActivePath) {
+      updateSearch({ view: "file", file: nextActivePath });
+      return;
+    }
+
+    updateSearch({ view: undefined, file: undefined, threadId: chat.selectedThreadId ?? undefined });
+  }, [activeFilePath, activeWorktreeFileTabs, chat.selectedThreadId, closeFileTabState, confirmDiscardDirtyFile, repos.selectedWorktreeId, updateSearch]);
+
+  const handleEditorDraftChange = useCallback((filePath: string, nextContent: string) => {
+    if (!repos.selectedWorktreeId) {
+      return;
+    }
+
+    const worktreeId = repos.selectedWorktreeId;
+    const fileState = getEditorFileState(worktreeId, filePath);
+
+    if (fileState.loaded && nextContent !== fileState.savedContent) {
+      setOpenFileTabsByWorktreeId((current) => {
+        const tabs = current[worktreeId] ?? [];
+        const targetTab = tabs.find((tab) => tab.path === filePath);
+
+        if (!targetTab || targetTab.pinned) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [worktreeId]: tabs.map((tab) =>
+            tab.path === filePath ? { ...tab, pinned: true } : tab
+          ),
+        };
+      });
+    }
+
+    updateEditorFileState(repos.selectedWorktreeId, filePath, (current) => ({
+      ...current,
+      draftContent: nextContent,
+      loaded: true,
+      error: null,
+    }));
+  }, [getEditorFileState, repos.selectedWorktreeId, updateEditorFileState]);
+
+  const handleRetryActiveFileLoad = useCallback(() => {
+    if (!repos.selectedWorktreeId || !activeFilePath) {
+      return;
+    }
+
+    updateEditorFileState(repos.selectedWorktreeId, activeFilePath, (current) => ({
+      ...current,
+      loaded: false,
+      loading: false,
+      error: null,
+    }));
+    loadEditorFile(repos.selectedWorktreeId, activeFilePath);
+  }, [activeFilePath, loadEditorFile, repos.selectedWorktreeId, updateEditorFileState]);
+
+  const handleSaveActiveFile = useCallback(async () => {
+    if (!repos.selectedWorktreeId || !activeFilePath) {
+      return;
+    }
+
+    const fileState = getEditorFileState(repos.selectedWorktreeId, activeFilePath);
+    if (!fileState.loaded || fileState.loading || fileState.saving || fileState.error) {
+      return;
+    }
+
+    updateEditorFileState(repos.selectedWorktreeId, activeFilePath, (current) => ({
+      ...current,
+      saving: true,
+      error: null,
+    }));
+
+    try {
+      const result = await api.saveWorktreeFileContent(repos.selectedWorktreeId, {
+        path: activeFilePath,
+        content: fileState.draftContent,
+      });
+      updateEditorFileState(repos.selectedWorktreeId, activeFilePath, (current) => ({
+        ...current,
+        savedContent: result.content,
+        draftContent: result.content,
+        saving: false,
+        loaded: true,
+        error: null,
+      }));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(repos.selectedWorktreeId) });
+      void queryClient.invalidateQueries({ queryKey: ["worktrees", repos.selectedWorktreeId, "gitBranchDiffSummary"] });
+      setError(null);
+    } catch (e) {
+      updateEditorFileState(repos.selectedWorktreeId, activeFilePath, (current) => ({
+        ...current,
+        saving: false,
+        error: e instanceof Error ? e.message : "Unable to save file",
+      }));
+    }
+  }, [activeFilePath, getEditorFileState, queryClient, repos.selectedWorktreeId, updateEditorFileState]);
+
+  useEffect(() => {
+    if (activeView !== "file" || !activeFilePath) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      void handleSaveActiveFile();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeFilePath, activeView, handleSaveActiveFile]);
 
   const handleRequestCloseThread = useCallback((threadId: string) => {
     const needsConfirm = shouldConfirmCloseThread({
@@ -857,6 +1371,14 @@ export function WorkspacePage() {
             </button>
             <button
               type="button"
+              onClick={() => setMobilePanelOpen("explorer")}
+              className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
+              aria-label="Open explorer"
+            >
+              <FolderTree className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
               onClick={() => setMobilePanelOpen("git")}
               className="relative flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/50 text-muted-foreground transition-colors active:bg-secondary"
               aria-label="Open source control"
@@ -870,13 +1392,21 @@ export function WorkspacePage() {
             </button>
           </div>
 
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-1 lg:gap-2">
+          <div
+            className={cn(
+              "flex min-h-0 min-w-0 flex-1 flex-col gap-1 lg:gap-2",
+              activeView === "file" && "gap-0",
+              activeView === "file" && "-mx-1.5 sm:-mx-2.5 lg:-mx-3",
+            )}
+          >
             <WorkspaceHeader
               selectedRepositoryName={repos.selectedRepository?.name ?? "No repository selected"}
               selectedWorktreeLabel={selectedContextLabel}
               worktreePath={repos.selectedWorktree?.path ?? null}
               threads={chat.threads}
               selectedThreadId={chat.selectedThreadId}
+              fileTabs={workspaceFileTabs}
+              activeFilePath={activeFilePath}
               disabled={!repos.selectedWorktreeId}
               createThreadDisabled={!repos.selectedWorktreeId || chat.sendingMessage}
               closingThreadId={chat.closingThreadId}
@@ -884,13 +1414,27 @@ export function WorkspacePage() {
               showReviewTab={reviewTabOpen}
               reviewTabActive={activeView === "review"}
               onSelectThread={handleSelectThread}
-              onCreateThread={() => void chat.createAdditionalThread()}
+              onSelectFileTab={handleSelectFileTab}
+              onPinFileTab={handlePinFileTab}
+              onCloseFileTab={handleCloseFileTab}
+              onCreateThread={() => {
+                if (!confirmSwitchAwayFromActiveFile()) {
+                  return;
+                }
+                void chat.createAdditionalThread();
+              }}
               onCloseThread={handleRequestCloseThread}
               onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
-              onSelectReviewTab={() => updateSearch({ view: "review" })}
+              onSelectReviewTab={() => {
+                if (!confirmSwitchAwayFromActiveFile()) {
+                  return;
+                }
+                updateSearch({ view: "review" });
+              }}
               onCloseReviewTab={handleCloseReview}
               runScriptRunning={selectedBottomPanelState.runScriptActive}
               onToggleRunScript={handleToggleRunScript}
+              mergeWithContent={activeView === "file"}
             />
 
             {uiError ? (
@@ -904,6 +1448,27 @@ export function WorkspacePage() {
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading review...</div>}>
                   <DiffReviewPanel worktreeId={repos.selectedWorktreeId} selectedFilePath={selectedDiffFilePath} />
                 </Suspense>
+              </section>
+            ) : activeView === "file" && activeFilePath ? (
+              <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <CodeEditorPanel
+                  key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
+                  filePath={activeFilePath}
+                  fileEntries={fileIndex.entries}
+                  content={activeEditorFileState?.draftContent ?? ""}
+                  loading={activeEditorFileState?.loading ?? false}
+                  saving={activeEditorFileState?.saving ?? false}
+                  dirty={!!(
+                    activeEditorFileState
+                    && activeEditorFileState.loaded
+                    && activeEditorFileState.draftContent !== activeEditorFileState.savedContent
+                  )}
+                  error={activeEditorFileState?.error ?? null}
+                  onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
+                  onSave={() => void handleSaveActiveFile()}
+                  onRetry={handleRetryActiveFileLoad}
+                  onOpenFile={(path) => void openReadFile(path)}
+                />
               </section>
             ) : (
               <>
@@ -1053,6 +1618,9 @@ export function WorkspacePage() {
         <WorkspaceRightPanel
           rightPanelId={rightPanelId}
           gitChanges={gitChanges}
+          fileIndexEntries={fileIndex.entries}
+          fileIndexLoading={fileIndex.loading}
+          activeFilePath={activeFilePath}
           selectedDiffFilePath={selectedDiffFilePath}
           onOpenReview={handleOpenReview}
           onSelectDiffFile={handleSelectDiffFile}
@@ -1136,6 +1704,28 @@ export function WorkspacePage() {
             Settings
           </button>
         </div>
+      </aside>
+
+      {/* ── Mobile explorer drawer (slide from right) ── */}
+      <aside
+        className={cn(
+          "fixed inset-y-0 right-0 z-50 flex w-[85vw] max-w-[360px] flex-col bg-card shadow-2xl drawer-slide safe-top safe-bottom lg:hidden",
+          mobilePanelOpen === "explorer" ? "translate-x-0" : "translate-x-full",
+        )}
+      >
+        {mobilePanelOpen === "explorer" && (
+          <WorkspaceExplorerPanel
+            entries={fileIndex.entries}
+            gitEntries={gitChanges.entries}
+            loading={fileIndex.loading}
+            activeFilePath={activeFilePath}
+            onOpenFile={(path) => {
+              void openReadFile(path);
+              setMobilePanelOpen(null);
+            }}
+            onClose={() => setMobilePanelOpen(null)}
+          />
+        )}
       </aside>
 
       {/* ── Mobile git drawer (slide from right) ── */}

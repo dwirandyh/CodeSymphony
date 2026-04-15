@@ -1,9 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
-import { GitPullRequestArrow, Plus, X } from "lucide-react";
+import { Dot, FileCode2, GitPullRequestArrow, Plus, X } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
 import { OpenInAppButton } from "./OpenInAppButton";
+
+export type WorkspaceFileTab = {
+  path: string;
+  dirty: boolean;
+  pinned: boolean;
+};
+
+function fileTabLabel(filePath: string): string {
+  const lastSlash = filePath.lastIndexOf("/");
+  return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath;
+}
 
 type WorkspaceHeaderProps = {
   selectedRepositoryName: string;
@@ -11,6 +22,8 @@ type WorkspaceHeaderProps = {
   worktreePath: string | null;
   threads: ChatThread[];
   selectedThreadId: string | null;
+  fileTabs: WorkspaceFileTab[];
+  activeFilePath: string | null;
   disabled: boolean;
   createThreadDisabled?: boolean;
   closingThreadId: string | null;
@@ -18,6 +31,9 @@ type WorkspaceHeaderProps = {
   showReviewTab?: boolean;
   reviewTabActive?: boolean;
   onSelectThread: (threadId: string | null) => void;
+  onSelectFileTab: (path: string) => void;
+  onPinFileTab: (path: string) => void;
+  onCloseFileTab: (path: string) => void;
   onCreateThread: () => void;
   onCloseThread: (threadId: string) => void;
   onRenameThread: (threadId: string, title: string) => Promise<void> | void;
@@ -25,6 +41,7 @@ type WorkspaceHeaderProps = {
   onCloseReviewTab?: () => void;
   runScriptRunning?: boolean;
   onToggleRunScript?: () => void;
+  mergeWithContent?: boolean;
 };
 
 function FilledPlayIcon({ className }: { className?: string }) {
@@ -50,6 +67,8 @@ export function WorkspaceHeader({
   worktreePath,
   threads,
   selectedThreadId,
+  fileTabs,
+  activeFilePath,
   disabled,
   createThreadDisabled,
   closingThreadId,
@@ -57,6 +76,9 @@ export function WorkspaceHeader({
   showReviewTab,
   reviewTabActive,
   onSelectThread,
+  onSelectFileTab,
+  onPinFileTab,
+  onCloseFileTab,
   onCreateThread,
   onCloseThread,
   onRenameThread,
@@ -64,6 +86,7 @@ export function WorkspaceHeader({
   onCloseReviewTab,
   runScriptRunning,
   onToggleRunScript,
+  mergeWithContent = false,
 }: WorkspaceHeaderProps) {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -120,7 +143,10 @@ export function WorkspaceHeader({
   }
 
   return (
-    <section className="workspace-header space-y-1 pb-1 lg:space-y-1.5 lg:pb-2">
+    <section className={cn(
+      "workspace-header space-y-1 pb-1 lg:space-y-1.5 lg:pb-2",
+      mergeWithContent && "pb-0 lg:pb-0",
+    )}>
       <div className="hidden items-center justify-between gap-3 lg:flex">
         <div className="min-w-0 truncate text-[11px]">
           <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Session</span>
@@ -157,10 +183,18 @@ export function WorkspaceHeader({
       </div>
 
       <div className="flex items-center gap-1">
-        <div className="min-w-0 flex-1 overflow-x-auto" role="tablist" aria-label="Sessions" data-testid="session-tabs-scroll">
+        <div
+          className={cn(
+            "min-w-0 flex-1 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
+            mergeWithContent && "pb-0",
+          )}
+          role="tablist"
+          aria-label="Sessions"
+          data-testid="session-tabs-scroll"
+        >
           <div className="flex w-max min-w-full items-center gap-0.5 whitespace-nowrap">
             {threads.map((thread) => {
-              const isSelected = thread.id === selectedThreadId && !reviewTabActive;
+              const isSelected = thread.id === selectedThreadId && !reviewTabActive && !activeFilePath;
               const isAnyThreadClosing = closingThreadId !== null;
               const isProtected = protectedThreadId === thread.id;
               const isEditing = editingThreadId === thread.id;
@@ -263,6 +297,53 @@ export function WorkspaceHeader({
                 </button>
               </div>
             )}
+
+            {fileTabs.map((fileTab) => {
+              const label = fileTabLabel(fileTab.path);
+              const isSelected = activeFilePath === fileTab.path;
+
+              return (
+                <div
+                  key={fileTab.path}
+                  className={cn(
+                    "group flex shrink-0 items-center border-b-2 border-b-transparent text-muted-foreground",
+                    isSelected && "border-b-primary text-foreground",
+                  )}
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isSelected}
+                    title={fileTab.path}
+                    className={cn(
+                      "max-w-[180px] truncate px-2 py-1.5 text-xs font-medium transition-colors",
+                      !fileTab.pinned && "italic text-muted-foreground/90",
+                      isSelected && "text-foreground",
+                    )}
+                    onClick={() => onSelectFileTab(fileTab.path)}
+                    onDoubleClick={() => onPinFileTab(fileTab.path)}
+                    disabled={disabled}
+                  >
+                    <span>{label}</span>
+                    {fileTab.dirty ? <Dot className="ml-1 inline h-4 w-4 align-middle text-amber-500" /> : null}
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label={`Close file ${label}`}
+                    title={`Close ${label}`}
+                    className={cn(
+                      "rounded-sm p-1 text-muted-foreground transition-opacity hover:text-destructive",
+                      isSelected ? "opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
+                    )}
+                    onClick={() => onCloseFileTab(fileTab.path)}
+                    disabled={disabled}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
 

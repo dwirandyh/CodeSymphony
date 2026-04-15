@@ -1,7 +1,14 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { GitCommitInputSchema, OpenWorktreeFileInputSchema, RenameWorktreeBranchInputSchema, UpdateRepositoryScriptsInputSchema } from "@codesymphony/shared-types";
+import {
+  GetWorktreeFileContentQuerySchema,
+  GitCommitInputSchema,
+  OpenWorktreeFileInputSchema,
+  RenameWorktreeBranchInputSchema,
+  UpdateRepositoryScriptsInputSchema,
+  UpdateWorktreeFileContentInputSchema,
+} from "@codesymphony/shared-types";
 import { z } from "zod";
 import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHead, gitCommitAll, discardGitChange } from "../services/git.js";
 import { TeardownError } from "../services/worktreeService.js";
@@ -25,6 +32,54 @@ const inFlightReviewsByRepositoryId = new Map<string, Promise<RepositoryReviewSt
 function isPathInsideRoot(rootPath: string, targetPath: string): boolean {
   const relative = path.relative(rootPath, targetPath);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function invalidateCachedWorktreeGitData(worktreeId: string) {
+  cachedGitStatusByWorktreeId.delete(worktreeId);
+  inFlightGitStatusByWorktreeId.delete(worktreeId);
+
+  for (const key of cachedBranchDiffByWorktreeKey.keys()) {
+    if (key.startsWith(`${worktreeId}:`)) {
+      cachedBranchDiffByWorktreeKey.delete(key);
+    }
+  }
+
+  for (const key of inFlightBranchDiffByWorktreeKey.keys()) {
+    if (key.startsWith(`${worktreeId}:`)) {
+      inFlightBranchDiffByWorktreeKey.delete(key);
+    }
+  }
+}
+
+function isBinaryBuffer(buffer: Buffer): boolean {
+  return buffer.includes(0);
+}
+
+async function resolveWorktreeFile(worktree: { path: string }, inputPath: string) {
+  const rootPath = path.resolve(worktree.path);
+  const targetPath = path.isAbsolute(inputPath)
+    ? path.resolve(inputPath)
+    : path.resolve(rootPath, inputPath);
+
+  if (!isPathInsideRoot(rootPath, targetPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  const targetStat = await stat(targetPath).catch(() => null);
+  if (!targetStat || !targetStat.isFile()) {
+    throw new Error("Target file does not exist");
+  }
+
+  const canonicalRootPath = await realpath(rootPath).catch(() => rootPath);
+  const canonicalTargetPath = await realpath(targetPath).catch(() => targetPath);
+  if (!isPathInsideRoot(canonicalRootPath, canonicalTargetPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  return {
+    canonicalTargetPath,
+    relativePath: path.relative(canonicalRootPath, canonicalTargetPath).split(path.sep).join("/"),
+  };
 }
 
 async function getCachedGitStatus(worktreeId: string, worktreePath: string): Promise<GitStatusResult> {
@@ -411,6 +466,53 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get("/worktrees/:id/files/content", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const query = GetWorktreeFileContentQuerySchema.parse(request.query);
+
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) {
+      return reply.code(404).send({ error: "Worktree not found" });
+    }
+
+    try {
+      const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, query.path);
+      const buffer = await readFile(canonicalTargetPath);
+      if (isBinaryBuffer(buffer)) {
+        return reply.code(400).send({ error: "Binary files cannot be opened in the editor" });
+      }
+
+      return { data: { path: relativePath, content: buffer.toString("utf8") } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to read file";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.put("/worktrees/:id/files/content", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = UpdateWorktreeFileContentInputSchema.parse(request.body);
+
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) {
+      return reply.code(404).send({ error: "Worktree not found" });
+    }
+
+    try {
+      const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, input.path);
+      await writeFile(canonicalTargetPath, input.content, "utf8");
+      invalidateCachedWorktreeGitData(worktree.id);
+      app.workspaceEventHub.emit("worktree.updated", {
+        repositoryId: worktree.repositoryId,
+        worktreeId: worktree.id,
+      });
+      return { data: { path: relativePath, content: input.content } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save file";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
   app.get("/worktrees/:id/git/status", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
     const worktree = await app.worktreeService.getById(params.id);
@@ -525,25 +627,8 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "Worktree not found" });
     }
 
-    const rootPath = path.resolve(worktree.path);
-    const targetPath = path.isAbsolute(input.path)
-      ? path.resolve(input.path)
-      : path.resolve(rootPath, input.path);
-    if (!isPathInsideRoot(rootPath, targetPath)) {
-      return reply.code(400).send({ error: "Path must be inside the selected worktree" });
-    }
-
-    const targetStat = await stat(targetPath).catch(() => null);
-    if (!targetStat || !targetStat.isFile()) {
-      return reply.code(400).send({ error: "Target file does not exist" });
-    }
-    const canonicalRootPath = await realpath(rootPath).catch(() => rootPath);
-    const canonicalTargetPath = await realpath(targetPath).catch(() => targetPath);
-    if (!isPathInsideRoot(canonicalRootPath, canonicalTargetPath)) {
-      return reply.code(400).send({ error: "Path must be inside the selected worktree" });
-    }
-
     try {
+      const { canonicalTargetPath } = await resolveWorktreeFile(worktree, input.path);
       await app.systemService.openFileDefaultApp(canonicalTargetPath);
       return reply.code(204).send();
     } catch (error) {

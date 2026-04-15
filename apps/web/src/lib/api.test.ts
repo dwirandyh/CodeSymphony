@@ -401,6 +401,18 @@ describe("api", () => {
       await api.getSlashCommands("w1");
     });
 
+    it("gets worktree file content", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ path: "src/a.ts", content: "const a = 1;" }));
+      await api.getWorktreeFileContent("w1", "src/a.ts");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/files/content?path=");
+    });
+
+    it("saves worktree file content", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ path: "src/a.ts", content: "const a = 2;" }));
+      await api.saveWorktreeFileContent("w1", { path: "src/a.ts", content: "const a = 2;" });
+      expect(String(mockFetch.mock.calls[0]?.[1]?.body)).toContain('"content":"const a = 2;"');
+    });
+
     it("opens worktree file", async () => {
       mockFetch.mockReturnValueOnce(mock204());
       await api.openWorktreeFile("w1", { path: "src/a.ts" });

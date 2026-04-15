@@ -66,11 +66,16 @@ describe("WorkspaceHeader", () => {
       worktreePath: "/tmp/repo",
       threads,
       selectedThreadId: "thread-1",
+      fileTabs: [],
+      activeFilePath: null,
       disabled: false,
       createThreadDisabled: false,
       closingThreadId: null,
       protectedThreadId: null,
       onSelectThread: noop,
+      onSelectFileTab: noop,
+      onPinFileTab: noop,
+      onCloseFileTab: noop,
       onCreateThread: noop,
       onCloseThread: noop,
       onRenameThread: noop,
@@ -203,6 +208,52 @@ describe("WorkspaceHeader", () => {
 
     expect(closeButton.className).toContain("pointer-events-none");
     expect(closeButton.disabled).toBe(false);
+  });
+
+  it("renders file tabs and routes close/select actions", () => {
+    const onSelectFileTab = vi.fn();
+    const onPinFileTab = vi.fn();
+    const onCloseFileTab = vi.fn();
+    renderHeader({
+      activeFilePath: "src/editor.tsx",
+      fileTabs: [{ path: "src/editor.tsx", dirty: true, pinned: false }],
+      onSelectFileTab,
+      onPinFileTab,
+      onCloseFileTab,
+    });
+
+    const fileTab = container.querySelector<HTMLButtonElement>('button[role="tab"][title="src/editor.tsx"]');
+    const closeButton = container.querySelector<HTMLButtonElement>('button[aria-label="Close file editor.tsx"]');
+    if (!fileTab || !closeButton) {
+      throw new Error("File tab controls not found");
+    }
+
+    expect(fileTab.className).toContain("italic");
+
+    act(() => {
+      fileTab.click();
+      fileTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      closeButton.click();
+    });
+
+    expect(container.textContent).toContain("editor.tsx");
+    expect(onSelectFileTab).toHaveBeenCalledWith("src/editor.tsx");
+    expect(onPinFileTab).toHaveBeenCalledWith("src/editor.tsx");
+    expect(onCloseFileTab).toHaveBeenCalledWith("src/editor.tsx");
+  });
+
+  it("uses the same simple active-tab styling for the review tab", () => {
+    renderHeader({ showReviewTab: true, reviewTabActive: true });
+
+    const reviewTab = container.querySelector<HTMLDivElement>('button[aria-label="Close review tab"]')?.parentElement;
+    if (!reviewTab) {
+      throw new Error("Review tab container not found");
+    }
+
+    expect(reviewTab.className).toContain("border-b-primary");
+    expect(reviewTab.className).not.toContain("rounded-t-md");
+    expect(reviewTab.className).not.toContain("shadow-[inset_0_2px_0_0_#4cc2ff]");
+    expect(reviewTab.className).not.toContain("bg-[#1f1f1f]");
   });
 
   it("disables all close buttons while a thread is closing", () => {

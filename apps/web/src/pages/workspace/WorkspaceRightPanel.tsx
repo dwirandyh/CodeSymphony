@@ -1,7 +1,8 @@
 import { memo } from "react";
-import { GitBranch } from "lucide-react";
-import type { ReviewKind, ReviewRef } from "@codesymphony/shared-types";
+import { FolderTree, GitBranch } from "lucide-react";
+import type { FileEntry, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { GitChangesPanel } from "../../components/workspace/GitChangesPanel";
+import { WorkspaceExplorerPanel } from "../../components/workspace/WorkspaceExplorerPanel";
 import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
 import type { useGitChanges } from "./hooks/useGitChanges";
@@ -11,6 +12,9 @@ type GitChangesData = ReturnType<typeof useGitChanges>;
 export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   rightPanelId,
   gitChanges,
+  fileIndexEntries,
+  fileIndexLoading,
+  activeFilePath,
   selectedDiffFilePath,
   onOpenReview,
   onSelectDiffFile,
@@ -23,12 +27,15 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   prMrActionBusy,
   onPrMrAction,
 }: {
-  rightPanelId: string | null;
+  rightPanelId: "explorer" | "git" | null;
   gitChanges: GitChangesData;
+  fileIndexEntries: FileEntry[];
+  fileIndexLoading: boolean;
+  activeFilePath: string | null;
   selectedDiffFilePath: string | null;
   onOpenReview: () => void;
   onSelectDiffFile: (filePath: string) => void;
-  onUpdatePanel: (panel: "git" | undefined) => void;
+  onUpdatePanel: (panel: "explorer" | "git" | undefined) => void;
   onOpenReadFile: (path: string) => void | Promise<void>;
   reviewKind?: ReviewKind | null;
   reviewRef?: ReviewRef | null;
@@ -74,11 +81,21 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
         {rightPanelId && (
           <aside
             ref={rightPanelRef}
-            id="source-control-panel"
-            aria-label="Source Control panel"
+            id="workspace-right-panel"
+            aria-label={rightPanelId === "explorer" ? "Explorer panel" : "Source Control panel"}
             className="flex min-h-0 shrink-0 flex-col overflow-hidden border-r border-border/30"
             style={{ width: `${rightPanelWidth}px` }}
           >
+            {rightPanelId === "explorer" && (
+              <WorkspaceExplorerPanel
+                entries={fileIndexEntries}
+                gitEntries={gitChanges.entries}
+                loading={fileIndexLoading}
+                activeFilePath={activeFilePath}
+                onOpenFile={(path) => void onOpenReadFile(path)}
+                onClose={() => onUpdatePanel(undefined)}
+              />
+            )}
             {rightPanelId === "git" && (
               <GitChangesPanel
                 entries={gitChanges.entries}
@@ -109,10 +126,24 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
         <nav className="flex w-[48px] shrink-0 flex-col items-center pt-[10px] lg:pt-[14px]">
           <button
             type="button"
+            title="Explorer"
+            aria-label="Explorer"
+            aria-expanded={rightPanelId === "explorer"}
+            aria-controls="workspace-right-panel"
+            className={cn(
+              "mb-2 flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+              rightPanelId === "explorer" && "bg-secondary text-foreground",
+            )}
+            onClick={() => onUpdatePanel(rightPanelId === "explorer" ? undefined : "explorer")}
+          >
+            <FolderTree className="h-[18px] w-[18px]" />
+          </button>
+          <button
+            type="button"
             title="Source Control"
             aria-label="Source Control"
             aria-expanded={rightPanelId === "git"}
-            aria-controls="source-control-panel"
+            aria-controls="workspace-right-panel"
             className={cn(
               "relative flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
               rightPanelId === "git" && "bg-secondary text-foreground",
