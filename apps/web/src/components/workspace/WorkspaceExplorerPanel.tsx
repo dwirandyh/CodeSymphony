@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, FileCode2, Folder, FolderOpen, Loader2, X } from "lucide-react";
 import type { FileEntry, GitChangeEntry, GitChangeStatus } from "@codesymphony/shared-types";
 import { ScrollArea } from "../ui/scroll-area";
@@ -98,6 +98,19 @@ function changeDotClass(status: GitChangeStatus | null): string {
   }
 }
 
+function parentDirectoryPaths(filePath: string): string[] {
+  const parts = filePath.split("/").filter((part) => part.length > 0);
+  const parents: string[] = [];
+  let currentPath = "";
+
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    currentPath = currentPath ? `${currentPath}/${parts[index]}` : parts[index]!;
+    parents.push(currentPath);
+  }
+
+  return parents;
+}
+
 interface WorkspaceExplorerPanelProps {
   entries: FileEntry[];
   gitEntries: GitChangeEntry[];
@@ -117,6 +130,47 @@ export function WorkspaceExplorerPanel({
 }: WorkspaceExplorerPanelProps) {
   const tree = useMemo(() => buildTree(entries, gitEntries), [entries, gitEntries]);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set(["src", "app", "apps", "packages"]));
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!activeFilePath) {
+      return;
+    }
+
+    const pathsToExpand = parentDirectoryPaths(activeFilePath);
+    if (pathsToExpand.length === 0) {
+      return;
+    }
+
+    setExpandedPaths((current) => {
+      let changed = false;
+      const next = new Set(current);
+
+      for (const path of pathsToExpand) {
+        if (!next.has(path)) {
+          next.add(path);
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+  }, [activeFilePath]);
+
+  useEffect(() => {
+    if (!activeFilePath || !scrollAreaRef.current) {
+      return;
+    }
+
+    const activeButton = Array.from(
+      scrollAreaRef.current.querySelectorAll<HTMLButtonElement>("button[data-explorer-path]"),
+    ).find((button) => button.dataset.explorerPath === activeFilePath);
+
+    activeButton?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [activeFilePath, expandedPaths]);
 
   function toggleDirectory(path: string) {
     setExpandedPaths((current) => {
@@ -140,6 +194,8 @@ export function WorkspaceExplorerPanel({
       <div key={node.path || "__root__"}>
         <button
           type="button"
+          data-explorer-path={!isDirectory ? node.path : undefined}
+          aria-current={isActive ? "page" : undefined}
           className={cn(
             "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary/40",
             isActive && "bg-secondary text-foreground",
@@ -204,7 +260,7 @@ export function WorkspaceExplorerPanel({
         </Button>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1 px-2 py-2">
+      <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1 px-2 py-2">
         {loading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />

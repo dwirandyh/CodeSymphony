@@ -494,6 +494,7 @@ function fileNameLabel(filePath: string): string {
   return filePath.split("/").pop() ?? filePath;
 }
 
+
 function buildGitDecorations(
   state: EditorState,
   lines: EditorGitLineDecoration[],
@@ -811,6 +812,7 @@ export interface CodeEditorPanelProps {
   filePath: string;
   fileEntries?: FileEntry[];
   content: string;
+  mimeType?: string;
   gitHeadContent?: string | null;
   gitBaselineReady?: boolean;
   gitBaselineLoading?: boolean;
@@ -908,6 +910,7 @@ export function CodeEditorPanel({
   filePath,
   fileEntries = [],
   content,
+  mimeType = "text/plain",
   gitHeadContent = null,
   gitBaselineReady = false,
   gitBaselineLoading = false,
@@ -929,6 +932,8 @@ export function CodeEditorPanel({
   const languageCompartmentRef = useRef(new Compartment());
   const gitCompartmentRef = useRef(new Compartment());
   const deferredContent = useDeferredValue(content);
+  const isImageFile = mimeType.startsWith("image/");
+  const imageSource = isImageFile ? `data:${mimeType};base64,${content}` : null;
   const [cursorLine, setCursorLine] = useState(1);
   const [compareMode, setCompareMode] = useState(false);
   const [gitPeek, setGitPeek] = useState<GitPeekState | null>(null);
@@ -1113,6 +1118,10 @@ export function CodeEditorPanel({
   }, []);
 
   useEffect(() => {
+    if (isImageFile) {
+      return;
+    }
+
     const container = containerRef.current;
     if (!container) {
       return;
@@ -1143,9 +1152,13 @@ export function CodeEditorPanel({
       view.destroy();
       viewRef.current = null;
     };
-  }, [extensions]);
+  }, [extensions, isImageFile]);
 
   useEffect(() => {
+    if (isImageFile) {
+      return;
+    }
+
     const view = viewRef.current;
     if (!view) {
       return;
@@ -1154,9 +1167,13 @@ export function CodeEditorPanel({
     view.dispatch({
       effects: languageCompartmentRef.current.reconfigure(languageExtensionForFile(filePath)),
     });
-  }, [filePath]);
+  }, [filePath, isImageFile]);
 
   useEffect(() => {
+    if (isImageFile) {
+      return;
+    }
+
     const view = viewRef.current;
     if (!view) {
       return;
@@ -1195,9 +1212,14 @@ export function CodeEditorPanel({
     loading,
     peekPatch,
     saving,
+    isImageFile,
   ]);
 
   useEffect(() => {
+    if (isImageFile) {
+      return;
+    }
+
     const view = viewRef.current;
     if (!view) {
       return;
@@ -1211,10 +1233,10 @@ export function CodeEditorPanel({
     view.dispatch({
       changes: { from: 0, to: currentValue.length, insert: content },
     });
-  }, [content]);
+  }, [content, isImageFile]);
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t border-border bg-background">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
       {error ? (
         <div className="flex flex-1 items-center justify-center px-6 py-10">
           <div className="max-w-sm text-center">
@@ -1258,11 +1280,23 @@ export function CodeEditorPanel({
             </div>
           </div>
           <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
-            <div
-              ref={containerRef}
-              className={cn("h-full w-full min-w-0 overflow-hidden", (loading || compareMode) && "pointer-events-none opacity-0")}
-              aria-label={`Code editor for ${filePath}`}
-            />
+            {isImageFile ? (
+              <div className="flex h-full w-full min-w-0 items-center justify-center overflow-auto bg-background p-4">
+                {imageSource ? (
+                  <img
+                    src={imageSource}
+                    alt={fileNameLabel(filePath)}
+                    className="max-h-full max-w-full object-contain shadow-[0_12px_40px_rgba(0,0,0,0.28)]"
+                  />
+                ) : null}
+              </div>
+            ) : (
+              <div
+                ref={containerRef}
+                className={cn("h-full w-full min-w-0 overflow-hidden", (loading || compareMode) && "pointer-events-none opacity-0")}
+                aria-label={`Code editor for ${filePath}`}
+              />
+            )}
             {compareMode ? (
               <div className="absolute inset-0 min-w-0 overflow-auto bg-background">
                 {gitBaselineLoading && !gitBaselineReady ? (
@@ -1349,7 +1383,7 @@ export function CodeEditorPanel({
                 closeGitPeek();
                 setCompareMode((current) => !current);
               }}
-              disabled={!gitBaselineReady && gitBaselineLoading}
+              disabled={isImageFile || (!gitBaselineReady && gitBaselineLoading)}
             >
               <Eye className="h-3 w-3" />
               <span>{compareMode ? "Editor" : "Compare"}</span>

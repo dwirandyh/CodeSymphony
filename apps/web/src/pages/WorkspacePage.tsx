@@ -15,6 +15,7 @@ import { WorkspaceHeader, type WorkspaceFileTab } from "../components/workspace/
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
 import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
+import { QuickFilePicker } from "../components/workspace/QuickFilePicker";
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -63,6 +64,7 @@ import {
   FilledPlayIcon,
   FilledPauseIcon,
 } from "./workspace/workspacePageUtils";
+import { buildQuickFileItems, filterQuickFileItems } from "../components/workspace/quickFilePickerUtils";
 
 const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
 const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
@@ -77,6 +79,7 @@ type BottomPanelWorktreeState = {
 type EditorFileState = {
   savedContent: string;
   draftContent: string;
+  mimeType: string;
   loading: boolean;
   loaded: boolean;
   saving: boolean;
@@ -96,10 +99,17 @@ type OpenFileTab = {
   pinned: boolean;
 };
 
+type QuickFilePickerState = {
+  open: boolean;
+  query: string;
+  selectedIndex: number;
+};
+
 function createInitialEditorFileState(): EditorFileState {
   return {
     savedContent: "",
     draftContent: "",
+    mimeType: "text/plain",
     loading: false,
     loaded: false,
     saving: false,
@@ -615,12 +625,26 @@ export function WorkspacePage() {
   const [mobilePanelOpen, setMobilePanelOpen] = useState<"repos" | "explorer" | "git" | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
+  const quickFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [quickFilePicker, setQuickFilePicker] = useState<QuickFilePickerState>({
+    open: false,
+    query: "",
+    selectedIndex: 0,
+  });
 
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
   const slashCommands = useSlashCommands(repos.selectedWorktreeId);
   const editorFileStateRef = useRef(editorFileStateByWorktreeId);
   const editorGitBaselineStateRef = useRef(editorGitBaselineStateByWorktreeId);
   const closingActiveFileRef = useRef<{ worktreeId: string; filePath: string } | null>(null);
+  const quickFileItems = useMemo(
+    () => buildQuickFileItems(fileIndex.entries),
+    [fileIndex.entries],
+  );
+  const filteredQuickFileItems = useMemo(
+    () => filterQuickFileItems(quickFileItems, quickFilePicker.query),
+    [quickFileItems, quickFilePicker.query],
+  );
 
   useEffect(() => {
     editorFileStateRef.current = editorFileStateByWorktreeId;
@@ -802,6 +826,7 @@ export function WorkspacePage() {
         updateEditorFileState(worktreeId, filePath, () => ({
           savedContent: result.content,
           draftContent: result.content,
+          mimeType: result.mimeType,
           loading: false,
           loaded: true,
           saving: false,
@@ -1038,12 +1063,93 @@ export function WorkspacePage() {
     [activeFilePath, activeView, confirmSwitchAwayFromActiveFile, ensureFileTab, repos.selectedWorktreeId, updateSearch],
   );
 
+  const closeQuickFilePicker = useCallback(() => {
+    setQuickFilePicker({
+      open: false,
+      query: "",
+      selectedIndex: 0,
+    });
+  }, []);
+
+  const openQuickFilePicker = useCallback(() => {
+    if (!repos.selectedWorktreeId) {
+      return;
+    }
+
+    setQuickFilePicker((current) => ({
+      open: true,
+      query: current.open ? current.query : "",
+      selectedIndex: 0,
+    }));
+    setMobilePanelOpen(null);
+  }, [repos.selectedWorktreeId]);
+
+  const handleQuickFileSelect = useCallback((filePath: string) => {
+    closeQuickFilePicker();
+    void openReadFile(filePath);
+  }, [closeQuickFilePicker, openReadFile]);
+
   const handleOpenReview = useCallback(() => {
     if (!confirmSwitchAwayFromActiveFile()) {
       return;
     }
     updateSearch({ file: undefined, view: "review" });
   }, [confirmSwitchAwayFromActiveFile, updateSearch]);
+
+  useEffect(() => {
+    if (!quickFilePicker.open) {
+      return;
+    }
+
+    quickFileInputRef.current?.focus();
+    quickFileInputRef.current?.select();
+  }, [quickFilePicker.open]);
+
+  useEffect(() => {
+    if (!quickFilePicker.open) {
+      return;
+    }
+
+    setQuickFilePicker((current) => {
+      if (!current.open) {
+        return current;
+      }
+
+      const nextIndex = filteredQuickFileItems.length === 0
+        ? 0
+        : Math.min(current.selectedIndex, filteredQuickFileItems.length - 1);
+      return nextIndex === current.selectedIndex ? current : { ...current, selectedIndex: nextIndex };
+    });
+  }, [filteredQuickFileItems.length, quickFilePicker.open]);
+
+  useEffect(() => {
+    setQuickFilePicker({
+      open: false,
+      query: "",
+      selectedIndex: 0,
+    });
+  }, [repos.selectedWorktreeId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        event.stopPropagation();
+        openQuickFilePicker();
+        return;
+      }
+
+      if (event.key === "Escape" && quickFilePicker.open) {
+        event.preventDefault();
+        closeQuickFilePicker();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeQuickFilePicker, openQuickFilePicker, quickFilePicker.open]);
 
   const handlePrMrAction = useCallback(async () => {
     if (!repos.selectedRepository || !repos.selectedWorktree) {
@@ -1377,7 +1483,7 @@ export function WorkspacePage() {
     }
 
     const fileState = getEditorFileState(repos.selectedWorktreeId, activeFilePath);
-    if (!fileState.loaded || fileState.loading || fileState.saving || fileState.error) {
+    if (!fileState.loaded || fileState.loading || fileState.saving || fileState.error || fileState.mimeType.startsWith("image/")) {
       return;
     }
 
@@ -1396,6 +1502,7 @@ export function WorkspacePage() {
         ...current,
         savedContent: result.content,
         draftContent: result.content,
+        mimeType: result.mimeType,
         saving: false,
         loaded: true,
         error: null,
@@ -1563,53 +1670,54 @@ export function WorkspacePage() {
 
           <div
             className={cn(
-              "flex min-h-0 min-w-0 flex-1 flex-col gap-1 lg:gap-2",
-              activeView === "file" && "gap-0",
+              "flex min-h-0 min-w-0 flex-1 flex-col gap-0",
             )}
           >
-            <WorkspaceHeader
-              selectedRepositoryName={repos.selectedRepository?.name ?? "No repository selected"}
-              selectedWorktreeLabel={selectedContextLabel}
-              worktreePath={repos.selectedWorktree?.path ?? null}
-              threads={chat.threads}
-              selectedThreadId={chat.selectedThreadId}
-              fileTabs={workspaceFileTabs}
-              activeFilePath={activeFilePath}
-              disabled={!repos.selectedWorktreeId}
-              createThreadDisabled={!repos.selectedWorktreeId || chat.sendingMessage}
-              closingThreadId={chat.closingThreadId}
-              protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
-              showReviewTab={reviewTabOpen}
-              reviewTabActive={activeView === "review"}
-              onSelectThread={handleSelectThread}
-              onSelectFileTab={handleSelectFileTab}
-              onPinFileTab={handlePinFileTab}
-              onCloseFileTab={handleCloseFileTab}
-              onCreateThread={() => {
-                if (!confirmSwitchAwayFromActiveFile()) {
-                  return;
-                }
-                void chat.createAdditionalThread();
-              }}
-              onCloseThread={handleRequestCloseThread}
-              onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
-              onSelectReviewTab={() => {
-                if (!confirmSwitchAwayFromActiveFile()) {
-                  return;
-                }
-                updateSearch({ view: "review" });
-              }}
-              onCloseReviewTab={handleCloseReview}
-              runScriptRunning={selectedBottomPanelState.runScriptActive}
-              onToggleRunScript={handleToggleRunScript}
-              mergeWithContent={activeView === "file"}
-            />
+            <div className={cn(activeView === "file" && "px-1.5 pt-1.5 sm:px-2.5 sm:pt-2.5 lg:px-3 lg:pt-3")}>
+              <WorkspaceHeader
+                selectedRepositoryName={repos.selectedRepository?.name ?? "No repository selected"}
+                selectedWorktreeLabel={selectedContextLabel}
+                worktreePath={repos.selectedWorktree?.path ?? null}
+                threads={chat.threads}
+                selectedThreadId={chat.selectedThreadId}
+                fileTabs={workspaceFileTabs}
+                activeFilePath={activeFilePath}
+                disabled={!repos.selectedWorktreeId}
+                createThreadDisabled={!repos.selectedWorktreeId || chat.sendingMessage}
+                closingThreadId={chat.closingThreadId}
+                protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
+                showReviewTab={reviewTabOpen}
+                reviewTabActive={activeView === "review"}
+                onSelectThread={handleSelectThread}
+                onSelectFileTab={handleSelectFileTab}
+                onPinFileTab={handlePinFileTab}
+                onCloseFileTab={handleCloseFileTab}
+                onCreateThread={() => {
+                  if (!confirmSwitchAwayFromActiveFile()) {
+                    return;
+                  }
+                  void chat.createAdditionalThread();
+                }}
+                onCloseThread={handleRequestCloseThread}
+                onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
+                onSelectReviewTab={() => {
+                  if (!confirmSwitchAwayFromActiveFile()) {
+                    return;
+                  }
+                  updateSearch({ view: "review" });
+                }}
+                onCloseReviewTab={handleCloseReview}
+                runScriptRunning={selectedBottomPanelState.runScriptActive}
+                onToggleRunScript={handleToggleRunScript}
+                mergeWithContent={activeView === "file"}
+              />
 
-            {uiError ? (
-              <div className="flex items-center gap-2 px-3 py-2 text-xs text-destructive">
-                <strong>!</strong> {uiError}
-              </div>
-            ) : null}
+              {uiError ? (
+                <div className="flex items-center gap-2 px-3 py-2 text-xs text-destructive">
+                  <strong>!</strong> {uiError}
+                </div>
+              ) : null}
+            </div>
 
             {activeView === "review" && reviewTabOpen && repos.selectedWorktreeId ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1624,6 +1732,7 @@ export function WorkspacePage() {
                   filePath={activeFilePath}
                   fileEntries={fileIndex.entries}
                   content={activeEditorFileState?.draftContent ?? ""}
+                  mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
                   gitHeadContent={activeEditorGitBaselineState?.headContent ?? null}
                   gitBaselineReady={activeEditorGitBaselineState?.loaded ?? false}
                   gitBaselineLoading={activeEditorGitBaselineState?.loading ?? false}
@@ -1634,6 +1743,7 @@ export function WorkspacePage() {
                   dirty={!!(
                     activeEditorFileState
                     && activeEditorFileState.loaded
+                    && !activeEditorFileState.mimeType.startsWith("image/")
                     && activeEditorFileState.draftContent !== activeEditorFileState.savedContent
                   )}
                   error={activeEditorFileState?.error ?? null}
@@ -1807,6 +1917,30 @@ export function WorkspacePage() {
           onPrMrAction={() => void handlePrMrAction()}
         />
       </div>
+
+      <QuickFilePicker
+        open={quickFilePicker.open}
+        query={quickFilePicker.query}
+        items={filteredQuickFileItems}
+        loading={fileIndex.loading}
+        selectedIndex={quickFilePicker.selectedIndex}
+        inputRef={quickFileInputRef}
+        shortcutLabel={navigator.platform.toLowerCase().includes("mac") ? "Cmd+Shift+O" : "Ctrl+Shift+O"}
+        onQueryChange={(value) => {
+          setQuickFilePicker((current) => ({
+            ...current,
+            query: value,
+            selectedIndex: 0,
+          }));
+        }}
+        onSelectedIndexChange={(index) => {
+          setQuickFilePicker((current) => ({ ...current, selectedIndex: index }));
+        }}
+        onSelect={(item) => {
+          void handleQuickFileSelect(item.path);
+        }}
+        onClose={closeQuickFilePicker}
+      />
 
       {/* ── Mobile drawer backdrop ── */}
       <div

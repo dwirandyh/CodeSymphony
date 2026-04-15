@@ -25,7 +25,10 @@ describe("CodeEditorPanel", () => {
     vi.clearAllMocks();
   });
 
-  function renderEditor(overrides?: Partial<Parameters<typeof CodeEditorPanel>[0]>) {
+  function renderEditor(
+    overrides?: Partial<Parameters<typeof CodeEditorPanel>[0]>,
+    options?: { allowMissingEditor?: boolean },
+  ) {
     const props: Parameters<typeof CodeEditorPanel>[0] = {
       filePath: "src/example.ts",
       content: "const value = 1;\n",
@@ -38,12 +41,12 @@ describe("CodeEditorPanel", () => {
     });
 
     const editor = container.querySelector<HTMLElement>(".cm-content");
-    if (!editor) {
+    if (!editor && !options?.allowMissingEditor) {
       throw new Error("Editor content element not found");
     }
 
     return {
-      editor,
+      editor: editor ?? null,
       props: { ...props, ...overrides },
     };
   }
@@ -51,6 +54,9 @@ describe("CodeEditorPanel", () => {
   it("saves on Mod+S while focused", () => {
     const onSave = vi.fn();
     const { editor } = renderEditor({ onSave });
+    if (!editor) {
+      throw new Error("Editor content element not found");
+    }
 
     act(() => {
       editor.focus();
@@ -68,6 +74,9 @@ describe("CodeEditorPanel", () => {
   it("indents with Tab instead of moving focus away", () => {
     const onChange = vi.fn();
     const { editor } = renderEditor({ content: "", onChange });
+    if (!editor) {
+      throw new Error("Editor content element not found");
+    }
 
     act(() => {
       editor.focus();
@@ -177,5 +186,21 @@ describe("CodeEditorPanel", () => {
     expect(container.textContent).toContain("New File");
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.title === "Previous change")).toBe(false);
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.title === "Next change")).toBe(false);
+  });
+
+  it("renders an image preview for image files including svg", () => {
+    renderEditor(
+      {
+        filePath: "assets/logo.svg",
+        mimeType: "image/svg+xml",
+        content: "PHN2Zy8+",
+      },
+      { allowMissingEditor: true },
+    );
+
+    const image = container.querySelector("img");
+    expect(image).not.toBeNull();
+    expect(image?.getAttribute("src")).toBe("data:image/svg+xml;base64,PHN2Zy8+");
+    expect(image?.getAttribute("alt")).toBe("logo.svg");
   });
 });

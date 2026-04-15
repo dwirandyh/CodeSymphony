@@ -395,6 +395,7 @@ export type GetWorktreeFileContentQuery = z.infer<typeof GetWorktreeFileContentQ
 export const WorktreeFileContentSchema = z.object({
   path: z.string(),
   content: z.string(),
+  mimeType: z.string(),
 });
 export type WorktreeFileContent = z.infer<typeof WorktreeFileContentSchema>;
 

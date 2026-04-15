@@ -86,7 +86,6 @@ export function WorkspaceHeader({
   onCloseReviewTab,
   runScriptRunning,
   onToggleRunScript,
-  mergeWithContent = false,
 }: WorkspaceHeaderProps) {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -144,8 +143,7 @@ export function WorkspaceHeader({
 
   return (
     <section className={cn(
-      "workspace-header space-y-1 pb-1 lg:space-y-1.5 lg:pb-2",
-      mergeWithContent && "pb-0 lg:pb-0",
+      "workspace-header space-y-1 lg:space-y-1.5",
     )}>
       <div className="hidden items-center justify-between gap-3 lg:flex">
         <div className="min-w-0 truncate text-[11px]">
@@ -185,8 +183,7 @@ export function WorkspaceHeader({
       <div className="flex items-center gap-1">
         <div
           className={cn(
-            "min-w-0 flex-1 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
-            mergeWithContent && "pb-0",
+            "min-w-0 flex-1 overflow-x-auto overscroll-x-contain [scrollbar-color:hsl(var(--border))_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-[3px] [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/60 hover:[&::-webkit-scrollbar-thumb]:bg-border/80",
           )}
           role="tablist"
           aria-label="Sessions"

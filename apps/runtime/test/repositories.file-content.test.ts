@@ -92,23 +92,29 @@ describe("worktree file content routes", () => {
     expect(response.json().data).toEqual({
       path: "src/index.ts",
       content: "export const ready = true;\n",
+      mimeType: "text/typescript",
     });
   });
 
-  it("rejects binary files", async () => {
+  it("returns image files as base64 payloads", async () => {
     const worktreePath = path.join(tempRoot, "worktree");
-    const filePath = path.join(worktreePath, "assets", "icon.bin");
+    const filePath = path.join(worktreePath, "assets", "icon.png");
     await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, Buffer.from([0, 1, 2, 3]));
+    const imageBytes = Buffer.from([137, 80, 78, 71]);
+    await writeFile(filePath, imageBytes);
     getWorktreeById.mockResolvedValueOnce(buildWorktree(worktreePath));
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/worktrees/wt-1/files/content?path=assets/icon.bin",
+      url: "/api/worktrees/wt-1/files/content?path=assets/icon.png",
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: "Binary files cannot be opened in the editor" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().data).toEqual({
+      path: "assets/icon.png",
+      content: imageBytes.toString("base64"),
+      mimeType: "image/png",
+    });
   });
 
   it("saves file content and emits a worktree update", async () => {

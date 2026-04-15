@@ -11,6 +11,7 @@ import {
 } from "@codesymphony/shared-types";
 import { z } from "zod";
 import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHead, gitCommitAll, discardGitChange } from "../services/git.js";
+import { detectMimeType, isImageMimeType } from "../services/filesystemService.js";
 import { TeardownError } from "../services/worktreeService.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
@@ -478,11 +479,28 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     try {
       const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, query.path);
       const buffer = await readFile(canonicalTargetPath);
+      const mimeType = detectMimeType(canonicalTargetPath);
+      if (isImageMimeType(mimeType)) {
+        return {
+          data: {
+            path: relativePath,
+            content: buffer.toString("base64"),
+            mimeType,
+          },
+        };
+      }
+
       if (isBinaryBuffer(buffer)) {
         return reply.code(400).send({ error: "Binary files cannot be opened in the editor" });
       }
 
-      return { data: { path: relativePath, content: buffer.toString("utf8") } };
+      return {
+        data: {
+          path: relativePath,
+          content: buffer.toString("utf8"),
+          mimeType,
+        },
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to read file";
       return reply.code(400).send({ error: message });
@@ -506,7 +524,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
         repositoryId: worktree.repositoryId,
         worktreeId: worktree.id,
       });
-      return { data: { path: relativePath, content: input.content } };
+      return {
+        data: {
+          path: relativePath,
+          content: input.content,
+          mimeType: detectMimeType(canonicalTargetPath),
+        },
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save file";
       return reply.code(400).send({ error: message });
