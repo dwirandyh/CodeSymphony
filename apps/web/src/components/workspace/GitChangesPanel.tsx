@@ -29,6 +29,7 @@ interface GitChangesPanelProps {
   prMrActionTitle?: string;
   prMrActionBusy?: boolean;
   onPrMrAction?: () => void;
+  showHeader?: boolean;
 }
 
 const STATUS_CONFIG: Record<string, { icon: any; className: string }> = {
@@ -65,6 +66,7 @@ export function GitChangesPanel({
   prMrActionTitle,
   prMrActionBusy,
   onPrMrAction,
+  showHeader = true,
 }: GitChangesPanelProps) {
   const [commitMessage, setCommitMessage] = useState("");
 
@@ -81,38 +83,41 @@ export function GitChangesPanel({
 
   return (
     <Card className="flex h-full flex-col overflow-hidden border-0 bg-transparent shadow-none">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
-          Source Control
-        </span>
-        <div className="flex items-center gap-1">
-          {onPrMrAction && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 gap-1 px-2 text-[10px] text-muted-foreground/80 hover:text-foreground"
-              onClick={onPrMrAction}
-              disabled={prMrActionDisabled || prMrActionBusy}
-              title={prMrActionTitle ?? prMrActionLabel}
-            >
-              <GitPullRequestArrow className="h-3 w-3" />
-              <span>{prMrActionBusy ? "Working..." : prMrActionLabel}</span>
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
-            onClick={onClose}
-            aria-label="Close Source Control"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </div>
+      {showHeader ? (
+        <>
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
+              Source Control
+            </span>
+            <div className="flex items-center gap-1">
+              {onPrMrAction && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-[10px] text-muted-foreground/80 hover:text-foreground"
+                  onClick={onPrMrAction}
+                  disabled={prMrActionDisabled || prMrActionBusy}
+                  title={prMrActionTitle ?? prMrActionLabel}
+                >
+                  <GitPullRequestArrow className="h-3 w-3" />
+                  <span>{prMrActionBusy ? "Working..." : prMrActionLabel}</span>
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
+                onClick={onClose}
+                aria-label="Close Source Control"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
 
-      <Separator className="opacity-20" />
+          <Separator className="opacity-20" />
+        </>
+      ) : null}
 
       {/* Commit section */}
       <div className="space-y-3 px-3 py-3">

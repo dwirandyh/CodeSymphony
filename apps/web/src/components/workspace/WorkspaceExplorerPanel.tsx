@@ -118,6 +118,7 @@ interface WorkspaceExplorerPanelProps {
   activeFilePath: string | null;
   onOpenFile: (path: string) => void;
   onClose: () => void;
+  showHeader?: boolean;
 }
 
 export function WorkspaceExplorerPanel({
@@ -127,6 +128,7 @@ export function WorkspaceExplorerPanel({
   activeFilePath,
   onOpenFile,
   onClose,
+  showHeader = true,
 }: WorkspaceExplorerPanelProps) {
   const tree = useMemo(() => buildTree(entries, gitEntries), [entries, gitEntries]);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set(["src", "app", "apps", "packages"]));
@@ -244,23 +246,28 @@ export function WorkspaceExplorerPanel({
   }
 
   return (
-    <section className="flex h-full flex-col overflow-hidden border-l border-border/40 bg-background">
-      <div className="flex items-center justify-between border-b border-border/40 px-3 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
-          Explorer
-        </span>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
-          onClick={onClose}
-          aria-label="Close Explorer"
-        >
-          <X className="h-3.5 w-3.5" />
-        </Button>
-      </div>
+    <section className={cn(
+      "flex h-full flex-col overflow-hidden bg-background",
+      showHeader && "border-l border-border/40",
+    )}>
+      {showHeader ? (
+        <div className="flex items-center justify-between border-b border-border/40 px-3 py-2">
+          <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
+            Explorer
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
+            onClick={onClose}
+            aria-label="Close Explorer"
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ) : null}
 
-      <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1 px-2 py-2">
+      <ScrollArea ref={scrollAreaRef} className={cn("min-h-0 flex-1 px-2 py-2", !showHeader && "pb-4")}>
         {loading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
