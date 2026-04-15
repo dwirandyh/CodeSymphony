@@ -1,5 +1,6 @@
 import {
   type DragEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useEffect,
   useMemo,
@@ -332,6 +333,7 @@ export function RepositoryPanel({
   onRenameWorktreeBranch,
 }: RepositoryPanelProps) {
   const enableNativeReorderPreview = !isTauriDesktop();
+  const enableDesktopPointerReorder = isTauriDesktop();
   const [editingWorktreeId, setEditingWorktreeId] = useState<string | null>(
     null,
   );
@@ -342,7 +344,16 @@ export function RepositoryPanel({
   const [draggedRepositoryHeight, setDraggedRepositoryHeight] = useState<number | null>(null);
   const draggedRepositoryIdRef = useRef<string | null>(null);
   const dragPreviewElementRef = useRef<HTMLElement | null>(null);
+  const dragPreviewOffsetRef = useRef<{ x: number; y: number } | null>(null);
   const dragActivationTimeoutRef = useRef<number | null>(null);
+  const desktopPointerDragRef = useRef<{
+    repositoryId: string;
+    started: boolean;
+    startX: number;
+    startY: number;
+    repositoryElement: HTMLElement | null;
+  } | null>(null);
+  const suppressRepositoryClickRef = useRef<string | null>(null);
   const pendingDropTargetRef = useRef<{
     repositoryId: string;
     position: RepositoryPanelDropPosition;
@@ -364,6 +375,8 @@ export function RepositoryPanel({
     () => visibleRepositories.map((repository) => repository.id),
     [visibleRepositories],
   );
+  const visibleRepositoryIdsRef = useRef<string[]>(visibleRepositoryIds);
+  const previewVisibleRepositoryIdsRef = useRef<string[] | null>(previewVisibleRepositoryIds);
   const visibleRepositoryById = useMemo(
     () => new Map(visibleRepositories.map((repository) => [repository.id, repository])),
     [visibleRepositories],
@@ -371,6 +384,14 @@ export function RepositoryPanel({
   const renderedVisibleRepositoryIds = previewVisibleRepositoryIds ?? visibleRepositoryIds;
   const hiddenRepositoryCount =
     repositories.length - visibleRepositories.length;
+
+  useEffect(() => {
+    visibleRepositoryIdsRef.current = visibleRepositoryIds;
+  }, [visibleRepositoryIds]);
+
+  useEffect(() => {
+    previewVisibleRepositoryIdsRef.current = previewVisibleRepositoryIds;
+  }, [previewVisibleRepositoryIds]);
 
   const activeWorktreeSummaries = useMemo(
     () =>
@@ -466,10 +487,62 @@ export function RepositoryPanel({
     }
   }
 
+  function createRepositoryDragPreview(
+    repositoryCard: HTMLElement,
+    clientX: number,
+    clientY: number,
+    visible: boolean,
+  ): { element: HTMLElement; offsetX: number; offsetY: number } | null {
+    const repositoryBounds = repositoryCard.getBoundingClientRect();
+    setDraggedRepositoryHeight(repositoryBounds.height);
+
+    const dragPreview = repositoryCard.cloneNode(true);
+    if (!(dragPreview instanceof HTMLElement)) {
+      return null;
+    }
+
+    const offsetX = Math.max(12, clientX - repositoryBounds.left);
+    const offsetY = Math.max(12, clientY - repositoryBounds.top);
+
+    dragPreview.style.position = "fixed";
+    dragPreview.style.top = visible ? "0" : "-10000px";
+    dragPreview.style.left = visible ? "0" : "-10000px";
+    dragPreview.style.width = `${repositoryBounds.width}px`;
+    dragPreview.style.pointerEvents = "none";
+    dragPreview.style.margin = "0";
+    dragPreview.style.zIndex = "9999";
+    dragPreview.setAttribute("data-repository-drag-preview", "true");
+    dragPreview.removeAttribute("data-testid");
+    dragPreview.removeAttribute("data-repository-id");
+    dragPreview.classList.add("bg-secondary/35", "shadow-lg");
+
+    document.body.appendChild(dragPreview);
+    dragPreviewElementRef.current = dragPreview;
+    dragPreviewOffsetRef.current = { x: offsetX, y: offsetY };
+
+    if (visible) {
+      updateRepositoryDragPreviewPosition(clientX, clientY);
+    }
+
+    return { element: dragPreview, offsetX, offsetY };
+  }
+
+  function updateRepositoryDragPreviewPosition(clientX: number, clientY: number) {
+    if (!dragPreviewElementRef.current || !dragPreviewOffsetRef.current) {
+      return;
+    }
+
+    dragPreviewElementRef.current.style.transform = `translate(${clientX - dragPreviewOffsetRef.current.x}px, ${clientY - dragPreviewOffsetRef.current.y}px)`;
+  }
+
   function handleRepositoryDragStart(
     event: DragEvent<HTMLElement>,
     repositoryId: string,
   ) {
+    if (enableDesktopPointerReorder) {
+      return;
+    }
+
     draggedRepositoryIdRef.current = repositoryId;
 
     if (event.dataTransfer) {
@@ -479,24 +552,18 @@ export function RepositoryPanel({
       if (enableNativeReorderPreview) {
         const repositoryCard = event.currentTarget.closest("article");
         if (repositoryCard instanceof HTMLElement) {
-          setDraggedRepositoryHeight(repositoryCard.getBoundingClientRect().height);
-          const dragPreview = repositoryCard.cloneNode(true);
-          if (dragPreview instanceof HTMLElement) {
-            const repositoryBounds = repositoryCard.getBoundingClientRect();
-            dragPreview.style.position = "fixed";
-            dragPreview.style.top = "-10000px";
-            dragPreview.style.left = "-10000px";
-            dragPreview.style.width = `${repositoryBounds.width}px`;
-            dragPreview.style.pointerEvents = "none";
-            dragPreview.style.margin = "0";
-            dragPreview.style.zIndex = "9999";
-            dragPreview.classList.add("bg-secondary/35", "shadow-lg");
-            document.body.appendChild(dragPreview);
-            dragPreviewElementRef.current = dragPreview;
-
-            const offsetX = Math.max(12, event.clientX - repositoryBounds.left);
-            const offsetY = Math.max(12, event.clientY - repositoryBounds.top);
-            event.dataTransfer.setDragImage(dragPreview, offsetX, offsetY);
+          const preview = createRepositoryDragPreview(
+            repositoryCard,
+            event.clientX,
+            event.clientY,
+            false,
+          );
+          if (preview) {
+            event.dataTransfer.setDragImage(
+              preview.element,
+              preview.offsetX,
+              preview.offsetY,
+            );
           }
         }
       }
@@ -512,6 +579,77 @@ export function RepositoryPanel({
         visibleRepositories.map((repository) => repository.id),
       );
     }, 0);
+  }
+
+  function beginDesktopPointerDrag(
+    dragState: NonNullable<typeof desktopPointerDragRef.current>,
+  ) {
+    draggedRepositoryIdRef.current = dragState.repositoryId;
+    if (dragState.repositoryElement) {
+      createRepositoryDragPreview(
+        dragState.repositoryElement,
+        dragState.startX,
+        dragState.startY,
+        true,
+      );
+    } else {
+      setDraggedRepositoryHeight(null);
+    }
+    setDraggedRepositoryId(dragState.repositoryId);
+    setPreviewVisibleRepositoryIds(visibleRepositoryIdsRef.current);
+  }
+
+  function handleDesktopPointerReorderMove(clientX: number, clientY: number) {
+    const sourceRepositoryId = draggedRepositoryIdRef.current;
+    if (!sourceRepositoryId) {
+      return;
+    }
+
+    const hoveredElement = document.elementFromPoint(clientX, clientY);
+    const repositoryArticle = hoveredElement?.closest<HTMLElement>("[data-repository-id]");
+    if (!repositoryArticle) {
+      return;
+    }
+    const targetRepositoryId = repositoryArticle?.dataset.repositoryId ?? null;
+    if (!targetRepositoryId || targetRepositoryId === sourceRepositoryId) {
+      return;
+    }
+
+    const bounds = repositoryArticle.getBoundingClientRect();
+    const position: RepositoryPanelDropPosition =
+      clientY >= bounds.top + bounds.height / 2 ? "after" : "before";
+
+    pendingDropTargetRef.current = { repositoryId: targetRepositoryId, position };
+
+    const currentOrder = previewVisibleRepositoryIdsRef.current ?? visibleRepositoryIdsRef.current;
+    const nextOrder = reorderRepositoryIds(
+      currentOrder,
+      sourceRepositoryId,
+      targetRepositoryId,
+      position,
+    );
+
+    if (!sameIds(currentOrder, nextOrder)) {
+      setPreviewVisibleRepositoryIds(nextOrder);
+    }
+  }
+
+  function handleRepositoryPointerDown(
+    event: ReactMouseEvent<HTMLElement>,
+    repositoryId: string,
+  ) {
+    if (!enableDesktopPointerReorder || repositories.length <= 1 || event.button !== 0) {
+      return;
+    }
+
+    desktopPointerDragRef.current = {
+      repositoryId,
+      started: false,
+      startX: event.clientX,
+      startY: event.clientY,
+      repositoryElement: event.currentTarget.closest<HTMLElement>("article"),
+    };
+    suppressRepositoryClickRef.current = null;
   }
 
   function handleRepositoryDragOver(
@@ -601,6 +739,7 @@ export function RepositoryPanel({
       dragPreviewElementRef.current.remove();
       dragPreviewElementRef.current = null;
     }
+    dragPreviewOffsetRef.current = null;
     pendingDropTargetRef.current = null;
   }
 
@@ -610,6 +749,83 @@ export function RepositoryPanel({
     setDraggedRepositoryHeight(null);
     setPreviewVisibleRepositoryIds(null);
   }
+
+  useEffect(() => {
+    if (!enableDesktopPointerReorder) {
+      return;
+    }
+
+    const dragThresholdPx = 6;
+
+    function handlePointerMove(event: MouseEvent) {
+      const dragState = desktopPointerDragRef.current;
+      if (!dragState) {
+        return;
+      }
+
+      if (!dragState.started) {
+        const deltaX = event.clientX - dragState.startX;
+        const deltaY = event.clientY - dragState.startY;
+        if (Math.hypot(deltaX, deltaY) < dragThresholdPx) {
+          return;
+        }
+
+        dragState.started = true;
+        beginDesktopPointerDrag(dragState);
+      }
+
+      updateRepositoryDragPreviewPosition(event.clientX, event.clientY);
+      handleDesktopPointerReorderMove(event.clientX, event.clientY);
+    }
+
+    function handlePointerEnd() {
+      const dragState = desktopPointerDragRef.current;
+      if (!dragState) {
+        return;
+      }
+
+      desktopPointerDragRef.current = null;
+
+      if (!dragState.started) {
+        return;
+      }
+
+      suppressRepositoryClickRef.current = dragState.repositoryId;
+
+      const dropTarget = pendingDropTargetRef.current;
+      if (
+        dropTarget &&
+        dragState.repositoryId !== dropTarget.repositoryId
+      ) {
+        onReorderRepositories(
+          dragState.repositoryId,
+          dropTarget.repositoryId,
+          dropTarget.position,
+        );
+      }
+
+      clearDragState();
+
+      window.setTimeout(() => {
+        if (suppressRepositoryClickRef.current === dragState.repositoryId) {
+          suppressRepositoryClickRef.current = null;
+        }
+      }, 0);
+    }
+
+    window.addEventListener("mousemove", handlePointerMove);
+    window.addEventListener("mouseup", handlePointerEnd);
+
+    return () => {
+      window.removeEventListener("mousemove", handlePointerMove);
+      window.removeEventListener("mouseup", handlePointerEnd);
+      desktopPointerDragRef.current = null;
+    };
+  }, [
+    enableDesktopPointerReorder,
+    onReorderRepositories,
+    repositories.length,
+  ]);
 
   useEffect(() => {
     function handleWindowDragTermination() {
@@ -791,6 +1007,7 @@ export function RepositoryPanel({
                   draggedRepositoryId === repository.id && "bg-secondary/30 opacity-70 shadow-lg",
                 )}
                 data-testid={`repository-${repository.id}`}
+                data-repository-id={repository.id}
                 onDragOver={(event) =>
                   handleRepositoryDragOver(event, repository.id)
                 }
@@ -801,12 +1018,21 @@ export function RepositoryPanel({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    draggable={repositories.length > 1}
+                    draggable={enableDesktopPointerReorder ? false : repositories.length > 1}
                     className={cn(
                       "h-8 min-w-0 flex-1 cursor-grab justify-start gap-1.5 overflow-hidden px-2 text-muted-foreground hover:bg-transparent hover:text-foreground active:cursor-grabbing",
                       isSelected && "text-foreground",
                     )}
-                    onClick={() => toggleRepository(repository.id)}
+                    onClick={() => {
+                      if (suppressRepositoryClickRef.current === repository.id) {
+                        suppressRepositoryClickRef.current = null;
+                        return;
+                      }
+                      toggleRepository(repository.id);
+                    }}
+                    onMouseDown={(event) =>
+                      handleRepositoryPointerDown(event, repository.id)
+                    }
                     onDragStart={(event) =>
                       handleRepositoryDragStart(event, repository.id)
                     }

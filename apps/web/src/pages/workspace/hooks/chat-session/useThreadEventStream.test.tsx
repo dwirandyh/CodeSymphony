@@ -738,6 +738,42 @@ describe("useThreadEventStream", () => {
     expect(cancelQueriesMock).not.toHaveBeenCalled();
   });
 
+  it("opens the SSE stream immediately while bootstrap snapshot is still pending", async () => {
+    const threadId = "selected-thread";
+    let resolveSnapshot: ((snapshot: ChatTimelineSnapshot) => void) | null = null;
+    const pendingSnapshot = new Promise<ChatTimelineSnapshot>((resolve) => {
+      resolveSnapshot = resolve;
+    });
+    getTimelineSnapshotMock.mockReturnValueOnce(pendingSnapshot);
+
+    renderHook(threadId, {
+      initialWaitingAssistant: { threadId, afterIdx: 1 },
+    });
+
+    expect(MockEventSource.instances).toHaveLength(1);
+    const stream = MockEventSource.instances[0]!;
+
+    act(() => {
+      stream.emit(
+        "tool.started",
+        makeEvent({
+          id: "e-bootstrap-live",
+          threadId,
+          idx: 2,
+          type: "tool.started",
+          payload: { toolUseId: "tu-1", toolName: "Bash" },
+        }),
+      );
+    });
+
+    expect(latestWaitingAssistant).toBeNull();
+
+    await act(async () => {
+      resolveSnapshot?.(makeSnapshot());
+      await pendingSnapshot;
+    });
+  });
+
   it("still invalidates the selected thread snapshot on gate resolution events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());

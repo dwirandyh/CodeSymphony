@@ -6,6 +6,7 @@ import {
   getClipboardTextDisplayLabel,
   resetClipboardCounter,
   isImageMimeType,
+  localAttachmentToPendingAttachment,
   validateAttachmentSize,
   fileToAttachment,
   detectClipboardTextLanguage,
@@ -83,6 +84,32 @@ describe("fileToAttachment", () => {
     const file = new File(["data"], "unknown", { type: "" });
     const attachment = await fileToAttachment(file, "clipboard_text");
     expect(attachment.mimeType).toBe("application/octet-stream");
+  });
+});
+
+describe("localAttachmentToPendingAttachment", () => {
+  it("creates image previews from native desktop attachment payloads", () => {
+    const attachment = localAttachmentToPendingAttachment({
+      filename: "drop.png",
+      mimeType: "image/png",
+      content: "aGVsbG8=",
+      sizeBytes: 5,
+    }, "drag_drop");
+
+    expect(attachment.previewUrl).toBe("data:image/png;base64,aGVsbG8=");
+    expect(attachment.source).toBe("drag_drop");
+  });
+
+  it("does not create previews for text attachments", () => {
+    const attachment = localAttachmentToPendingAttachment({
+      filename: "drop.txt",
+      mimeType: "text/plain",
+      content: "hello",
+      sizeBytes: 5,
+    }, "drag_drop");
+
+    expect(attachment.previewUrl).toBeUndefined();
+    expect(attachment.content).toBe("hello");
   });
 });
 

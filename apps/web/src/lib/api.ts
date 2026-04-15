@@ -15,6 +15,7 @@ import type {
   ExternalApp,
   FileEntry,
   FilesystemBrowseResponse,
+  FilesystemReadAttachmentsResponse,
   GitBranchDiffSummary,
   GitCommitInput,
   GitDiff,
@@ -506,6 +507,11 @@ export const api = {
     const params = path ? `?path=${encodeURIComponent(path)}` : "";
     return request<FilesystemBrowseResponse>(`/filesystem/browse${params}`);
   },
+  readLocalAttachments: (paths: string[]) =>
+    request<FilesystemReadAttachmentsResponse>("/filesystem/attachments/read", {
+      method: "POST",
+      body: JSON.stringify({ paths }),
+    }).then((response) => response.attachments),
   getInstalledApps: () =>
     request<{ apps: ExternalApp[] }>("/system/installed-apps").then((r) => r.apps),
   openInApp: async (input: OpenInAppInput) => {

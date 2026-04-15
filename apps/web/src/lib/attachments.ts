@@ -11,6 +11,24 @@ export type PendingAttachment = {
 
 const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
 
+type PendingAttachmentSource = PendingAttachment["source"];
+
+type PendingAttachmentDraft = {
+  filename: string;
+  mimeType: string;
+  content: string;
+  sizeBytes: number;
+  source: PendingAttachmentSource;
+  previewUrl?: string;
+};
+
+type LocalFilesystemAttachment = {
+  filename: string;
+  mimeType: string;
+  content: string;
+  sizeBytes: number;
+};
+
 let clipboardCounter = 0;
 
 /** Generate a unique ID, with fallback for non-secure contexts (HTTP) where crypto.randomUUID is unavailable. */
@@ -42,9 +60,41 @@ export function validateAttachmentSize(file: File): string | null {
   return null;
 }
 
+function createPendingAttachment(input: PendingAttachmentDraft): PendingAttachment {
+  return {
+    id: generateAttachmentId(),
+    filename: input.filename,
+    mimeType: input.mimeType || "application/octet-stream",
+    content: input.content,
+    sizeBytes: input.sizeBytes,
+    source: input.source,
+    previewUrl: input.previewUrl,
+    isInline: false,
+  };
+}
+
+export function localAttachmentToPendingAttachment(
+  attachment: LocalFilesystemAttachment,
+  source: PendingAttachmentSource,
+): PendingAttachment {
+  const mimeType = attachment.mimeType || "application/octet-stream";
+  const previewUrl = isImageMimeType(mimeType)
+    ? `data:${mimeType};base64,${attachment.content}`
+    : undefined;
+
+  return createPendingAttachment({
+    filename: attachment.filename,
+    mimeType,
+    content: attachment.content,
+    sizeBytes: attachment.sizeBytes,
+    source,
+    previewUrl,
+  });
+}
+
 export async function fileToAttachment(
   file: File,
-  source: PendingAttachment["source"],
+  source: PendingAttachmentSource,
 ): Promise<PendingAttachment> {
   const isImage = isImageMimeType(file.type);
 
@@ -70,16 +120,14 @@ export async function fileToAttachment(
 
   const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
 
-  return {
-    id: generateAttachmentId(),
+  return createPendingAttachment({
     filename: file.name,
     mimeType: file.type || "application/octet-stream",
     content,
     sizeBytes: file.size,
     source,
     previewUrl,
-    isInline: false,
-  };
+  });
 }
 
 export function detectClipboardTextLanguage(text: string): string {

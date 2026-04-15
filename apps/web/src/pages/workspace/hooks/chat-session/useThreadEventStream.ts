@@ -402,51 +402,31 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       queryKeys.threads.timelineSnapshot(selectedThreadId),
     );
 
-    if (cachedSnapshot) {
-      startStream();
-      return () => {
-        disposed = true;
-        if (reconnectTimer !== null) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-        if (rafIdRef.current !== null) {
-          cancelAnimationFrame(rafIdRef.current);
-          rafIdRef.current = null;
-        }
-        pendingEventsRef.current = [];
-        pendingMessageMutationsRef.current = [];
-        if (stream) {
-          for (const eventType of EVENT_TYPES) {
-            stream.removeEventListener(eventType, onEvent as EventListener);
-          }
-          stream.close();
-        }
-      };
-    }
+    startStream();
 
-    void (async () => {
-      try {
-        const bootstrapThreadId = selectedThreadId;
-        const snapshot = await queryClient.fetchQuery({
-          queryKey: queryKeys.threads.timelineSnapshot(bootstrapThreadId),
-          queryFn: () => api.getTimelineSnapshot(bootstrapThreadId),
-        });
-        if (
-          disposed
-          || locallyDeletedThreadIdsRef.current.has(bootstrapThreadId)
-          || activeThreadIdRef.current !== bootstrapThreadId
-        ) return;
-        if (snapshot.events.length > 0) {
-          const seenEventIds = ensureSeenEventIds(selectedThreadId);
-          for (const e of snapshot.events) {
-            seenEventIds.add(e.id);
-            updateLastEventIdx(selectedThreadId, e.idx);
+    if (!cachedSnapshot) {
+      void (async () => {
+        try {
+          const bootstrapThreadId = selectedThreadId;
+          const snapshot = await queryClient.fetchQuery({
+            queryKey: queryKeys.threads.timelineSnapshot(bootstrapThreadId),
+            queryFn: () => api.getTimelineSnapshot(bootstrapThreadId),
+          });
+          if (
+            disposed
+            || locallyDeletedThreadIdsRef.current.has(bootstrapThreadId)
+            || activeThreadIdRef.current !== bootstrapThreadId
+          ) return;
+          if (snapshot.events.length > 0) {
+            const seenEventIds = ensureSeenEventIds(bootstrapThreadId);
+            for (const e of snapshot.events) {
+              seenEventIds.add(e.id);
+              updateLastEventIdx(bootstrapThreadId, e.idx);
+            }
           }
-        }
-      } catch {}
-      if (!disposed) startStream();
-    })();
+        } catch {}
+      })();
+    }
 
     return () => {
       disposed = true;
