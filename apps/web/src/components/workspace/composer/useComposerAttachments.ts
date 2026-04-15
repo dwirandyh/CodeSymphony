@@ -3,8 +3,11 @@ import type { PendingAttachment } from "../../../lib/attachments";
 import {
   fileToAttachment,
   isImageMimeType,
+  localAttachmentToPendingAttachment,
   validateAttachmentSize,
 } from "../../../lib/attachments";
+import { api } from "../../../lib/api";
+import { isTauriDesktop } from "../../../lib/openExternalUrl";
 
 export function useComposerAttachments({
   editorRef,
@@ -46,6 +49,38 @@ export function useComposerAttachments({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
+  const appendBrowserFiles = useCallback(
+    async (files: FileList | File[], source: PendingAttachment["source"]) => {
+      const newAttachments: PendingAttachment[] = [];
+      for (const file of Array.from(files)) {
+        const sizeError = validateAttachmentSize(file);
+        if (sizeError) continue;
+        const attachment = await fileToAttachment(file, source);
+        newAttachments.push(attachment);
+      }
+      if (newAttachments.length > 0) {
+        applyAttachmentsChange((prev) => [...prev, ...newAttachments]);
+      }
+    },
+    [applyAttachmentsChange],
+  );
+
+  const appendLocalFiles = useCallback(
+    async (paths: string[]) => {
+      const nextAttachments = await api.readLocalAttachments(paths);
+      if (nextAttachments.length === 0) {
+        return;
+      }
+
+      applyAttachmentsChange((prev) => [
+        ...prev,
+        ...nextAttachments.map((attachment) =>
+          localAttachmentToPendingAttachment(attachment, "drag_drop")),
+      ]);
+    },
+    [applyAttachmentsChange],
+  );
+
   const handleFileInputChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const files = event.target.files;
@@ -54,16 +89,7 @@ export function useComposerAttachments({
       startAttachmentRead();
       void (async () => {
         try {
-          const newAttachments: PendingAttachment[] = [];
-          for (const file of Array.from(files)) {
-            const sizeError = validateAttachmentSize(file);
-            if (sizeError) continue;
-            const att = await fileToAttachment(file, "file_picker");
-            newAttachments.push(att);
-          }
-          if (newAttachments.length > 0) {
-            applyAttachmentsChange((prev) => [...prev, ...newAttachments]);
-          }
+          await appendBrowserFiles(files, "file_picker");
         } finally {
           finishAttachmentRead();
         }
@@ -71,7 +97,7 @@ export function useComposerAttachments({
 
       event.target.value = "";
     },
-    [applyAttachmentsChange, startAttachmentRead, finishAttachmentRead],
+    [appendBrowserFiles, startAttachmentRead, finishAttachmentRead],
   );
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
@@ -92,28 +118,23 @@ export function useComposerAttachments({
       event.stopPropagation();
       setIsDragOver(false);
 
+      if (isTauriDesktop()) {
+        return;
+      }
+
       const files = event.dataTransfer.files;
       if (!files || files.length === 0) return;
 
       startAttachmentRead();
       void (async () => {
         try {
-          const newAttachments: PendingAttachment[] = [];
-          for (const file of Array.from(files)) {
-            const sizeError = validateAttachmentSize(file);
-            if (sizeError) continue;
-            const att = await fileToAttachment(file, "drag_drop");
-            newAttachments.push(att);
-          }
-          if (newAttachments.length > 0) {
-            applyAttachmentsChange((prev) => [...prev, ...newAttachments]);
-          }
+          await appendBrowserFiles(files, "drag_drop");
         } finally {
           finishAttachmentRead();
         }
       })();
     },
-    [applyAttachmentsChange, startAttachmentRead, finishAttachmentRead],
+    [appendBrowserFiles, startAttachmentRead, finishAttachmentRead],
   );
 
   const removeAttachment = useCallback(
@@ -138,24 +159,69 @@ export function useComposerAttachments({
       startAttachmentRead();
       void (async () => {
         try {
-          const newAttachments: PendingAttachment[] = [];
-          for (const file of imageFiles) {
-            const sizeError = validateAttachmentSize(file);
-            if (sizeError) continue;
-            const att = await fileToAttachment(file, "clipboard_image");
-            newAttachments.push(att);
-          }
-          if (newAttachments.length > 0) {
-            applyAttachmentsChange((prev) => [...prev, ...newAttachments]);
-          }
+          await appendBrowserFiles(imageFiles, "clipboard_image");
         } finally {
           finishAttachmentRead();
         }
       })();
       return true;
     },
-    [applyAttachmentsChange, startAttachmentRead, finishAttachmentRead],
+    [appendBrowserFiles, startAttachmentRead, finishAttachmentRead],
   );
+
+  useEffect(() => {
+    if (!isTauriDesktop()) {
+      return;
+    }
+
+    let active = true;
+    let unlisten: null | (() => void) = null;
+
+    void (async () => {
+      try {
+        const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        if (!active) {
+          return;
+        }
+
+        unlisten = await getCurrentWebviewWindow().onDragDropEvent((event) => {
+          const payload = event.payload as { type: string; paths?: string[] };
+
+          if (payload.type === "over") {
+            setIsDragOver(true);
+            return;
+          }
+
+          setIsDragOver(false);
+
+          if (payload.type !== "drop") {
+            return;
+          }
+
+          const paths = Array.isArray(payload.paths) ? payload.paths : [];
+          if (paths.length === 0) {
+            return;
+          }
+
+          startAttachmentRead();
+          void (async () => {
+            try {
+              await appendLocalFiles(paths);
+            } finally {
+              finishAttachmentRead();
+            }
+          })();
+        });
+      } catch {
+        // Ignore native desktop drag/drop wiring failures and fall back to the DOM path.
+      }
+    })();
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, [appendLocalFiles, finishAttachmentRead, startAttachmentRead]);
 
   const barAttachments = attachments.filter((a) => !a.isInline);
 

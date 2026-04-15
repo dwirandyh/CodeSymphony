@@ -801,10 +801,28 @@ describe("RepositoryPanel", () => {
 
     const dragSource = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("repo-one"));
+    const sourceArticle = container.querySelector('[data-testid="repository-r1"]') as HTMLElement | null;
     const target = container.querySelector('[data-testid="repository-r2"]') as HTMLElement | null;
 
     expect(dragSource).toBeTruthy();
+    expect(sourceArticle).toBeTruthy();
     expect(target).toBeTruthy();
+    expect(dragSource?.getAttribute("draggable")).toBe("false");
+
+    Object.defineProperty(sourceArticle, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 200,
+        bottom: 64,
+        width: 200,
+        height: 64,
+        toJSON: () => ({}),
+      }),
+    });
 
     Object.defineProperty(target, "getBoundingClientRect", {
       configurable: true,
@@ -821,59 +839,54 @@ describe("RepositoryPanel", () => {
       }),
     });
 
-    const setDragImage = vi.fn();
-    const dragStartEvent = new Event("dragstart", { bubbles: true, cancelable: true });
-    Object.defineProperty(dragStartEvent, "dataTransfer", {
-      value: {
-        effectAllowed: "move",
-        setData: vi.fn(),
-        setDragImage,
-      },
+    const originalElementFromPoint = document.elementFromPoint;
+    document.elementFromPoint = vi.fn(() => target);
+
+    const pointerDownEvent = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      clientX: 20,
+      clientY: 20,
     });
 
-    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
-    Object.defineProperty(dragOverEvent, "clientY", { value: 80 });
-    Object.defineProperty(dragOverEvent, "dataTransfer", {
-      value: {
-        dropEffect: "move",
-      },
+    const pointerMoveEvent = new MouseEvent("mousemove", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 30,
+      clientY: 80,
     });
 
-    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
-    Object.defineProperty(dropEvent, "clientY", { value: 80 });
-    Object.defineProperty(dropEvent, "dataTransfer", {
-      value: {
-        getData: () => "r1",
-      },
+    const pointerUpEvent = new MouseEvent("mouseup", {
+      bubbles: true,
+      cancelable: true,
     });
 
     act(() => {
-      dragSource?.dispatchEvent(dragStartEvent);
+      dragSource?.dispatchEvent(pointerDownEvent);
+      window.dispatchEvent(pointerMoveEvent);
     });
 
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    expect(setDragImage).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="repository-r1"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="repository-placeholder-r1"]')).toBeNull();
-
-    act(() => {
-      target?.dispatchEvent(dragOverEvent);
-    });
-
-    expect(dragOverEvent.defaultPrevented).toBe(true);
+    expect(container.querySelector('[data-testid="repository-r1"]')).toBeNull();
+    const placeholder = container.querySelector('[data-testid="repository-placeholder-r1"]') as HTMLElement | null;
+    expect(placeholder).toBeTruthy();
+    expect(placeholder?.style.height).toBe("64px");
+    const dragPreview = document.body.querySelector('[data-repository-drag-preview="true"]') as HTMLElement | null;
+    expect(dragPreview).toBeTruthy();
+    expect(dragPreview?.style.transform).toContain("translate(");
     expect(
       Array.from(container.querySelectorAll('[data-testid^="repository-"]'))
         .map((element) => element.getAttribute("data-testid")),
-    ).toEqual(["repository-r1", "repository-r2"]);
+    ).toEqual(["repository-r2", "repository-placeholder-r1"]);
 
     act(() => {
-      target?.dispatchEvent(dropEvent);
+      window.dispatchEvent(pointerUpEvent);
     });
 
+    document.elementFromPoint = originalElementFromPoint;
+
     expect(onReorderRepositories).toHaveBeenCalledWith("r1", "r2", "after");
+    expect(document.body.querySelector('[data-repository-drag-preview="true"]')).toBeNull();
   });
 
   it("renders stacked review and diff metadata", async () => {

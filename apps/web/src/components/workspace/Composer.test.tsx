@@ -2,8 +2,24 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry, SlashCommand } from "@codesymphony/shared-types";
+import { api } from "../../lib/api";
 import { Composer } from "./composer";
 import { getPlainTextFromEditor } from "./composer/composerEditorUtils";
+
+const tauriDragDropState = vi.hoisted(() => ({
+  handler: null as null | ((event: { payload: { type: string; paths?: string[] } }) => void | Promise<void>),
+}));
+
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({
+    onDragDropEvent: vi.fn(async (handler: (event: { payload: { type: string; paths?: string[] } }) => void | Promise<void>) => {
+      tauriDragDropState.handler = handler;
+      return () => {
+        tauriDragDropState.handler = null;
+      };
+    }),
+  }),
+}));
 
 const sampleFileIndex: FileEntry[] = [
   { path: "src/index.ts", type: "file" },
@@ -69,9 +85,12 @@ describe("Composer", () => {
     // jsdom does not implement scrollIntoView
     Element.prototype.scrollIntoView = vi.fn();
     setMobileViewport(false);
+    tauriDragDropState.handler = null;
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     act(() => root.unmount());
     document.body.removeChild(container);
   });
@@ -590,6 +609,35 @@ describe("Composer", () => {
     expect(payload.attachments).toHaveLength(1);
     expect(payload.attachments[0].source).toBe("clipboard_text");
     expect(payload.attachments[0].content).toBe(longText);
+  });
+
+  it("handles native Tauri drag/drop attachments in desktop mode", async () => {
+    vi.spyOn(api, "readLocalAttachments").mockResolvedValue([{
+      path: "/tmp/dropped.txt",
+      filename: "dropped.txt",
+      mimeType: "text/plain",
+      sizeBytes: 11,
+      content: "hello world",
+    }]);
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+    renderComposer();
+    await flushMicrotasks();
+
+    expect(tauriDragDropState.handler).toBeTypeOf("function");
+
+    await act(async () => {
+      await tauriDragDropState.handler?.({
+        payload: {
+          type: "drop",
+          paths: ["/tmp/dropped.txt"],
+        },
+      });
+    });
+    await flushMicrotasks();
+
+    expect(api.readLocalAttachments).toHaveBeenCalledWith(["/tmp/dropped.txt"]);
+    expect(container.textContent).toContain("dropped.txt");
   });
 
   it("opens pasted text chip details from the composer before sending", async () => {

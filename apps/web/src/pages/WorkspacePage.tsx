@@ -271,6 +271,22 @@ export function WorkspacePage() {
     () => orderedRepositories.filter((repository) => !hiddenRepositoryIdSet.has(repository.id)),
     [hiddenRepositoryIdSet, orderedRepositories],
   );
+  const desiredVisibleRepositoryId = useMemo(() => {
+    if (search.worktreeId) {
+      const matchedRepository = repos.repositories.find((repository) =>
+        repository.worktrees.some((worktree) => worktree.id === search.worktreeId),
+      );
+      if (matchedRepository) {
+        return matchedRepository.id;
+      }
+    }
+
+    if (search.repoId && repos.repositories.some((repository) => repository.id === search.repoId)) {
+      return search.repoId;
+    }
+
+    return null;
+  }, [repos.repositories, search.repoId, search.worktreeId]);
 
   useEffect(() => {
     if (
@@ -284,9 +300,30 @@ export function WorkspacePage() {
   }, [normalizedRepositoryPanelPreferences, repositoryPanelPreferences.hidden, repositoryPanelPreferences.order]);
 
   useEffect(() => {
+    if (!desiredVisibleRepositoryId) {
+      return;
+    }
+
+    setRepositoryPanelPreferences((current) => {
+      if (!current.hidden.includes(desiredVisibleRepositoryId)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        hidden: current.hidden.filter((id) => id !== desiredVisibleRepositoryId),
+      };
+    });
+  }, [desiredVisibleRepositoryId]);
+
+  useEffect(() => {
     const nextSelection = resolveVisibleRepositorySelection({
+      allRepositories: orderedRepositories,
       visibleRepositories,
       selectedRepositoryId: repos.selectedRepositoryId,
+      selectedWorktreeId: repos.selectedWorktreeId,
+      desiredRepositoryId: search.repoId,
+      desiredWorktreeId: search.worktreeId,
     });
 
     if (!nextSelection) {
@@ -297,8 +334,11 @@ export function WorkspacePage() {
     repos.setSelectedWorktreeId(nextSelection.worktreeId);
   }, [
     repos.selectedRepositoryId,
+    repos.selectedWorktreeId,
     repos.setSelectedRepositoryId,
     repos.setSelectedWorktreeId,
+    search.repoId,
+    search.worktreeId,
     visibleRepositories,
   ]);
 

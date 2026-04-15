@@ -9,6 +9,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import type {
   AttachmentInput,
+  ChatAttachment,
   ChatEvent,
   ChatMessage,
   ChatMode,
@@ -50,6 +51,7 @@ import {
   prependUniqueEvents,
   prunePendingStreamUpdatesForSnapshot,
 } from "./messageEventMerge";
+import { areMessagesEqual } from "../messageMerge";
 import {
   applySnapshotSeed,
   applyThreadModeUpdate,
@@ -246,6 +248,7 @@ export function useChatSession(
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
+  const messagesRef = useRef<ChatMessage[]>([]);
   const creatingThreadRef = useRef(false);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
   const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
@@ -262,6 +265,7 @@ export function useChatSession(
 
   activeThreadIdRef.current = selectedThreadId;
   threadsRef.current = threads;
+  messagesRef.current = messages;
 
   const { data: queriedThreads } = useThreads(selectedWorktreeId);
 
@@ -588,17 +592,112 @@ export function useChatSession(
     void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
   }
 
+  function buildOptimisticAttachments(
+    messageId: string,
+    attachments: Array<AttachmentInput & { sizeBytes?: number }>,
+  ): ChatAttachment[] {
+    const createdAt = new Date().toISOString();
+
+    return attachments.map((attachment, index) => ({
+      id: attachment.id ?? `optimistic-attachment:${messageId}:${index}`,
+      messageId,
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes ?? attachment.content.length,
+      content: attachment.content,
+      storagePath: null,
+      source: attachment.source,
+      createdAt,
+    }));
+  }
+
+  function createOptimisticUserMessage(params: {
+    threadId: string;
+    content: string;
+    attachments: Array<AttachmentInput & { sizeBytes?: number }>;
+    force?: boolean;
+  }): ChatMessage {
+    const { threadId, content, attachments, force = false } = params;
+    const messageId = `optimistic-user:${threadId}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+    const baseMessages =
+      force && activeThreadIdRef.current !== threadId
+        ? []
+        : allMessagesBelongToThread(messagesRef.current, threadId)
+          ? messagesRef.current
+          : [];
+    const nextSeq = (baseMessages[baseMessages.length - 1]?.seq ?? 0) + 1;
+
+    return {
+      id: messageId,
+      threadId,
+      seq: nextSeq,
+      role: "user",
+      content,
+      attachments: buildOptimisticAttachments(messageId, attachments),
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  function insertOptimisticUserMessage(
+    optimisticMessage: ChatMessage,
+    options?: { force?: boolean },
+  ) {
+    const force = options?.force === true;
+
+    setMessages((current) => {
+      const baseMessages =
+        force && activeThreadIdRef.current !== optimisticMessage.threadId
+          ? []
+          : allMessagesBelongToThread(current, optimisticMessage.threadId)
+            ? current
+            : [];
+      return prependUniqueMessages(baseMessages, [optimisticMessage]);
+    });
+  }
+
+  function removeOptimisticMessage(threadId: string, optimisticMessageId: string, options?: { force?: boolean }) {
+    if (!options?.force && activeThreadIdRef.current !== threadId) {
+      return;
+    }
+
+    setMessages((current) => {
+      const next = current.filter((message) => message.id !== optimisticMessageId);
+      return next.length === current.length ? current : next;
+    });
+  }
+
   function mergeReturnedMessageIntoVisibleState(
     threadId: string,
     sentMessage: ChatMessage,
-    options?: { force?: boolean },
+    options?: { force?: boolean; optimisticMessageId?: string },
   ) {
     if (!options?.force && activeThreadIdRef.current !== threadId) {
       return;
     }
 
-    startTransition(() => {
-      setMessages((current) => prependUniqueMessages(current, [sentMessage]));
+    setMessages((current) => {
+      const baseMessages =
+        options?.force && activeThreadIdRef.current !== threadId
+          ? []
+          : allMessagesBelongToThread(current, threadId)
+            ? current
+            : [];
+      const withoutOptimistic = options?.optimisticMessageId
+        ? baseMessages.filter((message) => message.id !== options.optimisticMessageId)
+        : baseMessages;
+      const existingIndex = withoutOptimistic.findIndex((message) => message.id === sentMessage.id);
+
+      if (existingIndex === -1) {
+        return prependUniqueMessages(withoutOptimistic, [sentMessage]);
+      }
+
+      if (areMessagesEqual(withoutOptimistic[existingIndex], sentMessage)) {
+        return withoutOptimistic;
+      }
+
+      const updated = [...withoutOptimistic];
+      updated[existingIndex] = sentMessage;
+      return updated.sort((a, b) => a.seq - b.seq);
     });
   }
 
@@ -728,6 +827,13 @@ export function useChatSession(
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
       startWaitingAssistant(created.id);
       setSendingMessage(true);
+      const optimisticMessage = createOptimisticUserMessage({
+        threadId: created.id,
+        content,
+        attachments: [],
+        force: true,
+      });
+      insertOptimisticUserMessage(optimisticMessage, { force: true });
       try {
         setThreads((current) => applyThreadModeUpdate(current, created.id, mode));
         queryClient.setQueryData<ChatThread[] | undefined>(
@@ -740,8 +846,12 @@ export function useChatSession(
           attachments: [],
           expectedWorktreeId: worktreeId,
         });
-        mergeReturnedMessageIntoVisibleState(created.id, sentMessage, { force: true });
+        mergeReturnedMessageIntoVisibleState(created.id, sentMessage, {
+          force: true,
+          optimisticMessageId: optimisticMessage.id,
+        });
       } catch (e) {
+        removeOptimisticMessage(created.id, optimisticMessage.id, { force: true });
         setWaitingAssistant(null);
         throw e;
       } finally {
@@ -760,10 +870,13 @@ export function useChatSession(
 
     onError(null);
     setSendingMessage(true);
+    let optimisticMessageId: string | null = null;
+    let createdThreadId: string | null = null;
     try {
       const created = await api.getOrCreatePrMrThread(selectedWorktreeId, {
         permissionMode: composerPermissionMode,
       });
+      createdThreadId = created.id;
       optimisticCreatedThreadIdsRef.current.add(created.id);
       setThreads((current) => {
         const existingIndex = current.findIndex((thread) => thread.id === created.id);
@@ -791,6 +904,14 @@ export function useChatSession(
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
       invalidateRepositoryReviews();
       startWaitingAssistant(created.id);
+      const optimisticMessage = createOptimisticUserMessage({
+        threadId: created.id,
+        content,
+        attachments: [],
+        force: true,
+      });
+      optimisticMessageId = optimisticMessage.id;
+      insertOptimisticUserMessage(optimisticMessage, { force: true });
       setThreads((current) => applyThreadModeUpdate(current, created.id, mode));
       queryClient.setQueryData<ChatThread[] | undefined>(
         queryKeys.threads.list(selectedWorktreeId),
@@ -802,10 +923,16 @@ export function useChatSession(
         attachments: [],
         expectedWorktreeId: created.worktreeId,
       });
-      mergeReturnedMessageIntoVisibleState(created.id, sentMessage, { force: true });
+      mergeReturnedMessageIntoVisibleState(created.id, sentMessage, {
+        force: true,
+        optimisticMessageId: optimisticMessage.id,
+      });
       invalidateRepositoryReviews();
       return created;
     } catch (e) {
+      if (createdThreadId && optimisticMessageId) {
+        removeOptimisticMessage(createdThreadId, optimisticMessageId, { force: true });
+      }
       setWaitingAssistant(null);
       onError(e instanceof Error ? e.message : "Failed to create PR/MR thread");
       return null;
@@ -1019,6 +1146,12 @@ export function useChatSession(
     }
     setSendingMessage(true);
     onError(null);
+    const optimisticMessage = createOptimisticUserMessage({
+      threadId: activeThread.id,
+      content,
+      attachments: messageAttachments,
+    });
+    insertOptimisticUserMessage(optimisticMessage);
 
     try {
       setThreads((current) => applyThreadModeUpdate(current, activeThread.id, mode));
@@ -1034,12 +1167,15 @@ export function useChatSession(
         attachments: attachmentsToSend,
         expectedWorktreeId: activeThread.worktreeId,
       });
-      mergeReturnedMessageIntoVisibleState(activeThread.id, sentMessage);
+      mergeReturnedMessageIntoVisibleState(activeThread.id, sentMessage, {
+        optimisticMessageId: optimisticMessage.id,
+      });
       if (shouldInvalidateSnapshot) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(activeThread.id) });
       }
       return true;
     } catch (e) {
+      removeOptimisticMessage(activeThread.id, optimisticMessage.id);
       setWaitingAssistant(null);
       onError(e instanceof Error ? e.message : "Failed to send message");
       return false;

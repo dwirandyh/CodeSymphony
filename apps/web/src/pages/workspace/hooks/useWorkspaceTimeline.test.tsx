@@ -1094,6 +1094,83 @@ describe("useWorkspaceTimeline", () => {
     expect(secondEditedIndex).toBeLessThan(doneMessageIndex);
   });
 
+  it("starts a new explore card for read/search work that happens after edit cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "implement this"),
+      makeMessage("m2", 2, "assistant", "Baik saya akan implement."),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Baik saya akan implement." }, "m2"),
+      makeEvent(10, "tool.started", { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "src/fileA.ts" } }, "m2"),
+      makeEvent(11, "tool.finished", { toolName: "Read", summary: "Read src/fileA.ts", precedingToolUseIds: ["r1"] }, "m2"),
+      makeEvent(20, "tool.started", { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "src/fileA.ts", old_string: "a", new_string: "b" } }, "m2"),
+      makeEvent(21, "tool.finished", { toolName: "Edit", summary: "Edited src/fileA.ts", editTarget: "src/fileA.ts", precedingToolUseIds: ["e1"], changedFiles: ["src/fileA.ts"], additions: 1, deletions: 1 }, "m2"),
+      makeEvent(30, "tool.started", { toolName: "Edit", toolUseId: "e2", toolInput: { file_path: "src/fileB.ts", old_string: "x", new_string: "y" } }, "m2"),
+      makeEvent(31, "tool.finished", { toolName: "Edit", summary: "Edited src/fileB.ts", editTarget: "src/fileB.ts", precedingToolUseIds: ["e2"], changedFiles: ["src/fileB.ts"], additions: 1, deletions: 1 }, "m2"),
+      makeEvent(40, "tool.started", { toolName: "Read", toolUseId: "r2", toolInput: { file_path: "src/fileC.ts" } }, "m2"),
+      makeEvent(41, "tool.finished", { toolName: "Read", summary: "Read src/fileC.ts", precedingToolUseIds: ["r2"] }, "m2"),
+      makeEvent(50, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreItems = items.filter((item) => item.kind === "explore-activity");
+    const firstExploreIndex = items.findIndex(
+      (item) => item.kind === "explore-activity" && item.entries.some((entry) => entry.label.includes("fileA.ts")),
+    );
+    const secondExploreIndex = items.findIndex(
+      (item) => item.kind === "explore-activity" && item.entries.some((entry) => entry.label.includes("fileC.ts")),
+    );
+    const firstEditedIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.includes("src/fileA.ts"),
+    );
+    const secondEditedIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.includes("src/fileB.ts"),
+    );
+
+    expect(exploreItems).toHaveLength(2);
+    expect(firstExploreIndex).toBeGreaterThan(-1);
+    expect(firstEditedIndex).toBeGreaterThan(-1);
+    expect(secondEditedIndex).toBeGreaterThan(-1);
+    expect(secondExploreIndex).toBeGreaterThan(-1);
+    expect(firstExploreIndex).toBeLessThan(firstEditedIndex);
+    expect(firstEditedIndex).toBeLessThan(secondEditedIndex);
+    expect(secondEditedIndex).toBeLessThan(secondExploreIndex);
+  });
+
+  it("keeps a generic tool card after preceding edit cards in the same assistant turn", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "implement this"),
+      makeMessage("m2", 2, "assistant", "Baik saya akan implement."),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Baik saya akan implement." }, "m2"),
+      makeEvent(10, "tool.started", { toolName: "Edit", toolUseId: "e1", toolInput: { file_path: "src/fileA.ts", old_string: "a", new_string: "b" } }, "m2"),
+      makeEvent(11, "tool.finished", { toolName: "Edit", summary: "Edited src/fileA.ts", editTarget: "src/fileA.ts", precedingToolUseIds: ["e1"], changedFiles: ["src/fileA.ts"], additions: 1, deletions: 1 }, "m2"),
+      makeEvent(20, "tool.started", { toolName: "Edit", toolUseId: "e2", toolInput: { file_path: "src/fileB.ts", old_string: "x", new_string: "y" } }, "m2"),
+      makeEvent(21, "tool.finished", { toolName: "Edit", summary: "Edited src/fileB.ts", editTarget: "src/fileB.ts", precedingToolUseIds: ["e2"], changedFiles: ["src/fileB.ts"], additions: 1, deletions: 1 }, "m2"),
+      makeEvent(30, "tool.started", { toolName: "WebFetch", toolUseId: "wf1", url: "https://example.com" }, "m2"),
+      makeEvent(31, "tool.finished", { toolName: "WebFetch", summary: "Fetched example.com", precedingToolUseIds: ["wf1"], output: "ok" }, "m2"),
+      makeEvent(40, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const firstEditedIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.includes("src/fileA.ts"),
+    );
+    const secondEditedIndex = items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.includes("src/fileB.ts"),
+    );
+    const toolIndex = items.findIndex(
+      (item) => item.kind === "tool" && item.toolName === "WebFetch",
+    );
+
+    expect(firstEditedIndex).toBeGreaterThan(-1);
+    expect(secondEditedIndex).toBeGreaterThan(-1);
+    expect(toolIndex).toBeGreaterThan(-1);
+    expect(firstEditedIndex).toBeLessThan(secondEditedIndex);
+    expect(secondEditedIndex).toBeLessThan(toolIndex);
+  });
+
   it("renders a single README edited diff when pre-delta edit events and worktree diff belong to the same assistant turn", () => {
     const messages = [
       makeMessage("m1", 1, "user", "update readme"),

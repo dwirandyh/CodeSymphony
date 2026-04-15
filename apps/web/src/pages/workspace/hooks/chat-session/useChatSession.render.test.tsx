@@ -2,7 +2,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatThread, ChatTimelineItem, ChatTimelineSnapshot } from "@codesymphony/shared-types";
+import type { ChatMessage, ChatThread, ChatTimelineItem, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useChatSession";
@@ -817,6 +817,95 @@ describe("useChatSession", () => {
 
     await act(async () => {
       const submitted = await hookResult.submitMessage("Follow up", "default", []);
+      expect(submitted).toBe(true);
+    });
+
+    expect(hookResult.messages).toEqual([
+      {
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Initial reply",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "user-2",
+        threadId: "thread-a",
+        seq: 2,
+        role: "user",
+        content: "Follow up",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+    ]);
+  });
+
+  it("shows an optimistic follow-up user message before the send response resolves", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Initial reply",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+    const sendDeferred = createDeferred<ChatMessage>();
+    vi.mocked(api.sendMessage).mockReturnValue(sendDeferred.promise);
+
+    renderHook("thread-a");
+
+    let submitPromise: Promise<boolean> | undefined;
+    await act(async () => {
+      submitPromise = hookResult.submitMessage("Follow up", "default", []);
+      await Promise.resolve();
+    });
+
+    expect(hookResult.messages).toEqual([
+      {
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Initial reply",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      expect.objectContaining({
+        id: expect.stringMatching(/^optimistic-user:thread-a:/),
+        threadId: "thread-a",
+        seq: 2,
+        role: "user",
+        content: "Follow up",
+        attachments: [],
+      }),
+    ]);
+
+    await act(async () => {
+      sendDeferred.resolve({
+        id: "user-2",
+        threadId: "thread-a",
+        seq: 2,
+        role: "user",
+        content: "Follow up",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:02Z",
+      });
+      const submitted = await submitPromise;
       expect(submitted).toBe(true);
     });
 

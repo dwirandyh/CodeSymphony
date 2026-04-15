@@ -543,6 +543,25 @@ export const FilesystemBrowseResponseSchema = z.object({
 });
 export type FilesystemBrowseResponse = z.infer<typeof FilesystemBrowseResponseSchema>;
 
+export const FilesystemReadAttachmentsInputSchema = z.object({
+  paths: z.array(z.string().trim().min(1)).min(1).max(32),
+});
+export type FilesystemReadAttachmentsInput = z.infer<typeof FilesystemReadAttachmentsInputSchema>;
+
+export const FilesystemReadAttachmentSchema = z.object({
+  path: z.string(),
+  filename: z.string(),
+  mimeType: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  content: z.string(),
+});
+export type FilesystemReadAttachment = z.infer<typeof FilesystemReadAttachmentSchema>;
+
+export const FilesystemReadAttachmentsResponseSchema = z.object({
+  attachments: z.array(FilesystemReadAttachmentSchema),
+});
+export type FilesystemReadAttachmentsResponse = z.infer<typeof FilesystemReadAttachmentsResponseSchema>;
+
 // ── Script Execution Types ──
 
 export const ScriptResultSchema = z.object({

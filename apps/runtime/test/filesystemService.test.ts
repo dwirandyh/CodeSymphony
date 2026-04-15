@@ -13,6 +13,8 @@ beforeAll(async () => {
   await mkdir(join(tempDir, "project-b/.git"), { recursive: true });
   await mkdir(join(tempDir, ".hidden"), { recursive: true });
   await writeFile(join(tempDir, "file.txt"), "text");
+  await writeFile(join(tempDir, "image.png"), Buffer.from([137, 80, 78, 71]));
+  await writeFile(join(tempDir, "big.bin"), new Uint8Array(11 * 1024 * 1024));
 });
 
 afterAll(async () => {
@@ -58,6 +60,30 @@ describe("filesystemService", () => {
 
     it("throws for nonexistent path", async () => {
       await expect(service.browse("/nonexistent-dir-12345")).rejects.toThrow();
+    });
+  });
+
+  describe("readAttachments", () => {
+    it("reads text attachments as utf-8 text", async () => {
+      const [attachment] = await service.readAttachments([join(tempDir, "file.txt")]);
+      expect(attachment.filename).toBe("file.txt");
+      expect(attachment.mimeType).toBe("text/plain");
+      expect(attachment.content).toBe("text");
+    });
+
+    it("reads image attachments as base64", async () => {
+      const [attachment] = await service.readAttachments([join(tempDir, "image.png")]);
+      expect(attachment.mimeType).toBe("image/png");
+      expect(attachment.content).toBe(Buffer.from([137, 80, 78, 71]).toString("base64"));
+    });
+
+    it("skips directories, missing files, and oversized files", async () => {
+      const attachments = await service.readAttachments([
+        join(tempDir, "project-a"),
+        join(tempDir, "missing.txt"),
+        join(tempDir, "big.bin"),
+      ]);
+      expect(attachments).toEqual([]);
     });
   });
 });

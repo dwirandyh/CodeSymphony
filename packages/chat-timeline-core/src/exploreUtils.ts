@@ -332,19 +332,23 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
     const toolUseId = payloadStringOrNull(event.payload.toolUseId);
 
     if (toolUseId && failedReadToolUseIds.has(toolUseId)) {
+      flushGroupIfIdle();
+      continue;
+    }
+
+    if (!kindFromEvent) {
+      flushGroupIfIdle();
       continue;
     }
 
     if (event.type === "tool.started" || event.type === "tool.output") {
       const runId = toolUseId ?? `${event.type}:${event.id}`;
       if (failedReadToolUseIds.has(runId)) {
+        flushGroupIfIdle();
         continue;
       }
       const existing = currentRuns.get(runId);
       const kind = existing?.kind ?? kindFromEvent;
-      if (!kind) {
-        continue;
-      }
 
       markGroupEvent(event);
       const run = ensureRun(runId, kind, event);
@@ -361,14 +365,12 @@ export function extractExploreActivityGroups(context: ChatEvent[]): ExploreActiv
 
     const runIds = finishedToolUseIds(event);
     if (runIds.some((runId) => failedReadToolUseIds.has(runId))) {
+      flushGroupIfIdle();
       continue;
     }
     for (const runId of runIds) {
       const existing = currentRuns.get(runId);
       const kind = existing?.kind ?? kindFromEvent;
-      if (!kind) {
-        continue;
-      }
 
       markGroupEvent(event);
       const run = existing ?? ensureRun(runId, kind, event);
