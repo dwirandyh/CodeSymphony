@@ -108,7 +108,6 @@ function MobilePanelShell({
 }
 
 export function MobileActionBar({
-  visible = true,
   hasWorktree,
   gitChangeCount,
   activeSection,
@@ -117,7 +116,6 @@ export function MobileActionBar({
   onOpenGit,
   onOpenMore,
 }: {
-  visible?: boolean;
   hasWorktree: boolean;
   gitChangeCount: number;
   activeSection: "chat" | "files" | "git" | "more";
@@ -139,10 +137,6 @@ export function MobileActionBar({
     disabled: boolean;
     badge?: string;
   }>;
-
-  if (!visible) {
-    return null;
-  }
 
   return (
     <nav className="shrink-0 border-t border-border/30 bg-[hsl(220,18%,10%)]/95 px-1.5 pb-2 pt-1 backdrop-blur-md safe-bottom lg:hidden sm:px-2.5">
@@ -624,10 +618,12 @@ export function MobileUtilitiesSheet({
 export function MobileSavePill({
   visible,
   saving,
+  bottomOffset = 0,
   onSave,
 }: {
   visible: boolean;
   saving: boolean;
+  bottomOffset?: number;
   onSave: () => void;
 }) {
   if (!visible) {
@@ -635,7 +631,10 @@ export function MobileSavePill({
   }
 
   return (
-    <div className="shrink-0 px-3 pb-2 lg:hidden sm:px-4">
+    <div
+      className="shrink-0 px-3 pb-2 lg:hidden sm:px-4"
+      style={{ marginBottom: bottomOffset > 0 ? `${bottomOffset}px` : undefined }}
+    >
       <button
         type="button"
         onClick={onSave}

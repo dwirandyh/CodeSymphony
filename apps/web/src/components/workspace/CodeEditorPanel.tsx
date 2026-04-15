@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { basicSetup } from "codemirror";
-import { indentLess, indentMore } from "@codemirror/commands";
+import { indentLess, indentMore, redo, undo } from "@codemirror/commands";
 import { Compartment, EditorSelection, EditorState, RangeSetBuilder, type Extension, type StateCommand } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, WidgetType, gutter, keymap } from "@codemirror/view";
 import { css } from "@codemirror/lang-css";
@@ -29,7 +29,7 @@ import { swift } from "@codemirror/legacy-modes/mode/swift";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import type { FileEntry, GitChangeStatus } from "@codesymphony/shared-types";
 import { FileDiff } from "@pierre/diffs/react";
-import { ArrowDown, ArrowUp, ChevronRight, Eye, FileCode2, Folder, GitBranch, Loader2, Undo2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, Eye, FileCode2, Folder, GitBranch, Info, Loader2, Redo2, Save, Undo2, X } from "lucide-react";
 import { vscodeDarkInit } from "@uiw/codemirror-theme-vscode";
 import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -494,6 +494,17 @@ function fileNameLabel(filePath: string): string {
   return filePath.split("/").pop() ?? filePath;
 }
 
+function runEditorStateCommand(view: EditorView | null, command: StateCommand) {
+  if (!view) {
+    return false;
+  }
+
+  return command({
+    state: view.state,
+    dispatch: view.dispatch.bind(view),
+  });
+}
+
 
 function buildGitDecorations(
   state: EditorState,
@@ -822,6 +833,7 @@ export interface CodeEditorPanelProps {
   saving?: boolean;
   dirty?: boolean;
   error?: string | null;
+  mobileBottomOffset?: number;
   onChange: (content: string) => void;
   onSave: () => void;
   onRetry?: () => void;
@@ -920,6 +932,7 @@ export function CodeEditorPanel({
   saving = false,
   dirty = false,
   error = null,
+  mobileBottomOffset = 0,
   onChange,
   onSave,
   onRetry,
@@ -1094,6 +1107,43 @@ export function CodeEditorPanel({
     onChangeRef.current(nextContent);
   };
 
+  const handleUndo = () => {
+    if (isImageFile || compareMode) {
+      return;
+    }
+
+    const view = viewRef.current;
+    if (runEditorStateCommand(view, undo)) {
+      view?.focus();
+    }
+  };
+
+  const handleRedo = () => {
+    if (isImageFile || compareMode) {
+      return;
+    }
+
+    const view = viewRef.current;
+    if (runEditorStateCommand(view, redo)) {
+      view?.focus();
+    }
+  };
+
+  const handleToggleCompareMode = () => {
+    closeGitPeek();
+    setCompareMode((current) => !current);
+  };
+
+  const canNavigateGitChanges = inlineGitModel.hunks.length > 0 && !compareMode;
+  const canCompare = !isImageFile && (!gitBaselineLoading || gitBaselineReady);
+  const canUseHistoryActions = !isImageFile && !compareMode;
+  const canSave = !isImageFile && !loading && !saving && dirty;
+  const gitStateLabel = gitBaselineLoading && !gitBaselineReady
+    ? "Git is loading"
+    : isNewFileGitMode
+      ? "New File"
+      : gitStatusLabel(effectiveGitStatus);
+
   useEffect(() => {
     if (gitPeek === null) {
       return;
@@ -1236,7 +1286,7 @@ export function CodeEditorPanel({
   }, [content, isImageFile]);
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+    <section className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
       {error ? (
         <div className="flex flex-1 items-center justify-center px-6 py-10">
           <div className="max-w-sm text-center">
@@ -1252,7 +1302,7 @@ export function CodeEditorPanel({
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background pb-[52px] lg:pb-0">
           <div className="flex h-8 shrink-0 items-center border-b border-border bg-background/95 px-3 text-[11px] text-muted-foreground">
             <div
               className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -1333,65 +1383,193 @@ export function CodeEditorPanel({
       )}
 
       {!error ? (
-        <div className="flex h-7 min-w-0 items-center justify-between gap-3 border-t border-border bg-background px-3 text-[11px] text-muted-foreground">
-          <div className="flex min-w-0 items-center gap-3 truncate">
-            <span className="truncate">
-              {saving ? "Saving..." : loading ? "Loading file..." : dirty ? "Unsaved changes" : "Saved"}
-            </span>
-            <span className="inline-flex shrink-0 items-center gap-1">
-              <GitBranch className="h-3 w-3" />
-              <span className="truncate">{gitBranch || "No branch"}</span>
-            </span>
-            <span className="shrink-0" style={{ color: gitStatusColor(effectiveGitStatus) }}>
-              {gitBaselineLoading && !gitBaselineReady
-                ? "Git..."
-                : isNewFileGitMode
-                  ? "New File"
-                  : gitStatusLabel(effectiveGitStatus)}
-            </span>
-            {inlineGitModel.hunks.length > 0 ? (
-              <>
-                <button
-                  type="button"
-                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
-                  onClick={() => navigateGitChange(-1)}
-                  aria-label="Previous change"
-                  title="Previous change"
-                >
-                  <ArrowUp className="h-3 w-3" />
-                </button>
-                <span className="shrink-0">
-                  {activeGitHunkIndex + 1}/{inlineGitModel.hunks.length}
-                </span>
-                <button
-                  type="button"
-                  className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
-                  onClick={() => navigateGitChange(1)}
-                  aria-label="Next change"
-                  title="Next change"
-                >
-                  <ArrowDown className="h-3 w-3" />
-                </button>
-              </>
-            ) : null}
+        <>
+          <div
+            className={cn(
+              "inset-x-0 z-10 border-t border-border bg-background px-1.5 py-1.5 lg:hidden",
+              mobileBottomOffset > 0
+                ? "fixed bottom-0 z-40 shadow-[0_-10px_30px_rgba(0,0,0,0.28)]"
+                : "absolute bottom-0 safe-bottom",
+            )}
+            style={mobileBottomOffset > 0 ? { bottom: `${mobileBottomOffset}px` } : undefined}
+          >
+            <div className="grid grid-cols-7 gap-1">
+              <button
+                type="button"
+                className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={handleUndo}
+                disabled={!canUseHistoryActions}
+                aria-label="Undo"
+                title="Undo"
+              >
+                <Undo2 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={handleRedo}
+                disabled={!canUseHistoryActions}
+                aria-label="Redo"
+                title="Redo"
+              >
+                <Redo2 className="h-4 w-4" />
+              </button>
+              {inlineGitModel.hunks.length > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={() => navigateGitChange(-1)}
+                    disabled={!canNavigateGitChanges}
+                    aria-label="Previous change"
+                    title="Previous change"
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={() => navigateGitChange(1)}
+                    disabled={!canNavigateGitChanges}
+                    aria-label="Next change"
+                    title="Next change"
+                  >
+                    <ArrowDown className="h-4 w-4" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="h-9" aria-hidden="true" />
+                  <div className="h-9" aria-hidden="true" />
+                </>
+              )}
+              <button
+                type="button"
+                className={cn(
+                  "inline-flex h-9 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                  compareMode ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
+                )}
+                onClick={handleToggleCompareMode}
+                disabled={!canCompare}
+                aria-label={compareMode ? "Return to editor" : "Compare with HEAD"}
+                title={compareMode ? "Return to editor" : "Compare with HEAD"}
+              >
+                <Eye className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  "relative inline-flex h-9 items-center justify-center rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                  canSave ? "text-primary hover:bg-primary/10" : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
+                )}
+                onClick={onSave}
+                disabled={!canSave}
+                aria-label={saving ? "Saving file" : "Save file"}
+                title={saving ? "Saving file" : "Save file"}
+              >
+                {dirty && !saving ? <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-amber-500" /> : null}
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              </button>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+                    aria-label="Editor info"
+                    title="Editor info"
+                  >
+                    <Info className="h-4 w-4" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="end" side="top" className="w-56 border-border/70 bg-popover/95 p-3 text-xs">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">File</span>
+                      <span className="truncate text-right text-foreground">{fileNameLabel(filePath)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">Status</span>
+                      <span className="text-right" style={{ color: gitStatusColor(effectiveGitStatus) }}>{gitStateLabel}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">Branch</span>
+                      <span className="truncate text-right text-foreground">{gitBranch || "No branch"}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">Language</span>
+                      <span className="text-right text-[#9cdcfe]">{languageLabel(filePath)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">Changes</span>
+                      <span className="text-right text-foreground">
+                        {inlineGitModel.hunks.length > 0 ? `${activeGitHunkIndex + 1}/${inlineGitModel.hunks.length}` : "No hunks"}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">State</span>
+                      <span className="text-right text-foreground">
+                        {saving ? "Saving" : loading ? "Loading" : dirty ? "Unsaved" : "Saved"}
+                      </span>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
-          <div className="flex shrink-0 items-center gap-3">
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              onClick={() => {
-                closeGitPeek();
-                setCompareMode((current) => !current);
-              }}
-              disabled={isImageFile || (!gitBaselineReady && gitBaselineLoading)}
-            >
-              <Eye className="h-3 w-3" />
-              <span>{compareMode ? "Editor" : "Compare"}</span>
-            </button>
-            <span className="text-[#9cdcfe]">{languageLabel(filePath)}</span>
-            <span>{navigator.platform.toLowerCase().includes("mac") ? "Cmd+S" : "Ctrl+S"}</span>
+
+          <div className="hidden h-7 min-w-0 items-center justify-between gap-3 border-t border-border bg-background px-3 text-[11px] text-muted-foreground lg:flex">
+            <div className="flex min-w-0 items-center gap-3 truncate">
+              <span className="truncate">
+                {saving ? "Saving..." : loading ? "Loading file..." : dirty ? "Unsaved changes" : "Saved"}
+              </span>
+              <span className="inline-flex shrink-0 items-center gap-1">
+                <GitBranch className="h-3 w-3" />
+                <span className="truncate">{gitBranch || "No branch"}</span>
+              </span>
+              <span className="shrink-0" style={{ color: gitStatusColor(effectiveGitStatus) }}>
+                {gitStateLabel}
+              </span>
+              {inlineGitModel.hunks.length > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+                    onClick={() => navigateGitChange(-1)}
+                    aria-label="Previous change"
+                    title="Previous change"
+                  >
+                    <ArrowUp className="h-3 w-3" />
+                  </button>
+                  <span className="shrink-0">
+                    {activeGitHunkIndex + 1}/{inlineGitModel.hunks.length}
+                  </span>
+                  <button
+                    type="button"
+                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+                    onClick={() => navigateGitChange(1)}
+                    aria-label="Next change"
+                    title="Next change"
+                  >
+                    <ArrowDown className="h-3 w-3" />
+                  </button>
+                </>
+              ) : null}
+            </div>
+            <div className="flex shrink-0 items-center gap-3">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={handleToggleCompareMode}
+                disabled={!canCompare}
+              >
+                <Eye className="h-3 w-3" />
+                <span>{compareMode ? "Editor" : "Compare"}</span>
+              </button>
+              <span className="text-[#9cdcfe]">{languageLabel(filePath)}</span>
+              <span>{navigator.platform.toLowerCase().includes("mac") ? "Cmd+S" : "Ctrl+S"}</span>
+            </div>
           </div>
-        </div>
+        </>
       ) : null}
     </section>
   );

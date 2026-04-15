@@ -668,7 +668,7 @@ export function WorkspacePage() {
   const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<MobilePanelState>(null);
   const [mobileReposOrigin, setMobileReposOrigin] = useState<MobileReposOrigin | null>(null);
-  const [mobileKeyboardOpen, setMobileKeyboardOpen] = useState(false);
+  const [mobileKeyboardOffset, setMobileKeyboardOffset] = useState(0);
   const activeMobileSection: "chat" | "files" | "git" | "more" = mobilePanelOpen === "more" || mobilePanelOpen === "utilities"
     ? "more"
     : mobilePanelOpen === "files"
@@ -1101,12 +1101,20 @@ export function WorkspacePage() {
     }
 
     let baselineViewportHeight = viewport.height + viewport.offsetTop;
+    let baselineViewportWidth = viewport.width;
 
     const updateKeyboardState = () => {
       if (window.innerWidth >= 1024) {
+        setMobileKeyboardOffset(0);
         baselineViewportHeight = viewport.height + viewport.offsetTop;
-        setMobileKeyboardOpen(false);
+        baselineViewportWidth = viewport.width;
         return;
+      }
+
+      const widthDelta = Math.abs(viewport.width - baselineViewportWidth);
+      if (widthDelta > 80) {
+        baselineViewportWidth = viewport.width;
+        baselineViewportHeight = viewport.height + viewport.offsetTop;
       }
 
       const currentViewportHeight = viewport.height + viewport.offsetTop;
@@ -1121,7 +1129,8 @@ export function WorkspacePage() {
         || activeElement.isContentEditable
       );
 
-      setMobileKeyboardOpen(activeIsEditable && (baselineViewportHeight - currentViewportHeight) > 160);
+      const keyboardHeight = Math.max(0, Math.round(baselineViewportHeight - currentViewportHeight));
+      setMobileKeyboardOffset(activeIsEditable && keyboardHeight > 100 ? keyboardHeight : 0);
     };
 
     updateKeyboardState();
@@ -2070,6 +2079,7 @@ export function WorkspacePage() {
                     && activeEditorFileState.draftContent !== activeEditorFileState.savedContent
                   )}
                   error={activeEditorFileState?.error ?? null}
+                  mobileBottomOffset={mobileKeyboardOffset}
                   onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
                   onSave={() => void handleSaveActiveFile()}
                   onRetry={handleRetryActiveFileLoad}
@@ -2200,13 +2210,13 @@ export function WorkspacePage() {
           </div>
 
           <MobileSavePill
-            visible={canSaveActiveFile && !mobileInlinePanel && !mobileKeyboardOpen}
+            visible={canSaveActiveFile && activeView !== "file" && !mobileInlinePanel}
             saving={activeEditorFileState?.saving ?? false}
+            bottomOffset={mobileKeyboardOffset}
             onSave={() => void handleSaveActiveFile()}
           />
 
           <MobileActionBar
-            visible={!mobileKeyboardOpen}
             hasWorktree={!!repos.selectedWorktreeId}
             gitChangeCount={gitChanges.entries.length}
             activeSection={activeMobileSection}
