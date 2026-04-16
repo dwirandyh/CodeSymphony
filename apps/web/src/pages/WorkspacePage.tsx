@@ -45,6 +45,7 @@ import { useModelProviders } from "./workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "./workspace/hooks/useWorkspaceSyncStream";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
 import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
+import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { queryKeys } from "../lib/queryKeys";
@@ -1848,6 +1849,67 @@ export function WorkspacePage() {
 
     void chat.closeThread(threadId);
   }, [chat.closeThread, chat.selectedThreadId, chat.showStopAction, chat.threads, waitingAssistantThreadId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.metaKey !== true || event.ctrlKey || event.key.toLowerCase() !== "w") {
+        return;
+      }
+
+      const closeTarget = resolveMacCloseShortcutTarget({
+        activeView,
+        selectedThreadId: chat.selectedThreadId,
+        activeFilePath,
+        threadCount: chat.threads.length,
+        messageListEmptyState: chat.messageListEmptyState,
+      });
+
+      if (!closeTarget) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (closeTarget === "file") {
+        if (activeFilePath) {
+          handleCloseFileTab(activeFilePath);
+        }
+        return;
+      }
+
+      if (closeTarget === "review") {
+        handleCloseReview();
+        return;
+      }
+
+      if (chat.closingThreadId || !repos.selectedWorktreeId || !chat.selectedThreadId) {
+        return;
+      }
+
+      handleRequestCloseThread(chat.selectedThreadId);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [
+    activeFilePath,
+    activeView,
+    chat.closingThreadId,
+    chat.messageListEmptyState,
+    chat.selectedThreadId,
+    chat.threads.length,
+    handleCloseFileTab,
+    handleCloseReview,
+    handleRequestCloseThread,
+    repos.selectedWorktreeId,
+  ]);
 
   const handleConfirmCloseThread = useCallback(async () => {
     if (!confirmCloseThreadId) return;
