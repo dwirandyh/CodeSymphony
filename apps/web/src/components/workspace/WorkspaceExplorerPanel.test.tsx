@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 describe("WorkspaceExplorerPanel", () => {
-  it("auto-expands parent folders for the active file and marks it as current", () => {
+  it("auto-expands parent folders for the active file and marks it as current", async () => {
     const entries: FileEntry[] = [
       { path: "docs/guides/intro.md", type: "file" },
       { path: "docs/guides/advanced.md", type: "file" },
@@ -43,6 +43,10 @@ describe("WorkspaceExplorerPanel", () => {
           onClose={vi.fn()}
         />,
       );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
     });
 
     const activeButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))

@@ -3,6 +3,11 @@ import { ChevronDown, ChevronRight, FileCode2, Folder, FolderOpen, Loader2, X } 
 import type { FileEntry, GitChangeEntry, GitChangeStatus } from "@codesymphony/shared-types";
 import { ScrollArea } from "../ui/scroll-area";
 import { Button } from "../ui/button";
+import {
+  loadMaterialIconThemeManifest,
+  resolveMaterialIconThemeIconUrl,
+  type MaterialIconThemeManifest,
+} from "../../lib/materialIconTheme";
 import { cn } from "../../lib/utils";
 
 type ExplorerNode = {
@@ -13,6 +18,47 @@ type ExplorerNode = {
   changeCount: number;
   status: GitChangeStatus | null;
 };
+
+function ExplorerNodeIcon({
+  manifest,
+  node,
+  isExpanded,
+  depth,
+}: {
+  manifest: MaterialIconThemeManifest | null;
+  node: ExplorerNode;
+  isExpanded: boolean;
+  depth: number;
+}) {
+  const iconSrc = manifest
+    ? resolveMaterialIconThemeIconUrl(manifest, {
+      path: node.path,
+      type: node.type,
+      isExpanded,
+      isRoot: depth === 0,
+    })
+    : null;
+
+  if (iconSrc) {
+    return (
+      <img
+        src={iconSrc}
+        alt=""
+        aria-hidden="true"
+        className="h-4 w-4 shrink-0 object-contain"
+        loading="lazy"
+      />
+    );
+  }
+
+  if (node.type === "directory") {
+    return isExpanded
+      ? <FolderOpen className="h-4 w-4 shrink-0 text-sky-500" />
+      : <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />;
+  }
+
+  return <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" />;
+}
 
 function insertNode(root: ExplorerNode, entry: FileEntry, statusByPath: Map<string, GitChangeStatus>) {
   const parts = entry.path.split("/").filter((part) => part.length > 0);
@@ -132,7 +178,22 @@ export function WorkspaceExplorerPanel({
 }: WorkspaceExplorerPanelProps) {
   const tree = useMemo(() => buildTree(entries, gitEntries), [entries, gitEntries]);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set(["src", "app", "apps", "packages"]));
+  const [iconManifest, setIconManifest] = useState<MaterialIconThemeManifest | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadMaterialIconThemeManifest().then((manifest) => {
+      if (!cancelled) {
+        setIconManifest(manifest);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeFilePath) {
@@ -217,11 +278,12 @@ export function WorkspaceExplorerPanel({
             <span className="w-3.5 shrink-0" />
           )}
 
-          {isDirectory ? (
-            isExpanded ? <FolderOpen className="h-4 w-4 shrink-0 text-sky-500" /> : <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
-          ) : (
-            <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-          )}
+          <ExplorerNodeIcon
+            manifest={iconManifest}
+            node={node}
+            isExpanded={isExpanded}
+            depth={depth}
+          />
 
           <span className="min-w-0 flex-1 truncate">{node.name || "/"}</span>
 
