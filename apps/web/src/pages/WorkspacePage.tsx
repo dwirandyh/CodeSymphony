@@ -70,10 +70,16 @@ import {
   FilledPlayIcon,
   resolveChatMessageListKey,
 } from "./workspace/workspacePageUtils";
+import {
+  computeMobileKeyboardState,
+  createMobileKeyboardBaseline,
+  type MobileKeyboardBaseline,
+} from "./workspace/mobileKeyboard";
 import { buildQuickFileItems, filterQuickFileItems } from "../components/workspace/quickFilePickerUtils";
 
 const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
 const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
+const MOBILE_KEYBOARD_OFFSET_CSS_VAR = "--cs-mobile-keyboard-offset";
 
 type BottomPanelWorktreeState = {
   activeTab: string;
@@ -1096,53 +1102,89 @@ export function WorkspacePage() {
     }
 
     const viewport = window.visualViewport;
-    if (!viewport) {
-      return;
-    }
+    const navigatorWithKeyboard = window.navigator as Navigator & {
+      virtualKeyboard?: EventTarget & {
+        boundingRect?: DOMRectReadOnly;
+      };
+    };
+    const virtualKeyboard = navigatorWithKeyboard.virtualKeyboard;
+    const rootElement = document.documentElement;
+    const rootStyle = document.documentElement.style;
+    let keyboardVisibleRef = false;
+    let allowFocusedFallback = false;
+    let sawMeasuredKeyboard = false;
+    let baseline: MobileKeyboardBaseline = createMobileKeyboardBaseline({
+      activeElement: document.activeElement,
+      layoutHeight: window.innerHeight,
+      layoutWidth: window.innerWidth,
+      virtualKeyboardHeight: virtualKeyboard?.boundingRect?.height ?? 0,
+      visualHeight: viewport?.height ?? window.innerHeight,
+      visualOffsetTop: viewport?.offsetTop ?? 0,
+      visualWidth: viewport?.width ?? window.innerWidth,
+    });
 
-    let baselineViewportHeight = viewport.height + viewport.offsetTop;
-    let baselineViewportWidth = viewport.width;
+    const updateKeyboardState = (reason: "init" | "focusin" | "focusout" | "viewport") => {
+      const nextState = computeMobileKeyboardState({
+        baseline,
+        snapshot: {
+          activeElement: document.activeElement,
+          layoutHeight: window.innerHeight,
+          layoutWidth: window.innerWidth,
+          virtualKeyboardHeight: virtualKeyboard?.boundingRect?.height ?? 0,
+          visualHeight: viewport?.height ?? window.innerHeight,
+          visualOffsetTop: viewport?.offsetTop ?? 0,
+          visualWidth: viewport?.width ?? window.innerWidth,
+        },
+      });
 
-    const updateKeyboardState = () => {
-      if (window.innerWidth >= 1024) {
-        setMobileKeyboardOffset(0);
-        baselineViewportHeight = viewport.height + viewport.offsetTop;
-        baselineViewportWidth = viewport.width;
-        return;
+      baseline = nextState.baseline;
+      rootStyle.setProperty(MOBILE_KEYBOARD_OFFSET_CSS_VAR, `${nextState.bottomInsetPx}px`);
+
+      if (!nextState.activeIsEditable || reason === "focusout") {
+        allowFocusedFallback = false;
+        sawMeasuredKeyboard = false;
+      } else if (nextState.measuredVisible) {
+        sawMeasuredKeyboard = true;
+        allowFocusedFallback = false;
+      } else if (reason === "focusin") {
+        allowFocusedFallback = !sawMeasuredKeyboard;
+      } else if (sawMeasuredKeyboard) {
+        // The editor may keep focus after the user dismisses the soft keyboard.
+        // Once measured keyboard geometry collapses back to zero, stop relying on focus fallback.
+        allowFocusedFallback = false;
+        sawMeasuredKeyboard = false;
       }
 
-      const widthDelta = Math.abs(viewport.width - baselineViewportWidth);
-      if (widthDelta > 80) {
-        baselineViewportWidth = viewport.width;
-        baselineViewportHeight = viewport.height + viewport.offsetTop;
+      const nextKeyboardVisible = nextState.measuredVisible || (allowFocusedFallback && nextState.activeIsEditable);
+      if (keyboardVisibleRef !== nextKeyboardVisible) {
+        keyboardVisibleRef = nextKeyboardVisible;
+        rootElement.dataset.mobileKeyboardVisible = nextKeyboardVisible ? "true" : "false";
+        setMobileKeyboardOffset(nextKeyboardVisible ? 1 : 0);
       }
-
-      const currentViewportHeight = viewport.height + viewport.offsetTop;
-      if (currentViewportHeight > baselineViewportHeight) {
-        baselineViewportHeight = currentViewportHeight;
-      }
-
-      const activeElement = document.activeElement as HTMLElement | null;
-      const activeIsEditable = !!activeElement && (
-        activeElement.tagName === "INPUT"
-        || activeElement.tagName === "TEXTAREA"
-        || activeElement.isContentEditable
-      );
-
-      const keyboardHeight = Math.max(0, Math.round(baselineViewportHeight - currentViewportHeight));
-      setMobileKeyboardOffset(activeIsEditable && keyboardHeight > 100 ? keyboardHeight : 0);
     };
 
-    updateKeyboardState();
+    const handleViewportChange = () => updateKeyboardState("viewport");
+    const handleFocusIn = () => updateKeyboardState("focusin");
+    const handleFocusOut = () => updateKeyboardState("focusout");
 
-    viewport.addEventListener("resize", updateKeyboardState);
-    viewport.addEventListener("scroll", updateKeyboardState);
-    window.addEventListener("resize", updateKeyboardState);
+    updateKeyboardState("init");
+
+    viewport?.addEventListener("resize", handleViewportChange);
+    viewport?.addEventListener("scroll", handleViewportChange);
+    virtualKeyboard?.addEventListener("geometrychange", handleViewportChange);
+    window.addEventListener("resize", handleViewportChange);
+    document.addEventListener("focusin", handleFocusIn);
+    document.addEventListener("focusout", handleFocusOut);
 
     return () => {
-      viewport.removeEventListener("resize", updateKeyboardState);
-      viewport.removeEventListener("scroll", updateKeyboardState);
-      window.removeEventListener("resize", updateKeyboardState);
+      rootStyle.setProperty(MOBILE_KEYBOARD_OFFSET_CSS_VAR, "0px");
+      rootElement.dataset.mobileKeyboardVisible = "false";
+      viewport?.removeEventListener("resize", handleViewportChange);
+      viewport?.removeEventListener("scroll", handleViewportChange);
+      virtualKeyboard?.removeEventListener("geometrychange", handleViewportChange);
+      window.removeEventListener("resize", handleViewportChange);
+      document.removeEventListener("focusin", handleFocusIn);
+      document.removeEventListener("focusout", handleFocusOut);
     };
   }, []);
 
@@ -2049,6 +2091,7 @@ export function WorkspacePage() {
                   onRerunSetup={handleRerunSetup}
                   runScriptActive={selectedBottomPanelState.runScriptActive}
                   onRunScriptExit={(event) => handleRunScriptTerminalExit(event, repos.selectedWorktreeId)}
+                  bottomOffset={mobileKeyboardOffset}
                 />
               </section>
             ) : activeView === "review" && reviewTabOpen && repos.selectedWorktreeId ? (
@@ -2216,15 +2259,17 @@ export function WorkspacePage() {
             onSave={() => void handleSaveActiveFile()}
           />
 
-          <MobileActionBar
-            hasWorktree={!!repos.selectedWorktreeId}
-            gitChangeCount={gitChanges.entries.length}
-            activeSection={activeMobileSection}
-            onShowChat={handleShowMobileChat}
-            onOpenFiles={handleOpenMobileFiles}
-            onOpenGit={handleOpenMobileGit}
-            onOpenMore={handleOpenMobileMore}
-          />
+          {mobileKeyboardOffset === 0 ? (
+            <MobileActionBar
+              hasWorktree={!!repos.selectedWorktreeId}
+              gitChangeCount={gitChanges.entries.length}
+              activeSection={activeMobileSection}
+              onShowChat={handleShowMobileChat}
+              onOpenFiles={handleOpenMobileFiles}
+              onOpenGit={handleOpenMobileGit}
+              onOpenMore={handleOpenMobileMore}
+            />
+          ) : null}
 
           <div className="hidden lg:block">
             <BottomPanel

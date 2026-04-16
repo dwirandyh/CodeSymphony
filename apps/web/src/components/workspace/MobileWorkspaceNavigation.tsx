@@ -1,11 +1,12 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Clock3, FileCode2, Files, FolderGit2, GitBranch, Grip, Loader2, MessageSquareText, Play, Save, Search, Settings2, TerminalSquare, Wrench, X } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, Clock3, FileCode2, Files, FolderGit2, GitBranch, Grip, Loader2, MessageSquareText, Play, Save, Search, Settings2, TerminalSquare, Wrench, X } from "lucide-react";
 import type { GitChangeEntry, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Input } from "../ui/input";
 import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
 import { cn } from "../../lib/utils";
+import { debugLog } from "../../lib/debugLog";
 import { WorkspaceExplorerPanel } from "./WorkspaceExplorerPanel";
 import { GitChangesPanel } from "./GitChangesPanel";
 import type { WorkspaceFileTab } from "./WorkspaceHeader";
@@ -13,14 +14,40 @@ import { buildQuickFileItems, filterQuickFileItems } from "./quickFilePickerUtil
 import type { ScriptOutputEntry } from "./ScriptOutputTab";
 import { ScriptOutputTab } from "./ScriptOutputTab";
 import { DebugConsoleTab } from "./DebugConsoleTab";
-
-const TerminalTab = lazy(() =>
-  import("./TerminalTab").then((module) => ({ default: module.TerminalTab }))
-);
+import { TerminalTab, type TerminalTabHandle } from "./TerminalTab";
 
 function fileName(filePath: string): string {
   const lastSlash = filePath.lastIndexOf("/");
   return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath;
+}
+
+function toCtrlChar(data: string): string | null {
+  if (data.length !== 1) {
+    return null;
+  }
+
+  const char = data.toUpperCase();
+  if (char >= "A" && char <= "Z") {
+    return String.fromCharCode(char.charCodeAt(0) - 64);
+  }
+
+  if (char === " ") {
+    return "\u0000";
+  }
+
+  if (data === "[") {
+    return "\u001b";
+  }
+
+  if (data === "\\") {
+    return "\u001c";
+  }
+
+  if (data === "]") {
+    return "\u001d";
+  }
+
+  return null;
 }
 
 function fileDir(filePath: string): string {
@@ -107,6 +134,162 @@ function MobilePanelShell({
   );
 }
 
+function MobileTerminalToolbar({
+  bottomOffset = 0,
+  ctrlArmed,
+  ctrlLocked,
+  moreOpen,
+  onKeepTerminalFocus,
+  onToggleCtrl,
+  onSendEscape,
+  onSendTab,
+  onSendArrow,
+  onToggleMore,
+  onQuickAction,
+  onRestartTerminal,
+  canRestartTerminal,
+}: {
+  bottomOffset?: number;
+  ctrlArmed: boolean;
+  ctrlLocked: boolean;
+  moreOpen: boolean;
+  onKeepTerminalFocus: () => void;
+  onToggleCtrl: () => void;
+  onSendEscape: () => void;
+  onSendTab: () => void;
+  onSendArrow: (direction: "up" | "down" | "left" | "right") => void;
+  onToggleMore: () => void;
+  onQuickAction: (value: string) => void;
+  onRestartTerminal: () => void;
+  canRestartTerminal: boolean;
+}) {
+  const ctrlActive = ctrlArmed || ctrlLocked;
+  const runToolbarAction = useCallback((actionId: string, action: () => void) => {
+    debugLog("mobile.terminal.toolbar", "action", {
+      actionId,
+      ctrlArmed,
+      ctrlLocked,
+      moreOpen,
+    });
+    action();
+    onKeepTerminalFocus();
+  }, [ctrlArmed, ctrlLocked, moreOpen, onKeepTerminalFocus]);
+
+  const createPressHandlers = useCallback((actionId: string, action: () => void) => ({
+    onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      runToolbarAction(actionId, action);
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+
+      event.preventDefault();
+      runToolbarAction(actionId, action);
+    },
+  }), [runToolbarAction]);
+
+  return (
+    <div
+      className={cn(
+        "inset-x-0 z-10 border-t border-border/40 bg-[hsl(220,18%,10%)]/95 px-2 py-1.5 backdrop-blur-md",
+        bottomOffset > 0
+          ? "fixed bottom-0 z-40 shadow-[0_-10px_30px_rgba(0,0,0,0.28)]"
+          : "absolute bottom-0 safe-bottom",
+      )}
+      style={{ bottom: bottomOffset > 0 ? "var(--cs-mobile-keyboard-offset, 0px)" : undefined }}
+    >
+      <div className="grid grid-cols-6 gap-1">
+        <button
+          type="button"
+          {...createPressHandlers("ctrl", onToggleCtrl)}
+          className={cn(
+            "inline-flex h-9 items-center justify-center rounded-lg border text-[11px] font-semibold transition-colors",
+            ctrlActive
+              ? "border-primary/60 bg-primary/12 text-primary"
+              : "border-transparent text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
+          )}
+          aria-pressed={ctrlActive}
+          title={ctrlLocked ? "Ctrl locked" : ctrlArmed ? "Ctrl armed" : "Ctrl"}
+        >
+          CTRL
+        </button>
+        <button
+          type="button"
+          {...createPressHandlers("tab", onSendTab)}
+          className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+          title="Tab"
+        >
+          <span className="text-[11px] font-semibold">TAB</span>
+        </button>
+        <button
+          type="button"
+          {...createPressHandlers("escape", onSendEscape)}
+          className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+          title="Escape"
+        >
+          <span className="text-[11px] font-semibold">ESC</span>
+        </button>
+        <button
+          type="button"
+          {...createPressHandlers("arrow-up", () => onSendArrow("up"))}
+          className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+          title="Arrow up"
+        >
+          <ArrowUp className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          {...createPressHandlers("arrow-down", () => onSendArrow("down"))}
+          className="inline-flex h-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+          title="Arrow down"
+        >
+          <ArrowDown className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          {...createPressHandlers("more", onToggleMore)}
+          className={cn(
+            "inline-flex h-9 items-center justify-center rounded-lg px-2 text-[12px] font-semibold transition-colors",
+            moreOpen ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
+          )}
+          title="More terminal keys"
+        >
+          <span>...</span>
+        </button>
+      </div>
+      {moreOpen ? (
+        <div className="mt-1 grid grid-cols-2 gap-1 border-t border-border/30 pt-1.5">
+          {[
+            { label: "Ctrl+C", actionId: "quick-Ctrl+C", onPress: () => onQuickAction("\u0003") },
+            { label: "Ctrl+D", actionId: "quick-Ctrl+D", onPress: () => onQuickAction("\u0004") },
+            { label: "Ctrl+L", actionId: "quick-Ctrl+L", onPress: () => onQuickAction("\u000c") },
+          ].map((action) => (
+            <button
+              key={action.label}
+              type="button"
+              {...createPressHandlers(action.actionId, action.onPress)}
+              className="inline-flex h-8 items-center justify-center rounded-lg text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+            >
+              {action.label}
+            </button>
+          ))}
+          {canRestartTerminal ? (
+            <button
+              type="button"
+              {...createPressHandlers("restart-terminal", onRestartTerminal)}
+              className="inline-flex h-8 items-center justify-center rounded-lg text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary/45 hover:text-foreground"
+            >
+              Restart
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function MobileActionBar({
   hasWorktree,
   gitChangeCount,
@@ -139,7 +322,10 @@ export function MobileActionBar({
   }>;
 
   return (
-    <nav className="shrink-0 border-t border-border/30 bg-[hsl(220,18%,10%)]/95 px-1.5 pb-2 pt-1 backdrop-blur-md safe-bottom lg:hidden sm:px-2.5">
+    <nav
+      data-mobile-action-bar="true"
+      className="shrink-0 border-t border-border/30 bg-[hsl(220,18%,10%)]/95 px-1.5 pb-2 pt-1 backdrop-blur-md safe-bottom lg:hidden sm:px-2.5"
+    >
       <div className="grid grid-cols-4 gap-1">
         {buttons.map((button) => {
           const isActive = activeSection === button.key;
@@ -535,6 +721,7 @@ export function MobileUtilitiesSheet({
   onRerunSetup,
   runScriptActive,
   onRunScriptExit,
+  bottomOffset = 0,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -547,6 +734,7 @@ export function MobileUtilitiesSheet({
   onRerunSetup?: () => void;
   runScriptActive: boolean;
   onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
+  bottomOffset?: number;
 }) {
   const filteredOutputs = useMemo(
     () => worktreeId ? scriptOutputs.filter((entry) => entry.worktreeId === worktreeId) : [],
@@ -558,10 +746,192 @@ export function MobileUtilitiesSheet({
   );
   const latestSetupOutput = setupOutputs[setupOutputs.length - 1] ?? null;
   const runSessionId = worktreeId && runScriptActive ? `${worktreeId}:script-runner` : null;
+  const [terminalSessionVersion, setTerminalSessionVersion] = useState(0);
+  const terminalRef = useRef<TerminalTabHandle | null>(null);
+  const runTerminalRef = useRef<TerminalTabHandle | null>(null);
+  const ctrlArmedRef = useRef(false);
+  const ctrlLockedRef = useRef(false);
+  const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [ctrlLocked, setCtrlLocked] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const terminalToolbarVisible = activeTab === "terminal" || activeTab === "run";
+  const terminalToolbarPaddingClass = moreOpen ? "pb-[118px]" : "pb-[78px]";
+
+  const getActiveTerminalRef = useCallback(() => {
+    if (activeTab === "run") {
+      return runTerminalRef.current;
+    }
+
+    if (activeTab === "terminal") {
+      return terminalRef.current;
+    }
+
+    return null;
+  }, [activeTab]);
+
+  const sendTerminalInput = useCallback((data: string) => {
+    const activeTerminal = getActiveTerminalRef();
+    if (!activeTerminal) {
+      return;
+    }
+
+    activeTerminal.sendInput(data);
+    activeTerminal.focus();
+  }, [getActiveTerminalRef]);
+
+  const keepTerminalFocus = useCallback(() => {
+    const activeTerminal = getActiveTerminalRef();
+    if (!activeTerminal) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      activeTerminal.focus();
+    });
+  }, [getActiveTerminalRef]);
+
+  const updateCtrlState = useCallback((nextArmed: boolean, nextLocked: boolean) => {
+    ctrlArmedRef.current = nextArmed;
+    ctrlLockedRef.current = nextLocked;
+    setCtrlArmed(nextArmed);
+    setCtrlLocked(nextLocked);
+  }, []);
+
+  const resetCtrlState = useCallback(() => {
+    updateCtrlState(false, false);
+  }, [updateCtrlState]);
+
+  const handleToggleCtrl = useCallback(() => {
+    setMoreOpen(false);
+    const beforeState = {
+      armed: ctrlArmedRef.current,
+      locked: ctrlLockedRef.current,
+    };
+
+    if (ctrlLockedRef.current) {
+      resetCtrlState();
+    } else if (ctrlArmedRef.current) {
+      updateCtrlState(false, true);
+    } else {
+      updateCtrlState(true, false);
+    }
+
+    debugLog("mobile.terminal.ctrl", "toggle", {
+      activeTab,
+      before: beforeState,
+      after: {
+        armed: ctrlArmedRef.current,
+        locked: ctrlLockedRef.current,
+      },
+    });
+    keepTerminalFocus();
+  }, [activeTab, keepTerminalFocus, resetCtrlState, updateCtrlState]);
+
+  const handleTerminalInputTransform = useCallback((data: string) => {
+    const ctrlIsArmed = ctrlArmedRef.current;
+    const ctrlIsLocked = ctrlLockedRef.current;
+
+    if (!ctrlIsArmed && !ctrlIsLocked) {
+      if (data.length === 1) {
+        debugLog("mobile.terminal.ctrl", "transform.skip", {
+          activeTab,
+          data,
+          reason: "ctrl-inactive",
+        });
+      }
+      return data;
+    }
+
+    const ctrlChar = toCtrlChar(data);
+    if (!ctrlChar) {
+      debugLog("mobile.terminal.ctrl", "transform.skip", {
+        activeTab,
+        data,
+        reason: "no-ctrl-mapping",
+        armed: ctrlIsArmed,
+        locked: ctrlIsLocked,
+      });
+      return data;
+    }
+
+    if (ctrlIsArmed && !ctrlIsLocked) {
+      resetCtrlState();
+    }
+
+    debugLog("mobile.terminal.ctrl", "transform.apply", {
+      activeTab,
+      data,
+      armed: ctrlIsArmed,
+      locked: ctrlIsLocked,
+      transformedCode: ctrlChar.charCodeAt(0),
+    });
+
+    return ctrlChar;
+  }, [activeTab, resetCtrlState]);
+
+  const handleSendEscape = useCallback(() => {
+    sendTerminalInput("\u001b");
+    setMoreOpen(false);
+  }, [sendTerminalInput]);
+
+  const handleSendTab = useCallback(() => {
+    sendTerminalInput("\t");
+    setMoreOpen(false);
+  }, [sendTerminalInput]);
+
+  const handleSendArrow = useCallback((direction: "up" | "down" | "left" | "right") => {
+    const keyMap: Record<"up" | "down" | "left" | "right", string> = {
+      up: "\u001b[A",
+      down: "\u001b[B",
+      right: "\u001b[C",
+      left: "\u001b[D",
+    };
+
+    sendTerminalInput(keyMap[direction]);
+    setMoreOpen(false);
+  }, [sendTerminalInput]);
+
+  const handleQuickAction = useCallback((value: string) => {
+    sendTerminalInput(value);
+    setMoreOpen(false);
+  }, [sendTerminalInput]);
+
+  const handleRestartTerminal = useCallback(() => {
+    if (activeTab !== "terminal") {
+      return;
+    }
+
+    debugLog("mobile.terminal.toolbar", "restart", {
+      activeTab,
+      worktreeId,
+      terminalSessionVersion,
+    });
+    resetCtrlState();
+    setMoreOpen(false);
+    setTerminalSessionVersion((current) => current + 1);
+  }, [activeTab, resetCtrlState, terminalSessionVersion, worktreeId]);
+
+  useEffect(() => {
+    if (terminalToolbarVisible) {
+      return;
+    }
+
+    resetCtrlState();
+    setMoreOpen(false);
+  }, [resetCtrlState, terminalToolbarVisible]);
+
+  useEffect(() => {
+    if (open) {
+      return;
+    }
+
+    resetCtrlState();
+    setMoreOpen(false);
+  }, [open, resetCtrlState]);
 
   return (
     <MobilePanelShell open={open}>
-      <Tabs value={activeTab} onValueChange={onTabChange} className="flex h-full min-h-0 flex-col">
+      <Tabs value={activeTab} onValueChange={onTabChange} className="relative flex h-full min-h-0 flex-col">
         <div className="border-b border-border/20 px-4 py-3">
           <TabsList className="grid h-auto w-full grid-cols-2 gap-1 rounded-xl bg-secondary/60 p-1 text-xs">
             <TabsTrigger value="setup-script" className="rounded-lg px-2 py-2 text-[11px]">Setup</TabsTrigger>
@@ -589,16 +959,33 @@ export function MobileUtilitiesSheet({
           />
         </TabsContent>
 
-        <TabsContent value="terminal" className="mt-0 min-h-0 flex-1 overflow-hidden">
+        <TabsContent
+          value="terminal"
+          className={cn("mt-0 min-h-0 flex-1 overflow-hidden", terminalToolbarVisible && terminalToolbarPaddingClass)}
+        >
           <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-            <TerminalTab sessionId={worktreeId ? `${worktreeId}:terminal` : "default"} cwd={worktreePath} />
+            <TerminalTab
+              ref={terminalRef}
+              sessionId={worktreeId ? `${worktreeId}:terminal:${terminalSessionVersion}` : `default:${terminalSessionVersion}`}
+              cwd={worktreePath}
+              transformInput={handleTerminalInputTransform}
+            />
           </Suspense>
         </TabsContent>
 
-        <TabsContent value="run" className="mt-0 min-h-0 flex-1 overflow-hidden">
+        <TabsContent
+          value="run"
+          className={cn("mt-0 min-h-0 flex-1 overflow-hidden", terminalToolbarVisible && terminalToolbarPaddingClass)}
+        >
           {runSessionId ? (
             <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading run session...</div>}>
-              <TerminalTab sessionId={runSessionId} cwd={worktreePath} onSessionExit={onRunScriptExit} />
+              <TerminalTab
+                ref={runTerminalRef}
+                sessionId={runSessionId}
+                cwd={worktreePath}
+                onSessionExit={onRunScriptExit}
+                transformInput={handleTerminalInputTransform}
+              />
             </Suspense>
           ) : (
             <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
@@ -610,6 +997,27 @@ export function MobileUtilitiesSheet({
         <TabsContent value="debug" className="mt-0 min-h-0 flex-1 overflow-hidden">
           <DebugConsoleTab worktreeId={worktreeId} selectedThreadId={selectedThreadId} />
         </TabsContent>
+
+        {terminalToolbarVisible ? (
+          <MobileTerminalToolbar
+            bottomOffset={bottomOffset}
+            ctrlArmed={ctrlArmed}
+            ctrlLocked={ctrlLocked}
+            moreOpen={moreOpen}
+            onKeepTerminalFocus={keepTerminalFocus}
+            onToggleCtrl={handleToggleCtrl}
+            onSendEscape={handleSendEscape}
+            onSendTab={handleSendTab}
+            onSendArrow={handleSendArrow}
+            onToggleMore={() => {
+              setMoreOpen((current) => !current);
+              keepTerminalFocus();
+            }}
+            onQuickAction={handleQuickAction}
+            onRestartTerminal={handleRestartTerminal}
+            canRestartTerminal={activeTab === "terminal"}
+          />
+        ) : null}
       </Tabs>
     </MobilePanelShell>
   );
@@ -633,7 +1041,7 @@ export function MobileSavePill({
   return (
     <div
       className="shrink-0 px-3 pb-2 lg:hidden sm:px-4"
-      style={{ marginBottom: bottomOffset > 0 ? `${bottomOffset}px` : undefined }}
+      style={{ marginBottom: bottomOffset > 0 ? "var(--cs-mobile-keyboard-offset, 0px)" : undefined }}
     >
       <button
         type="button"

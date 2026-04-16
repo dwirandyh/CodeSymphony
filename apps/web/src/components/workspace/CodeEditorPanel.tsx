@@ -1391,7 +1391,7 @@ export function CodeEditorPanel({
                 ? "fixed bottom-0 z-40 shadow-[0_-10px_30px_rgba(0,0,0,0.28)]"
                 : "absolute bottom-0 safe-bottom",
             )}
-            style={mobileBottomOffset > 0 ? { bottom: `${mobileBottomOffset}px` } : undefined}
+            style={mobileBottomOffset > 0 ? { bottom: "var(--cs-mobile-keyboard-offset, 0px)" } : undefined}
           >
             <div className="grid grid-cols-7 gap-1">
               <button

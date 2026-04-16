@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { debugLog } from "../../lib/debugLog";
 import { resolveRuntimeApiBase } from "../../lib/runtimeUrl";
 import "@xterm/xterm/css/xterm.css";
 
@@ -38,9 +39,20 @@ interface TerminalTabProps {
     sessionId: string;
     cwd: string | null;
     onSessionExit?: (event: { exitCode: number; signal: number }) => void;
+    transformInput?: (data: string) => string;
 }
 
-export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps) {
+export interface TerminalTabHandle {
+    sendInput: (data: string) => void;
+    focus: () => void;
+}
+
+export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(function TerminalTab({
+    sessionId,
+    cwd,
+    onSessionExit,
+    transformInput,
+}: TerminalTabProps, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
@@ -48,7 +60,36 @@ export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps)
     const disposedRef = useRef(false);
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const currentSessionRef = useRef(sessionId);
+    const transformInputRef = useRef(transformInput);
     const [connected, setConnected] = useState(false);
+    const isAndroidRef = useRef(false);
+    const suppressedInputRef = useRef<{
+        active: boolean;
+        originalData: string | null;
+    }>({
+        active: false,
+        originalData: null,
+    });
+
+    useEffect(() => {
+        transformInputRef.current = transformInput;
+    }, [transformInput]);
+
+    useEffect(() => {
+        isAndroidRef.current = typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+    }, []);
+
+    useImperativeHandle(ref, () => ({
+        sendInput: (data: string) => {
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(data);
+            }
+        },
+        focus: () => {
+            terminalRef.current?.focus();
+        },
+    }), []);
 
     // When sessionId changes (worktree switch), tear down and reconnect
     useEffect(() => {
@@ -59,6 +100,13 @@ export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps)
         // If switching session, close old WS first
         currentSessionRef.current = sessionId;
         disposedRef.current = false;
+
+        const sendTerminalData = (data: string) => {
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(data);
+            }
+        };
 
         const terminal = new Terminal({
             cursorBlink: true,
@@ -83,11 +131,112 @@ export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps)
         setTimeout(() => fitAddon.fit(), 50);
 
         terminal.onData((data) => {
-            const ws = wsRef.current;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(data);
+            const nextData = transformInputRef.current ? transformInputRef.current(data) : data;
+            if (isAndroidRef.current && data.length <= 2) {
+                debugLog("terminal.input", "onData", {
+                    sessionId,
+                    raw: data,
+                    rawCode: data.length === 1 ? data.charCodeAt(0) : null,
+                    next: nextData,
+                    nextCode: nextData.length === 1 ? nextData.charCodeAt(0) : null,
+                });
             }
+            sendTerminalData(nextData);
         });
+
+        const textarea = terminal.textarea;
+        const handleBeforeInput = (event: InputEvent) => {
+            if (isAndroidRef.current) {
+                debugLog("terminal.input", "beforeinput", {
+                    sessionId,
+                    data: event.data ?? null,
+                    inputType: event.inputType ?? null,
+                    defaultPrevented: event.defaultPrevented,
+                });
+            }
+
+            if (event.defaultPrevented || typeof event.data !== "string" || event.data.length === 0) {
+                return;
+            }
+
+            const nextData = transformInputRef.current ? transformInputRef.current(event.data) : event.data;
+            if (nextData === event.data) {
+                return;
+            }
+
+            suppressedInputRef.current = {
+                active: true,
+                originalData: event.data,
+            };
+            event.preventDefault();
+            if (textarea) {
+                textarea.value = "";
+            }
+            sendTerminalData(nextData);
+        };
+
+        const handleInput = (event: Event) => {
+            if (!isAndroidRef.current) {
+                return;
+            }
+
+            const inputEvent = event as InputEvent;
+            debugLog("terminal.input", "input", {
+                sessionId,
+                data: inputEvent.data ?? null,
+                inputType: inputEvent.inputType ?? null,
+                value: textarea?.value ?? null,
+                defaultPrevented: inputEvent.defaultPrevented,
+            });
+
+            if (suppressedInputRef.current.active) {
+                inputEvent.preventDefault();
+                inputEvent.stopImmediatePropagation();
+                if (textarea) {
+                    textarea.value = "";
+                }
+                queueMicrotask(() => {
+                    if (textarea) {
+                        textarea.value = "";
+                    }
+                });
+            }
+        };
+
+        const handleCompositionEnd = () => {
+            if (!suppressedInputRef.current.active) {
+                return;
+            }
+
+            if (textarea) {
+                textarea.value = "";
+            }
+
+            queueMicrotask(() => {
+                if (textarea) {
+                    textarea.value = "";
+                }
+                suppressedInputRef.current = {
+                    active: false,
+                    originalData: null,
+                };
+            });
+        };
+
+        const handleCompositionStart = () => {
+            if (!suppressedInputRef.current.active) {
+                return;
+            }
+
+            if (textarea) {
+                textarea.value = "";
+            }
+        };
+
+        textarea?.addEventListener("beforeinput", handleBeforeInput);
+        textarea?.addEventListener("input", handleInput, true);
+        textarea?.addEventListener("compositionstart", handleCompositionStart, true);
+        textarea?.addEventListener("compositionend", handleCompositionEnd, true);
 
         function connectWebSocket() {
             if (disposedRef.current) {
@@ -183,6 +332,10 @@ export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps)
                 wsRef.current.close();
                 wsRef.current = null;
             }
+            textarea?.removeEventListener("compositionend", handleCompositionEnd, true);
+            textarea?.removeEventListener("compositionstart", handleCompositionStart, true);
+            textarea?.removeEventListener("input", handleInput, true);
+            textarea?.removeEventListener("beforeinput", handleBeforeInput);
             terminal.dispose();
             terminalRef.current = null;
             fitAddonRef.current = null;
@@ -208,4 +361,4 @@ export function TerminalTab({ sessionId, cwd, onSessionExit }: TerminalTabProps)
             <div ref={containerRef} className="min-h-0 flex-1" />
         </div>
     );
-}
+});
