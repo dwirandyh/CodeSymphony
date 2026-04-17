@@ -179,4 +179,42 @@ describe("TerminalTab", () => {
     expect(beforeInputEvent.defaultPrevented).toBe(true);
     expect(MockWebSocket.instances[0]?.send).toHaveBeenCalledWith("\u0003");
   });
+
+  it("does not reconnect when only onSessionExit changes and still uses the latest callback", async () => {
+    const firstExitHandler = vi.fn();
+    const secondExitHandler = vi.fn();
+
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" onSessionExit={firstExitHandler} />);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    act(() => {
+      root.render(<TerminalTab sessionId="s1" cwd="/tmp" onSessionExit={secondExitHandler} />);
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(mockTerminal.dispose).not.toHaveBeenCalled();
+
+    act(() => {
+      MockWebSocket.instances[0]?.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            kind: "cs-terminal-event",
+            type: "exit",
+            exitCode: 0,
+            signal: 0,
+          }),
+        }),
+      );
+    });
+
+    expect(firstExitHandler).not.toHaveBeenCalled();
+    expect(secondExitHandler).toHaveBeenCalledWith({ exitCode: 0, signal: 0 });
+  });
 });

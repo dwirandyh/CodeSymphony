@@ -10,7 +10,7 @@ import {
   UpdateWorktreeFileContentInputSchema,
 } from "@codesymphony/shared-types";
 import { z } from "zod";
-import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHead, gitCommitAll, discardGitChange } from "../services/git.js";
+import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHead, gitCommitAll, discardGitChange, syncCurrentBranch } from "../services/git.js";
 import { detectMimeType, isImageMimeType } from "../services/filesystemService.js";
 import { TeardownError } from "../services/worktreeService.js";
 
@@ -617,9 +617,33 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       }
 
       const result = await gitCommitAll(worktree.path, finalMessage);
+      invalidateCachedWorktreeGitData(worktree.id);
+      app.workspaceEventHub.emit("worktree.updated", {
+        repositoryId: worktree.repositoryId,
+        worktreeId: worktree.id,
+      });
       return { data: { result } };
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Commit failed";
+      return reply.code(400).send({ error: msg });
+    }
+  });
+
+  app.post("/worktrees/:id/git/sync", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
+
+    try {
+      const result = await syncCurrentBranch(worktree.path);
+      invalidateCachedWorktreeGitData(worktree.id);
+      app.workspaceEventHub.emit("worktree.updated", {
+        repositoryId: worktree.repositoryId,
+        worktreeId: worktree.id,
+      });
+      return { data: result };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Sync failed";
       return reply.code(400).send({ error: msg });
     }
   });
@@ -635,6 +659,11 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       await discardGitChange(worktree.path, filePath);
+      invalidateCachedWorktreeGitData(worktree.id);
+      app.workspaceEventHub.emit("worktree.updated", {
+        repositoryId: worktree.repositoryId,
+        worktreeId: worktree.id,
+      });
       return reply.code(204).send();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Discard failed";

@@ -147,6 +147,12 @@ function expectRowSpacingClass(itemIndex: number, className: "pb-2" | "pb-4") {
   expect(row.className).toContain(className);
 }
 
+function expectRowPaddingClass(itemIndex: number, className: "pt-3") {
+  const row = getTimelineRowWrappers()[itemIndex];
+  expect(row).toBeTruthy();
+  expect(row.className).toContain(className);
+}
+
 function mountChatMessageList(
   props: Partial<ComponentProps<typeof ChatMessageList>> = {},
 ): void {
@@ -314,6 +320,22 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
     expect(container.textContent).toContain("Hello there");
+  });
+
+  it("applies top padding only to the first rendered row so the spacing scrolls with content", () => {
+    const items: ChatTimelineItem[] = [
+      { kind: "message", message: makeMessage("m1", "user", "First", 1) },
+      { kind: "message", message: makeMessage("m2", "assistant", "Second", 2), renderHint: "markdown" },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    const rows = getTimelineRowWrappers();
+    expect(rows).toHaveLength(2);
+    expectRowPaddingClass(0, "pt-3");
+    expect(rows[1]?.className).not.toContain("pt-3");
   });
 
   it("renders assistant message", () => {

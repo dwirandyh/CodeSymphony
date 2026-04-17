@@ -472,6 +472,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  gitSync: (worktreeId: string) =>
+    request<{ result: string }>(`/worktrees/${worktreeId}/git/sync`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   discardGitChange: async (worktreeId: string, filePath: string) => {
     const response = await runtimeFetch(`/worktrees/${worktreeId}/git/discard`, {
       method: "POST",

@@ -345,7 +345,7 @@ describe("api", () => {
 
   describe("git operations", () => {
     it("gets git status", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ branch: "main", entries: [] }));
+      mockFetch.mockReturnValueOnce(mockOk({ branch: "main", upstream: "origin/main", ahead: 0, behind: 0, entries: [] }));
       await api.getGitStatus("w1");
     });
 
@@ -369,6 +369,12 @@ describe("api", () => {
     it("commits", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ result: "ok" }));
       await api.gitCommit("w1", { message: "test" });
+    });
+
+    it("syncs branch", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ result: "ok" }));
+      await api.gitSync("w1");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/git/sync");
     });
 
     it("discards change", async () => {

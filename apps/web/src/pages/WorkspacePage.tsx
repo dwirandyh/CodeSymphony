@@ -86,6 +86,7 @@ type BottomPanelWorktreeState = {
   activeTab: string;
   openSignal: number;
   runScriptActive: boolean;
+  runScriptSessionId: string | null;
   collapsed: boolean;
 };
 
@@ -185,6 +186,7 @@ function getBottomPanelState(
       activeTab: DEFAULT_BOTTOM_PANEL_TAB,
       openSignal: 0,
       runScriptActive: false,
+      runScriptSessionId: null,
       collapsed: true,
     };
   }
@@ -193,6 +195,7 @@ function getBottomPanelState(
     activeTab: DEFAULT_BOTTOM_PANEL_TAB,
     openSignal: 0,
     runScriptActive: false,
+    runScriptSessionId: null,
     collapsed: true,
   };
 }
@@ -687,6 +690,7 @@ export function WorkspacePage() {
     || mobilePanelOpen === "git"
     || mobilePanelOpen === "more"
     || mobilePanelOpen === "utilities";
+  const mobileUtilitiesFullscreen = mobilePanelOpen === "utilities";
   const mobileTitle = mobilePanelOpen === "files"
     ? "Files"
     : mobilePanelOpen === "git"
@@ -1524,10 +1528,17 @@ export function WorkspacePage() {
     void repos.rerunSetup(worktreeId);
   }, [repos.rerunSetup, repos.selectedWorktreeId, updateBottomPanelState]);
 
-  const resolveRunScriptSessionId = useCallback(() => {
-    if (!repos.selectedWorktreeId) return null;
-    return `${repos.selectedWorktreeId}:script-runner`;
-  }, [repos.selectedWorktreeId]);
+  const resolveActiveRunScriptSessionId = useCallback(() => {
+    if (!repos.selectedWorktreeId) {
+      return null;
+    }
+
+    return getBottomPanelState(bottomPanelStateByWorktreeId, repos.selectedWorktreeId).runScriptSessionId;
+  }, [bottomPanelStateByWorktreeId, repos.selectedWorktreeId]);
+
+  const createRunScriptSessionId = useCallback((worktreeId: string) => (
+    `${worktreeId}:script-runner:${Date.now().toString(36)}`
+  ), []);
 
   const handleRunScript = useCallback(async () => {
     if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
@@ -1539,8 +1550,7 @@ export function WorkspacePage() {
       return;
     }
     const shellScript = runCommands.join(" ; ");
-    const sessionId = resolveRunScriptSessionId();
-    if (!sessionId) return;
+    const sessionId = createRunScriptSessionId(repos.selectedWorktreeId);
 
     try {
       updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
@@ -1548,6 +1558,7 @@ export function WorkspacePage() {
         activeTab: "run",
         openSignal: current.openSignal + 1,
         runScriptActive: true,
+        runScriptSessionId: sessionId,
       }));
       await api.runTerminalCommand({
         sessionId,
@@ -1562,10 +1573,10 @@ export function WorkspacePage() {
       }));
       setError(e instanceof Error ? e.message : "Failed to run script");
     }
-  }, [repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, resolveRunScriptSessionId, updateBottomPanelState]);
+  }, [createRunScriptSessionId, repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, updateBottomPanelState]);
 
   const handleStopRunScript = useCallback(async () => {
-    const sessionId = resolveRunScriptSessionId();
+    const sessionId = resolveActiveRunScriptSessionId();
     if (!sessionId) return;
     try {
       updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
@@ -1581,7 +1592,7 @@ export function WorkspacePage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to stop script");
     }
-  }, [repos.selectedWorktreeId, resolveRunScriptSessionId, updateBottomPanelState]);
+  }, [repos.selectedWorktreeId, resolveActiveRunScriptSessionId, updateBottomPanelState]);
 
   const selectedBottomPanelState = getBottomPanelState(bottomPanelStateByWorktreeId, repos.selectedWorktreeId);
 
@@ -1958,13 +1969,14 @@ export function WorkspacePage() {
         <main
           className={cn(
             "workspace-main flex min-h-0 min-w-0 flex-1 flex-col px-0 pb-0 pt-0",
-            activeView !== "file" && "lg:p-3",
+            activeView !== "file" && "lg:px-3 lg:pb-0 lg:pt-3",
           )}
         >
           {/* ── Mobile top bar ── */}
           <div
             className={cn(
               "flex items-center gap-2.5 px-1.5 pb-1.5 pt-1.5 lg:hidden sm:px-2.5 sm:pt-2.5",
+              mobileUtilitiesFullscreen && "hidden",
             )}
           >
             <button
@@ -2085,9 +2097,14 @@ export function WorkspacePage() {
                   branch={gitChanges.branch}
                   loading={gitChanges.loading}
                   committing={gitChanges.committing}
+                  syncing={gitChanges.syncing}
+                  canSync={gitChanges.canSync}
+                  ahead={gitChanges.ahead}
+                  behind={gitChanges.behind}
                   error={gitChanges.error}
                   selectedFilePath={selectedDiffFilePath}
                   onCommit={(msg) => void gitChanges.commit(msg)}
+                  onSync={() => void gitChanges.sync()}
                   onReview={() => {
                     handleOpenReview();
                     setMobilePanelOpen(null);
@@ -2141,17 +2158,15 @@ export function WorkspacePage() {
                       setMobilePanelOpen(null);
                     }
                   }}
+                  onBack={() => setMobilePanelOpen("more")}
                   worktreeId={repos.selectedWorktreeId}
                   worktreePath={repos.selectedWorktree?.path ?? null}
                   selectedThreadId={chat.selectedThreadId}
                   scriptOutputs={scriptOutputs}
                   activeTab={selectedBottomPanelState.activeTab}
-                  onTabChange={(tab) => updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
-                    ...current,
-                    activeTab: tab,
-                  }))}
                   onRerunSetup={handleRerunSetup}
                   runScriptActive={selectedBottomPanelState.runScriptActive}
+                  runScriptSessionId={selectedBottomPanelState.runScriptSessionId}
                   onRunScriptExit={(event) => handleRunScriptTerminalExit(event, repos.selectedWorktreeId)}
                   bottomOffset={mobileKeyboardOffset}
                 />
@@ -2321,7 +2336,7 @@ export function WorkspacePage() {
             onSave={() => void handleSaveActiveFile()}
           />
 
-          {mobileKeyboardOffset === 0 ? (
+          {mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen ? (
             <MobileActionBar
               hasWorktree={!!repos.selectedWorktreeId}
               gitChangeCount={gitChanges.entries.length}
@@ -2351,6 +2366,7 @@ export function WorkspacePage() {
               }))}
               onRerunSetup={handleRerunSetup}
               runScriptActive={selectedBottomPanelState.runScriptActive}
+              runScriptSessionId={selectedBottomPanelState.runScriptSessionId}
               onRunScriptExit={(event) => handleRunScriptTerminalExit(event, repos.selectedWorktreeId)}
               openSignal={selectedBottomPanelState.openSignal}
             />

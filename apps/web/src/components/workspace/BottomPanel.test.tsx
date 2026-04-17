@@ -33,6 +33,7 @@ describe("BottomPanel", () => {
     onTabChange: vi.fn(),
     onCollapsedChange: vi.fn(),
     runScriptActive: false,
+    runScriptSessionId: null,
   };
   const findToggleButton = () => {
     const buttons = container.querySelectorAll("button");
@@ -130,6 +131,21 @@ describe("BottomPanel", () => {
       root.render(<BottomPanel {...baseProps} activeTab="run" />);
     });
     expect(container.textContent).toContain("No run session active.");
+  });
+
+  it("keeps rendering the last run session after it is no longer active", () => {
+    act(() => {
+      root.render(
+        <BottomPanel
+          {...baseProps}
+          activeTab="run"
+          runScriptSessionId="w1:script-runner:done"
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Terminal");
+    expect(container.textContent).not.toContain("No run session active.");
   });
 
   it("toggles collapsed state when collapse button clicked", () => {

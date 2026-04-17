@@ -10,6 +10,7 @@ const TerminalTab = lazy(() =>
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT_RATIO = 0.6;
 const DEFAULT_HEIGHT = 250;
+const TERMINAL_SURFACE_CLASS = "bg-[#0f1218]";
 
 const collapseIcon = (
     <svg
@@ -39,6 +40,7 @@ interface BottomPanelProps {
     onCollapsedChange: (collapsed: boolean) => void;
     onRerunSetup?: () => void;
     runScriptActive: boolean;
+    runScriptSessionId: string | null;
     onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
     openSignal?: number;
 }
@@ -54,6 +56,7 @@ export function BottomPanel({
     onCollapsedChange,
     onRerunSetup,
     runScriptActive,
+    runScriptSessionId,
     onRunScriptExit,
     openSignal,
 }: BottomPanelProps) {
@@ -78,11 +81,6 @@ export function BottomPanel({
     const setupStatusChipClassName = latestSetupOutput?.status === "completed" && !latestSetupOutput.success
         ? "bg-destructive/20 text-destructive"
         : "bg-primary/20 text-primary";
-    const scriptRunnerSessionId = useMemo(
-        () => (worktreeId && runScriptActive ? `${worktreeId}:script-runner` : null),
-        [worktreeId, runScriptActive],
-    );
-
     const handleMouseDown = useCallback(
         (e: React.MouseEvent) => {
             e.preventDefault();
@@ -152,7 +150,13 @@ export function BottomPanel({
     }, [onCollapsedChange, openSignal, worktreeId]);
 
     return (
-        <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-3">
+        <div
+            className={`-mx-1.5 flex flex-col border-t border-border/30 safe-bottom sm:-mx-2.5 lg:-mx-3 ${
+                activeTab === "terminal" || activeTab === "run"
+                    ? TERMINAL_SURFACE_CLASS
+                    : "bg-[hsl(220,18%,10%)]"
+            }`}
+        >
             <Tabs.Root
                 value={activeTab}
                 onValueChange={(val) => {
@@ -240,7 +244,11 @@ export function BottomPanel({
                 {/* Panel body — hidden via CSS when collapsed so children stay mounted */}
                 <div
                     ref={panelRef}
-                    className={`flex flex-col overflow-hidden ${collapsed ? "invisible h-0" : ""}`}
+                    className={`flex flex-col overflow-hidden ${
+                        activeTab === "terminal" || activeTab === "run"
+                            ? TERMINAL_SURFACE_CLASS
+                            : ""
+                    } ${collapsed ? "invisible h-0" : ""}`}
                     style={collapsed ? undefined : { height: `${height}px` }}
                 >
                     <Tabs.Content value="setup-script" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
@@ -251,17 +259,17 @@ export function BottomPanel({
                         />
                     </Tabs.Content>
 
-                    <Tabs.Content value="terminal" className="min-h-0 flex-1 data-[state=inactive]:hidden">
+                    <Tabs.Content value="terminal" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
                         <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
                             <TerminalTab sessionId={worktreeId ? `${worktreeId}:terminal` : "default"} cwd={worktreePath} />
                         </Suspense>
                     </Tabs.Content>
 
-                    <Tabs.Content value="run" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
-                        {scriptRunnerSessionId ? (
+                    <Tabs.Content value="run" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
+                        {runScriptSessionId ? (
                             <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
                                 <TerminalTab
-                                    sessionId={scriptRunnerSessionId}
+                                    sessionId={runScriptSessionId}
                                     cwd={worktreePath}
                                     onSessionExit={onRunScriptExit}
                                 />

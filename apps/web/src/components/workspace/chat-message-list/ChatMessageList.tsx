@@ -100,14 +100,14 @@ function EmptyStateCard({ state }: { state: ChatMessageListEmptyState }) {
   );
 }
 
-function getTimelineRowClassName(item: ChatTimelineItem): string {
+function getTimelineRowClassName(item: ChatTimelineItem, isFirst: boolean): string {
   const isCompactRunningRow =
     (item.kind === "activity" && item.defaultExpanded) ||
     (item.kind === "subagent-activity" && item.status === "running") ||
     (item.kind === "explore-activity" && item.status === "running") ||
     (item.kind === "tool" && item.status === "running");
 
-  return `mx-auto max-w-3xl px-3 ${isCompactRunningRow ? "pb-2" : "pb-4"}`;
+  return `mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}${isCompactRunningRow ? "pb-2" : "pb-4"}`;
 }
 
 export function ChatMessageList({
@@ -285,16 +285,17 @@ export function ChatMessageList({
           onScroll={handleScroll}
           onScrollEnd={handleScrollEnd}
         >
-          {displayItems.map((item) => {
+          {displayItems.map((item, index) => {
+            const isFirst = index === 0;
             if (item === "thinking-placeholder") {
               return (
-                <div key="thinking-placeholder" className="mx-auto max-w-3xl px-3 pb-4">
+                <div key="thinking-placeholder" className={`mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}pb-4`}>
                   <ThinkingPlaceholder />
                 </div>
               );
             }
             return (
-              <div key={getTimelineItemKey(item)} className={getTimelineRowClassName(item)}>
+              <div key={getTimelineItemKey(item)} className={getTimelineRowClassName(item, isFirst)}>
                 <TimelineItem item={item} ctx={timelineCtx} />
               </div>
             );

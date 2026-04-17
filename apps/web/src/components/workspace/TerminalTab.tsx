@@ -60,6 +60,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
     const disposedRef = useRef(false);
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const currentSessionRef = useRef(sessionId);
+    const onSessionExitRef = useRef(onSessionExit);
     const transformInputRef = useRef(transformInput);
     const [connected, setConnected] = useState(false);
     const isAndroidRef = useRef(false);
@@ -70,6 +71,10 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
         active: false,
         originalData: null,
     });
+
+    useEffect(() => {
+        onSessionExitRef.current = onSessionExit;
+    }, [onSessionExit]);
 
     useEffect(() => {
         transformInputRef.current = transformInput;
@@ -275,7 +280,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
                             && typeof parsed.exitCode === "number"
                             && typeof parsed.signal === "number"
                         ) {
-                            onSessionExit?.({
+                            onSessionExitRef.current?.({
                                 exitCode: parsed.exitCode,
                                 signal: parsed.signal,
                             });
@@ -340,10 +345,10 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
             terminalRef.current = null;
             fitAddonRef.current = null;
         };
-    }, [sessionId, cwd, onSessionExit]);
+    }, [sessionId, cwd]);
 
     return (
-        <div className="relative flex h-full flex-col">
+        <div className="relative flex h-full flex-col bg-[#0f1218]">
             <div className="absolute right-2 top-1 z-10">
                 <span
                     className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${connected
@@ -358,7 +363,7 @@ export const TerminalTab = forwardRef<TerminalTabHandle, TerminalTabProps>(funct
                     {connected ? "Connected" : "Connecting..."}
                 </span>
             </div>
-            <div ref={containerRef} className="min-h-0 flex-1" />
+            <div ref={containerRef} className="min-h-0 flex-1 bg-[#0f1218]" />
         </div>
     );
 });

@@ -102,9 +102,14 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
                 branch={gitChanges.branch}
                 loading={gitChanges.loading}
                 committing={gitChanges.committing}
+                syncing={gitChanges.syncing}
+                canSync={gitChanges.canSync}
+                ahead={gitChanges.ahead}
+                behind={gitChanges.behind}
                 error={gitChanges.error}
                 selectedFilePath={selectedDiffFilePath}
                 onCommit={(msg) => void gitChanges.commit(msg)}
+                onSync={() => void gitChanges.sync()}
                 onReview={onOpenReview}
                 onRefresh={() => void gitChanges.refresh()}
                 onClose={() => onUpdatePanel(undefined)}

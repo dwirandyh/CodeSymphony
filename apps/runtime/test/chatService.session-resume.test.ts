@@ -186,4 +186,48 @@ describe("chatService early session persistence", () => {
     expect(continueCompleted).toBeDefined();
     expect(capturedSessionIds).toEqual([null, "session-stop-resume"]);
   });
+
+  it("marks interrupted runs as failed during startup recovery before clients hydrate thread history", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread("Interrupted run");
+
+    await prisma.chatEvent.createMany({
+      data: [
+        {
+          threadId,
+          idx: 0,
+          type: "message_delta",
+          payload: {
+            messageId: "msg-assistant",
+            role: "assistant",
+            delta: "Sedang jalan...",
+          },
+        },
+        {
+          threadId,
+          idx: 1,
+          type: "tool_started",
+          payload: {
+            toolUseId: "tool-1",
+            toolName: "Bash",
+          },
+        },
+      ],
+    });
+
+    const recoveredCount = await chatService.recoverStuckThreads();
+
+    expect(recoveredCount).toBe(1);
+
+    const recoveredEvents = await chatService.listEvents(threadId);
+    expect(recoveredEvents.at(-1)?.type).toBe("chat.failed");
+    expect(recoveredEvents.at(-1)?.payload.message).toBe(
+      "Chat run interrupted by a runtime restart. You can send a new message to continue.",
+    );
+  });
 });

@@ -488,6 +488,9 @@ export type GitChangeEntry = z.infer<typeof GitChangeEntrySchema>;
 
 export const GitStatusSchema = z.object({
   branch: z.string(),
+  upstream: z.string().nullable().default(null),
+  ahead: z.number().int().nonnegative().default(0),
+  behind: z.number().int().nonnegative().default(0),
   entries: z.array(GitChangeEntrySchema),
 });
 export type GitStatus = z.infer<typeof GitStatusSchema>;

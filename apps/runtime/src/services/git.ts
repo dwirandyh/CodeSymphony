@@ -313,6 +313,18 @@ export async function getUpstreamRemote(cwd: string): Promise<string | null> {
   return remote?.trim() || null;
 }
 
+export async function getUpstreamBranch(cwd: string): Promise<string | null> {
+  const upstreamRef = await runGit([
+    "rev-parse",
+    "--abbrev-ref",
+    "--symbolic-full-name",
+    "@{upstream}",
+  ], cwd, { allowedExitCodes: [128] }).catch(() => "");
+
+  const trimmed = upstreamRef.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export async function hasUpstreamBranch(cwd: string): Promise<boolean> {
   return (await getUpstreamRemote(cwd)) !== null;
 }
@@ -378,6 +390,34 @@ export async function ensureCliAvailable(command: "gh" | "glab"): Promise<void> 
 
 export async function pushCurrentBranch(cwd: string, remote: string): Promise<void> {
   await runGit(["push", "-u", remote, "HEAD"], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+}
+
+function parseAheadBehindCounts(output: string): { ahead: number; behind: number } {
+  const [aheadRaw = "0", behindRaw = "0"] = output.trim().split(/\s+/);
+  const ahead = Number.parseInt(aheadRaw, 10);
+  const behind = Number.parseInt(behindRaw, 10);
+
+  return {
+    ahead: Number.isFinite(ahead) && ahead >= 0 ? ahead : 0,
+    behind: Number.isFinite(behind) && behind >= 0 ? behind : 0,
+  };
+}
+
+async function getBranchSyncStatus(cwd: string): Promise<{ upstream: string | null; ahead: number; behind: number }> {
+  const upstream = await getUpstreamBranch(cwd);
+  if (!upstream) {
+    return { upstream: null, ahead: 0, behind: 0 };
+  }
+
+  const countsOutput = await runGit(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cwd, {
+    timeoutMs: STATUS_GIT_TIMEOUT_MS,
+    allowedExitCodes: [128],
+  }).catch(() => "");
+
+  return {
+    upstream,
+    ...parseAheadBehindCounts(countsOutput),
+  };
 }
 
 export async function listGithubPullRequests(cwd: string, baseBranch: string): Promise<RemoteReviewRef[]> {
@@ -505,13 +545,22 @@ async function resolveBranchDiffBaseRef(cwd: string, baseBranch: string): Promis
   return null;
 }
 
-export async function getGitStatus(cwd: string): Promise<{ branch: string; entries: Array<{ path: string; status: string; insertions: number; deletions: number }> }> {
-  const branch = await runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD");
+export async function getGitStatus(cwd: string): Promise<{
+  branch: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  entries: Array<{ path: string; status: string; insertions: number; deletions: number }>;
+}> {
+  const [branch, syncStatus] = await Promise.all([
+    runGit(["branch", "--show-current"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS }).catch(() => "HEAD"),
+    getBranchSyncStatus(cwd),
+  ]);
   let porcelain = "";
   try {
     porcelain = await runGit(["status", "--porcelain"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS });
   } catch {
-    return { branch, entries: [] };
+    return { branch, ...syncStatus, entries: [] };
   }
 
   const entries: Array<{ path: string; status: string; insertions: number; deletions: number }> = [];
@@ -553,7 +602,25 @@ export async function getGitStatus(cwd: string): Promise<{ branch: string; entri
     entries.push({ path: filePath, status, ...stats });
   }
 
-  return { branch, entries };
+  return { branch, ...syncStatus, entries };
+}
+
+export async function syncCurrentBranch(cwd: string): Promise<{ result: string }> {
+  const upstream = await getUpstreamBranch(cwd);
+  if (!upstream) {
+    throw new Error("Current branch has no upstream branch");
+  }
+
+  const syncStatus = await getBranchSyncStatus(cwd);
+  if (syncStatus.behind > 0) {
+    await runGit(["pull", "--rebase", "--autostash"], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+  }
+
+  if (syncStatus.ahead > 0 || syncStatus.behind > 0) {
+    await runGit(["push"], cwd, { timeoutMs: REVIEW_CLI_TIMEOUT_MS });
+  }
+
+  return { result: `Synced with ${upstream}` };
 }
 
 export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): Promise<{
