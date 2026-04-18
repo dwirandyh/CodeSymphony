@@ -32,8 +32,10 @@ import type {
   Repository,
   ScriptResult,
   SendChatMessageInput,
+  UpdateWorktreeFileContentInput,
   UpdateModelProviderInput,
   UpdateRepositoryScriptsInput,
+  WorktreeFileContent,
   Worktree,
 } from "@codesymphony/shared-types";
 import { resolveRuntimeApiBases } from "./runtimeUrl";
@@ -470,6 +472,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  gitSync: (worktreeId: string) =>
+    request<{ result: string }>(`/worktrees/${worktreeId}/git/sync`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   discardGitChange: async (worktreeId: string, filePath: string) => {
     const response = await runtimeFetch(`/worktrees/${worktreeId}/git/discard`, {
       method: "POST",
@@ -488,6 +495,15 @@ export const api = {
     request<FileEntry[]>(`/worktrees/${worktreeId}/files/index`, { signal }),
   getSlashCommands: (worktreeId: string, signal?: AbortSignal) =>
     request<SlashCommandCatalog>(`/worktrees/${worktreeId}/slash-commands`, { signal }),
+  getWorktreeFileContent: (worktreeId: string, filePath: string, signal?: AbortSignal) => {
+    const params = `?path=${encodeURIComponent(filePath)}`;
+    return request<WorktreeFileContent>(`/worktrees/${worktreeId}/files/content${params}`, { signal });
+  },
+  saveWorktreeFileContent: (worktreeId: string, input: UpdateWorktreeFileContentInput) =>
+    request<WorktreeFileContent>(`/worktrees/${worktreeId}/files/content`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
   openWorktreeFile: async (worktreeId: string, input: OpenWorktreeFileInput) => {
     const response = await runtimeFetch(`/worktrees/${worktreeId}/files/open`, {
       method: "POST",

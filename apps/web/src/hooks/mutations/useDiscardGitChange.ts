@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import { queryKeys } from "../../lib/queryKeys";
+import { invalidateWorktreeGitQueries } from "./invalidateWorktreeGitQueries";
 
 export function useDiscardGitChange(worktreeId: string | null) {
   const queryClient = useQueryClient();
@@ -8,7 +8,7 @@ export function useDiscardGitChange(worktreeId: string | null) {
     mutationFn: (filePath: string) => api.discardGitChange(worktreeId!, filePath),
     onSuccess: () => {
       if (worktreeId) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(worktreeId) });
+        invalidateWorktreeGitQueries(queryClient, worktreeId);
       }
     },
   });

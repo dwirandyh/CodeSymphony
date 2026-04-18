@@ -12,6 +12,7 @@ vi.mock("../../lib/api", () => ({
     openFileDefaultApp: vi.fn(),
     getGitDiff: vi.fn().mockResolvedValue({ diff: "", summary: "" }),
     gitCommit: vi.fn().mockResolvedValue(undefined),
+    gitSync: vi.fn().mockResolvedValue(undefined),
     discardGitChange: vi.fn().mockResolvedValue(undefined),
   },
 }));
@@ -53,8 +54,13 @@ function HookBackedPanel({ worktreeId, enabled }: { worktreeId: string | null; e
       branch={git.branch}
       loading={git.loading}
       committing={git.committing}
+      syncing={git.syncing}
+      canSync={git.canSync}
+      ahead={git.ahead}
+      behind={git.behind}
       error={git.error}
       onCommit={() => {}}
+      onSync={() => {}}
       onReview={() => {}}
       onRefresh={git.refresh}
       onClose={() => {}}
@@ -68,8 +74,13 @@ describe("GitChangesPanel", () => {
     branch: "main",
     loading: false,
     committing: false,
+    syncing: false,
+    canSync: false,
+    ahead: 0,
+    behind: 0,
     error: null,
     onCommit: vi.fn(),
+    onSync: vi.fn(),
     onReview: vi.fn(),
     onRefresh: vi.fn(),
     onClose: vi.fn(),
@@ -129,6 +140,15 @@ describe("GitChangesPanel", () => {
       root.render(<GitChangesPanel {...baseProps} entries={[makeEntry()]} />);
     });
     expect(container.textContent).toContain("Commit");
+  });
+
+  it("renders Sync Changes button when branch needs syncing", () => {
+    act(() => {
+      root.render(<GitChangesPanel {...baseProps} canSync={true} ahead={2} behind={1} />);
+    });
+    expect(container.textContent).toContain("Sync Changes");
+    expect(container.textContent).toContain("2 outgoing");
+    expect(container.textContent).toContain("1 incoming");
   });
 
   it("shows error message", () => {
@@ -254,6 +274,9 @@ describe("GitChangesPanel", () => {
     vi.mocked(useGitStatus).mockReturnValue({
       data: {
         branch: "main",
+        upstream: "origin/main",
+        ahead: 0,
+        behind: 0,
         entries: [
           makeEntry({ path: "src/new-dir/", status: "untracked" }),
           makeEntry({ path: "src/zeta.ts", status: "modified" }),
@@ -287,5 +310,34 @@ describe("GitChangesPanel", () => {
       expect.stringContaining("file.ts"),
     ]);
     expect(container.textContent).toContain("4");
+  });
+
+  it("switches to Sync Changes from hook data when repo is clean but ahead/behind upstream", async () => {
+    vi.mocked(useGitStatus).mockReturnValue({
+      data: {
+        branch: "main",
+        upstream: "origin/main",
+        ahead: 1,
+        behind: 1,
+        entries: [],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useGitStatus>);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <HookBackedPanel worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Sync Changes");
+    expect(container.textContent).toContain("1 outgoing");
+    expect(container.textContent).toContain("1 incoming");
   });
 });

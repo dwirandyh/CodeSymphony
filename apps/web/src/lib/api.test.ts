@@ -345,7 +345,7 @@ describe("api", () => {
 
   describe("git operations", () => {
     it("gets git status", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ branch: "main", entries: [] }));
+      mockFetch.mockReturnValueOnce(mockOk({ branch: "main", upstream: "origin/main", ahead: 0, behind: 0, entries: [] }));
       await api.getGitStatus("w1");
     });
 
@@ -369,6 +369,12 @@ describe("api", () => {
     it("commits", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ result: "ok" }));
       await api.gitCommit("w1", { message: "test" });
+    });
+
+    it("syncs branch", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ result: "ok" }));
+      await api.gitSync("w1");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/git/sync");
     });
 
     it("discards change", async () => {
@@ -399,6 +405,18 @@ describe("api", () => {
         updatedAt: "2026-01-01T00:00:00.000Z",
       }));
       await api.getSlashCommands("w1");
+    });
+
+    it("gets worktree file content", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ path: "src/a.ts", content: "const a = 1;" }));
+      await api.getWorktreeFileContent("w1", "src/a.ts");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/files/content?path=");
+    });
+
+    it("saves worktree file content", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ path: "src/a.ts", content: "const a = 2;" }));
+      await api.saveWorktreeFileContent("w1", { path: "src/a.ts", content: "const a = 2;" });
+      expect(String(mockFetch.mock.calls[0]?.[1]?.body)).toContain('"content":"const a = 2;"');
     });
 
     it("opens worktree file", async () => {

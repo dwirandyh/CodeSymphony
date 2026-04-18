@@ -49,11 +49,12 @@ const mockScriptStreamService = {
 };
 
 vi.mock("../src/services/git.js", () => ({
-  getGitStatus: vi.fn().mockResolvedValue({ entries: [], branch: "main" }),
+  getGitStatus: vi.fn().mockResolvedValue({ entries: [], branch: "main", upstream: "origin/main", ahead: 0, behind: 0 }),
   getGitBranchDiffSummary: vi.fn().mockResolvedValue({ branch: "feature-x", baseBranch: "main", insertions: 10, deletions: 2, filesChanged: 1, available: true }),
   getGitDiff: vi.fn().mockResolvedValue("diff output"),
   getFileAtHead: vi.fn().mockResolvedValue("old content"),
   gitCommitAll: vi.fn().mockResolvedValue("abc123"),
+  syncCurrentBranch: vi.fn().mockResolvedValue({ result: "Synced with origin/main" }),
   discardGitChange: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -430,6 +431,27 @@ describe("repository routes", () => {
         method: "POST",
         url: "/api/worktrees/xxx/git/commit",
         payload: { message: "msg" },
+      });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("POST /api/worktrees/:id/git/sync", () => {
+    it("syncs the current branch", async () => {
+      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt", repositoryId: "r1" });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/worktrees/w1/git/sync",
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.result).toContain("Synced");
+    });
+
+    it("returns 404 when worktree not found", async () => {
+      mockWorktreeService.getById.mockResolvedValue(null);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/worktrees/xxx/git/sync",
       });
       expect(res.statusCode).toBe(404);
     });
