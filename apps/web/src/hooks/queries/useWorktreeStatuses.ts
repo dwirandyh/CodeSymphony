@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useQueries } from "@tanstack/react-query";
-import type { ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
+import type { ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { aggregateWorktreeStatus, type WorktreeStatusSummary } from "../../pages/workspace/hooks/worktreeThreadStatus";
@@ -11,46 +11,54 @@ export function useWorktreeStatuses(repositories: Repository[]) {
     [repositories],
   );
 
-  const threadListQueries = useQueries({
+  const threadListResult = useQueries({
     queries: activeWorktreeIds.map((worktreeId) => ({
       queryKey: queryKeys.threads.list(worktreeId),
       queryFn: () => api.listThreads(worktreeId),
       enabled: worktreeId.length > 0,
       staleTime: 5_000,
     })),
+    combine: (results) => {
+      const threadsByWorktreeId: Record<string, ChatThread[]> = {};
+      const allThreadIds: string[] = [];
+      for (let i = 0; i < activeWorktreeIds.length; i++) {
+        const threads = results[i]?.data ?? [];
+        threadsByWorktreeId[activeWorktreeIds[i]] = threads;
+        for (const thread of threads) {
+          allThreadIds.push(thread.id);
+        }
+      }
+      return { threadsByWorktreeId, threadIds: allThreadIds };
+    },
   });
 
-  const threadsByWorktreeId = useMemo(
-    () => Object.fromEntries(activeWorktreeIds.map((worktreeId, index) => [worktreeId, threadListQueries[index]?.data ?? []])),
-    [activeWorktreeIds, threadListQueries],
-  );
+  const { threadsByWorktreeId, threadIds } = threadListResult;
 
-  const threadIds = useMemo(() => {
-    const candidateThreadIds = new Set<string>();
-
-    for (const worktreeId of activeWorktreeIds) {
-      const threads = threadsByWorktreeId[worktreeId] ?? [];
-      for (const thread of threads) {
-        candidateThreadIds.add(thread.id);
-      }
+  const prevThreadIdsRef = useRef<string[]>([]);
+  const stableThreadIds = useMemo(() => {
+    const prev = prevThreadIdsRef.current;
+    if (prev.length === threadIds.length && prev.every((id, i) => id === threadIds[i])) {
+      return prev;
     }
+    prevThreadIdsRef.current = threadIds;
+    return threadIds;
+  }, [threadIds]);
 
-    return Array.from(candidateThreadIds);
-  }, [activeWorktreeIds, threadsByWorktreeId]);
-
-  const snapshotQueries = useQueries({
-    queries: threadIds.map((threadId) => ({
+  const snapshotResult = useQueries({
+    queries: stableThreadIds.map((threadId) => ({
       queryKey: queryKeys.threads.statusSnapshot(threadId),
       queryFn: () => api.getThreadSnapshot(threadId),
       enabled: threadId.length > 0,
       staleTime: 15_000,
     })),
+    combine: (results) => {
+      const snapshotsByThreadId: Record<string, ChatThreadSnapshot | null> = {};
+      for (let i = 0; i < stableThreadIds.length; i++) {
+        snapshotsByThreadId[stableThreadIds[i]] = (results[i]?.data ?? null) as ChatThreadSnapshot | null;
+      }
+      return snapshotsByThreadId;
+    },
   });
-
-  const snapshotsByThreadId = useMemo(
-    () => Object.fromEntries(threadIds.map((threadId, index) => [threadId, (snapshotQueries[index]?.data ?? null) as ChatThreadSnapshot | null])),
-    [threadIds, snapshotQueries],
-  );
 
   return useMemo<Record<string, WorktreeStatusSummary>>(() => {
     const entries = activeWorktreeIds.map((worktreeId) => {
@@ -58,7 +66,7 @@ export function useWorktreeStatuses(repositories: Repository[]) {
       const summary = aggregateWorktreeStatus(
         threads.map((thread) => ({
           thread,
-          snapshot: snapshotsByThreadId[thread.id] ?? null,
+          snapshot: snapshotResult[thread.id] ?? null,
         })),
       );
 
@@ -66,5 +74,5 @@ export function useWorktreeStatuses(repositories: Repository[]) {
     });
 
     return Object.fromEntries(entries);
-  }, [activeWorktreeIds, snapshotsByThreadId, threadsByWorktreeId]);
+  }, [activeWorktreeIds, snapshotResult, threadsByWorktreeId]);
 }

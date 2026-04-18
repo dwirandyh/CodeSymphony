@@ -263,6 +263,7 @@ export function useChatSession(
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
+  const threadByIdRef = useRef<Map<string, ChatThread>>(new Map());
   const messagesRef = useRef<ChatMessage[]>([]);
   const creatingThreadRef = useRef(false);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
@@ -282,6 +283,14 @@ export function useChatSession(
   activeThreadIdRef.current = selectedThreadId;
   threadsRef.current = threads;
   messagesRef.current = messages;
+
+  const threadByIdMap = threadByIdRef.current;
+  if (threadByIdMap.size !== threads.length || threads.some((t) => threadByIdMap.get(t.id) !== t)) {
+    threadByIdMap.clear();
+    for (const thread of threads) {
+      threadByIdMap.set(thread.id, thread);
+    }
+  }
 
   const { data: queriedThreads } = useThreads(selectedWorktreeId);
 
@@ -442,7 +451,7 @@ export function useChatSession(
     if (!selectedThreadId) return;
     if (restoredActiveThreadIdsRef.current.has(selectedThreadId)) return;
 
-    const thread = threads.find((t) => t.id === selectedThreadId);
+    const thread = threadByIdRef.current.get(selectedThreadId);
     if (thread?.active) {
       restoredActiveThreadIdsRef.current.add(selectedThreadId);
       startWaitingAssistant(selectedThreadId, { restored: true });
@@ -463,7 +472,7 @@ export function useChatSession(
   });
   const selectedThreadIsRunning = selectedThreadUiStatus === "running";
   const selectedThread = selectedThreadId
-    ? threads.find((thread) => thread.id === selectedThreadId) ?? null
+    ? threadByIdRef.current.get(selectedThreadId) ?? null
     : null;
   const composerMode = selectedThreadUiStatus === "review_plan"
     ? "plan"
@@ -1100,14 +1109,14 @@ export function useChatSession(
   }
 
   async function setThreadMode(threadId: string, mode: ChatMode) {
-    const currentThread = threads.find((thread) => thread.id === threadId) ?? null;
+    const currentThread = threadByIdRef.current.get(threadId) ?? null;
     if (currentThread?.mode === mode) {
       return;
     }
 
     onError(null);
     const previousThreads = threads;
-    const cacheWorktreeId = selectedWorktreeId ?? previousThreads.find((thread) => thread.id === threadId)?.worktreeId ?? null;
+    const cacheWorktreeId = selectedWorktreeId ?? (threadByIdRef.current.get(threadId)?.worktreeId ?? null);
 
     setThreads((current) => applyThreadModeUpdate(current, threadId, mode));
     if (cacheWorktreeId) {

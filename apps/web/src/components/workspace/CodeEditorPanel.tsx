@@ -4,29 +4,7 @@ import { basicSetup } from "codemirror";
 import { indentLess, indentMore, redo, undo } from "@codemirror/commands";
 import { Compartment, EditorSelection, EditorState, RangeSetBuilder, type Extension, type StateCommand } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, WidgetType, gutter, keymap } from "@codemirror/view";
-import { css } from "@codemirror/lang-css";
-import { html } from "@codemirror/lang-html";
-import { java } from "@codemirror/lang-java";
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
-import { php } from "@codemirror/lang-php";
-import { sass } from "@codemirror/lang-sass";
-import { sql } from "@codemirror/lang-sql";
 import { StreamLanguage, indentUnit } from "@codemirror/language";
-import { markdown } from "@codemirror/lang-markdown";
-import { python } from "@codemirror/lang-python";
-import { xml } from "@codemirror/lang-xml";
-import { yaml } from "@codemirror/lang-yaml";
-import { c, cpp, csharp, dart, kotlin, objectiveC, objectiveCpp } from "@codemirror/legacy-modes/mode/clike";
-import { go } from "@codemirror/legacy-modes/mode/go";
-import { groovy } from "@codemirror/legacy-modes/mode/groovy";
-import { lua } from "@codemirror/legacy-modes/mode/lua";
-import { properties } from "@codemirror/legacy-modes/mode/properties";
-import { ruby } from "@codemirror/legacy-modes/mode/ruby";
-import { rust } from "@codemirror/legacy-modes/mode/rust";
-import { shell } from "@codemirror/legacy-modes/mode/shell";
-import { swift } from "@codemirror/legacy-modes/mode/swift";
-import { toml } from "@codemirror/legacy-modes/mode/toml";
 import type { FileEntry, GitChangeStatus } from "@codesymphony/shared-types";
 import { FileDiff } from "@pierre/diffs/react";
 import { ArrowDown, ArrowUp, ChevronRight, Eye, FileCode2, Folder, GitBranch, Info, Loader2, Redo2, Save, Undo2, X } from "lucide-react";
@@ -54,91 +32,91 @@ function fileExtension(filePath: string): string {
   return lastDot >= 0 ? filename.slice(lastDot + 1).toLowerCase() : "";
 }
 
-function languageExtensionForFile(filePath: string): Extension {
-  const extension = fileExtension(filePath);
+async function languageExtensionForFile(filePath: string): Promise<Extension> {
+  const ext = fileExtension(filePath);
 
-  switch (extension) {
+  switch (ext) {
     case "ts":
-      return javascript({ typescript: true });
+      return (await import("@codemirror/lang-javascript")).javascript({ typescript: true });
     case "tsx":
-      return javascript({ typescript: true, jsx: true });
+      return (await import("@codemirror/lang-javascript")).javascript({ typescript: true, jsx: true });
     case "js":
     case "mjs":
     case "cjs":
-      return javascript();
+      return (await import("@codemirror/lang-javascript")).javascript();
     case "jsx":
-      return javascript({ jsx: true });
+      return (await import("@codemirror/lang-javascript")).javascript({ jsx: true });
     case "json":
-      return json();
+      return (await import("@codemirror/lang-json")).json();
     case "md":
     case "mdx":
-      return markdown();
+      return (await import("@codemirror/lang-markdown")).markdown();
     case "css":
-      return css();
+      return (await import("@codemirror/lang-css")).css();
     case "scss":
-      return sass();
+      return (await import("@codemirror/lang-sass")).sass();
     case "sass":
-      return sass({ indented: true });
+      return (await import("@codemirror/lang-sass")).sass({ indented: true });
     case "html":
     case "htm":
-      return html();
+      return (await import("@codemirror/lang-html")).html();
     case "xml":
     case "svg":
     case "plist":
-      return xml();
+      return (await import("@codemirror/lang-xml")).xml();
     case "yaml":
     case "yml":
-      return yaml();
+      return (await import("@codemirror/lang-yaml")).yaml();
     case "py":
-      return python();
+      return (await import("@codemirror/lang-python")).python();
     case "java":
-      return java();
+      return (await import("@codemirror/lang-java")).java();
     case "kt":
     case "kts":
-      return StreamLanguage.define(kotlin);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).kotlin);
     case "dart":
-      return StreamLanguage.define(dart);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).dart);
     case "swift":
-      return StreamLanguage.define(swift);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/swift")).swift);
     case "go":
-      return StreamLanguage.define(go);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/go")).go);
     case "rs":
-      return StreamLanguage.define(rust);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/rust")).rust);
     case "sh":
     case "bash":
     case "zsh":
-      return StreamLanguage.define(shell);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/shell")).shell);
     case "c":
     case "h":
-      return StreamLanguage.define(c);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).c);
     case "cc":
     case "cpp":
     case "cxx":
     case "hpp":
     case "hxx":
-      return StreamLanguage.define(cpp);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).cpp);
     case "cs":
-      return StreamLanguage.define(csharp);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).csharp);
     case "m":
-      return StreamLanguage.define(objectiveC);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).objectiveC);
     case "mm":
-      return StreamLanguage.define(objectiveCpp);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/clike")).objectiveCpp);
     case "php":
     case "phtml":
-      return php({ plain: true });
+      return (await import("@codemirror/lang-php")).php({ plain: true });
     case "sql":
-      return sql();
+      return (await import("@codemirror/lang-sql")).sql();
     case "rb":
-      return StreamLanguage.define(ruby);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/ruby")).ruby);
     case "lua":
-      return StreamLanguage.define(lua);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/lua")).lua);
     case "toml":
-      return StreamLanguage.define(toml);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/toml")).toml);
     case "properties":
-      return StreamLanguage.define(properties);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/properties")).properties);
     case "gradle":
     case "groovy":
-      return StreamLanguage.define(groovy);
+      return StreamLanguage.define((await import("@codemirror/legacy-modes/mode/groovy")).groovy);
     default:
       return [];
   }
@@ -1110,7 +1088,7 @@ export function CodeEditorPanel({
     }),
     vscodeDarkModern,
     editorTheme,
-    languageCompartmentRef.current.of(languageExtensionForFile(filePath)),
+    languageCompartmentRef.current.of([]),
     gitCompartmentRef.current.of(EMPTY_GIT_EXTENSION),
   ]), [filePath]);
 
@@ -1265,14 +1243,17 @@ export function CodeEditorPanel({
       return;
     }
 
-    const view = viewRef.current;
-    if (!view) {
-      return;
-    }
-
-    view.dispatch({
-      effects: languageCompartmentRef.current.reconfigure(languageExtensionForFile(filePath)),
+    let cancelled = false;
+    void languageExtensionForFile(filePath).then((langExt) => {
+      if (cancelled) return;
+      const view = viewRef.current;
+      if (!view) return;
+      view.dispatch({
+        effects: languageCompartmentRef.current.reconfigure(langExt),
+      });
     });
+
+    return () => { cancelled = true; };
   }, [filePath, isImageFile]);
 
   useEffect(() => {

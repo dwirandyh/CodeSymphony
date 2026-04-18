@@ -5,7 +5,9 @@ import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
-import { CodeEditorPanel } from "../components/workspace/CodeEditorPanel";
+const CodeEditorPanel = lazy(() =>
+  import("../components/workspace/CodeEditorPanel").then(m => ({ default: m.CodeEditorPanel }))
+);
 import { PermissionPromptCard } from "../components/workspace/PermissionPromptCard";
 import { PlanDecisionComposer } from "../components/workspace/PlanDecisionComposer";
 import { QuestionCard } from "../components/workspace/QuestionCard";
@@ -14,14 +16,24 @@ import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
 import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
 import { QuickFilePicker } from "../components/workspace/QuickFilePicker";
-import {
-  MobileActionBar,
-  MobileFilesSheet,
-  MobileGitSheet,
-  MobileMoreSheet,
-  MobileSavePill,
-  MobileUtilitiesSheet,
-} from "../components/workspace/MobileWorkspaceNavigation";
+const MobileActionBar = lazy(() =>
+  import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileActionBar }))
+);
+const MobileFilesSheet = lazy(() =>
+  import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileFilesSheet }))
+);
+const MobileGitSheet = lazy(() =>
+  import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileGitSheet }))
+);
+const MobileMoreSheet = lazy(() =>
+  import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileMoreSheet }))
+);
+const MobileSavePill = lazy(() =>
+  import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileSavePill }))
+);
+const MobileUtilitiesSheet = lazy(() =>
+  import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileUtilitiesSheet }))
+);
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -29,6 +41,10 @@ import { Button } from "../components/ui/button";
 const DiffReviewPanel = lazy(() =>
   import("../components/workspace/DiffReviewPanel").then(m => ({ default: m.DiffReviewPanel }))
 );
+
+const preloadCodeEditorPanel = () => import("../components/workspace/CodeEditorPanel");
+const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewPanel");
+
 import { api } from "../lib/api";
 import { openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
@@ -765,6 +781,13 @@ export function WorkspacePage() {
 
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
   const slashCommands = useSlashCommands(repos.selectedWorktreeId);
+
+  useEffect(() => {
+    if (!repos.selectedWorktreeId) return;
+    void preloadCodeEditorPanel();
+    void preloadDiffReviewPanel();
+  }, [repos.selectedWorktreeId]);
+
   const editorFileStateRef = useRef(editorFileStateByWorktreeId);
   const editorGitBaselineStateRef = useRef(editorGitBaselineStateByWorktreeId);
   const closingActiveFileRef = useRef<{ worktreeId: string; filePath: string } | null>(null);
@@ -1174,10 +1197,10 @@ export function WorkspacePage() {
 
     updateKeyboardState("init");
 
-    viewport?.addEventListener("resize", handleViewportChange);
-    viewport?.addEventListener("scroll", handleViewportChange);
+    viewport?.addEventListener("resize", handleViewportChange, { passive: true });
+    viewport?.addEventListener("scroll", handleViewportChange, { passive: true });
     virtualKeyboard?.addEventListener("geometrychange", handleViewportChange);
-    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("resize", handleViewportChange, { passive: true });
     document.addEventListener("focusin", handleFocusIn);
     document.addEventListener("focusout", handleFocusOut);
 
@@ -2066,110 +2089,118 @@ export function WorkspacePage() {
 
             {mobilePanelOpen === "files" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
-                <MobileFilesSheet
-                  open
-                  onOpenChange={(open) => {
-                    if (!open) {
-                      setMobilePanelOpen(null);
-                    }
-                  }}
-                  activeFilePath={activeFilePath}
-                  fileTabs={workspaceFileTabs}
-                  recentFilePaths={recentFilePaths}
-                  fileEntries={fileIndex.entries}
-                  loading={fileIndex.loading}
-                  onOpenFile={(path) => {
-                    void openReadFile(path);
-                  }}
-                  onCloseFile={handleCloseFileTab}
-                />
+                <Suspense fallback={null}>
+                  <MobileFilesSheet
+                    open
+                    onOpenChange={(open) => {
+                      if (!open) {
+                        setMobilePanelOpen(null);
+                      }
+                    }}
+                    activeFilePath={activeFilePath}
+                    fileTabs={workspaceFileTabs}
+                    recentFilePaths={recentFilePaths}
+                    fileEntries={fileIndex.entries}
+                    loading={fileIndex.loading}
+                    onOpenFile={(path) => {
+                      void openReadFile(path);
+                    }}
+                    onCloseFile={handleCloseFileTab}
+                  />
+                </Suspense>
               </section>
             ) : mobilePanelOpen === "git" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
-                <MobileGitSheet
-                  open
-                  onOpenChange={(open) => {
-                    if (!open) {
+                <Suspense fallback={null}>
+                  <MobileGitSheet
+                    open
+                    onOpenChange={(open) => {
+                      if (!open) {
+                        setMobilePanelOpen(null);
+                      }
+                    }}
+                    entries={gitChanges.entries}
+                    branch={gitChanges.branch}
+                    loading={gitChanges.loading}
+                    committing={gitChanges.committing}
+                    syncing={gitChanges.syncing}
+                    canSync={gitChanges.canSync}
+                    ahead={gitChanges.ahead}
+                    behind={gitChanges.behind}
+                    error={gitChanges.error}
+                    selectedFilePath={selectedDiffFilePath}
+                    onCommit={(msg) => void gitChanges.commit(msg)}
+                    onSync={() => void gitChanges.sync()}
+                    onReview={() => {
+                      handleOpenReview();
                       setMobilePanelOpen(null);
-                    }
-                  }}
-                  entries={gitChanges.entries}
-                  branch={gitChanges.branch}
-                  loading={gitChanges.loading}
-                  committing={gitChanges.committing}
-                  syncing={gitChanges.syncing}
-                  canSync={gitChanges.canSync}
-                  ahead={gitChanges.ahead}
-                  behind={gitChanges.behind}
-                  error={gitChanges.error}
-                  selectedFilePath={selectedDiffFilePath}
-                  onCommit={(msg) => void gitChanges.commit(msg)}
-                  onSync={() => void gitChanges.sync()}
-                  onReview={() => {
-                    handleOpenReview();
-                    setMobilePanelOpen(null);
-                  }}
-                  onRefresh={() => void gitChanges.refresh()}
-                  onSelectFile={(path) => {
-                    handleSelectDiffFile(path);
-                    setMobilePanelOpen(null);
-                  }}
-                  onDiscardChange={(path) => void gitChanges.discardChange(path)}
-                  onOpenFile={(path) => {
-                    void openReadFile(path);
-                    setMobilePanelOpen(null);
-                  }}
-                  reviewKind={repositoryReviews.data?.kind ?? null}
-                  reviewRef={selectedReviewRef}
-                  prMrActionDisabled={prMrActionDisabled}
-                  prMrActionTitle={prMrActionTitle}
-                  prMrActionBusy={prMrActionBusy}
-                  onPrMrAction={() => {
-                    setMobilePanelOpen(null);
-                    void handlePrMrAction();
-                  }}
-                />
+                    }}
+                    onRefresh={() => void gitChanges.refresh()}
+                    onSelectFile={(path) => {
+                      handleSelectDiffFile(path);
+                      setMobilePanelOpen(null);
+                    }}
+                    onDiscardChange={(path) => void gitChanges.discardChange(path)}
+                    onOpenFile={(path) => {
+                      void openReadFile(path);
+                      setMobilePanelOpen(null);
+                    }}
+                    reviewKind={repositoryReviews.data?.kind ?? null}
+                    reviewRef={selectedReviewRef}
+                    prMrActionDisabled={prMrActionDisabled}
+                    prMrActionTitle={prMrActionTitle}
+                    prMrActionBusy={prMrActionBusy}
+                    onPrMrAction={() => {
+                      setMobilePanelOpen(null);
+                      void handlePrMrAction();
+                    }}
+                  />
+                </Suspense>
               </section>
             ) : mobilePanelOpen === "more" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
-                <MobileMoreSheet
-                  open
-                  onOpenChange={(open) => {
-                    if (!open) {
+                <Suspense fallback={null}>
+                  <MobileMoreSheet
+                    open
+                    onOpenChange={(open) => {
+                      if (!open) {
+                        setMobilePanelOpen(null);
+                      }
+                    }}
+                    hasWorktree={!!repos.selectedWorktreeId}
+                    runScriptActive={selectedBottomPanelState.runScriptActive}
+                    onOpenRepositories={handleOpenMobileRepositories}
+                    onOpenSettings={() => {
                       setMobilePanelOpen(null);
-                    }
-                  }}
-                  hasWorktree={!!repos.selectedWorktreeId}
-                  runScriptActive={selectedBottomPanelState.runScriptActive}
-                  onOpenRepositories={handleOpenMobileRepositories}
-                  onOpenSettings={() => {
-                    setMobilePanelOpen(null);
-                    setSettingsOpen(true);
-                  }}
-                  onOpenUtility={(tab) => handleOpenMobileUtilities(tab)}
-                />
+                      setSettingsOpen(true);
+                    }}
+                    onOpenUtility={(tab) => handleOpenMobileUtilities(tab)}
+                  />
+                </Suspense>
               </section>
             ) : mobilePanelOpen === "utilities" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
-                <MobileUtilitiesSheet
-                  open
-                  onOpenChange={(open) => {
-                    if (!open) {
-                      setMobilePanelOpen(null);
-                    }
-                  }}
-                  onBack={() => setMobilePanelOpen("more")}
-                  worktreeId={repos.selectedWorktreeId}
-                  worktreePath={repos.selectedWorktree?.path ?? null}
-                  selectedThreadId={chat.selectedThreadId}
-                  scriptOutputs={scriptOutputs}
-                  activeTab={selectedBottomPanelState.activeTab}
-                  onRerunSetup={handleRerunSetup}
-                  runScriptActive={selectedBottomPanelState.runScriptActive}
-                  runScriptSessionId={selectedBottomPanelState.runScriptSessionId}
-                  onRunScriptExit={(event) => handleRunScriptTerminalExit(event, repos.selectedWorktreeId)}
-                  bottomOffset={mobileKeyboardOffset}
-                />
+                <Suspense fallback={null}>
+                  <MobileUtilitiesSheet
+                    open
+                    onOpenChange={(open) => {
+                      if (!open) {
+                        setMobilePanelOpen(null);
+                      }
+                    }}
+                    onBack={() => setMobilePanelOpen("more")}
+                    worktreeId={repos.selectedWorktreeId}
+                    worktreePath={repos.selectedWorktree?.path ?? null}
+                    selectedThreadId={chat.selectedThreadId}
+                    scriptOutputs={scriptOutputs}
+                    activeTab={selectedBottomPanelState.activeTab}
+                    onRerunSetup={handleRerunSetup}
+                    runScriptActive={selectedBottomPanelState.runScriptActive}
+                    runScriptSessionId={selectedBottomPanelState.runScriptSessionId}
+                    onRunScriptExit={(event) => handleRunScriptTerminalExit(event, repos.selectedWorktreeId)}
+                    bottomOffset={mobileKeyboardOffset}
+                  />
+                </Suspense>
               </section>
             ) : activeView === "review" && reviewTabOpen && repos.selectedWorktreeId ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -2179,32 +2210,34 @@ export function WorkspacePage() {
               </section>
             ) : activeView === "file" && activeFilePath ? (
               <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-                <CodeEditorPanel
-                  key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
-                  filePath={activeFilePath}
-                  fileEntries={fileIndex.entries}
-                  content={activeEditorFileState?.draftContent ?? ""}
-                  mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
-                  gitHeadContent={activeEditorGitBaselineState?.headContent ?? null}
-                  gitBaselineReady={activeEditorGitBaselineState?.loaded ?? false}
-                  gitBaselineLoading={activeEditorGitBaselineState?.loading ?? false}
-                  gitBranch={gitChanges.branch}
-                  gitStatus={activeGitChangeEntry?.status ?? null}
-                  loading={activeEditorFileState?.loading ?? false}
-                  saving={activeEditorFileState?.saving ?? false}
-                  dirty={!!(
-                    activeEditorFileState
-                    && activeEditorFileState.loaded
-                    && !activeEditorFileState.mimeType.startsWith("image/")
-                    && activeEditorFileState.draftContent !== activeEditorFileState.savedContent
-                  )}
-                  error={activeEditorFileState?.error ?? null}
-                  mobileBottomOffset={mobileKeyboardOffset}
-                  onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
-                  onSave={() => void handleSaveActiveFile()}
-                  onRetry={handleRetryActiveFileLoad}
-                  onOpenFile={(path) => void openReadFile(path)}
-                />
+                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading editor...</div>}>
+                  <CodeEditorPanel
+                    key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
+                    filePath={activeFilePath}
+                    fileEntries={fileIndex.entries}
+                    content={activeEditorFileState?.draftContent ?? ""}
+                    mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
+                    gitHeadContent={activeEditorGitBaselineState?.headContent ?? null}
+                    gitBaselineReady={activeEditorGitBaselineState?.loaded ?? false}
+                    gitBaselineLoading={activeEditorGitBaselineState?.loading ?? false}
+                    gitBranch={gitChanges.branch}
+                    gitStatus={activeGitChangeEntry?.status ?? null}
+                    loading={activeEditorFileState?.loading ?? false}
+                    saving={activeEditorFileState?.saving ?? false}
+                    dirty={!!(
+                      activeEditorFileState
+                      && activeEditorFileState.loaded
+                      && !activeEditorFileState.mimeType.startsWith("image/")
+                      && activeEditorFileState.draftContent !== activeEditorFileState.savedContent
+                    )}
+                    error={activeEditorFileState?.error ?? null}
+                    mobileBottomOffset={mobileKeyboardOffset}
+                    onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
+                    onSave={() => void handleSaveActiveFile()}
+                    onRetry={handleRetryActiveFileLoad}
+                    onOpenFile={(path) => void openReadFile(path)}
+                  />
+                </Suspense>
               </section>
             ) : (
               <>
@@ -2329,23 +2362,27 @@ export function WorkspacePage() {
             )}
           </div>
 
-          <MobileSavePill
-            visible={canSaveActiveFile && activeView !== "file" && !mobileInlinePanel}
-            saving={activeEditorFileState?.saving ?? false}
-            bottomOffset={mobileKeyboardOffset}
-            onSave={() => void handleSaveActiveFile()}
-          />
+          <Suspense fallback={null}>
+            <MobileSavePill
+              visible={canSaveActiveFile && activeView !== "file" && !mobileInlinePanel}
+              saving={activeEditorFileState?.saving ?? false}
+              bottomOffset={mobileKeyboardOffset}
+              onSave={() => void handleSaveActiveFile()}
+            />
+          </Suspense>
 
           {mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen ? (
-            <MobileActionBar
-              hasWorktree={!!repos.selectedWorktreeId}
-              gitChangeCount={gitChanges.entries.length}
-              activeSection={activeMobileSection}
-              onShowChat={handleShowMobileChat}
-              onOpenFiles={handleOpenMobileFiles}
-              onOpenGit={handleOpenMobileGit}
-              onOpenMore={handleOpenMobileMore}
-            />
+            <Suspense fallback={null}>
+              <MobileActionBar
+                hasWorktree={!!repos.selectedWorktreeId}
+                gitChangeCount={gitChanges.entries.length}
+                activeSection={activeMobileSection}
+                onShowChat={handleShowMobileChat}
+                onOpenFiles={handleOpenMobileFiles}
+                onOpenGit={handleOpenMobileGit}
+                onOpenMore={handleOpenMobileMore}
+              />
+            </Suspense>
           ) : null}
 
           <div className="hidden lg:block">
