@@ -1,55 +1,68 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useLiveQuery } from "@tanstack/react-db";
 import type { ModelProvider } from "@codesymphony/shared-types";
+import { getModelProvidersCollection, toPlainModelProvider } from "../../../collections/modelProviders";
 import { api } from "../../../lib/api";
 
 export function useModelProviders() {
-  const [providers, setProviders] = useState<ModelProvider[]>([]);
-  const requestVersionRef = useRef(0);
-  const mountedRef = useRef(false);
-
-  useEffect(() => {
-    mountedRef.current = true;
-
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  const queryClient = useQueryClient();
+  const collection = useMemo(() => getModelProvidersCollection(queryClient), [queryClient]);
+  const { data: liveProviders, isLoading } = useLiveQuery(() => collection, [collection]);
+  const providers = useMemo(
+    () => liveProviders?.map((provider) => toPlainModelProvider(provider as ModelProvider)) ?? [],
+    [liveProviders],
+  );
 
   const replaceProviders = useCallback((nextProviders: ModelProvider[]) => {
-    requestVersionRef.current += 1;
-    if (mountedRef.current) {
-      setProviders(nextProviders);
-    }
-  }, []);
+    const nextById = new Map(nextProviders.map((provider) => [provider.id, provider] as const));
+    const currentIds = (collection.toArray as ModelProvider[]).map((provider) => provider.id);
+
+    collection.utils.writeBatch(() => {
+      for (const providerId of currentIds) {
+        if (!nextById.has(providerId)) {
+          collection.utils.writeDelete(providerId);
+        }
+      }
+      for (const provider of nextProviders) {
+        collection.utils.writeUpsert(provider);
+      }
+    });
+  }, [collection]);
 
   const refreshProviders = useCallback(async (): Promise<ModelProvider[]> => {
-    const requestVersion = requestVersionRef.current + 1;
-    requestVersionRef.current = requestVersion;
-
-    const nextProviders = await api.listModelProviders();
-    if (mountedRef.current && requestVersionRef.current === requestVersion) {
-      setProviders(nextProviders);
-    }
-
-    return nextProviders;
-  }, []);
+    await collection.utils.refetch();
+    return (collection.toArray as ModelProvider[]).map((provider) => toPlainModelProvider(provider));
+  }, [collection]);
 
   const selectProvider = useCallback(async (id: string | null): Promise<ModelProvider[]> => {
     if (id === null) {
       await api.deactivateAllProviders();
-    } else {
-      await api.activateModelProvider(id);
+      const currentProviders = (collection.toArray as ModelProvider[]).map((provider) => ({
+        ...provider,
+        isActive: false,
+      }));
+      replaceProviders(currentProviders);
+      return currentProviders.map((provider) => toPlainModelProvider(provider));
     }
 
-    return refreshProviders();
-  }, [refreshProviders]);
+    const activeProvider = await api.activateModelProvider(id);
+    const nextProviders = (collection.toArray as ModelProvider[])
+      .map((provider) => ({
+        ...provider,
+        isActive: false,
+      }));
 
-  useEffect(() => {
-    void refreshProviders().catch(() => {});
-  }, [refreshProviders]);
+    const nextById = new Map(nextProviders.map((provider) => [provider.id, provider] as const));
+    nextById.set(activeProvider.id, activeProvider);
+    replaceProviders([...nextById.values()].map((provider) => toPlainModelProvider(provider)));
+
+    return [...nextById.values()].map((provider) => toPlainModelProvider(provider));
+  }, [collection, replaceProviders]);
 
   return {
     providers,
+    loading: isLoading || collection.utils.isLoading,
     refreshProviders,
     replaceProviders,
     selectProvider,

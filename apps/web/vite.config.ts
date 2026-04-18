@@ -14,7 +14,6 @@ export default defineConfig(({ mode }) => {
 
   if (mode === "analyze") {
     plugins.push(
-      // @ts-expect-error -- installed as devDependency; types available after pnpm install
       import("rollup-plugin-visualizer").then(({ visualizer }: { visualizer: Function }) =>
         visualizer({ open: true, filename: "dist/stats.html", gzipSize: true })
       ) as unknown as PluginOption,

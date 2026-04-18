@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import type { MutableRefObject } from "react";
 import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
@@ -8,6 +8,10 @@ import { EVENT_TYPES } from "../constants";
 import { GIT_STATUS_INVALIDATION_EVENT_TYPES, isMetadataToolEvent, payloadStringOrNull } from "../eventUtils";
 import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "./snapshotInvalidationEventTypes";
+import { buildRepositoryWorktreeIndex } from "../../../collections/worktrees";
+import { patchThreadInCollection, refetchThreadsCollection } from "../../../collections/threads";
+import { refetchGitStatusCollection } from "../../../collections/gitStatus";
+import { useThreadsByWorktreeIds } from "../../../hooks/queries/useThreads";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
@@ -90,36 +94,10 @@ function patchThreadListCache(params: {
   mode?: ChatThread["mode"] | null;
 }) {
   const { queryClient, worktreeId, threadId, active, threadTitle, mode } = params;
-
-  queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(worktreeId), (current) => {
-    if (!current) {
-      return current;
-    }
-
-    let next = current;
-
-    const index = next.findIndex((thread) => thread.id === threadId);
-    if (index === -1) {
-      return next;
-    }
-
-    const thread = next[index]!;
-    const nextTitle = threadTitle ?? thread.title;
-    const nextMode = mode ?? thread.mode;
-    const nextActive = typeof active === "boolean" ? active : thread.active;
-
-    if (thread.title === nextTitle && thread.mode === nextMode && thread.active === nextActive) {
-      return next;
-    }
-
-    const updated = [...next];
-    updated[index] = {
-      ...thread,
-      title: nextTitle,
-      mode: nextMode,
-      active: nextActive,
-    };
-    return updated;
+  patchThreadInCollection(queryClient, worktreeId, threadId, {
+    ...(typeof active === "boolean" ? { active } : {}),
+    ...(threadTitle ? { title: threadTitle } : {}),
+    ...(mode ? { mode } : {}),
   });
 }
 
@@ -149,35 +127,16 @@ export function useBackgroundWorktreeStatusStream(
   const lastEventIdxByThreadRef = useRef<Map<string, number>>(new Map());
   const recentlyRelevantThreadIdsRef = useRef<Set<string>>(new Set());
 
-  const activeWorktreeIds = useMemo(
-    () => repositories
-      .flatMap((repository) => repository.worktrees.filter((worktree) => worktree.status === "active").map((worktree) => worktree.id)),
+  const repositoryWorktreeIndex = useMemo(
+    () => buildRepositoryWorktreeIndex(repositories),
     [repositories],
   );
-
-  const repositoryIdByWorktreeId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const repository of repositories) {
-      for (const worktree of repository.worktrees) {
-        map.set(worktree.id, repository.id);
-      }
-    }
-    return map;
-  }, [repositories]);
-
-  const threadListQueries = useQueries({
-    queries: activeWorktreeIds.map((worktreeId) => ({
-      queryKey: queryKeys.threads.list(worktreeId),
-      queryFn: () => api.listThreads(worktreeId),
-      enabled: worktreeId.length > 0,
-      staleTime: 5_000,
-    })),
-  });
-
+  const activeWorktreeIds = repositoryWorktreeIndex.activeWorktreeIds;
+  const { threadsByWorktreeId } = useThreadsByWorktreeIds(activeWorktreeIds);
   const threadEntries = useMemo(
-    () => activeWorktreeIds.flatMap((worktreeId, index) =>
-      (threadListQueries[index]?.data ?? []).map((thread) => ({ thread, worktreeId }))),
-    [activeWorktreeIds, threadListQueries],
+    () => activeWorktreeIds.flatMap((worktreeId) =>
+      (threadsByWorktreeId[worktreeId] ?? []).map((thread) => ({ thread, worktreeId }))),
+    [activeWorktreeIds, threadsByWorktreeId],
   );
 
   const subscribedThreads = useMemo(
@@ -274,7 +233,8 @@ export function useBackgroundWorktreeStatusStream(
           }
 
           if (GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {
-            void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(worktreeId) });
+            void refetchGitStatusCollection(queryClient, worktreeId);
+            void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitDiffScope(worktreeId) });
           }
 
           if (TERMINAL_EVENT_TYPES.has(payload.type)) {
@@ -287,7 +247,7 @@ export function useBackgroundWorktreeStatusStream(
               mode: nextMode,
             });
             if (thread.kind === "review") {
-              const repositoryId = repositoryIdByWorktreeId.get(worktreeId);
+              const repositoryId = repositoryWorktreeIndex.repositoryIdByWorktreeId.get(worktreeId);
               if (repositoryId) {
                 void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(repositoryId) });
               }
@@ -324,7 +284,7 @@ export function useBackgroundWorktreeStatusStream(
           closeCurrentStream();
 
           if (currentState.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(worktreeId) });
+            void refetchThreadsCollection(queryClient, worktreeId);
             void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(thread.id) });
             streamsRef.current.delete(thread.id);
             return;
@@ -345,7 +305,7 @@ export function useBackgroundWorktreeStatusStream(
 
       startStream();
     }
-  }, [queryClient, repositoryIdByWorktreeId, subscribedThreads]);
+  }, [queryClient, repositoryWorktreeIndex.repositoryIdByWorktreeId, subscribedThreads]);
 
   useEffect(() => {
     return () => {

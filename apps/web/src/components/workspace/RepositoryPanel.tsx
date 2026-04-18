@@ -35,6 +35,7 @@ import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBran
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
 import { isTauriDesktop } from "../../lib/openExternalUrl";
+import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
 import type {
   WorktreeStatusSummary,
   WorktreeThreadUiStatus,
@@ -393,17 +394,23 @@ export function RepositoryPanel({
     previewVisibleRepositoryIdsRef.current = previewVisibleRepositoryIds;
   }, [previewVisibleRepositoryIds]);
 
-  const activeWorktreeSummaries = useMemo(
-    () =>
-      repositories.flatMap((repository) =>
-        repository.worktrees
-          .filter((worktree) => worktree.status === "active")
-          .map((worktree) => ({
-            worktreeId: worktree.id,
-            baseBranch: worktree.baseBranch || repository.defaultBranch,
-          })),
-      ),
+  const repositoryWorktreeIndex = useMemo(
+    () => buildRepositoryWorktreeIndex(repositories),
     [repositories],
+  );
+  const activeWorktreeSummaries = useMemo(
+    () => repositoryWorktreeIndex.activeWorktreeIds.flatMap((worktreeId) => {
+      const worktree = repositoryWorktreeIndex.worktreeById.get(worktreeId);
+      if (!worktree) {
+        return [];
+      }
+
+      return [{
+        worktreeId,
+        baseBranch: worktree.baseBranch || worktree.repository.defaultBranch,
+      }];
+    }),
+    [repositoryWorktreeIndex],
   );
   const worktreeStatuses = useWorktreeStatuses(repositories);
   const gitBranchDiffQueries = useQueries({

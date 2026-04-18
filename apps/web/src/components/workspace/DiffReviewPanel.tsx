@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, ChevronRight, Columns2, FileText, Rows3, RefreshCw } from "lucide-react";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
-import { api } from "../../lib/api";
-import { parsePatchFiles, SPLIT_WITH_NEWLINES } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import type { FileDiffMetadata } from "@pierre/diffs";
+import { useGitDiffReview, type GitDiffReviewEntry } from "../../hooks/queries/useGitDiffReview";
 
 interface DiffReviewPanelProps {
   worktreeId: string;
@@ -21,6 +20,11 @@ const STATUS_BADGE: Record<string, { label: string; className: string }> = {
 
 type ViewMode = "split" | "unified";
 
+const DIFF_ENTRY_STYLE: CSSProperties = {
+  contentVisibility: "auto",
+  containIntrinsicSize: "0 520px",
+};
+
 function mapFileType(type: FileDiffMetadata["type"]): string {
   switch (type) {
     case "new":
@@ -35,42 +39,76 @@ function mapFileType(type: FileDiffMetadata["type"]): string {
   }
 }
 
-function computeStats(file: FileDiffMetadata) {
-  let additions = 0;
-  let deletions = 0;
-  for (const hunk of file.hunks) {
-    for (const content of hunk.hunkContent) {
-      if (content.type === "change") {
-        additions += content.additions.length;
-        deletions += content.deletions.length;
-      }
-    }
+function splitFilePath(path: string) {
+  const lastSlashIdx = path.lastIndexOf("/");
+  if (lastSlashIdx === -1) {
+    return { fileName: path, directory: null };
   }
-  return { additions, deletions };
+
+  return {
+    fileName: path.slice(lastSlashIdx + 1),
+    directory: path.slice(0, lastSlashIdx + 1),
+  };
 }
 
-type DiffFileEntry = {
-  file: FileDiffMetadata;
-  stats: { additions: number; deletions: number };
-};
+function estimateDiffBodyHeight(entry: GitDiffReviewEntry, isMobile: boolean): number {
+  const changedLineCount = entry.stats.additions + entry.stats.deletions;
+  const hunkCount = entry.file.hunks.length;
+  const lineHeight = isMobile ? 18 : 20;
+  const hunkOverhead = isMobile ? 56 : 72;
+  const baseHeight = isMobile ? 160 : 220;
+  const maxHeight = isMobile ? 2200 : 2800;
 
-type DiffFetchResult = {
-  entries: DiffFileEntry[];
-  diffLength: number;
-  fileCount: number;
-  fetchedFullContents: boolean;
-  diffFetchDurationMs: number;
-  parseDurationMs: number;
-  contentFetchDurationMs: number;
-  totalDurationMs: number;
-};
+  return Math.min(
+    maxHeight,
+    Math.max(baseHeight, changedLineCount * lineHeight + hunkCount * hunkOverhead),
+  );
+}
 
-const diffRequestCache = new Map<string, DiffFetchResult>();
-const diffRequestInFlight = new Map<string, Promise<DiffFetchResult>>();
+function useNearScrollViewport(root: HTMLDivElement | null, rootMargin = "1200px 0px") {
+  const targetRef = useRef<HTMLDivElement | null>(null);
+  const [isNearViewport, setIsNearViewport] = useState(() => typeof IntersectionObserver === "undefined");
 
-export function __resetDiffReviewPanelCacheForTests() {
-  diffRequestCache.clear();
-  diffRequestInFlight.clear();
+  useEffect(() => {
+    if (isNearViewport) {
+      return;
+    }
+
+    const target = targetRef.current;
+    if (!target) {
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") {
+      setIsNearViewport(true);
+      return;
+    }
+
+    if (!root) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+          setIsNearViewport(true);
+          observer.disconnect();
+        }
+      },
+      {
+        root,
+        rootMargin,
+      },
+    );
+
+    observer.observe(target);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [isNearViewport, root, rootMargin]);
+
+  return { isNearViewport, targetRef };
 }
 
 function useIsMobile(breakpoint = 768) {
@@ -86,135 +124,65 @@ function useIsMobile(breakpoint = 768) {
 }
 
 export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPanelProps) {
-  const [entries, setEntries] = useState<DiffFileEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [viewMode, setViewMode] = useState<ViewMode>("split");
+  const { data, error, isLoading, isFetching, refetch, dataUpdatedAt } = useGitDiffReview(worktreeId, selectedFilePath ?? null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [viewMode, setViewMode] = useState<ViewMode>("unified");
+  const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
+  const pendingCollapseScrollRestoreRef = useRef<{
+    headerElement: HTMLButtonElement;
+    relativeTop: number;
+  } | null>(null);
   const isMobile = useIsMobile();
-  const cacheKey = `${worktreeId}::${selectedFilePath ?? "__all__"}`;
-  const appliedCacheKeyRef = useRef<string | null>(null);
-  const mountedRef = useRef(false);
+  const entries = data?.entries ?? [];
 
   const effectiveViewMode: ViewMode = isMobile ? "unified" : viewMode;
+  const deferredViewMode = useDeferredValue(effectiveViewMode);
 
-  const applyResult = useCallback((nextCacheKey: string, result: DiffFetchResult) => {
-    if (!mountedRef.current) {
+  useEffect(() => {
+    if (!data) {
       return;
     }
 
-    appliedCacheKeyRef.current = nextCacheKey;
-    setEntries(result.entries);
-    setCollapsed(() => result.fetchedFullContents ? new Set() : new Set(result.entries.map((entry) => entry.file.name)));
-    setError(null);
-    setLoading(false);
-  }, []);
+    startTransition(() => {
+      setCollapsed(() => new Set());
+    });
+  }, [data, dataUpdatedAt, selectedFilePath, worktreeId]);
 
-  const fetchDiff = useCallback(async (options?: { force?: boolean }) => {
-    const force = options?.force === true;
-    setLoading(true);
-    setError(null);
-    try {
-      if (!force) {
-        const cached = diffRequestCache.get(cacheKey);
-        if (cached) {
-          applyResult(cacheKey, cached);
-          return;
-        }
-      } else {
-        diffRequestCache.delete(cacheKey);
-      }
-
-      let request = diffRequestInFlight.get(cacheKey);
-      if (!request) {
-        request = (async (): Promise<DiffFetchResult> => {
-          const fetchStartedAt = performance.now();
-          const opts = selectedFilePath ? { filePath: selectedFilePath } : undefined;
-          const diffStartedAt = performance.now();
-          const { diff } = await api.getGitDiff(worktreeId, opts);
-          const diffFetchedAt = performance.now();
-          const parseStartedAt = performance.now();
-          const patches = parsePatchFiles(diff);
-          const allFiles = patches.flatMap((p) => p.files);
-          const shouldFetchFullContents = Boolean(selectedFilePath);
-          const fileFetchStartedAt = performance.now();
-
-          if (shouldFetchFullContents) {
-            await Promise.all(
-              allFiles.map(async (file) => {
-                try {
-                  const { oldContent, newContent } = await api.getFileContents(worktreeId, file.name);
-                  file.oldLines = (oldContent ?? "").split(SPLIT_WITH_NEWLINES);
-                  file.newLines = (newContent ?? "").split(SPLIT_WITH_NEWLINES);
-                } catch {
-                  // If fetching contents fails, the diff still renders without expand
-                }
-              })
-            );
-          }
-
-          const entries = allFiles.map((file) => ({
-            file,
-            stats: computeStats(file),
-          }));
-          const totalDurationMs = performance.now() - fetchStartedAt;
-          const parseDurationMs = performance.now() - parseStartedAt;
-          const contentFetchDurationMs = shouldFetchFullContents ? performance.now() - fileFetchStartedAt : 0;
-          return {
-            entries,
-            diffLength: diff.length,
-            fileCount: allFiles.length,
-            fetchedFullContents: shouldFetchFullContents,
-            diffFetchDurationMs: Number((diffFetchedAt - diffStartedAt).toFixed(2)),
-            parseDurationMs: Number(parseDurationMs.toFixed(2)),
-            contentFetchDurationMs: Number(contentFetchDurationMs.toFixed(2)),
-            totalDurationMs: Number(totalDurationMs.toFixed(2)),
-          };
-        })();
-        diffRequestInFlight.set(cacheKey, request);
-      }
-
-      const result = await request;
-      if (diffRequestInFlight.get(cacheKey) === request) {
-        diffRequestInFlight.delete(cacheKey);
-      }
-      diffRequestCache.set(cacheKey, result);
-      applyResult(cacheKey, result);
-
-    } catch (e) {
-      if (diffRequestInFlight.get(cacheKey)) {
-        diffRequestInFlight.delete(cacheKey);
-      }
-      if (!mountedRef.current) {
-        return;
-      }
-      setError(e instanceof Error ? e.message : "Failed to load diff");
-      setLoading(false);
-    }
-  }, [applyResult, cacheKey, selectedFilePath, worktreeId]);
-
-  useEffect(() => {
-    mountedRef.current = true;
-
-    if (appliedCacheKeyRef.current !== cacheKey) {
-      void fetchDiff();
-    } else {
-      setLoading(false);
+  useLayoutEffect(() => {
+    const pending = pendingCollapseScrollRestoreRef.current;
+    if (!pending || !scrollRoot) {
+      return;
     }
 
-    return () => {
-      mountedRef.current = false;
-    };
-  }, [cacheKey, fetchDiff]);
+    const rootTop = scrollRoot.getBoundingClientRect().top;
+    const nextRelativeTop = pending.headerElement.getBoundingClientRect().top - rootTop;
+    scrollRoot.scrollTop += nextRelativeTop - pending.relativeTop;
+    pendingCollapseScrollRestoreRef.current = null;
+  }, [collapsed, scrollRoot]);
 
-  const toggleFile = (path: string) => {
+  const toggleFile = useCallback((path: string, headerElement: HTMLButtonElement | null) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
+      if (next.has(path)) {
+        pendingCollapseScrollRestoreRef.current = null;
+        next.delete(path);
+        return next;
+      }
+
+      if (scrollRoot && headerElement) {
+        const rootTop = scrollRoot.getBoundingClientRect().top;
+        pendingCollapseScrollRestoreRef.current = {
+          headerElement,
+          relativeTop: headerElement.getBoundingClientRect().top - rootTop,
+        };
+      } else {
+        pendingCollapseScrollRestoreRef.current = null;
+      }
+
+      next.add(path);
       return next;
     });
-  };
+  }, [scrollRoot]);
 
   const totals = useMemo(() => {
     let additions = 0;
@@ -226,7 +194,11 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
     return { additions, deletions };
   }, [entries]);
 
-  if (loading) {
+  const handleScrollAreaRef = useCallback((node: HTMLDivElement | null) => {
+    setScrollRoot((current) => current === node ? current : node);
+  }, []);
+
+  if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         Loading diff...
@@ -235,12 +207,14 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
   }
 
   if (error) {
+    const errorMessage = error instanceof Error ? error.message : "Failed to load diff";
+
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2">
-        <p className="text-sm text-destructive">{error}</p>
+        <p className="text-sm text-destructive">{errorMessage}</p>
         <button
           type="button"
-          onClick={() => void fetchDiff({ force: true })}
+          onClick={() => void refetch()}
           className="text-xs text-muted-foreground underline hover:text-foreground"
         >
           Retry
@@ -286,7 +260,12 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
           <div className="flex items-center gap-0.5 rounded-md border border-border/20 p-0.5">
             <button
               type="button"
-              onClick={() => setViewMode("split")}
+              onClick={() => {
+                startTransition(() => {
+                  setViewMode("split");
+                });
+              }}
+              aria-pressed={viewMode === "split"}
               className={cn(
                 "flex items-center gap-1 rounded px-2 py-1 text-[11px] transition-colors",
                 viewMode === "split"
@@ -300,7 +279,12 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
             </button>
             <button
               type="button"
-              onClick={() => setViewMode("unified")}
+              onClick={() => {
+                startTransition(() => {
+                  setViewMode("unified");
+                });
+              }}
+              aria-pressed={viewMode === "unified"}
               className={cn(
                 "flex items-center gap-1 rounded px-2 py-1 text-[11px] transition-colors",
                 viewMode === "unified"
@@ -317,73 +301,31 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
 
         <button
           type="button"
-          onClick={() => void fetchDiff({ force: true })}
+          onClick={() => void refetch()}
           className="rounded-sm p-1 text-muted-foreground/50 transition-colors hover:bg-secondary/40 hover:text-foreground"
           title="Refresh diff"
         >
-          <RefreshCw className="h-3.5 w-3.5" />
+          <RefreshCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
         </button>
       </div>
 
       {/* Diff entries */}
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea ref={handleScrollAreaRef} className="min-h-0 flex-1">
         <div className={cn("space-y-3", isMobile ? "p-2" : "p-4")}>
           {entries.map((entry) => {
             const file = entry.file;
             const key = file.name;
-            const isCollapsed = collapsed.has(key);
-            const stats = entry.stats;
-            const status = mapFileType(file.type);
-            const badge = STATUS_BADGE[status] ?? STATUS_BADGE.modified;
-
             return (
-              <div key={key} className="overflow-hidden rounded-lg border border-border/20 bg-card/40">
-                {/* File header */}
-                <button
-                  type="button"
-                  onClick={() => toggleFile(key)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-secondary/20"
-                >
-                  {isCollapsed ? (
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
-                  ) : (
-                    <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
-                  )}
-                  <span className={cn("shrink-0 text-[11px] font-bold", badge.className)}>
-                    {badge.label}
-                  </span>
-                  <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
-                  <span className="min-w-0 truncate text-xs font-medium text-foreground/90">
-                    {file.name}
-                  </span>
-                  <span className="ml-auto flex shrink-0 gap-2 pl-2 text-[11px]">
-                    {stats.additions > 0 && (
-                      <span className="font-semibold text-green-400">+{stats.additions}</span>
-                    )}
-                    {stats.deletions > 0 && (
-                      <span className="font-semibold text-red-400">-{stats.deletions}</span>
-                    )}
-                  </span>
-                </button>
-
-                {/* Diff hunks */}
-                {!isCollapsed && (
-                  <div className="border-t border-border/10">
-                    <FileDiff
-                      fileDiff={file}
-                      options={{
-                        diffStyle: effectiveViewMode,
-                        overflow: isMobile ? "wrap" : "scroll",
-                        theme: "pierre-dark",
-                        themeType: "dark",
-                        disableFileHeader: true,
-                        expandUnchanged: false,
-                        expansionLineCount: 20,
-                      }}
-                    />
-                  </div>
-                )}
-              </div>
+              <DiffReviewEntryCard
+                key={key}
+                entry={entry}
+                isCollapsed={collapsed.has(key)}
+                isMobile={isMobile}
+                isSelected={selectedFilePath === key}
+                scrollRoot={scrollRoot}
+                viewMode={deferredViewMode}
+                onToggle={toggleFile}
+              />
             );
           })}
         </div>
@@ -391,3 +333,109 @@ export function DiffReviewPanel({ worktreeId, selectedFilePath }: DiffReviewPane
     </div>
   );
 }
+
+const DiffReviewEntryCard = memo(function DiffReviewEntryCard({
+  entry,
+  isCollapsed,
+  isMobile,
+  isSelected,
+  scrollRoot,
+  viewMode,
+  onToggle,
+}: {
+  entry: GitDiffReviewEntry;
+  isCollapsed: boolean;
+  isMobile: boolean;
+  isSelected: boolean;
+  scrollRoot: HTMLDivElement | null;
+  viewMode: ViewMode;
+  onToggle: (path: string, headerElement: HTMLButtonElement | null) => void;
+}) {
+  const file = entry.file;
+  const key = file.name;
+  const stats = entry.stats;
+  const status = mapFileType(file.type);
+  const badge = STATUS_BADGE[status] ?? STATUS_BADGE.modified;
+  const headerRef = useRef<HTMLButtonElement | null>(null);
+  const { fileName, directory } = useMemo(() => splitFilePath(file.name), [file.name]);
+  const estimatedDiffBodyHeight = useMemo(() => estimateDiffBodyHeight(entry, isMobile), [entry, isMobile]);
+  const { isNearViewport, targetRef } = useNearScrollViewport(scrollRoot, isSelected ? "1600px 0px" : "1200px 0px");
+  const shouldRenderDiff = !isCollapsed && (isSelected || isNearViewport);
+
+  return (
+    <div
+      ref={targetRef}
+      className="rounded-lg border border-border/20 bg-card/40"
+      style={DIFF_ENTRY_STYLE}
+    >
+      <button
+        ref={headerRef}
+        type="button"
+        onClick={() => onToggle(key, headerRef.current)}
+        aria-expanded={!isCollapsed}
+        title={file.name}
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-secondary",
+          isCollapsed
+            ? "relative bg-card"
+            : "sticky top-0 z-10 border-b border-border/10 bg-card",
+        )}
+      >
+        {isCollapsed ? (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+        )}
+        <span className={cn("shrink-0 text-[11px] font-bold", badge.className)}>
+          {badge.label}
+        </span>
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
+        <span className="min-w-0 flex flex-1 items-baseline gap-1 overflow-hidden">
+          <span className="truncate text-xs font-medium text-foreground/90">
+            {fileName}
+          </span>
+          {directory && (
+            <span className="truncate text-[11px] text-muted-foreground/55">
+              {directory}
+            </span>
+          )}
+        </span>
+        <span className="ml-auto flex shrink-0 gap-2 pl-2 text-[11px]">
+          {stats.additions > 0 && (
+            <span className="font-semibold text-green-400">+{stats.additions}</span>
+          )}
+          {stats.deletions > 0 && (
+            <span className="font-semibold text-red-400">-{stats.deletions}</span>
+          )}
+        </span>
+      </button>
+
+      {!isCollapsed && (
+        <div className="overflow-hidden border-t border-border/10">
+          {shouldRenderDiff ? (
+            <FileDiff
+              fileDiff={file}
+              options={{
+                diffStyle: viewMode,
+                overflow: isMobile ? "wrap" : "scroll",
+                theme: "pierre-dark",
+                themeType: "dark",
+                disableFileHeader: true,
+                expandUnchanged: false,
+                expansionLineCount: 20,
+              }}
+            />
+          ) : (
+            <div
+              aria-hidden="true"
+              className="flex items-center px-3 py-4 text-xs text-muted-foreground/45"
+              style={{ minHeight: `${estimatedDiffBodyHeight}px` }}
+            >
+              Preparing diff...
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});

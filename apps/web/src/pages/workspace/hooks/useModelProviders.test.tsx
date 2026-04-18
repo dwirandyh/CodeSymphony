@@ -1,7 +1,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProvider } from "@codesymphony/shared-types";
+import { resetModelProvidersCollectionRegistryForTest } from "../../../collections/modelProviders";
 import { useModelProviders } from "./useModelProviders";
 
 const apiMocks = vi.hoisted(() => ({
@@ -17,19 +19,6 @@ vi.mock("../../../lib/api", () => ({
     deactivateAllProviders: apiMocks.deactivateAllProviders,
   },
 }));
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-};
-
-function createDeferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((nextResolve) => {
-    resolve = nextResolve;
-  });
-  return { promise, resolve };
-}
 
 function makeProvider(overrides: Partial<ModelProvider> = {}): ModelProvider {
   return {
@@ -47,6 +36,7 @@ function makeProvider(overrides: Partial<ModelProvider> = {}): ModelProvider {
 
 let container: HTMLDivElement;
 let root: Root;
+let queryClient: QueryClient;
 let latestHook: ReturnType<typeof useModelProviders> | null = null;
 
 function HookHarness() {
@@ -55,15 +45,17 @@ function HookHarness() {
     <div>
       {latestHook.providers.length === 0
         ? "empty"
-        : latestHook.providers.map((provider) => provider.modelId).join(",")}
+        : latestHook.providers.map((provider) => `${provider.modelId}:${provider.isActive ? "active" : "idle"}`).join(",")}
     </div>
   );
 }
 
 beforeEach(() => {
+  resetModelProvidersCollectionRegistryForTest();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   latestHook = null;
   apiMocks.listModelProviders.mockReset();
   apiMocks.activateModelProvider.mockReset();
@@ -72,8 +64,20 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  queryClient.clear();
+  resetModelProvidersCollectionRegistryForTest();
   container.remove();
 });
+
+function renderHarness() {
+  act(() => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <HookHarness />
+      </QueryClientProvider>,
+    );
+  });
+}
 
 async function flushEffects() {
   await act(async () => {
@@ -86,90 +90,67 @@ describe("useModelProviders", () => {
   it("loads providers from the initial fetch", async () => {
     apiMocks.listModelProviders.mockResolvedValueOnce([makeProvider({ id: "initial", modelId: "claude-initial" })]);
 
-    act(() => {
-      root.render(<HookHarness />);
-    });
-
+    renderHarness();
     await flushEffects();
 
-    expect(container.textContent).toContain("claude-initial");
+    expect(container.textContent).toContain("claude-initial:idle");
   });
 
-  it("does not let an older fetch overwrite newer synced providers", async () => {
-    const staleRequest = createDeferred<ModelProvider[]>();
-    apiMocks.listModelProviders.mockImplementationOnce(() => staleRequest.promise);
+  it("replaces the shared provider collection locally", async () => {
+    apiMocks.listModelProviders.mockResolvedValueOnce([]);
 
-    act(() => {
-      root.render(<HookHarness />);
-    });
-
+    renderHarness();
+    await flushEffects();
     expect(container.textContent).toBe("empty");
 
     act(() => {
       latestHook?.replaceProviders([makeProvider({ id: "fresh", modelId: "claude-fresh" })]);
     });
 
-    expect(container.textContent).toContain("claude-fresh");
-
-    staleRequest.resolve([makeProvider({ id: "stale", modelId: "claude-stale" })]);
-    await flushEffects();
-
-    expect(container.textContent).toContain("claude-fresh");
-    expect(container.textContent).not.toContain("claude-stale");
+    expect(container.textContent).toContain("claude-fresh:idle");
   });
 
-  it("keeps the latest refresh result when requests resolve out of order", async () => {
-    apiMocks.listModelProviders.mockResolvedValueOnce([]);
-
-    act(() => {
-      root.render(<HookHarness />);
-    });
-    await flushEffects();
-
-    const firstRefresh = createDeferred<ModelProvider[]>();
-    const secondRefresh = createDeferred<ModelProvider[]>();
-    apiMocks.listModelProviders
-      .mockImplementationOnce(() => firstRefresh.promise)
-      .mockImplementationOnce(() => secondRefresh.promise);
-
-    act(() => {
-      void latestHook?.refreshProviders();
-      void latestHook?.refreshProviders();
-    });
-
-    secondRefresh.resolve([makeProvider({ id: "latest", modelId: "claude-latest" })]);
-    await flushEffects();
-    expect(container.textContent).toContain("claude-latest");
-
-    firstRefresh.resolve([makeProvider({ id: "older", modelId: "claude-older" })]);
-    await flushEffects();
-    expect(container.textContent).toContain("claude-latest");
-    expect(container.textContent).not.toContain("claude-older");
-  });
-
-  it("refreshes providers after activating and deactivating a provider", async () => {
+  it("refreshes providers from the server on demand", async () => {
     apiMocks.listModelProviders
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([makeProvider({ id: "active", modelId: "claude-active", isActive: true })])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([makeProvider({ id: "latest", modelId: "claude-latest" })]);
 
-    act(() => {
-      root.render(<HookHarness />);
+    renderHarness();
+    await flushEffects();
+    expect(container.textContent).toBe("empty");
+
+    await act(async () => {
+      await latestHook?.refreshProviders();
     });
+
+    expect(container.textContent).toContain("claude-latest:idle");
+  });
+
+  it("updates active provider flags when activating and deactivating", async () => {
+    apiMocks.listModelProviders.mockResolvedValueOnce([
+      makeProvider({ id: "old", modelId: "claude-old" }),
+      makeProvider({ id: "active", modelId: "claude-active" }),
+    ]);
+
+    renderHarness();
     await flushEffects();
 
-    apiMocks.activateModelProvider.mockResolvedValue(undefined);
+    apiMocks.activateModelProvider.mockResolvedValue(
+      makeProvider({ id: "active", modelId: "claude-active", isActive: true }),
+    );
     await act(async () => {
       await latestHook?.selectProvider("active");
     });
     expect(apiMocks.activateModelProvider).toHaveBeenCalledWith("active");
-    expect(container.textContent).toContain("claude-active");
+    expect(container.textContent).toContain("claude-active:active");
+    expect(container.textContent).toContain("claude-old:idle");
 
     apiMocks.deactivateAllProviders.mockResolvedValue(undefined);
     await act(async () => {
       await latestHook?.selectProvider(null);
     });
     expect(apiMocks.deactivateAllProviders).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toBe("empty");
+    expect(container.textContent).toContain("claude-active:idle");
+    expect(container.textContent).toContain("claude-old:idle");
   });
 });
