@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent } from "@codesymphony/shared-types";
+import { getThreadEventsCollection, resetThreadCollectionsForTest } from "../../../collections/threadCollections";
 import { usePendingGates, type PendingGatesDeps } from "./usePendingGates";
 
 const {
@@ -48,13 +49,11 @@ function makeEvent(idx: number, type: ChatEvent["type"], payload: Record<string,
 }
 
 function TestComponent({
-  events,
   selectedThreadId,
 }: {
-  events: ChatEvent[];
   selectedThreadId: string | null;
 }) {
-  hookResult = usePendingGates(events, selectedThreadId, mockDeps);
+  hookResult = usePendingGates(selectedThreadId, mockDeps);
   return (
     <div>
       perms:{hookResult.pendingPermissionRequests.length}
@@ -69,6 +68,7 @@ function TestComponent({
 let queryClient: QueryClient;
 
 beforeEach(() => {
+  resetThreadCollectionsForTest();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -84,13 +84,25 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  resetThreadCollectionsForTest();
 });
 
 function render(events: ChatEvent[], threadId: string | null = "t1") {
+  if (threadId) {
+    const eventsCollection = getThreadEventsCollection(threadId);
+    const existingEventIds = (eventsCollection.toArray as ChatEvent[]).map((event) => event.id);
+    if (existingEventIds.length > 0) {
+      eventsCollection.delete(existingEventIds);
+    }
+    if (events.length > 0) {
+      eventsCollection.insert(events);
+    }
+  }
+
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <TestComponent events={events} selectedThreadId={threadId} />
+        <TestComponent selectedThreadId={threadId} />
       </QueryClientProvider>
     );
   });

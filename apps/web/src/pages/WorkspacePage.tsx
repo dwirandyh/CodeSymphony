@@ -280,8 +280,6 @@ export function WorkspacePage() {
 
   const {
     providers: modelProviders,
-    refreshProviders: refreshModelProviders,
-    replaceProviders: replaceModelProviders,
     selectProvider,
   } = useModelProviders();
 
@@ -668,7 +666,7 @@ export function WorkspacePage() {
     prevSelectedThreadIdRef.current = chat.selectedThreadId;
   }, [chat.selectedThreadId]);
 
-  const gates = usePendingGates(chat.events, chat.selectedThreadId, {
+  const gates = usePendingGates(chat.selectedThreadIdForData ?? chat.selectedThreadId, {
     onError: setError,
     startWaitingAssistant: chat.startWaitingAssistant,
     clearWaitingAssistantForThread: chat.clearWaitingAssistantForThread,
@@ -2097,6 +2095,7 @@ export function WorkspacePage() {
                         setMobilePanelOpen(null);
                       }
                     }}
+                    worktreeId={repos.selectedWorktreeId}
                     activeFilePath={activeFilePath}
                     fileTabs={workspaceFileTabs}
                     recentFilePaths={recentFilePaths}
@@ -2338,8 +2337,6 @@ export function WorkspacePage() {
                     worktreeId={repos.selectedWorktreeId}
                     mode={chat.composerMode}
                     modeLocked={chat.composerModeLocked}
-                    fileIndex={fileIndex.entries}
-                    fileIndexLoading={fileIndex.loading}
                     slashCommands={slashCommands.commands}
                     slashCommandsLoading={slashCommands.loading}
                     providers={modelProviders}
@@ -2412,9 +2409,8 @@ export function WorkspacePage() {
 
         <WorkspaceRightPanel
           rightPanelId={rightPanelId}
+          worktreeId={repos.selectedWorktreeId}
           gitChanges={gitChanges}
-          fileIndexEntries={fileIndex.entries}
-          fileIndexLoading={fileIndex.loading}
           activeFilePath={activeFilePath}
           selectedDiffFilePath={selectedDiffFilePath}
           onOpenReview={handleOpenReview}
@@ -2542,7 +2538,6 @@ export function WorkspacePage() {
           setSettingsOpen(false);
           void repos.removeRepository(id);
         }}
-        onProvidersChanged={replaceModelProviders}
       />
 
       <TeardownErrorDialog

@@ -1,23 +1,30 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
-import { api } from "../../lib/api";
-import { queryKeys } from "../../lib/queryKeys";
-
-const GIT_STATUS_REFETCH_MS = 30_000;
-
-function gitStatusQueryOptions(worktreeId: string) {
-  return queryOptions({
-    queryKey: queryKeys.worktrees.gitStatus(worktreeId),
-    queryFn: () => api.getGitStatus(worktreeId),
-    enabled: worktreeId.length > 0,
-    refetchInterval: (query) => query.state.fetchStatus === "fetching" ? false : GIT_STATUS_REFETCH_MS,
-    staleTime: GIT_STATUS_REFETCH_MS - 1_000,
-    retry: false,
-  });
-}
+import { useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useLiveQuery } from "@tanstack/react-db";
+import type { GitStatus } from "@codesymphony/shared-types";
+import { getGitStatusCollection, toPlainGitStatus, type GitStatusRow } from "../../collections/gitStatus";
 
 export function useGitStatus(worktreeId: string | null) {
-  return useQuery({
-    ...gitStatusQueryOptions(worktreeId ?? ""),
-    enabled: !!worktreeId,
-  });
+  const queryClient = useQueryClient();
+  const collection = useMemo(
+    () => worktreeId ? getGitStatusCollection(queryClient, worktreeId) : null,
+    [queryClient, worktreeId],
+  );
+  const { data: liveRows, isLoading } = useLiveQuery(() => collection ?? undefined, [collection]);
+  const data = useMemo<GitStatus | undefined>(
+    () => {
+      const firstRow = liveRows?.[0] as GitStatusRow | undefined;
+      return firstRow ? toPlainGitStatus(firstRow) : undefined;
+    },
+    [liveRows],
+  );
+
+  return {
+    data,
+    isLoading: collection ? isLoading || collection.utils.isLoading : false,
+    isFetching: collection?.utils.isFetching ?? false,
+    error: collection?.utils.lastError ?? null,
+    isError: collection?.utils.isError ?? false,
+    refetch: () => collection ? collection.utils.refetch() : Promise.resolve([]),
+  };
 }

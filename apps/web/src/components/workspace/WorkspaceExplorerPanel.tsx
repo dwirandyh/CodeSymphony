@@ -9,6 +9,7 @@ import {
   type MaterialIconThemeManifest,
 } from "../../lib/materialIconTheme";
 import { cn } from "../../lib/utils";
+import { useFileIndex } from "../../pages/workspace/hooks/useFileIndex";
 
 type ExplorerNode = {
   name: string;
@@ -158,6 +159,25 @@ function parentDirectoryPaths(filePath: string): string[] {
 }
 
 interface WorkspaceExplorerPanelProps {
+  worktreeId?: string | null;
+  gitEntries: GitChangeEntry[];
+  entries?: FileEntry[];
+  loading?: boolean;
+  activeFilePath: string | null;
+  onOpenFile: (path: string) => void;
+  onClose: () => void;
+  showHeader?: boolean;
+}
+
+function WorkspaceExplorerPanelContent({
+  gitEntries,
+  entries,
+  loading,
+  activeFilePath,
+  onOpenFile,
+  onClose,
+  showHeader = true,
+}: {
   entries: FileEntry[];
   gitEntries: GitChangeEntry[];
   loading: boolean;
@@ -165,17 +185,7 @@ interface WorkspaceExplorerPanelProps {
   onOpenFile: (path: string) => void;
   onClose: () => void;
   showHeader?: boolean;
-}
-
-export function WorkspaceExplorerPanel({
-  entries,
-  gitEntries,
-  loading,
-  activeFilePath,
-  onOpenFile,
-  onClose,
-  showHeader = true,
-}: WorkspaceExplorerPanelProps) {
+}) {
   const tree = useMemo(() => buildTree(entries, gitEntries), [entries, gitEntries]);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set(["src", "app", "apps", "packages"]));
   const [iconManifest, setIconManifest] = useState<MaterialIconThemeManifest | null>(null);
@@ -346,4 +356,38 @@ export function WorkspaceExplorerPanel({
       </ScrollArea>
     </section>
   );
+}
+
+function WorkspaceExplorerPanelBridge(props: WorkspaceExplorerPanelProps) {
+  const fileIndex = useFileIndex(props.worktreeId ?? null);
+
+  return (
+    <WorkspaceExplorerPanelContent
+      entries={fileIndex.entries}
+      gitEntries={props.gitEntries}
+      loading={fileIndex.loading}
+      activeFilePath={props.activeFilePath}
+      onOpenFile={props.onOpenFile}
+      onClose={props.onClose}
+      showHeader={props.showHeader}
+    />
+  );
+}
+
+export function WorkspaceExplorerPanel(props: WorkspaceExplorerPanelProps) {
+  if (props.entries !== undefined && typeof props.loading === "boolean") {
+    return (
+      <WorkspaceExplorerPanelContent
+        entries={props.entries}
+        gitEntries={props.gitEntries}
+        loading={props.loading}
+        activeFilePath={props.activeFilePath}
+        onOpenFile={props.onOpenFile}
+        onClose={props.onClose}
+        showHeader={props.showHeader}
+      />
+    );
+  }
+
+  return <WorkspaceExplorerPanelBridge {...props} />;
 }
