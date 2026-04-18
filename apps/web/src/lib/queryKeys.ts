@@ -7,8 +7,11 @@ export const queryKeys = {
     gitStatus: (worktreeId: string) => ["worktrees", worktreeId, "gitStatus"] as const,
     gitBranchDiffSummary: (worktreeId: string, baseBranch: string) =>
       ["worktrees", worktreeId, "gitBranchDiffSummary", baseBranch] as const,
+    gitDiffScope: (worktreeId: string) => ["worktrees", worktreeId, "gitDiff"] as const,
     gitDiff: (worktreeId: string, filePath?: string) =>
       ["worktrees", worktreeId, "gitDiff", filePath ?? "__all__"] as const,
+    gitDiffRaw: (worktreeId: string, filePath?: string) =>
+      ["worktrees", worktreeId, "gitDiffRaw", filePath ?? "__all__"] as const,
     fileIndex: (worktreeId: string) => ["worktrees", worktreeId, "fileIndex"] as const,
     slashCommands: (worktreeId: string) => ["worktrees", worktreeId, "slashCommands"] as const,
     fileContents: (worktreeId: string, filePath: string) =>

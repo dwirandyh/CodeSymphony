@@ -234,6 +234,7 @@ export function useBackgroundWorktreeStatusStream(
 
           if (GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {
             void refetchGitStatusCollection(queryClient, worktreeId);
+            void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitDiffScope(worktreeId) });
           }
 
           if (TERMINAL_EVENT_TYPES.has(payload.type)) {
