@@ -18,12 +18,14 @@ interface ScriptOutputTabProps {
   entries: ScriptOutputEntry[];
   onRerunSetup?: () => void;
   rerunning?: boolean;
+  showHeader?: boolean;
 }
 
 export function ScriptOutputTab({
   entries,
   onRerunSetup,
   rerunning,
+  showHeader = true,
 }: ScriptOutputTabProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -44,31 +46,33 @@ export function ScriptOutputTab({
   }, [setupEntries.length, latestSetupOutputLength]);
 
   return (
-    <div className="flex h-full flex-col overflow-auto p-2">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xs font-medium text-foreground">Setup Script</div>
-          <div className="text-[10px] text-muted-foreground">Runs automatically after worktree creation.</div>
-        </div>
+    <div className={showHeader ? "flex h-full flex-col overflow-auto p-2" : "flex h-full flex-col overflow-auto p-3 pt-2"}>
+      {showHeader ? (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div>
+            <div className="text-xs font-medium text-foreground">Setup Script</div>
+            <div className="text-[10px] text-muted-foreground">Runs automatically after worktree creation.</div>
+          </div>
 
-        {onRerunSetup && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-6 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
-            disabled={rerunning}
-            onClick={onRerunSetup}
-          >
-            {rerunning ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Play className="h-3 w-3" />
-            )}
-            Re-run setup
-          </Button>
-        )}
-      </div>
+          {onRerunSetup && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-6 gap-1.5 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              disabled={rerunning}
+              onClick={onRerunSetup}
+            >
+              {rerunning ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Play className="h-3 w-3" />
+              )}
+              Re-run setup
+            </Button>
+          )}
+        </div>
+      ) : null}
 
       <div className="overflow-hidden rounded-md border border-border/20 bg-card/30">
         {setupEntries.length === 0 ? (

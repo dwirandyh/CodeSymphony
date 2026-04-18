@@ -258,6 +258,43 @@ describe("useChatSession", () => {
     }
   });
 
+  it("refreshes thread activity on session switch and clears stale stop state after sync", async () => {
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
+
+    renderHook("thread-b");
+
+    expect(hookResult.showStopAction).toBe(true);
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.list("wt-1") });
+
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b", false)];
+
+    renderHook("thread-b");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.showStopAction).toBe(false);
+  });
+
+  it("reconciles stale running state when stop reports no active assistant run", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    vi.mocked(api.stopRun).mockRejectedValue(new Error("No active assistant run for this thread"));
+
+    renderHook("thread-a");
+
+    expect(hookResult.showStopAction).toBe(true);
+
+    await act(async () => {
+      await hookResult.stopAssistantRun();
+    });
+
+    expect(hookResult.showStopAction).toBe(false);
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot("thread-a") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot("thread-a") });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.list("wt-1") });
+  });
+
   it("creates or reuses dedicated PR/MR thread, sends message, and invalidates repository reviews", async () => {
     vi.mocked(api.updateThreadMode).mockResolvedValue({ ...makeThread("thread-a"), mode: "plan" });
     const prMrThread = {

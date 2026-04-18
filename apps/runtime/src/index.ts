@@ -187,6 +187,7 @@ async function main() {
     const port = Number(process.env.RUNTIME_PORT ?? "4331");
 
     const app = createApp();
+    const recoveredStuckThreadCount = await app.chatService.recoverStuckThreads();
 
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
 
@@ -195,13 +196,9 @@ async function main() {
       databaseUrl: database.urlPreview,
       databasePath: database.resolvedPath,
     }, `Runtime listening on http://${host}:${port}`);
-    void app.chatService.recoverStuckThreads()
-      .then((count) => {
-        if (count > 0) app.logService.log("info", "runtime", `Recovered ${count} stuck thread(s)`);
-      })
-      .catch((error) => {
-        app.log.error(error, "Failed to recover stuck threads during startup");
-      });
+    if (recoveredStuckThreadCount > 0) {
+      app.logService.log("info", "runtime", `Recovered ${recoveredStuckThreadCount} stuck thread(s)`);
+    }
   } catch (error) {
     if (error instanceof DatabaseNotReadyError) {
       console.error(error.message);

@@ -5,9 +5,9 @@ export type WorkspaceSearch = {
   repoId?: string;
   worktreeId?: string;
   threadId?: string;
-  view?: "chat" | "review";
+  view?: "chat" | "review" | "file";
   file?: string;
-  panel?: "git";
+  panel?: "explorer" | "git";
 };
 
 export const Route = createFileRoute("/")({
@@ -15,9 +15,9 @@ export const Route = createFileRoute("/")({
     repoId: typeof search.repoId === "string" ? search.repoId : undefined,
     worktreeId: typeof search.worktreeId === "string" ? search.worktreeId : undefined,
     threadId: typeof search.threadId === "string" ? search.threadId : undefined,
-    view: search.view === "review" ? "review" : undefined,
+    view: search.view === "review" || search.view === "file" ? search.view : undefined,
     file: typeof search.file === "string" ? search.file : undefined,
-    panel: search.panel === "git" ? "git" : undefined,
+    panel: search.panel === "explorer" || search.panel === "git" ? search.panel : undefined,
   }),
   component: WorkspacePage,
   notFoundComponent: () => {

@@ -152,6 +152,27 @@ describe("SettingsDialog", () => {
     });
     expect(document.body.textContent).toContain("Workspace");
     expect(document.body.textContent).toContain("Models");
+    expect(document.body.textContent).toContain("Licenses");
+  });
+
+  it("shows bundled open-source license details in the Licenses tab", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const licensesTab = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Licenses");
+    if (!licensesTab) {
+      throw new Error("Licenses tab not found");
+    }
+
+    await act(async () => {
+      licensesTab.click();
+    });
+
+    expect(document.body.textContent).toContain("Open Source Licenses");
+    expect(document.body.textContent).toContain("Material Icon Theme");
+    expect(document.body.textContent).toContain("The MIT License (MIT)");
+    expect(document.body.textContent).toContain("https://github.com/material-extensions/vscode-material-icon-theme");
   });
 
   it("shows repository name in workspace tab", async () => {

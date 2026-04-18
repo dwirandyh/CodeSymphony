@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as Tabs from "@radix-ui/react-tabs";
+import { Root as TabsRoot, List as TabsList, Trigger as TabsTrigger, Content as TabsContent } from "@radix-ui/react-tabs";
 import { DebugConsoleTab } from "./DebugConsoleTab";
 import { ScriptOutputTab, type ScriptOutputEntry } from "./ScriptOutputTab";
 
@@ -10,6 +10,7 @@ const TerminalTab = lazy(() =>
 const MIN_HEIGHT = 120;
 const MAX_HEIGHT_RATIO = 0.6;
 const DEFAULT_HEIGHT = 250;
+const TERMINAL_SURFACE_CLASS = "bg-[#0f1218]";
 
 const collapseIcon = (
     <svg
@@ -39,6 +40,7 @@ interface BottomPanelProps {
     onCollapsedChange: (collapsed: boolean) => void;
     onRerunSetup?: () => void;
     runScriptActive: boolean;
+    runScriptSessionId: string | null;
     onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
     openSignal?: number;
 }
@@ -54,6 +56,7 @@ export function BottomPanel({
     onCollapsedChange,
     onRerunSetup,
     runScriptActive,
+    runScriptSessionId,
     onRunScriptExit,
     openSignal,
 }: BottomPanelProps) {
@@ -78,11 +81,6 @@ export function BottomPanel({
     const setupStatusChipClassName = latestSetupOutput?.status === "completed" && !latestSetupOutput.success
         ? "bg-destructive/20 text-destructive"
         : "bg-primary/20 text-primary";
-    const scriptRunnerSessionId = useMemo(
-        () => (worktreeId && runScriptActive ? `${worktreeId}:script-runner` : null),
-        [worktreeId, runScriptActive],
-    );
-
     const handleMouseDown = useCallback(
         (e: React.MouseEvent) => {
             e.preventDefault();
@@ -152,8 +150,14 @@ export function BottomPanel({
     }, [onCollapsedChange, openSignal, worktreeId]);
 
     return (
-        <div className="-mx-1.5 flex flex-col border-t border-border/30 bg-[hsl(220,18%,10%)] safe-bottom sm:-mx-2.5 lg:-mx-3">
-            <Tabs.Root
+        <div
+            className={`-mx-1.5 flex flex-col border-t border-border/30 safe-bottom sm:-mx-2.5 lg:-mx-3 ${
+                activeTab === "terminal" || activeTab === "run"
+                    ? TERMINAL_SURFACE_CLASS
+                    : "bg-[hsl(220,18%,10%)]"
+            }`}
+        >
+            <TabsRoot
                 value={activeTab}
                 onValueChange={(val) => {
                     onTabChange(val);
@@ -178,8 +182,8 @@ export function BottomPanel({
 
                 {/* Tab header — always visible in both collapsed and expanded states */}
                 <div className="flex items-center border-b border-border/20 bg-card/75 px-1">
-                    <Tabs.List className="flex items-center">
-                        <Tabs.Trigger
+                    <TabsList className="flex items-center">
+                        <TabsTrigger
                             value="setup-script"
                             className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
@@ -193,15 +197,15 @@ export function BottomPanel({
                                 </span>
                             )}
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
-                        </Tabs.Trigger>
-                        <Tabs.Trigger
+                        </TabsTrigger>
+                        <TabsTrigger
                             value="terminal"
                             className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
                             Terminal
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
-                        </Tabs.Trigger>
-                        <Tabs.Trigger
+                        </TabsTrigger>
+                        <TabsTrigger
                             value="run"
                             className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
@@ -212,15 +216,15 @@ export function BottomPanel({
                                 </span>
                             )}
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
-                        </Tabs.Trigger>
-                        <Tabs.Trigger
+                        </TabsTrigger>
+                        <TabsTrigger
                             value="debug"
                             className="relative px-3 py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground data-[state=active]:text-foreground md:py-1.5"
                         >
                             Debug Console
                             <span className="absolute bottom-0 left-0 right-0 h-[2px] rounded-t-full bg-primary opacity-0 transition-opacity data-[state=active]:opacity-100" />
-                        </Tabs.Trigger>
-                    </Tabs.List>
+                        </TabsTrigger>
+                    </TabsList>
 
                     <div className="flex-1" />
 
@@ -240,28 +244,32 @@ export function BottomPanel({
                 {/* Panel body — hidden via CSS when collapsed so children stay mounted */}
                 <div
                     ref={panelRef}
-                    className={`flex flex-col overflow-hidden ${collapsed ? "invisible h-0" : ""}`}
+                    className={`flex flex-col overflow-hidden ${
+                        activeTab === "terminal" || activeTab === "run"
+                            ? TERMINAL_SURFACE_CLASS
+                            : ""
+                    } ${collapsed ? "invisible h-0" : ""}`}
                     style={collapsed ? undefined : { height: `${height}px` }}
                 >
-                    <Tabs.Content value="setup-script" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
+                    <TabsContent value="setup-script" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
                         <ScriptOutputTab
                             entries={setupOutputs}
                             onRerunSetup={onRerunSetup}
                             rerunning={setupOutputs.some((e) => e.status === "running")}
                         />
-                    </Tabs.Content>
+                    </TabsContent>
 
-                    <Tabs.Content value="terminal" className="min-h-0 flex-1 data-[state=inactive]:hidden">
+                    <TabsContent value="terminal" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
                         <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
                             <TerminalTab sessionId={worktreeId ? `${worktreeId}:terminal` : "default"} cwd={worktreePath} />
                         </Suspense>
-                    </Tabs.Content>
+                    </TabsContent>
 
-                    <Tabs.Content value="run" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
-                        {scriptRunnerSessionId ? (
+                    <TabsContent value="run" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
+                        {runScriptSessionId ? (
                             <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
                                 <TerminalTab
-                                    sessionId={scriptRunnerSessionId}
+                                    sessionId={runScriptSessionId}
                                     cwd={worktreePath}
                                     onSessionExit={onRunScriptExit}
                                 />
@@ -271,13 +279,13 @@ export function BottomPanel({
                                 No run session active.
                             </div>
                         )}
-                    </Tabs.Content>
+                    </TabsContent>
 
-                    <Tabs.Content value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
+                    <TabsContent value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
                         <DebugConsoleTab worktreeId={worktreeId} selectedThreadId={selectedThreadId} />
-                    </Tabs.Content>
+                    </TabsContent>
                 </div>
-            </Tabs.Root>
+            </TabsRoot>
         </div>
     );
 }

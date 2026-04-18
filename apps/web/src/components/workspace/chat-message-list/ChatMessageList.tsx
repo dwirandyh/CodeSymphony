@@ -100,14 +100,14 @@ function EmptyStateCard({ state }: { state: ChatMessageListEmptyState }) {
   );
 }
 
-function getTimelineRowClassName(item: ChatTimelineItem): string {
+function getTimelineRowClassName(item: ChatTimelineItem, isFirst: boolean): string {
   const isCompactRunningRow =
     (item.kind === "activity" && item.defaultExpanded) ||
     (item.kind === "subagent-activity" && item.status === "running") ||
     (item.kind === "explore-activity" && item.status === "running") ||
     (item.kind === "tool" && item.status === "running");
 
-  return `mx-auto max-w-3xl px-3 ${isCompactRunningRow ? "pb-2" : "pb-4"}`;
+  return `mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}${isCompactRunningRow ? "pb-2" : "pb-4"}`;
 }
 
 export function ChatMessageList({
@@ -128,6 +128,15 @@ export function ChatMessageList({
   const [subagentExploreExpandedById, setSubagentExploreExpandedById] = useState<Map<string, boolean>>(() => new Map());
   const lastRenderSignatureByMessageIdRef = useRef<Map<string, string>>(new Map());
   const renderDebugEnabled = isRenderDebugEnabled();
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debugCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+      if (debugCopyTimeoutRef.current) clearTimeout(debugCopyTimeoutRef.current);
+    };
+  }, []);
 
   const stickyBottomRef = useRef(true);
 
@@ -147,13 +156,15 @@ export function ChatMessageList({
     void navigator.clipboard.writeText(content);
     setCopiedMessageId(id);
     setCopiedDebug(false);
-    setTimeout(() => setCopiedMessageId(null), 2000);
+    if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    copyTimeoutRef.current = setTimeout(() => setCopiedMessageId(null), 2000);
   }, []);
 
   const copyDebugLog = useCallback(() => {
     copyRenderDebugLog();
     setCopiedDebug(true);
-    setTimeout(() => setCopiedDebug(false), 2000);
+    if (debugCopyTimeoutRef.current) clearTimeout(debugCopyTimeoutRef.current);
+    debugCopyTimeoutRef.current = setTimeout(() => setCopiedDebug(false), 2000);
   }, []);
 
   const displayItems = useMemo(() => {
@@ -228,46 +239,38 @@ export function ChatMessageList({
     scrollToBottom("bottom");
   }, [displayItems.length, isAtBottom, scrollToBottom]);
 
-  const timelineCtx: TimelineCtx = useMemo(
-    () => ({
-      rawOutputMessageIds,
-      copiedMessageId,
-      copiedDebug,
-      renderDebugEnabled,
-      toggleRawOutput,
-      copyOutput,
-      copyDebugLog,
-      onOpenReadFile,
-      toolExpandedById,
-      setToolExpandedById,
-      editedExpandedById,
-      setEditedExpandedById,
-      exploreActivityExpandedById,
-      setExploreActivityExpandedById,
-      subagentExpandedById,
-      setSubagentExpandedById,
-      subagentPromptExpandedById,
-      setSubagentPromptExpandedById,
-      subagentExploreExpandedById,
-      setSubagentExploreExpandedById,
-      lastRenderSignatureByMessageIdRef,
+  const timelineCtxRef = useRef<TimelineCtx>(null!);
+  timelineCtxRef.current = {
+    rawOutputMessageIds,
+    copiedMessageId,
+    copiedDebug,
+    renderDebugEnabled,
+    toggleRawOutput,
+    copyOutput,
+    copyDebugLog,
+    onOpenReadFile,
+    toolExpandedById,
+    setToolExpandedById,
+    editedExpandedById,
+    setEditedExpandedById,
+    exploreActivityExpandedById,
+    setExploreActivityExpandedById,
+    subagentExpandedById,
+    setSubagentExpandedById,
+    subagentPromptExpandedById,
+    setSubagentPromptExpandedById,
+    subagentExploreExpandedById,
+    setSubagentExploreExpandedById,
+    lastRenderSignatureByMessageIdRef,
+  };
+
+  const stableCtx = useMemo<TimelineCtx>(
+    () => new Proxy({} as TimelineCtx, {
+      get(_target, prop) {
+        return (timelineCtxRef.current as unknown as Record<string | symbol, unknown>)[prop];
+      },
     }),
-    [
-      rawOutputMessageIds,
-      copiedMessageId,
-      copiedDebug,
-      renderDebugEnabled,
-      toggleRawOutput,
-      copyOutput,
-      copyDebugLog,
-      onOpenReadFile,
-      toolExpandedById,
-      editedExpandedById,
-      exploreActivityExpandedById,
-      subagentExpandedById,
-      subagentPromptExpandedById,
-      subagentExploreExpandedById,
-    ],
+    [],
   );
 
   return (
@@ -285,17 +288,18 @@ export function ChatMessageList({
           onScroll={handleScroll}
           onScrollEnd={handleScrollEnd}
         >
-          {displayItems.map((item) => {
+          {displayItems.map((item, index) => {
+            const isFirst = index === 0;
             if (item === "thinking-placeholder") {
               return (
-                <div key="thinking-placeholder" className="mx-auto max-w-3xl px-3 pb-4">
+                <div key="thinking-placeholder" className={`mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}pb-4`}>
                   <ThinkingPlaceholder />
                 </div>
               );
             }
             return (
-              <div key={getTimelineItemKey(item)} className={getTimelineRowClassName(item)}>
-                <TimelineItem item={item} ctx={timelineCtx} />
+              <div key={getTimelineItemKey(item)} className={getTimelineRowClassName(item, isFirst)}>
+                <TimelineItem item={item} ctx={stableCtx} />
               </div>
             );
           })}

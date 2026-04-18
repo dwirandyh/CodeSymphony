@@ -3,6 +3,7 @@ import type { GitChangeEntry, GitChangeStatus } from "@codesymphony/shared-types
 import { useGitStatus } from "../../../hooks/queries/useGitStatus";
 import { useGitCommit } from "../../../hooks/mutations/useGitCommit";
 import { useDiscardGitChange } from "../../../hooks/mutations/useDiscardGitChange";
+import { useGitSync } from "../../../hooks/mutations/useGitSync";
 import { api } from "../../../lib/api";
 
 const STATUS_PRIORITY: Record<GitChangeStatus, number> = {
@@ -17,6 +18,7 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
   const { data, isLoading, refetch } = useGitStatus(enabled ? worktreeId : null);
   const commitMutation = useGitCommit(worktreeId);
   const discardMutation = useDiscardGitChange(worktreeId);
+  const syncMutation = useGitSync(worktreeId);
 
   const commit = useCallback(
     async (message: string) => {
@@ -34,6 +36,11 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     [worktreeId, discardMutation],
   );
 
+  const sync = useCallback(async () => {
+    if (!worktreeId) return;
+    await syncMutation.mutateAsync();
+  }, [worktreeId, syncMutation]);
+
   const getDiff = useCallback(async () => {
     if (!worktreeId) return { diff: "", summary: "" };
     return api.getGitDiff(worktreeId);
@@ -50,13 +57,23 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     });
   }, [data?.entries]);
 
+  const ahead = data?.ahead ?? 0;
+  const behind = data?.behind ?? 0;
+  const canSync = entries.length === 0 && !!data?.upstream && (ahead > 0 || behind > 0);
+
   return {
     entries,
     branch: data?.branch ?? "",
+    upstream: data?.upstream ?? null,
+    ahead,
+    behind,
+    canSync,
     loading: isLoading,
     committing: commitMutation.isPending,
-    error: commitMutation.error?.message ?? discardMutation.error?.message ?? null,
+    syncing: syncMutation.isPending,
+    error: commitMutation.error?.message ?? syncMutation.error?.message ?? discardMutation.error?.message ?? null,
     commit,
+    sync,
     discardChange,
     getDiff,
     refresh: () => void refetch(),

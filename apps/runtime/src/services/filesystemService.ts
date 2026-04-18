@@ -39,11 +39,11 @@ const MIME_TYPES_BY_EXTENSION: Record<string, string> = {
   ".yml": "application/yaml",
 };
 
-function detectMimeType(filePath: string): string {
+export function detectMimeType(filePath: string): string {
   return MIME_TYPES_BY_EXTENSION[extname(filePath).toLowerCase()] ?? "application/octet-stream";
 }
 
-function isImageMimeType(mimeType: string): boolean {
+export function isImageMimeType(mimeType: string): boolean {
   return mimeType.startsWith("image/");
 }
 

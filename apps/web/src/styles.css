@@ -2,6 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
+html[data-mobile-keyboard-visible="true"] [data-mobile-action-bar="true"] {
+  display: none !important;
+}
+
 :root {
   --background: 220 18% 10%;
   --foreground: 210 20% 92%;

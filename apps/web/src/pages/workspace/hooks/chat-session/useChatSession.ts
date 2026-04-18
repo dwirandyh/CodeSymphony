@@ -93,6 +93,21 @@ function mergeTrackedThreads(params: {
   return mergedThreads;
 }
 
+function applyThreadActiveUpdate(
+  threads: ChatThread[],
+  threadId: string,
+  active: boolean,
+): ChatThread[] {
+  const index = threads.findIndex((thread) => thread.id === threadId);
+  if (index === -1 || threads[index]?.active === active) {
+    return threads;
+  }
+
+  const updated = [...threads];
+  updated[index] = { ...updated[index]!, active };
+  return updated;
+}
+
 function resolvePreferredThreadId(threads: ChatThread[]): string | null {
   for (let index = threads.length - 1; index >= 0; index -= 1) {
     if (threads[index]?.active) {
@@ -248,6 +263,7 @@ export function useChatSession(
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
+  const threadByIdRef = useRef<Map<string, ChatThread>>(new Map());
   const messagesRef = useRef<ChatMessage[]>([]);
   const creatingThreadRef = useRef(false);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
@@ -257,6 +273,7 @@ export function useChatSession(
   const prevRequestedThreadIdRef = useRef<string | null>(null);
   const prevRequestedThreadExistsRef = useRef(false);
   const restoredActiveThreadIdsRef = useRef<Set<string>>(new Set());
+  const restoredWaitingThreadIdsRef = useRef<Set<string>>(new Set());
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
   const rafIdRef = useRef<number | null>(null);
@@ -266,6 +283,14 @@ export function useChatSession(
   activeThreadIdRef.current = selectedThreadId;
   threadsRef.current = threads;
   messagesRef.current = messages;
+
+  const threadByIdMap = threadByIdRef.current;
+  if (threadByIdMap.size !== threads.length || threads.some((t) => threadByIdMap.get(t.id) !== t)) {
+    threadByIdMap.clear();
+    for (const thread of threads) {
+      threadByIdMap.set(thread.id, thread);
+    }
+  }
 
   const { data: queriedThreads } = useThreads(selectedWorktreeId);
 
@@ -426,10 +451,10 @@ export function useChatSession(
     if (!selectedThreadId) return;
     if (restoredActiveThreadIdsRef.current.has(selectedThreadId)) return;
 
-    const thread = threads.find((t) => t.id === selectedThreadId);
+    const thread = threadByIdRef.current.get(selectedThreadId);
     if (thread?.active) {
       restoredActiveThreadIdsRef.current.add(selectedThreadId);
-      startWaitingAssistant(selectedThreadId);
+      startWaitingAssistant(selectedThreadId, { restored: true });
     }
   }, [selectedThreadId, threads]);
 
@@ -447,7 +472,7 @@ export function useChatSession(
   });
   const selectedThreadIsRunning = selectedThreadUiStatus === "running";
   const selectedThread = selectedThreadId
-    ? threads.find((thread) => thread.id === selectedThreadId) ?? null
+    ? threadByIdRef.current.get(selectedThreadId) ?? null
     : null;
   const composerMode = selectedThreadUiStatus === "review_plan"
     ? "plan"
@@ -461,6 +486,26 @@ export function useChatSession(
     selectedThreadId != null && !locallyDeletedThreadIdsRef.current.has(selectedThreadId)
       ? selectedThreadId
       : null;
+
+  useEffect(() => {
+    if (!selectedThreadId || waitingAssistant?.threadId !== selectedThreadId) {
+      return;
+    }
+
+    if (selectedThread?.active) {
+      return;
+    }
+
+    if (hasPendingUserGate || hasRunningAssistantActivity(events)) {
+      return;
+    }
+
+    if (!restoredWaitingThreadIdsRef.current.has(selectedThreadId)) {
+      return;
+    }
+
+    clearWaitingAssistantForThread(selectedThreadId);
+  }, [events, hasPendingUserGate, selectedThread?.active, selectedThreadId, waitingAssistant]);
 
   const {
     data: queriedThreadSnapshot,
@@ -575,13 +620,36 @@ export function useChatSession(
     lastAppliedSnapshotKeyByThreadRef.current.delete(threadId);
   }
 
-  function startWaitingAssistant(threadId: string) {
+  function startWaitingAssistant(threadId: string, options?: { restored?: boolean }) {
+    if (options?.restored) {
+      restoredWaitingThreadIdsRef.current.add(threadId);
+    } else {
+      restoredWaitingThreadIdsRef.current.delete(threadId);
+    }
+
     const afterIdx = lastEventIdxByThreadRef.current.get(threadId) ?? -1;
     setWaitingAssistant({ threadId, afterIdx });
   }
 
   function clearWaitingAssistantForThread(threadId: string) {
+    restoredWaitingThreadIdsRef.current.delete(threadId);
     setWaitingAssistant((current) => (current?.threadId === threadId ? null : current));
+  }
+
+  function reconcileInactiveThread(threadId: string) {
+    clearWaitingAssistantForThread(threadId);
+    setThreads((current) => applyThreadActiveUpdate(current, threadId, false));
+
+    if (selectedWorktreeId) {
+      queryClient.setQueryData<ChatThread[] | undefined>(
+        queryKeys.threads.list(selectedWorktreeId),
+        (current) => current ? applyThreadActiveUpdate(current, threadId, false) : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+    }
+
+    void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
   }
 
   function invalidateRepositoryReviews() {
@@ -725,6 +793,16 @@ export function useChatSession(
       options?.onThreadChange?.(selectedThreadId);
     }
   }, [selectedThreadId]);
+
+  useEffect(() => {
+    if (!selectedWorktreeId || !selectedThreadId) {
+      return;
+    }
+
+    // Thread selection is a sync point: refresh the worktree thread list so
+    // `thread.active` does not linger from stale client cache.
+    void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
+  }, [queryClient, selectedThreadId, selectedWorktreeId]);
 
   useThreadEventStream({
     selectedThreadId: selectedThreadIdForData,
@@ -1031,14 +1109,14 @@ export function useChatSession(
   }
 
   async function setThreadMode(threadId: string, mode: ChatMode) {
-    const currentThread = threads.find((thread) => thread.id === threadId) ?? null;
+    const currentThread = threadByIdRef.current.get(threadId) ?? null;
     if (currentThread?.mode === mode) {
       return;
     }
 
     onError(null);
     const previousThreads = threads;
-    const cacheWorktreeId = selectedWorktreeId ?? previousThreads.find((thread) => thread.id === threadId)?.worktreeId ?? null;
+    const cacheWorktreeId = selectedWorktreeId ?? (threadByIdRef.current.get(threadId)?.worktreeId ?? null);
 
     setThreads((current) => applyThreadModeUpdate(current, threadId, mode));
     if (cacheWorktreeId) {
@@ -1196,6 +1274,12 @@ export function useChatSession(
     try {
       await api.stopRun(threadId);
     } catch (e) {
+      if (e instanceof Error && e.message === "No active assistant run for this thread") {
+        reconcileInactiveThread(threadId);
+        setStopRequestedThreadId((current) => (current === threadId ? null : current));
+        return;
+      }
+
       onError(e instanceof Error ? e.message : "Failed to stop run");
       setStopRequestedThreadId((c) => (c === threadId ? null : c));
     } finally {

@@ -387,6 +387,24 @@ export const OpenWorktreeFileInputSchema = z.object({
 });
 export type OpenWorktreeFileInput = z.infer<typeof OpenWorktreeFileInputSchema>;
 
+export const GetWorktreeFileContentQuerySchema = z.object({
+  path: z.string().trim().min(1),
+});
+export type GetWorktreeFileContentQuery = z.infer<typeof GetWorktreeFileContentQuerySchema>;
+
+export const WorktreeFileContentSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  mimeType: z.string(),
+});
+export type WorktreeFileContent = z.infer<typeof WorktreeFileContentSchema>;
+
+export const UpdateWorktreeFileContentInputSchema = z.object({
+  path: z.string().trim().min(1),
+  content: z.string(),
+});
+export type UpdateWorktreeFileContentInput = z.infer<typeof UpdateWorktreeFileContentInputSchema>;
+
 export const RenameWorktreeBranchInputSchema = z.object({
   branch: z
     .string()
@@ -470,6 +488,9 @@ export type GitChangeEntry = z.infer<typeof GitChangeEntrySchema>;
 
 export const GitStatusSchema = z.object({
   branch: z.string(),
+  upstream: z.string().nullable().default(null),
+  ahead: z.number().int().nonnegative().default(0),
+  behind: z.number().int().nonnegative().default(0),
   entries: z.array(GitChangeEntrySchema),
 });
 export type GitStatus = z.infer<typeof GitStatusSchema>;

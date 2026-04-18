@@ -5,9 +5,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
+import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
 import type { ModelProvider, Repository } from "@codesymphony/shared-types";
 
-type SettingsTab = "workspace" | "models";
+type SettingsTab = "workspace" | "models" | "licenses";
 
 type RepositoryFormState = {
   runScriptText: string;
@@ -343,6 +344,17 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
             >
               Models
             </button>
+            <button
+              type="button"
+              className={`w-full rounded-md px-2 py-1.5 text-left text-xs ${
+                activeTab === "licenses"
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+              }`}
+              onClick={() => setActiveTab("licenses")}
+            >
+              Licenses
+            </button>
           </div>
         </aside>
 
@@ -462,7 +474,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                   </div>
                 )}
               </>
-            ) : (
+            ) : activeTab === "models" ? (
               /* ── Models Tab ── */
               <>
                 {loadingModels ? (
@@ -642,6 +654,58 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                   </div>
                 )}
               </>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-foreground">Open Source Licenses</h2>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Third-party assets bundled in the app should keep their original license and attribution notice.
+                  </p>
+                </div>
+
+                <div className="space-y-3">
+                  {THIRD_PARTY_LICENSES.map((entry) => (
+                    <section
+                      key={entry.id}
+                      className="rounded-xl border border-border/40 bg-secondary/10 p-4"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-medium text-foreground">{entry.name}</h3>
+                          <p className="mt-1 text-[11px] text-muted-foreground">{entry.copyright}</p>
+                        </div>
+                        <span className="shrink-0 rounded-full border border-border/50 bg-background px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {entry.license}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                        <div>
+                          Source:{" "}
+                          <a
+                            href={entry.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-foreground underline underline-offset-2"
+                          >
+                            {entry.sourceUrl}
+                          </a>
+                        </div>
+                        {entry.assetPath ? (
+                          <div>
+                            Bundled notice:{" "}
+                            <code className="rounded bg-secondary/60 px-1 py-0.5 text-[11px]">{entry.assetPath}</code>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <pre className="mt-3 overflow-x-auto rounded-lg border border-border/40 bg-background/80 p-3 text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                        {entry.text}
+                      </pre>
+                    </section>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         </div>

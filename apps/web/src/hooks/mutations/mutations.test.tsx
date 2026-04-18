@@ -18,6 +18,7 @@ import { useRevisePlan } from "./useRevisePlan";
 import { useStopRun } from "./useStopRun";
 import { useGitCommit } from "./useGitCommit";
 import { useDiscardGitChange } from "./useDiscardGitChange";
+import { useGitSync } from "./useGitSync";
 import { useRenameWorktreeBranch } from "./useRenameWorktreeBranch";
 
 vi.mock("../../lib/api", () => ({
@@ -36,6 +37,7 @@ vi.mock("../../lib/api", () => ({
     revisePlan: vi.fn().mockResolvedValue(undefined),
     stopRun: vi.fn().mockResolvedValue(undefined),
     gitCommit: vi.fn().mockResolvedValue(undefined),
+    gitSync: vi.fn().mockResolvedValue(undefined),
     discardGitChange: vi.fn().mockResolvedValue(undefined),
     renameWorktreeBranch: vi.fn().mockResolvedValue({ id: "w1", branch: "new-name" }),
   },
@@ -142,6 +144,11 @@ describe("mutation hooks", () => {
 
   it("useGitCommit renders", () => {
     renderHook(useGitCommit as (...args: unknown[]) => unknown, ["wt-1"]);
+    expect(container.textContent).toBe("ok");
+  });
+
+  it("useGitSync renders", () => {
+    renderHook(useGitSync as (...args: unknown[]) => unknown, ["wt-1"]);
     expect(container.textContent).toBe("ok");
   });
 

@@ -14,9 +14,14 @@ interface GitChangesPanelProps {
   branch: string;
   loading: boolean;
   committing: boolean;
+  syncing: boolean;
+  canSync: boolean;
+  ahead?: number;
+  behind?: number;
   error: string | null;
   selectedFilePath?: string | null;
   onCommit: (message: string) => void;
+  onSync: () => void;
   onReview: () => void;
   onRefresh: () => void;
   onClose: () => void;
@@ -29,6 +34,7 @@ interface GitChangesPanelProps {
   prMrActionTitle?: string;
   prMrActionBusy?: boolean;
   onPrMrAction?: () => void;
+  showHeader?: boolean;
 }
 
 const STATUS_CONFIG: Record<string, { icon: any; className: string }> = {
@@ -45,14 +51,30 @@ function splitFilePath(filePath: string) {
   return { name: filePath.substring(lastSlash + 1), dir: filePath.substring(0, lastSlash + 1) };
 }
 
+function formatSyncSummary(ahead: number, behind: number) {
+  const parts: string[] = [];
+  if (ahead > 0) {
+    parts.push(`${ahead} outgoing`);
+  }
+  if (behind > 0) {
+    parts.push(`${behind} incoming`);
+  }
+  return parts.join(" · ");
+}
+
 export function GitChangesPanel({
   entries,
   branch,
   loading,
   committing,
+  syncing,
+  canSync,
+  ahead = 0,
+  behind = 0,
   error,
   selectedFilePath,
   onCommit,
+  onSync,
   onReview,
   onRefresh,
   onClose,
@@ -65,12 +87,22 @@ export function GitChangesPanel({
   prMrActionTitle,
   prMrActionBusy,
   onPrMrAction,
+  showHeader = true,
 }: GitChangesPanelProps) {
   const [commitMessage, setCommitMessage] = useState("");
+  const syncSummary = formatSyncSummary(ahead, behind);
 
   const handleCommit = () => {
     onCommit(commitMessage.trim());
     setCommitMessage("");
+  };
+
+  const handlePrimaryAction = () => {
+    if (canSync) {
+      onSync();
+      return;
+    }
+    handleCommit();
   };
 
   const prMrActionLabel = reviewRef
@@ -81,47 +113,54 @@ export function GitChangesPanel({
 
   return (
     <Card className="flex h-full flex-col overflow-hidden border-0 bg-transparent shadow-none">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
-          Source Control
-        </span>
-        <div className="flex items-center gap-1">
-          {onPrMrAction && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 gap-1 px-2 text-[10px] text-muted-foreground/80 hover:text-foreground"
-              onClick={onPrMrAction}
-              disabled={prMrActionDisabled || prMrActionBusy}
-              title={prMrActionTitle ?? prMrActionLabel}
-            >
-              <GitPullRequestArrow className="h-3 w-3" />
-              <span>{prMrActionBusy ? "Working..." : prMrActionLabel}</span>
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
-            onClick={onClose}
-            aria-label="Close Source Control"
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-      </div>
+      {showHeader ? (
+        <>
+          <div className="flex items-center justify-between px-3 py-2">
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-foreground/80">
+              Source Control
+            </span>
+            <div className="flex items-center gap-1">
+              {onPrMrAction && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-[10px] text-muted-foreground/80 hover:text-foreground"
+                  onClick={onPrMrAction}
+                  disabled={prMrActionDisabled || prMrActionBusy}
+                  title={prMrActionTitle ?? prMrActionLabel}
+                >
+                  <GitPullRequestArrow className="h-3 w-3" />
+                  <span>{prMrActionBusy ? "Working..." : prMrActionLabel}</span>
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground/60 hover:text-foreground"
+                onClick={onClose}
+                aria-label="Close Source Control"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
 
-      <Separator className="opacity-20" />
+          <Separator className="opacity-20" />
+        </>
+      ) : null}
 
       {/* Commit section */}
       <div className="space-y-3 px-3 py-3">
         <Input
           value={commitMessage}
           onChange={(e) => setCommitMessage(e.target.value)}
-          placeholder="Auto-generate if blank (Cmd+Enter)"
+          placeholder={canSync ? "Working tree clean and ready to sync" : "Auto-generate if blank (Cmd+Enter)"}
+          disabled={syncing}
           className="border-border/30 bg-secondary/10 px-2.5 py-1.5 text-xs placeholder:text-muted-foreground/40 focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-offset-0"
           onKeyDown={(e) => {
+            if (canSync) {
+              return;
+            }
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               handleCommit();
@@ -130,19 +169,29 @@ export function GitChangesPanel({
         />
         <Button
           size="sm"
-          onClick={handleCommit}
-          disabled={committing || entries.length === 0}
+          onClick={handlePrimaryAction}
+          disabled={committing || syncing || (!canSync && entries.length === 0)}
           className="w-full h-8 text-xs font-medium"
         >
-          {committing ? (
+          {syncing ? (
+            <div className="flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <span>Syncing...</span>
+            </div>
+          ) : committing ? (
             <div className="flex items-center gap-1.5">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               <span>Committing...</span>
             </div>
           ) : (
-            "Commit"
+            canSync ? "Sync Changes" : "Commit"
           )}
         </Button>
+        {canSync && syncSummary && (
+          <p className="text-[11px] text-muted-foreground/60">
+            Ready to sync {syncSummary} on <span className="font-medium text-foreground/80">{branch}</span>.
+          </p>
+        )}
         {error && (
           <p className="text-[11px] text-destructive" role="alert">{error}</p>
         )}
