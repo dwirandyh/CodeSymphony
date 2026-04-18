@@ -7,6 +7,7 @@ import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
 import type { ModelProvider, Repository } from "@codesymphony/shared-types";
+import { useModelProviders } from "../../pages/workspace/hooks/useModelProviders";
 
 type SettingsTab = "workspace" | "models" | "licenses";
 
@@ -59,10 +60,12 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   const savedScriptsRef = useRef<Record<string, RepositoryFormState>>({});
   const savePromiseRef = useRef<Promise<void> | null>(null);
   const hydratedRepoIdRef = useRef<string | null>(null);
-
-  // ── Models tab state ──
-  const [providers, setProviders] = useState<ModelProvider[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
+  const {
+    providers,
+    loading: loadingModels,
+    refreshProviders,
+    replaceProviders,
+  } = useModelProviders();
 
   // Provider form state
   const [showProviderForm, setShowProviderForm] = useState(false);
@@ -137,24 +140,17 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     return () => { cancelled = true; };
   }, [selectedRepoId]);
 
-  // ── Models: Fetch providers when tab opens ──
   useEffect(() => {
-    if (!open || activeTab !== "models") return;
-    let cancelled = false;
-    setLoadingModels(true);
-    api.listModelProviders()
-      .then((data) => {
-        if (cancelled) {
-          return;
-        }
+    if (!open || activeTab !== "models") {
+      return;
+    }
 
-        setProviders(data);
-        onProvidersChanged?.(data);
-      })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoadingModels(false); });
-    return () => { cancelled = true; };
-  }, [open, activeTab, onProvidersChanged]);
+    void refreshProviders().catch(() => {});
+  }, [activeTab, open, refreshProviders]);
+
+  useEffect(() => {
+    onProvidersChanged?.(providers);
+  }, [onProvidersChanged, providers]);
 
   const parseScriptLines = useCallback((scriptText: string): string[] | null => {
     const lines = scriptText.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
@@ -225,28 +221,20 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     return () => clearTimeout(timeoutId);
   }, [dirty, handleSave]);
 
-  // ── Models: provider CRUD ──
-  const refreshProviders = useCallback(async () => {
-    try {
-      const data = await api.listModelProviders();
-      setProviders(data);
-      onProvidersChanged?.(data);
-    } catch {}
-  }, [onProvidersChanged]);
-
   const handleSaveProvider = useCallback(async () => {
     if (!providerName.trim() || !providerModelId.trim() || !providerBaseUrl.trim() || (!editingProviderId && !providerApiKey.trim())) return;
     setSavingProvider(true);
     try {
+      let nextProvider: ModelProvider;
       if (editingProviderId) {
-        await api.updateModelProvider(editingProviderId, {
+        nextProvider = await api.updateModelProvider(editingProviderId, {
           name: providerName,
           modelId: providerModelId,
           baseUrl: providerBaseUrl,
           ...(providerApiKey.trim() ? { apiKey: providerApiKey } : {}),
         });
       } else {
-        await api.createModelProvider({
+        nextProvider = await api.createModelProvider({
           name: providerName,
           modelId: providerModelId,
           baseUrl: providerBaseUrl,
@@ -259,20 +247,23 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
       setProviderModelId("");
       setProviderBaseUrl("");
       setProviderApiKey("");
-      await refreshProviders();
+      replaceProviders([
+        ...providers.filter((provider) => provider.id !== nextProvider.id),
+        nextProvider,
+      ]);
     } catch {
       // non-critical
     } finally {
       setSavingProvider(false);
     }
-  }, [editingProviderId, providerName, providerModelId, providerBaseUrl, providerApiKey, refreshProviders]);
+  }, [editingProviderId, providerApiKey, providerBaseUrl, providerModelId, providerName, providers, replaceProviders]);
 
   const handleDeleteProvider = useCallback(async (id: string) => {
     try {
       await api.deleteModelProvider(id);
-      await refreshProviders();
+      replaceProviders(providers.filter((provider) => provider.id !== id));
     } catch {}
-  }, [refreshProviders]);
+  }, [providers, replaceProviders]);
 
   const handleEditProvider = useCallback((provider: ModelProvider) => {
     setEditingProviderId(provider.id);

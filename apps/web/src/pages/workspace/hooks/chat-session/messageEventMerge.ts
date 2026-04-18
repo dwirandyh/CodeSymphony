@@ -1,7 +1,7 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { PendingMessageMutation } from "./useChatSession.types";
 
-function computeAssistantDeltaSuffix(existingContent: string, incomingDelta: string): string {
+export function computeAssistantDeltaSuffix(existingContent: string, incomingDelta: string): string {
   if (incomingDelta.length === 0) {
     return "";
   }

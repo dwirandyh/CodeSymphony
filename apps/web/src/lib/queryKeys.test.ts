@@ -18,6 +18,14 @@ describe("queryKeys", () => {
     expect(queryKeys.worktrees.gitDiff("w1")).toEqual(["worktrees", "w1", "gitDiff", "__all__"]);
   });
 
+  it("worktrees.gitDiffScope returns the diff namespace", () => {
+    expect(queryKeys.worktrees.gitDiffScope("w1")).toEqual(["worktrees", "w1", "gitDiff"]);
+  });
+
+  it("worktrees.gitDiffRaw includes filePath", () => {
+    expect(queryKeys.worktrees.gitDiffRaw("w1", "file.ts")).toEqual(["worktrees", "w1", "gitDiffRaw", "file.ts"]);
+  });
+
   it("worktrees.fileIndex returns key", () => {
     expect(queryKeys.worktrees.fileIndex("w1")).toEqual(["worktrees", "w1", "fileIndex"]);
   });

@@ -5,10 +5,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ChatEvent,
-  ChatMessage,
   ChatThread,
   ChatTimelineSnapshot,
 } from "@codesymphony/shared-types";
+import {
+  getThreadEventsCollection,
+  getThreadMessagesCollection,
+  resetThreadCollectionsForTest,
+} from "../../../../collections/threadCollections";
+import { resetThreadStreamStateRegistryForTest } from "../../../../collections/threadStreamState";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreadEventStream } from "./useThreadEventStream";
 
@@ -130,8 +135,6 @@ function HookHarness({
   initialWaitingAssistant?: { threadId: string; afterIdx: number } | null;
   initialThreads?: ChatThread[];
 }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [events, setEvents] = useState<ChatEvent[]>([]);
   const [threads, setThreads] = useState<ChatThread[]>(initialThreads);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(initialWaitingAssistant);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
@@ -140,19 +143,12 @@ function HookHarness({
   latestWaitingAssistant = waitingAssistant;
   latestThreads = threads;
 
-  void messages;
-  void events;
   void stoppingThreadId;
   void stopRequestedThreadId;
 
-  const seenEventIdsByThreadRef = useRef(new Map<string, Set<string>>());
-  const lastEventIdxByThreadRef = useRef(new Map<string, number>());
   const streamingMessageIdsRef = useRef(new Set<string>());
   const stickyRawFallbackMessageIdsRef = useRef(new Set<string>());
   const renderDecisionByMessageIdRef = useRef(new Map<string, string>());
-  const pendingEventsRef = useRef<ChatEvent[]>([]);
-  const pendingMessageMutationsRef = useRef([]);
-  const rafIdRef = useRef<number | null>(null);
   const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
   const activeThreadIdRef = useRef<string | null>(selectedThreadId);
   activeThreadIdRef.current = selectedThreadId;
@@ -164,20 +160,13 @@ function HookHarness({
     selectedThreadIsPrMr,
     locallyDeletedThreadIdsRef,
     activeThreadIdRef,
-    setMessages,
-    setEvents,
     setThreads,
     setWaitingAssistant,
     setStoppingThreadId,
     setStopRequestedThreadId,
-    seenEventIdsByThreadRef,
-    lastEventIdxByThreadRef,
     streamingMessageIdsRef,
     stickyRawFallbackMessageIdsRef,
     renderDecisionByMessageIdRef,
-    pendingEventsRef,
-    pendingMessageMutationsRef,
-    rafIdRef,
     onError: vi.fn(),
   });
 
@@ -235,6 +224,8 @@ function renderHookInStrictMode(
 }
 
 beforeEach(() => {
+  resetThreadCollectionsForTest();
+  resetThreadStreamStateRegistryForTest();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -268,6 +259,8 @@ afterEach(() => {
   act(() => root.unmount());
   queryClient.clear();
   container.remove();
+  resetThreadCollectionsForTest();
+  resetThreadStreamStateRegistryForTest();
   if (originalEventSource) {
     globalThis.EventSource = originalEventSource;
   }
@@ -799,5 +792,97 @@ describe("useThreadEventStream", () => {
     });
 
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+  });
+
+  it("writes stream batches into local thread collections without duplicating repeated events", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "message.delta",
+        makeEvent({
+          id: "e-message-1",
+          threadId,
+          idx: 1,
+          type: "message.delta",
+          payload: {
+            messageId: "assistant-1",
+            role: "assistant",
+            delta: "Hello",
+          },
+        }),
+      );
+      stream.emit(
+        "message.delta",
+        makeEvent({
+          id: "e-message-1",
+          threadId,
+          idx: 1,
+          type: "message.delta",
+          payload: {
+            messageId: "assistant-1",
+            role: "assistant",
+            delta: "Hello",
+          },
+        }),
+      );
+    });
+
+    const storedEvents = getThreadEventsCollection(threadId).toArray as ChatEvent[];
+    const storedMessages = getThreadMessagesCollection(threadId).toArray;
+    expect(storedEvents.map((event) => event.id)).toEqual(["e-message-1"]);
+    expect(storedMessages).toHaveLength(1);
+    expect(storedMessages[0]?.content).toBe("Hello");
+  });
+
+  it("reconnects with afterIdx from the local thread registry", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const threadId = "selected-thread";
+      queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+      renderHook(threadId);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const firstStream = MockEventSource.instances[0]!;
+      act(() => {
+        firstStream.emit(
+          "tool.started",
+          makeEvent({
+            id: "e-reconnect-1",
+            threadId,
+            idx: 4,
+            type: "tool.started",
+            payload: { toolUseId: "tool-1", toolName: "Bash" },
+          }),
+        );
+      });
+
+      expect(firstStream.url).not.toContain("afterIdx=4");
+
+      await act(async () => {
+        firstStream.readyState = MockEventSource.CLOSED;
+        firstStream.onerror?.();
+        vi.advanceTimersByTime(1000);
+        await Promise.resolve();
+      });
+
+      expect(MockEventSource.instances).toHaveLength(2);
+      expect(MockEventSource.instances[1]?.url).toContain("afterIdx=4");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

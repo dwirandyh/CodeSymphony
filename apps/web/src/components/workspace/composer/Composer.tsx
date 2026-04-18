@@ -28,6 +28,7 @@ import { createAttachmentChipElement } from "./composerChipUtils";
 import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
 import { useComposerSlashCommand } from "./useComposerSlashCommand";
+import { useFileIndex } from "../../../pages/workspace/hooks/useFileIndex";
 
 type ComposerSubmitPayload = {
   content: string;
@@ -44,8 +45,8 @@ type ComposerProps = {
   worktreeId: string | null;
   mode: ChatMode;
   modeLocked: boolean;
-  fileIndex: FileEntry[];
-  fileIndexLoading: boolean;
+  fileIndex?: FileEntry[];
+  fileIndexLoading?: boolean;
   slashCommands: SlashCommand[];
   slashCommandsLoading: boolean;
   providers: ModelProvider[];
@@ -104,7 +105,7 @@ function AttachmentPreviewDialog({
   );
 }
 
-export function Composer({
+function ComposerContent({
   disabled,
   sending,
   showStop,
@@ -204,8 +205,8 @@ export function Composer({
   } = useComposerMention({
     editorRef,
     popoverRef,
-    fileIndex,
-    fileIndexLoading,
+    fileIndex: fileIndex ?? [],
+    fileIndexLoading: fileIndexLoading ?? false,
     onChange: setDraftText,
   });
 
@@ -713,12 +714,12 @@ export function Composer({
             onChange={handleFileInputChange}
           />
 
-          {mention.active && (suggestions.length > 0 || fileIndexLoading) && (
+          {mention.active && (suggestions.length > 0 || (fileIndexLoading ?? false)) && (
             <div
               ref={popoverRef}
               className="absolute bottom-full left-0 z-50 mb-2 w-full max-h-60 overflow-y-auto rounded-xl border border-border/60 bg-popover shadow-lg"
             >
-              {fileIndexLoading && suggestions.length === 0 ? (
+              {(fileIndexLoading ?? false) && suggestions.length === 0 ? (
                 <div className="px-3 py-2 text-xs text-muted-foreground">Loading files...</div>
               ) : (
                 suggestions.map((entry, index) => (
@@ -1043,4 +1044,24 @@ export function Composer({
       />
     </section>
   );
+}
+
+function ComposerFileIndexBridge(props: ComposerProps) {
+  const fileIndex = useFileIndex(props.worktreeId);
+
+  return (
+    <ComposerContent
+      {...props}
+      fileIndex={fileIndex.entries}
+      fileIndexLoading={fileIndex.loading}
+    />
+  );
+}
+
+export function Composer(props: ComposerProps) {
+  if (props.fileIndex !== undefined && typeof props.fileIndexLoading === "boolean") {
+    return <ComposerContent {...props} />;
+  }
+
+  return <ComposerFileIndexBridge {...props} />;
 }

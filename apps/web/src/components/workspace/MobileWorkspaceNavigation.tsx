@@ -514,6 +514,7 @@ export function MobileActionBar({
 export function MobileFilesSheet({
   open,
   onOpenChange,
+  worktreeId,
   activeFilePath,
   fileTabs,
   recentFilePaths,
@@ -524,6 +525,7 @@ export function MobileFilesSheet({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  worktreeId: string | null;
   activeFilePath: string | null;
   fileTabs: WorkspaceFileTab[];
   recentFilePaths: string[];
@@ -675,6 +677,7 @@ export function MobileFilesSheet({
 
             <TabsContent value="browse" className="mt-0 min-h-0 flex-1 overflow-hidden">
               <WorkspaceExplorerPanel
+                worktreeId={worktreeId}
                 entries={fileEntries}
                 gitEntries={[]}
                 loading={loading}

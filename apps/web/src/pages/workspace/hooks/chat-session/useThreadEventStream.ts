@@ -17,6 +17,27 @@ import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { logService } from "../../../../lib/logService";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
+import {
+  getThreadCollections,
+  getThreadEventsCollection,
+  getThreadMessagesCollection,
+} from "../../../../collections/threadCollections";
+import {
+  allocateNextThreadMessageSeq,
+  clearThreadReconnectTimer,
+  getThreadLastEventIdx,
+  getThreadLastMessageSeq,
+  getThreadReconnectAttempts,
+  hasSeenThreadEvent,
+  incrementThreadReconnectAttempts,
+  markThreadEventSeen,
+  markThreadStreamDisposed,
+  replaceSeenThreadEventIds,
+  resetThreadReconnectAttempts,
+  setThreadLastEventIdx,
+  setThreadLastMessageSeq,
+  setThreadReconnectTimer,
+} from "../../../../collections/threadStreamState";
 import { EVENT_TYPES } from "../../constants";
 import {
   GIT_STATUS_INVALIDATION_EVENT_TYPES,
@@ -25,7 +46,7 @@ import {
   shouldClearWaitingAssistantOnEvent,
 } from "../../eventUtils";
 import type { PendingMessageMutation } from "./useChatSession.types";
-import { insertAllEvents, applyMessageMutations } from "./messageEventMerge";
+import { computeAssistantDeltaSuffix } from "./messageEventMerge";
 import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
 
@@ -56,22 +77,166 @@ interface UseThreadEventStreamParams {
   selectedThreadIsPrMr: boolean;
   locallyDeletedThreadIdsRef: MutableRefObject<Set<string>>;
   activeThreadIdRef: MutableRefObject<string | null>;
-  setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
-  setEvents: Dispatch<SetStateAction<ChatEvent[]>>;
   setThreads: Dispatch<SetStateAction<ChatThread[]>>;
   setWaitingAssistant: Dispatch<SetStateAction<{ threadId: string; afterIdx: number } | null>>;
   setStoppingThreadId: Dispatch<SetStateAction<string | null>>;
   setStopRequestedThreadId: Dispatch<SetStateAction<string | null>>;
-  seenEventIdsByThreadRef: MutableRefObject<Map<string, Set<string>>>;
-  lastEventIdxByThreadRef: MutableRefObject<Map<string, number>>;
   streamingMessageIdsRef: MutableRefObject<Set<string>>;
   stickyRawFallbackMessageIdsRef: MutableRefObject<Set<string>>;
   renderDecisionByMessageIdRef: MutableRefObject<Map<string, string>>;
-  pendingEventsRef: MutableRefObject<ChatEvent[]>;
-  pendingMessageMutationsRef: MutableRefObject<PendingMessageMutation[]>;
-  rafIdRef: MutableRefObject<number | null>;
   onError: (msg: string | null) => void;
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void;
+}
+
+function syncThreadStreamCursorFromSnapshot(threadId: string, snapshot: ChatTimelineSnapshot) {
+  const snapshotNewestIdx = snapshot.newestIdx ?? snapshot.events[snapshot.events.length - 1]?.idx ?? null;
+  const localNewestIdx = getThreadLastEventIdx(threadId);
+
+  if (
+    localNewestIdx != null
+    && snapshotNewestIdx != null
+    && snapshotNewestIdx < localNewestIdx
+  ) {
+    return;
+  }
+
+  if (snapshot.events.length > 0) {
+    replaceSeenThreadEventIds(threadId, snapshot.events.map((event) => event.id));
+  }
+
+  if (snapshotNewestIdx != null) {
+    setThreadLastEventIdx(threadId, snapshotNewestIdx);
+  }
+}
+
+function flushPendingEventsToCollection(threadId: string, pendingEvents: ChatEvent[]) {
+  if (pendingEvents.length === 0) {
+    return;
+  }
+
+  const eventsCollection = getThreadEventsCollection(threadId);
+  const existingEventIds = new Set((eventsCollection.toArray as ChatEvent[]).map((event) => event.id));
+  const insertableEvents = pendingEvents.filter((event) => !existingEventIds.has(event.id));
+
+  if (insertableEvents.length === 0) {
+    return;
+  }
+
+  eventsCollection.insert(insertableEvents);
+  setThreadLastEventIdx(threadId, insertableEvents[insertableEvents.length - 1]?.idx ?? null);
+}
+
+function flushPendingMessageMutationsToCollection(
+  threadId: string,
+  pendingMutations: PendingMessageMutation[],
+) {
+  if (pendingMutations.length === 0) {
+    return;
+  }
+
+  const messagesCollection = getThreadMessagesCollection(threadId);
+  const currentMessages = messagesCollection.toArray as ChatMessage[];
+  const currentMessagesById = new Map(currentMessages.map((message) => [message.id, message]));
+  const insertRows = new Map<string, ChatMessage>();
+  const updateContentById = new Map<string, string>();
+  let nextSeq = getThreadLastMessageSeq(threadId) ?? currentMessages[currentMessages.length - 1]?.seq ?? 0;
+
+  const getKnownMessage = (messageId: string) => {
+    const inserted = insertRows.get(messageId);
+    if (inserted) {
+      return inserted;
+    }
+
+    const current = currentMessagesById.get(messageId);
+    if (!current) {
+      return null;
+    }
+
+    const updatedContent = updateContentById.get(messageId);
+    if (updatedContent == null) {
+      return current;
+    }
+
+    return {
+      ...current,
+      content: updatedContent,
+    };
+  };
+
+  for (const mutation of pendingMutations) {
+    if (mutation.kind === "ensure-placeholder") {
+      if (getKnownMessage(mutation.id)) {
+        continue;
+      }
+
+      nextSeq = allocateNextThreadMessageSeq(threadId, nextSeq);
+      insertRows.set(mutation.id, {
+        id: mutation.id,
+        threadId: mutation.threadId,
+        seq: nextSeq,
+        role: "assistant",
+        content: "",
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      });
+      continue;
+    }
+
+    const knownMessage = getKnownMessage(mutation.id);
+    if (!knownMessage) {
+      nextSeq = allocateNextThreadMessageSeq(threadId, nextSeq);
+      insertRows.set(mutation.id, {
+        id: mutation.id,
+        threadId: mutation.threadId,
+        seq: nextSeq,
+        role: mutation.role,
+        content: mutation.delta,
+        attachments: [],
+        createdAt: new Date().toISOString(),
+      });
+      continue;
+    }
+
+    if (mutation.role === "user" || mutation.delta.length === 0) {
+      continue;
+    }
+
+    const suffix = computeAssistantDeltaSuffix(knownMessage.content, mutation.delta);
+    if (suffix.length === 0) {
+      continue;
+    }
+
+    const nextContent = knownMessage.content + suffix;
+    if (insertRows.has(mutation.id)) {
+      insertRows.set(mutation.id, {
+        ...insertRows.get(mutation.id)!,
+        content: nextContent,
+      });
+      continue;
+    }
+
+    updateContentById.set(mutation.id, nextContent);
+  }
+
+  if (insertRows.size > 0) {
+    messagesCollection.insert([...insertRows.values()]);
+  }
+
+  for (const [messageId, content] of updateContentById) {
+    const current = currentMessagesById.get(messageId);
+    if (!current || current.content === content) {
+      continue;
+    }
+
+    messagesCollection.update(messageId, (draft) => {
+      draft.content = content;
+    });
+  }
+
+  setThreadLastMessageSeq(
+    threadId,
+    nextSeq > 0 ? nextSeq : currentMessages[currentMessages.length - 1]?.seq ?? null,
+  );
 }
 
 export function useThreadEventStream(params: UseThreadEventStreamParams) {
@@ -82,20 +247,13 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     selectedThreadIsPrMr,
     locallyDeletedThreadIdsRef,
     activeThreadIdRef,
-    setMessages,
-    setEvents,
     setThreads,
     setWaitingAssistant,
     setStoppingThreadId,
     setStopRequestedThreadId,
-    seenEventIdsByThreadRef,
-    lastEventIdxByThreadRef,
     streamingMessageIdsRef,
     stickyRawFallbackMessageIdsRef,
     renderDecisionByMessageIdRef,
-    pendingEventsRef,
-    pendingMessageMutationsRef,
-    rafIdRef,
     onError,
     onBranchRenamed,
   } = params;
@@ -103,26 +261,14 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
   const queryClient = useQueryClient();
   const repositoryIdRef = useRef(repositoryId);
   const selectedThreadIsPrMrRef = useRef(selectedThreadIsPrMr);
+  const pendingEventsRef = useRef<ChatEvent[]>([]);
+  const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
+  const rafIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     repositoryIdRef.current = repositoryId;
     selectedThreadIsPrMrRef.current = selectedThreadIsPrMr;
   }, [repositoryId, selectedThreadIsPrMr]);
-
-  function ensureSeenEventIds(threadId: string): Set<string> {
-    const existing = seenEventIdsByThreadRef.current.get(threadId);
-    if (existing) return existing;
-    const created = new Set<string>();
-    seenEventIdsByThreadRef.current.set(threadId, created);
-    return created;
-  }
-
-  function updateLastEventIdx(threadId: string, idx: number) {
-    const current = lastEventIdxByThreadRef.current.get(threadId);
-    if (current == null || idx > current) {
-      lastEventIdxByThreadRef.current.set(threadId, idx);
-    }
-  }
 
   function clearPendingStreamBuffers() {
     pendingEventsRef.current = [];
@@ -141,32 +287,33 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       setStopRequestedThreadId(null);
       streamingMessageIdsRef.current = new Set();
       stickyRawFallbackMessageIdsRef.current = new Set();
-      setMessages((current) => (current.length === 0 ? current : []));
-      setEvents((current) => (current.length === 0 ? current : []));
       return;
     }
 
+    getThreadCollections(selectedThreadId);
     clearPendingStreamBuffers();
     streamingMessageIdsRef.current = new Set();
     stickyRawFallbackMessageIdsRef.current = new Set();
     renderDecisionByMessageIdRef.current = new Map();
     setStoppingThreadId(null);
     setStopRequestedThreadId(null);
+    markThreadStreamDisposed(selectedThreadId, false);
 
     let disposed = false;
     let stream: EventSource | null = null;
 
     const onEvent = (rawEvent: MessageEvent<string>) => {
-      if (disposed) return;
-
-      const payload = JSON.parse(rawEvent.data) as ChatEvent;
-      const seenEventIds = ensureSeenEventIds(selectedThreadId);
-      if (seenEventIds.has(payload.id)) {
+      if (disposed) {
         return;
       }
 
-      seenEventIds.add(payload.id);
-      updateLastEventIdx(selectedThreadId, payload.idx);
+      const payload = JSON.parse(rawEvent.data) as ChatEvent;
+      if (hasSeenThreadEvent(selectedThreadId, payload.id)) {
+        return;
+      }
+
+      markThreadEventSeen(selectedThreadId, payload.id);
+      setThreadLastEventIdx(selectedThreadId, payload.idx);
       pushRenderDebug({
         source: "WorkspacePage",
         event: "streamEventAccepted",
@@ -205,12 +352,10 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       setWaitingAssistant((current) => {
-        if (!current || current.threadId !== selectedThreadId || payload.idx <= current.afterIdx) return current;
-        const shouldClear = shouldClearWaitingAssistantOnEvent(payload);
-        if (shouldClear) {
-          return null;
+        if (!current || current.threadId !== selectedThreadId || payload.idx <= current.afterIdx) {
+          return current;
         }
-        return current;
+        return shouldClearWaitingAssistantOnEvent(payload) ? null : current;
       });
 
       pendingEventsRef.current.push(payload);
@@ -241,21 +386,23 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       if (rafIdRef.current === null) {
         rafIdRef.current = requestAnimationFrame(() => {
           rafIdRef.current = null;
+          if (disposed) {
+            return;
+          }
+
           const pendingEvents = pendingEventsRef.current;
           const pendingMutations = pendingMessageMutationsRef.current;
           pendingEventsRef.current = [];
           pendingMessageMutationsRef.current = [];
 
-          if (pendingEvents.length > 0 || pendingMutations.length > 0) {
-            startTransition(() => {
-              if (pendingEvents.length > 0) {
-                setEvents((current) => insertAllEvents(current, pendingEvents));
-              }
-              if (pendingMutations.length > 0) {
-                setMessages((current) => applyMessageMutations(current, pendingMutations));
-              }
-            });
+          if (pendingEvents.length === 0 && pendingMutations.length === 0) {
+            return;
           }
+
+          startTransition(() => {
+            flushPendingEventsToCollection(selectedThreadId, pendingEvents);
+            flushPendingMessageMutationsToCollection(selectedThreadId, pendingMutations);
+          });
         });
       }
 
@@ -285,9 +432,13 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           queryClient.setQueryData<ChatThread[] | undefined>(
             queryKeys.threads.list(selectedWorktreeId),
             (current) => {
-              if (!current) return current;
+              if (!current) {
+                return current;
+              }
               const index = current.findIndex((thread) => thread.id === selectedThreadId);
-              if (index === -1 || !current[index]?.active) return current;
+              if (index === -1 || !current[index]?.active) {
+                return current;
+              }
               const updated = [...current];
               updated[index] = { ...updated[index]!, active: false };
               return updated;
@@ -341,25 +492,27 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
     const MAX_RECONNECT_ATTEMPTS = 5;
     const BASE_RECONNECT_DELAY_MS = 1000;
-    let reconnectAttempts = 0;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const startStream = () => {
-      if (disposed) return;
+      if (disposed) {
+        return;
+      }
 
       const cachedSnapshot = queryClient.getQueryData<ChatTimelineSnapshot>(
         queryKeys.threads.timelineSnapshot(selectedThreadId),
       );
-      if (cachedSnapshot && cachedSnapshot.events.length > 0) {
-        const seenEventIds = ensureSeenEventIds(selectedThreadId);
-        for (const e of cachedSnapshot.events) {
-          seenEventIds.add(e.id);
-          updateLastEventIdx(selectedThreadId, e.idx);
-        }
+      if (cachedSnapshot) {
+        syncThreadStreamCursorFromSnapshot(selectedThreadId, cachedSnapshot);
+      }
+
+      const existingEvents = getThreadEventsCollection(selectedThreadId).toArray as ChatEvent[];
+      const existingLastEventIdx = existingEvents[existingEvents.length - 1]?.idx ?? null;
+      if (existingLastEventIdx != null) {
+        setThreadLastEventIdx(selectedThreadId, existingLastEventIdx);
       }
 
       const streamUrl = new URL(`${api.runtimeBaseUrl}/api/threads/${selectedThreadId}/events/stream`);
-      const lastEventIdx = lastEventIdxByThreadRef.current.get(selectedThreadId);
+      const lastEventIdx = getThreadLastEventIdx(selectedThreadId);
       if (typeof lastEventIdx === "number") {
         streamUrl.searchParams.set("afterIdx", String(lastEventIdx));
       }
@@ -371,12 +524,15 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       stream.onopen = () => {
-        reconnectAttempts = 0;
+        resetThreadReconnectAttempts(selectedThreadId);
+        clearThreadReconnectTimer(selectedThreadId);
         onError(null);
       };
 
       stream.onerror = () => {
-        if (disposed) return;
+        if (disposed) {
+          return;
+        }
         if (stream && stream.readyState === EventSource.CLOSED) {
           for (const eventType of EVENT_TYPES) {
             stream.removeEventListener(eventType, onEvent as EventListener);
@@ -384,13 +540,14 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           stream.close();
           stream = null;
 
-          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-            const delay = BASE_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttempts);
-            reconnectAttempts++;
-            reconnectTimer = setTimeout(() => {
-              reconnectTimer = null;
+          if (getThreadReconnectAttempts(selectedThreadId) < MAX_RECONNECT_ATTEMPTS) {
+            const attempt = incrementThreadReconnectAttempts(selectedThreadId);
+            const delay = BASE_RECONNECT_DELAY_MS * Math.pow(2, attempt - 1);
+            const reconnectTimer = setTimeout(() => {
+              setThreadReconnectTimer(selectedThreadId, null);
               startStream();
             }, delay);
+            setThreadReconnectTimer(selectedThreadId, reconnectTimer);
           } else {
             onError("Lost connection to chat stream");
           }
@@ -416,31 +573,22 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             disposed
             || locallyDeletedThreadIdsRef.current.has(bootstrapThreadId)
             || activeThreadIdRef.current !== bootstrapThreadId
-          ) return;
-          if (snapshot.events.length > 0) {
-            const seenEventIds = ensureSeenEventIds(bootstrapThreadId);
-            for (const e of snapshot.events) {
-              seenEventIds.add(e.id);
-              updateLastEventIdx(bootstrapThreadId, e.idx);
-            }
+          ) {
+            return;
           }
+
+          syncThreadStreamCursorFromSnapshot(bootstrapThreadId, snapshot);
         } catch {}
       })();
     }
 
     return () => {
       disposed = true;
+      markThreadStreamDisposed(selectedThreadId, true);
+      flushPendingEventsToCollection(selectedThreadId, pendingEventsRef.current);
+      flushPendingMessageMutationsToCollection(selectedThreadId, pendingMessageMutationsRef.current);
       clearPendingStreamBuffers();
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = null;
-      }
-      pendingEventsRef.current = [];
-      pendingMessageMutationsRef.current = [];
+      clearThreadReconnectTimer(selectedThreadId);
       if (stream) {
         for (const eventType of EVENT_TYPES) {
           stream.removeEventListener(eventType, onEvent as EventListener);

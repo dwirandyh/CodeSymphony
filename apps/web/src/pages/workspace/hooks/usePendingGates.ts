@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatEvent } from "@codesymphony/shared-types";
+import { useLiveQuery } from "@tanstack/react-db";
 import { api } from "../../../lib/api";
+import { getThreadCollections } from "../../../collections/threadCollections";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest } from "../types";
 import {
   derivePendingPermissionRequests,
@@ -9,6 +11,8 @@ import {
   isPlanReviewReady,
 } from "./worktreeThreadStatus";
 
+const EMPTY_EVENTS: ChatEvent[] = [];
+
 export interface PendingGatesDeps {
   onError: (msg: string | null) => void;
   startWaitingAssistant: (threadId: string) => void;
@@ -16,11 +20,15 @@ export interface PendingGatesDeps {
 }
 
 export function usePendingGates(
-  events: ChatEvent[],
   selectedThreadId: string | null,
   deps: PendingGatesDeps,
 ) {
   const { onError, startWaitingAssistant, clearWaitingAssistantForThread } = deps;
+  const { data: liveEvents } = useLiveQuery(
+    () => selectedThreadId ? getThreadCollections(selectedThreadId).eventsCollection : undefined,
+    [selectedThreadId],
+  );
+  const events = liveEvents ?? EMPTY_EVENTS;
 
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set());
   const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(() => new Set());

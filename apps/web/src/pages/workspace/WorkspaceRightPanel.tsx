@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { FolderTree, GitBranch } from "lucide-react";
-import type { FileEntry, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
+import type { ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { GitChangesPanel } from "../../components/workspace/GitChangesPanel";
 import { WorkspaceExplorerPanel } from "../../components/workspace/WorkspaceExplorerPanel";
 import { cn } from "../../lib/utils";
@@ -11,9 +11,8 @@ type GitChangesData = ReturnType<typeof useGitChanges>;
 
 export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   rightPanelId,
+  worktreeId,
   gitChanges,
-  fileIndexEntries,
-  fileIndexLoading,
   activeFilePath,
   selectedDiffFilePath,
   onOpenReview,
@@ -28,9 +27,8 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   onPrMrAction,
 }: {
   rightPanelId: "explorer" | "git" | null;
+  worktreeId: string | null;
   gitChanges: GitChangesData;
-  fileIndexEntries: FileEntry[];
-  fileIndexLoading: boolean;
   activeFilePath: string | null;
   selectedDiffFilePath: string | null;
   onOpenReview: () => void;
@@ -88,9 +86,8 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
           >
             {rightPanelId === "explorer" && (
               <WorkspaceExplorerPanel
-                entries={fileIndexEntries}
+                worktreeId={worktreeId}
                 gitEntries={gitChanges.entries}
-                loading={fileIndexLoading}
                 activeFilePath={activeFilePath}
                 onOpenFile={(path) => void onOpenReadFile(path)}
                 onClose={() => onUpdatePanel(undefined)}
