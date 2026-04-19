@@ -258,6 +258,8 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
                       key={`${activeSession.sessionId}:${viewerNonce}`}
                       sessionId={activeSession.sessionId}
                       deviceName={activeDevice.name}
+                      nativeBaseUrl={activeSession.nativeBaseUrl ?? null}
+                      platformSessionId={activeSession.platformSessionId ?? null}
                     />
                   ) : (
                     <iframe

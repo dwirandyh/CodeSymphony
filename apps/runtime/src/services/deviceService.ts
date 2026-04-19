@@ -249,6 +249,8 @@ function toPublicSession(session: InternalStreamSession): DeviceStreamSession {
     viewerUrl: session.viewerUrl,
     controlTransport: session.controlTransport,
     startedAt: session.startedAt,
+    nativeBaseUrl: session.platform === "ios-simulator" ? session.proxyBaseUrl : null,
+    platformSessionId: session.platform === "ios-simulator" ? session.platformSessionId ?? null : null,
   };
 }
 

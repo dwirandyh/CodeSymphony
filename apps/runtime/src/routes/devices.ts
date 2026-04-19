@@ -175,8 +175,20 @@ function proxyWebSocketConnection(args: {
   upstreamFailureMessage: string;
 }) {
   const { app, authorizationHeader, client, request, sessionId, targetUrl, upstreamFailureMessage } = args;
+  const pendingClientMessages: Array<{ data: RawData; isBinary: boolean }> = [];
   const upstream = new WebSocket(targetUrl, {
     headers: buildWebSocketProxyHeaders(request, authorizationHeader),
+  });
+
+  upstream.on("open", () => {
+    while (pendingClientMessages.length > 0 && upstream.readyState === WebSocket.OPEN) {
+      const nextMessage = pendingClientMessages.shift();
+      if (!nextMessage) {
+        return;
+      }
+
+      upstream.send(nextMessage.data, { binary: nextMessage.isBinary });
+    }
   });
 
   upstream.on("message", (data: RawData, isBinary: boolean) => {
@@ -201,6 +213,11 @@ function proxyWebSocketConnection(args: {
   client.on("message", (data: RawData, isBinary: boolean) => {
     if (upstream.readyState === WebSocket.OPEN) {
       upstream.send(data, { binary: isBinary });
+      return;
+    }
+
+    if (upstream.readyState === WebSocket.CONNECTING) {
+      pendingClientMessages.push({ data, isBinary });
     }
   });
 
@@ -409,6 +426,28 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
       app.log.warn({ error, sessionId, targetUrl: targetUrl.toString() }, "iOS native screenshot proxy failed");
       return reply.code(502).send({ error: "Failed to reach iOS bridge screenshot endpoint" });
     }
+  });
+
+  app.get("/device-streams/:sessionId/native/webrtc", { websocket: true }, (socket, request) => {
+    const { sessionId } = request.params as DeviceStreamSessionParams;
+    const viewerSession = app.deviceService.getViewerSession(sessionId);
+    if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
+      socket.close(4404, "Device stream session not found");
+      return;
+    }
+
+    const targetUrl = new URL(`/ws/${encodeURIComponent(viewerSession.platformSessionId)}/webrtc`, viewerSession.proxyBaseUrl);
+    targetUrl.protocol = targetUrl.protocol === "https:" ? "wss:" : "ws:";
+
+    proxyWebSocketConnection({
+      app,
+      authorizationHeader: viewerSession.proxyAuthorizationHeader,
+      client: socket,
+      request,
+      sessionId,
+      targetUrl,
+      upstreamFailureMessage: "iOS native WebRTC signaling proxy failed",
+    });
   });
 
   app.get("/device-streams/:sessionId/native/control", { websocket: true }, (socket, request) => {

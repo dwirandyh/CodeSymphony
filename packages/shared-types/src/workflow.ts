@@ -181,6 +181,8 @@ export const DeviceStreamSessionSchema = z.object({
   viewerUrl: z.string().min(1),
   controlTransport: DeviceStreamControlTransportSchema,
   startedAt: z.string().datetime(),
+  nativeBaseUrl: z.string().url().nullable().optional(),
+  platformSessionId: z.string().nullable().optional(),
 });
 export type DeviceStreamSession = z.infer<typeof DeviceStreamSessionSchema>;
 

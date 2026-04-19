@@ -5,10 +5,13 @@ import { api } from "../../lib/api";
 
 type IosSimulatorViewerProps = {
   deviceName: string;
+  nativeBaseUrl?: string | null;
+  platformSessionId?: string | null;
   sessionId: string;
 };
 
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
+type MediaMode = "live" | "fallback";
 
 type DragState = {
   startAt: number;
@@ -25,8 +28,17 @@ type IosStatusResponse = {
   };
 };
 
-const SCREENSHOT_POLL_INTERVAL_MS = 2_000;
-const POST_ACTION_REFRESH_DELAYS_MS = [180, 900];
+type IosVideoFrame = {
+  data: string;
+  pixel_height?: number;
+  pixel_width?: number;
+  point_height?: number;
+  point_width?: number;
+  type?: string;
+};
+
+const FALLBACK_SCREENSHOT_POLL_INTERVAL_MS = 1_250;
+const FALLBACK_REFRESH_AFTER_ACTION_MS = [120, 700];
 
 function clamp(value: number, min: number, max: number): number {
   if (value < min) {
@@ -38,16 +50,103 @@ function clamp(value: number, min: number, max: number): number {
   return value;
 }
 
-function buildIosViewerUrls(sessionId: string) {
+function supportsIosLiveViewer(): boolean {
+  return typeof window !== "undefined" && typeof WebSocket === "function";
+}
+
+function buildDirectIosWebSocketUrl(baseUrl: string, platformSessionId: string, channel: "control" | "video"): string {
+  const websocketBase = new URL(baseUrl);
+  websocketBase.protocol = websocketBase.protocol === "https:" ? "wss:" : "ws:";
+  return new URL(`/ws/${encodeURIComponent(platformSessionId)}/${channel}`, websocketBase).toString();
+}
+
+function buildIosViewerUrls(args: {
+  nativeBaseUrl?: string | null;
+  platformSessionId?: string | null;
+  sessionId: string;
+}) {
+  const { nativeBaseUrl, platformSessionId, sessionId } = args;
   const httpBase = new URL(api.runtimeBaseUrl);
   const websocketBase = new URL(api.runtimeBaseUrl);
   websocketBase.protocol = websocketBase.protocol === "https:" ? "wss:" : "ws:";
   const encodedSessionId = encodeURIComponent(sessionId);
+  const hasDirectWebSocketTarget = typeof nativeBaseUrl === "string"
+    && nativeBaseUrl.length > 0
+    && typeof platformSessionId === "string"
+    && platformSessionId.length > 0;
 
   return {
-    control: new URL(`/api/device-streams/${encodedSessionId}/native/control`, websocketBase).toString(),
+    control: hasDirectWebSocketTarget
+      ? buildDirectIosWebSocketUrl(nativeBaseUrl, platformSessionId, "control")
+      : new URL(`/api/device-streams/${encodedSessionId}/native/control`, websocketBase).toString(),
     screenshot: new URL(`/api/device-streams/${encodedSessionId}/native/screenshot`, httpBase).toString(),
     status: new URL(`/api/device-streams/${encodedSessionId}/native/status`, httpBase).toString(),
+    video: hasDirectWebSocketTarget
+      ? buildDirectIosWebSocketUrl(nativeBaseUrl, platformSessionId, "video")
+      : new URL(`/api/device-streams/${encodedSessionId}/native/video`, websocketBase).toString(),
+  };
+}
+
+function getContainedContentBox(
+  boundsHeight: number,
+  boundsWidth: number,
+  contentHeight: number,
+  contentWidth: number,
+): { height: number; left: number; top: number; width: number } {
+  const safeBoundsWidth = Math.max(boundsWidth, 1);
+  const safeBoundsHeight = Math.max(boundsHeight, 1);
+  const safeContentWidth = Math.max(contentWidth, 1);
+  const safeContentHeight = Math.max(contentHeight, 1);
+  const boundsRatio = safeBoundsWidth / safeBoundsHeight;
+  const contentRatio = safeContentWidth / safeContentHeight;
+
+  if (contentRatio >= boundsRatio) {
+    const width = safeBoundsWidth;
+    const height = width / contentRatio;
+    return {
+      height,
+      left: 0,
+      top: (safeBoundsHeight - height) / 2,
+      width,
+    };
+  }
+
+  const height = safeBoundsHeight;
+  const width = height * contentRatio;
+  return {
+    height,
+    left: (safeBoundsWidth - width) / 2,
+    top: 0,
+    width,
+  };
+}
+
+function mapClientPointToDevice(args: {
+  clientX: number;
+  clientY: number;
+  contentHeight: number;
+  contentWidth: number;
+  deviceHeight: number;
+  deviceWidth: number;
+  element: HTMLElement;
+}) {
+  const { clientX, clientY, contentHeight, contentWidth, deviceHeight, deviceWidth, element } = args;
+  if (contentWidth <= 0 || contentHeight <= 0 || deviceWidth <= 0 || deviceHeight <= 0) {
+    return null;
+  }
+
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+
+  const contentBox = getContainedContentBox(rect.height, rect.width, contentHeight, contentWidth);
+  const relativeX = clamp(clientX - rect.left - contentBox.left, 0, contentBox.width);
+  const relativeY = clamp(clientY - rect.top - contentBox.top, 0, contentBox.height);
+
+  return {
+    x: clamp(Math.round((relativeX / contentBox.width) * deviceWidth), 0, deviceWidth),
+    y: clamp(Math.round((relativeY / contentBox.height) * deviceHeight), 0, deviceHeight),
   };
 }
 
@@ -84,32 +183,314 @@ async function drawBlobToCanvas(canvas: HTMLCanvasElement, blob: Blob): Promise<
   }
 }
 
-export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewerProps) {
+export function IosSimulatorViewer({
+  deviceName,
+  nativeBaseUrl = null,
+  platformSessionId = null,
+  sessionId,
+}: IosSimulatorViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
   const pointSizeRef = useRef({ height: 844, width: 390 });
   const dragStateRef = useRef<DragState | null>(null);
-  const hasFrameRef = useRef(false);
   const screenshotAbortRef = useRef<AbortController | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
-  const refreshTimerRef = useRef<number | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
+  const fallbackRefreshTimerRef = useRef<number | null>(null);
+  const controlReconnectTimerRef = useRef<number | null>(null);
   const actionRefreshTimersRef = useRef<number[]>([]);
-  const requestRefreshRef = useRef<() => void>(() => undefined);
-  const queueActionRefreshesRef = useRef<() => void>(() => undefined);
+  const hasFrameRef = useRef(false);
+  const mediaModeRef = useRef<MediaMode>(supportsIosLiveViewer() ? "live" : "fallback");
+  const requestFallbackRefreshRef = useRef<() => void>(() => undefined);
 
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [hasFrame, setHasFrame] = useState(false);
+  const [liveAttempt, setLiveAttempt] = useState(0);
+  const [mediaMode, setMediaMode] = useState<MediaMode>(supportsIosLiveViewer() ? "live" : "fallback");
 
-  const urls = useMemo(() => buildIosViewerUrls(sessionId), [sessionId]);
+  const urls = useMemo(() => buildIosViewerUrls({
+    nativeBaseUrl,
+    platformSessionId,
+    sessionId,
+  }), [nativeBaseUrl, platformSessionId, sessionId]);
 
   useEffect(() => {
+    mediaModeRef.current = mediaMode;
+  }, [mediaMode]);
+
+  const loadPointDimensions = async () => {
+    try {
+      const response = await fetch(urls.status, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await response.json().catch(() => null) as IosStatusResponse | null;
+      const width = Number(payload?.session_info?.device_width);
+      const height = Number(payload?.session_info?.device_height);
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        return;
+      }
+
+      pointSizeRef.current = {
+        height,
+        width,
+      };
+    } catch {
+      // Dimension lookup is best-effort; fallback defaults still keep input usable.
+    }
+  };
+
+  useEffect(() => {
+    void loadPointDimensions();
+  }, [urls.status]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const clearReconnectTimer = () => {
+      if (controlReconnectTimerRef.current != null) {
+        window.clearTimeout(controlReconnectTimerRef.current);
+        controlReconnectTimerRef.current = null;
+      }
+    };
+
+    const closeControlSocket = () => {
+      const socket = controlSocketRef.current;
+      controlSocketRef.current = null;
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        socket.close();
+      }
+    };
+
+    const scheduleReconnect = (message: string) => {
+      if (disposed || controlReconnectTimerRef.current != null) {
+        return;
+      }
+
+      setConnectionState("connecting");
+      if (!hasFrameRef.current) {
+        setError(message);
+      }
+
+      controlReconnectTimerRef.current = window.setTimeout(() => {
+        controlReconnectTimerRef.current = null;
+        connectControlSocket();
+      }, 1_500);
+    };
+
+    const connectControlSocket = () => {
+      closeControlSocket();
+
+      const socket = new WebSocket(urls.control);
+      controlSocketRef.current = socket;
+
+      socket.onopen = () => {
+        if (disposed) {
+          return;
+        }
+
+        setConnectionState(hasFrameRef.current ? "connected" : "connecting");
+        if (!hasFrameRef.current) {
+          setError(null);
+        }
+        void loadPointDimensions();
+      };
+
+      socket.onerror = () => {
+        scheduleReconnect("Reconnecting iOS control channel…");
+      };
+
+      socket.onclose = (closeEvent) => {
+        if (disposed) {
+          return;
+        }
+
+        if (closeEvent.wasClean && closeEvent.code === 1000) {
+          setConnectionState("disconnected");
+          return;
+        }
+
+        scheduleReconnect(closeEvent.reason || "Reconnecting iOS control channel…");
+      };
+    };
+
+    connectControlSocket();
+
+    return () => {
+      disposed = true;
+      clearReconnectTimer();
+      closeControlSocket();
+    };
+  }, [urls.control]);
+
+  useEffect(() => {
+    if (mediaMode !== "live") {
+      return;
+    }
+
+    if (!supportsIosLiveViewer()) {
+      setMediaMode("fallback");
+      return;
+    }
+
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) {
+      setConnectionState("error");
+      setError("Unable to initialize iOS live viewer.");
+      return;
+    }
+
+    let disposed = false;
+    let animationFrameId: number | null = null;
+    let isProcessingFrame = false;
+    let pendingFrame: IosVideoFrame | null = null;
+
+    hasFrameRef.current = false;
+    setHasFrame(false);
+    setConnectionState("connecting");
+    setError(null);
+
+    const switchToFallback = (message: string) => {
+      if (disposed) {
+        return;
+      }
+
+      hasFrameRef.current = false;
+      setHasFrame(false);
+      setConnectionState("connecting");
+      setError(message);
+      setMediaMode("fallback");
+    };
+
+    const processFrame = (frame: IosVideoFrame) => {
+      isProcessingFrame = true;
+
+      const image = new Image();
+      image.onload = () => {
+        if (disposed) {
+          isProcessingFrame = false;
+          return;
+        }
+
+        if (canvas.width !== image.width || canvas.height !== image.height) {
+          canvas.width = image.width;
+          canvas.height = image.height;
+        }
+
+        pointSizeRef.current = {
+          height: frame.point_height ?? pointSizeRef.current.height,
+          width: frame.point_width ?? pointSizeRef.current.width,
+        };
+
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0);
+
+        hasFrameRef.current = true;
+        setHasFrame(true);
+        setConnectionState(controlSocketRef.current?.readyState === WebSocket.OPEN ? "connected" : "connecting");
+        setError(null);
+
+        isProcessingFrame = false;
+        if (pendingFrame) {
+          const nextFrame = pendingFrame;
+          pendingFrame = null;
+          scheduleFrame(nextFrame);
+        }
+      };
+
+      image.onerror = () => {
+        isProcessingFrame = false;
+        if (!hasFrameRef.current) {
+          switchToFallback("Live iOS stream failed before the first frame arrived.");
+        }
+      };
+
+      image.src = `data:image/jpeg;base64,${frame.data}`;
+    };
+
+    const scheduleFrame = (frame: IosVideoFrame) => {
+      if (isProcessingFrame) {
+        pendingFrame = frame;
+        return;
+      }
+
+      if (animationFrameId != null) {
+        pendingFrame = frame;
+        return;
+      }
+
+      animationFrameId = window.requestAnimationFrame(() => {
+        animationFrameId = null;
+        processFrame(frame);
+      });
+    };
+
+    const videoSocket = new WebSocket(urls.video);
+
+    videoSocket.onopen = () => {
+      setConnectionState("connecting");
+      setError(null);
+    };
+
+    videoSocket.onmessage = (event) => {
+      try {
+        const frame = JSON.parse(event.data) as IosVideoFrame;
+        if (frame.type !== "video_frame" || !frame.data) {
+          return;
+        }
+
+        scheduleFrame(frame);
+      } catch (frameError) {
+        if (!hasFrameRef.current) {
+          const message = frameError instanceof Error ? frameError.message : "Invalid iOS video frame payload.";
+          switchToFallback(message);
+        }
+      }
+    };
+
+    videoSocket.onerror = () => {
+      if (!hasFrameRef.current) {
+        switchToFallback("Live iOS stream failed. Falling back to compatibility mode.");
+      }
+    };
+
+    videoSocket.onclose = (closeEvent) => {
+      if (disposed) {
+        return;
+      }
+
+      if (closeEvent.wasClean && closeEvent.code === 1000) {
+        setConnectionState("disconnected");
+        return;
+      }
+
+      switchToFallback(closeEvent.reason || "Live iOS stream disconnected. Falling back to compatibility mode.");
+    };
+
+    return () => {
+      disposed = true;
+      if (animationFrameId != null) {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+      videoSocket.close();
+    };
+  }, [liveAttempt, mediaMode, urls.video]);
+
+  useEffect(() => {
+    if (mediaMode !== "fallback") {
+      requestFallbackRefreshRef.current = () => undefined;
+      return;
+    }
+
     const canvas = canvasRef.current;
     if (!canvas || !canvas.getContext("2d")) {
       setConnectionState("error");
-      setError("Unable to initialize iOS simulator canvas.");
+      setError("Unable to initialize iOS compatibility viewer.");
       return;
     }
 
@@ -117,19 +498,11 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     hasFrameRef.current = false;
     setHasFrame(false);
     setConnectionState("connecting");
-    setError(null);
 
-    const clearRefreshTimer = () => {
-      if (refreshTimerRef.current != null) {
-        window.clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
-    };
-
-    const clearReconnectTimer = () => {
-      if (reconnectTimerRef.current != null) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
+    const clearFallbackRefreshTimer = () => {
+      if (fallbackRefreshTimerRef.current != null) {
+        window.clearTimeout(fallbackRefreshTimerRef.current);
+        fallbackRefreshTimerRef.current = null;
       }
     };
 
@@ -140,37 +513,12 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       actionRefreshTimersRef.current = [];
     };
 
-    const schedulePoll = (delay = SCREENSHOT_POLL_INTERVAL_MS) => {
-      clearRefreshTimer();
-      refreshTimerRef.current = window.setTimeout(() => {
-        refreshTimerRef.current = null;
-        requestRefreshRef.current();
-      }, delay);
-    };
-
-    const loadPointDimensions = async () => {
-      try {
-        const response = await fetch(urls.status, {
-          cache: "no-store",
-        });
-        if (!response.ok) {
-          return;
-        }
-
-        const payload = await response.json().catch(() => null) as IosStatusResponse | null;
-        const width = Number(payload?.session_info?.device_width);
-        const height = Number(payload?.session_info?.device_height);
-        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-          return;
-        }
-
-        pointSizeRef.current = {
-          height,
-          width,
-        };
-      } catch {
-        // Status metadata is best-effort; screenshot rendering can continue without it.
-      }
+    const scheduleFallbackPoll = () => {
+      clearFallbackRefreshTimer();
+      fallbackRefreshTimerRef.current = window.setTimeout(() => {
+        fallbackRefreshTimerRef.current = null;
+        requestFallbackRefreshRef.current();
+      }, FALLBACK_SCREENSHOT_POLL_INTERVAL_MS);
     };
 
     const refreshScreenshot = async () => {
@@ -184,7 +532,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       }
 
       refreshInFlightRef.current = true;
-      clearRefreshTimer();
+      clearFallbackRefreshTimer();
 
       const controller = new AbortController();
       screenshotAbortRef.current = controller;
@@ -197,14 +545,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
           cache: "no-store",
           signal: controller.signal,
         });
-
         if (!response.ok) {
-          throw new Error(`Failed to refresh iOS simulator view (${response.status}).`);
+          throw new Error(`Failed to refresh iOS compatibility view (${response.status}).`);
         }
 
         const blob = await response.blob();
         if (blob.size <= 0) {
-          throw new Error("iOS simulator screenshot was empty.");
+          throw new Error("iOS compatibility screenshot was empty.");
         }
 
         const renderCanvas = canvasRef.current;
@@ -230,7 +577,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
 
         const message = refreshError instanceof Error
           ? refreshError.message
-          : "Failed to refresh iOS simulator view.";
+          : "Failed to refresh the iOS compatibility view.";
 
         if (!hasFrameRef.current) {
           setConnectionState("error");
@@ -252,101 +599,35 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
           return;
         }
 
-        schedulePoll();
+        scheduleFallbackPoll();
       }
     };
 
-    requestRefreshRef.current = () => {
+    requestFallbackRefreshRef.current = () => {
       void refreshScreenshot();
     };
 
-    queueActionRefreshesRef.current = () => {
-      clearActionRefreshTimers();
-      for (const delay of POST_ACTION_REFRESH_DELAYS_MS) {
-        const timer = window.setTimeout(() => {
-          actionRefreshTimersRef.current = actionRefreshTimersRef.current.filter((value) => value !== timer);
-          requestRefreshRef.current();
-        }, delay);
-        actionRefreshTimersRef.current.push(timer);
-      }
-    };
-
-    const closeControlSocket = () => {
-      const socket = controlSocketRef.current;
-      controlSocketRef.current = null;
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-        socket.close();
-      }
-    };
-
-    const scheduleReconnect = (message: string) => {
-      if (disposed || reconnectTimerRef.current != null) {
-        return;
-      }
-
-      setConnectionState("connecting");
-      if (!hasFrameRef.current) {
-        setError(message);
-      }
-
-      reconnectTimerRef.current = window.setTimeout(() => {
-        reconnectTimerRef.current = null;
-        connectControlSocket();
-      }, 1_500);
-    };
-
-    const connectControlSocket = () => {
-      closeControlSocket();
-
-      const controlSocket = new WebSocket(urls.control);
-      controlSocketRef.current = controlSocket;
-
-      controlSocket.onopen = () => {
-        if (disposed) {
-          return;
-        }
-
-        setConnectionState(hasFrameRef.current ? "connected" : "connecting");
-        setError(null);
-        void loadPointDimensions();
-        requestRefreshRef.current();
-      };
-
-      controlSocket.onerror = () => {
-        scheduleReconnect("Reconnecting iOS control websocket…");
-      };
-
-      controlSocket.onclose = (closeEvent) => {
-        if (disposed) {
-          return;
-        }
-
-        if (closeEvent.wasClean && closeEvent.code === 1000) {
-          setConnectionState("disconnected");
-          return;
-        }
-
-        scheduleReconnect(closeEvent.reason || "Reconnecting iOS control websocket…");
-      };
-    };
-
     void loadPointDimensions();
-    connectControlSocket();
-    requestRefreshRef.current();
+    requestFallbackRefreshRef.current();
 
     return () => {
       disposed = true;
-      dragStateRef.current = null;
-      requestRefreshRef.current = () => undefined;
-      queueActionRefreshesRef.current = () => undefined;
-      clearRefreshTimer();
-      clearReconnectTimer();
+      requestFallbackRefreshRef.current = () => undefined;
+      clearFallbackRefreshTimer();
       clearActionRefreshTimers();
       screenshotAbortRef.current?.abort();
       screenshotAbortRef.current = null;
-      closeControlSocket();
     };
-  }, [urls.control, urls.screenshot, urls.status]);
+  }, [mediaMode, urls.screenshot, urls.status]);
+
+  const restartLiveStream = () => {
+    hasFrameRef.current = false;
+    setHasFrame(false);
+    setConnectionState("connecting");
+    setError(null);
+    setMediaMode("live");
+    setLiveAttempt((current) => current + 1);
+  };
 
   const sendControl = (payload: Record<string, number | string>) => {
     const socket = controlSocketRef.current;
@@ -357,30 +638,43 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     }
 
     socket.send(JSON.stringify(payload));
-    queueActionRefreshesRef.current();
+
+    if (mediaModeRef.current !== "fallback") {
+      return;
+    }
+
+    for (const timer of actionRefreshTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+
+    actionRefreshTimersRef.current = FALLBACK_REFRESH_AFTER_ACTION_MS.map((delay) => {
+      const timer = window.setTimeout(() => {
+        actionRefreshTimersRef.current = actionRefreshTimersRef.current.filter((value) => value !== timer);
+        requestFallbackRefreshRef.current();
+      }, delay);
+      return timer;
+    });
   };
 
-  const getCanvasPoint = (clientX: number, clientY: number) => {
+  const getInteractivePoint = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) {
       return null;
     }
 
-    const rect = canvas.getBoundingClientRect();
-    const width = pointSizeRef.current.width;
-    const height = pointSizeRef.current.height;
-    if (rect.width <= 0 || rect.height <= 0 || width <= 0 || height <= 0) {
-      return null;
-    }
-
-    return {
-      x: clamp(Math.round(((clientX - rect.left) / rect.width) * width), 0, width),
-      y: clamp(Math.round(((clientY - rect.top) / rect.height) * height), 0, height),
-    };
+    return mapClientPointToDevice({
+      clientX,
+      clientY,
+      contentHeight: canvas.height || pointSizeRef.current.height,
+      contentWidth: canvas.width || pointSizeRef.current.width,
+      deviceHeight: pointSizeRef.current.height,
+      deviceWidth: pointSizeRef.current.width,
+      element: canvas,
+    });
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    const point = getCanvasPoint(event.clientX, event.clientY);
+    const point = getInteractivePoint(event.clientX, event.clientY);
     if (!point) {
       return;
     }
@@ -401,7 +695,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       return;
     }
 
-    const point = getCanvasPoint(event.clientX, event.clientY);
+    const point = getInteractivePoint(event.clientX, event.clientY);
     if (!point) {
       return;
     }
@@ -423,7 +717,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       return;
     }
 
-    const point = getCanvasPoint(event.clientX, event.clientY) ?? { x: activeDrag.x, y: activeDrag.y };
+    const point = getInteractivePoint(event.clientX, event.clientY) ?? { x: activeDrag.x, y: activeDrag.y };
     const dx = point.x - activeDrag.startX;
     const dy = point.y - activeDrag.startY;
     const distance = Math.sqrt(dx * dx + dy * dy);
@@ -448,12 +742,20 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   };
 
   const statusLabel = connectionState === "connected"
-    ? "Ready"
+    ? mediaMode === "live"
+      ? "Live"
+      : "Fallback"
     : connectionState === "connecting"
       ? "Connecting"
       : connectionState === "disconnected"
         ? "Disconnected"
         : "Error";
+
+  const overlayMessage = error ?? (
+    mediaMode === "live"
+      ? "Starting the iOS live stream directly in this panel."
+      : "Using the compatibility renderer while the live stream is unavailable."
+  );
 
   return (
     <div
@@ -485,9 +787,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             )}
             <div>
               <p className="text-sm font-semibold text-white">{deviceName}</p>
-              <p className="mt-1 text-xs leading-5 text-white/65">
-                {error ?? "Menyambungkan simulator iOS langsung ke panel ini tanpa iframe."}
-              </p>
+              <p className="mt-1 text-xs leading-5 text-white/65">{overlayMessage}</p>
             </div>
           </div>
         ) : null}
@@ -500,8 +800,8 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             variant="ghost"
             size="icon"
             className="h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
-            aria-label="iOS Refresh"
-            onClick={() => requestRefreshRef.current()}
+            aria-label="iOS Reconnect"
+            onClick={restartLiveStream}
           >
             <RefreshCw className="h-4 w-4" />
           </Button>
