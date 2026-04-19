@@ -37,8 +37,16 @@ type IosVideoFrame = {
   type?: string;
 };
 
+type IosControlPayload = Record<string, number | string>;
+
 const FALLBACK_SCREENSHOT_POLL_INTERVAL_MS = 1_250;
 const FALLBACK_REFRESH_AFTER_ACTION_MS = [120, 700];
+const IOS_SPECIAL_KEY_MAP: Record<string, string> = {
+  Backspace: "DELETE",
+  Enter: "RETURN",
+  Escape: "ESCAPE",
+  Tab: "TAB",
+};
 
 function clamp(value: number, min: number, max: number): number {
   if (value < min) {
@@ -190,6 +198,7 @@ export function IosSimulatorViewer({
   sessionId,
 }: IosSimulatorViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const keyboardInputRef = useRef<HTMLTextAreaElement | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
   const pointSizeRef = useRef({ height: 844, width: 390 });
   const dragStateRef = useRef<DragState | null>(null);
@@ -629,7 +638,23 @@ export function IosSimulatorViewer({
     setLiveAttempt((current) => current + 1);
   };
 
-  const sendControl = (payload: Record<string, number | string>) => {
+  const focusKeyboardInput = () => {
+    keyboardInputRef.current?.focus({
+      preventScroll: true,
+    });
+  };
+
+  const clearKeyboardBuffer = () => {
+    const input = keyboardInputRef.current;
+    if (!input) {
+      return;
+    }
+
+    input.value = "";
+    input.setSelectionRange(0, 0);
+  };
+
+  const sendControl = (payload: IosControlPayload) => {
     const socket = controlSocketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       setConnectionState("connecting");
@@ -656,6 +681,50 @@ export function IosSimulatorViewer({
     });
   };
 
+  const sendKeyboardText = (text: string) => {
+    if (text.length === 0) {
+      return;
+    }
+
+    sendControl({
+      t: "text",
+      text,
+    });
+  };
+
+  const sendKeyboardKey = (key: string, duration?: number) => {
+    sendControl({
+      ...(duration != null ? { duration } : {}),
+      key,
+      t: "key",
+    });
+  };
+
+  const handleKeyboardInput = (event: React.FormEvent<HTMLTextAreaElement>) => {
+    const text = event.currentTarget.value;
+    if (text.length === 0) {
+      return;
+    }
+
+    sendKeyboardText(text);
+    clearKeyboardBuffer();
+  };
+
+  const handleKeyboardKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+
+    const specialKey = IOS_SPECIAL_KEY_MAP[event.key];
+    if (!specialKey) {
+      return;
+    }
+
+    event.preventDefault();
+    sendKeyboardKey(specialKey, event.key === "Enter" ? 0.1 : undefined);
+    clearKeyboardBuffer();
+  };
+
   const getInteractivePoint = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) {
@@ -674,6 +743,7 @@ export function IosSimulatorViewer({
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    focusKeyboardInput();
     const point = getInteractivePoint(event.clientX, event.clientY);
     if (!point) {
       return;
@@ -762,6 +832,19 @@ export function IosSimulatorViewer({
       data-device-viewer="ios-native"
       className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(251,191,36,0.12),_transparent_48%),linear-gradient(180deg,_rgba(9,9,11,0.96),_rgba(2,6,23,0.98))]"
     >
+      <textarea
+        ref={keyboardInputRef}
+        aria-label="iOS keyboard bridge"
+        autoCapitalize="off"
+        autoComplete="off"
+        autoCorrect="off"
+        className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+        spellCheck={false}
+        tabIndex={-1}
+        onInput={handleKeyboardInput}
+        onKeyDown={handleKeyboardKeyDown}
+      />
+
       <div className="absolute left-3 top-3 z-20 rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/70">
         {statusLabel}
       </div>
