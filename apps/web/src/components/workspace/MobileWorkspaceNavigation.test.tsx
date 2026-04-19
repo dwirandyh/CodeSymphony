@@ -94,7 +94,8 @@ describe("MobileGitSheet", () => {
 });
 
 describe("MobileMoreSheet", () => {
-  it("renders a compact utilities hub and routes utility taps", () => {
+  it("renders a compact utilities hub and routes device and utility taps", () => {
+    const onOpenDevices = vi.fn();
     const onOpenUtility = vi.fn();
 
     act(() => {
@@ -105,6 +106,7 @@ describe("MobileMoreSheet", () => {
           hasWorktree
           runScriptActive
           onOpenRepositories={vi.fn()}
+          onOpenDevices={onOpenDevices}
           onOpenSettings={vi.fn()}
           onOpenUtility={onOpenUtility}
         />,
@@ -112,20 +114,29 @@ describe("MobileMoreSheet", () => {
     });
 
     expect(container.textContent).toContain("Focused tools for setup, shell access, runs, and logs.");
+    expect(container.textContent).toContain("Devices");
     expect(container.textContent).toContain("Run Script");
     expect(container.textContent).toContain("Running");
     expect(container.textContent).not.toContain("Inspect workspace setup and rerun initialization output.");
 
+    const devicesButton = Array.from(container.querySelectorAll("button")).find((element) =>
+      element.textContent?.includes("Devices")
+    );
     const runButton = Array.from(container.querySelectorAll("button")).find((element) =>
       element.textContent?.includes("Run Script")
     );
 
+    expect(devicesButton).toBeTruthy();
     expect(runButton).toBeTruthy();
 
+    act(() => {
+      (devicesButton as HTMLButtonElement).click();
+    });
     act(() => {
       (runButton as HTMLButtonElement).click();
     });
 
+    expect(onOpenDevices).toHaveBeenCalledTimes(1);
     expect(onOpenUtility).toHaveBeenCalledWith("run");
   });
 });

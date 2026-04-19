@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { ArrowDown, ArrowLeft, ArrowUp, Bug, ChevronRight, Clock3, FileCode2, Files, FolderGit2, GitBranch, GitPullRequestArrow, Grip, Loader2, MessageSquareText, Play, Save, Search, Settings2, TerminalSquare, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, Bug, ChevronRight, Clock3, FileCode2, Files, FolderGit2, GitBranch, GitPullRequestArrow, Grip, Loader2, MessageSquareText, Play, Save, Search, Settings2, Smartphone, TerminalSquare, Wrench, X } from "lucide-react";
 import type { GitChangeEntry, ReviewKind, ReviewRef } from "@codesymphony/shared-types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Input } from "../ui/input";
@@ -849,6 +849,7 @@ export function MobileMoreSheet({
   hasWorktree,
   runScriptActive,
   onOpenRepositories,
+  onOpenDevices,
   onOpenSettings,
   onOpenUtility,
 }: {
@@ -857,6 +858,7 @@ export function MobileMoreSheet({
   hasWorktree: boolean;
   runScriptActive: boolean;
   onOpenRepositories: () => void;
+  onOpenDevices: () => void;
   onOpenSettings: () => void;
   onOpenUtility: (tab: string) => void;
 }) {
@@ -878,6 +880,13 @@ export function MobileMoreSheet({
                 title="Settings"
                 description="Open workspace and model settings."
                 onClick={onOpenSettings}
+              />
+              <SectionButton
+                icon={Smartphone}
+                title="Devices"
+                description="View Android emulators/devices and iOS simulators in one place."
+                badge="Live"
+                onClick={onOpenDevices}
               />
             </div>
           </div>
