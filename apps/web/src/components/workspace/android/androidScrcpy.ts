@@ -490,8 +490,8 @@ export function parseAndroidInitialPacket(data: ArrayBuffer): AndroidInitialPack
     if (videoSettingsBytesCount > 0) {
       const widthSetting = readInt16(view, offset + 9);
       const heightSetting = readInt16(view, offset + 11);
-      const codecOptionsLength = readInt32(view, offset + 25);
-      const codecOptionsOffset = offset + 29;
+      const codecOptionsLength = readInt32(view, offset + 27);
+      const codecOptionsOffset = offset + 31;
       const encoderLengthOffset = codecOptionsOffset + codecOptionsLength;
       const encoderNameLength = readInt32(view, encoderLengthOffset);
       const encoderNameOffset = encoderLengthOffset + 4;
@@ -501,15 +501,15 @@ export function parseAndroidInitialPacket(data: ArrayBuffer): AndroidInitialPack
         codecOptions: codecOptionsLength > 0
           ? textDecoder.decode(new Uint8Array(data, codecOptionsOffset, codecOptionsLength))
           : null,
-        displayId: readInt32(view, offset + 21),
+        displayId: readInt32(view, offset + 23),
         encoderName: encoderNameLength > 0
           ? textDecoder.decode(new Uint8Array(data, encoderNameOffset, encoderNameLength))
           : null,
         height: heightSetting,
         iFrameInterval: readInt8(view, offset + 8),
-        lockedVideoOrientation: readInt8(view, offset + 20),
+        lockedVideoOrientation: readInt8(view, offset + 22),
         maxFps: readInt32(view, offset + 4),
-        sendFrameMeta: readInt8(view, offset + 17) === 1,
+        sendFrameMeta: readInt8(view, offset + 21) === 1,
         width: widthSetting,
       };
 

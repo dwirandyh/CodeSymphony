@@ -34,7 +34,6 @@ type AndroidDeviceViewerProps = {
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error" | "unsupported";
 
 const MIN_STREAM_BOUNDS = 160;
-
 function clamp(value: number, min: number, max: number): number {
   if (value < min) {
     return min;
@@ -84,7 +83,8 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   const decoderRef = useRef<VideoDecoder | null>(null);
   const bufferedPacketRef = useRef<Uint8Array | null>(null);
   const hasIdrRef = useRef(false);
-  const packetTimestampRef = useRef(0);
+  const hasPpsRef = useRef(false);
+  const hasSpsRef = useRef(false);
   const resizeTimerRef = useRef<number | null>(null);
   const activeDisplayRef = useRef<AndroidDisplayInfo | null>(null);
   const activeVideoSettingsRef = useRef<AndroidVideoSettings | null>(null);
@@ -109,6 +109,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       return;
     }
 
+    let disposed = false;
     const canvas = canvasRef.current;
     const context = canvas?.getContext("2d");
     if (!canvas || !context) {
@@ -119,6 +120,11 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
 
     const decoder = new VideoDecoder({
       output: (frame) => {
+        if (disposed) {
+          frame.close();
+          return;
+        }
+
         if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
           canvas.width = frame.displayWidth;
           canvas.height = frame.displayHeight;
@@ -131,6 +137,10 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
         setError(null);
       },
       error: (decodeError) => {
+        if (disposed) {
+          return;
+        }
+
         setConnectionState("error");
         setError(decodeError.message || "Failed to decode Android stream.");
       },
@@ -141,6 +151,8 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
     setHasFrame(false);
     setError(null);
     hasIdrRef.current = false;
+    hasPpsRef.current = false;
+    hasSpsRef.current = false;
     bufferedPacketRef.current = null;
     activeDisplayRef.current = null;
     activeVideoSettingsRef.current = null;
@@ -176,106 +188,144 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
     websocketRef.current = websocket;
 
     websocket.onopen = () => {
+      if (disposed) {
+        return;
+      }
+
       setConnectionState("connecting");
       setError(null);
     };
 
     websocket.onmessage = (event) => {
-      if (!(event.data instanceof ArrayBuffer)) {
+      if (disposed) {
         return;
       }
 
-      if (isAndroidInitialPacket(event.data)) {
-        const initialPacket = parseAndroidInitialPacket(event.data);
-        setDeviceLabel(initialPacket.deviceName || deviceName);
-
-        const activeDisplay = initialPacket.displays[0] ?? null;
-        if (!activeDisplay) {
-          setConnectionState("error");
-          setError("scrcpy stream started without display metadata.");
+      const handleBinaryPacket = (buffer: ArrayBuffer) => {
+        if (disposed) {
           return;
         }
 
-        activeDisplayRef.current = activeDisplay;
-        deviceSizeRef.current = {
-          height: activeDisplay.screenInfo?.videoHeight ?? activeDisplay.height,
-          width: activeDisplay.screenInfo?.videoWidth ?? activeDisplay.width,
-        };
-        activeVideoSettingsRef.current = activeDisplay.videoSettings ?? createDefaultAndroidVideoSettings(
-          activeDisplay.displayId,
-          activeDisplay.width,
-          activeDisplay.height,
-        );
-        sendVideoSettings();
-        return;
-      }
+        if (isAndroidInitialPacket(buffer)) {
+          const initialPacket = parseAndroidInitialPacket(buffer);
+          setDeviceLabel(initialPacket.deviceName || deviceName);
 
-      if (isAndroidDeviceMessagePacket(event.data)) {
-        return;
-      }
+          const activeDisplay = initialPacket.displays[0] ?? null;
+          if (!activeDisplay) {
+            setConnectionState("error");
+            setError("scrcpy stream started without display metadata.");
+            return;
+          }
 
-      const packet = new Uint8Array(event.data);
-      const packetType = getAndroidVideoPacketType(packet);
-      if (packetType == null) {
-        return;
-      }
-
-      const decoderConfig = parseAndroidVideoPacketConfig(packet);
-      if (decoderConfig) {
-        if (canvas.width !== decoderConfig.width || canvas.height !== decoderConfig.height) {
-          canvas.width = decoderConfig.width;
-          canvas.height = decoderConfig.height;
+          activeDisplayRef.current = activeDisplay;
+          deviceSizeRef.current = {
+            height: activeDisplay.screenInfo?.videoHeight ?? activeDisplay.height,
+            width: activeDisplay.screenInfo?.videoWidth ?? activeDisplay.width,
+          };
+          activeVideoSettingsRef.current = activeDisplay.videoSettings ?? createDefaultAndroidVideoSettings(
+            activeDisplay.displayId,
+            activeDisplay.width,
+            activeDisplay.height,
+          );
+          sendVideoSettings();
+          return;
         }
 
-        if (decoder.state !== "configured") {
-          decoder.configure({
-            codec: decoderConfig.codec,
-            optimizeForLatency: true,
-          });
-        } else {
-          try {
+        if (isAndroidDeviceMessagePacket(buffer)) {
+          return;
+        }
+
+        const packet = new Uint8Array(buffer);
+        const packetType = getAndroidVideoPacketType(packet);
+        if (packetType == null) {
+          return;
+        }
+
+        const decoderConfig = parseAndroidVideoPacketConfig(packet);
+        if (decoderConfig) {
+          if (canvas.width !== decoderConfig.width || canvas.height !== decoderConfig.height) {
+            canvas.width = decoderConfig.width;
+            canvas.height = decoderConfig.height;
+          }
+
+          if (decoder.state !== "configured") {
             decoder.configure({
               codec: decoderConfig.codec,
               optimizeForLatency: true,
             });
-          } catch {
-            decoder.close();
-            decoderRef.current = new VideoDecoder({
-              output: (frame) => {
-                const renderCanvas = canvasRef.current;
-                const renderContext = renderCanvas?.getContext("2d");
-                if (!renderCanvas || !renderContext) {
+          } else {
+            try {
+              decoder.configure({
+                codec: decoderConfig.codec,
+                optimizeForLatency: true,
+              });
+            } catch {
+              decoder.close();
+              decoderRef.current = new VideoDecoder({
+                output: (frame) => {
+                  if (disposed) {
+                    frame.close();
+                    return;
+                  }
+
+                  const renderCanvas = canvasRef.current;
+                  const renderContext = renderCanvas?.getContext("2d");
+                  if (!renderCanvas || !renderContext) {
+                    frame.close();
+                    return;
+                  }
+                  if (renderCanvas.width !== frame.displayWidth || renderCanvas.height !== frame.displayHeight) {
+                    renderCanvas.width = frame.displayWidth;
+                    renderCanvas.height = frame.displayHeight;
+                  }
+                  renderContext.drawImage(frame, 0, 0, renderCanvas.width, renderCanvas.height);
                   frame.close();
-                  return;
-                }
-                if (renderCanvas.width !== frame.displayWidth || renderCanvas.height !== frame.displayHeight) {
-                  renderCanvas.width = frame.displayWidth;
-                  renderCanvas.height = frame.displayHeight;
-                }
-                renderContext.drawImage(frame, 0, 0, renderCanvas.width, renderCanvas.height);
-                frame.close();
-                deviceSizeRef.current = { height: renderCanvas.height, width: renderCanvas.width };
-                setConnectionState("connected");
-                setHasFrame(true);
-                setError(null);
-              },
-              error: (decodeError) => {
-                setConnectionState("error");
-                setError(decodeError.message || "Failed to decode Android stream.");
-              },
-            });
-            decoderRef.current.configure({
-              codec: decoderConfig.codec,
-              optimizeForLatency: true,
-            });
+                  deviceSizeRef.current = { height: renderCanvas.height, width: renderCanvas.width };
+                  setConnectionState("connected");
+                  setHasFrame(true);
+                  setError(null);
+                },
+                error: (decodeError) => {
+                  if (disposed) {
+                    return;
+                  }
+
+                  setConnectionState("error");
+                  setError(decodeError.message || "Failed to decode Android stream.");
+                },
+              });
+              decoderRef.current.configure({
+                codec: decoderConfig.codec,
+                optimizeForLatency: true,
+              });
+            }
           }
+
+          hasIdrRef.current = false;
+          hasSpsRef.current = true;
+          hasPpsRef.current = false;
+          bufferedPacketRef.current = packet;
+          return;
         }
 
-        hasIdrRef.current = false;
-      }
+        if (packetType === 8) {
+          bufferedPacketRef.current = bufferedPacketRef.current
+            ? (() => {
+              const merged = new Uint8Array(bufferedPacketRef.current.length + packet.length);
+              merged.set(bufferedPacketRef.current);
+              merged.set(packet, bufferedPacketRef.current.length);
+              return merged;
+            })()
+            : packet;
+          hasPpsRef.current = true;
+          return;
+        }
 
-      if (packetType === 7 || packetType === 8) {
-        bufferedPacketRef.current = bufferedPacketRef.current
+        if (packetType === 6 && (!hasSpsRef.current || !hasPpsRef.current)) {
+          return;
+        }
+
+        const bufferedPacket = bufferedPacketRef.current
           ? (() => {
             const merged = new Uint8Array(bufferedPacketRef.current.length + packet.length);
             merged.set(bufferedPacketRef.current);
@@ -283,43 +333,57 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
             return merged;
           })()
           : packet;
+
+        bufferedPacketRef.current = bufferedPacket;
+        hasIdrRef.current = hasIdrRef.current || isAndroidVideoKeyPacket(packetType);
+        const activeDecoder = decoderRef.current;
+        if (!activeDecoder || activeDecoder.state !== "configured" || !hasIdrRef.current) {
+          return;
+        }
+
+        bufferedPacketRef.current = null;
+        hasSpsRef.current = false;
+        hasPpsRef.current = false;
+        activeDecoder.decode(new EncodedVideoChunk({
+          data: bufferedPacket,
+          timestamp: Math.round(performance.now() * 1_000),
+          type: "key",
+        }));
+      };
+
+      if (event.data instanceof Blob) {
+        void event.data.arrayBuffer().then(handleBinaryPacket).catch(() => {
+          if (disposed) {
+            return;
+          }
+
+          setConnectionState("error");
+          setError("Android websocket stream failed.");
+        });
         return;
       }
 
-      if (packetType === 6 && !bufferedPacketRef.current) {
+      if (!(event.data instanceof ArrayBuffer)) {
         return;
       }
 
-      const bufferedPacket = bufferedPacketRef.current
-        ? (() => {
-          const merged = new Uint8Array(bufferedPacketRef.current.length + packet.length);
-          merged.set(bufferedPacketRef.current);
-          merged.set(packet, bufferedPacketRef.current.length);
-          return merged;
-        })()
-        : packet;
-
-      bufferedPacketRef.current = null;
-      hasIdrRef.current = hasIdrRef.current || isAndroidVideoKeyPacket(packetType);
-      const activeDecoder = decoderRef.current;
-      if (!activeDecoder || activeDecoder.state !== "configured" || !hasIdrRef.current) {
-        return;
-      }
-
-      packetTimestampRef.current += 1_000;
-      activeDecoder.decode(new EncodedVideoChunk({
-        data: bufferedPacket,
-        timestamp: packetTimestampRef.current,
-        type: isAndroidVideoKeyPacket(packetType) ? "key" : "delta",
-      }));
+      handleBinaryPacket(event.data);
     };
 
     websocket.onerror = () => {
+      if (disposed) {
+        return;
+      }
+
       setConnectionState("error");
       setError("Android websocket stream failed.");
     };
 
     websocket.onclose = (closeEvent) => {
+      if (disposed) {
+        return;
+      }
+
       if (closeEvent.wasClean) {
         setConnectionState("disconnected");
         return;
@@ -346,6 +410,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
     }
 
     return () => {
+      disposed = true;
       resizeObserver?.disconnect();
       if (resizeTimerRef.current != null) {
         window.clearTimeout(resizeTimerRef.current);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DeviceStatus, DeviceSummary } from "@codesymphony/shared-types";
+import type { DeviceStatus } from "@codesymphony/shared-types";
 import { ExternalLink, Play, RefreshCw, RotateCcw, Smartphone, Square, X } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -29,23 +29,6 @@ function getStatusVariant(status: DeviceStatus): "default" | "secondary" | "dest
 
 function platformLabel(platform: "android" | "ios-simulator"): string {
   return platform === "android" ? "Android" : "iOS Simulator";
-}
-
-function connectionLabel(connectionKind: DeviceSummary["connectionKind"]): string {
-  switch (connectionKind) {
-    case "emulator":
-      return "Android Emulator";
-    case "simulator":
-      return "iOS Simulator";
-    case "wifi":
-      return "ADB over Wi-Fi";
-    case "usb":
-      return "USB";
-    case "remote":
-      return "Remote";
-    default:
-      return connectionKind;
-  }
 }
 
 type DevicePanelProps = {
@@ -81,7 +64,6 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
     [selectedDeviceId, snapshot.activeSessions],
   );
   const viewerSrc = activeSession ? `${api.runtimeBaseUrl}${activeSession.viewerUrl}` : null;
-  const selectedDeviceLabel = activeDevice ? `${platformLabel(activeDevice.platform)} · ${connectionLabel(activeDevice.connectionKind)}` : null;
 
   useEffect(() => {
     setViewerNonce(0);
@@ -116,20 +98,53 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
       onValueChange={(value) => setSelectedDeviceId(value)}
       className="flex h-full min-h-0 flex-col bg-card/95"
     >
-      <div className="flex items-center justify-between border-b border-border/40 px-3 py-2.5">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Smartphone className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold tracking-wide text-foreground">Devices</h2>
-            <Badge variant="outline" className="rounded-full px-2">
-              {snapshot.devices.length}
-            </Badge>
-          </div>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-            {selectedDeviceLabel ?? "Emulator, simulator, and attached device streams"}
-          </p>
+      <div className="flex items-center justify-between border-b border-border/40 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <Smartphone className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold tracking-wide text-foreground">Devices</h2>
+          <Badge variant="outline" className="rounded-full px-2">
+            {snapshot.devices.length}
+          </Badge>
         </div>
         <div className="flex items-center gap-1">
+          {activeDevice && activeSession && viewerSrc ? (
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                title="Reconnect stream"
+                aria-label="Reconnect stream"
+                onClick={() => void handleReconnect()}
+                disabled={!activeDevice.supportsEmbeddedStream || startingDeviceId === activeDevice.id || stoppingSessionId === activeSession.sessionId}
+              >
+                <RotateCcw className="h-4 w-4" />
+              </Button>
+              {activeDevice.platform === "android" ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  title="Open detached viewer"
+                  aria-label="Open detached viewer"
+                  onClick={() => void openExternalUrl(viewerSrc)}
+                >
+                  <ExternalLink className="h-4 w-4" />
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                title="Stop stream"
+                aria-label="Stop stream"
+                onClick={() => void stopStream(activeSession.sessionId)}
+                disabled={stoppingSessionId === activeSession.sessionId}
+              >
+                <Square className="h-4 w-4" />
+              </Button>
+            </>
+          ) : null}
           <Button type="button" variant="ghost" size="icon" aria-label="Refresh devices" onClick={() => void refresh()}>
             <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           </Button>
@@ -139,24 +154,6 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
         </div>
       </div>
 
-      {snapshot.issues.length > 0 ? (
-        <div className="space-y-2 border-b border-border/30 px-3 py-2">
-          {snapshot.issues.map((issue) => (
-            <div
-              key={issue.id}
-              className={cn(
-                "rounded-xl border px-3 py-2 text-xs",
-                issue.severity === "error"
-                  ? "border-destructive/40 bg-destructive/10 text-destructive"
-                  : "border-border/40 bg-secondary/30 text-muted-foreground",
-              )}
-            >
-              {issue.message}
-            </div>
-          ))}
-        </div>
-      ) : null}
-
       {error ? (
         <div className="border-b border-border/30 px-3 py-2 text-xs text-destructive">
           {error}
@@ -165,17 +162,17 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
 
       {snapshot.devices.length > 0 ? (
         <>
-          <div className="border-b border-border/30 px-2 py-2">
-            <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl bg-secondary/45 p-1">
+          <div className="border-b border-border/30 px-2 py-1.5">
+            <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl bg-secondary/35 p-1">
               {snapshot.devices.map((device) => (
                 <TabsTrigger
                   key={device.id}
                   value={device.id}
-                  className="min-w-[116px] justify-start gap-2 rounded-lg px-3 py-2 text-left data-[state=active]:bg-background"
+                  className="min-w-[108px] justify-start gap-2 rounded-lg px-2.5 py-1.5 text-left data-[state=active]:bg-background"
                 >
                   <div className="min-w-0">
                     <div className="truncate text-xs font-semibold">{device.name}</div>
-                    <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                    <div className="truncate text-[10px] text-muted-foreground">
                       {platformLabel(device.platform)}
                     </div>
                   </div>
@@ -188,62 +185,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
           </div>
 
           {activeDevice ? (
-            <TabsContent value={activeDevice.id} className="mt-0 flex min-h-0 flex-1 flex-col gap-2 px-2 pb-2 pt-2">
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/40 bg-secondary/15 px-3 py-2">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <h3 className="truncate text-sm font-semibold text-foreground">{activeDevice.name}</h3>
-                    <Badge variant={getStatusVariant(activeDevice.status)}>{activeDevice.status}</Badge>
-                  </div>
-                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
-                    {platformLabel(activeDevice.platform)} · {connectionLabel(activeDevice.connectionKind)}
-                  </p>
-                </div>
-
-                {activeSession && viewerSrc ? (
-                  <div className="flex items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      title="Reconnect stream"
-                      aria-label="Reconnect stream"
-                      onClick={() => void handleReconnect()}
-                      disabled={!activeDevice.supportsEmbeddedStream || startingDeviceId === activeDevice.id || stoppingSessionId === activeSession.sessionId}
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      title="Open detached viewer"
-                      aria-label="Open detached viewer"
-                      onClick={() => void openExternalUrl(viewerSrc)}
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      title="Stop stream"
-                      aria-label="Stop stream"
-                      onClick={() => void stopStream(activeSession.sessionId)}
-                      disabled={stoppingSessionId === activeSession.sessionId}
-                    >
-                      <Square className="h-4 w-4" />
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-
-              {activeDevice.lastError ? (
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                  {activeDevice.lastError}
-                </div>
-              ) : null}
-
+            <TabsContent value={activeDevice.id} className="mt-0 flex min-h-0 flex-1 flex-col px-2 pb-2 pt-1.5">
               <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/40 bg-black/90">
                 {activeSession && viewerSrc ? (
                   activeDevice.platform === "android" && activeDevice.serial ? (
@@ -257,7 +199,9 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
                     <IosSimulatorViewer
                       key={`${activeSession.sessionId}:${viewerNonce}`}
                       sessionId={activeSession.sessionId}
+                      controlTransport={activeSession.controlTransport}
                       deviceName={activeDevice.name}
+                      iosStreamProtocol={activeSession.iosStreamProtocol ?? null}
                       nativeBaseUrl={activeSession.nativeBaseUrl ?? null}
                       platformSessionId={activeSession.platformSessionId ?? null}
                     />

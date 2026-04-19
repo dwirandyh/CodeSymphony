@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type {
@@ -11,16 +13,19 @@ import type {
   SendDeviceControlInput,
   StartDeviceStreamInput,
 } from "@codesymphony/shared-types";
+import WebSocket from "ws";
 import type { LogEntry } from "./logService.js";
 import { buildAndroidProxyViewerUrl, parseAdbDevicesOutput, parseSimctlDevicesOutput } from "./deviceService.utils.js";
 
 const execFile = promisify(execFileCallback);
 const DEFAULT_ANDROID_WS_SCRCPY_BASE_URL = "http://127.0.0.1:8765/";
 const DEFAULT_IOS_BRIDGE_BASE_URL = "http://127.0.0.1:8000";
+const DEFAULT_IOS_SIMULATOR_BRIDGE_FPS = 60;
 const DEFAULT_REFRESH_INTERVAL_MS = 5_000;
 const HEALTH_TIMEOUT_MS = 1_500;
 const START_TIMEOUT_MS = 20_000;
 const DISCOVERY_TIMEOUT_MS = 5_000;
+const IOS_SIMULATOR_BRIDGE_READY_TIMEOUT_MS = 15_000;
 
 type DeviceListener = (snapshot: DeviceInventorySnapshot) => void;
 
@@ -39,7 +44,10 @@ type InternalStreamSession = DeviceStreamSession & {
   redirectUrl: string | null;
   proxyBaseUrl: string | null;
   proxyAuthorizationHeader: string | null;
+  iosNativeControl: boolean;
+  iosUdid?: string | null;
   platformSessionId?: string | null;
+  iosVideoBridge?: IosSimulatorVideoBridge | null;
 };
 
 type DeviceViewerSession = {
@@ -49,6 +57,22 @@ type DeviceViewerSession = {
   proxyBaseUrl: string | null;
   proxyAuthorizationHeader: string | null;
   platformSessionId: string | null;
+};
+
+type IosSimulatorBridgePacketType = 0 | 1 | 2 | 3;
+
+type IosSimulatorVideoBridge = {
+  buffer: Buffer;
+  child: ChildProcess;
+  clients: Set<WebSocket>;
+  closeReason: string | null;
+  latestConfigPacket: Buffer | null;
+  latestPointHeight: number | null;
+  latestPointWidth: number | null;
+  latestKeyPacket: Buffer | null;
+  latestMetadata: string | null;
+  latestPixelHeight: number | null;
+  latestPixelWidth: number | null;
 };
 
 type ManagedSidecar = {
@@ -89,6 +113,11 @@ function getAndroidBaseUrl(): string {
 
 function getIosBridgeBaseUrl(): string {
   return normalizeBaseUrl(process.env.IOS_BRIDGE_BASE_URL?.trim() || DEFAULT_IOS_BRIDGE_BASE_URL);
+}
+
+function getIosSimulatorBridgeFps(): number {
+  const raw = Number(process.env.IOS_SIMULATOR_BRIDGE_FPS ?? DEFAULT_IOS_SIMULATOR_BRIDGE_FPS);
+  return Number.isFinite(raw) && raw >= 1 && raw <= 60 ? Math.floor(raw) : DEFAULT_IOS_SIMULATOR_BRIDGE_FPS;
 }
 
 function getAndroidBasicAuthorizationHeader(): string | null {
@@ -249,6 +278,7 @@ function toPublicSession(session: InternalStreamSession): DeviceStreamSession {
     viewerUrl: session.viewerUrl,
     controlTransport: session.controlTransport,
     startedAt: session.startedAt,
+    iosStreamProtocol: session.platform === "ios-simulator" ? session.iosStreamProtocol ?? "legacy-jpeg" : null,
     nativeBaseUrl: session.platform === "ios-simulator" ? session.proxyBaseUrl : null,
     platformSessionId: session.platform === "ios-simulator" ? session.platformSessionId ?? null : null,
   };
@@ -278,6 +308,70 @@ function getDefaultIosBridgeCommand(port: number): string {
   return `command -v ios-bridge >/dev/null 2>&1 && ios-bridge ${args} || uvx --from ios-bridge-cli ios-bridge ${args}`;
 }
 
+function resolveIosSimulatorBridgePackagePath(): string {
+  const candidates = [
+    resolvePath(process.cwd(), "../simulator-bridge"),
+    resolvePath(process.cwd(), "apps/simulator-bridge"),
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+
+function resolveIosSimulatorBridgeExecutablePath(): string | null {
+  const packagePath = resolveIosSimulatorBridgePackagePath();
+  const candidates = [
+    resolvePath(packagePath, ".build/arm64-apple-macosx/debug/SimulatorBridge"),
+    resolvePath(packagePath, ".build/debug/SimulatorBridge"),
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function createLocalIosSimulatorBridgeExecSpec(commandArgs: string[]): {
+  args: string[];
+  command: string;
+  prettyCommand: string;
+} {
+  const executablePath = resolveIosSimulatorBridgeExecutablePath();
+  if (executablePath) {
+    return {
+      args: commandArgs,
+      command: executablePath,
+      prettyCommand: [executablePath, ...commandArgs].join(" "),
+    };
+  }
+
+  const packagePath = resolveIosSimulatorBridgePackagePath();
+  const args = ["run", "--package-path", packagePath, "SimulatorBridge", ...commandArgs];
+  return {
+    args,
+    command: "swift",
+    prettyCommand: ["swift", ...args].join(" "),
+  };
+}
+
+function createIosSimulatorBridgeSpawnSpec(udid: string): {
+  args: string[];
+  command: string;
+  prettyCommand: string;
+  shell: boolean;
+} {
+  const fps = getIosSimulatorBridgeFps();
+  const override = process.env.IOS_SIMULATOR_BRIDGE_COMMAND?.trim();
+  if (override) {
+    const command = `${override} stream --udid ${udid} --fps ${fps}`;
+    return {
+      args: [],
+      command,
+      prettyCommand: command,
+      shell: true,
+    };
+  }
+
+  const localSpec = createLocalIosSimulatorBridgeExecSpec(["stream", "--udid", udid, "--fps", String(fps)]);
+  return { ...localSpec, shell: false };
+}
+
 async function resolveAndroidDisplayName(device: ReturnType<typeof parseAdbDevicesOutput>[number]): Promise<string> {
   if (device.connectionKind !== "emulator") {
     return buildAndroidName(device);
@@ -303,6 +397,30 @@ async function resolveAndroidDisplayName(device: ReturnType<typeof parseAdbDevic
   return buildAndroidName(device);
 }
 
+async function runLocalIosSimulatorBridge(commandArgs: string[]): Promise<{ stdout: Buffer; stderr: string }> {
+  const spec = createLocalIosSimulatorBridgeExecSpec(commandArgs);
+  const { stdout, stderr } = await execFile(spec.command, spec.args, {
+    encoding: "buffer",
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: START_TIMEOUT_MS,
+  });
+
+  return {
+    stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout),
+    stderr: Buffer.isBuffer(stderr) ? stderr.toString("utf8") : String(stderr ?? ""),
+  };
+}
+
+async function captureIosSimulatorScreenshot(udid: string): Promise<Buffer> {
+  const { stdout } = await execFile("xcrun", ["simctl", "io", udid, "screenshot", "--type=jpeg", "-"], {
+    encoding: "buffer",
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: START_TIMEOUT_MS,
+  });
+
+  return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+}
+
 export function createDeviceService(logService?: RuntimeLogService) {
   const listeners = new Set<DeviceListener>();
   const streamSessions = new Map<string, InternalStreamSession>();
@@ -317,6 +435,243 @@ export function createDeviceService(logService?: RuntimeLogService) {
   let refreshTimer: NodeJS.Timeout | null = null;
   let androidSidecar: ManagedSidecar | null = null;
   let iosBridgeSidecar: ManagedSidecar | null = null;
+  let iosSimulatorBridgeIssue: string | null = null;
+
+  function closeIosVideoBridgeClients(bridge: IosSimulatorVideoBridge, reason: string): void {
+    if (bridge.closeReason) {
+      return;
+    }
+
+    bridge.closeReason = reason;
+    const message = reason.slice(0, 120) || "iOS simulator video stream stopped";
+
+    for (const client of [...bridge.clients]) {
+      bridge.clients.delete(client);
+      if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) {
+        client.close(1011, message);
+      }
+    }
+  }
+
+  function terminateIosVideoBridge(bridge: IosSimulatorVideoBridge | null | undefined, reason: string): void {
+    if (!bridge) {
+      return;
+    }
+
+    closeIosVideoBridgeClients(bridge, reason);
+    bridge.child.stdin?.end();
+
+    if (bridge.child.killed || !bridge.child.pid) {
+      return;
+    }
+
+    try {
+      bridge.child.kill("SIGTERM");
+    } catch {
+      // Ignore teardown failures.
+    }
+  }
+
+  function sendIosVideoBridgePacket(bridge: IosSimulatorVideoBridge, message: Buffer | string, isBinary: boolean): void {
+    for (const client of [...bridge.clients]) {
+      if (client.readyState !== WebSocket.OPEN) {
+        bridge.clients.delete(client);
+        continue;
+      }
+
+      client.send(message, { binary: isBinary });
+    }
+  }
+
+  function consumeIosSimulatorBridgeStdout(bridge: IosSimulatorVideoBridge, chunk: Buffer): void {
+    bridge.buffer = bridge.buffer.length > 0 ? Buffer.concat([bridge.buffer, chunk]) : chunk;
+
+    while (bridge.buffer.length >= 5) {
+      const packetLength = bridge.buffer.readUInt32BE(0);
+      if (packetLength <= 0 || bridge.buffer.length < packetLength + 4) {
+        return;
+      }
+
+      const packetType = bridge.buffer[4] as IosSimulatorBridgePacketType;
+      const payload = bridge.buffer.subarray(5, 4 + packetLength);
+      bridge.buffer = bridge.buffer.subarray(4 + packetLength);
+
+      if (packetType === 0) {
+        const message = payload.toString("utf8");
+        bridge.latestMetadata = message;
+        try {
+          const parsed = JSON.parse(message) as {
+            pixelHeight?: unknown;
+            pixelWidth?: unknown;
+            pointHeight?: unknown;
+            pointWidth?: unknown;
+          };
+          const pixelHeight = Number(parsed.pixelHeight);
+          const pixelWidth = Number(parsed.pixelWidth);
+          const pointHeight = Number(parsed.pointHeight);
+          const pointWidth = Number(parsed.pointWidth);
+          bridge.latestPixelHeight = Number.isFinite(pixelHeight) && pixelHeight > 0 ? pixelHeight : null;
+          bridge.latestPixelWidth = Number.isFinite(pixelWidth) && pixelWidth > 0 ? pixelWidth : null;
+          bridge.latestPointHeight = Number.isFinite(pointHeight) && pointHeight > 0 ? pointHeight : null;
+          bridge.latestPointWidth = Number.isFinite(pointWidth) && pointWidth > 0 ? pointWidth : null;
+        } catch {
+          bridge.latestPointHeight = null;
+          bridge.latestPointWidth = null;
+          bridge.latestPixelHeight = null;
+          bridge.latestPixelWidth = null;
+        }
+        sendIosVideoBridgePacket(bridge, message, false);
+        continue;
+      }
+
+      const binaryMessage = Buffer.concat([Buffer.from([packetType]), payload]);
+      if (packetType === 1) {
+        bridge.latestConfigPacket = binaryMessage;
+      }
+      if (packetType === 2) {
+        bridge.latestKeyPacket = binaryMessage;
+      }
+
+      if (packetType === 1 || packetType === 2 || packetType === 3) {
+        sendIosVideoBridgePacket(bridge, binaryMessage, true);
+      }
+    }
+  }
+
+  async function startIosSimulatorVideoBridge(
+    runtimeSessionId: string,
+    udid: string,
+    deviceName: string,
+  ): Promise<IosSimulatorVideoBridge> {
+    const spawnSpec = createIosSimulatorBridgeSpawnSpec(udid);
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+      },
+      shell: spawnSpec.shell,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    if (!child.stdin || !child.stdout || !child.stderr) {
+      throw new Error("Failed to initialize the simulator bridge process pipes.");
+    }
+
+    const bridge: IosSimulatorVideoBridge = {
+      buffer: Buffer.alloc(0),
+      child,
+      clients: new Set(),
+      closeReason: null,
+      latestConfigPacket: null,
+      latestPointHeight: null,
+      latestPointWidth: null,
+      latestKeyPacket: null,
+      latestMetadata: null,
+      latestPixelHeight: null,
+      latestPixelWidth: null,
+    };
+
+    const stderrLines: string[] = [];
+    const rememberStderr = (value: string) => {
+      for (const line of value.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        stderrLines.push(trimmed);
+        if (stderrLines.length > 20) {
+          stderrLines.shift();
+        }
+        logService?.log("info", "devices.ios-simulator-bridge", trimmed, {
+          deviceName,
+          runtimeSessionId,
+          udid,
+        });
+      }
+    };
+
+    const buildFailureReason = () => stderrLines.at(-1)
+      ?? `Simulator bridge exited before the first frame for ${deviceName}.`;
+
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      rememberStderr(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk);
+    });
+
+    const readyPromise = new Promise<IosSimulatorVideoBridge>((resolve, reject) => {
+      let settled = false;
+      const settleResolve = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(readyTimer);
+        resolve(bridge);
+      };
+      const settleReject = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(readyTimer);
+        reject(error);
+      };
+
+      const readyTimer = setTimeout(() => {
+        settleReject(new Error(`Timed out waiting for the iOS simulator bridge to start for ${deviceName}.`));
+      }, IOS_SIMULATOR_BRIDGE_READY_TIMEOUT_MS);
+
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        consumeIosSimulatorBridgeStdout(bridge, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        if (bridge.latestMetadata) {
+          settleResolve();
+        }
+      });
+
+      child.on("error", (error) => {
+        closeIosVideoBridgeClients(bridge, error.message);
+        settleReject(error);
+      });
+
+      child.on("exit", (code, signal) => {
+        const reason = buildFailureReason();
+        closeIosVideoBridgeClients(bridge, reason);
+
+        if (settled) {
+          logService?.log("warn", "devices.ios-simulator-bridge", "Simulator bridge exited", {
+            code,
+            command: spawnSpec.prettyCommand,
+            runtimeSessionId,
+            signal,
+            udid,
+          });
+          const activeSession = streamSessions.get(runtimeSessionId);
+          if (activeSession?.iosVideoBridge === bridge) {
+            iosSimulatorBridgeIssue = reason;
+            streamSessions.delete(runtimeSessionId);
+            void refreshAndEmit();
+          }
+          return;
+        }
+
+        settleReject(new Error(reason));
+      });
+    });
+
+    logService?.log("info", "devices.ios-simulator-bridge", "Starting simulator bridge", {
+      command: spawnSpec.prettyCommand,
+      deviceName,
+      runtimeSessionId,
+      udid,
+    });
+
+    try {
+      return await readyPromise;
+    } catch (error) {
+      terminateIosVideoBridge(bridge, error instanceof Error ? error.message : "Simulator bridge failed to start.");
+      throw error;
+    }
+  }
 
   function emit(nextSnapshot: DeviceInventorySnapshot): void {
     snapshot = nextSnapshot;
@@ -572,13 +927,21 @@ export function createDeviceService(logService?: RuntimeLogService) {
 
     const baseUrl = getIosBridgeBaseUrl();
     const reachable = await isHttpReady(baseUrl, "/health");
+    const nativeHelperAvailable = process.platform === "darwin";
 
     try {
       if (!reachable) {
-        issues.push(createPlatformIssue(
-          "ios-simulator",
-          "ios-bridge is unavailable. Booted simulators can still appear, but streaming requires ios-bridge to be installed and running.",
-        ));
+        if (!nativeHelperAvailable) {
+          issues.push(createPlatformIssue(
+            "ios-simulator",
+            "ios-bridge is unavailable. Booted simulators can still appear, but streaming requires ios-bridge to be installed and running.",
+          ));
+        } else {
+          issues.push(createPlatformIssue(
+            "ios-simulator",
+            "ios-bridge is unavailable. Native simulator video/control will use the local macOS helper instead.",
+          ));
+        }
       } else {
         const sessions = await fetchIosSessions(baseUrl);
         for (const session of sessions) {
@@ -665,6 +1028,13 @@ export function createDeviceService(logService?: RuntimeLogService) {
         discoverIosDevices(issues, nextDeviceMetadata),
       ]);
 
+      if (iosSimulatorBridgeIssue) {
+        issues.push(createPlatformIssue(
+          "ios-simulator",
+          `Native iOS simulator streaming is unavailable: ${iosSimulatorBridgeIssue}`,
+        ));
+      }
+
       deviceMetadata = nextDeviceMetadata;
 
       return {
@@ -732,19 +1102,79 @@ export function createDeviceService(logService?: RuntimeLogService) {
       proxyBaseUrl = baseUrl;
       proxyAuthorizationHeader = getAndroidBasicAuthorizationHeader();
     } else {
-      const iosBridgeBaseUrl = await ensureIosBridgeReady();
       const metadata = deviceMetadata.get(device.id) ?? {
         serial: device.serial?.trim() || null,
         iosSessionId: device.id.startsWith("ios-session:") ? device.id.slice("ios-session:".length) : null,
         iosVersion: null,
         deviceType: normalizeDeviceLabel(device.name),
       } satisfies DeviceMetadata;
-      const sessionId = await resolveIosSessionId(device.id, metadata);
+      const udid = metadata.serial?.trim() || device.serial?.trim();
+      let iosVideoBridge: IosSimulatorVideoBridge | null = null;
+      let videoBridgeError: string | null = null;
 
-      platformSessionId = sessionId;
-      proxyBaseUrl = iosBridgeBaseUrl;
-      controlTransport = "websocket";
-      redirectUrl = new URL(`/control/${sessionId}`, iosBridgeBaseUrl).toString();
+      if (process.platform === "darwin" && udid) {
+        try {
+          iosVideoBridge = await startIosSimulatorVideoBridge(sessionId, udid, device.name);
+          iosSimulatorBridgeIssue = null;
+        } catch (error) {
+          videoBridgeError = error instanceof Error ? error.message : String(error);
+          iosSimulatorBridgeIssue = videoBridgeError;
+          logService?.log("warn", "devices.ios-simulator-bridge", "Falling back to legacy iOS simulator streaming", {
+            deviceId: device.id,
+            deviceName: device.name,
+            error: videoBridgeError,
+            udid,
+          });
+        }
+      }
+
+      if (iosVideoBridge) {
+        const session: InternalStreamSession = {
+          sessionId,
+          deviceId: device.id,
+          platform: device.platform,
+          viewerUrl,
+          controlTransport: udid ? "websocket" : "none",
+          startedAt: new Date().toISOString(),
+          viewerMode,
+          redirectUrl: viewerMode === "redirect" && redirectUrl ? redirectUrl : null,
+          iosNativeControl: Boolean(udid),
+          iosUdid: udid ?? null,
+          proxyBaseUrl,
+          proxyAuthorizationHeader,
+          platformSessionId,
+          iosStreamProtocol: "webcodecs-h264",
+          iosVideoBridge,
+        };
+
+        streamSessions.set(session.sessionId, session);
+        await refreshAndEmit();
+        return toPublicSession(session);
+      }
+
+      let iosBridgeError: string | null = null;
+      try {
+        const iosBridgeBaseUrl = await ensureIosBridgeReady();
+        const resolvedPlatformSessionId = await resolveIosSessionId(device.id, metadata);
+
+        platformSessionId = resolvedPlatformSessionId;
+        proxyBaseUrl = iosBridgeBaseUrl;
+        controlTransport = "websocket";
+        redirectUrl = new URL(`/control/${resolvedPlatformSessionId}`, iosBridgeBaseUrl).toString();
+      } catch (error) {
+        iosBridgeError = error instanceof Error ? error.message : String(error);
+        logService?.log("warn", "devices.ios-control", "iOS control bridge unavailable for simulator session", {
+          deviceId: device.id,
+          deviceName: device.name,
+          error: iosBridgeError,
+          udid,
+        });
+      }
+
+      if (!proxyBaseUrl || !platformSessionId) {
+        const detail = [videoBridgeError, iosBridgeError].filter((value): value is string => Boolean(value)).join(" | ");
+        throw new Error(detail || "Unable to start the iOS simulator stream.");
+      }
     }
 
     const session: InternalStreamSession = {
@@ -756,9 +1186,13 @@ export function createDeviceService(logService?: RuntimeLogService) {
       startedAt: new Date().toISOString(),
       viewerMode,
       redirectUrl: viewerMode === "redirect" ? redirectUrl : null,
+      iosNativeControl: false,
+      iosUdid: device.platform === "ios-simulator" ? (device.serial?.trim() || null) : null,
       proxyBaseUrl,
       proxyAuthorizationHeader,
       platformSessionId,
+      iosStreamProtocol: device.platform === "ios-simulator" ? "legacy-jpeg" : null,
+      iosVideoBridge: null,
     };
 
     streamSessions.set(session.sessionId, session);
@@ -767,10 +1201,13 @@ export function createDeviceService(logService?: RuntimeLogService) {
   }
 
   async function stopStream(sessionId: string): Promise<void> {
-    if (!streamSessions.delete(sessionId)) {
+    const session = streamSessions.get(sessionId);
+    if (!session) {
       throw new Error(`Stream session not found: ${sessionId}`);
     }
 
+    streamSessions.delete(sessionId);
+    terminateIosVideoBridge(session.iosVideoBridge, "iOS simulator stream stopped");
     await refreshAndEmit();
   }
 
@@ -794,12 +1231,257 @@ export function createDeviceService(logService?: RuntimeLogService) {
     };
   }
 
+  function attachIosNativeVideoClient(sessionId: string, socket: WebSocket): boolean {
+    const session = streamSessions.get(sessionId);
+    const bridge = session?.iosVideoBridge;
+    if (!session || session.platform !== "ios-simulator" || !bridge || session.iosStreamProtocol !== "webcodecs-h264") {
+      return false;
+    }
+
+    bridge.clients.add(socket);
+
+    if (bridge.latestMetadata) {
+      socket.send(bridge.latestMetadata);
+    }
+
+    if (bridge.latestConfigPacket) {
+      socket.send(bridge.latestConfigPacket, { binary: true });
+    }
+    if (bridge.latestKeyPacket) {
+      socket.send(bridge.latestKeyPacket, { binary: true });
+    }
+
+    if (bridge.closeReason) {
+      socket.close(1011, bridge.closeReason.slice(0, 120));
+      return true;
+    }
+
+    socket.on("close", () => {
+      bridge.clients.delete(socket);
+    });
+
+    socket.on("error", () => {
+      bridge.clients.delete(socket);
+    });
+
+    return true;
+  }
+
+  function getNativeIosControlSession(sessionId: string): InternalStreamSession | null {
+    const session = streamSessions.get(sessionId);
+    if (!session || session.platform !== "ios-simulator" || !session.iosNativeControl || !session.iosUdid) {
+      return null;
+    }
+
+    return session;
+  }
+
+  function getNativeIosStatus(sessionId: string): {
+    session_info: {
+      device_height: number;
+      device_width: number;
+      pixel_height: number;
+      pixel_width: number;
+    };
+  } | null {
+    const session = getNativeIosControlSession(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    const pixelHeight = session.iosVideoBridge?.latestPixelHeight ?? 0;
+    const pixelWidth = session.iosVideoBridge?.latestPixelWidth ?? 0;
+    const deviceHeight = session.iosVideoBridge?.latestPointHeight ?? 0;
+    const deviceWidth = session.iosVideoBridge?.latestPointWidth ?? 0;
+    if (pixelHeight <= 0 || pixelWidth <= 0 || deviceHeight <= 0 || deviceWidth <= 0) {
+      return null;
+    }
+
+    return {
+      session_info: {
+        device_height: deviceHeight,
+        device_width: deviceWidth,
+        pixel_height: pixelHeight,
+        pixel_width: pixelWidth,
+      },
+    };
+  }
+
+  async function getNativeIosScreenshot(sessionId: string): Promise<Buffer | null> {
+    const session = getNativeIosControlSession(sessionId);
+    if (!session?.iosUdid) {
+      return null;
+    }
+
+    return captureIosSimulatorScreenshot(session.iosUdid);
+  }
+
+  function readPayloadNumber(payload: SendDeviceControlInput["payload"], key: string): number {
+    const value = Number(payload?.[key]);
+    if (!Number.isFinite(value)) {
+      throw new Error(`Missing numeric control payload field: ${key}`);
+    }
+    return value;
+  }
+
+  function readPayloadString(payload: SendDeviceControlInput["payload"], key: string): string {
+    const value = payload?.[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(`Missing string control payload field: ${key}`);
+    }
+    return value;
+  }
+
+  async function writeNativeIosBridgeControl(
+    bridge: IosSimulatorVideoBridge,
+    input: SendDeviceControlInput,
+  ): Promise<void> {
+    const stdin = bridge.child.stdin;
+    if (!stdin || stdin.destroyed || stdin.writableEnded || bridge.closeReason) {
+      throw new Error("iOS simulator bridge control pipe is unavailable.");
+    }
+
+    const message = `${JSON.stringify({
+      action: input.action,
+      payload: input.payload ?? {},
+    })}\n`;
+
+    await new Promise<void>((resolve, reject) => {
+      stdin.write(message, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+  }
+
+  async function sendNativeIosControl(session: InternalStreamSession, input: SendDeviceControlInput): Promise<void> {
+    if (!session.iosUdid) {
+      throw new Error("iOS simulator UDID is unavailable for native control.");
+    }
+
+    if (session.iosVideoBridge) {
+      try {
+        await writeNativeIosBridgeControl(session.iosVideoBridge, input);
+        return;
+      } catch (error) {
+        logService?.log("warn", "devices.ios-simulator-bridge", "Falling back to one-shot iOS control command", {
+          error: error instanceof Error ? error.message : String(error),
+          sessionId: session.sessionId,
+          udid: session.iosUdid,
+        });
+      }
+    }
+
+    const payload = input.payload ?? {};
+    let args: string[];
+
+    switch (input.action) {
+      case "tap":
+        args = [
+          "control",
+          "--udid",
+          session.iosUdid,
+          "--action",
+          "tap",
+          "--x",
+          String(readPayloadNumber(payload, "x")),
+          "--y",
+          String(readPayloadNumber(payload, "y")),
+        ];
+        break;
+      case "touch":
+        args = [
+          "control",
+          "--udid",
+          session.iosUdid,
+          "--action",
+          "touch",
+          "--x",
+          String(readPayloadNumber(payload, "x")),
+          "--y",
+          String(readPayloadNumber(payload, "y")),
+          "--phase",
+          readPayloadString(payload, "phase"),
+        ];
+        break;
+      case "swipe":
+        args = [
+          "control",
+          "--udid",
+          session.iosUdid,
+          "--action",
+          "swipe",
+          "--start-x",
+          String(readPayloadNumber(payload, "start_x")),
+          "--start-y",
+          String(readPayloadNumber(payload, "start_y")),
+          "--end-x",
+          String(readPayloadNumber(payload, "end_x")),
+          "--end-y",
+          String(readPayloadNumber(payload, "end_y")),
+          "--duration",
+          String(Math.min(Math.max(Number(payload.duration ?? 0.2), 0.08), 0.8)),
+        ];
+        break;
+      case "text":
+        args = [
+          "control",
+          "--udid",
+          session.iosUdid,
+          "--action",
+          "text",
+          "--text",
+          readPayloadString(payload, "text"),
+        ];
+        break;
+      case "key":
+        args = [
+          "control",
+          "--udid",
+          session.iosUdid,
+          "--action",
+          "key",
+          "--key",
+          readPayloadString(payload, "key"),
+        ];
+        if (payload.duration != null) {
+          args.push("--duration", String(Number(payload.duration)));
+        }
+        break;
+      case "button":
+        args = [
+          "control",
+          "--udid",
+          session.iosUdid,
+          "--action",
+          "button",
+          "--button",
+          readPayloadString(payload, "button"),
+        ];
+        break;
+      default:
+        throw new Error(`Unsupported control action: ${input.action}`);
+    }
+
+    await runLocalIosSimulatorBridge(args);
+  }
+
   async function sendControl(sessionId: string, input: SendDeviceControlInput): Promise<void> {
-    if (!streamSessions.has(sessionId)) {
+    const session = streamSessions.get(sessionId);
+    if (!session) {
       throw new Error(`Stream session not found: ${sessionId}`);
     }
 
     if (input.action === "noop") {
+      return;
+    }
+
+    if (session.platform === "ios-simulator" && session.iosNativeControl) {
+      await sendNativeIosControl(session, input);
       return;
     }
 
@@ -817,7 +1499,12 @@ export function createDeviceService(logService?: RuntimeLogService) {
   }
 
   async function stopAll(): Promise<void> {
+    for (const session of streamSessions.values()) {
+      terminateIosVideoBridge(session.iosVideoBridge, "Shutting down device service");
+    }
+
     streamSessions.clear();
+    iosSimulatorBridgeIssue = null;
 
     const sidecars = [androidSidecar, iosBridgeSidecar].filter((value): value is ManagedSidecar => value !== null);
     for (const sidecar of sidecars) {
@@ -851,6 +1538,9 @@ export function createDeviceService(logService?: RuntimeLogService) {
     stopStream,
     getViewerRedirectUrl,
     getViewerSession,
+    attachIosNativeVideoClient,
+    getNativeIosStatus,
+    getNativeIosScreenshot,
     sendControl,
     stopAll,
   };

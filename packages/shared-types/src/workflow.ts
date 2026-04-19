@@ -174,6 +174,9 @@ export type DeviceSummary = z.infer<typeof DeviceSummarySchema>;
 export const DeviceStreamControlTransportSchema = z.enum(["iframe", "websocket", "none"]);
 export type DeviceStreamControlTransport = z.infer<typeof DeviceStreamControlTransportSchema>;
 
+export const IosDeviceStreamProtocolSchema = z.enum(["legacy-jpeg", "webcodecs-h264"]);
+export type IosDeviceStreamProtocol = z.infer<typeof IosDeviceStreamProtocolSchema>;
+
 export const DeviceStreamSessionSchema = z.object({
   sessionId: z.string(),
   deviceId: z.string(),
@@ -181,6 +184,7 @@ export const DeviceStreamSessionSchema = z.object({
   viewerUrl: z.string().min(1),
   controlTransport: DeviceStreamControlTransportSchema,
   startedAt: z.string().datetime(),
+  iosStreamProtocol: IosDeviceStreamProtocolSchema.nullable().optional(),
   nativeBaseUrl: z.string().url().nullable().optional(),
   platformSessionId: z.string().nullable().optional(),
 });

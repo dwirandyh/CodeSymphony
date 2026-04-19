@@ -165,6 +165,28 @@ function normalizeCloseCode(code: number, fallback: number): number {
   return code;
 }
 
+function parseNativeIosControlMessage(data: RawData): { action: string; payload?: Record<string, unknown> } {
+  const text = Buffer.isBuffer(data)
+    ? data.toString("utf8")
+    : Array.isArray(data)
+      ? Buffer.concat(data).toString("utf8")
+      : typeof data === "string"
+        ? data
+        : Buffer.from(data).toString("utf8");
+
+  const payload = JSON.parse(text) as Record<string, unknown>;
+  const action = typeof payload.t === "string" ? payload.t : null;
+  if (!action) {
+    throw new Error("Invalid iOS control message.");
+  }
+
+  const { t: _type, ...rest } = payload;
+  return {
+    action,
+    payload: rest,
+  };
+}
+
 function proxyWebSocketConnection(args: {
   app: FastifyInstance;
   authorizationHeader: string | null;
@@ -352,6 +374,10 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
 
   app.get("/device-streams/:sessionId/native/video", { websocket: true }, (socket, request) => {
     const { sessionId } = request.params as DeviceStreamSessionParams;
+    if (app.deviceService.attachIosNativeVideoClient(sessionId, socket)) {
+      return;
+    }
+
     const viewerSession = app.deviceService.getViewerSession(sessionId);
     if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
       socket.close(4404, "Device stream session not found");
@@ -374,6 +400,12 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
 
   app.get("/device-streams/:sessionId/native/status", async (request, reply) => {
     const { sessionId } = request.params as DeviceStreamSessionParams;
+    const nativeStatus = app.deviceService.getNativeIosStatus(sessionId);
+    if (nativeStatus) {
+      reply.header("Cache-Control", "no-store");
+      return reply.send(nativeStatus);
+    }
+
     const viewerSession = app.deviceService.getViewerSession(sessionId);
     if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
       return reply.code(404).send({ error: "Device stream session not found" });
@@ -402,6 +434,14 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
 
   app.get("/device-streams/:sessionId/native/screenshot", async (request, reply) => {
     const { sessionId } = request.params as DeviceStreamSessionParams;
+    const nativeScreenshot = await app.deviceService.getNativeIosScreenshot(sessionId);
+    if (nativeScreenshot) {
+      return reply
+        .header("Cache-Control", "no-store")
+        .type("image/jpeg")
+        .send(nativeScreenshot);
+    }
+
     const viewerSession = app.deviceService.getViewerSession(sessionId);
     if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
       return reply.code(404).send({ error: "Device stream session not found" });
@@ -453,6 +493,26 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
   app.get("/device-streams/:sessionId/native/control", { websocket: true }, (socket, request) => {
     const { sessionId } = request.params as DeviceStreamSessionParams;
     const viewerSession = app.deviceService.getViewerSession(sessionId);
+    if (viewerSession?.platform === "ios-simulator" && !viewerSession.proxyBaseUrl && !viewerSession.platformSessionId) {
+      socket.on("message", async (data, isBinary) => {
+        if (isBinary) {
+          return;
+        }
+
+        try {
+          const input = parseNativeIosControlMessage(data);
+          await app.deviceService.sendControl(sessionId, input);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to send iOS control input";
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ error: message }));
+          }
+        }
+      });
+
+      return;
+    }
+
     if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
       socket.close(4404, "Device stream session not found");
       return;
