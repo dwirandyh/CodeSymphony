@@ -174,13 +174,38 @@ async function drawBlobToCanvas(canvas: HTMLCanvasElement, blob: Blob): Promise<
       throw new Error("Unable to initialize iOS simulator canvas.");
     }
 
-    if (canvas.width !== image.naturalWidth || canvas.height !== image.naturalHeight) {
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
+    const container = canvas.parentElement;
+    const boundsWidth = Math.max(container?.clientWidth ?? image.naturalWidth, 1);
+    const boundsHeight = Math.max(container?.clientHeight ?? image.naturalHeight, 1);
+    const displayBox = getContainedContentBox(
+      boundsHeight,
+      boundsWidth,
+      image.naturalHeight,
+      image.naturalWidth,
+    );
+    const displayWidth = Math.max(Math.round(displayBox.width), 1);
+    const displayHeight = Math.max(Math.round(displayBox.height), 1);
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const renderWidth = Math.max(Math.round(displayWidth * pixelRatio), 1);
+    const renderHeight = Math.max(Math.round(displayHeight * pixelRatio), 1);
+
+    if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
+      canvas.width = renderWidth;
+      canvas.height = renderHeight;
     }
 
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    if (canvas.style.width !== `${displayWidth}px`) {
+      canvas.style.width = `${displayWidth}px`;
+    }
+    if (canvas.style.height !== `${displayHeight}px`) {
+      canvas.style.height = `${displayHeight}px`;
+    }
+
+    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.clearRect(0, 0, displayWidth, displayHeight);
+    context.drawImage(image, 0, 0, displayWidth, displayHeight);
 
     return {
       height: image.naturalHeight,
@@ -198,9 +223,11 @@ export function IosSimulatorViewer({
   sessionId,
 }: IosSimulatorViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const keyboardInputRef = useRef<HTMLTextAreaElement | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
   const pointSizeRef = useRef({ height: 844, width: 390 });
+  const framePixelSizeRef = useRef({ height: 844, width: 390 });
   const dragStateRef = useRef<DragState | null>(null);
   const screenshotAbortRef = useRef<AbortController | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -376,6 +403,36 @@ export function IosSimulatorViewer({
       setMediaMode("fallback");
     };
 
+    const drawLiveFrame = (image: HTMLImageElement, pixelWidth: number, pixelHeight: number) => {
+      const container = containerRef.current;
+      const boundsWidth = Math.max(container?.clientWidth ?? pixelWidth, 1);
+      const boundsHeight = Math.max(container?.clientHeight ?? pixelHeight, 1);
+      const displayBox = getContainedContentBox(boundsHeight, boundsWidth, pixelHeight, pixelWidth);
+      const displayWidth = Math.max(Math.round(displayBox.width), 1);
+      const displayHeight = Math.max(Math.round(displayBox.height), 1);
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const renderWidth = Math.max(Math.round(displayWidth * pixelRatio), 1);
+      const renderHeight = Math.max(Math.round(displayHeight * pixelRatio), 1);
+
+      if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
+        canvas.width = renderWidth;
+        canvas.height = renderHeight;
+      }
+
+      if (canvas.style.width !== `${displayWidth}px`) {
+        canvas.style.width = `${displayWidth}px`;
+      }
+      if (canvas.style.height !== `${displayHeight}px`) {
+        canvas.style.height = `${displayHeight}px`;
+      }
+
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.clearRect(0, 0, displayWidth, displayHeight);
+      context.drawImage(image, 0, 0, displayWidth, displayHeight);
+    };
+
     const processFrame = (frame: IosVideoFrame) => {
       isProcessingFrame = true;
 
@@ -386,18 +443,19 @@ export function IosSimulatorViewer({
           return;
         }
 
-        if (canvas.width !== image.width || canvas.height !== image.height) {
-          canvas.width = image.width;
-          canvas.height = image.height;
-        }
+        const pixelWidth = frame.pixel_width ?? image.width;
+        const pixelHeight = frame.pixel_height ?? image.height;
 
         pointSizeRef.current = {
           height: frame.point_height ?? pointSizeRef.current.height,
           width: frame.point_width ?? pointSizeRef.current.width,
         };
+        framePixelSizeRef.current = {
+          height: pixelHeight,
+          width: pixelWidth,
+        };
 
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(image, 0, 0);
+        drawLiveFrame(image, pixelWidth, pixelHeight);
 
         hasFrameRef.current = true;
         setHasFrame(true);
@@ -569,6 +627,7 @@ export function IosSimulatorViewer({
         }
 
         const dimensions = await drawBlobToCanvas(renderCanvas, blob);
+        framePixelSizeRef.current = dimensions;
         if (pointSizeRef.current.width <= 0 || pointSizeRef.current.height <= 0) {
           pointSizeRef.current = dimensions;
         }
@@ -734,8 +793,8 @@ export function IosSimulatorViewer({
     return mapClientPointToDevice({
       clientX,
       clientY,
-      contentHeight: canvas.height || pointSizeRef.current.height,
-      contentWidth: canvas.width || pointSizeRef.current.width,
+      contentHeight: framePixelSizeRef.current.height,
+      contentWidth: framePixelSizeRef.current.width,
       deviceHeight: pointSizeRef.current.height,
       deviceWidth: pointSizeRef.current.width,
       element: canvas,
@@ -849,7 +908,7 @@ export function IosSimulatorViewer({
         {statusLabel}
       </div>
 
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
+      <div ref={containerRef} className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-3">
         <canvas
           ref={canvasRef}
           className="block max-h-full max-w-full touch-none rounded-[22px] bg-black shadow-[0_24px_90px_rgba(0,0,0,0.55)] outline-none"
