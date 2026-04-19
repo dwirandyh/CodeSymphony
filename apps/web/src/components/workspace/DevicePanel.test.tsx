@@ -27,6 +27,12 @@ vi.mock("./AndroidDeviceViewer", () => ({
   ),
 }));
 
+vi.mock("./IosSimulatorViewer", () => ({
+  IosSimulatorViewer: ({ sessionId }: { sessionId: string }) => (
+    <div data-device-viewer="ios-native">iOS native viewer {sessionId}</div>
+  ),
+}));
+
 vi.mock("../../pages/workspace/hooks/useDevices", () => ({
   useDevices: useDevicesMock,
 }));
@@ -144,5 +150,52 @@ describe("DevicePanel", () => {
 
     expect(container.textContent).toContain("Scanning devices");
     expect(container.textContent).not.toContain("No devices detected");
+  });
+
+  it("renders the native iOS simulator viewer when an iOS stream is active", async () => {
+    useDevicesMock.mockImplementation(() => ({
+      snapshot: {
+        devices: [
+          {
+            id: "ios-simulator:abc123",
+            name: "iPhone 15 Pro",
+            platform: "ios-simulator",
+            status: "streaming",
+            connectionKind: "simulator",
+            supportsEmbeddedStream: true,
+            supportsControl: true,
+            serial: "ABC123",
+            lastError: null,
+          },
+        ],
+        activeSessions: [
+          {
+            sessionId: "ios-stream-1",
+            deviceId: "ios-simulator:abc123",
+            platform: "ios-simulator",
+            viewerUrl: "/api/device-streams/ios-stream-1/viewer",
+            controlTransport: "websocket",
+            startedAt: new Date().toISOString(),
+          },
+        ],
+        issues: [],
+        refreshedAt: new Date().toISOString(),
+      },
+      loading: false,
+      error: null,
+      refresh,
+      startStream,
+      stopStream,
+      startingDeviceId: null,
+      stoppingSessionId: null,
+    }));
+
+    await act(async () => {
+      root.render(<DevicePanel onClose={() => {}} />);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[data-device-viewer="ios-native"]')).toBeTruthy();
+    expect(container.querySelector("iframe")).toBeNull();
   });
 });

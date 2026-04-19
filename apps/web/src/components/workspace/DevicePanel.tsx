@@ -9,6 +9,7 @@ import { api } from "../../lib/api";
 import { openExternalUrl } from "../../lib/openExternalUrl";
 import { useDevices } from "../../pages/workspace/hooks/useDevices";
 import { AndroidDeviceViewer } from "./AndroidDeviceViewer";
+import { IosSimulatorViewer } from "./IosSimulatorViewer";
 
 function getStatusVariant(status: DeviceStatus): "default" | "secondary" | "destructive" | "outline" {
   if (status === "streaming") {
@@ -45,22 +46,6 @@ function connectionLabel(connectionKind: DeviceSummary["connectionKind"]): strin
     default:
       return connectionKind;
   }
-}
-
-function formatStartedAt(value: string | null): string {
-  if (!value) {
-    return "Not started";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "Unknown";
-  }
-
-  return date.toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 type DevicePanelProps = {
@@ -212,7 +197,6 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
                   </div>
                   <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
                     {platformLabel(activeDevice.platform)} · {connectionLabel(activeDevice.connectionKind)}
-                    {activeDevice.serial ? ` · ${activeDevice.serial}` : ""}
                   </p>
                 </div>
 
@@ -269,6 +253,12 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
                       serial={activeDevice.serial}
                       deviceName={activeDevice.name}
                     />
+                  ) : activeDevice.platform === "ios-simulator" ? (
+                    <IosSimulatorViewer
+                      key={`${activeSession.sessionId}:${viewerNonce}`}
+                      sessionId={activeSession.sessionId}
+                      deviceName={activeDevice.name}
+                    />
                   ) : (
                     <iframe
                       key={`${activeSession.sessionId}:${viewerNonce}`}
@@ -296,15 +286,6 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
                     </Button>
                   </div>
                 )}
-              </div>
-
-              <div className="flex items-center justify-between gap-2 rounded-xl border border-border/30 bg-secondary/10 px-3 py-2 text-[11px] text-muted-foreground">
-                <div className="min-w-0 truncate">
-                  {activeSession
-                    ? `Session ${activeSession.sessionId.slice(0, 8)} · ${activeSession.controlTransport}`
-                    : "Ready to stream"}
-                </div>
-                <div className="shrink-0">{formatStartedAt(activeSession?.startedAt ?? null)}</div>
               </div>
             </TabsContent>
           ) : null}

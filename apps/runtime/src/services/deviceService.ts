@@ -48,6 +48,7 @@ type DeviceViewerSession = {
   redirectUrl: string | null;
   proxyBaseUrl: string | null;
   proxyAuthorizationHeader: string | null;
+  platformSessionId: string | null;
 };
 
 type ManagedSidecar = {
@@ -739,6 +740,8 @@ export function createDeviceService(logService?: RuntimeLogService) {
       const sessionId = await resolveIosSessionId(device.id, metadata);
 
       platformSessionId = sessionId;
+      proxyBaseUrl = iosBridgeBaseUrl;
+      controlTransport = "websocket";
       redirectUrl = new URL(`/control/${sessionId}`, iosBridgeBaseUrl).toString();
     }
 
@@ -785,6 +788,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
       redirectUrl: session.redirectUrl,
       proxyBaseUrl: session.proxyBaseUrl,
       proxyAuthorizationHeader: session.proxyAuthorizationHeader,
+      platformSessionId: session.platformSessionId ?? null,
     };
   }
 

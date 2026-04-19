@@ -27,6 +27,10 @@ type ViewerPathParams = {
   "*": string;
 };
 
+type DeviceStreamSessionParams = {
+  sessionId: string;
+};
+
 function getRawSearch(request: FastifyRequest): string {
   const rawUrl = request.raw.url ?? request.url;
   const queryIndex = rawUrl.indexOf("?");
@@ -161,6 +165,59 @@ function normalizeCloseCode(code: number, fallback: number): number {
   return code;
 }
 
+function proxyWebSocketConnection(args: {
+  app: FastifyInstance;
+  authorizationHeader: string | null;
+  client: WebSocket;
+  request: FastifyRequest;
+  sessionId: string;
+  targetUrl: URL;
+  upstreamFailureMessage: string;
+}) {
+  const { app, authorizationHeader, client, request, sessionId, targetUrl, upstreamFailureMessage } = args;
+  const upstream = new WebSocket(targetUrl, {
+    headers: buildWebSocketProxyHeaders(request, authorizationHeader),
+  });
+
+  upstream.on("message", (data: RawData, isBinary: boolean) => {
+    if (client.readyState === client.OPEN) {
+      client.send(data, { binary: isBinary });
+    }
+  });
+
+  upstream.on("close", (code: number, reason: Buffer) => {
+    if (client.readyState === client.OPEN || client.readyState === client.CONNECTING) {
+      client.close(normalizeCloseCode(code, 1000), reason.toString());
+    }
+  });
+
+  upstream.on("error", (error: Error) => {
+    app.log.warn({ error, sessionId, targetUrl: targetUrl.toString() }, upstreamFailureMessage);
+    if (client.readyState === client.OPEN || client.readyState === client.CONNECTING) {
+      client.close(1011, "Viewer upstream failed");
+    }
+  });
+
+  client.on("message", (data: RawData, isBinary: boolean) => {
+    if (upstream.readyState === WebSocket.OPEN) {
+      upstream.send(data, { binary: isBinary });
+    }
+  });
+
+  client.on("close", (code: number, reason: Buffer) => {
+    if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
+      upstream.close(normalizeCloseCode(code, 1000), reason.toString());
+    }
+  });
+
+  client.on("error", (error: Error) => {
+    app.log.warn({ error, sessionId }, "Embedded device viewer websocket client closed with error");
+    if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
+      upstream.close(1011, "Viewer client failed");
+    }
+  });
+}
+
 function writeSseHeaders(request: FastifyRequest, reply: FastifyReply) {
   const requestOrigin = Array.isArray(request.headers.origin)
     ? request.headers.origin[0]
@@ -254,7 +311,7 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
   });
 
   app.get("/device-streams/:sessionId/viewer/ws", { websocket: true }, (socket, request) => {
-    const { sessionId } = request.params as { sessionId: string };
+    const { sessionId } = request.params as DeviceStreamSessionParams;
     const viewerSession = app.deviceService.getViewerSession(sessionId);
     if (!viewerSession || viewerSession.viewerMode !== "proxy" || !viewerSession.proxyBaseUrl) {
       socket.close(4404, "Device stream session not found");
@@ -265,46 +322,114 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
     targetUrl.protocol = targetUrl.protocol === "https:" ? "wss:" : "ws:";
     targetUrl.search = getRawSearch(request);
 
-    const upstream = new WebSocket(targetUrl, {
-      headers: buildWebSocketProxyHeaders(request, viewerSession.proxyAuthorizationHeader),
+    proxyWebSocketConnection({
+      app,
+      authorizationHeader: viewerSession.proxyAuthorizationHeader,
+      client: socket,
+      request,
+      sessionId,
+      targetUrl,
+      upstreamFailureMessage: "Android viewer websocket proxy failed",
     });
+  });
 
-    upstream.on("message", (data: RawData, isBinary: boolean) => {
-      if (socket.readyState === socket.OPEN) {
-        socket.send(data, { binary: isBinary });
-      }
+  app.get("/device-streams/:sessionId/native/video", { websocket: true }, (socket, request) => {
+    const { sessionId } = request.params as DeviceStreamSessionParams;
+    const viewerSession = app.deviceService.getViewerSession(sessionId);
+    if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
+      socket.close(4404, "Device stream session not found");
+      return;
+    }
+
+    const targetUrl = new URL(`/ws/${encodeURIComponent(viewerSession.platformSessionId)}/video`, viewerSession.proxyBaseUrl);
+    targetUrl.protocol = targetUrl.protocol === "https:" ? "wss:" : "ws:";
+
+    proxyWebSocketConnection({
+      app,
+      authorizationHeader: viewerSession.proxyAuthorizationHeader,
+      client: socket,
+      request,
+      sessionId,
+      targetUrl,
+      upstreamFailureMessage: "iOS native video websocket proxy failed",
     });
+  });
 
-    upstream.on("close", (code: number, reason: Buffer) => {
-      if (socket.readyState === socket.OPEN || socket.readyState === socket.CONNECTING) {
-        socket.close(normalizeCloseCode(code, 1000), reason.toString());
-      }
-    });
+  app.get("/device-streams/:sessionId/native/status", async (request, reply) => {
+    const { sessionId } = request.params as DeviceStreamSessionParams;
+    const viewerSession = app.deviceService.getViewerSession(sessionId);
+    if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
+      return reply.code(404).send({ error: "Device stream session not found" });
+    }
 
-    upstream.on("error", (error: Error) => {
-      app.log.warn({ error, sessionId, targetUrl: targetUrl.toString() }, "Android viewer websocket proxy failed");
-      if (socket.readyState === socket.OPEN || socket.readyState === socket.CONNECTING) {
-        socket.close(1011, "Viewer upstream failed");
-      }
-    });
+    const targetUrl = new URL(`/status/${encodeURIComponent(viewerSession.platformSessionId)}`, viewerSession.proxyBaseUrl);
 
-    socket.on("message", (data: RawData, isBinary: boolean) => {
-      if (upstream.readyState === WebSocket.OPEN) {
-        upstream.send(data, { binary: isBinary });
-      }
-    });
+    try {
+      const response = await fetch(targetUrl, {
+        method: "GET",
+        headers: buildProxyHeaders(request, viewerSession.proxyAuthorizationHeader),
+        signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
+      });
 
-    socket.on("close", (code: number, reason: Buffer) => {
-      if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
-        upstream.close(normalizeCloseCode(code, 1000), reason.toString());
-      }
-    });
+      copyProxyResponseHeaders(reply, response);
+      reply.header("Cache-Control", "no-store");
+      reply.code(response.status);
 
-    socket.on("error", (error: Error) => {
-      app.log.warn({ error, sessionId }, "Embedded device viewer websocket client closed with error");
-      if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
-        upstream.close(1011, "Viewer client failed");
-      }
+      const payload = await response.json().catch(() => null);
+      return reply.send(payload ?? { error: "Invalid iOS status response" });
+    } catch (error) {
+      app.log.warn({ error, sessionId, targetUrl: targetUrl.toString() }, "iOS native status proxy failed");
+      return reply.code(502).send({ error: "Failed to reach iOS bridge status endpoint" });
+    }
+  });
+
+  app.get("/device-streams/:sessionId/native/screenshot", async (request, reply) => {
+    const { sessionId } = request.params as DeviceStreamSessionParams;
+    const viewerSession = app.deviceService.getViewerSession(sessionId);
+    if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
+      return reply.code(404).send({ error: "Device stream session not found" });
+    }
+
+    const targetUrl = new URL(`/api/sessions/${encodeURIComponent(viewerSession.platformSessionId)}/screenshot`, viewerSession.proxyBaseUrl);
+
+    try {
+      const response = await fetch(targetUrl, {
+        method: "GET",
+        headers: buildProxyHeaders(request, viewerSession.proxyAuthorizationHeader),
+        signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
+      });
+
+      copyProxyResponseHeaders(reply, response);
+      reply.header("Cache-Control", "no-store");
+      reply.code(response.status);
+
+      const body = Buffer.from(await response.arrayBuffer());
+      return reply.send(body);
+    } catch (error) {
+      app.log.warn({ error, sessionId, targetUrl: targetUrl.toString() }, "iOS native screenshot proxy failed");
+      return reply.code(502).send({ error: "Failed to reach iOS bridge screenshot endpoint" });
+    }
+  });
+
+  app.get("/device-streams/:sessionId/native/control", { websocket: true }, (socket, request) => {
+    const { sessionId } = request.params as DeviceStreamSessionParams;
+    const viewerSession = app.deviceService.getViewerSession(sessionId);
+    if (!viewerSession || viewerSession.platform !== "ios-simulator" || !viewerSession.proxyBaseUrl || !viewerSession.platformSessionId) {
+      socket.close(4404, "Device stream session not found");
+      return;
+    }
+
+    const targetUrl = new URL(`/ws/${encodeURIComponent(viewerSession.platformSessionId)}/control`, viewerSession.proxyBaseUrl);
+    targetUrl.protocol = targetUrl.protocol === "https:" ? "wss:" : "ws:";
+
+    proxyWebSocketConnection({
+      app,
+      authorizationHeader: viewerSession.proxyAuthorizationHeader,
+      client: socket,
+      request,
+      sessionId,
+      targetUrl,
+      upstreamFailureMessage: "iOS native control websocket proxy failed",
     });
   });
 
