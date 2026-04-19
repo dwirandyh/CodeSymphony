@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DeviceStatus } from "@codesymphony/shared-types";
+import type { DeviceStatus, DeviceStreamSession } from "@codesymphony/shared-types";
 import { ExternalLink, Play, RefreshCw, RotateCcw, Smartphone, Square, X } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -31,6 +31,30 @@ function platformLabel(platform: "android" | "ios-simulator"): string {
   return platform === "android" ? "Android" : "iOS Simulator";
 }
 
+type IosStreamMode = "auto" | "legacy-jpeg" | "webrtc";
+
+const IOS_STREAM_MODE_OPTIONS: Array<{ label: string; value: IosStreamMode }> = [
+  { label: "Auto", value: "auto" },
+  { label: "Bridge WS", value: "legacy-jpeg" },
+  { label: "WebRTC", value: "webrtc" },
+];
+
+function resolveIosStreamMode(session: DeviceStreamSession | null): IosStreamMode {
+  if (!session || session.platform !== "ios-simulator") {
+    return "auto";
+  }
+
+  if (session.iosStreamProtocol === "webrtc") {
+    return "webrtc";
+  }
+
+  if (session.iosStreamProtocol === "legacy-jpeg" && session.nativeBaseUrl && session.platformSessionId) {
+    return "legacy-jpeg";
+  }
+
+  return "auto";
+}
+
 type DevicePanelProps = {
   onClose: () => void;
 };
@@ -39,6 +63,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
   const { snapshot, loading, error, refresh, startStream, stopStream, startingDeviceId, stoppingSessionId } = useDevices();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [viewerNonce, setViewerNonce] = useState(0);
+  const [iosStreamMode, setIosStreamMode] = useState<IosStreamMode>("auto");
   const tabsValue = selectedDeviceId ?? "__none__";
 
   useEffect(() => {
@@ -69,6 +94,30 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
     setViewerNonce(0);
   }, [activeSession?.sessionId]);
 
+  useEffect(() => {
+    if (activeDevice?.platform !== "ios-simulator" || !activeSession) {
+      return;
+    }
+
+    const nextMode = resolveIosStreamMode(activeSession);
+    setIosStreamMode((current) => current === nextMode ? current : nextMode);
+  }, [activeDevice?.platform, activeSession]);
+
+  const activeIosStreamMode = activeDevice?.platform === "ios-simulator"
+    ? resolveIosStreamMode(activeSession)
+    : null;
+  const iosStreamModePendingReconnect = activeIosStreamMode !== null && activeSession && activeIosStreamMode !== iosStreamMode;
+
+  const buildStartStreamInput = () => {
+    if (activeDevice?.platform !== "ios-simulator" || iosStreamMode === "auto") {
+      return {};
+    }
+
+    return {
+      preferredPlayer: iosStreamMode,
+    };
+  };
+
   const handleReconnect = async () => {
     if (!activeDevice) {
       return;
@@ -78,7 +127,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
       await stopStream(activeSession.sessionId);
     }
 
-    await startStream(activeDevice.id);
+    await startStream(activeDevice.id, buildStartStreamInput());
     setViewerNonce((current) => current + 1);
   };
 
@@ -87,7 +136,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
       return;
     }
 
-    await startStream(activeDevice.id);
+    await startStream(activeDevice.id, buildStartStreamInput());
   };
 
   const showLoadingState = loading && snapshot.devices.length === 0 && !error;
@@ -186,6 +235,28 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
 
           {activeDevice ? (
             <TabsContent value={activeDevice.id} className="mt-0 flex min-h-0 flex-1 flex-col px-2 pb-2 pt-1.5">
+              {activeDevice.platform === "ios-simulator" ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-2">
+                  <div className="inline-flex items-center gap-1 rounded-full border border-border/50 bg-card/60 p-1">
+                    {IOS_STREAM_MODE_OPTIONS.map((option) => (
+                      <Button
+                        key={option.value}
+                        type="button"
+                        size="sm"
+                        variant={iosStreamMode === option.value ? "secondary" : "ghost"}
+                        className="h-7 rounded-full px-2.5 text-[11px]"
+                        onClick={() => setIosStreamMode(option.value)}
+                        disabled={startingDeviceId === activeDevice.id || (activeSession ? stoppingSessionId === activeSession.sessionId : false)}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                    {iosStreamModePendingReconnect ? "Reconnect to apply" : "iOS stream mode"}
+                  </div>
+                </div>
+              ) : null}
               <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/40 bg-black/90">
                 {activeSession && viewerSrc ? (
                   activeDevice.platform === "android" && activeDevice.serial ? (

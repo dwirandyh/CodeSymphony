@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, House, LayoutGrid, LoaderCircle, Power, Smartphone } from "lucide-react";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
+import { createDeviceStreamMetrics } from "../../lib/deviceStreamMetrics";
 import {
   ANDROID_KEY_ACTION_DOWN,
   ANDROID_KEY_ACTION_UP,
@@ -98,6 +99,14 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   const [error, setError] = useState<string | null>(null);
   const [deviceLabel, setDeviceLabel] = useState(deviceName);
   const [hasFrame, setHasFrame] = useState(false);
+  const metrics = useMemo(
+    () => createDeviceStreamMetrics({
+      platform: "android",
+      sessionId,
+      streamProtocol: "webcodecs-h264",
+    }),
+    [sessionId],
+  );
 
   const viewerWebSocketUrl = useMemo(
     () => buildAndroidViewerWebSocketUrl(api.runtimeBaseUrl, sessionId, serial),
@@ -108,6 +117,11 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
     if (!supportsAndroidNativeViewer()) {
       return;
     }
+
+    metrics.markConnectStart({
+      serial,
+      viewerWebSocketUrl,
+    });
 
     let disposed = false;
     const canvas = canvasRef.current;
@@ -132,6 +146,10 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
         context.drawImage(frame, 0, 0, canvas.width, canvas.height);
         frame.close();
         deviceSizeRef.current = { height: canvas.height, width: canvas.width };
+        metrics.markFrame({
+          height: canvas.height,
+          width: canvas.width,
+        });
         setConnectionState("connected");
         setHasFrame(true);
         setError(null);
@@ -411,6 +429,9 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
 
     return () => {
       disposed = true;
+      metrics.flush("cleanup", {
+        hadFrame: deviceSizeRef.current.width > 0 && deviceSizeRef.current.height > 0,
+      });
       resizeObserver?.disconnect();
       if (resizeTimerRef.current != null) {
         window.clearTimeout(resizeTimerRef.current);
@@ -421,7 +442,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       decoder.close();
       decoderRef.current = null;
     };
-  }, [deviceName, viewerWebSocketUrl]);
+  }, [deviceName, metrics, serial, viewerWebSocketUrl]);
 
   const sendKeyPress = (keycode: number) => {
     const ws = websocketRef.current;
@@ -429,6 +450,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       return;
     }
 
+    metrics.markControl(`keycode:${keycode}`);
     ws.send(buildAndroidKeyCodeMessage(ANDROID_KEY_ACTION_DOWN, keycode));
     ws.send(buildAndroidKeyCodeMessage(ANDROID_KEY_ACTION_UP, keycode));
   };
@@ -462,6 +484,9 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
     if (event.type === "pointerdown") {
       pointerActiveRef.current = true;
       canvas.setPointerCapture(event.pointerId);
+      metrics.markControl("gesture:pointerdown", {
+        gestureToControlMs: 0,
+      });
     }
 
     if (event.type === "pointerup" || event.type === "pointercancel") {

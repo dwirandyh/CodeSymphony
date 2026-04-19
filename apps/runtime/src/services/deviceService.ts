@@ -102,6 +102,8 @@ type DeviceMetadata = {
   deviceType: string | null;
 };
 
+type PreferredIosStreamProtocol = "auto" | "legacy-jpeg" | "webcodecs-h264" | "webrtc";
+
 function normalizeBaseUrl(value: string): string {
   const url = new URL(value);
   return url.toString();
@@ -114,6 +116,26 @@ function getRefreshIntervalMs(): number {
 
 function getAndroidBaseUrl(): string {
   return normalizeBaseUrl(process.env.ANDROID_WS_SCRCPY_BASE_URL?.trim() || DEFAULT_ANDROID_WS_SCRCPY_BASE_URL);
+}
+
+function resolvePreferredIosStreamProtocol(value: string | undefined): PreferredIosStreamProtocol {
+  const normalized = value?.trim().toLowerCase();
+
+  switch (normalized) {
+    case "compatibility":
+    case "legacy":
+    case "legacy-jpeg":
+      return "legacy-jpeg";
+    case "native":
+    case "native-h264":
+    case "webcodecs":
+    case "webcodecs-h264":
+      return "webcodecs-h264";
+    case "webrtc":
+      return "webrtc";
+    default:
+      return "auto";
+  }
 }
 
 function quotePosixShellArg(value: string): string {
@@ -517,13 +539,13 @@ export function createDeviceService(logService?: RuntimeLogService) {
   }
 
   function sendIosVideoBridgePacket(bridge: IosSimulatorVideoBridge, message: Buffer | string, isBinary: boolean): void {
-    for (const client of [...bridge.clients]) {
+    for (const client of bridge.clients) {
       if (client.readyState !== WebSocket.OPEN) {
         bridge.clients.delete(client);
         continue;
       }
 
-      client.send(message, { binary: isBinary });
+      client.send(message, { binary: isBinary, compress: false });
     }
   }
 
@@ -1130,6 +1152,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
     let viewerUrl = `/api/device-streams/${encodeURIComponent(sessionId)}/viewer`;
     let proxyBaseUrl: string | null = null;
     let proxyAuthorizationHeader: string | null = null;
+    let preferredIosStreamProtocol: PreferredIosStreamProtocol = "auto";
 
     if (device.platform === "android") {
       const serial = device.serial?.trim();
@@ -1151,10 +1174,12 @@ export function createDeviceService(logService?: RuntimeLogService) {
         deviceType: normalizeDeviceLabel(device.name),
       } satisfies DeviceMetadata;
       const udid = metadata.serial?.trim() || device.serial?.trim();
+      preferredIosStreamProtocol = resolvePreferredIosStreamProtocol(input.preferredPlayer);
+      const shouldForceIosBridgeStream = preferredIosStreamProtocol === "legacy-jpeg" || preferredIosStreamProtocol === "webrtc";
       let iosVideoBridge: IosSimulatorVideoBridge | null = null;
       let videoBridgeError: string | null = null;
 
-      if (process.platform === "darwin" && udid) {
+      if (!shouldForceIosBridgeStream && process.platform === "darwin" && udid) {
         try {
           iosVideoBridge = await startIosSimulatorVideoBridge(sessionId, udid, device.name);
           iosSimulatorBridgeIssue = null;
@@ -1233,7 +1258,9 @@ export function createDeviceService(logService?: RuntimeLogService) {
       proxyBaseUrl,
       proxyAuthorizationHeader,
       platformSessionId,
-      iosStreamProtocol: device.platform === "ios-simulator" ? "legacy-jpeg" : null,
+      iosStreamProtocol: device.platform === "ios-simulator"
+        ? preferredIosStreamProtocol === "webrtc" ? "webrtc" : "legacy-jpeg"
+        : null,
       iosVideoBridge: null,
     };
 

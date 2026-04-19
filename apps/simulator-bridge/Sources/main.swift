@@ -5,6 +5,10 @@ import CoreVideo
 import Foundation
 import ScreenCaptureKit
 import VideoToolbox
+#if canImport(FBControlCore) && canImport(FBSimulatorControl)
+import FBControlCore
+import FBSimulatorControl
+#endif
 
 private enum BridgeError: LocalizedError {
   case invalidArguments(String)
@@ -979,12 +983,50 @@ private enum ControlMessageParser {
 
 private final class SimulatorControlExecutor {
   private let udid: String
+  private let axeExecutableURL: URL
+  #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+  private var nativeControlUnavailableReason: String?
+  private var nativeSession: NativeSimulatorControlSession?
+  #endif
 
   init(udid: String) {
     self.udid = udid
+    self.axeExecutableURL = SimulatorControlExecutor.resolveAxeExecutableURL()
+  }
+
+  func prepareForStreaming() {
+    #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+    guard nativeSession == nil, nativeControlUnavailableReason == nil else {
+      return
+    }
+
+    do {
+      nativeSession = try NativeSimulatorControlSession(udid: udid)
+      StderrLogger.log("SimulatorBridge native HID control ready (\(udid)).")
+    } catch {
+      nativeControlUnavailableReason = error.localizedDescription
+      StderrLogger.log("SimulatorBridge falling back to axe control for \(udid): \(error.localizedDescription)")
+    }
+    #endif
+  }
+
+  func stop() {
+    #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+    nativeSession?.disconnect()
+    nativeSession = nil
+    #endif
   }
 
   func perform(_ action: ControlAction) throws {
+    prepareForStreaming()
+
+    #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+    if let nativeSession, nativeSession.canHandle(action) {
+      try nativeSession.perform(action)
+      return
+    }
+    #endif
+
     switch action {
     case .tap(let x, let y):
       try performTap(x: x, y: y)
@@ -1011,7 +1053,7 @@ private final class SimulatorControlExecutor {
     let process = Process()
     let error = Pipe()
 
-    process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/axe")
+    process.executableURL = axeExecutableURL
     process.arguments = arguments
     process.standardError = error
 
@@ -1028,6 +1070,21 @@ private final class SimulatorControlExecutor {
 
   private func coordinateString(_ value: Double) -> String {
     String(Int(max(value.rounded(), 0)))
+  }
+
+  private static func resolveAxeExecutableURL() -> URL {
+    let candidates = [
+      "/opt/homebrew/bin/axe",
+      "/usr/local/bin/axe",
+    ]
+
+    for candidate in candidates {
+      if FileManager.default.isExecutableFile(atPath: candidate) {
+        return URL(fileURLWithPath: candidate)
+      }
+    }
+
+    return URL(fileURLWithPath: candidates[0])
   }
 
   private func performTap(x: Double, y: Double) throws {
@@ -1142,6 +1199,109 @@ private final class SimulatorControlExecutor {
   }
 }
 
+#if canImport(FBControlCore) && canImport(FBSimulatorControl)
+private final class NativeSimulatorControlSession {
+  private let hid: FBSimulatorHID
+  private let control: FBSimulatorControl
+  private let simulator: FBSimulator
+  private let udid: String
+
+  init(udid: String) throws {
+    self.udid = udid
+    FBSimulatorControlFrameworkLoader.xcodeFrameworks.loadPrivateFrameworksOrAbort()
+
+    let configuration = FBSimulatorControlConfiguration(deviceSetPath: nil, logger: nil, reporter: nil)
+    self.control = try FBSimulatorControl.withConfiguration(configuration)
+    guard let simulator = control.set.simulator(withUDID: udid) else {
+      throw BridgeError.simulatorNotBooted(udid)
+    }
+    self.simulator = simulator
+    self.hid = try FBSimulatorHID.hid(for: simulator).await(withTimeout: 5)
+  }
+
+  func canHandle(_ action: ControlAction) -> Bool {
+    switch action {
+    case .tap, .touch, .swipe, .key, .button:
+      return true
+    case .text:
+      return false
+    }
+  }
+
+  func perform(_ action: ControlAction) throws {
+    switch action {
+    case .tap(let x, let y):
+      _ = try FBSimulatorHIDEvent.tapAt(x: x, y: y).perform(on: hid).await(withTimeout: 5)
+    case .touch(let x, let y, let phase):
+      let event = phase == "down"
+        ? FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
+        : FBSimulatorHIDEvent.touchUpAt(x: x, y: y)
+      _ = try event.perform(on: hid).await(withTimeout: 5)
+    case .swipe(let startX, let startY, let endX, let endY, let duration):
+      _ = try FBSimulatorHIDEvent.swipe(
+        startX,
+        yStart: startY,
+        xEnd: endX,
+        yEnd: endY,
+        delta: DEFAULT_SWIPE_DELTA,
+        duration: duration
+      ).perform(on: hid).await(withTimeout: 5)
+    case .text:
+      break
+    case .key(let key, let duration):
+      let keyCode = try hidKeyCode(for: key)
+      _ = try hid.sendKeyboardEvent(with: .down, keyCode: keyCode).await(withTimeout: 5)
+      if let duration {
+        Thread.sleep(forTimeInterval: max(duration, 0))
+      }
+      _ = try hid.sendKeyboardEvent(with: .up, keyCode: keyCode).await(withTimeout: 5)
+    case .button(let button):
+      let hidButton = try buttonValue(for: button)
+      _ = try hid.sendButtonEvent(with: .down, button: hidButton).await(withTimeout: 5)
+      _ = try hid.sendButtonEvent(with: .up, button: hidButton).await(withTimeout: 5)
+    }
+  }
+
+  func disconnect() {
+    do {
+      _ = try hid.disconnect().await(withTimeout: 5)
+    } catch {
+      StderrLogger.log("SimulatorBridge native HID disconnect failed for \(udid): \(error.localizedDescription)")
+    }
+    _ = control
+    _ = simulator
+  }
+
+  private func hidKeyCode(for key: String) throws -> UInt32 {
+    switch key.uppercased() {
+    case "DELETE", "BACKSPACE":
+      return 42
+    case "RETURN", "ENTER":
+      return 40
+    case "TAB":
+      return 43
+    case "ESCAPE":
+      return 41
+    default:
+      throw BridgeError.invalidArguments("Unsupported simulator key: \(key)")
+    }
+  }
+
+  private func buttonValue(for button: String) throws -> FBSimulatorHIDButton {
+    switch button.lowercased() {
+    case "home":
+      return .homeButton
+    case "lock":
+      return .lock
+    case "side":
+      return .sideButton
+    default:
+      throw BridgeError.invalidArguments("Unsupported simulator button: \(button)")
+    }
+  }
+}
+#endif
+
 @MainActor
 private final class ControlCommandRunner {
   private let action: ControlAction
@@ -1163,6 +1323,7 @@ private final class ControlCommandRunner {
 private final class H264Encoder {
   private let writer: PacketWriter
   private let deviceName: String
+  private let fps: Int
   private let pointHeight: Int
   private let pointWidth: Int
   private let udid: String
@@ -1172,9 +1333,11 @@ private final class H264Encoder {
   private var currentWidth = 0
   private var lastCodec = ""
   private var lastMetadataSignature = ""
+  private var pendingForcedKeyFrame = true
 
-  init(deviceName: String, pointHeight: Int, pointWidth: Int, udid: String, writer: PacketWriter) {
+  init(deviceName: String, fps: Int, pointHeight: Int, pointWidth: Int, udid: String, writer: PacketWriter) {
     self.deviceName = deviceName
+    self.fps = fps
     self.pointHeight = pointHeight
     self.pointWidth = pointWidth
     self.udid = udid
@@ -1186,6 +1349,14 @@ private final class H264Encoder {
       return
     }
 
+    try encode(
+      pixelBuffer: pixelBuffer,
+      presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
+      duration: CMSampleBufferGetDuration(sampleBuffer)
+    )
+  }
+
+  func encode(pixelBuffer: CVPixelBuffer, presentationTimeStamp: CMTime, duration: CMTime) throws {
     let width = CVPixelBufferGetWidth(pixelBuffer)
     let height = CVPixelBufferGetHeight(pixelBuffer)
     try ensureCompressionSession(width: width, height: height)
@@ -1194,14 +1365,14 @@ private final class H264Encoder {
       throw BridgeError.failedToCreateEncoder
     }
 
-    let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-    let duration = CMSampleBufferGetDuration(sampleBuffer)
     let status = VTCompressionSessionEncodeFrame(
       compressionSession,
       imageBuffer: pixelBuffer,
-      presentationTimeStamp: timestamp,
+      presentationTimeStamp: presentationTimeStamp,
       duration: duration,
-      frameProperties: nil,
+      frameProperties: pendingForcedKeyFrame
+        ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
+        : nil,
       sourceFrameRefcon: nil,
       infoFlagsOut: nil
     )
@@ -1209,6 +1380,8 @@ private final class H264Encoder {
     guard status == noErr else {
       throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
     }
+
+    pendingForcedKeyFrame = false
   }
 
   func finish() {
@@ -1230,6 +1403,7 @@ private final class H264Encoder {
 
     currentWidth = width
     currentHeight = height
+    pendingForcedKeyFrame = true
 
     let callback: VTCompressionOutputCallback = { outputRefCon, _, status, _, sampleBuffer in
       guard
@@ -1271,26 +1445,37 @@ private final class H264Encoder {
 
     compressionSession = newSession
 
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 60 as CFTypeRef)
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: 1 as CFTypeRef)
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFTypeRef)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 1 as CFTypeRef)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: fps as CFTypeRef)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: 1 as CFTypeRef)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFTypeRef)
 
     let entropyMode = kVTH264EntropyMode_CABAC as CFTypeRef
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_H264EntropyMode, value: entropyMode)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_H264EntropyMode, value: entropyMode)
 
     let averageBitrate = NSNumber(value: max(width * height * 6, 2_000_000))
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: averageBitrate)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: averageBitrate)
 
     let dataRateLimits: [NSNumber] = [
       NSNumber(value: max(width * height * 8, 3_000_000)),
       1,
     ]
-    VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
 
     VTCompressionSessionPrepareToEncodeFrames(newSession)
+  }
+
+  private func setCompressionProperty(_ session: VTCompressionSession, key: CFString, value: CFTypeRef) {
+    let status = VTSessionSetProperty(session, key: key, value: value)
+    guard status != noErr else {
+      return
+    }
+
+    StderrLogger.log("VTSessionSetProperty \(key) failed with status \(status).")
   }
 
   private func handleEncoded(sampleBuffer: CMSampleBuffer) throws {
@@ -1434,17 +1619,24 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
   private let fps: Int
   private let udid: String
   private let writer = PacketWriter()
+  private let frameInterval: CMTime
+  private let frameIntervalNanoseconds: UInt64
 
   private let controlExecutor: SimulatorControlExecutor
   private let controlQueue = DispatchQueue(label: "codesymphony.simulator-bridge.control", qos: .userInitiated)
   private var encoder: H264Encoder?
   private var controlBuffer = Data()
+  private var framePump: DispatchSourceTimer?
+  private var latestPixelBuffer: CVPixelBuffer?
+  private var nextPresentationTime = CMTime.invalid
   private var sampleQueue = DispatchQueue(label: "codesymphony.simulator-bridge.capture", qos: .userInteractive)
   private var stream: SCStream?
 
   init(fps: Int, udid: String) {
     self.fps = fps
     self.udid = udid
+    self.frameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
+    self.frameIntervalNanoseconds = max(UInt64(1_000_000_000 / max(fps, 1)), 1)
     self.controlExecutor = SimulatorControlExecutor(udid: udid)
   }
 
@@ -1475,11 +1667,14 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
 
     encoder = H264Encoder(
       deviceName: resolved.device.name,
+      fps: fps,
       pointHeight: max(Int((screenSize?.height ?? CGFloat(resolved.pixelHeight)).rounded()), 1),
       pointWidth: max(Int((screenSize?.width ?? CGFloat(resolved.pixelWidth)).rounded()), 1),
       udid: udid,
       writer: writer
     )
+    controlExecutor.prepareForStreaming()
+    startFramePump()
     stream = captureStream
     installControlInputHandler()
 
@@ -1489,8 +1684,10 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
   @MainActor
   func stop() async {
     clearControlInputHandler()
+    stopFramePump()
     encoder?.finish()
     encoder = nil
+    controlExecutor.stop()
 
     if let stream {
       try? await stream.stopCapture()
@@ -1511,8 +1708,53 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
       return
     }
 
+    guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+      return
+    }
+
+    latestPixelBuffer = pixelBuffer
+  }
+
+  private func startFramePump() {
+    stopFramePump()
+
+    let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
+    timer.schedule(
+      deadline: .now(),
+      repeating: .nanoseconds(Int(frameIntervalNanoseconds)),
+      leeway: .nanoseconds(Int(max(frameIntervalNanoseconds / 8, 1)))
+    )
+    timer.setEventHandler { [weak self] in
+      self?.encodeLatestFrame()
+    }
+    framePump = timer
+    timer.resume()
+  }
+
+  private func stopFramePump() {
+    framePump?.setEventHandler {}
+    framePump?.cancel()
+    framePump = nil
+    latestPixelBuffer = nil
+    nextPresentationTime = .invalid
+  }
+
+  private func encodeLatestFrame() {
+    guard let encoder, let latestPixelBuffer else {
+      return
+    }
+
+    if !nextPresentationTime.isValid {
+      nextPresentationTime = .zero
+    }
+
     do {
-      try encoder?.encode(sampleBuffer: sampleBuffer)
+      try encoder.encode(
+        pixelBuffer: latestPixelBuffer,
+        presentationTimeStamp: nextPresentationTime,
+        duration: frameInterval
+      )
+      nextPresentationTime = CMTimeAdd(nextPresentationTime, frameInterval)
     } catch {
       StderrLogger.log(error.localizedDescription)
     }

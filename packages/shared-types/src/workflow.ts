@@ -174,7 +174,7 @@ export type DeviceSummary = z.infer<typeof DeviceSummarySchema>;
 export const DeviceStreamControlTransportSchema = z.enum(["iframe", "websocket", "none"]);
 export type DeviceStreamControlTransport = z.infer<typeof DeviceStreamControlTransportSchema>;
 
-export const IosDeviceStreamProtocolSchema = z.enum(["legacy-jpeg", "webcodecs-h264"]);
+export const IosDeviceStreamProtocolSchema = z.enum(["legacy-jpeg", "webcodecs-h264", "webrtc"]);
 export type IosDeviceStreamProtocol = z.infer<typeof IosDeviceStreamProtocolSchema>;
 
 export const DeviceStreamSessionSchema = z.object({
