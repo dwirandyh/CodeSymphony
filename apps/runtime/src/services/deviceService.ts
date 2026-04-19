@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type {
   DeviceInventorySnapshot,
@@ -14,10 +15,14 @@ import type {
   StartDeviceStreamInput,
 } from "@codesymphony/shared-types";
 import WebSocket from "ws";
+import { buildClaudeRuntimeEnv as buildSubprocessEnv } from "../claude/shellEnv.js";
 import type { LogEntry } from "./logService.js";
 import { buildAndroidProxyViewerUrl, parseAdbDevicesOutput, parseSimctlDevicesOutput } from "./deviceService.utils.js";
 
 const execFile = promisify(execFileCallback);
+const managedSubprocessEnv = buildSubprocessEnv({
+  ...process.env,
+} as NodeJS.ProcessEnv);
 const DEFAULT_ANDROID_WS_SCRCPY_BASE_URL = "http://127.0.0.1:8765/";
 const DEFAULT_IOS_BRIDGE_BASE_URL = "http://127.0.0.1:8000";
 const DEFAULT_IOS_SIMULATOR_BRIDGE_FPS = 60;
@@ -109,6 +114,42 @@ function getRefreshIntervalMs(): number {
 
 function getAndroidBaseUrl(): string {
   return normalizeBaseUrl(process.env.ANDROID_WS_SCRCPY_BASE_URL?.trim() || DEFAULT_ANDROID_WS_SCRCPY_BASE_URL);
+}
+
+function quotePosixShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function buildNodeEntryCommand(nodePath: string, entryPath: string, envEntries: Record<string, string>): string {
+  const envAssignments = Object.entries(envEntries)
+    .map(([key, value]) => `${key}=${quotePosixShellArg(value)}`)
+    .join(" ");
+  const prefix = envAssignments.length > 0 ? `${envAssignments} ` : "";
+  return `${prefix}${quotePosixShellArg(nodePath)} ${quotePosixShellArg(entryPath)}`;
+}
+
+function resolvePackagedAndroidSidecarCommand(): string {
+  const entryPath = fileURLToPath(new URL("../../android-ws-scrcpy/dist/index.js", import.meta.url));
+  const configPath = fileURLToPath(new URL("../../android-ws-scrcpy/ws-scrcpy.config.yaml", import.meta.url));
+  const nodePath = process.execPath;
+
+  if (!existsSync(entryPath) || !existsSync(configPath) || !existsSync(nodePath)) {
+    return "";
+  }
+
+  return buildNodeEntryCommand(nodePath, entryPath, {
+    WS_SCRCPY_CONFIG: configPath,
+  });
+}
+
+function getBundledAndroidSidecarCommand(): string {
+  const packagedCommand = resolvePackagedAndroidSidecarCommand();
+  if (packagedCommand) {
+    return packagedCommand;
+  }
+
+  const scriptPath = fileURLToPath(new URL("../../../../scripts/start-ws-scrcpy.sh", import.meta.url));
+  return existsSync(scriptPath) ? scriptPath : "";
 }
 
 function getIosBridgeBaseUrl(): string {
@@ -380,6 +421,7 @@ async function resolveAndroidDisplayName(device: ReturnType<typeof parseAdbDevic
   try {
     const { stdout } = await execFile("adb", ["-s", device.serial, "emu", "avd", "name"], {
       encoding: "utf8",
+      env: managedSubprocessEnv,
       timeout: 1_500,
     });
     const avdName = stdout
@@ -401,6 +443,7 @@ async function runLocalIosSimulatorBridge(commandArgs: string[]): Promise<{ stdo
   const spec = createLocalIosSimulatorBridgeExecSpec(commandArgs);
   const { stdout, stderr } = await execFile(spec.command, spec.args, {
     encoding: "buffer",
+    env: managedSubprocessEnv,
     maxBuffer: 32 * 1024 * 1024,
     timeout: START_TIMEOUT_MS,
   });
@@ -414,6 +457,7 @@ async function runLocalIosSimulatorBridge(commandArgs: string[]): Promise<{ stdo
 async function captureIosSimulatorScreenshot(udid: string): Promise<Buffer> {
   const { stdout } = await execFile("xcrun", ["simctl", "io", udid, "screenshot", "--type=jpeg", "-"], {
     encoding: "buffer",
+    env: managedSubprocessEnv,
     maxBuffer: 32 * 1024 * 1024,
     timeout: START_TIMEOUT_MS,
   });
@@ -546,9 +590,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
     const spawnSpec = createIosSimulatorBridgeSpawnSpec(udid);
     const child = spawn(spawnSpec.command, spawnSpec.args, {
       cwd: process.cwd(),
-      env: {
-        ...process.env,
-      },
+      env: managedSubprocessEnv,
       shell: spawnSpec.shell,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -727,9 +769,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
       stdio: "ignore",
       shell: true,
       detached: process.platform !== "win32",
-      env: {
-        ...process.env,
-      },
+      env: managedSubprocessEnv,
     });
     child.unref();
 
@@ -758,7 +798,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
 
   async function ensureAndroidSidecarReady(): Promise<string> {
     const baseUrl = getAndroidBaseUrl();
-    const command = process.env.ANDROID_WS_SCRCPY_COMMAND?.trim() || "";
+    const command = process.env.ANDROID_WS_SCRCPY_COMMAND?.trim() || getBundledAndroidSidecarCommand();
 
     androidSidecar = await startSidecar(androidSidecar, {
       name: "ws-scrcpy",
@@ -790,6 +830,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
     try {
       const { stdout } = await execFile("adb", ["devices", "-l"], {
         encoding: "utf8",
+        env: managedSubprocessEnv,
         timeout: DISCOVERY_TIMEOUT_MS,
       });
       const parsed = parseAdbDevicesOutput(stdout);
@@ -833,6 +874,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
     try {
       const { stdout } = await execFile("xcrun", ["simctl", "list", "devices", "available", "--json"], {
         encoding: "utf8",
+        env: managedSubprocessEnv,
         timeout: DISCOVERY_TIMEOUT_MS,
       });
 
