@@ -112,16 +112,26 @@ afterEach(() => {
 });
 
 describe("DevicePanel", () => {
-  it("renders device tabs and native Android viewer", () => {
+  it("renders the selected device summary and opens the custom device picker overlay", async () => {
     act(() => {
       root.render(<DevicePanel onClose={() => {}} />);
     });
 
     expect(container.textContent).toContain("Devices");
     expect(container.textContent).toContain("Pixel 9");
-    expect(container.textContent).toContain("iPhone 15 Pro");
     expect(container.querySelector('[data-device-viewer="android-native"]')).toBeTruthy();
     expect(container.querySelector("iframe")).toBeNull();
+
+    const trigger = container.querySelector('button[aria-label="Choose device"]');
+    expect(trigger).toBeTruthy();
+
+    await act(async () => {
+      (trigger as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain("iPhone 15 Pro");
+    expect(document.body.textContent).toContain("Available Devices");
   });
 
   it("falls back to the proxied Android iframe viewer when native decoding is unavailable", () => {
@@ -265,7 +275,7 @@ describe("DevicePanel", () => {
     expect(container.textContent).not.toContain("WebRTC");
     expect(container.textContent).not.toContain("Bridge WS");
 
-    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent?.includes("Start Stream"));
+    const button = container.querySelector('button[aria-label="Start Stream"]');
     expect(button).toBeTruthy();
 
     await act(async () => {
