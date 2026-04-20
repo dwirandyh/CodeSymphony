@@ -338,6 +338,7 @@ describe("DevicePanel", () => {
 
     expect(container.textContent).toContain("Screen Recording required");
     expect(container.textContent).toContain("Grant Screen Recording to CodeSymphony");
+    expect(container.textContent).toContain("fully quit and reopen the app");
 
     const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent?.includes("Open Settings"));
     expect(button).toBeTruthy();

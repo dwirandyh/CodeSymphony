@@ -11,6 +11,9 @@ export function runPrismaMigrations(): void {
   const fallbackSchemaPath = path.resolve(process.cwd(), "prisma", "schema.prisma");
   const schemaPath = schemaPathFromEnv ?? (existsSync(fallbackSchemaPath) ? fallbackSchemaPath : undefined);
   const migrationsDir = process.env.PRISMA_MIGRATIONS_DIR;
+  const prismaEnginesDirFromEnv = process.env.PRISMA_ENGINES_DIR;
+  const prismaQueryEngineLibrary = process.env.PRISMA_QUERY_ENGINE_LIBRARY;
+  const prismaSchemaEngineBinary = process.env.PRISMA_SCHEMA_ENGINE_BINARY;
 
   if (!schemaPath) {
     console.log("PRISMA schema not found, skipping migrations");
@@ -18,7 +21,7 @@ export function runPrismaMigrations(): void {
   }
 
   // Resolve prisma CLI from node_modules
-  const prismaCliPath = path.resolve(
+  const prismaCliPath = prismaEnginesDirFromEnv ?? path.resolve(
     path.dirname(schemaPath),
     "..",
     "node_modules",
@@ -45,6 +48,8 @@ export function runPrismaMigrations(): void {
       env: {
         ...process.env,
         PRISMA_ENGINES_DIR: prismaCliPath,
+        ...(prismaQueryEngineLibrary ? { PRISMA_QUERY_ENGINE_LIBRARY: prismaQueryEngineLibrary } : {}),
+        ...(prismaSchemaEngineBinary ? { PRISMA_SCHEMA_ENGINE_BINARY: prismaSchemaEngineBinary } : {}),
         ...(migrationsDir ? { PRISMA_MIGRATIONS_DIR: migrationsDir } : {}),
       },
     });
