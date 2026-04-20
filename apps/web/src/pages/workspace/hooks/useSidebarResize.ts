@@ -18,6 +18,11 @@ export function useSidebarResize(initialWidth = 300, reverse = false) {
   useEffect(() => {
     if (!sidebarDragging) return;
 
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
     function onMove(e: MouseEvent) {
       const delta = reverse
         ? sidebarStartXRef.current - e.clientX
@@ -35,9 +40,13 @@ export function useSidebarResize(initialWidth = 300, reverse = false) {
 
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onUp);
     return () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onUp);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
     };
   }, [sidebarDragging, reverse]);
 

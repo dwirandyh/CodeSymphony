@@ -127,6 +127,15 @@ Web only:
 pnpm dev:web
 ```
 
+Android streaming sidecar:
+
+```bash
+make setup-android-streaming
+make start-android-streaming
+```
+
+`make dev` starts the web app and runtime. Android device/emulator streaming also requires `ws-scrcpy`; the runtime now falls back to the bundled `scripts/start-ws-scrcpy.sh` helper when no explicit `ANDROID_WS_SCRCPY_COMMAND` is configured.
+
 Desktop shell:
 
 ```bash
@@ -134,6 +143,7 @@ pnpm dev:desktop
 ```
 
 - Desktop dev web URL (used by Tauri): `http://127.0.0.1:5174`
+- The packaged desktop bundle now includes the Android `ws-scrcpy` sidecar under `runtime-bundle/android-ws-scrcpy`, so the macOS app can auto-start Android streaming without depending on the workspace `scripts/` directory.
 
 ## Makefile Shortcuts
 

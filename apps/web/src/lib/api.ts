@@ -9,6 +9,8 @@ import type {
   CreateModelProviderInput,
   CreateRepositoryInput,
   CreateWorktreeInput,
+  DeviceInventorySnapshot,
+  DeviceStreamSession,
   DismissQuestionInput,
   UpdateChatThreadPermissionModeInput,
   UpdateChatThreadModeInput,
@@ -31,7 +33,10 @@ import type {
   ResolvePermissionInput,
   Repository,
   ScriptResult,
+  SendDeviceControlInput,
   SendChatMessageInput,
+  StartDeviceStreamInput,
+  StopDeviceStreamInput,
   UpdateWorktreeFileContentInput,
   UpdateModelProviderInput,
   UpdateRepositoryScriptsInput,
@@ -540,6 +545,37 @@ export const api = {
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to open in app");
+    }
+  },
+  getDevices: () => request<DeviceInventorySnapshot>("/devices"),
+  streamDevices: () => createEventSource("/devices/stream"),
+  startDeviceStream: (deviceId: string, input: StartDeviceStreamInput = {}) =>
+    request<DeviceStreamSession>(`/devices/${encodeURIComponent(deviceId)}/stream/start`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  stopDeviceStream: async (input: StopDeviceStreamInput): Promise<void> => {
+    const response = await runtimeFetch("/device-streams/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to stop device stream");
+    }
+  },
+  sendDeviceControl: async (sessionId: string, input: SendDeviceControlInput): Promise<void> => {
+    const response = await runtimeFetch(`/device-streams/${encodeURIComponent(sessionId)}/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to send device control");
     }
   },
 

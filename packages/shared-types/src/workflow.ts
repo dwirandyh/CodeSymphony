@@ -146,6 +146,76 @@ export const WorkspaceSyncEventSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+export const DevicePlatformSchema = z.enum(["android", "ios-simulator"]);
+export type DevicePlatform = z.infer<typeof DevicePlatformSchema>;
+
+export const DeviceConnectionKindSchema = z.enum(["usb", "wifi", "emulator", "simulator", "remote"]);
+export type DeviceConnectionKind = z.infer<typeof DeviceConnectionKindSchema>;
+
+export const DeviceStatusSchema = z.enum(["offline", "available", "connecting", "streaming", "error"]);
+export type DeviceStatus = z.infer<typeof DeviceStatusSchema>;
+
+export const DeviceIssueSeveritySchema = z.enum(["info", "warning", "error"]);
+export type DeviceIssueSeverity = z.infer<typeof DeviceIssueSeveritySchema>;
+
+export const DeviceSummarySchema = z.object({
+  id: z.string(),
+  name: z.string().min(1),
+  platform: DevicePlatformSchema,
+  status: DeviceStatusSchema,
+  connectionKind: DeviceConnectionKindSchema,
+  supportsEmbeddedStream: z.boolean(),
+  supportsControl: z.boolean(),
+  serial: z.string().nullable().optional(),
+  lastError: z.string().nullable().optional(),
+});
+export type DeviceSummary = z.infer<typeof DeviceSummarySchema>;
+
+export const DeviceStreamControlTransportSchema = z.enum(["iframe", "websocket", "none"]);
+export type DeviceStreamControlTransport = z.infer<typeof DeviceStreamControlTransportSchema>;
+
+export const DeviceStreamSessionSchema = z.object({
+  sessionId: z.string(),
+  deviceId: z.string(),
+  platform: DevicePlatformSchema,
+  viewerUrl: z.string().min(1),
+  controlTransport: DeviceStreamControlTransportSchema,
+  startedAt: z.string().datetime(),
+});
+export type DeviceStreamSession = z.infer<typeof DeviceStreamSessionSchema>;
+
+export const DeviceIssueSchema = z.object({
+  id: z.string(),
+  platform: DevicePlatformSchema.nullable().optional(),
+  severity: DeviceIssueSeveritySchema,
+  message: z.string().min(1),
+});
+export type DeviceIssue = z.infer<typeof DeviceIssueSchema>;
+
+export const DeviceInventorySnapshotSchema = z.object({
+  devices: z.array(DeviceSummarySchema),
+  activeSessions: z.array(DeviceStreamSessionSchema),
+  issues: z.array(DeviceIssueSchema).default([]),
+  refreshedAt: z.string().datetime(),
+});
+export type DeviceInventorySnapshot = z.infer<typeof DeviceInventorySnapshotSchema>;
+
+export const StartDeviceStreamInputSchema = z.object({
+  preferredPlayer: z.string().trim().min(1).optional(),
+});
+export type StartDeviceStreamInput = z.infer<typeof StartDeviceStreamInputSchema>;
+
+export const StopDeviceStreamInputSchema = z.object({
+  sessionId: z.string().trim().min(1),
+});
+export type StopDeviceStreamInput = z.infer<typeof StopDeviceStreamInputSchema>;
+
+export const SendDeviceControlInputSchema = z.object({
+  action: z.string().trim().min(1),
+  payload: z.record(z.string(), z.any()).optional(),
+});
+export type SendDeviceControlInput = z.infer<typeof SendDeviceControlInputSchema>;
+
 
 export const AssistantRenderHintSchema = z.enum(["markdown", "raw-file", "raw-fallback", "diff"]);
 export type AssistantRenderHint = z.infer<typeof AssistantRenderHintSchema>;

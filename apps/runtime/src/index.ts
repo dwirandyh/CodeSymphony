@@ -21,6 +21,7 @@ import { createFilesystemService } from "./services/filesystemService.js";
 import { createScriptStreamService } from "./services/scriptStreamService.js";
 import { createModelProviderService } from "./services/modelProviderService.js";
 import { createReviewService } from "./services/reviewService.js";
+import { createDeviceService } from "./services/deviceService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -30,6 +31,7 @@ import { registerFilesystemRoutes } from "./routes/filesystem.js";
 import { registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
 import { registerModelRoutes } from "./routes/models.js";
 import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
+import { registerDeviceRoutes } from "./routes/devices.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -47,6 +49,7 @@ declare module "fastify" {
     scriptStreamService: ReturnType<typeof createScriptStreamService>;
     modelProviderService: ReturnType<typeof createModelProviderService>;
     reviewService: ReturnType<typeof createReviewService>;
+    deviceService: ReturnType<typeof createDeviceService>;
   }
 }
 
@@ -64,6 +67,7 @@ function createApp() {
   const scriptStreamService = createScriptStreamService();
   const modelProviderService = createModelProviderService(prisma);
   const reviewService = createReviewService(prisma);
+  const deviceService = createDeviceService(logService);
   const chatService = createChatService({
     prisma,
     eventHub,
@@ -86,6 +90,7 @@ function createApp() {
   app.decorate("scriptStreamService", scriptStreamService);
   app.decorate("modelProviderService", modelProviderService);
   app.decorate("reviewService", reviewService);
+  app.decorate("deviceService", deviceService);
 
   app.register(cors, {
     origin: true,
@@ -127,6 +132,11 @@ function createApp() {
   app.register(registerDebugRoutes, { prefix: "/api" });
   app.register(registerModelRoutes, { prefix: "/api" });
   app.register(registerWorkspaceEventRoutes, { prefix: "/api" });
+  app.register(registerDeviceRoutes, { prefix: "/api" });
+
+  app.addHook("onClose", async () => {
+    await deviceService.stopAll();
+  });
 
   // Serve web frontend static files when WEB_DIST_PATH is set (production)
   const webDistPath = process.env.WEB_DIST_PATH;

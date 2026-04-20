@@ -1,6 +1,7 @@
 import { memo } from "react";
-import { FolderTree, GitBranch } from "lucide-react";
+import { FolderTree, GitBranch, Smartphone } from "lucide-react";
 import type { ReviewKind, ReviewRef } from "@codesymphony/shared-types";
+import { DevicePanel } from "../../components/workspace/DevicePanel";
 import { GitChangesPanel } from "../../components/workspace/GitChangesPanel";
 import { WorkspaceExplorerPanel } from "../../components/workspace/WorkspaceExplorerPanel";
 import { cn } from "../../lib/utils";
@@ -26,14 +27,14 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   prMrActionBusy,
   onPrMrAction,
 }: {
-  rightPanelId: "explorer" | "git" | null;
+  rightPanelId: "explorer" | "git" | "device" | null;
   worktreeId: string | null;
   gitChanges: GitChangesData;
   activeFilePath: string | null;
   selectedDiffFilePath: string | null;
   onOpenReview: () => void;
   onSelectDiffFile: (filePath: string) => void;
-  onUpdatePanel: (panel: "explorer" | "git" | undefined) => void;
+  onUpdatePanel: (panel: "explorer" | "git" | "device" | undefined) => void;
   onOpenReadFile: (path: string) => void | Promise<void>;
   reviewKind?: ReviewKind | null;
   reviewRef?: ReviewRef | null;
@@ -53,11 +54,11 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
     <>
       {/* ── Right panel resize handle ── */}
       {rightPanelId && (
-        <div className="hidden relative w-0 lg:block" aria-hidden="true">
+        <div className="relative hidden w-0 lg:block" aria-hidden="true">
           <button
             type="button"
             className={cn(
-              "group absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors",
+              "group absolute inset-y-0 -left-1.5 z-40 flex w-3 cursor-col-resize items-center justify-center transition-colors",
               rightDragging && "bg-primary/10",
             )}
             onMouseDown={handleRightPanelMouseDown}
@@ -80,52 +81,66 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
           <aside
             ref={rightPanelRef}
             id="workspace-right-panel"
-            aria-label={rightPanelId === "explorer" ? "Explorer panel" : "Source Control panel"}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden border-r border-border/30"
+            aria-label={rightPanelId === "explorer" ? "Explorer panel" : rightPanelId === "git" ? "Source Control panel" : "Devices panel"}
+            className="relative flex min-h-0 shrink-0 flex-col overflow-hidden border-r border-border/30"
             style={{ width: `${rightPanelWidth}px` }}
           >
-            {rightPanelId === "explorer" && (
-              <WorkspaceExplorerPanel
-                worktreeId={worktreeId}
-                gitEntries={gitChanges.entries}
-                activeFilePath={activeFilePath}
-                onOpenFile={(path) => void onOpenReadFile(path)}
-                onClose={() => onUpdatePanel(undefined)}
+            {rightDragging ? (
+              <div
+                aria-hidden="true"
+                data-resize-shield="true"
+                className="absolute inset-0 z-30 cursor-col-resize bg-transparent"
               />
-            )}
-            {rightPanelId === "git" && (
-              <GitChangesPanel
-                entries={gitChanges.entries}
-                branch={gitChanges.branch}
-                loading={gitChanges.loading}
-                committing={gitChanges.committing}
-                syncing={gitChanges.syncing}
-                canSync={gitChanges.canSync}
-                ahead={gitChanges.ahead}
-                behind={gitChanges.behind}
-                error={gitChanges.error}
-                selectedFilePath={selectedDiffFilePath}
-                onCommit={(msg) => void gitChanges.commit(msg)}
-                onSync={() => void gitChanges.sync()}
-                onReview={onOpenReview}
-                onRefresh={() => void gitChanges.refresh()}
-                onClose={() => onUpdatePanel(undefined)}
-                onSelectFile={onSelectDiffFile}
-                onDiscardChange={(path) => void gitChanges.discardChange(path)}
-                onOpenFile={(path) => void onOpenReadFile(path)}
-                reviewKind={reviewKind}
-                reviewRef={reviewRef}
-                prMrActionDisabled={prMrActionDisabled}
-                prMrActionTitle={prMrActionTitle}
-                prMrActionBusy={prMrActionBusy}
-                onPrMrAction={onPrMrAction}
-              />
-            )}
+            ) : null}
+            <div className={cn("flex min-h-0 flex-1 flex-col", rightDragging && "pointer-events-none select-none")}>
+              {rightPanelId === "explorer" && (
+                <WorkspaceExplorerPanel
+                  worktreeId={worktreeId}
+                  gitEntries={gitChanges.entries}
+                  activeFilePath={activeFilePath}
+                  onOpenFile={(path) => void onOpenReadFile(path)}
+                  onClose={() => onUpdatePanel(undefined)}
+                />
+              )}
+              {rightPanelId === "git" && (
+                <GitChangesPanel
+                  entries={gitChanges.entries}
+                  branch={gitChanges.branch}
+                  loading={gitChanges.loading}
+                  committing={gitChanges.committing}
+                  syncing={gitChanges.syncing}
+                  canSync={gitChanges.canSync}
+                  ahead={gitChanges.ahead}
+                  behind={gitChanges.behind}
+                  error={gitChanges.error}
+                  selectedFilePath={selectedDiffFilePath}
+                  onCommit={(msg) => void gitChanges.commit(msg)}
+                  onSync={() => void gitChanges.sync()}
+                  onReview={onOpenReview}
+                  onRefresh={() => void gitChanges.refresh()}
+                  onClose={() => onUpdatePanel(undefined)}
+                  onSelectFile={onSelectDiffFile}
+                  onDiscardChange={(path) => void gitChanges.discardChange(path)}
+                  onOpenFile={(path) => void onOpenReadFile(path)}
+                  reviewKind={reviewKind}
+                  reviewRef={reviewRef}
+                  prMrActionDisabled={prMrActionDisabled}
+                  prMrActionTitle={prMrActionTitle}
+                  prMrActionBusy={prMrActionBusy}
+                  onPrMrAction={onPrMrAction}
+                />
+              )}
+              {rightPanelId === "device" && (
+                <DevicePanel
+                  onClose={() => onUpdatePanel(undefined)}
+                />
+              )}
+            </div>
           </aside>
         )}
 
         {/* ── Right icon bar ── */}
-        <nav className="flex w-[48px] shrink-0 flex-col items-center pt-[10px] lg:pt-[14px]">
+        <nav className={cn("flex w-[48px] shrink-0 flex-col items-center pt-[10px] lg:pt-[14px]", rightDragging && "pointer-events-none select-none")}>
           <button
             type="button"
             title="Explorer"
@@ -158,6 +173,20 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
                 {gitChanges.entries.length > 99 ? "99+" : gitChanges.entries.length}
               </span>
             )}
+          </button>
+          <button
+            type="button"
+            title="Devices"
+            aria-label="Devices"
+            aria-expanded={rightPanelId === "device"}
+            aria-controls="workspace-right-panel"
+            className={cn(
+              "mt-2 flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+              rightPanelId === "device" && "bg-secondary text-foreground",
+            )}
+            onClick={() => onUpdatePanel(rightPanelId === "device" ? undefined : "device")}
+          >
+            <Smartphone className="h-[18px] w-[18px]" />
           </button>
         </nav>
       </div>

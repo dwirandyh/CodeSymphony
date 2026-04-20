@@ -1,6 +1,6 @@
 PNPM ?= pnpm
 
-.PHONY: help install stop-dev dev dev-runtime dev-web dev-desktop db-generate db-migrate db-seed db-init build test lint setup-worktree
+.PHONY: help install stop-dev dev dev-runtime dev-web dev-desktop setup-android-streaming start-android-streaming db-generate db-migrate db-seed db-init build test lint setup-worktree
 
 help:
 	@echo "Available targets:"
@@ -10,6 +10,8 @@ help:
 	@echo "  make dev-runtime   - Run runtime only"
 	@echo "  make dev-web       - Run web only"
 	@echo "  make dev-desktop   - Run desktop shell"
+	@echo "  make setup-android-streaming - Bootstrap ws-scrcpy sidecar for Android streaming"
+	@echo "  make start-android-streaming - Run the Android ws-scrcpy sidecar"
 	@echo "  make run           - Run production runtime + web (builds first)"
 	@echo "  make run-runtime   - Run production runtime only"
 	@echo "  make run-web       - Run production web only"
@@ -47,6 +49,12 @@ dev-web:
 
 dev-desktop:
 	$(PNPM) dev:desktop
+
+setup-android-streaming:
+	./scripts/setup-ws-scrcpy.sh
+
+start-android-streaming:
+	./scripts/start-ws-scrcpy.sh
 
 run: stop-dev
 	$(PNPM) run run

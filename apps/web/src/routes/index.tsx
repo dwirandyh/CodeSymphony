@@ -7,7 +7,7 @@ export type WorkspaceSearch = {
   threadId?: string;
   view?: "chat" | "review" | "file";
   file?: string;
-  panel?: "explorer" | "git";
+  panel?: "explorer" | "git" | "device";
 };
 
 export const Route = createFileRoute("/")({
@@ -17,7 +17,7 @@ export const Route = createFileRoute("/")({
     threadId: typeof search.threadId === "string" ? search.threadId : undefined,
     view: search.view === "review" || search.view === "file" ? search.view : undefined,
     file: typeof search.file === "string" ? search.file : undefined,
-    panel: search.panel === "explorer" || search.panel === "git" ? search.panel : undefined,
+    panel: search.panel === "explorer" || search.panel === "git" || search.panel === "device" ? search.panel : undefined,
   }),
   component: WorkspacePage,
   notFoundComponent: () => {
