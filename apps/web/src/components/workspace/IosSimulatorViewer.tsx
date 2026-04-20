@@ -1,24 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { House, LoaderCircle, Lock, RefreshCw, Smartphone } from "lucide-react";
+import { House, Keyboard, LoaderCircle, Lock, Maximize2, Minimize2, RefreshCw, Smartphone } from "lucide-react";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
 import { debugLog } from "../../lib/debugLog";
 import { createDeviceStreamMetrics } from "../../lib/deviceStreamMetrics";
+import { cn } from "../../lib/utils";
+import { getMobileDeviceViewerControlsFlag, supportsIosNativeViewer } from "./deviceViewerEnvironment";
 import {
   buildIosDragPayload,
   detectIosGestureEdge,
-  IOS_BOTTOM_EDGE_APP_SWITCHER_HOLD_DELAY_MS,
   IOS_GESTURE_PATH_FLUSH_INTERVAL_MS,
   IOS_GESTURE_TAP_SLOP_CSS_PX,
   IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX,
   IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX,
   IOS_TOUCH_DOWN_DELAY_LIVE_MS,
-  resolveIosSystemGesture,
   resolveIosGestureAxis,
   type IosGestureAxis,
   type IosGestureEdge,
   type IosGesturePathPoint,
-  type IosSystemGesture,
   shouldAppendIosGesturePathPoint,
 } from "./iosGesture";
 
@@ -54,10 +53,6 @@ type DragState = {
   startClientY: number;
   startX: number;
   startY: number;
-  systemGesture: IosSystemGesture | null;
-  systemGestureDeferred: boolean;
-  systemGestureTimer: number | null;
-  systemGestureTriggered: boolean;
   touchDownSent: boolean;
   touchTimer: number | null;
   x: number;
@@ -129,15 +124,6 @@ function readBigEndianUint64Number(bytes: Uint8Array): number | null {
   const high = view.getUint32(0);
   const low = view.getUint32(4);
   return (high * 2 ** 32) + low;
-}
-
-function supportsIosNativeViewer(): boolean {
-  if (typeof window === "undefined" || typeof WebSocket !== "function") {
-    return false;
-  }
-
-  return window.isSecureContext === true
-    && typeof createImageBitmap === "function";
 }
 
 function normalizeIosStreamMessage(message: string): string {
@@ -464,6 +450,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const keyboardActiveRef = useRef(false);
   const keyboardFlushTimerRef = useRef<number | null>(null);
   const keyboardTextBufferRef = useRef("");
+  const keyboardToggleSnapshotRef = useRef(false);
   const hasFrameRef = useRef(false);
   const liveViewportAlignedRef = useRef(false);
   const pointerGestureStartedAtRef = useRef<number | null>(null);
@@ -477,6 +464,9 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const [hasFrame, setHasFrame] = useState(false);
   const [liveAttempt, setLiveAttempt] = useState(0);
   const [liveViewportAligned, setLiveViewportAligned] = useState(false);
+  const [viewerExpanded, setViewerExpanded] = useState(false);
+  const [keyboardBridgeFocused, setKeyboardBridgeFocused] = useState(false);
+  const showMobileViewerControls = useMemo(() => getMobileDeviceViewerControlsFlag(), []);
 
   const urls = useMemo(() => buildIosViewerUrls(sessionId), [sessionId]);
   const metrics = useMemo(
@@ -489,6 +479,19 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   );
 
   const screenInteractionEnabled = liveViewportAligned;
+
+  useEffect(() => {
+    if (!viewerExpanded || typeof document === "undefined") {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [viewerExpanded]);
 
   const updateLiveViewportAligned = (aligned: boolean) => {
     liveViewportAlignedRef.current = aligned;
@@ -1406,6 +1409,39 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     });
   };
 
+  const dismissKeyboardInput = () => {
+    flushKeyboardTextBuffer();
+    keyboardActiveRef.current = false;
+    keyboardInputRef.current?.blur();
+    setKeyboardBridgeFocused(false);
+  };
+
+  const setSoftwareKeyboardVisible = (visible: boolean) => {
+    sendControl({
+      t: "system",
+      name: visible ? "show_keyboard" : "hide_keyboard",
+    });
+  };
+
+  const toggleKeyboardInput = (closeKeyboard = false) => {
+    const input = keyboardInputRef.current;
+    if (!input) {
+      return;
+    }
+
+    if (closeKeyboard || document.activeElement === input || keyboardBridgeFocused) {
+      dismissKeyboardInput();
+      setSoftwareKeyboardVisible(false);
+      canvasRef.current?.focus({
+        preventScroll: true,
+      });
+      return;
+    }
+
+    setSoftwareKeyboardVisible(true);
+    focusKeyboardInput();
+  };
+
   const flushKeyboardTextBuffer = () => {
     if (keyboardFlushTimerRef.current != null) {
       window.clearTimeout(keyboardFlushTimerRef.current);
@@ -1483,10 +1519,6 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
 
     clearDragTouchTimer(activeDrag);
     clearDragFlushTimer(activeDrag);
-    clearSystemGestureTimer(activeDrag);
-    if (activeDrag.systemGestureTriggered || activeDrag.systemGestureDeferred) {
-      return;
-    }
     if (activeDrag.dragActive || activeDrag.dragPoints.length > 0) {
       flushDragGesture(activeDrag, true);
       return;
@@ -1653,13 +1685,6 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     }
   };
 
-  const clearSystemGestureTimer = (dragState: DragState) => {
-    if (dragState.systemGestureTimer != null) {
-      window.clearTimeout(dragState.systemGestureTimer);
-      dragState.systemGestureTimer = null;
-    }
-  };
-
   const queueDragPoint = (args: {
     activeDrag: DragState;
     atMs: number;
@@ -1717,37 +1742,6 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     activeDrag.dragActive = !end;
   };
 
-  const dispatchSystemGesture = (activeDrag: DragState, gesture: IosSystemGesture) => {
-    clearDragTouchTimer(activeDrag);
-    clearDragFlushTimer(activeDrag);
-    clearSystemGestureTimer(activeDrag);
-    activeDrag.dragActive = false;
-    activeDrag.dragPoints = [];
-    activeDrag.systemGesture = gesture;
-    activeDrag.systemGestureDeferred = false;
-    activeDrag.systemGestureTriggered = true;
-    activeDrag.touchDownSent = false;
-    sendControl({
-      name: gesture,
-      t: "system",
-    });
-  };
-
-  const deferSystemGesture = (activeDrag: DragState, gesture: IosSystemGesture) => {
-    clearSystemGestureTimer(activeDrag);
-    activeDrag.systemGesture = gesture;
-    activeDrag.systemGestureDeferred = true;
-    activeDrag.systemGestureTriggered = false;
-    activeDrag.systemGestureTimer = window.setTimeout(() => {
-      const currentDrag = dragStateRef.current;
-      if (!currentDrag || currentDrag.pointerId !== activeDrag.pointerId || currentDrag.systemGesture !== gesture || !currentDrag.systemGestureDeferred) {
-        return;
-      }
-
-      dispatchSystemGesture(currentDrag, gesture);
-    }, IOS_BOTTOM_EDGE_APP_SWITCHER_HOLD_DELAY_MS);
-  };
-
   const scheduleDragFlush = (activeDrag: DragState) => {
     if (activeDrag.dragFlushTimer != null) {
       return;
@@ -1800,10 +1794,6 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       startClientY: event.clientY,
       startX: point.x,
       startY: point.y,
-      systemGesture: null,
-      systemGestureDeferred: false,
-      systemGestureTimer: null,
-      systemGestureTriggered: false,
       touchDownSent: false,
       touchTimer: null,
       x: point.x,
@@ -1859,14 +1849,6 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       edge: activeDrag.edge,
       lockedAxis: activeDrag.axis,
     });
-    const systemGesture = !activeDrag.touchDownSent && !activeDrag.dragActive
-      ? resolveIosSystemGesture({
-        axis,
-        clientDx,
-        clientDy,
-        edge: activeDrag.edge,
-      })
-      : null;
     const scrollIntent = activeDrag.scrollIntent || axis !== null;
     const moved = activeDrag.moved || clientDistance > IOS_GESTURE_TAP_SLOP_CSS_PX || scrollIntent;
     const moveStartedAt = moved
@@ -1883,43 +1865,10 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       moved,
       moveStartedAt,
       scrollIntent,
-      systemGesture,
       touchTimer: shouldCancelTouchDown ? null : activeDrag.touchTimer,
       x: point.x,
       y: point.y,
     };
-
-    if (activeDrag.systemGestureDeferred && !activeDrag.systemGestureTriggered && systemGesture == null) {
-      clearSystemGestureTimer(nextDragState);
-      nextDragState.systemGesture = null;
-      nextDragState.systemGestureDeferred = false;
-      dragStateRef.current = nextDragState;
-      if (!nextDragState.dragActive && nextDragState.dragPoints.length > 0) {
-        flushDragGesture(nextDragState, false);
-      }
-      return;
-    }
-
-    if (systemGesture) {
-      if (!nextDragState.dragActive && nextDragState.dragPoints.length === 0) {
-        nextDragState.dragPoints.push({
-          atMs: nextDragState.startAtMs,
-          x: nextDragState.startX,
-          y: nextDragState.startY,
-        });
-      }
-
-      queueDragPoint({
-        activeDrag: nextDragState,
-        atMs: nowMs,
-        clientX: event.clientX,
-        clientY: event.clientY,
-        point,
-      });
-      deferSystemGesture(nextDragState, systemGesture);
-      dragStateRef.current = nextDragState;
-      return;
-    }
 
     const shouldContinueAsDrag = (!nextDragState.touchDownSent && scrollIntent)
       || (nextDragState.touchDownSent && clientDistance >= IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX);
@@ -1973,15 +1922,6 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       clearDragTouchTimer(activeDrag);
     }
     clearDragFlushTimer(activeDrag);
-    clearSystemGestureTimer(activeDrag);
-
-    if (activeDrag.systemGestureTriggered) {
-      return;
-    }
-    if (activeDrag.systemGestureDeferred) {
-      activeDrag.systemGesture = null;
-      activeDrag.systemGestureDeferred = false;
-    }
 
     const point = getInteractivePoint(event.clientX, event.clientY) ?? { x: activeDrag.x, y: activeDrag.y };
     const clientDx = event.clientX - activeDrag.startClientX;
@@ -2071,12 +2011,16 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     : connectionState === "connecting"
       ? "Starting the iOS stream directly in this panel."
       : "Streaming iOS directly in this panel.";
+  const showMobileKeyboardBridge = showMobileViewerControls && keyboardBridgeFocused;
 
   return (
     <div
       ref={rootRef}
       data-device-viewer="ios-native"
-      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(251,191,36,0.12),_transparent_48%),linear-gradient(180deg,_rgba(9,9,11,0.96),_rgba(2,6,23,0.98))]"
+      className={cn(
+        "relative flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(251,191,36,0.12),_transparent_48%),linear-gradient(180deg,_rgba(9,9,11,0.96),_rgba(2,6,23,0.98))]",
+        viewerExpanded && "fixed inset-0 z-[90]",
+      )}
     >
       <textarea
         ref={keyboardInputRef}
@@ -2084,9 +2028,25 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         autoCapitalize="off"
         autoComplete="off"
         autoCorrect="off"
-        className="pointer-events-none absolute left-0 top-0 h-px w-px opacity-0"
+        className={cn(
+          showMobileKeyboardBridge
+            ? "absolute inset-x-3 bottom-3 z-30 min-h-11 rounded-2xl border border-white/15 bg-black/45 px-3 py-2 text-sm text-white shadow-[0_16px_48px_rgba(0,0,0,0.35)] backdrop-blur-md placeholder:text-white/45"
+            : "pointer-events-none absolute left-0 top-0 h-px w-px opacity-0",
+        )}
+        enterKeyHint="done"
+        inputMode="text"
+        placeholder={showMobileKeyboardBridge ? "Type into iOS" : undefined}
         spellCheck={false}
         tabIndex={-1}
+        onBlur={() => {
+          flushKeyboardTextBuffer();
+          keyboardActiveRef.current = false;
+          setKeyboardBridgeFocused(false);
+        }}
+        onFocus={() => {
+          keyboardActiveRef.current = true;
+          setKeyboardBridgeFocused(true);
+        }}
         onInput={handleKeyboardInput}
         onKeyDown={handleKeyboardKeyDown}
       />
@@ -2094,6 +2054,64 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       <div className="pointer-events-none absolute left-3 top-3 z-20 rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/70">
         {statusLabel}
       </div>
+
+      {showMobileViewerControls ? (
+        <div className="absolute right-3 top-3 z-20 flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn(
+              "h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white",
+              keyboardBridgeFocused && "bg-white/12 text-white",
+            )}
+            aria-label={keyboardBridgeFocused ? "Hide iOS keyboard" : "Show iOS keyboard"}
+            title={keyboardBridgeFocused ? "Hide iOS keyboard" : "Show iOS keyboard"}
+            onPointerDown={() => {
+              keyboardToggleSnapshotRef.current = document.activeElement === keyboardInputRef.current || keyboardBridgeFocused;
+            }}
+            onClick={() => {
+              toggleKeyboardInput(keyboardToggleSnapshotRef.current);
+              keyboardToggleSnapshotRef.current = false;
+            }}
+          >
+            <Keyboard className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white"
+            aria-label="iOS Shake"
+            title="iOS Shake"
+            onClick={() => sendControl({ t: "system", name: "shake" })}
+          >
+            <Smartphone className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white"
+            aria-label={viewerExpanded ? "Exit iOS fullscreen" : "iOS fullscreen"}
+            title={viewerExpanded ? "Exit iOS fullscreen" : "iOS fullscreen"}
+            onClick={() => setViewerExpanded((current) => !current)}
+          >
+            {viewerExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white"
+            aria-label="iOS Power"
+            title="iOS Power"
+            onClick={() => sendControl({ t: "button", button: "lock" })}
+          >
+            <Lock className="h-4 w-4" />
+          </Button>
+        </div>
+      ) : null}
 
       <div ref={containerRef} className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-3 pt-3">
         <canvas
@@ -2153,16 +2171,51 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
           >
             <House className="h-4 w-4" />
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
-            aria-label="iOS Lock"
-            onClick={() => sendControl({ t: "button", button: "lock" })}
-          >
-            <Lock className="h-4 w-4" />
-          </Button>
+          {!showMobileViewerControls ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white",
+                keyboardBridgeFocused && "bg-white/12 text-white",
+              )}
+              aria-label={keyboardBridgeFocused ? "Hide iOS keyboard" : "Show iOS keyboard"}
+              onPointerDown={() => {
+                keyboardToggleSnapshotRef.current = document.activeElement === keyboardInputRef.current || keyboardBridgeFocused;
+              }}
+              onClick={() => {
+                toggleKeyboardInput(keyboardToggleSnapshotRef.current);
+                keyboardToggleSnapshotRef.current = false;
+              }}
+            >
+              <Keyboard className="h-4 w-4" />
+            </Button>
+          ) : null}
+          {!showMobileViewerControls ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+              aria-label="iOS Shake"
+              onClick={() => sendControl({ t: "system", name: "shake" })}
+            >
+              <Smartphone className="h-4 w-4" />
+            </Button>
+          ) : null}
+          {!showMobileViewerControls ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+              aria-label="iOS Lock"
+              onClick={() => sendControl({ t: "button", button: "lock" })}
+            >
+              <Lock className="h-4 w-4" />
+            </Button>
+          ) : null}
         </div>
       </div>
     </div>

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, House, LayoutGrid, LoaderCircle, Power, Smartphone } from "lucide-react";
+import { ArrowLeft, House, LayoutGrid, LoaderCircle, Maximize2, Minimize2, Power, Smartphone } from "lucide-react";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
 import { createDeviceStreamMetrics } from "../../lib/deviceStreamMetrics";
+import { cn } from "../../lib/utils";
+import { getMobileDeviceViewerControlsFlag, supportsAndroidNativeViewer } from "./deviceViewerEnvironment";
 import {
   ANDROID_KEY_ACTION_DOWN,
   ANDROID_KEY_ACTION_UP,
@@ -45,14 +47,6 @@ function clamp(value: number, min: number, max: number): number {
   return value;
 }
 
-function supportsAndroidNativeViewer(): boolean {
-  return typeof window !== "undefined"
-    && typeof WebSocket === "function"
-    && window.isSecureContext === true
-    && typeof VideoDecoder === "function"
-    && typeof EncodedVideoChunk === "function";
-}
-
 function getPointerAction(type: string): number | null {
   switch (type) {
     case "pointerdown":
@@ -79,6 +73,7 @@ function getTargetBounds(element: HTMLElement | null): { height: number; width: 
 }
 
 export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDeviceViewerProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const websocketRef = useRef<WebSocket | null>(null);
@@ -100,6 +95,8 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
   const [error, setError] = useState<string | null>(null);
   const [deviceLabel, setDeviceLabel] = useState(deviceName);
   const [hasFrame, setHasFrame] = useState(false);
+  const [viewerExpanded, setViewerExpanded] = useState(false);
+  const showMobileViewerControls = useMemo(() => getMobileDeviceViewerControlsFlag(), []);
   const metrics = useMemo(
     () => createDeviceStreamMetrics({
       platform: "android",
@@ -113,6 +110,19 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
     () => buildAndroidViewerWebSocketUrl(api.runtimeBaseUrl, sessionId, serial),
     [serial, sessionId],
   );
+
+  useEffect(() => {
+    if (!viewerExpanded || typeof document === "undefined") {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [viewerExpanded]);
 
   useEffect(() => {
     if (!supportsAndroidNativeViewer()) {
@@ -539,14 +549,31 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
 
   return (
     <div
+      ref={rootRef}
       data-device-viewer="android-native"
-      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(96,165,250,0.16),_transparent_48%),linear-gradient(180deg,_rgba(9,9,11,0.96),_rgba(2,6,23,0.98))]"
+      className={cn(
+        "relative flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(96,165,250,0.16),_transparent_48%),linear-gradient(180deg,_rgba(9,9,11,0.96),_rgba(2,6,23,0.98))]",
+        viewerExpanded && "fixed inset-0 z-[90]",
+      )}
     >
       <div className="absolute left-3 top-3 z-20 rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/70">
         {statusLabel}
       </div>
 
-      <div className="absolute right-3 top-3 z-20">
+      <div className="absolute right-3 top-3 z-20 flex items-center gap-1">
+        {showMobileViewerControls ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white"
+            aria-label={viewerExpanded ? "Exit Android fullscreen" : "Android fullscreen"}
+            title={viewerExpanded ? "Exit Android fullscreen" : "Android fullscreen"}
+            onClick={() => setViewerExpanded((current) => !current)}
+          >
+            {viewerExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </Button>
+        ) : null}
         <Button
           type="button"
           variant="ghost"

@@ -1,6 +1,5 @@
 export type IosGestureAxis = "horizontal" | "vertical";
 export type IosGestureEdge = "bottom" | "left" | "right" | "top";
-export type IosSystemGesture = "app_switcher";
 
 export type IosGesturePathPoint = {
   atMs: number;
@@ -15,8 +14,6 @@ export const IOS_GESTURE_PATH_FLUSH_INTERVAL_MS = 12;
 export const IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX = 4;
 export const IOS_GESTURE_PATH_POINT_MIN_INTERVAL_MS = 4;
 export const IOS_TOUCH_DOWN_DELAY_LIVE_MS = 220;
-export const IOS_BOTTOM_EDGE_APP_SWITCHER_HOLD_DELAY_MS = 150;
-export const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_TRAVEL_CSS_PX = 54;
 
 const IOS_GESTURE_AXIS_LOCK_RATIO = 1.12;
 const IOS_GESTURE_EDGE_DIRECTION_DISTANCE_CSS_PX = 6;
@@ -24,7 +21,8 @@ const IOS_GESTURE_EDGE_MARGIN_RATIO = 0.08;
 const IOS_GESTURE_EDGE_MIN_MARGIN_PT = 18;
 const IOS_GESTURE_PATH_DWELL_DELAY_MAX_MS = 320;
 const IOS_GESTURE_PATH_STEP_DELAY_MAX_MS = 20;
-const IOS_BOTTOM_EDGE_APP_SWITCHER_DIRECTION_RATIO = 1.35;
+const IOS_BOTTOM_EDGE_HORIZONTAL_AXIS_COMMIT_RATIO = 1.45;
+const IOS_BOTTOM_EDGE_VERTICAL_AXIS_BIAS_RATIO = 1.28;
 
 function clamp(value: number, min: number, max: number): number {
   if (value < min) {
@@ -68,14 +66,29 @@ export function resolveIosGestureAxis(args: {
   lockedAxis: IosGestureAxis | null;
 }): IosGestureAxis | null {
   const { clientDx, clientDy, edge, lockedAxis } = args;
-  if (lockedAxis) {
-    return lockedAxis;
-  }
-
   const absX = Math.abs(clientDx);
   const absY = Math.abs(clientDy);
   const dominantDistance = Math.max(absX, absY);
   const minorDistance = Math.min(absX, absY);
+  const isBottomEdgeUpwardSwipe = edge === "bottom" && clientDy < 0;
+
+  if (lockedAxis === "vertical") {
+    return "vertical";
+  }
+
+  if (isBottomEdgeUpwardSwipe && lockedAxis === "horizontal") {
+    if (
+      absY >= IOS_GESTURE_EDGE_DIRECTION_DISTANCE_CSS_PX
+      && absY * IOS_BOTTOM_EDGE_VERTICAL_AXIS_BIAS_RATIO >= absX
+    ) {
+      return "vertical";
+    }
+    return "horizontal";
+  }
+
+  if (lockedAxis) {
+    return lockedAxis;
+  }
 
   if ((edge === "left" || edge === "right") && absX >= IOS_GESTURE_EDGE_DIRECTION_DISTANCE_CSS_PX && absX >= absY) {
     return "horizontal";
@@ -83,6 +96,25 @@ export function resolveIosGestureAxis(args: {
 
   if ((edge === "top" || edge === "bottom") && absY >= IOS_GESTURE_EDGE_DIRECTION_DISTANCE_CSS_PX && absY >= absX) {
     return "vertical";
+  }
+
+  if (isBottomEdgeUpwardSwipe) {
+    if (
+      absY >= IOS_GESTURE_EDGE_DIRECTION_DISTANCE_CSS_PX
+      && absY * IOS_BOTTOM_EDGE_VERTICAL_AXIS_BIAS_RATIO >= absX
+    ) {
+      return "vertical";
+    }
+
+    if (dominantDistance < IOS_GESTURE_SCROLL_INTENT_DISTANCE_CSS_PX) {
+      return null;
+    }
+
+    if (absX < absY * IOS_BOTTOM_EDGE_HORIZONTAL_AXIS_COMMIT_RATIO) {
+      return null;
+    }
+
+    return "horizontal";
   }
 
   if (dominantDistance < IOS_GESTURE_SCROLL_INTENT_DISTANCE_CSS_PX) {
@@ -104,25 +136,6 @@ export function shouldAppendIosGesturePathPoint(args: {
   const { clientDx, clientDy, elapsedMs } = args;
   return Math.hypot(clientDx, clientDy) >= IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX
     || elapsedMs >= IOS_GESTURE_PATH_POINT_MIN_INTERVAL_MS;
-}
-
-export function resolveIosSystemGesture(args: {
-  axis: IosGestureAxis | null;
-  clientDx: number;
-  clientDy: number;
-  edge: IosGestureEdge | null;
-}): IosSystemGesture | null {
-  const { axis, clientDx, clientDy, edge } = args;
-  if (edge !== "bottom" || axis !== "vertical") {
-    return null;
-  }
-
-  const verticalTravel = Math.abs(clientDy);
-  if (clientDy >= -IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_TRAVEL_CSS_PX || verticalTravel < Math.abs(clientDx) * IOS_BOTTOM_EDGE_APP_SWITCHER_DIRECTION_RATIO) {
-    return null;
-  }
-
-  return "app_switcher";
 }
 
 export function buildIosDragPayload(args: {

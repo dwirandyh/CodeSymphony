@@ -9,6 +9,7 @@ import { api } from "../../lib/api";
 import { isTauriDesktop, openExternalUrl } from "../../lib/openExternalUrl";
 import { useDevices } from "../../pages/workspace/hooks/useDevices";
 import { AndroidDeviceViewer } from "./AndroidDeviceViewer";
+import { supportsAndroidNativeViewer } from "./deviceViewerEnvironment";
 import { IosSimulatorViewer } from "./IosSimulatorViewer";
 
 function getStatusVariant(status: DeviceStatus): "default" | "secondary" | "destructive" | "outline" {
@@ -97,6 +98,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
   }, [activeDevice, snapshot.issues]);
   const viewerSrc = activeSession ? `${api.runtimeBaseUrl}${activeSession.viewerUrl}` : null;
   const desktopApp = isTauriDesktop();
+  const canUseAndroidNativePanelViewer = supportsAndroidNativeViewer();
 
   useEffect(() => {
     setViewerNonce(0);
@@ -262,7 +264,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
               ) : null}
               <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/40 bg-black/90">
                 {activeSession && viewerSrc ? (
-                  activeDevice.platform === "android" && activeDevice.serial ? (
+                  activeDevice.platform === "android" && activeDevice.serial && canUseAndroidNativePanelViewer ? (
                     <AndroidDeviceViewer
                       key={`${activeSession.sessionId}:${viewerNonce}`}
                       sessionId={activeSession.sessionId}

@@ -2,10 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildIosDragPayload,
   detectIosGestureEdge,
-  IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_TRAVEL_CSS_PX,
   IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX,
   IOS_GESTURE_PATH_POINT_MIN_INTERVAL_MS,
-  resolveIosSystemGesture,
   resolveIosGestureAxis,
   shouldAppendIosGesturePathPoint,
 } from "./iosGesture";
@@ -92,6 +90,45 @@ describe("iosGesture", () => {
     })).toBe("horizontal");
   });
 
+  it("keeps bottom-edge upward swipes from locking horizontal too early", () => {
+    expect(resolveIosGestureAxis({
+      clientDx: 16,
+      clientDy: -14,
+      edge: "bottom",
+      lockedAxis: null,
+    })).toBe("vertical");
+
+    expect(resolveIosGestureAxis({
+      clientDx: 18,
+      clientDy: -14,
+      edge: "bottom",
+      lockedAxis: null,
+    })).toBeNull();
+
+    expect(resolveIosGestureAxis({
+      clientDx: 24,
+      clientDy: -8,
+      edge: "bottom",
+      lockedAxis: null,
+    })).toBe("horizontal");
+  });
+
+  it("allows a bottom-edge upward swipe to recover from an early horizontal lock", () => {
+    expect(resolveIosGestureAxis({
+      clientDx: 22,
+      clientDy: -26,
+      edge: "bottom",
+      lockedAxis: "horizontal",
+    })).toBe("vertical");
+
+    expect(resolveIosGestureAxis({
+      clientDx: 26,
+      clientDy: -10,
+      edge: "bottom",
+      lockedAxis: "horizontal",
+    })).toBe("horizontal");
+  });
+
   it("appends path points only after enough movement or elapsed time", () => {
     expect(shouldAppendIosGesturePathPoint({
       clientDx: IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX - 1,
@@ -110,36 +147,6 @@ describe("iosGesture", () => {
       clientDy: 0,
       elapsedMs: IOS_GESTURE_PATH_POINT_MIN_INTERVAL_MS,
     })).toBe(true);
-  });
-
-  it("promotes a bottom-edge upward hold into the app switcher gesture only when the movement is decisively vertical", () => {
-    expect(resolveIosSystemGesture({
-      axis: "vertical",
-      clientDx: 8,
-      clientDy: -(IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_TRAVEL_CSS_PX + 8),
-      edge: "bottom",
-    })).toBe("app_switcher");
-
-    expect(resolveIosSystemGesture({
-      axis: "vertical",
-      clientDx: IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_TRAVEL_CSS_PX,
-      clientDy: -(IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_TRAVEL_CSS_PX + 2),
-      edge: "bottom",
-    })).toBeNull();
-
-    expect(resolveIosSystemGesture({
-      axis: "horizontal",
-      clientDx: 0,
-      clientDy: -(IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_TRAVEL_CSS_PX + 10),
-      edge: "bottom",
-    })).toBeNull();
-
-    expect(resolveIosSystemGesture({
-      axis: "vertical",
-      clientDx: 4,
-      clientDy: -(IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_TRAVEL_CSS_PX - 1),
-      edge: "bottom",
-    })).toBeNull();
   });
 
   it("serializes drag payload points with per-step delays capped for live streaming", () => {

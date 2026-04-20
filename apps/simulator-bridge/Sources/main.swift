@@ -65,6 +65,8 @@ private struct DragPathPoint {
   let y: Double
 }
 
+private let SIMULATOR_HARDWARE_KEYBOARD_TYPE_DEFAULT: UInt8 = 0
+
 private enum ControlAction {
   case tap(x: Double, y: Double)
   case touch(x: Double, y: Double, phase: String)
@@ -267,7 +269,7 @@ private enum BridgeCommand {
       action = .button(button)
     case "system":
       guard let name = values["name"] else {
-        throw BridgeError.invalidArguments("system requires --name <app_switcher>.")
+        throw BridgeError.invalidArguments("system requires --name <gesture>.")
       }
       action = .systemGesture(name)
     default:
@@ -476,6 +478,7 @@ private final class EncodedFrameContext {
 
 private struct PendingVideoFrame {
   let capturedAtMs: UInt64
+  let changeRatio: Double?
   let pixelBuffer: CVPixelBuffer
 }
 
@@ -487,7 +490,6 @@ private final class JpegEncoder {
   private let udid: String
   private let ciContext = CIContext()
   private let colorSpace = CGColorSpaceCreateDeviceRGB()
-  private let compressionQuality = 0.9
 
   private var lastMetadataSignature = ""
 
@@ -504,10 +506,10 @@ private final class JpegEncoder {
       return
     }
 
-    try encode(pixelBuffer: pixelBuffer, capturedAtMs: capturedAtMs)
+    try encode(pixelBuffer: pixelBuffer, capturedAtMs: capturedAtMs, changeRatio: nil)
   }
 
-  func encode(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64) throws {
+  func encode(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64, changeRatio: Double?) throws {
     let width = max(CVPixelBufferGetWidth(pixelBuffer), 1)
     let height = max(CVPixelBufferGetHeight(pixelBuffer), 1)
     let metadataSignature = "jpeg:\(width)x\(height)"
@@ -526,6 +528,11 @@ private final class JpegEncoder {
     }
 
     let image = CIImage(cvPixelBuffer: pixelBuffer)
+    let compressionQuality = jpegCompressionQuality(
+      pixelWidth: width,
+      pixelHeight: height,
+      changeRatio: changeRatio
+    )
     guard let jpegData = ciContext.jpegRepresentation(
       of: image,
       colorSpace: colorSpace,
@@ -538,6 +545,40 @@ private final class JpegEncoder {
   }
 
   func finish() {}
+
+  private func jpegCompressionQuality(pixelWidth: Int, pixelHeight: Int, changeRatio: Double?) -> Double {
+    let pixelCount = max(pixelWidth, 1) * max(pixelHeight, 1)
+    let baseQuality: Double
+    if pixelCount <= 400_000 {
+      baseQuality = 0.95
+    } else if pixelCount <= 900_000 {
+      baseQuality = 0.93
+    } else {
+      baseQuality = 0.9
+    }
+
+    guard let changeRatio else {
+      return baseQuality
+    }
+
+    let normalizedChangeRatio = min(max(changeRatio, 0), 1)
+    if normalizedChangeRatio <= 0.02 {
+      return min(baseQuality + 0.03, 0.98)
+    }
+    if normalizedChangeRatio <= 0.08 {
+      return min(baseQuality + 0.02, 0.97)
+    }
+    if normalizedChangeRatio <= 0.2 {
+      return min(baseQuality + 0.01, 0.96)
+    }
+    if normalizedChangeRatio >= 0.75 {
+      return max(baseQuality - 0.05, 0.88)
+    }
+    if normalizedChangeRatio >= 0.4 {
+      return max(baseQuality - 0.03, 0.89)
+    }
+    return baseQuality
+  }
 }
 
 private final class SignalTrap {
@@ -1255,32 +1296,6 @@ private final class SimulatorControlExecutor {
     }
   }
 
-  private func runAppleScript(lines: [String]) throws {
-    let process = Process()
-    let output = Pipe()
-    let error = Pipe()
-
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    process.arguments = lines.flatMap { ["-e", $0] }
-    process.standardOutput = output
-    process.standardError = error
-
-    try process.run()
-    process.waitUntilExit()
-
-    guard process.terminationStatus == 0 else {
-      let stdout = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      let stderr = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      let detail = [stderr, stdout]
-        .compactMap { $0 }
-        .first(where: { $0.isEmpty == false })
-        ?? "osascript exited with status \(process.terminationStatus)"
-      throw BridgeError.invalidArguments(detail)
-    }
-  }
-
   private func coordinateString(_ value: Double) -> String {
     String(Int(max(value.rounded(), 0)))
   }
@@ -1461,38 +1476,118 @@ private final class SimulatorControlExecutor {
     ])
   }
 
+  private func postSimulatorNotification(name: String, userInfo: [String: Any]? = nil) {
+    DistributedNotificationCenter.default().post(
+      name: Notification.Name(name),
+      object: nil,
+      userInfo: userInfo
+    )
+  }
+
   private func performSystemGesture(_ gesture: String) throws {
     switch gesture.lowercased() {
+    case "shake":
+      prepareForStreaming()
+      #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+      if let nativeSession {
+        do {
+          try nativeSession.performSystemGesture("shake")
+          return
+        } catch {
+          StderrLogger.log("SimulatorBridge native shake fallback for \(udid): \(error.localizedDescription)")
+        }
+      }
+      #endif
+      postSimulatorNotification(name: "com.apple.UIKit.SimulatorShake")
+    case "show_keyboard", "hide_keyboard":
+      prepareForStreaming()
+      #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+      if let nativeSession {
+        try nativeSession.performSystemGesture(gesture)
+        return
+      }
+      #endif
+      throw BridgeError.invalidArguments(
+        "Simulator software keyboard control requires native simulator access."
+      )
     case "app_switcher":
-      try runAppleScript(lines: [
-        "tell application \"Simulator\" to activate",
-        "delay 0.12",
-        "tell application \"System Events\"",
-        "  if UI elements enabled is false then error \"SimulatorBridge needs Accessibility access to control Simulator menus.\"",
-        "  tell process \"Simulator\"",
-        "    set frontmost to true",
-        "    repeat with attempt from 1 to 3",
-        "      try",
-        "        click menu bar item \"Device\" of menu bar 1",
-        "        delay 0.12",
-        "        click menu item \"App Switcher\" of menu 1 of menu bar item \"Device\" of menu bar 1",
-        "        exit repeat",
-        "      on error errMsg number errNum",
-        "        key code 53",
-        "        delay 0.05",
-        "        if attempt is 3 then error errMsg number errNum",
-        "      end try",
-        "    end repeat",
-        "  end tell",
-        "end tell",
-      ])
+      throw BridgeError.invalidArguments(
+        "Unsupported native simulator system gesture: app_switcher. Use a direct drag gesture instead."
+      )
     default:
-      throw BridgeError.invalidArguments("Unsupported simulator system gesture: \(gesture)")
+      throw BridgeError.invalidArguments("Unsupported native simulator system gesture: \(gesture)")
     }
   }
 }
 
 #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+private enum SimulatorAppPrivateCategoryLoader {
+  private static var attemptedLoad = false
+
+  static func ensureLoaded() {
+    guard attemptedLoad == false else {
+      return
+    }
+    attemptedLoad = true
+
+    for candidate in simulatorExecutableCandidates() {
+      if dlopen(candidate, RTLD_NOW | RTLD_GLOBAL) != nil {
+        StderrLogger.log("SimulatorBridge loaded Simulator private categories from \(candidate).")
+        return
+      }
+    }
+
+    let details = simulatorExecutableCandidates().joined(separator: ", ")
+    StderrLogger.log("SimulatorBridge could not load Simulator private categories. Checked: \(details)")
+  }
+
+  private static func simulatorExecutableCandidates() -> [String] {
+    var candidates: [String] = []
+
+    func appendDeveloperDir(_ value: String?) {
+      guard let value else {
+        return
+      }
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmed.isEmpty == false else {
+        return
+      }
+
+      candidates.append("\(trimmed)/Applications/Simulator.app/Contents/MacOS/Simulator")
+    }
+
+    appendDeveloperDir(ProcessInfo.processInfo.environment["DEVELOPER_DIR"])
+    appendDeveloperDir(ProcessInfo.processInfo.environment["XCODE_DEVELOPER_DIR_PATH"])
+    appendDeveloperDir(resolveDeveloperDirUsingXcodeSelect())
+
+    return Array(NSOrderedSet(array: candidates)) as? [String] ?? candidates
+  }
+
+  private static func resolveDeveloperDirUsingXcodeSelect() -> String? {
+    let process = Process()
+    let output = Pipe()
+
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+    process.arguments = ["-p"]
+    process.standardOutput = output
+    process.standardError = Pipe()
+
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      return nil
+    }
+
+    guard process.terminationStatus == 0 else {
+      return nil
+    }
+
+    return String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+
 private final class NativeSimulatorControlSession {
   private let hid: FBSimulatorHID
   private let control: FBSimulatorControl
@@ -1558,6 +1653,19 @@ private final class NativeSimulatorControlSession {
       _ = try hid.sendButtonEvent(with: .down, button: hidButton).await(withTimeout: 5)
       _ = try hid.sendButtonEvent(with: .up, button: hidButton).await(withTimeout: 5)
     case .systemGesture(let gesture):
+      throw BridgeError.invalidArguments("Unsupported native simulator system gesture: \(gesture)")
+    }
+  }
+
+  func performSystemGesture(_ gesture: String) throws {
+    switch gesture.lowercased() {
+    case "shake":
+      try performNativeShake()
+    case "show_keyboard":
+      try setSoftwareKeyboardVisible(true)
+    case "hide_keyboard":
+      try setSoftwareKeyboardVisible(false)
+    default:
       throw BridgeError.invalidArguments("Unsupported native simulator system gesture: \(gesture)")
     }
   }
@@ -1632,6 +1740,86 @@ private final class NativeSimulatorControlSession {
       ? events[0]
       : FBSimulatorHIDEvent(events: events)
     _ = try event.perform(on: hid).await(withTimeout: 5)
+  }
+
+  private func performNativeShake() throws {
+    SimulatorAppPrivateCategoryLoader.ensureLoaded()
+
+    guard let device = simulator.perform(NSSelectorFromString("device"))?.takeUnretainedValue() as AnyObject? else {
+      throw BridgeError.invalidArguments("Unable to resolve the underlying simulator device for shake.")
+    }
+    if try postNativeDarwinNotification(
+      on: device,
+      name: "com.apple.UIKit.SimulatorShake"
+    ) {
+      return
+    }
+    let selector = NSSelectorFromString("simulateShake")
+    guard device.responds(to: selector) else {
+      throw BridgeError.invalidArguments("Simulator private shake API is unavailable.")
+    }
+
+    _ = device.perform(selector)
+  }
+
+  private func postNativeDarwinNotification(on device: AnyObject, name: String) throws -> Bool {
+    let selector = NSSelectorFromString("postDarwinNotification:error:")
+    guard device.responds(to: selector) else {
+      return false
+    }
+
+    typealias PostDarwinNotification = @convention(c) (
+      AnyObject,
+      Selector,
+      NSString,
+      UnsafeMutablePointer<NSError?>?
+    ) -> Bool
+
+    let implementation = unsafeBitCast(device.method(for: selector), to: PostDarwinNotification.self)
+    var error: NSError?
+    let succeeded = implementation(device, selector, name as NSString, &error)
+    if let error {
+      throw error
+    }
+
+    return succeeded
+  }
+
+  private func setSoftwareKeyboardVisible(_ visible: Bool) throws {
+    SimulatorAppPrivateCategoryLoader.ensureLoaded()
+
+    guard let device = simulator.perform(NSSelectorFromString("device"))?.takeUnretainedValue() as AnyObject? else {
+      throw BridgeError.invalidArguments("Unable to resolve the underlying simulator device for keyboard control.")
+    }
+
+    let selector = NSSelectorFromString("setHardwareKeyboardEnabled:keyboardType:error:")
+    guard device.responds(to: selector) else {
+      throw BridgeError.invalidArguments("Simulator hardware keyboard API is unavailable.")
+    }
+
+    typealias SetHardwareKeyboardEnabled = @convention(c) (
+      AnyObject,
+      Selector,
+      Bool,
+      UInt8,
+      UnsafeMutablePointer<NSError?>?
+    ) -> Bool
+
+    let implementation = unsafeBitCast(device.method(for: selector), to: SetHardwareKeyboardEnabled.self)
+    var error: NSError?
+    let succeeded = implementation(
+      device,
+      selector,
+      !visible,
+      SIMULATOR_HARDWARE_KEYBOARD_TYPE_DEFAULT,
+      &error
+    )
+    if let error {
+      throw error
+    }
+    guard succeeded else {
+      throw BridgeError.invalidArguments("Simulator keyboard toggle was rejected.")
+    }
   }
 }
 #endif
@@ -2053,16 +2241,22 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
 
     enqueueFrame(
       pixelBuffer: pixelBuffer,
-      capturedAtMs: currentUnixTimestampMs()
+      capturedAtMs: currentUnixTimestampMs(),
+      changeRatio: frameChangeRatio(
+        sampleBuffer: sampleBuffer,
+        pixelHeight: CVPixelBufferGetHeight(pixelBuffer),
+        pixelWidth: CVPixelBufferGetWidth(pixelBuffer)
+      )
     )
   }
 
-  private func enqueueFrame(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64) {
+  private func enqueueFrame(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64, changeRatio: Double?) {
     let shouldStartLoop: Bool
 
     frameStateLock.lock()
     latestFrame = PendingVideoFrame(
       capturedAtMs: capturedAtMs,
+      changeRatio: changeRatio,
       pixelBuffer: pixelBuffer
     )
     shouldStartLoop = !encodeLoopRunning
@@ -2110,7 +2304,8 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
         try autoreleasepool {
           try encoder.encode(
             pixelBuffer: nextFrame.pixelBuffer,
-            capturedAtMs: nextFrame.capturedAtMs
+            capturedAtMs: nextFrame.capturedAtMs,
+            changeRatio: nextFrame.changeRatio
           )
         }
       } catch {
@@ -2121,6 +2316,40 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
 
   private func currentUnixTimestampMs() -> UInt64 {
     UInt64(Date().timeIntervalSince1970 * 1000)
+  }
+
+  private func frameChangeRatio(sampleBuffer: CMSampleBuffer, pixelHeight: Int, pixelWidth: Int) -> Double? {
+    guard
+      pixelWidth > 0,
+      pixelHeight > 0,
+      let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+        as? [[SCStreamFrameInfo: Any]],
+      let sampleAttachment = attachments.first,
+      let dirtyRects = sampleAttachment[.dirtyRects] as? [NSValue]
+    else {
+      return nil
+    }
+
+    if dirtyRects.isEmpty {
+      return 0
+    }
+
+    let frameRect = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
+    let frameArea = Double(pixelWidth * pixelHeight)
+    guard frameArea > 0 else {
+      return nil
+    }
+
+    var dirtyArea = 0.0
+    for dirtyRectValue in dirtyRects {
+      let clippedRect = dirtyRectValue.rectValue.intersection(frameRect)
+      if clippedRect.isNull || clippedRect.isEmpty {
+        continue
+      }
+      dirtyArea += Double(clippedRect.width * clippedRect.height)
+    }
+
+    return min(max(dirtyArea / frameArea, 0), 1)
   }
 
   private func installControlInputHandler() {

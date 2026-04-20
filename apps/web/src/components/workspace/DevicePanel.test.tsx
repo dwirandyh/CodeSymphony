@@ -9,6 +9,9 @@ const { useDevicesMock } = vi.hoisted(() => ({
 const { openExternalUrlMock } = vi.hoisted(() => ({
   openExternalUrlMock: vi.fn(),
 }));
+const { supportsAndroidNativeViewerMock } = vi.hoisted(() => ({
+  supportsAndroidNativeViewerMock: vi.fn(),
+}));
 
 const startStream = vi.fn();
 const stopStream = vi.fn();
@@ -37,6 +40,10 @@ vi.mock("./IosSimulatorViewer", () => ({
   ),
 }));
 
+vi.mock("./deviceViewerEnvironment", () => ({
+  supportsAndroidNativeViewer: supportsAndroidNativeViewerMock,
+}));
+
 vi.mock("../../pages/workspace/hooks/useDevices", () => ({
   useDevices: useDevicesMock,
 }));
@@ -49,6 +56,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   vi.clearAllMocks();
+  supportsAndroidNativeViewerMock.mockReturnValue(true);
   useDevicesMock.mockImplementation(() => ({
     snapshot: {
       devices: [
@@ -114,6 +122,19 @@ describe("DevicePanel", () => {
     expect(container.textContent).toContain("iPhone 15 Pro");
     expect(container.querySelector('[data-device-viewer="android-native"]')).toBeTruthy();
     expect(container.querySelector("iframe")).toBeNull();
+  });
+
+  it("falls back to the proxied Android iframe viewer when native decoding is unavailable", () => {
+    supportsAndroidNativeViewerMock.mockReturnValue(false);
+
+    act(() => {
+      root.render(<DevicePanel onClose={() => {}} />);
+    });
+
+    const iframe = container.querySelector("iframe");
+    expect(container.querySelector('[data-device-viewer="android-native"]')).toBeNull();
+    expect(iframe).toBeTruthy();
+    expect(iframe?.getAttribute("src")).toBe("http://127.0.0.1:4331/api/device-streams/stream-1/viewer");
   });
 
   it("calls onClose when the close button is clicked", () => {
