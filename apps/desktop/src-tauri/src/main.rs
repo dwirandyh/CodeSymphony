@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, Url};
 
 #[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
 struct RuntimeProcess(Mutex<Option<Child>>);
@@ -23,6 +25,88 @@ fn desktop_runtime_host(is_dev: bool) -> &'static str {
     } else {
         LAN_RUNTIME_HOST
     }
+}
+
+fn prisma_engine_suffix() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "darwin-arm64",
+        "x86_64" => "darwin",
+        _ => "darwin-arm64",
+    }
+}
+
+fn prisma_query_engine_library_name() -> String {
+    format!("libquery_engine-{}.dylib.node", prisma_engine_suffix())
+}
+
+fn prisma_schema_engine_name() -> String {
+    format!("schema-engine-{}", prisma_engine_suffix())
+}
+
+fn copy_prisma_engine(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::copy(src, dst)?;
+
+    #[cfg(unix)]
+    {
+        let mode = std::fs::metadata(src)?.permissions().mode();
+        std::fs::set_permissions(dst, std::fs::Permissions::from_mode(mode))?;
+    }
+
+    Ok(())
+}
+
+fn prepare_prisma_engines(
+    resource_dir: &Path,
+    app_data_dir: &Path,
+) -> Option<(PathBuf, PathBuf, PathBuf)> {
+    let bundled_engines_dir = resource_dir
+        .join("runtime-bundle")
+        .join("node_modules")
+        .join("@prisma")
+        .join("engines");
+    let writable_engines_dir = app_data_dir.join("prisma-engines");
+    let query_engine_name = prisma_query_engine_library_name();
+    let schema_engine_name = prisma_schema_engine_name();
+    let bundled_query_engine = bundled_engines_dir.join(&query_engine_name);
+    let bundled_schema_engine = bundled_engines_dir.join(&schema_engine_name);
+    let writable_query_engine = writable_engines_dir.join(&query_engine_name);
+    let writable_schema_engine = writable_engines_dir.join(&schema_engine_name);
+
+    if let Err(error) = std::fs::create_dir_all(&writable_engines_dir) {
+        eprintln!(
+            "Failed to create writable Prisma engines directory ({}): {error}",
+            writable_engines_dir.display()
+        );
+        return None;
+    }
+
+    for (src, dst) in [
+        (&bundled_query_engine, &writable_query_engine),
+        (&bundled_schema_engine, &writable_schema_engine),
+    ] {
+        if !src.is_file() {
+            eprintln!(
+                "Bundled Prisma engine not found at expected path: {}",
+                src.display()
+            );
+            return None;
+        }
+
+        if let Err(error) = copy_prisma_engine(src, dst) {
+            eprintln!(
+                "Failed to copy Prisma engine from {} to {}: {error}",
+                src.display(),
+                dst.display()
+            );
+            return None;
+        }
+    }
+
+    Some((
+        writable_engines_dir,
+        writable_query_engine,
+        writable_schema_engine,
+    ))
 }
 
 fn find_node_candidate(dir: &Path) -> Option<PathBuf> {
@@ -217,6 +301,12 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         return None;
     }
 
+    let (prisma_engines_dir, prisma_query_engine_library, prisma_schema_engine_binary) =
+        match prepare_prisma_engines(&resource_dir, &app_data_dir) {
+            Some(paths) => paths,
+            None => return None,
+        };
+
     let mut cmd = Command::new(&node_bin);
     cmd.arg(&runtime_entry)
         .current_dir(&runtime_bundle_dir)
@@ -224,6 +314,9 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         .env("DATABASE_URL", format!("file:{}", db_path.display()))
         .env("PRISMA_SCHEMA_PATH", prisma_dir.join("schema.prisma"))
         .env("PRISMA_MIGRATIONS_DIR", prisma_dir.join("migrations"))
+        .env("PRISMA_ENGINES_DIR", &prisma_engines_dir)
+        .env("PRISMA_QUERY_ENGINE_LIBRARY", &prisma_query_engine_library)
+        .env("PRISMA_SCHEMA_ENGINE_BINARY", &prisma_schema_engine_binary)
         .env("RUNTIME_HOST", desktop_runtime_host(false))
         .env("RUNTIME_PORT", port.to_string())
         .env("CODESYMPHONY_DEBUG_LOG_PATH", &debug_log_path)

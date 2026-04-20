@@ -83,7 +83,7 @@ const MACOS_SCREEN_RECORDING_SETTINGS_URL = "x-apple.systempreferences:com.apple
 
 function normalizeIssueMessage(issue: DeviceIssue): string {
   if (issue.platform === "ios-simulator" && /declined TCCs/i.test(issue.message)) {
-    return "Grant Screen Recording to CodeSymphony in System Settings > Privacy & Security > Screen & System Audio Recording, then reconnect the stream.";
+    return "Grant Screen Recording to CodeSymphony in System Settings > Privacy & Security > Screen & System Audio Recording, then fully quit and reopen the app before reconnecting the stream.";
   }
 
   return issue.message

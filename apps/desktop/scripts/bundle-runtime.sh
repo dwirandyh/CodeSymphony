@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DESKTOP_DIR="${SCRIPT_DIR}/.."
 WORKSPACE_ROOT="${DESKTOP_DIR}/../.."
 BUNDLE_DIR="$(cd "${DESKTOP_DIR}/src-tauri" && pwd)/runtime-bundle"
+SIGN_MACOS_BINARIES_SCRIPT="${SCRIPT_DIR}/sign-macos-binaries.sh"
 
 echo "=== Building shared-types ==="
 pnpm --filter @codesymphony/shared-types build
@@ -110,10 +111,71 @@ copy_dependency() {
   done
 )
 
+echo "=== Priming Prisma engines ==="
+PRISMA_ENGINE_SUFFIX=""
+case "$(uname -m)" in
+  arm64)
+    PRISMA_ENGINE_SUFFIX="darwin-arm64"
+    ;;
+  x86_64)
+    PRISMA_ENGINE_SUFFIX="darwin"
+    ;;
+  *)
+    echo "Unsupported macOS architecture for Prisma engine bundling: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+find_engine_file() {
+  local filename="$1"
+  local -a candidates=()
+  local candidate
+
+  shopt -s nullglob
+  candidates=(
+    "${WORKSPACE_ROOT}"/node_modules/.pnpm/@prisma+engines@*/node_modules/@prisma/engines/"${filename}"
+    "${WORKSPACE_ROOT}"/node_modules/.pnpm/prisma@*/node_modules/prisma/"${filename}"
+    "${WORKSPACE_ROOT}"/node_modules/.pnpm/@prisma+client@*/node_modules/.prisma/client/"${filename}"
+    "${BUNDLE_DIR}"/node_modules/.pnpm/@prisma+engines@*/node_modules/@prisma/engines/"${filename}"
+    "${BUNDLE_DIR}"/node_modules/.prisma/client/"${filename}"
+  )
+  shopt -u nullglob
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+QUERY_ENGINE_FILENAME="libquery_engine-${PRISMA_ENGINE_SUFFIX}.dylib.node"
+SCHEMA_ENGINE_FILENAME="schema-engine-${PRISMA_ENGINE_SUFFIX}"
+PRISMA_ENGINES_DIR="${NODE_MODULES_DIR}/@prisma/engines"
+
+mkdir -p "${PRISMA_ENGINES_DIR}"
+
+QUERY_ENGINE_SOURCE="$(find_engine_file "${QUERY_ENGINE_FILENAME}")"
+SCHEMA_ENGINE_SOURCE="$(find_engine_file "${SCHEMA_ENGINE_FILENAME}")"
+
+if [[ -z "${QUERY_ENGINE_SOURCE}" || -z "${SCHEMA_ENGINE_SOURCE}" ]]; then
+  echo "Failed to locate Prisma macOS engines for ${PRISMA_ENGINE_SUFFIX}" >&2
+  exit 1
+fi
+
+cp -f "${QUERY_ENGINE_SOURCE}" "${PRISMA_ENGINES_DIR}/${QUERY_ENGINE_FILENAME}"
+cp -f "${SCHEMA_ENGINE_SOURCE}" "${PRISMA_ENGINES_DIR}/${SCHEMA_ENGINE_FILENAME}"
+chmod +x "${PRISMA_ENGINES_DIR}/${QUERY_ENGINE_FILENAME}" "${PRISMA_ENGINES_DIR}/${SCHEMA_ENGINE_FILENAME}"
+
 echo "=== Fixing node-pty permissions ==="
 # node-pty v1.x uses prebuilds/<platform>/spawn-helper
 # Search the entire bundle to catch all copies (.pnpm, hoisted, scoped)
 find "${BUNDLE_DIR}/node_modules" -name "spawn-helper" -exec chmod +x {} \; -exec echo "✓ Fixed permissions: {}" \;
+
+echo "=== Signing bundled macOS native binaries ==="
+bash "${SIGN_MACOS_BINARIES_SCRIPT}" "${BUNDLE_DIR}"
 
 echo "=== Runtime bundle ready at ${BUNDLE_DIR} ==="
 du -sh "${BUNDLE_DIR}"

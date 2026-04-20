@@ -145,6 +145,15 @@ pnpm dev:desktop
 - Desktop dev web URL (used by Tauri): `http://127.0.0.1:5174`
 - The packaged desktop bundle now includes the Android `ws-scrcpy` sidecar under `runtime-bundle/android-ws-scrcpy`, so the macOS app can auto-start Android streaming without depending on the workspace `scripts/` directory.
 
+Desktop release build:
+
+```bash
+APPLE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" pnpm --filter @codesymphony/desktop build:app
+```
+
+- Set `APPLE_SIGNING_IDENTITY` (or `CODESYMPHONY_MACOS_SIGN_IDENTITY`) to a valid macOS signing identity before building release bundles.
+- Use `pnpm --filter @codesymphony/desktop build:app:adhoc` only for local-only ad-hoc builds; TCC-sensitive features like Screen Recording can fail on ad-hoc signed apps.
+
 ## Makefile Shortcuts
 
 ```bash

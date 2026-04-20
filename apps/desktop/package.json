@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && tauri build",
-    "build:app": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && tauri build -b app && bash scripts/resign-app.sh",
+    "build": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && bash scripts/build-tauri.sh",
+    "build:adhoc": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && CODESYMPHONY_ALLOW_ADHOC_SIGNING=1 bash scripts/build-tauri.sh",
+    "build:app": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && bash scripts/build-tauri.sh -b app",
+    "build:app:adhoc": "bash scripts/download-node.sh && bash scripts/bundle-runtime.sh && CODESYMPHONY_ALLOW_ADHOC_SIGNING=1 bash scripts/build-tauri.sh -b app",
     "resign:app": "bash scripts/resign-app.sh"
   },
   "devDependencies": {
