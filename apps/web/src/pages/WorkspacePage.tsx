@@ -28,6 +28,9 @@ const MobileGitSheet = lazy(() =>
 const MobileMoreSheet = lazy(() =>
   import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileMoreSheet }))
 );
+const DevicePanel = lazy(() =>
+  import("../components/workspace/DevicePanel").then(m => ({ default: m.DevicePanel }))
+);
 const MobileSavePill = lazy(() =>
   import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileSavePill }))
 );
@@ -106,7 +109,7 @@ type BottomPanelWorktreeState = {
   collapsed: boolean;
 };
 
-type MobileInlinePanel = "files" | "git" | "more" | "utilities";
+type MobileInlinePanel = "files" | "git" | "more" | "utilities" | "device";
 type MobilePanelState = "repos" | MobileInlinePanel | null;
 type MobileReposOrigin = {
   panel: MobileInlinePanel | null;
@@ -568,7 +571,7 @@ export function WorkspacePage() {
   const [mobilePanelOpen, setMobilePanelOpen] = useState<MobilePanelState>(null);
   const [mobileReposOrigin, setMobileReposOrigin] = useState<MobileReposOrigin | null>(null);
   const [mobileKeyboardOffset, setMobileKeyboardOffset] = useState(0);
-  const activeMobileSection: "chat" | "files" | "git" | "more" = mobilePanelOpen === "more" || mobilePanelOpen === "utilities"
+  const activeMobileSection: "chat" | "files" | "git" | "more" = mobilePanelOpen === "more" || mobilePanelOpen === "utilities" || mobilePanelOpen === "device"
     ? "more"
     : mobilePanelOpen === "files"
       ? "files"
@@ -578,7 +581,8 @@ export function WorkspacePage() {
   const mobileInlinePanel = mobilePanelOpen === "files"
     || mobilePanelOpen === "git"
     || mobilePanelOpen === "more"
-    || mobilePanelOpen === "utilities";
+    || mobilePanelOpen === "utilities"
+    || mobilePanelOpen === "device";
   const mobileUtilitiesFullscreen = mobilePanelOpen === "utilities";
   const mobileTitle = mobilePanelOpen === "files"
     ? "Files"
@@ -588,6 +592,8 @@ export function WorkspacePage() {
         ? "More"
         : mobilePanelOpen === "utilities"
           ? "Utilities"
+          : mobilePanelOpen === "device"
+            ? "Devices"
           : activeView === "file"
             ? labelFromPath(activeFilePath)
             : activeView === "review"
@@ -598,7 +604,7 @@ export function WorkspacePage() {
     : "No repository selected";
 
   const captureMobileReposOrigin = useCallback((): MobileReposOrigin => ({
-    panel: mobilePanelOpen === "files" || mobilePanelOpen === "git" || mobilePanelOpen === "more" || mobilePanelOpen === "utilities"
+    panel: mobilePanelOpen === "files" || mobilePanelOpen === "git" || mobilePanelOpen === "more" || mobilePanelOpen === "utilities" || mobilePanelOpen === "device"
       ? mobilePanelOpen
       : null,
     view: activeView === "file" || activeView === "review" ? activeView : "chat",
@@ -882,6 +888,10 @@ export function WorkspacePage() {
 
   const handleOpenMobileMore = useCallback(() => {
     setMobilePanelOpen("more");
+  }, []);
+
+  const handleOpenMobileDevices = useCallback(() => {
+    setMobilePanelOpen("device");
   }, []);
 
   const handleOpenMobileUtilities = useCallback((tab: string) => {
@@ -1401,12 +1411,19 @@ export function WorkspacePage() {
                     hasWorktree={!!repos.selectedWorktreeId}
                     runScriptActive={selectedBottomPanelState.runScriptActive}
                     onOpenRepositories={handleOpenMobileRepositories}
+                    onOpenDevices={handleOpenMobileDevices}
                     onOpenSettings={() => {
                       setMobilePanelOpen(null);
                       setSettingsOpen(true);
                     }}
                     onOpenUtility={(tab) => handleOpenMobileUtilities(tab)}
                   />
+                </Suspense>
+              </section>
+            ) : mobilePanelOpen === "device" ? (
+              <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
+                <Suspense fallback={null}>
+                  <DevicePanel onClose={() => setMobilePanelOpen(null)} />
                 </Suspense>
               </section>
             ) : mobilePanelOpen === "utilities" ? (

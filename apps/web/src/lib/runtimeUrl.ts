@@ -53,11 +53,19 @@ function getWebDevPort(viteEnv: { VITE_DEV_PORT?: string }): string {
   return viteEnv.VITE_DEV_PORT ?? "5173";
 }
 
+function looksLikeViteDevPort(port: string): boolean {
+  const parsed = Number(port);
+  return Number.isInteger(parsed) && parsed >= 5173 && parsed < 5300;
+}
+
 function isWebDevServerWindow(
   windowRef: Window,
   viteEnv: { VITE_DEV_PORT?: string; DEV?: boolean },
 ): boolean {
-  if (windowRef.location.port === getWebDevPort(viteEnv)) {
+  if (
+    windowRef.location.port === getWebDevPort(viteEnv)
+    || looksLikeViteDevPort(windowRef.location.port)
+  ) {
     return true;
   }
 

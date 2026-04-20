@@ -104,6 +104,24 @@ describe("resolveRuntimeApiBase", () => {
     ]);
   });
 
+  it("uses runtime port for fallback vite ports even without explicit env hints", async () => {
+    vi.stubGlobal("window", {
+      location: {
+        protocol: "http:",
+        hostname: "127.0.0.1",
+        origin: "http://127.0.0.1:5175",
+        port: "5175",
+      },
+    } as Window);
+
+    const mod = await import("./runtimeUrl");
+    expect(mod.resolveRuntimeApiBase()).toBe("http://127.0.0.1:4331/api");
+    expect(mod.resolveRuntimeApiBases()).toEqual([
+      "http://127.0.0.1:4331/api",
+      "http://127.0.0.1:4321/api",
+    ]);
+  });
+
   it("uses same-origin api when not on the web dev server port", async () => {
     vi.stubGlobal("window", {
       location: {
