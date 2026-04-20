@@ -94,6 +94,7 @@ const IOS_LIVE_CALIBRATION_SAMPLE_WIDTH = 28;
 const IOS_LIVE_CALIBRATION_ATTEMPT_INTERVAL_MS = 650;
 const IOS_LIVE_CALIBRATION_RETRY_DELAY_MS = 900;
 const IOS_LIVE_ALIGNMENT_ASPECT_TOLERANCE = 0.012;
+const IOS_MAX_RENDER_PIXEL_RATIO = 2;
 const VIDEO_CHUNK_INTERVAL_US = 16_667;
 const IOS_SPECIAL_KEY_MAP: Record<string, string> = {
   Backspace: "DELETE",
@@ -440,6 +441,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const containerRef = useRef<HTMLDivElement | null>(null);
   const keyboardInputRef = useRef<HTMLTextAreaElement | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
+  const containerSizeRef = useRef({ height: 0, width: 0 });
+  const canvasLayoutRef = useRef({
+    displayHeight: 0,
+    displayWidth: 0,
+    renderHeight: 0,
+    renderWidth: 0,
+  });
   const pointSizeRef = useRef({ height: 844, width: 390 });
   const framePixelSizeRef = useRef({ height: 844, width: 390 });
   const rawFrameCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -533,13 +541,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     frameWidth: number,
   ) => {
     const viewport = getVisibleViewport(frameHeight, frameWidth);
-    const container = containerRef.current;
-    const boundsWidth = Math.max(container?.clientWidth ?? viewport.width, 1);
-    const boundsHeight = Math.max(container?.clientHeight ?? viewport.height, 1);
+    const containerSize = containerSizeRef.current;
+    const boundsWidth = Math.max(containerSize.width || containerRef.current?.clientWidth || viewport.width, 1);
+    const boundsHeight = Math.max(containerSize.height || containerRef.current?.clientHeight || viewport.height, 1);
     const displayBox = getContainedContentBox(boundsHeight, boundsWidth, viewport.height, viewport.width);
     const displayWidth = Math.max(Math.round(displayBox.width), 1);
     const displayHeight = Math.max(Math.round(displayBox.height), 1);
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, IOS_MAX_RENDER_PIXEL_RATIO);
     const renderWidth = Math.max(Math.round(displayWidth * pixelRatio), 1);
     const renderHeight = Math.max(Math.round(displayHeight * pixelRatio), 1);
     const canvas = canvasRef.current;
@@ -547,16 +555,21 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       return;
     }
 
-    if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
+    const canvasLayout = canvasLayoutRef.current;
+    if (canvasLayout.renderWidth !== renderWidth || canvasLayout.renderHeight !== renderHeight) {
       canvas.width = renderWidth;
       canvas.height = renderHeight;
+      canvasLayout.renderWidth = renderWidth;
+      canvasLayout.renderHeight = renderHeight;
     }
 
-    if (canvas.style.width !== `${displayWidth}px`) {
+    if (canvasLayout.displayWidth !== displayWidth) {
       canvas.style.width = `${displayWidth}px`;
+      canvasLayout.displayWidth = displayWidth;
     }
-    if (canvas.style.height !== `${displayHeight}px`) {
+    if (canvasLayout.displayHeight !== displayHeight) {
       canvas.style.height = `${displayHeight}px`;
+      canvasLayout.displayHeight = displayHeight;
     }
 
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
@@ -751,6 +764,40 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   }, [urls.status]);
 
   useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateContainerSize = () => {
+      containerSizeRef.current = {
+        height: Math.max(container.clientHeight, 1),
+        width: Math.max(container.clientWidth, 1),
+      };
+      redrawLiveFrameRef.current?.();
+    };
+
+    updateContainerSize();
+    window.addEventListener("resize", updateContainerSize);
+
+    if (typeof ResizeObserver !== "function") {
+      return () => {
+        window.removeEventListener("resize", updateContainerSize);
+      };
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateContainerSize();
+    });
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateContainerSize);
+    };
+  }, []);
+
+  useEffect(() => {
     const closeExistingSocket = () => {
       const existing = controlSocketRef.current;
       controlSocketRef.current = null;
@@ -931,32 +978,36 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         width: pixelWidth,
       };
 
-      const rawFrameSurface = ensureRawFrameSurface(pixelHeight, pixelWidth);
-      if (!rawFrameSurface) {
-        release?.();
-        if (!hasFrameRef.current) {
-          setConnectionState("error");
-          setError("Unable to initialize the iOS stream.");
-        }
-        return;
-      }
-
-      rawFrameSurface.rawContext.drawImage(source, 0, 0, pixelWidth, pixelHeight);
-
       if (frameAlreadyAligned) {
         liveViewportRef.current = null;
         liveCalibrationKeyRef.current = calibrationKey;
         if (!liveViewportAlignedRef.current) {
           updateLiveViewportAligned(true);
         }
-      } else if (liveCalibrationKeyRef.current !== calibrationKey) {
-        void recalibrateLiveViewport();
+        redrawLiveFrameRef.current = null;
+        drawLiveSourceToCanvas(context, source, pixelHeight, pixelWidth);
+      } else {
+        const rawFrameSurface = ensureRawFrameSurface(pixelHeight, pixelWidth);
+        if (!rawFrameSurface) {
+          release?.();
+          if (!hasFrameRef.current) {
+            setConnectionState("error");
+            setError("Unable to initialize the iOS stream.");
+          }
+          return;
+        }
+
+        rawFrameSurface.rawContext.drawImage(source, 0, 0, pixelWidth, pixelHeight);
+
+        redrawLiveFrameRef.current = () => {
+          drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
+        };
+        redrawLiveFrameRef.current();
       }
 
-      redrawLiveFrameRef.current = () => {
-        drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
-      };
-      redrawLiveFrameRef.current();
+      if (!frameAlreadyAligned && liveCalibrationKeyRef.current !== calibrationKey) {
+        void recalibrateLiveViewport();
+      }
       release?.();
 
       metrics.markFrame({
@@ -997,8 +1048,9 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       receivedAtMs: number;
     }) => {
       jpegDecodeInFlight = true;
-      const jpegBytes = new Uint8Array(frame.payload.byteLength);
-      jpegBytes.set(frame.payload);
+      const jpegBytes = frame.payload.buffer instanceof ArrayBuffer
+        ? new Uint8Array(frame.payload.buffer, frame.payload.byteOffset, frame.payload.byteLength)
+        : frame.payload.slice();
       void createImageBitmap(new Blob([jpegBytes], { type: "image/jpeg" }))
         .then((bitmap) => {
           if (disposed) {
