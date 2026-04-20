@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -58,13 +59,21 @@ private struct StatusCommand {
   let udid: String
 }
 
+private struct DragPathPoint {
+  let delayMs: Double
+  let x: Double
+  let y: Double
+}
+
 private enum ControlAction {
   case tap(x: Double, y: Double)
   case touch(x: Double, y: Double, phase: String)
-  case swipe(startX: Double, startY: Double, endX: Double, endY: Double, duration: Double)
+  case drag(phase: String, points: [DragPathPoint])
+  case swipe(startX: Double, startY: Double, endX: Double, endY: Double, duration: Double, delta: Double?)
   case text(String)
   case key(String, duration: Double?)
   case button(String)
+  case systemGesture(String)
 }
 
 private struct ControlCommand {
@@ -100,7 +109,7 @@ private enum BridgeCommand {
     Usage:
       SimulatorBridge stream --udid <SIMULATOR_UDID> [--fps 60]
       SimulatorBridge status --udid <SIMULATOR_UDID>
-      SimulatorBridge control --udid <SIMULATOR_UDID> --action <tap|touch|swipe|text|key|button> [options]
+      SimulatorBridge control --udid <SIMULATOR_UDID> --action <tap|touch|drag|swipe|text|key|button|system> [options]
     """
 
   private static func parseStreamCommand(arguments args: [String]) throws -> StreamCommand {
@@ -210,6 +219,15 @@ private enum BridgeCommand {
         throw BridgeError.invalidArguments("touch requires --phase <down|up>.")
       }
       action = .touch(x: x, y: y, phase: phase)
+    case "drag":
+      let phase = values["phase"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+      guard phase == "start" || phase == "move" || phase == "end" else {
+        throw BridgeError.invalidArguments("drag requires --phase <start|move|end>.")
+      }
+      guard let pointsJson = values["points-json"] else {
+        throw BridgeError.invalidArguments("drag requires --points-json <json-array>.")
+      }
+      action = .drag(phase: phase, points: try parseDragPoints(pointsJson))
     case "swipe":
       guard
         let startX = values["start-x"].flatMap(Double.init),
@@ -223,7 +241,15 @@ private enum BridgeCommand {
       }
 
       let duration = values["duration"].flatMap(Double.init) ?? 0.2
-      action = .swipe(startX: startX, startY: startY, endX: endX, endY: endY, duration: duration)
+      let delta = values["delta"].flatMap(Double.init)
+      action = .swipe(
+        startX: startX,
+        startY: startY,
+        endX: endX,
+        endY: endY,
+        duration: duration,
+        delta: delta
+      )
     case "text":
       guard let text = values["text"] else {
         throw BridgeError.invalidArguments("text requires --text <value>.")
@@ -239,11 +265,53 @@ private enum BridgeCommand {
         throw BridgeError.invalidArguments("button requires --button <home|lock>.")
       }
       action = .button(button)
+    case "system":
+      guard let name = values["name"] else {
+        throw BridgeError.invalidArguments("system requires --name <app_switcher>.")
+      }
+      action = .systemGesture(name)
     default:
       throw BridgeError.invalidArguments("Unsupported control action: \(actionName)")
     }
 
     return ControlCommand(udid: udid, action: action)
+  }
+
+  private static func parseDragPoints(_ json: String) throws -> [DragPathPoint] {
+    guard let data = json.data(using: .utf8) else {
+      throw BridgeError.invalidArguments("drag points json is not valid UTF-8.")
+    }
+
+    guard let rawPoints = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+      throw BridgeError.invalidArguments("drag points json must be an array of point objects.")
+    }
+
+    return try rawPoints.map { rawPoint in
+      let x = try readNumericValue(rawPoint, key: "x", context: "drag point")
+      let y = try readNumericValue(rawPoint, key: "y", context: "drag point")
+      let delayMs = readOptionalNumericValue(rawPoint, key: "delay_ms") ?? 0
+      return DragPathPoint(delayMs: delayMs, x: x, y: y)
+    }
+  }
+
+  private static func readNumericValue(_ payload: [String: Any], key: String, context: String) throws -> Double {
+    if let value = payload[key] as? NSNumber {
+      return value.doubleValue
+    }
+    if let value = payload[key] as? String, let parsed = Double(value) {
+      return parsed
+    }
+    throw BridgeError.invalidArguments("Missing numeric \(context) field: \(key)")
+  }
+
+  private static func readOptionalNumericValue(_ payload: [String: Any], key: String) -> Double? {
+    if let value = payload[key] as? NSNumber {
+      return value.doubleValue
+    }
+    if let value = payload[key] as? String {
+      return Double(value)
+    }
+    return nil
   }
 }
 
@@ -314,6 +382,7 @@ private enum DeviceProfile {
 }
 
 private struct SimulatorWindowMatch {
+  let captureRect: CGRect
   let captureDisplay: SCDisplay
   let device: BootedSimulator
   let absoluteDisplayRect: CGRect
@@ -378,6 +447,13 @@ private final class PacketWriter {
 
     try fileHandle.write(contentsOf: buffer)
   }
+
+  func sendFrame(type: BridgePacketType, payload: Data, capturedAtMs: UInt64) throws {
+    var capturedAtMsBigEndian = capturedAtMs.bigEndian
+    var framedPayload = Data(bytes: &capturedAtMsBigEndian, count: MemoryLayout<UInt64>.size)
+    framedPayload.append(payload)
+    try send(type: type, payload: framedPayload)
+  }
 }
 
 private enum StderrLogger {
@@ -388,6 +464,80 @@ private enum StderrLogger {
 
     FileHandle.standardError.write(data)
   }
+}
+
+private final class EncodedFrameContext {
+  let capturedAtMs: UInt64
+
+  init(capturedAtMs: UInt64) {
+    self.capturedAtMs = capturedAtMs
+  }
+}
+
+private struct PendingVideoFrame {
+  let capturedAtMs: UInt64
+  let pixelBuffer: CVPixelBuffer
+}
+
+private final class JpegEncoder {
+  private let writer: PacketWriter
+  private let deviceName: String
+  private let pointHeight: Int
+  private let pointWidth: Int
+  private let udid: String
+  private let ciContext = CIContext()
+  private let colorSpace = CGColorSpaceCreateDeviceRGB()
+  private let compressionQuality = 0.9
+
+  private var lastMetadataSignature = ""
+
+  init(deviceName: String, pointHeight: Int, pointWidth: Int, udid: String, writer: PacketWriter) {
+    self.deviceName = deviceName
+    self.pointHeight = pointHeight
+    self.pointWidth = pointWidth
+    self.udid = udid
+    self.writer = writer
+  }
+
+  func encode(sampleBuffer: CMSampleBuffer, capturedAtMs: UInt64) throws {
+    guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+      return
+    }
+
+    try encode(pixelBuffer: pixelBuffer, capturedAtMs: capturedAtMs)
+  }
+
+  func encode(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64) throws {
+    let width = max(CVPixelBufferGetWidth(pixelBuffer), 1)
+    let height = max(CVPixelBufferGetHeight(pixelBuffer), 1)
+    let metadataSignature = "jpeg:\(width)x\(height)"
+
+    if metadataSignature != lastMetadataSignature {
+      lastMetadataSignature = metadataSignature
+      try writer.sendJSON(StreamMetadata(
+        codec: "jpeg",
+        deviceName: deviceName,
+        pointHeight: pointHeight,
+        pointWidth: pointWidth,
+        pixelHeight: height,
+        pixelWidth: width,
+        udid: udid
+      ))
+    }
+
+    let image = CIImage(cvPixelBuffer: pixelBuffer)
+    guard let jpegData = ciContext.jpegRepresentation(
+      of: image,
+      colorSpace: colorSpace,
+      options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: compressionQuality]
+    ) else {
+      throw BridgeError.failedToCreateEncoder
+    }
+
+    try writer.sendFrame(type: .keyFrame, payload: jpegData as Data, capturedAtMs: capturedAtMs)
+  }
+
+  func finish() {}
 }
 
 private final class SignalTrap {
@@ -475,6 +625,7 @@ private enum SimulatorDiscovery {
     }
 
     return SimulatorWindowMatch(
+      captureRect: captureRect,
       captureDisplay: captureDisplay,
       device: device,
       absoluteDisplayRect: absoluteDisplayRect,
@@ -931,13 +1082,23 @@ private enum ControlMessageParser {
         y: try readNumber(payload, key: "y"),
         phase: phase
       )
+    case "drag":
+      let phase = try readString(payload, key: "phase").lowercased()
+      guard phase == "start" || phase == "move" || phase == "end" else {
+        throw BridgeError.invalidArguments("drag requires phase start, move, or end.")
+      }
+      return .drag(
+        phase: phase,
+        points: try readDragPoints(payload, key: "points")
+      )
     case "swipe":
       return .swipe(
         startX: try readNumber(payload, key: "start_x"),
         startY: try readNumber(payload, key: "start_y"),
         endX: try readNumber(payload, key: "end_x"),
         endY: try readNumber(payload, key: "end_y"),
-        duration: min(max(readOptionalNumber(payload, key: "duration") ?? 0.2, 0.08), 0.8)
+        duration: min(max(readOptionalNumber(payload, key: "duration") ?? 0.2, 0.08), 0.8),
+        delta: readOptionalNumber(payload, key: "delta")
       )
     case "text":
       return .text(try readString(payload, key: "text"))
@@ -948,6 +1109,8 @@ private enum ControlMessageParser {
       )
     case "button":
       return .button(try readString(payload, key: "button"))
+    case "system":
+      return .systemGesture(try readString(payload, key: "name"))
     default:
       throw BridgeError.invalidArguments("Unsupported streamed control action: \(actionName)")
     }
@@ -978,6 +1141,20 @@ private enum ControlMessageParser {
       return value
     }
     throw BridgeError.invalidArguments("Missing string streamed control field: \(key)")
+  }
+
+  private static func readDragPoints(_ payload: [String: Any], key: String) throws -> [DragPathPoint] {
+    guard let rawPoints = payload[key] as? [[String: Any]] else {
+      throw BridgeError.invalidArguments("Missing drag points array.")
+    }
+
+    return try rawPoints.map { rawPoint in
+      DragPathPoint(
+        delayMs: max(readOptionalNumber(rawPoint, key: "delay_ms") ?? 0, 0),
+        x: try readNumber(rawPoint, key: "x"),
+        y: try readNumber(rawPoint, key: "y")
+      )
+    }
   }
 }
 
@@ -1018,6 +1195,11 @@ private final class SimulatorControlExecutor {
   }
 
   func perform(_ action: ControlAction) throws {
+    if case .systemGesture(let gesture) = action {
+      try performSystemGesture(gesture)
+      return
+    }
+
     prepareForStreaming()
 
     #if canImport(FBControlCore) && canImport(FBSimulatorControl)
@@ -1032,13 +1214,16 @@ private final class SimulatorControlExecutor {
       try performTap(x: x, y: y)
     case .touch(let x, let y, let phase):
       try performTouch(x: x, y: y, phase: phase)
-    case .swipe(let startX, let startY, let endX, let endY, let duration):
+    case .drag(let phase, let points):
+      try performDrag(phase: phase, points: points)
+    case .swipe(let startX, let startY, let endX, let endY, let duration, let delta):
       try performSwipe(
         startX: startX,
         startY: startY,
         endX: endX,
         endY: endY,
-        duration: duration
+        duration: duration,
+        delta: delta
       )
     case .text(let text):
       try performText(text)
@@ -1046,6 +1231,8 @@ private final class SimulatorControlExecutor {
       try performNamedKey(key, duration: duration)
     case .button(let button):
       try performButton(button)
+    case .systemGesture:
+      break
     }
   }
 
@@ -1064,6 +1251,32 @@ private final class SimulatorControlExecutor {
       let stderr = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       let detail = stderr?.isEmpty == false ? stderr! : "axe exited with status \(process.terminationStatus)"
+      throw BridgeError.invalidArguments(detail)
+    }
+  }
+
+  private func runAppleScript(lines: [String]) throws {
+    let process = Process()
+    let output = Pipe()
+    let error = Pipe()
+
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = lines.flatMap { ["-e", $0] }
+    process.standardOutput = output
+    process.standardError = error
+
+    try process.run()
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+      let stdout = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let stderr = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let detail = [stderr, stdout]
+        .compactMap { $0 }
+        .first(where: { $0.isEmpty == false })
+        ?? "osascript exited with status \(process.terminationStatus)"
       throw BridgeError.invalidArguments(detail)
     }
   }
@@ -1120,14 +1333,57 @@ private final class SimulatorControlExecutor {
     try runAxe(arguments: arguments)
   }
 
+  private func performDrag(phase: String, points: [DragPathPoint]) throws {
+    var arguments = [
+      "batch",
+      "--udid",
+      udid,
+    ]
+
+    var remainingPoints = points
+    if (phase == "start" || phase == "move"), let firstPoint = remainingPoints.first {
+      arguments += [
+        "--step",
+        "touch -x \(coordinateString(firstPoint.x)) -y \(coordinateString(firstPoint.y)) --down",
+      ]
+      remainingPoints.removeFirst()
+    }
+
+    for point in remainingPoints {
+      if point.delayMs > 0 {
+        arguments += ["--step", "sleep \(String(format: "%.4f", point.delayMs / 1000))"]
+      }
+      let touchPhase = phase == "end" && point.x == remainingPoints.last?.x && point.y == remainingPoints.last?.y
+        ? "--up"
+        : "--down"
+      arguments += [
+        "--step",
+        "touch -x \(coordinateString(point.x)) -y \(coordinateString(point.y)) \(touchPhase)",
+      ]
+    }
+
+    if phase == "end", let lastPoint = points.last {
+      let hasUpStep = arguments.contains { $0.contains("--up") }
+      if !hasUpStep {
+        arguments += [
+          "--step",
+          "touch -x \(coordinateString(lastPoint.x)) -y \(coordinateString(lastPoint.y)) --up",
+        ]
+      }
+    }
+
+    try runAxe(arguments: arguments)
+  }
+
   private func performSwipe(
     startX: Double,
     startY: Double,
     endX: Double,
     endY: Double,
-    duration: Double
+    duration: Double,
+    delta: Double?
   ) throws {
-    try runAxe(arguments: [
+    var arguments = [
       "swipe",
       "--start-x",
       coordinateString(startX),
@@ -1139,9 +1395,16 @@ private final class SimulatorControlExecutor {
       coordinateString(endY),
       "--duration",
       String(min(max(duration, 0.08), 0.8)),
+    ]
+    if let delta {
+      arguments += ["--delta", String(min(max(delta, 2), 12))]
+    }
+    arguments += [
       "--udid",
       udid,
-    ])
+    ]
+
+    try runAxe(arguments: arguments)
   }
 
   private func performText(_ text: String) throws {
@@ -1197,6 +1460,36 @@ private final class SimulatorControlExecutor {
       udid,
     ])
   }
+
+  private func performSystemGesture(_ gesture: String) throws {
+    switch gesture.lowercased() {
+    case "app_switcher":
+      try runAppleScript(lines: [
+        "tell application \"Simulator\" to activate",
+        "delay 0.12",
+        "tell application \"System Events\"",
+        "  if UI elements enabled is false then error \"SimulatorBridge needs Accessibility access to control Simulator menus.\"",
+        "  tell process \"Simulator\"",
+        "    set frontmost to true",
+        "    repeat with attempt from 1 to 3",
+        "      try",
+        "        click menu bar item \"Device\" of menu bar 1",
+        "        delay 0.12",
+        "        click menu item \"App Switcher\" of menu 1 of menu bar item \"Device\" of menu bar 1",
+        "        exit repeat",
+        "      on error errMsg number errNum",
+        "        key code 53",
+        "        delay 0.05",
+        "        if attempt is 3 then error errMsg number errNum",
+        "      end try",
+        "    end repeat",
+        "  end tell",
+        "end tell",
+      ])
+    default:
+      throw BridgeError.invalidArguments("Unsupported simulator system gesture: \(gesture)")
+    }
+  }
 }
 
 #if canImport(FBControlCore) && canImport(FBSimulatorControl)
@@ -1205,6 +1498,7 @@ private final class NativeSimulatorControlSession {
   private let control: FBSimulatorControl
   private let simulator: FBSimulator
   private let udid: String
+  private var activeDragPoint: DragPathPoint?
 
   init(udid: String) throws {
     self.udid = udid
@@ -1221,9 +1515,9 @@ private final class NativeSimulatorControlSession {
 
   func canHandle(_ action: ControlAction) -> Bool {
     switch action {
-    case .tap, .touch, .swipe, .key, .button:
+    case .tap, .touch, .drag, .swipe, .key, .button:
       return true
-    case .text:
+    case .text, .systemGesture:
       return false
     }
   }
@@ -1237,15 +1531,19 @@ private final class NativeSimulatorControlSession {
         ? FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
         : FBSimulatorHIDEvent.touchUpAt(x: x, y: y)
       _ = try event.perform(on: hid).await(withTimeout: 5)
-    case .swipe(let startX, let startY, let endX, let endY, let duration):
+      activeDragPoint = phase == "down" ? DragPathPoint(delayMs: 0, x: x, y: y) : nil
+    case .drag(let phase, let points):
+      try performDrag(phase: phase, points: points)
+    case .swipe(let startX, let startY, let endX, let endY, let duration, let delta):
       _ = try FBSimulatorHIDEvent.swipe(
         startX,
         yStart: startY,
         xEnd: endX,
         yEnd: endY,
-        delta: DEFAULT_SWIPE_DELTA,
+        delta: min(max(delta ?? DEFAULT_SWIPE_DELTA, 2), 12),
         duration: duration
       ).perform(on: hid).await(withTimeout: 5)
+      activeDragPoint = nil
     case .text:
       break
     case .key(let key, let duration):
@@ -1259,10 +1557,13 @@ private final class NativeSimulatorControlSession {
       let hidButton = try buttonValue(for: button)
       _ = try hid.sendButtonEvent(with: .down, button: hidButton).await(withTimeout: 5)
       _ = try hid.sendButtonEvent(with: .up, button: hidButton).await(withTimeout: 5)
+    case .systemGesture(let gesture):
+      throw BridgeError.invalidArguments("Unsupported native simulator system gesture: \(gesture)")
     }
   }
 
   func disconnect() {
+    activeDragPoint = nil
     do {
       _ = try hid.disconnect().await(withTimeout: 5)
     } catch {
@@ -1298,6 +1599,39 @@ private final class NativeSimulatorControlSession {
     default:
       throw BridgeError.invalidArguments("Unsupported simulator button: \(button)")
     }
+  }
+
+  private func performDrag(phase: String, points: [DragPathPoint]) throws {
+    var events: [FBSimulatorHIDEvent] = []
+    var remainingPoints = points
+
+    if (phase == "start" || activeDragPoint == nil), let firstPoint = remainingPoints.first {
+      events.append(FBSimulatorHIDEvent.touchDownAt(x: firstPoint.x, y: firstPoint.y))
+      activeDragPoint = firstPoint
+      remainingPoints.removeFirst()
+    }
+
+    for point in remainingPoints {
+      if point.delayMs > 0 {
+        events.append(FBSimulatorHIDEvent.delay(point.delayMs / 1000))
+      }
+      events.append(FBSimulatorHIDEvent.touchDownAt(x: point.x, y: point.y))
+      activeDragPoint = point
+    }
+
+    if phase == "end", let endPoint = activeDragPoint ?? points.last {
+      events.append(FBSimulatorHIDEvent.touchUpAt(x: endPoint.x, y: endPoint.y))
+      activeDragPoint = nil
+    }
+
+    guard !events.isEmpty else {
+      return
+    }
+
+    let event = events.count == 1
+      ? events[0]
+      : FBSimulatorHIDEvent(events: events)
+    _ = try event.perform(on: hid).await(withTimeout: 5)
   }
 }
 #endif
@@ -1344,7 +1678,7 @@ private final class H264Encoder {
     self.writer = writer
   }
 
-  func encode(sampleBuffer: CMSampleBuffer) throws {
+  func encode(sampleBuffer: CMSampleBuffer, capturedAtMs: UInt64) throws {
     guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
       return
     }
@@ -1352,11 +1686,12 @@ private final class H264Encoder {
     try encode(
       pixelBuffer: pixelBuffer,
       presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
-      duration: CMSampleBufferGetDuration(sampleBuffer)
+      duration: CMSampleBufferGetDuration(sampleBuffer),
+      capturedAtMs: capturedAtMs
     )
   }
 
-  func encode(pixelBuffer: CVPixelBuffer, presentationTimeStamp: CMTime, duration: CMTime) throws {
+  func encode(pixelBuffer: CVPixelBuffer, presentationTimeStamp: CMTime, duration: CMTime, capturedAtMs: UInt64) throws {
     let width = CVPixelBufferGetWidth(pixelBuffer)
     let height = CVPixelBufferGetHeight(pixelBuffer)
     try ensureCompressionSession(width: width, height: height)
@@ -1373,7 +1708,7 @@ private final class H264Encoder {
       frameProperties: pendingForcedKeyFrame
         ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
         : nil,
-      sourceFrameRefcon: nil,
+      sourceFrameRefcon: Unmanaged.passRetained(EncodedFrameContext(capturedAtMs: capturedAtMs)).toOpaque(),
       infoFlagsOut: nil
     )
 
@@ -1405,7 +1740,10 @@ private final class H264Encoder {
     currentHeight = height
     pendingForcedKeyFrame = true
 
-    let callback: VTCompressionOutputCallback = { outputRefCon, _, status, _, sampleBuffer in
+    let callback: VTCompressionOutputCallback = { outputRefCon, sourceFrameRefCon, status, _, sampleBuffer in
+      let frameContext = sourceFrameRefCon.map {
+        Unmanaged<EncodedFrameContext>.fromOpaque($0).takeRetainedValue()
+      }
       guard
         status == noErr,
         let outputRefCon,
@@ -1419,19 +1757,22 @@ private final class H264Encoder {
 
       let encoder = Unmanaged<H264Encoder>.fromOpaque(outputRefCon).takeUnretainedValue()
       do {
-        try encoder.handleEncoded(sampleBuffer: sampleBuffer)
+        try encoder.handleEncoded(sampleBuffer: sampleBuffer, capturedAtMs: frameContext?.capturedAtMs ?? 0)
       } catch {
         StderrLogger.log(error.localizedDescription)
       }
     }
 
     var newSession: VTCompressionSession?
+    let encoderSpecification: CFDictionary = [
+      kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanFalse as Any
+    ] as CFDictionary
     let status = VTCompressionSessionCreate(
       allocator: kCFAllocatorDefault,
       width: Int32(width),
       height: Int32(height),
       codecType: kCMVideoCodecType_H264,
-      encoderSpecification: nil,
+      encoderSpecification: encoderSpecification,
       imageBufferAttributes: nil,
       compressedDataAllocator: nil,
       outputCallback: callback,
@@ -1448,20 +1789,22 @@ private final class H264Encoder {
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
-    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_OutputBitDepth, value: 8 as CFTypeRef)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 1 as CFTypeRef)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: fps as CFTypeRef)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: 1 as CFTypeRef)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFTypeRef)
 
-    let entropyMode = kVTH264EntropyMode_CABAC as CFTypeRef
+    let entropyMode = kVTH264EntropyMode_CAVLC as CFTypeRef
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_H264EntropyMode, value: entropyMode)
+    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_Quality, value: NSNumber(value: 1.0))
 
-    let averageBitrate = NSNumber(value: max(width * height * 6, 2_000_000))
+    let averageBitrate = NSNumber(value: max(width * height * 14, 8_000_000))
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: averageBitrate)
 
     let dataRateLimits: [NSNumber] = [
-      NSNumber(value: max(width * height * 8, 3_000_000)),
+      NSNumber(value: max(width * height * 18, 12_000_000)),
       1,
     ]
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
@@ -1478,7 +1821,7 @@ private final class H264Encoder {
     StderrLogger.log("VTSessionSetProperty \(key) failed with status \(status).")
   }
 
-  private func handleEncoded(sampleBuffer: CMSampleBuffer) throws {
+  private func handleEncoded(sampleBuffer: CMSampleBuffer, capturedAtMs: UInt64) throws {
     guard CMSampleBufferDataIsReady(sampleBuffer),
           let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
       return
@@ -1489,7 +1832,7 @@ private final class H264Encoder {
 
     try maybeSendFormatDescription(formatDescription)
     let payload = try annexBPayload(from: sampleBuffer)
-    try writer.send(type: keyFrame ? .keyFrame : .deltaFrame, payload: payload)
+    try writer.sendFrame(type: keyFrame ? .keyFrame : .deltaFrame, payload: payload, capturedAtMs: capturedAtMs)
   }
 
   private func maybeSendFormatDescription(_ formatDescription: CMFormatDescription) throws {
@@ -1619,24 +1962,21 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
   private let fps: Int
   private let udid: String
   private let writer = PacketWriter()
-  private let frameInterval: CMTime
-  private let frameIntervalNanoseconds: UInt64
 
   private let controlExecutor: SimulatorControlExecutor
   private let controlQueue = DispatchQueue(label: "codesymphony.simulator-bridge.control", qos: .userInitiated)
-  private var encoder: H264Encoder?
+  private let encoderQueue = DispatchQueue(label: "codesymphony.simulator-bridge.encode", qos: .userInteractive)
+  private let frameStateLock = NSLock()
+  private var encoder: JpegEncoder?
+  private var encodeLoopRunning = false
   private var controlBuffer = Data()
-  private var framePump: DispatchSourceTimer?
-  private var latestPixelBuffer: CVPixelBuffer?
-  private var nextPresentationTime = CMTime.invalid
-  private var sampleQueue = DispatchQueue(label: "codesymphony.simulator-bridge.capture", qos: .userInteractive)
+  private var latestFrame: PendingVideoFrame?
+  private let sampleQueue = DispatchQueue(label: "codesymphony.simulator-bridge.capture", qos: .userInteractive)
   private var stream: SCStream?
 
   init(fps: Int, udid: String) {
     self.fps = fps
     self.udid = udid
-    self.frameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
-    self.frameIntervalNanoseconds = max(UInt64(1_000_000_000 / max(fps, 1)), 1)
     self.controlExecutor = SimulatorControlExecutor(udid: udid)
   }
 
@@ -1644,10 +1984,17 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
   func start() async throws {
     let resolved = try await SimulatorDiscovery.resolve(udid: udid)
     let screenSize = DeviceProfile.screenSize(for: resolved.device.deviceTypeIdentifier)
-    let captureRect = WindowDisplayResolver.captureRect(for: resolved.window)
+
+    encoder = JpegEncoder(
+      deviceName: resolved.device.name,
+      pointHeight: max(Int((screenSize?.height ?? CGFloat(resolved.pixelHeight)).rounded()), 1),
+      pointWidth: max(Int((screenSize?.width ?? CGFloat(resolved.pixelWidth)).rounded()), 1),
+      udid: udid,
+      writer: writer
+    )
 
     let config = SCStreamConfiguration()
-    config.sourceRect = captureRect
+    config.sourceRect = resolved.captureRect
     config.width = resolved.pixelWidth
     config.height = resolved.pixelHeight
     config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
@@ -1663,20 +2010,10 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
     )
 
     try captureStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
-    try await captureStream.startCapture()
-
-    encoder = H264Encoder(
-      deviceName: resolved.device.name,
-      fps: fps,
-      pointHeight: max(Int((screenSize?.height ?? CGFloat(resolved.pixelHeight)).rounded()), 1),
-      pointWidth: max(Int((screenSize?.width ?? CGFloat(resolved.pixelWidth)).rounded()), 1),
-      udid: udid,
-      writer: writer
-    )
-    controlExecutor.prepareForStreaming()
-    startFramePump()
     stream = captureStream
+    controlExecutor.prepareForStreaming()
     installControlInputHandler()
+    try await captureStream.startCapture()
 
     StderrLogger.log("SimulatorBridge streaming \(resolved.device.name) (\(udid)).")
   }
@@ -1684,15 +2021,17 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
   @MainActor
   func stop() async {
     clearControlInputHandler()
-    stopFramePump()
-    encoder?.finish()
-    encoder = nil
-    controlExecutor.stop()
+    clearPendingFrames()
 
     if let stream {
       try? await stream.stopCapture()
       self.stream = nil
     }
+
+    encoderQueue.sync {}
+    encoder?.finish()
+    encoder = nil
+    controlExecutor.stop()
   }
 
   func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -1712,52 +2051,76 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
       return
     }
 
-    latestPixelBuffer = pixelBuffer
-  }
-
-  private func startFramePump() {
-    stopFramePump()
-
-    let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
-    timer.schedule(
-      deadline: .now(),
-      repeating: .nanoseconds(Int(frameIntervalNanoseconds)),
-      leeway: .nanoseconds(Int(max(frameIntervalNanoseconds / 8, 1)))
+    enqueueFrame(
+      pixelBuffer: pixelBuffer,
+      capturedAtMs: currentUnixTimestampMs()
     )
-    timer.setEventHandler { [weak self] in
-      self?.encodeLatestFrame()
+  }
+
+  private func enqueueFrame(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64) {
+    let shouldStartLoop: Bool
+
+    frameStateLock.lock()
+    latestFrame = PendingVideoFrame(
+      capturedAtMs: capturedAtMs,
+      pixelBuffer: pixelBuffer
+    )
+    shouldStartLoop = !encodeLoopRunning
+    if shouldStartLoop {
+      encodeLoopRunning = true
     }
-    framePump = timer
-    timer.resume()
-  }
+    frameStateLock.unlock()
 
-  private func stopFramePump() {
-    framePump?.setEventHandler {}
-    framePump?.cancel()
-    framePump = nil
-    latestPixelBuffer = nil
-    nextPresentationTime = .invalid
-  }
-
-  private func encodeLatestFrame() {
-    guard let encoder, let latestPixelBuffer else {
+    guard shouldStartLoop else {
       return
     }
 
-    if !nextPresentationTime.isValid {
-      nextPresentationTime = .zero
+    encoderQueue.async { [weak self] in
+      self?.runEncodeLoop()
     }
+  }
 
-    do {
-      try encoder.encode(
-        pixelBuffer: latestPixelBuffer,
-        presentationTimeStamp: nextPresentationTime,
-        duration: frameInterval
-      )
-      nextPresentationTime = CMTimeAdd(nextPresentationTime, frameInterval)
-    } catch {
-      StderrLogger.log(error.localizedDescription)
+  private func clearPendingFrames() {
+    frameStateLock.lock()
+    latestFrame = nil
+    frameStateLock.unlock()
+  }
+
+  private func runEncodeLoop() {
+    while true {
+      let nextFrame: PendingVideoFrame?
+
+      frameStateLock.lock()
+      nextFrame = latestFrame
+      latestFrame = nil
+      if nextFrame == nil {
+        encodeLoopRunning = false
+      }
+      frameStateLock.unlock()
+
+      guard let nextFrame else {
+        return
+      }
+
+      guard let encoder else {
+        continue
+      }
+
+      do {
+        try autoreleasepool {
+          try encoder.encode(
+            pixelBuffer: nextFrame.pixelBuffer,
+            capturedAtMs: nextFrame.capturedAtMs
+          )
+        }
+      } catch {
+        StderrLogger.log(error.localizedDescription)
+      }
     }
+  }
+
+  private func currentUnixTimestampMs() -> UInt64 {
+    UInt64(Date().timeIntervalSince1970 * 1000)
   }
 
   private func installControlInputHandler() {

@@ -50,6 +50,26 @@ cp -r "${WORKSPACE_ROOT}/apps/web/dist" "${BUNDLE_DIR}/web-dist"
 echo "=== Bundling Android ws-scrcpy sidecar ==="
 bash "${SCRIPT_DIR}/bundle-android-sidecar.sh" "${BUNDLE_DIR}/android-ws-scrcpy"
 
+echo "=== Bundling iOS SimulatorBridge ==="
+SIMULATOR_BRIDGE_DIR="${WORKSPACE_ROOT}/apps/simulator-bridge"
+swift build --package-path "${SIMULATOR_BRIDGE_DIR}" -c debug
+
+SIMULATOR_BRIDGE_ARM64_BINARY="${SIMULATOR_BRIDGE_DIR}/.build/arm64-apple-macosx/debug/SimulatorBridge"
+SIMULATOR_BRIDGE_DEBUG_BINARY="${SIMULATOR_BRIDGE_DIR}/.build/debug/SimulatorBridge"
+
+if [[ -f "${SIMULATOR_BRIDGE_ARM64_BINARY}" ]]; then
+  mkdir -p "${BUNDLE_DIR}/simulator-bridge/.build/arm64-apple-macosx/debug"
+  cp "${SIMULATOR_BRIDGE_ARM64_BINARY}" "${BUNDLE_DIR}/simulator-bridge/.build/arm64-apple-macosx/debug/SimulatorBridge"
+  chmod +x "${BUNDLE_DIR}/simulator-bridge/.build/arm64-apple-macosx/debug/SimulatorBridge"
+elif [[ -f "${SIMULATOR_BRIDGE_DEBUG_BINARY}" ]]; then
+  mkdir -p "${BUNDLE_DIR}/simulator-bridge/.build/debug"
+  cp "${SIMULATOR_BRIDGE_DEBUG_BINARY}" "${BUNDLE_DIR}/simulator-bridge/.build/debug/SimulatorBridge"
+  chmod +x "${BUNDLE_DIR}/simulator-bridge/.build/debug/SimulatorBridge"
+else
+  echo "SimulatorBridge binary not found after swift build" >&2
+  exit 1
+fi
+
 echo "=== Hoisting transitive dependencies for Tauri bundle ==="
 NODE_MODULES_DIR="${BUNDLE_DIR}/node_modules"
 

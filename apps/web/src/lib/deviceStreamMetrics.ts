@@ -12,13 +12,22 @@ type PendingControlSample = {
 };
 
 type SummaryPayload = {
+  avgFrameAgeMs: number | null;
+  avgFrameDecodeLatencyMs: number | null;
   approxFps: number | null;
   avgFrameIntervalMs: number | null;
+  avgFrameTransportAgeMs: number | null;
   controlSamples: number;
   elapsedMs: number;
   firstFrameMs: number | null;
   frameCount: number;
+  latestFrameDecodeLatencyMs: number | null;
+  latestFrameAgeMs: number | null;
+  latestFrameTransportAgeMs: number | null;
   maxControlToNextFrameMs: number | null;
+  maxFrameDecodeLatencyMs: number | null;
+  maxFrameAgeMs: number | null;
+  maxFrameTransportAgeMs: number | null;
   maxFrameIntervalMs: number | null;
 };
 
@@ -53,6 +62,18 @@ export function createDeviceStreamMetrics(options: StreamMetricsOptions) {
   let frameIntervalSum = 0;
   let frameIntervalCount = 0;
   let maxFrameIntervalMs = 0;
+  let frameAgeSum = 0;
+  let frameAgeCount = 0;
+  let frameDecodeLatencySum = 0;
+  let frameDecodeLatencyCount = 0;
+  let latestFrameDecodeLatencyMs: number | null = null;
+  let maxFrameDecodeLatencyMs = 0;
+  let latestFrameAgeMs: number | null = null;
+  let maxFrameAgeMs = 0;
+  let frameTransportAgeSum = 0;
+  let frameTransportAgeCount = 0;
+  let latestFrameTransportAgeMs: number | null = null;
+  let maxFrameTransportAgeMs = 0;
   let pendingControl: PendingControlSample | null = null;
   let controlSamples = 0;
   let maxControlToNextFrameMs = 0;
@@ -77,14 +98,23 @@ export function createDeviceStreamMetrics(options: StreamMetricsOptions) {
     const approxFps = avgFrameIntervalMs && avgFrameIntervalMs > 0 ? 1000 / avgFrameIntervalMs : null;
 
     return {
+      avgFrameAgeMs: frameAgeCount > 0 ? roundMetric(frameAgeSum / frameAgeCount) : null,
+      avgFrameDecodeLatencyMs: frameDecodeLatencyCount > 0 ? roundMetric(frameDecodeLatencySum / frameDecodeLatencyCount) : null,
       approxFps: roundMetric(approxFps),
       avgFrameIntervalMs: roundMetric(avgFrameIntervalMs),
+      avgFrameTransportAgeMs: frameTransportAgeCount > 0 ? roundMetric(frameTransportAgeSum / frameTransportAgeCount) : null,
       controlSamples,
       elapsedMs: roundMetric(elapsedMs) ?? 0,
       firstFrameMs: roundMetric(firstFrameMs),
       frameCount,
+      latestFrameDecodeLatencyMs: roundMetric(latestFrameDecodeLatencyMs),
+      latestFrameAgeMs: roundMetric(latestFrameAgeMs),
       maxControlToNextFrameMs: controlSamples > 0 ? roundMetric(maxControlToNextFrameMs) : null,
+      maxFrameDecodeLatencyMs: frameDecodeLatencyCount > 0 ? roundMetric(maxFrameDecodeLatencyMs) : null,
+      maxFrameAgeMs: frameAgeCount > 0 ? roundMetric(maxFrameAgeMs) : null,
+      maxFrameTransportAgeMs: frameTransportAgeCount > 0 ? roundMetric(maxFrameTransportAgeMs) : null,
       maxFrameIntervalMs: frameIntervalCount > 0 ? roundMetric(maxFrameIntervalMs) : null,
+      latestFrameTransportAgeMs: roundMetric(latestFrameTransportAgeMs),
     };
   };
 
@@ -100,13 +130,44 @@ export function createDeviceStreamMetrics(options: StreamMetricsOptions) {
     },
     markFrame(extra?: Record<string, unknown>) {
       const now = typeof performance !== "undefined" ? performance.now() : sessionStartedAt;
+      const rawFrameAgeMs = typeof extra?.frameAgeMs === "number" && Number.isFinite(extra.frameAgeMs)
+        ? Math.max(extra.frameAgeMs, 0)
+        : null;
+      const rawFrameDecodeLatencyMs = typeof extra?.frameDecodeLatencyMs === "number" && Number.isFinite(extra.frameDecodeLatencyMs)
+        ? Math.max(extra.frameDecodeLatencyMs, 0)
+        : null;
+      const rawFrameTransportAgeMs = typeof extra?.frameTransportAgeMs === "number" && Number.isFinite(extra.frameTransportAgeMs)
+        ? Math.max(extra.frameTransportAgeMs, 0)
+        : null;
       frameCount += 1;
+
+      if (rawFrameAgeMs != null) {
+        frameAgeCount += 1;
+        frameAgeSum += rawFrameAgeMs;
+        latestFrameAgeMs = rawFrameAgeMs;
+        maxFrameAgeMs = Math.max(maxFrameAgeMs, rawFrameAgeMs);
+      }
+      if (rawFrameDecodeLatencyMs != null) {
+        frameDecodeLatencyCount += 1;
+        frameDecodeLatencySum += rawFrameDecodeLatencyMs;
+        latestFrameDecodeLatencyMs = rawFrameDecodeLatencyMs;
+        maxFrameDecodeLatencyMs = Math.max(maxFrameDecodeLatencyMs, rawFrameDecodeLatencyMs);
+      }
+      if (rawFrameTransportAgeMs != null) {
+        frameTransportAgeCount += 1;
+        frameTransportAgeSum += rawFrameTransportAgeMs;
+        latestFrameTransportAgeMs = rawFrameTransportAgeMs;
+        maxFrameTransportAgeMs = Math.max(maxFrameTransportAgeMs, rawFrameTransportAgeMs);
+      }
 
       if (firstFrameMs == null) {
         firstFrameMs = Math.max(now - sessionStartedAt, 0);
         log("first_frame", {
+          frameDecodeLatencyMs: roundMetric(rawFrameDecodeLatencyMs),
           frameCount,
           firstFrameMs: roundMetric(firstFrameMs),
+          frameAgeMs: roundMetric(rawFrameAgeMs),
+          frameTransportAgeMs: roundMetric(rawFrameTransportAgeMs),
           ...extra,
         });
       }

@@ -4,7 +4,7 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::Manager;
+use tauri::{Manager, Url};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -321,6 +321,25 @@ fn main() {
                 let ready = wait_for_runtime(Duration::from_secs(30), runtime_port);
                 if let Some(window) = app_handle.get_webview_window("main") {
                     if ready {
+                        if !cfg!(debug_assertions) {
+                            let runtime_url = format!("http://127.0.0.1:{runtime_port}");
+                            match Url::parse(&runtime_url) {
+                                Ok(url) => {
+                                    if let Err(error) = window.navigate(url) {
+                                        eprintln!(
+                                            "Failed to navigate desktop webview to runtime origin {}: {error}",
+                                            runtime_url
+                                        );
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "Failed to parse desktop runtime origin {}: {error}",
+                                        runtime_url
+                                    );
+                                }
+                            }
+                        }
                         let _ = window.show();
                     } else {
                         eprintln!(

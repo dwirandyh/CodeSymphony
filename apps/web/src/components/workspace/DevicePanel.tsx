@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DeviceStatus, DeviceStreamSession } from "@codesymphony/shared-types";
-import { ExternalLink, Play, RefreshCw, RotateCcw, Smartphone, Square, X } from "lucide-react";
+import type { DeviceIssue, DeviceStatus } from "@codesymphony/shared-types";
+import { AlertTriangle, ExternalLink, Play, RefreshCw, RotateCcw, Smartphone, Square, X } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api";
-import { openExternalUrl } from "../../lib/openExternalUrl";
+import { isTauriDesktop, openExternalUrl } from "../../lib/openExternalUrl";
 import { useDevices } from "../../pages/workspace/hooks/useDevices";
 import { AndroidDeviceViewer } from "./AndroidDeviceViewer";
 import { IosSimulatorViewer } from "./IosSimulatorViewer";
@@ -31,28 +31,29 @@ function platformLabel(platform: "android" | "ios-simulator"): string {
   return platform === "android" ? "Android" : "iOS Simulator";
 }
 
-type IosStreamMode = "auto" | "legacy-jpeg" | "webrtc";
+const MACOS_SCREEN_RECORDING_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
-const IOS_STREAM_MODE_OPTIONS: Array<{ label: string; value: IosStreamMode }> = [
-  { label: "Auto", value: "auto" },
-  { label: "Bridge WS", value: "legacy-jpeg" },
-  { label: "WebRTC", value: "webrtc" },
-];
-
-function resolveIosStreamMode(session: DeviceStreamSession | null): IosStreamMode {
-  if (!session || session.platform !== "ios-simulator") {
-    return "auto";
+function normalizeIssueMessage(issue: DeviceIssue): string {
+  if (issue.platform === "ios-simulator" && /declined TCCs/i.test(issue.message)) {
+    return "Grant Screen Recording to CodeSymphony in System Settings > Privacy & Security > Screen & System Audio Recording, then reconnect the stream.";
   }
 
-  if (session.iosStreamProtocol === "webrtc") {
-    return "webrtc";
+  return issue.message
+    .replace(/^Native iOS simulator streaming is unavailable:\s*/i, "")
+    .replace(/^Android discovery unavailable:\s*/i, "")
+    .trim();
+}
+
+function issueTone(severity: DeviceIssue["severity"]): string {
+  if (severity === "error") {
+    return "border-destructive/40 bg-destructive/10 text-destructive";
   }
 
-  if (session.iosStreamProtocol === "legacy-jpeg" && session.nativeBaseUrl && session.platformSessionId) {
-    return "legacy-jpeg";
+  if (severity === "warning") {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-100";
   }
 
-  return "auto";
+  return "border-sky-500/30 bg-sky-500/10 text-sky-100";
 }
 
 type DevicePanelProps = {
@@ -63,7 +64,6 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
   const { snapshot, loading, error, refresh, startStream, stopStream, startingDeviceId, stoppingSessionId } = useDevices();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [viewerNonce, setViewerNonce] = useState(0);
-  const [iosStreamMode, setIosStreamMode] = useState<IosStreamMode>("auto");
   const tabsValue = selectedDeviceId ?? "__none__";
 
   useEffect(() => {
@@ -88,35 +88,19 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
     () => snapshot.activeSessions.find((session) => session.deviceId === selectedDeviceId) ?? null,
     [selectedDeviceId, snapshot.activeSessions],
   );
+  const activeIssues = useMemo(() => {
+    if (!activeDevice) {
+      return snapshot.issues;
+    }
+
+    return snapshot.issues.filter((issue) => !issue.platform || issue.platform === activeDevice.platform);
+  }, [activeDevice, snapshot.issues]);
   const viewerSrc = activeSession ? `${api.runtimeBaseUrl}${activeSession.viewerUrl}` : null;
+  const desktopApp = isTauriDesktop();
 
   useEffect(() => {
     setViewerNonce(0);
   }, [activeSession?.sessionId]);
-
-  useEffect(() => {
-    if (activeDevice?.platform !== "ios-simulator" || !activeSession) {
-      return;
-    }
-
-    const nextMode = resolveIosStreamMode(activeSession);
-    setIosStreamMode((current) => current === nextMode ? current : nextMode);
-  }, [activeDevice?.platform, activeSession]);
-
-  const activeIosStreamMode = activeDevice?.platform === "ios-simulator"
-    ? resolveIosStreamMode(activeSession)
-    : null;
-  const iosStreamModePendingReconnect = activeIosStreamMode !== null && activeSession && activeIosStreamMode !== iosStreamMode;
-
-  const buildStartStreamInput = () => {
-    if (activeDevice?.platform !== "ios-simulator" || iosStreamMode === "auto") {
-      return {};
-    }
-
-    return {
-      preferredPlayer: iosStreamMode,
-    };
-  };
 
   const handleReconnect = async () => {
     if (!activeDevice) {
@@ -127,7 +111,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
       await stopStream(activeSession.sessionId);
     }
 
-    await startStream(activeDevice.id, buildStartStreamInput());
+    await startStream(activeDevice.id);
     setViewerNonce((current) => current + 1);
   };
 
@@ -136,7 +120,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
       return;
     }
 
-    await startStream(activeDevice.id, buildStartStreamInput());
+    await startStream(activeDevice.id);
   };
 
   const showLoadingState = loading && snapshot.devices.length === 0 && !error;
@@ -235,26 +219,45 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
 
           {activeDevice ? (
             <TabsContent value={activeDevice.id} className="mt-0 flex min-h-0 flex-1 flex-col px-2 pb-2 pt-1.5">
-              {activeDevice.platform === "ios-simulator" ? (
-                <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-2">
-                  <div className="inline-flex items-center gap-1 rounded-full border border-border/50 bg-card/60 p-1">
-                    {IOS_STREAM_MODE_OPTIONS.map((option) => (
-                      <Button
-                        key={option.value}
-                        type="button"
-                        size="sm"
-                        variant={iosStreamMode === option.value ? "secondary" : "ghost"}
-                        className="h-7 rounded-full px-2.5 text-[11px]"
-                        onClick={() => setIosStreamMode(option.value)}
-                        disabled={startingDeviceId === activeDevice.id || (activeSession ? stoppingSessionId === activeSession.sessionId : false)}
+              {activeIssues.length > 0 ? (
+                <div className="space-y-2 px-1 pb-2">
+                  {activeIssues.map((issue) => {
+                    const isScreenRecordingIssue = issue.platform === "ios-simulator" && /declined TCCs/i.test(issue.message);
+
+                    return (
+                      <div
+                        key={issue.id}
+                        className={cn(
+                          "rounded-xl border px-3 py-2.5 text-[11px] leading-4 shadow-sm",
+                          issueTone(issue.severity),
+                        )}
+                        role={issue.severity === "error" ? "alert" : undefined}
                       >
-                        {option.label}
-                      </Button>
-                    ))}
-                  </div>
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                    {iosStreamModePendingReconnect ? "Reconnect to apply" : "iOS stream mode"}
-                  </div>
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <div className="font-semibold">
+                              {isScreenRecordingIssue ? "Screen Recording required" : issue.severity === "error" ? "Device issue" : "Device notice"}
+                            </div>
+                            <p className="mt-1 break-words opacity-90">
+                              {normalizeIssueMessage(issue)}
+                            </p>
+                          </div>
+                          {desktopApp && isScreenRecordingIssue ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 shrink-0 px-2 text-[11px]"
+                              onClick={() => void openExternalUrl(MACOS_SCREEN_RECORDING_SETTINGS_URL)}
+                            >
+                              Open Settings
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : null}
               <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border/40 bg-black/90">
@@ -270,11 +273,7 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
                     <IosSimulatorViewer
                       key={`${activeSession.sessionId}:${viewerNonce}`}
                       sessionId={activeSession.sessionId}
-                      controlTransport={activeSession.controlTransport}
                       deviceName={activeDevice.name}
-                      iosStreamProtocol={activeSession.iosStreamProtocol ?? null}
-                      nativeBaseUrl={activeSession.nativeBaseUrl ?? null}
-                      platformSessionId={activeSession.platformSessionId ?? null}
                     />
                   ) : (
                     <iframe

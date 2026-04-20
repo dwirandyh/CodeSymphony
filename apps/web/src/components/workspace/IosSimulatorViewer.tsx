@@ -1,21 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { IosDeviceStreamProtocol } from "@codesymphony/shared-types";
 import { House, LoaderCircle, Lock, RefreshCw, Smartphone } from "lucide-react";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
+import { debugLog } from "../../lib/debugLog";
 import { createDeviceStreamMetrics } from "../../lib/deviceStreamMetrics";
+import {
+  buildIosDragPayload,
+  detectIosGestureEdge,
+  IOS_BOTTOM_EDGE_APP_SWITCHER_HOLD_DELAY_MS,
+  IOS_GESTURE_PATH_FLUSH_INTERVAL_MS,
+  IOS_GESTURE_TAP_SLOP_CSS_PX,
+  IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX,
+  IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX,
+  IOS_TOUCH_DOWN_DELAY_LIVE_MS,
+  resolveIosSystemGesture,
+  resolveIosGestureAxis,
+  type IosGestureAxis,
+  type IosGestureEdge,
+  type IosGesturePathPoint,
+  type IosSystemGesture,
+  shouldAppendIosGesturePathPoint,
+} from "./iosGesture";
 
 type IosSimulatorViewerProps = {
-  controlTransport?: "iframe" | "none" | "websocket";
   deviceName: string;
-  iosStreamProtocol?: IosDeviceStreamProtocol | null;
-  nativeBaseUrl?: string | null;
-  platformSessionId?: string | null;
   sessionId: string;
 };
 
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
-type MediaMode = "live" | "fallback";
 
 type ViewportRect = {
   height: number;
@@ -25,16 +37,27 @@ type ViewportRect = {
 };
 
 type DragState = {
+  axis: IosGestureAxis | null;
+  edge: IosGestureEdge | null;
+  dragActive: boolean;
+  dragFlushTimer: number | null;
+  dragPoints: IosGesturePathPoint[];
+  lastPathAtMs: number;
+  lastPathClientX: number;
+  lastPathClientY: number;
   moved: boolean;
   moveStartedAt: number | null;
   pointerId: number;
   scrollIntent: boolean;
-  startAt: number;
+  startAtMs: number;
   startClientX: number;
   startClientY: number;
   startX: number;
   startY: number;
-  swipeDispatched: boolean;
+  systemGesture: IosSystemGesture | null;
+  systemGestureDeferred: boolean;
+  systemGestureTimer: number | null;
+  systemGestureTriggered: boolean;
   touchDownSent: boolean;
   touchTimer: number | null;
   x: number;
@@ -48,16 +71,7 @@ type IosStatusResponse = {
   };
 };
 
-type IosVideoFrame = {
-  data: string;
-  pixel_height?: number;
-  pixel_width?: number;
-  point_height?: number;
-  point_width?: number;
-  type?: string;
-};
-
-type IosControlPayload = Record<string, number | string>;
+type IosControlPayload = Record<string, unknown>;
 
 type IosStreamMetadata = {
   codec?: string;
@@ -67,17 +81,10 @@ type IosStreamMetadata = {
   pixelWidth?: number;
 };
 
-type VideoFrameRequestCallbackLike = (now: number, metadata: unknown) => void;
-
-const FALLBACK_SCREENSHOT_POLL_INTERVAL_MS = 1_250;
-const FALLBACK_REFRESH_AFTER_ACTION_MS = [120, 700];
 const IOS_H264_PACKET_CONFIG = 1;
 const IOS_H264_PACKET_KEY = 2;
 const IOS_H264_PACKET_DELTA = 3;
-const IOS_GESTURE_TAP_SLOP_CSS_PX = 12;
-const IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX = 4;
-const IOS_GESTURE_SCROLL_INTENT_DISTANCE_CSS_PX = 8;
-const IOS_GESTURE_EAGER_SWIPE_DISTANCE_CSS_PX = 28;
+const IOS_H264_PACKET_CAPTURE_TIMESTAMP_BYTES = 8;
 const IOS_LIVE_CALIBRATION_SCALES = [0.88, 0.92, 0.96, 1, 1.04, 1.08];
 const IOS_LIVE_CALIBRATION_COARSE_SEARCH_MARGIN_PX = 96;
 const IOS_LIVE_CALIBRATION_FINE_SEARCH_MARGIN_PX = 12;
@@ -87,10 +94,6 @@ const IOS_LIVE_CALIBRATION_SAMPLE_WIDTH = 28;
 const IOS_LIVE_CALIBRATION_ATTEMPT_INTERVAL_MS = 650;
 const IOS_LIVE_CALIBRATION_RETRY_DELAY_MS = 900;
 const IOS_LIVE_ALIGNMENT_ASPECT_TOLERANCE = 0.012;
-const IOS_TOUCH_DOWN_DELAY_FALLBACK_MS = 24;
-const IOS_TOUCH_DOWN_DELAY_LIVE_MS = 12;
-const IOS_WEBRTC_DEFAULT_QUALITY = "high";
-const IOS_WEBRTC_REQUESTED_FPS = 60;
 const VIDEO_CHUNK_INTERVAL_US = 16_667;
 const IOS_SPECIAL_KEY_MAP: Record<string, string> = {
   Backspace: "DELETE",
@@ -116,64 +119,53 @@ function concatUint8Arrays(first: Uint8Array, second: Uint8Array): Uint8Array {
   return merged;
 }
 
-function supportsIosLiveViewer(streamProtocol: IosDeviceStreamProtocol | null | undefined): boolean {
+function readBigEndianUint64Number(bytes: Uint8Array): number | null {
+  if (bytes.byteLength < IOS_H264_PACKET_CAPTURE_TIMESTAMP_BYTES) {
+    return null;
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const high = view.getUint32(0);
+  const low = view.getUint32(4);
+  return (high * 2 ** 32) + low;
+}
+
+function supportsIosNativeViewer(): boolean {
   if (typeof window === "undefined" || typeof WebSocket !== "function") {
     return false;
   }
 
-  if (streamProtocol === "webrtc") {
-    return typeof RTCPeerConnection === "function";
-  }
-
-  if (streamProtocol === "webcodecs-h264") {
-    return typeof VideoDecoder === "function" && typeof EncodedVideoChunk === "function";
-  }
-
-  return true;
+  return window.isSecureContext === true
+    && typeof createImageBitmap === "function";
 }
 
-function buildDirectIosWebSocketUrl(baseUrl: string, platformSessionId: string, channel: "control" | "video" | "webrtc"): string {
-  const websocketBase = new URL(baseUrl);
-  websocketBase.protocol = websocketBase.protocol === "https:" ? "wss:" : "ws:";
-  return new URL(`/ws/${encodeURIComponent(platformSessionId)}/${channel}`, websocketBase).toString();
+function normalizeIosStreamMessage(message: string): string {
+  if (/disconnected|closed/i.test(message)) {
+    return "The iOS stream disconnected.";
+  }
+
+  if (/unable to initialize/i.test(message)) {
+    return "Unable to initialize the iOS stream.";
+  }
+
+  if (/decode|packet|metadata/i.test(message)) {
+    return "Unable to decode the iOS stream.";
+  }
+
+  return message;
 }
 
-function buildIosViewerUrls(args: {
-  controlTransport?: "iframe" | "none" | "websocket";
-  nativeBaseUrl?: string | null;
-  platformSessionId?: string | null;
-  sessionId: string;
-}) {
-  const { controlTransport = "websocket", nativeBaseUrl, platformSessionId, sessionId } = args;
+function buildIosViewerUrls(sessionId: string) {
   const httpBase = new URL(api.runtimeBaseUrl);
   const websocketBase = new URL(api.runtimeBaseUrl);
   websocketBase.protocol = websocketBase.protocol === "https:" ? "wss:" : "ws:";
   const encodedSessionId = encodeURIComponent(sessionId);
-  const hasDirectWebSocketTarget = typeof nativeBaseUrl === "string"
-    && nativeBaseUrl.length > 0
-    && typeof platformSessionId === "string"
-    && platformSessionId.length > 0;
 
   return {
-    control: controlTransport === "websocket"
-      ? hasDirectWebSocketTarget
-      ? buildDirectIosWebSocketUrl(nativeBaseUrl, platformSessionId, "control")
-      : new URL(`/api/device-streams/${encodedSessionId}/native/control`, websocketBase).toString()
-      : null,
-    screenshot: controlTransport === "websocket"
-      ? new URL(`/api/device-streams/${encodedSessionId}/native/screenshot`, httpBase).toString()
-      : null,
-    status: controlTransport === "websocket"
-      ? new URL(`/api/device-streams/${encodedSessionId}/native/status`, httpBase).toString()
-      : null,
-    video: hasDirectWebSocketTarget
-      ? buildDirectIosWebSocketUrl(nativeBaseUrl, platformSessionId, "video")
-      : new URL(`/api/device-streams/${encodedSessionId}/native/video`, websocketBase).toString(),
-    webrtc: controlTransport === "websocket"
-      ? hasDirectWebSocketTarget
-        ? buildDirectIosWebSocketUrl(nativeBaseUrl, platformSessionId, "webrtc")
-        : new URL(`/api/device-streams/${encodedSessionId}/native/webrtc`, websocketBase).toString()
-      : null,
+    control: new URL(`/api/device-streams/${encodedSessionId}/native/control`, websocketBase).toString(),
+    screenshot: new URL(`/api/device-streams/${encodedSessionId}/native/screenshot`, httpBase).toString(),
+    status: new URL(`/api/device-streams/${encodedSessionId}/native/status`, httpBase).toString(),
+    video: new URL(`/api/device-streams/${encodedSessionId}/native/video`, websocketBase).toString(),
   };
 }
 
@@ -254,100 +246,6 @@ function frameLikelyMatchesDeviceAspect(args: {
   const deviceAspect = deviceWidth / deviceHeight;
   const frameAspect = frameWidth / frameHeight;
   return Math.abs(deviceAspect - frameAspect) <= IOS_LIVE_ALIGNMENT_ASPECT_TOLERANCE;
-}
-
-function buildIosSwipePayload(args: {
-  currentX: number;
-  currentY: number;
-  deviceHeight: number;
-  gestureDurationMs: number;
-  startX: number;
-  startY: number;
-}) {
-  const {
-    currentX,
-    currentY,
-    deviceHeight,
-    gestureDurationMs,
-    startX,
-    startY,
-  } = args;
-  const travelX = currentX - startX;
-  const travelY = currentY - startY;
-  const mostlyVertical = Math.abs(travelY) > Math.abs(travelX) * 1.2;
-  const upwardDismiss = mostlyVertical && travelY < 0;
-  const overshootY = upwardDismiss
-    ? Math.max(Math.round(deviceHeight * 0.14), Math.round(Math.abs(travelY) * 0.35))
-    : 0;
-
-  return {
-    duration: upwardDismiss
-      ? clamp(gestureDurationMs / 1000, 0.08, 0.14)
-      : clamp(gestureDurationMs / 1000, 0.08, 0.24),
-    end_x: currentX,
-    end_y: upwardDismiss ? clamp(currentY - overshootY, 8, deviceHeight) : currentY,
-    start_x: startX,
-    start_y: startY,
-    t: "swipe",
-  } satisfies IosControlPayload;
-}
-
-async function drawBlobToCanvas(canvas: HTMLCanvasElement, blob: Blob): Promise<{ height: number; width: number }> {
-  const imageUrl = URL.createObjectURL(blob);
-
-  try {
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const nextImage = new Image();
-      nextImage.onload = () => resolve(nextImage);
-      nextImage.onerror = () => reject(new Error("Failed to decode iOS simulator screenshot."));
-      nextImage.src = imageUrl;
-    });
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Unable to initialize iOS simulator canvas.");
-    }
-
-    const container = canvas.parentElement;
-    const boundsWidth = Math.max(container?.clientWidth ?? image.naturalWidth, 1);
-    const boundsHeight = Math.max(container?.clientHeight ?? image.naturalHeight, 1);
-    const displayBox = getContainedContentBox(
-      boundsHeight,
-      boundsWidth,
-      image.naturalHeight,
-      image.naturalWidth,
-    );
-    const displayWidth = Math.max(Math.round(displayBox.width), 1);
-    const displayHeight = Math.max(Math.round(displayBox.height), 1);
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-    const renderWidth = Math.max(Math.round(displayWidth * pixelRatio), 1);
-    const renderHeight = Math.max(Math.round(displayHeight * pixelRatio), 1);
-
-    if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
-      canvas.width = renderWidth;
-      canvas.height = renderHeight;
-    }
-
-    if (canvas.style.width !== `${displayWidth}px`) {
-      canvas.style.width = `${displayWidth}px`;
-    }
-    if (canvas.style.height !== `${displayHeight}px`) {
-      canvas.style.height = `${displayHeight}px`;
-    }
-
-    context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-    context.clearRect(0, 0, displayWidth, displayHeight);
-    context.drawImage(image, 0, 0, displayWidth, displayHeight);
-
-    return {
-      height: image.naturalHeight,
-      width: image.naturalWidth,
-    };
-  } finally {
-    URL.revokeObjectURL(imageUrl);
-  }
 }
 
 function fitViewportToAspect(frameHeight: number, frameWidth: number, aspectRatio: number): ViewportRect {
@@ -431,8 +329,14 @@ async function detectViewportFromScreenshot(args: {
   candidateCanvas.width = IOS_LIVE_CALIBRATION_SAMPLE_WIDTH;
   candidateCanvas.height = IOS_LIVE_CALIBRATION_SAMPLE_HEIGHT;
 
-  const targetContext = targetCanvas.getContext("2d", { willReadFrequently: true });
-  const candidateContext = candidateCanvas.getContext("2d", { willReadFrequently: true });
+  const targetContext = targetCanvas.getContext("2d", {
+    alpha: false,
+    willReadFrequently: true,
+  });
+  const candidateContext = candidateCanvas.getContext("2d", {
+    alpha: false,
+    willReadFrequently: true,
+  });
   if (!targetContext || !candidateContext) {
     return fallbackViewport;
   }
@@ -530,17 +434,9 @@ async function detectViewportFromScreenshot(args: {
   };
 }
 
-export function IosSimulatorViewer({
-  controlTransport = "websocket",
-  deviceName,
-  iosStreamProtocol = null,
-  nativeBaseUrl = null,
-  platformSessionId = null,
-  sessionId,
-}: IosSimulatorViewerProps) {
+export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewerProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const webrtcVideoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const keyboardInputRef = useRef<HTMLTextAreaElement | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
@@ -550,10 +446,6 @@ export function IosSimulatorViewer({
   const rawFrameContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const rawFramePixelSizeRef = useRef({ height: 844, width: 390 });
   const dragStateRef = useRef<DragState | null>(null);
-  const screenshotAbortRef = useRef<AbortController | null>(null);
-  const refreshInFlightRef = useRef(false);
-  const refreshQueuedRef = useRef(false);
-  const fallbackRefreshTimerRef = useRef<number | null>(null);
   const controlReconnectTimerRef = useRef<number | null>(null);
   const liveCalibrationInFlightRef = useRef(false);
   const liveCalibrationKeyRef = useRef("");
@@ -561,44 +453,34 @@ export function IosSimulatorViewer({
   const liveCalibrationRetryTimerRef = useRef<number | null>(null);
   const liveViewportRef = useRef<ViewportRect | null>(null);
   const redrawLiveFrameRef = useRef<(() => void) | null>(null);
-  const actionRefreshTimersRef = useRef<number[]>([]);
   const keyboardActiveRef = useRef(false);
   const keyboardFlushTimerRef = useRef<number | null>(null);
   const keyboardTextBufferRef = useRef("");
   const hasFrameRef = useRef(false);
   const liveViewportAlignedRef = useRef(false);
   const pointerGestureStartedAtRef = useRef<number | null>(null);
-  const mediaModeRef = useRef<MediaMode>(supportsIosLiveViewer(iosStreamProtocol) ? "live" : "fallback");
-  const requestFallbackRefreshRef = useRef<() => void>(() => undefined);
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(
-    supportsIosLiveViewer(iosStreamProtocol) ? "connecting" : "error",
+    supportsIosNativeViewer() ? "connecting" : "error",
   );
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    supportsIosNativeViewer() ? null : "This browser cannot decode the iOS native stream.",
+  );
   const [hasFrame, setHasFrame] = useState(false);
   const [liveAttempt, setLiveAttempt] = useState(0);
   const [liveViewportAligned, setLiveViewportAligned] = useState(false);
-  const [mediaMode, setMediaMode] = useState<MediaMode>(supportsIosLiveViewer(iosStreamProtocol) ? "live" : "fallback");
 
-  const urls = useMemo(() => buildIosViewerUrls({
-    controlTransport,
-    nativeBaseUrl,
-    platformSessionId,
-    sessionId,
-  }), [controlTransport, nativeBaseUrl, platformSessionId, sessionId]);
+  const urls = useMemo(() => buildIosViewerUrls(sessionId), [sessionId]);
   const metrics = useMemo(
     () => createDeviceStreamMetrics({
       platform: "ios",
       sessionId,
-      streamProtocol: iosStreamProtocol,
+      streamProtocol: "auto",
     }),
-    [iosStreamProtocol, sessionId],
+    [sessionId],
   );
 
-  const usesRuntimeNativeControl = !nativeBaseUrl && !platformSessionId;
-  const controlEnabled = controlTransport === "websocket" && typeof urls.control === "string";
-  const isWebRtcStream = iosStreamProtocol === "webrtc";
-  const screenInteractionEnabled = controlEnabled && (mediaMode !== "live" || liveViewportAligned);
+  const screenInteractionEnabled = liveViewportAligned;
 
   const updateLiveViewportAligned = (aligned: boolean) => {
     liveViewportAlignedRef.current = aligned;
@@ -678,8 +560,7 @@ export function IosSimulatorViewer({
     }
 
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
+    context.imageSmoothingEnabled = false;
     context.drawImage(
       source,
       viewport.left,
@@ -713,7 +594,7 @@ export function IosSimulatorViewer({
 
     let rawContext = rawFrameContextRef.current;
     if (!rawContext) {
-      rawContext = rawCanvas.getContext("2d");
+      rawContext = rawCanvas.getContext("2d", { alpha: false });
       if (!rawContext) {
         return null;
       }
@@ -727,7 +608,7 @@ export function IosSimulatorViewer({
   };
 
   const recalibrateLiveViewport = async () => {
-    if (!urls.screenshot || liveCalibrationInFlightRef.current) {
+    if (liveCalibrationInFlightRef.current) {
       return;
     }
 
@@ -777,7 +658,6 @@ export function IosSimulatorViewer({
       const targetUrl = new URL(urls.screenshot);
       targetUrl.searchParams.set("t", `${Date.now()}`);
       const response = await fetch(targetUrl, { cache: "no-store" });
-
       const fallbackViewport = fitViewportToAspect(
         rawCanvas.height,
         rawCanvas.width,
@@ -821,44 +701,7 @@ export function IosSimulatorViewer({
     }
   };
 
-  useEffect(() => {
-    metrics.markConnectStart({
-      controlTransport,
-      hasDirectWebSocketTarget: Boolean(nativeBaseUrl && platformSessionId),
-      usesRuntimeNativeControl,
-      videoUrl: urls.video,
-      webrtcUrl: urls.webrtc,
-    });
-
-    return () => {
-      metrics.flush("cleanup", {
-        finalMediaMode: mediaModeRef.current,
-        hadFrame: hasFrameRef.current,
-      });
-    };
-  }, [controlTransport, metrics, nativeBaseUrl, platformSessionId, urls.video, urls.webrtc, usesRuntimeNativeControl]);
-
-  useEffect(() => {
-    mediaModeRef.current = mediaMode;
-    metrics.markMode(mediaMode, {
-      liveViewportAligned: liveViewportAlignedRef.current,
-    });
-  }, [mediaMode, metrics]);
-
-  useEffect(() => {
-    const liveSupported = supportsIosLiveViewer(iosStreamProtocol);
-    setMediaMode(liveSupported ? "live" : "fallback");
-    setConnectionState(liveSupported ? "connecting" : "error");
-    if (!liveSupported) {
-      setError("This browser cannot decode the native iOS simulator stream.");
-    }
-  }, [iosStreamProtocol]);
-
   const loadPointDimensions = async () => {
-    if (!urls.status) {
-      return;
-    }
-
     try {
       const response = await fetch(urls.status, {
         cache: "no-store",
@@ -879,9 +722,29 @@ export function IosSimulatorViewer({
         width,
       };
     } catch {
-      // Dimension lookup is best-effort; fallback defaults still keep input usable.
+      // Dimension lookup is best-effort and not worth surfacing as a hard error.
     }
   };
+
+  useEffect(() => {
+    metrics.markConnectStart({
+      controlUrl: urls.control,
+      videoUrl: urls.video,
+    });
+
+    return () => {
+      metrics.flush("cleanup", {
+        hadFrame: hasFrameRef.current,
+        liveViewportAligned: liveViewportAlignedRef.current,
+      });
+    };
+  }, [metrics, urls.control, urls.video]);
+
+  useEffect(() => {
+    metrics.markMode("live", {
+      liveViewportAligned,
+    });
+  }, [liveViewportAligned, metrics]);
 
   useEffect(() => {
     void loadPointDimensions();
@@ -896,12 +759,6 @@ export function IosSimulatorViewer({
       }
     };
 
-    if (!controlEnabled || !urls.control) {
-      closeExistingSocket();
-      setConnectionState((current) => (current === "connected" ? current : "connecting"));
-      return;
-    }
-
     let disposed = false;
 
     const clearReconnectTimer = () => {
@@ -911,36 +768,8 @@ export function IosSimulatorViewer({
       }
     };
 
-    const closeControlSocket = () => {
-      const socket = controlSocketRef.current;
-      controlSocketRef.current = null;
-      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
-        socket.close();
-      }
-    };
-
-    const scheduleReconnect = (message: string) => {
-      if (disposed || controlReconnectTimerRef.current != null) {
-        return;
-      }
-
-      setConnectionState("connecting");
-      if (!hasFrameRef.current) {
-        setError(message);
-      }
-
-      controlReconnectTimerRef.current = window.setTimeout(() => {
-        controlReconnectTimerRef.current = null;
-        connectControlSocket();
-      }, 1_500);
-    };
-
     const connectControlSocket = () => {
-      closeControlSocket();
-      if (!urls.control) {
-        return;
-      }
-
+      closeExistingSocket();
       const socket = new WebSocket(urls.control);
       controlSocketRef.current = socket;
 
@@ -967,8 +796,24 @@ export function IosSimulatorViewer({
             setError(payload.error);
           }
         } catch {
-          // Ignore non-JSON messages from the control bridge.
+          // Ignore non-JSON messages from the native control bridge.
         }
+      };
+
+      const scheduleReconnect = (message: string) => {
+        if (disposed || controlReconnectTimerRef.current != null) {
+          return;
+        }
+
+        setConnectionState("connecting");
+        if (!hasFrameRef.current) {
+          setError(message);
+        }
+
+        controlReconnectTimerRef.current = window.setTimeout(() => {
+          controlReconnectTimerRef.current = null;
+          connectControlSocket();
+        }, 1_500);
       };
 
       socket.onerror = () => {
@@ -994,31 +839,45 @@ export function IosSimulatorViewer({
     return () => {
       disposed = true;
       clearReconnectTimer();
-      closeControlSocket();
+      closeExistingSocket();
     };
-  }, [controlEnabled, urls.control]);
+  }, [urls.control]);
 
   useEffect(() => {
-    if (mediaMode !== "live") {
-      return;
-    }
-
-    if (!supportsIosLiveViewer(iosStreamProtocol)) {
-      setMediaMode("fallback");
+    if (!supportsIosNativeViewer()) {
+      setConnectionState("error");
+      setError("This browser cannot decode the iOS native stream.");
       return;
     }
 
     const canvas = canvasRef.current;
-    const context = canvas?.getContext("2d");
+    const context = canvas?.getContext("2d", {
+      alpha: false,
+      desynchronized: true,
+    });
     if (!canvas || !context) {
       setConnectionState("error");
-      setError("Unable to initialize iOS live viewer.");
+      setError("Unable to initialize the iOS stream.");
       return;
     }
 
     let disposed = false;
-    let animationFrameId: number | null = null;
-    let startupFallbackTimer: number | null = null;
+    let startupTimer: number | null = null;
+    let codec = "";
+    let configPacket: Uint8Array | null = null;
+    let loggedFirstBinaryPacket = false;
+    let loggedFirstFrameOutput = false;
+    let jpegDecodeInFlight = false;
+    let pendingJpegFrame: {
+      capturedAtMs: number | null;
+      payload: Uint8Array;
+      receivedAtMs: number;
+    } | null = null;
+    const frameTimings = new Map<number, {
+      capturedAtMs: number;
+      receivedAtMs: number;
+    }>();
+    let packetTimestamp = 0;
 
     clearLiveCalibration();
     hasFrameRef.current = false;
@@ -1026,621 +885,217 @@ export function IosSimulatorViewer({
     setConnectionState("connecting");
     setError(null);
 
-    const switchToFallback = (message: string) => {
-      if (disposed) {
-        return;
-      }
-
-      if (startupFallbackTimer != null) {
-        window.clearTimeout(startupFallbackTimer);
-        startupFallbackTimer = null;
-      }
-
-      hasFrameRef.current = false;
-      setHasFrame(false);
-      setConnectionState(controlEnabled ? "connecting" : "connected");
-      setError(message);
-      setMediaMode("fallback");
-    };
-
-    if (iosStreamProtocol === "webrtc") {
-      const video = webrtcVideoRef.current;
-      if (!video || !urls.webrtc) {
-        switchToFallback("Unable to initialize the iOS WebRTC viewer.");
-        return;
-      }
-
-      let peerConnection: RTCPeerConnection | null = null;
-      let signalingSocket: WebSocket | null = null;
-      let rafFrameId: number | null = null;
-      let rvfcHandle: number | null = null;
-      let lastVideoTime = -1;
-      const trackedVideo = video as HTMLVideoElement & {
-        cancelVideoFrameCallback?: (handle: number) => void;
-        requestVideoFrameCallback?: (callback: VideoFrameRequestCallbackLike) => number;
-      };
-
-      const stopFrameTracking = () => {
-        if (rvfcHandle != null && trackedVideo.cancelVideoFrameCallback) {
-          trackedVideo.cancelVideoFrameCallback(rvfcHandle);
-          rvfcHandle = null;
-        }
-        if (rafFrameId != null) {
-          window.cancelAnimationFrame(rafFrameId);
-          rafFrameId = null;
-        }
-      };
-
-      const trackFrame = () => {
-        const pixelWidth = Math.max(video.videoWidth || framePixelSizeRef.current.width, 1);
-        const pixelHeight = Math.max(video.videoHeight || framePixelSizeRef.current.height, 1);
-        framePixelSizeRef.current = {
-          height: pixelHeight,
-          width: pixelWidth,
-        };
-        rawFramePixelSizeRef.current = {
-          height: pixelHeight,
-          width: pixelWidth,
-        };
-        metrics.markFrame({
-          liveViewportAligned: true,
-          mediaMode: "live",
-          pixelHeight,
-          pixelWidth,
-          webrtc: true,
-        });
-      };
-
-      const startFrameTracking = () => {
-        stopFrameTracking();
-
-        if (trackedVideo.requestVideoFrameCallback) {
-          const schedule = () => {
-            rvfcHandle = trackedVideo.requestVideoFrameCallback?.(() => {
-              if (disposed) {
-                return;
-              }
-
-              trackFrame();
-              schedule();
-            }) ?? null;
-          };
-
-          schedule();
-          return;
-        }
-
-        const tick = () => {
-          if (disposed) {
-            return;
-          }
-
-          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime !== lastVideoTime) {
-            lastVideoTime = video.currentTime;
-            trackFrame();
-          }
-
-          rafFrameId = window.requestAnimationFrame(tick);
-        };
-
-        rafFrameId = window.requestAnimationFrame(tick);
-      };
-
-      const handleVideoReady = () => {
-        if (disposed) {
-          return;
-        }
-
-        const pixelWidth = Math.max(video.videoWidth, 1);
-        const pixelHeight = Math.max(video.videoHeight, 1);
-        framePixelSizeRef.current = {
-          height: pixelHeight,
-          width: pixelWidth,
-        };
-        rawFramePixelSizeRef.current = {
-          height: pixelHeight,
-          width: pixelWidth,
-        };
-        updateLiveViewportAligned(true);
-        startFrameTracking();
-        if (startupFallbackTimer != null) {
-          window.clearTimeout(startupFallbackTimer);
-          startupFallbackTimer = null;
-        }
-        hasFrameRef.current = true;
-        setHasFrame(true);
-        setConnectionState(
-          controlEnabled
-            ? controlSocketRef.current?.readyState === WebSocket.OPEN ? "connected" : "connecting"
-            : "connected",
-        );
-        setError(null);
-        void loadPointDimensions();
-      };
-
-      video.srcObject = null;
-      video.addEventListener("loadedmetadata", handleVideoReady);
-
-      peerConnection = new RTCPeerConnection({
-        iceCandidatePoolSize: 4,
-      });
-      peerConnection.addTransceiver("video", { direction: "recvonly" });
-      peerConnection.ontrack = (event) => {
-        if (disposed) {
-          return;
-        }
-
-        const [stream] = event.streams;
-        video.srcObject = stream ?? new MediaStream([event.track]);
-        void video.play().catch(() => undefined);
-      };
-      peerConnection.onicecandidate = (event) => {
-        if (!event.candidate || !signalingSocket || signalingSocket.readyState !== WebSocket.OPEN) {
-          return;
-        }
-
-        signalingSocket.send(JSON.stringify({
-          candidate: typeof event.candidate.toJSON === "function" ? event.candidate.toJSON() : event.candidate,
-          type: "ice-candidate",
-        }));
-      };
-      peerConnection.onconnectionstatechange = () => {
-        if (disposed || !peerConnection) {
-          return;
-        }
-
-        if (peerConnection.connectionState === "failed") {
-          if (!hasFrameRef.current) {
-            switchToFallback("WebRTC iOS stream failed. Switching to compatibility mode.");
-            return;
-          }
-
-          setConnectionState("error");
-          setError("WebRTC iOS stream failed.");
-          return;
-        }
-
-        if (peerConnection.connectionState === "disconnected") {
-          setConnectionState("connecting");
-        }
-      };
-
-      signalingSocket = new WebSocket(urls.webrtc);
-      signalingSocket.onopen = async () => {
-        if (!peerConnection || disposed) {
-          return;
-        }
-
-        setConnectionState("connecting");
-        setError(null);
-
-        try {
-          signalingSocket?.send(JSON.stringify({
-            fps: IOS_WEBRTC_REQUESTED_FPS,
-            quality: IOS_WEBRTC_DEFAULT_QUALITY,
-            sessionId: platformSessionId ?? sessionId,
-            type: "start-stream",
-          }));
-
-          const offer = await peerConnection.createOffer();
-          await peerConnection.setLocalDescription(offer);
-          signalingSocket?.send(JSON.stringify({
-            sdp: offer.sdp,
-            type: "offer",
-          }));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Failed to initialize WebRTC stream.";
-          if (!hasFrameRef.current) {
-            switchToFallback(message);
-            return;
-          }
-          setConnectionState("error");
-          setError(message);
-        }
-      };
-
-      signalingSocket.onmessage = async (event) => {
-        if (typeof event.data !== "string" || !peerConnection) {
-          return;
-        }
-
-        try {
-          const payload = JSON.parse(event.data) as {
-            candidate?: RTCIceCandidateInit;
-            message?: string;
-            sdp?: string;
-            type?: string;
-          };
-
-          if (payload.type === "answer" && typeof payload.sdp === "string") {
-            await peerConnection.setRemoteDescription({
-              sdp: payload.sdp,
-              type: "answer",
-            });
-            return;
-          }
-
-          if (payload.type === "ice-candidate" && payload.candidate) {
-            await peerConnection.addIceCandidate(payload.candidate);
-            return;
-          }
-
-          if (payload.type === "error") {
-            throw new Error(payload.message || "WebRTC iOS signaling failed.");
-          }
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "WebRTC iOS signaling failed.";
-          if (!hasFrameRef.current) {
-            switchToFallback(message);
-            return;
-          }
-          setConnectionState("error");
-          setError(message);
-        }
-      };
-
-      signalingSocket.onerror = () => {
-        if (!hasFrameRef.current) {
-          switchToFallback("WebRTC iOS signaling failed. Switching to compatibility mode.");
-        }
-      };
-
-      signalingSocket.onclose = (closeEvent) => {
-        if (disposed) {
-          return;
-        }
-
-        if (closeEvent.wasClean && closeEvent.code === 1000 && hasFrameRef.current) {
-          setConnectionState("disconnected");
-          return;
-        }
-
-        if (!hasFrameRef.current) {
-          switchToFallback(closeEvent.reason || "WebRTC iOS stream disconnected. Switching to compatibility mode.");
-        }
-      };
-
-      startupFallbackTimer = window.setTimeout(() => {
-        if (!hasFrameRef.current) {
-          switchToFallback("WebRTC iOS stream is taking too long. Switching to compatibility view.");
-        }
-      }, 1_800);
-
-      return () => {
-        disposed = true;
-        if (startupFallbackTimer != null) {
-          window.clearTimeout(startupFallbackTimer);
-          startupFallbackTimer = null;
-        }
-        stopFrameTracking();
-        video.pause();
-        video.srcObject = null;
-        video.removeEventListener("loadedmetadata", handleVideoReady);
-        signalingSocket?.close();
-        peerConnection?.close();
-      };
-    }
-
     const videoSocket = new WebSocket(urls.video);
     videoSocket.binaryType = "arraybuffer";
 
-    if (iosStreamProtocol === "webcodecs-h264") {
-      let codec = "";
-      let configPacket: Uint8Array | null = null;
-      let packetTimestamp = 0;
+    const renderDecodedSource = (args: {
+      decodedAtMs: number;
+      frameCapturedAtMs: number | null;
+      pixelHeight: number;
+      pixelWidth: number;
+      receivedAtMs: number | null;
+      release?: () => void;
+      source: CanvasImageSource;
+    }) => {
+      const {
+        decodedAtMs,
+        frameCapturedAtMs,
+        pixelHeight,
+        pixelWidth,
+        receivedAtMs,
+        release,
+        source,
+      } = args;
+      const frameAgeMs = frameCapturedAtMs != null
+        ? Math.max(decodedAtMs - frameCapturedAtMs, 0)
+        : null;
+      const frameTransportAgeMs = frameCapturedAtMs != null && receivedAtMs != null
+        ? Math.max(receivedAtMs - frameCapturedAtMs, 0)
+        : null;
+      const frameDecodeLatencyMs = receivedAtMs != null
+        ? Math.max(decodedAtMs - receivedAtMs, 0)
+        : null;
 
-      const decoder = new VideoDecoder({
+      const deviceWidth = pointSizeRef.current.width;
+      const deviceHeight = pointSizeRef.current.height;
+      const frameAlreadyAligned = frameLikelyMatchesDeviceAspect({
+        deviceHeight,
+        deviceWidth,
+        frameHeight: pixelHeight,
+        frameWidth: pixelWidth,
+      });
+      const calibrationKey = `${pixelWidth}x${pixelHeight}:${deviceWidth}x${deviceHeight}`;
+
+      rawFramePixelSizeRef.current = {
+        height: pixelHeight,
+        width: pixelWidth,
+      };
+
+      const rawFrameSurface = ensureRawFrameSurface(pixelHeight, pixelWidth);
+      if (!rawFrameSurface) {
+        release?.();
+        if (!hasFrameRef.current) {
+          setConnectionState("error");
+          setError("Unable to initialize the iOS stream.");
+        }
+        return;
+      }
+
+      rawFrameSurface.rawContext.drawImage(source, 0, 0, pixelWidth, pixelHeight);
+
+      if (frameAlreadyAligned) {
+        liveViewportRef.current = null;
+        liveCalibrationKeyRef.current = calibrationKey;
+        if (!liveViewportAlignedRef.current) {
+          updateLiveViewportAligned(true);
+        }
+      } else if (liveCalibrationKeyRef.current !== calibrationKey) {
+        void recalibrateLiveViewport();
+      }
+
+      redrawLiveFrameRef.current = () => {
+        drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
+      };
+      redrawLiveFrameRef.current();
+      release?.();
+
+      metrics.markFrame({
+        frameDecodeLatencyMs,
+        frameAgeMs,
+        frameTransportAgeMs,
+        liveViewportAligned: liveViewportAlignedRef.current,
+        pixelHeight,
+        pixelWidth,
+      });
+
+      if (startupTimer != null) {
+        window.clearTimeout(startupTimer);
+        startupTimer = null;
+      }
+      if (!loggedFirstFrameOutput) {
+        loggedFirstFrameOutput = true;
+        debugLog("ios.viewer", "decoder.output.first_frame", {
+          codec,
+          frameAgeMs,
+          frameDecodeLatencyMs,
+          frameTransportAgeMs,
+          pixelHeight,
+          pixelWidth,
+        });
+      }
+      hasFrameRef.current = true;
+      setHasFrame(true);
+      setConnectionState(
+        controlSocketRef.current?.readyState === WebSocket.OPEN ? "connected" : "connecting",
+      );
+      setError(null);
+    };
+
+    const decodeJpegFrame = (frame: {
+      capturedAtMs: number | null;
+      payload: Uint8Array;
+      receivedAtMs: number;
+    }) => {
+      jpegDecodeInFlight = true;
+      const jpegBytes = new Uint8Array(frame.payload.byteLength);
+      jpegBytes.set(frame.payload);
+      void createImageBitmap(new Blob([jpegBytes], { type: "image/jpeg" }))
+        .then((bitmap) => {
+          if (disposed) {
+            bitmap.close();
+            return;
+          }
+          renderDecodedSource({
+            decodedAtMs: Date.now(),
+            frameCapturedAtMs: frame.capturedAtMs,
+            pixelHeight: Math.max(bitmap.height, 1),
+            pixelWidth: Math.max(bitmap.width, 1),
+            receivedAtMs: frame.receivedAtMs,
+            release: () => bitmap.close(),
+            source: bitmap,
+          });
+        })
+        .catch((decodeError) => {
+          debugLog("ios.viewer", "jpeg.decode.error", {
+            message: decodeError instanceof Error ? decodeError.message : String(decodeError),
+          });
+          if (!hasFrameRef.current) {
+            const message = decodeError instanceof Error
+              ? decodeError.message
+              : "Unable to decode the iOS stream.";
+            setConnectionState("error");
+            setError(message);
+          }
+        })
+        .finally(() => {
+          jpegDecodeInFlight = false;
+          const nextFrame = pendingJpegFrame;
+          pendingJpegFrame = null;
+          if (nextFrame) {
+            decodeJpegFrame(nextFrame);
+          }
+        });
+    };
+
+    const queueJpegFrame = (frame: {
+      capturedAtMs: number | null;
+      payload: Uint8Array;
+      receivedAtMs: number;
+    }) => {
+      if (jpegDecodeInFlight) {
+        pendingJpegFrame = frame;
+        return;
+      }
+      decodeJpegFrame(frame);
+    };
+
+    let decoder: VideoDecoder | null = null;
+
+    const ensureDecoder = () => {
+      if (decoder) {
+        return decoder;
+      }
+      if (typeof VideoDecoder !== "function" || typeof EncodedVideoChunk !== "function") {
+        throw new Error("This browser cannot decode the iOS native stream.");
+      }
+
+      decoder = new VideoDecoder({
         output: (frame) => {
           if (disposed) {
             frame.close();
             return;
           }
 
-          const pixelWidth = Math.max(frame.displayWidth, 1);
-          const pixelHeight = Math.max(frame.displayHeight, 1);
-          const deviceWidth = pointSizeRef.current.width;
-          const deviceHeight = pointSizeRef.current.height;
-          const frameAlreadyAligned = frameLikelyMatchesDeviceAspect({
-            deviceHeight,
-            deviceWidth,
-            frameHeight: pixelHeight,
-            frameWidth: pixelWidth,
+          const decodedAtMs = Date.now();
+          const frameTiming = typeof frame.timestamp === "number"
+            ? frameTimings.get(frame.timestamp) ?? null
+            : null;
+          if (typeof frame.timestamp === "number") {
+            frameTimings.delete(frame.timestamp);
+          }
+          renderDecodedSource({
+            decodedAtMs,
+            frameCapturedAtMs: frameTiming?.capturedAtMs ?? null,
+            pixelHeight: Math.max(frame.displayHeight, 1),
+            pixelWidth: Math.max(frame.displayWidth, 1),
+            receivedAtMs: frameTiming?.receivedAtMs ?? null,
+            release: () => frame.close(),
+            source: frame,
           });
-          const calibrationKey = `${pixelWidth}x${pixelHeight}:${deviceWidth}x${deviceHeight}`;
-
-          rawFramePixelSizeRef.current = {
-            height: pixelHeight,
-            width: pixelWidth,
-          };
-
-          const rawFrameSurface = ensureRawFrameSurface(pixelHeight, pixelWidth);
-          if (!rawFrameSurface) {
-            frame.close();
-            if (!hasFrameRef.current) {
-              switchToFallback("Unable to initialize the iOS live frame surface.");
-            }
-            return;
-          }
-
-          rawFrameSurface.rawContext.drawImage(frame, 0, 0, pixelWidth, pixelHeight);
-
-          if (frameAlreadyAligned) {
-            liveViewportRef.current = null;
-            liveCalibrationKeyRef.current = calibrationKey;
-            if (!liveViewportAlignedRef.current) {
-              updateLiveViewportAligned(true);
-            }
-          } else if (liveCalibrationKeyRef.current !== calibrationKey) {
-            void recalibrateLiveViewport();
-          }
-
-          redrawLiveFrameRef.current = () => {
-            drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
-          };
-          redrawLiveFrameRef.current();
-          frame.close();
-
-          metrics.markFrame({
-            liveViewportAligned: liveViewportAlignedRef.current,
-            mediaMode: "live",
-            pixelHeight,
-            pixelWidth,
-          });
-
-          if (startupFallbackTimer != null) {
-            window.clearTimeout(startupFallbackTimer);
-            startupFallbackTimer = null;
-          }
-          hasFrameRef.current = true;
-          setHasFrame(true);
-          setConnectionState(
-            controlEnabled
-              ? controlSocketRef.current?.readyState === WebSocket.OPEN ? "connected" : "connecting"
-              : "connected",
-          );
-          setError(null);
         },
         error: (decodeError) => {
+          debugLog("ios.viewer", "decoder.output.error", {
+            codec,
+            message: decodeError.message,
+          });
           if (!hasFrameRef.current) {
-            switchToFallback(decodeError.message || "Failed to decode the iOS simulator stream.");
+            setConnectionState("error");
+            setError(decodeError.message || "Unable to decode the iOS stream.");
           }
         },
       });
 
-      videoSocket.onopen = () => {
-        setConnectionState("connecting");
-        setError(null);
-      };
-
-      startupFallbackTimer = window.setTimeout(() => {
-        if (!hasFrameRef.current) {
-          switchToFallback("Live iOS stream is taking too long. Switching to compatibility view.");
-        }
-      }, 1_800);
-
-      videoSocket.onmessage = (event) => {
-        const handleBinaryPacket = (buffer: ArrayBuffer) => {
-          const packet = new Uint8Array(buffer);
-          const packetType = packet[0];
-          const payload = packet.subarray(1);
-
-          if (packetType === IOS_H264_PACKET_CONFIG) {
-            configPacket = payload;
-            return;
-          }
-
-          if (packetType !== IOS_H264_PACKET_KEY && packetType !== IOS_H264_PACKET_DELTA) {
-            return;
-          }
-
-          if (!codec || decoder.state !== "configured") {
-            return;
-          }
-
-          if (packetType === IOS_H264_PACKET_DELTA && decoder.decodeQueueSize > 2) {
-            return;
-          }
-
-          const data = packetType === IOS_H264_PACKET_KEY && configPacket
-            ? concatUint8Arrays(configPacket, payload)
-            : payload;
-          packetTimestamp = Math.max(
-            packetTimestamp + VIDEO_CHUNK_INTERVAL_US,
-            Math.round(performance.now() * 1_000),
-          );
-
-          try {
-            decoder.decode(new EncodedVideoChunk({
-              data,
-              timestamp: packetTimestamp,
-              type: packetType === IOS_H264_PACKET_KEY ? "key" : "delta",
-            }));
-          } catch (decodeError) {
-            if (!hasFrameRef.current) {
-              const message = decodeError instanceof Error
-                ? decodeError.message
-                : "Failed to decode the iOS simulator frame.";
-              switchToFallback(message);
-            }
-          }
-        };
-
-        if (typeof event.data === "string") {
-          try {
-            const metadata = JSON.parse(event.data) as IosStreamMetadata;
-            if (typeof metadata.codec === "string" && metadata.codec.length > 0 && metadata.codec !== codec) {
-              codec = metadata.codec;
-              decoder.configure({
-                codec,
-                optimizeForLatency: true,
-              });
-            }
-
-            const pixelWidth = Number(metadata.pixelWidth);
-            const pixelHeight = Number(metadata.pixelHeight);
-            const pointWidth = Number(metadata.pointWidth);
-            const pointHeight = Number(metadata.pointHeight);
-            if (Number.isFinite(pointWidth) && Number.isFinite(pointHeight) && pointWidth > 0 && pointHeight > 0) {
-              pointSizeRef.current = {
-                height: pointHeight,
-                width: pointWidth,
-              };
-            }
-            if (Number.isFinite(pixelWidth) && Number.isFinite(pixelHeight) && pixelWidth > 0 && pixelHeight > 0) {
-              rawFramePixelSizeRef.current = {
-                height: pixelHeight,
-                width: pixelWidth,
-              };
-              if (
-                usesRuntimeNativeControl
-                && (pointSizeRef.current.width <= 0 || pointSizeRef.current.height <= 0)
-              ) {
-                pointSizeRef.current = {
-                  height: pixelHeight,
-                  width: pixelWidth,
-                };
-              }
-            }
-          } catch (metadataError) {
-            if (!hasFrameRef.current) {
-              const message = metadataError instanceof Error
-                ? metadataError.message
-                : "Invalid iOS stream metadata.";
-              switchToFallback(message);
-            }
-          }
-          return;
-        }
-
-        if (event.data instanceof Blob) {
-          void event.data.arrayBuffer().then(handleBinaryPacket).catch((blobError) => {
-            if (!hasFrameRef.current) {
-              const message = blobError instanceof Error
-                ? blobError.message
-                : "Failed to read the iOS simulator packet.";
-              switchToFallback(message);
-            }
-          });
-          return;
-        }
-
-        if (!(event.data instanceof ArrayBuffer)) {
-          return;
-        }
-
-        handleBinaryPacket(event.data);
-      };
-
-      videoSocket.onerror = () => {
-        if (!hasFrameRef.current) {
-          switchToFallback("Live iOS stream failed. Falling back to compatibility mode.");
-        }
-      };
-
-      videoSocket.onclose = (closeEvent) => {
-        if (disposed) {
-          return;
-        }
-
-        if (closeEvent.wasClean && closeEvent.code === 1000) {
-          setConnectionState("disconnected");
-          return;
-        }
-
-        switchToFallback(closeEvent.reason || "Live iOS stream disconnected. Falling back to compatibility mode.");
-      };
-
-      return () => {
-        disposed = true;
-        if (startupFallbackTimer != null) {
-          window.clearTimeout(startupFallbackTimer);
-          startupFallbackTimer = null;
-        }
-        videoSocket.close();
-        decoder.close();
-      };
-    }
-
-    let isProcessingFrame = false;
-    let pendingFrame: IosVideoFrame | null = null;
-
-    const drawLiveFrame = (image: HTMLImageElement, pixelWidth: number, pixelHeight: number) => {
-      rawFramePixelSizeRef.current = {
-        height: pixelHeight,
-        width: pixelWidth,
-      };
-      drawLiveSourceToCanvas(context, image, pixelHeight, pixelWidth);
-    };
-
-    const processFrame = (frame: IosVideoFrame) => {
-      isProcessingFrame = true;
-
-      const image = new Image();
-      image.onload = () => {
-        if (disposed) {
-          isProcessingFrame = false;
-          return;
-        }
-
-        const pixelWidth = frame.pixel_width ?? image.width;
-        const pixelHeight = frame.pixel_height ?? image.height;
-
-        pointSizeRef.current = {
-          height: frame.point_height ?? pointSizeRef.current.height,
-          width: frame.point_width ?? pointSizeRef.current.width,
-        };
-        framePixelSizeRef.current = {
-          height: pixelHeight,
-          width: pixelWidth,
-        };
-
-        drawLiveFrame(image, pixelWidth, pixelHeight);
-        metrics.markFrame({
-          legacyJpeg: true,
-          liveViewportAligned: liveViewportAlignedRef.current,
-          mediaMode: "live",
-          pixelHeight,
-          pixelWidth,
-        });
-
-        hasFrameRef.current = true;
-        setHasFrame(true);
-        setConnectionState(controlSocketRef.current?.readyState === WebSocket.OPEN ? "connected" : "connecting");
-        setError(null);
-
-        isProcessingFrame = false;
-        if (pendingFrame) {
-          const nextFrame = pendingFrame;
-          pendingFrame = null;
-          scheduleFrame(nextFrame);
-        }
-      };
-
-      image.onerror = () => {
-        isProcessingFrame = false;
-        if (!hasFrameRef.current) {
-          switchToFallback("Live iOS stream failed before the first frame arrived.");
-        }
-      };
-
-      image.src = `data:image/jpeg;base64,${frame.data}`;
-    };
-
-    const scheduleFrame = (frame: IosVideoFrame) => {
-      if (isProcessingFrame) {
-        pendingFrame = frame;
-        return;
-      }
-
-      if (animationFrameId != null) {
-        pendingFrame = frame;
-        return;
-      }
-
-      animationFrameId = window.requestAnimationFrame(() => {
-        animationFrameId = null;
-        processFrame(frame);
-      });
+      return decoder;
     };
 
     videoSocket.onopen = () => {
@@ -1648,25 +1103,207 @@ export function IosSimulatorViewer({
       setError(null);
     };
 
+    startupTimer = window.setTimeout(() => {
+      if (!hasFrameRef.current) {
+        debugLog("ios.viewer", "decoder.startup.timeout", {
+          codec,
+          decoderState: codec === "jpeg" || !decoder ? null : decoder.state,
+        });
+        setConnectionState("error");
+        setError("The iOS stream is taking too long to start.");
+      }
+    }, 1_800);
+
     videoSocket.onmessage = (event) => {
-      try {
-        const frame = JSON.parse(event.data) as IosVideoFrame;
-        if (frame.type !== "video_frame" || !frame.data) {
+      const handleBinaryPacket = (buffer: ArrayBuffer) => {
+        const packet = new Uint8Array(buffer);
+        const packetType = packet[0];
+        const payload = packet.subarray(1);
+
+        if (packetType === IOS_H264_PACKET_CONFIG) {
+          configPacket = payload;
           return;
         }
 
-        scheduleFrame(frame);
-      } catch (frameError) {
-        if (!hasFrameRef.current) {
-          const message = frameError instanceof Error ? frameError.message : "Invalid iOS video frame payload.";
-          switchToFallback(message);
+        if (packetType !== IOS_H264_PACKET_KEY && packetType !== IOS_H264_PACKET_DELTA) {
+          return;
         }
+
+        const decoderState = codec === "jpeg" || !decoder ? null : decoder.state;
+        if (!codec || (codec !== "jpeg" && decoderState !== "configured")) {
+          if (!loggedFirstBinaryPacket) {
+            loggedFirstBinaryPacket = true;
+            debugLog("ios.viewer", codec === "jpeg" ? "jpeg.packet.ignored_until_configured" : "decoder.packet.ignored_until_configured", {
+              codec,
+              decoderState,
+              packetType,
+            });
+          }
+          return;
+        }
+
+        if (codec !== "jpeg" && packetType === IOS_H264_PACKET_DELTA && (decoder?.decodeQueueSize ?? 0) > 0) {
+          return;
+        }
+
+        const capturedAtMs = readBigEndianUint64Number(payload);
+        const receivedAtMs = Date.now();
+        const payloadWithoutTimestamp = capturedAtMs != null
+          ? payload.subarray(IOS_H264_PACKET_CAPTURE_TIMESTAMP_BYTES)
+          : payload;
+
+        if (codec === "jpeg") {
+          if (!loggedFirstBinaryPacket) {
+            loggedFirstBinaryPacket = true;
+            debugLog("ios.viewer", "jpeg.packet.first", {
+              payloadBytes: payloadWithoutTimestamp.byteLength,
+            });
+          }
+          queueJpegFrame({
+            capturedAtMs,
+            payload: payloadWithoutTimestamp,
+            receivedAtMs,
+          });
+          return;
+        }
+
+        const data = packetType === IOS_H264_PACKET_KEY && configPacket
+          ? concatUint8Arrays(configPacket, payloadWithoutTimestamp)
+          : payloadWithoutTimestamp;
+        packetTimestamp = Math.max(
+          packetTimestamp + VIDEO_CHUNK_INTERVAL_US,
+          Math.round(performance.now() * 1_000),
+        );
+
+        try {
+          const h264Decoder = ensureDecoder();
+          if (!loggedFirstBinaryPacket) {
+            loggedFirstBinaryPacket = true;
+            debugLog("ios.viewer", "decoder.packet.first", {
+              codec,
+              configPacketBytes: configPacket?.byteLength ?? 0,
+              decodeQueueSize: h264Decoder.decodeQueueSize,
+              packetType,
+              payloadBytes: payloadWithoutTimestamp.byteLength,
+            });
+          }
+          if (capturedAtMs != null) {
+            frameTimings.set(packetTimestamp, {
+              capturedAtMs,
+              receivedAtMs,
+            });
+            if (frameTimings.size > 24) {
+              const oldestTimestamp = frameTimings.keys().next().value;
+              if (typeof oldestTimestamp === "number") {
+                frameTimings.delete(oldestTimestamp);
+              }
+            }
+          }
+          h264Decoder.decode(new EncodedVideoChunk({
+            data,
+            timestamp: packetTimestamp,
+            type: packetType === IOS_H264_PACKET_KEY ? "key" : "delta",
+          }));
+        } catch (decodeError) {
+          frameTimings.delete(packetTimestamp);
+          debugLog("ios.viewer", "decoder.packet.error", {
+            codec,
+            message: decodeError instanceof Error ? decodeError.message : String(decodeError),
+            packetType,
+          });
+          if (!hasFrameRef.current) {
+            const message = decodeError instanceof Error
+              ? decodeError.message
+              : "Unable to decode the iOS stream.";
+            setConnectionState("error");
+            setError(message);
+          }
+        }
+      };
+
+      if (typeof event.data === "string") {
+        try {
+          const metadata = JSON.parse(event.data) as IosStreamMetadata;
+          if (typeof metadata.codec === "string" && metadata.codec.length > 0 && metadata.codec !== codec) {
+            codec = metadata.codec;
+            if (codec === "jpeg") {
+              debugLog("ios.viewer", "jpeg.configure.success", {
+                codec,
+              });
+            } else {
+              const h264Decoder = ensureDecoder();
+              debugLog("ios.viewer", "decoder.configure.start", {
+                codec,
+              });
+              h264Decoder.configure({
+                codec,
+                hardwareAcceleration: "prefer-hardware",
+                optimizeForLatency: true,
+              });
+              debugLog("ios.viewer", "decoder.configure.success", {
+                codec,
+                decoderState: h264Decoder.state,
+              });
+            }
+          }
+
+          const pixelWidth = Number(metadata.pixelWidth);
+          const pixelHeight = Number(metadata.pixelHeight);
+          const pointWidth = Number(metadata.pointWidth);
+          const pointHeight = Number(metadata.pointHeight);
+          if (Number.isFinite(pointWidth) && Number.isFinite(pointHeight) && pointWidth > 0 && pointHeight > 0) {
+            pointSizeRef.current = {
+              height: pointHeight,
+              width: pointWidth,
+            };
+          }
+          if (Number.isFinite(pixelWidth) && Number.isFinite(pixelHeight) && pixelWidth > 0 && pixelHeight > 0) {
+            rawFramePixelSizeRef.current = {
+              height: pixelHeight,
+              width: pixelWidth,
+            };
+          }
+        } catch (metadataError) {
+          debugLog("ios.viewer", "decoder.metadata.error", {
+            message: metadataError instanceof Error ? metadataError.message : String(metadataError),
+          });
+          if (!hasFrameRef.current) {
+            const message = metadataError instanceof Error
+              ? metadataError.message
+              : "Invalid iOS stream metadata.";
+            setConnectionState("error");
+            setError(message);
+          }
+        }
+        return;
+      }
+
+      if (event.data instanceof Blob) {
+        void event.data.arrayBuffer().then(handleBinaryPacket).catch((blobError) => {
+          if (!hasFrameRef.current) {
+            const message = blobError instanceof Error
+              ? blobError.message
+              : "Unable to read the iOS stream packet.";
+            setConnectionState("error");
+            setError(message);
+          }
+        });
+        return;
+      }
+
+      if (event.data instanceof ArrayBuffer) {
+        handleBinaryPacket(event.data);
       }
     };
 
     videoSocket.onerror = () => {
+      debugLog("ios.viewer", "socket.error", {
+        codec,
+        decoderState: codec === "jpeg" || !decoder ? null : decoder.state,
+      });
       if (!hasFrameRef.current) {
-        switchToFallback("Live iOS stream failed. Falling back to compatibility mode.");
+        setConnectionState("error");
+        setError("The iOS stream failed to start.");
       }
     };
 
@@ -1680,185 +1317,33 @@ export function IosSimulatorViewer({
         return;
       }
 
-      switchToFallback(closeEvent.reason || "Live iOS stream disconnected. Falling back to compatibility mode.");
+      debugLog("ios.viewer", "socket.close", {
+        code: closeEvent.code,
+        codec,
+        decoderState: codec === "jpeg" || !decoder ? null : decoder.state,
+        reason: closeEvent.reason,
+      });
+      setConnectionState("error");
+      setError(closeEvent.reason || "The iOS stream disconnected.");
     };
 
     return () => {
       disposed = true;
-      if (animationFrameId != null) {
-        window.cancelAnimationFrame(animationFrameId);
+      if (startupTimer != null) {
+        window.clearTimeout(startupTimer);
       }
       videoSocket.close();
-    };
-  }, [controlEnabled, iosStreamProtocol, liveAttempt, mediaMode, metrics, platformSessionId, sessionId, urls.video, urls.webrtc]);
-
-  useEffect(() => {
-    if (mediaMode !== "fallback") {
-      requestFallbackRefreshRef.current = () => undefined;
-      return;
-    }
-
-    if (!urls.screenshot) {
-      setConnectionState("error");
-      setError("Fallback mode is unavailable because no iOS control bridge is configured.");
-      requestFallbackRefreshRef.current = () => undefined;
-      return;
-    }
-
-    const canvas = canvasRef.current;
-    if (!canvas || !canvas.getContext("2d")) {
-      setConnectionState("error");
-      setError("Unable to initialize iOS compatibility viewer.");
-      return;
-    }
-
-    let disposed = false;
-    liveViewportRef.current = null;
-    hasFrameRef.current = false;
-    setHasFrame(false);
-    setConnectionState("connecting");
-
-    const clearFallbackRefreshTimer = () => {
-      if (fallbackRefreshTimerRef.current != null) {
-        window.clearTimeout(fallbackRefreshTimerRef.current);
-        fallbackRefreshTimerRef.current = null;
+      if (decoder && decoder.state !== "closed") {
+        decoder.close();
       }
     };
-
-    const clearActionRefreshTimers = () => {
-      for (const timer of actionRefreshTimersRef.current) {
-        window.clearTimeout(timer);
-      }
-      actionRefreshTimersRef.current = [];
-    };
-
-    const scheduleFallbackPoll = () => {
-      clearFallbackRefreshTimer();
-      fallbackRefreshTimerRef.current = window.setTimeout(() => {
-        fallbackRefreshTimerRef.current = null;
-        requestFallbackRefreshRef.current();
-      }, FALLBACK_SCREENSHOT_POLL_INTERVAL_MS);
-    };
-
-    const refreshScreenshot = async () => {
-      if (disposed) {
-        return;
-      }
-
-      if (refreshInFlightRef.current) {
-        refreshQueuedRef.current = true;
-        return;
-      }
-
-      refreshInFlightRef.current = true;
-      clearFallbackRefreshTimer();
-
-      const controller = new AbortController();
-      screenshotAbortRef.current = controller;
-
-      try {
-        if (!urls.screenshot) {
-          throw new Error("No screenshot endpoint is available for this iOS fallback session.");
-        }
-
-        const targetUrl = new URL(urls.screenshot);
-        targetUrl.searchParams.set("t", Date.now().toString());
-
-        const response = await fetch(targetUrl, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          throw new Error(`Failed to refresh iOS compatibility view (${response.status}).`);
-        }
-
-        const blob = await response.blob();
-        if (blob.size <= 0) {
-          throw new Error("iOS compatibility screenshot was empty.");
-        }
-
-        const renderCanvas = canvasRef.current;
-        if (!renderCanvas) {
-          return;
-        }
-
-        const dimensions = await drawBlobToCanvas(renderCanvas, blob);
-        framePixelSizeRef.current = dimensions;
-        if (usesRuntimeNativeControl || pointSizeRef.current.width <= 0 || pointSizeRef.current.height <= 0) {
-          pointSizeRef.current = dimensions;
-        }
-        metrics.markFrame({
-          mediaMode: "fallback",
-          pixelHeight: dimensions.height,
-          pixelWidth: dimensions.width,
-        });
-
-        if (!disposed) {
-          hasFrameRef.current = true;
-          setHasFrame(true);
-          setConnectionState(
-            controlEnabled
-              ? controlSocketRef.current?.readyState === WebSocket.OPEN ? "connected" : "connecting"
-              : "connected",
-          );
-          setError(null);
-        }
-      } catch (refreshError) {
-        if (disposed || controller.signal.aborted) {
-          return;
-        }
-
-        const message = refreshError instanceof Error
-          ? refreshError.message
-          : "Failed to refresh the iOS compatibility view.";
-
-        if (!hasFrameRef.current) {
-          setConnectionState("error");
-        }
-        setError(message);
-      } finally {
-        if (screenshotAbortRef.current === controller) {
-          screenshotAbortRef.current = null;
-        }
-
-        refreshInFlightRef.current = false;
-        if (disposed) {
-          return;
-        }
-
-        if (refreshQueuedRef.current) {
-          refreshQueuedRef.current = false;
-          void refreshScreenshot();
-          return;
-        }
-
-        scheduleFallbackPoll();
-      }
-    };
-
-    requestFallbackRefreshRef.current = () => {
-      void refreshScreenshot();
-    };
-
-    void loadPointDimensions();
-    requestFallbackRefreshRef.current();
-
-    return () => {
-      disposed = true;
-      requestFallbackRefreshRef.current = () => undefined;
-      clearFallbackRefreshTimer();
-      clearActionRefreshTimers();
-      screenshotAbortRef.current?.abort();
-      screenshotAbortRef.current = null;
-    };
-  }, [controlEnabled, mediaMode, metrics, urls.screenshot, urls.status, usesRuntimeNativeControl]);
+  }, [liveAttempt, metrics, urls.screenshot, urls.video]);
 
   const restartLiveStream = () => {
     hasFrameRef.current = false;
     setHasFrame(false);
     setConnectionState("connecting");
     setError(null);
-    setMediaMode("live");
     setLiveAttempt((current) => current + 1);
   };
 
@@ -1913,11 +1398,6 @@ export function IosSimulatorViewer({
   };
 
   const sendControl = (payload: IosControlPayload) => {
-    if (!controlEnabled) {
-      setError("iOS control is not configured for this simulator session.");
-      return;
-    }
-
     const socket = controlSocketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       setConnectionState("connecting");
@@ -1926,7 +1406,7 @@ export function IosSimulatorViewer({
     }
 
     const action = typeof payload.t === "string" ? payload.t : "unknown";
-    const isPointerGestureAction = action === "tap" || action === "touch" || action === "swipe";
+    const isPointerGestureAction = action === "drag" || action === "tap" || action === "touch" || action === "swipe" || action === "system";
     const gestureToControlMs = isPointerGestureAction && pointerGestureStartedAtRef.current != null
       ? Math.max(performance.now() - pointerGestureStartedAtRef.current, 0)
       : null;
@@ -1937,26 +1417,38 @@ export function IosSimulatorViewer({
 
     metrics.markControl(action, {
       gestureToControlMs: gestureToControlMs != null ? Math.round(gestureToControlMs * 10) / 10 : null,
-      mediaMode: mediaModeRef.current,
+      mode: "live",
     });
     socket.send(JSON.stringify(payload));
+  };
 
-    if (mediaModeRef.current !== "fallback") {
+  useEffect(() => () => {
+    const activeDrag = dragStateRef.current;
+    dragStateRef.current = null;
+    if (!activeDrag) {
       return;
     }
 
-    for (const timer of actionRefreshTimersRef.current) {
-      window.clearTimeout(timer);
+    clearDragTouchTimer(activeDrag);
+    clearDragFlushTimer(activeDrag);
+    clearSystemGestureTimer(activeDrag);
+    if (activeDrag.systemGestureTriggered || activeDrag.systemGestureDeferred) {
+      return;
+    }
+    if (activeDrag.dragActive || activeDrag.dragPoints.length > 0) {
+      flushDragGesture(activeDrag, true);
+      return;
     }
 
-    actionRefreshTimersRef.current = FALLBACK_REFRESH_AFTER_ACTION_MS.map((delay) => {
-      const timer = window.setTimeout(() => {
-        actionRefreshTimersRef.current = actionRefreshTimersRef.current.filter((value) => value !== timer);
-        requestFallbackRefreshRef.current();
-      }, delay);
-      return timer;
-    });
-  };
+    if (activeDrag.touchDownSent) {
+      sendControl({
+        phase: "up",
+        t: "touch",
+        x: activeDrag.x,
+        y: activeDrag.y,
+      });
+    }
+  }, []);
 
   const sendKeyboardText = (text: string) => {
     if (text.length === 0) {
@@ -2078,16 +1570,8 @@ export function IosSimulatorViewer({
     };
   }, []);
 
-  const getInteractiveElement = () => {
-    if (isWebRtcStream && mediaModeRef.current === "live") {
-      return webrtcVideoRef.current;
-    }
-
-    return canvasRef.current;
-  };
-
   const getInteractivePoint = (clientX: number, clientY: number) => {
-    const element = getInteractiveElement();
+    const element = canvasRef.current;
     if (!element) {
       return null;
     }
@@ -2101,6 +1585,130 @@ export function IosSimulatorViewer({
       deviceWidth: pointSizeRef.current.width,
       element,
     });
+  };
+
+  const clearDragTouchTimer = (dragState: DragState) => {
+    if (dragState.touchTimer != null) {
+      window.clearTimeout(dragState.touchTimer);
+      dragState.touchTimer = null;
+    }
+  };
+
+  const clearDragFlushTimer = (dragState: DragState) => {
+    if (dragState.dragFlushTimer != null) {
+      window.clearTimeout(dragState.dragFlushTimer);
+      dragState.dragFlushTimer = null;
+    }
+  };
+
+  const clearSystemGestureTimer = (dragState: DragState) => {
+    if (dragState.systemGestureTimer != null) {
+      window.clearTimeout(dragState.systemGestureTimer);
+      dragState.systemGestureTimer = null;
+    }
+  };
+
+  const queueDragPoint = (args: {
+    activeDrag: DragState;
+    atMs: number;
+    clientX: number;
+    clientY: number;
+    point: { x: number; y: number };
+  }): boolean => {
+    const { activeDrag, atMs, clientX, clientY, point } = args;
+    const clientDx = clientX - activeDrag.lastPathClientX;
+    const clientDy = clientY - activeDrag.lastPathClientY;
+    const elapsedMs = atMs - activeDrag.lastPathAtMs;
+
+    if (activeDrag.dragPoints.length > 0 && !shouldAppendIosGesturePathPoint({
+      clientDx,
+      clientDy,
+      elapsedMs,
+    })) {
+      return false;
+    }
+
+    activeDrag.dragPoints.push({
+      atMs,
+      x: point.x,
+      y: point.y,
+    });
+    activeDrag.lastPathAtMs = atMs;
+    activeDrag.lastPathClientX = clientX;
+    activeDrag.lastPathClientY = clientY;
+    activeDrag.x = point.x;
+    activeDrag.y = point.y;
+    return true;
+  };
+
+  const flushDragGesture = (activeDrag: DragState, end: boolean) => {
+    clearDragFlushTimer(activeDrag);
+
+    const points = activeDrag.dragPoints.length > 0
+      ? [...activeDrag.dragPoints]
+      : end
+        ? [{
+          atMs: performance.now(),
+          x: activeDrag.x,
+          y: activeDrag.y,
+        }]
+        : [];
+    if (points.length === 0) {
+      return;
+    }
+
+    activeDrag.dragPoints = [];
+    sendControl(buildIosDragPayload({
+      phase: end ? "end" : (activeDrag.dragActive || activeDrag.touchDownSent) ? "move" : "start",
+      points,
+    }) satisfies IosControlPayload);
+    activeDrag.dragActive = !end;
+  };
+
+  const dispatchSystemGesture = (activeDrag: DragState, gesture: IosSystemGesture) => {
+    clearDragTouchTimer(activeDrag);
+    clearDragFlushTimer(activeDrag);
+    clearSystemGestureTimer(activeDrag);
+    activeDrag.dragActive = false;
+    activeDrag.dragPoints = [];
+    activeDrag.systemGesture = gesture;
+    activeDrag.systemGestureDeferred = false;
+    activeDrag.systemGestureTriggered = true;
+    activeDrag.touchDownSent = false;
+    sendControl({
+      name: gesture,
+      t: "system",
+    });
+  };
+
+  const deferSystemGesture = (activeDrag: DragState, gesture: IosSystemGesture) => {
+    clearSystemGestureTimer(activeDrag);
+    activeDrag.systemGesture = gesture;
+    activeDrag.systemGestureDeferred = true;
+    activeDrag.systemGestureTriggered = false;
+    activeDrag.systemGestureTimer = window.setTimeout(() => {
+      const currentDrag = dragStateRef.current;
+      if (!currentDrag || currentDrag.pointerId !== activeDrag.pointerId || currentDrag.systemGesture !== gesture || !currentDrag.systemGestureDeferred) {
+        return;
+      }
+
+      dispatchSystemGesture(currentDrag, gesture);
+    }, IOS_BOTTOM_EDGE_APP_SWITCHER_HOLD_DELAY_MS);
+  };
+
+  const scheduleDragFlush = (activeDrag: DragState) => {
+    if (activeDrag.dragFlushTimer != null) {
+      return;
+    }
+
+    activeDrag.dragFlushTimer = window.setTimeout(() => {
+      const currentDrag = dragStateRef.current;
+      if (!currentDrag || currentDrag.pointerId !== activeDrag.pointerId) {
+        return;
+      }
+
+      flushDragGesture(currentDrag, false);
+    }, IOS_GESTURE_PATH_FLUSH_INTERVAL_MS);
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLElement>) => {
@@ -2118,26 +1726,39 @@ export function IosSimulatorViewer({
     }
 
     dragStateRef.current = {
+      axis: null,
+      dragActive: false,
+      dragFlushTimer: null,
+      dragPoints: [],
+      edge: detectIosGestureEdge({
+        deviceHeight: pointSizeRef.current.height,
+        deviceWidth: pointSizeRef.current.width,
+        startX: point.x,
+        startY: point.y,
+      }),
+      lastPathAtMs: performance.now(),
+      lastPathClientX: event.clientX,
+      lastPathClientY: event.clientY,
       moved: false,
       moveStartedAt: null,
       pointerId: event.pointerId,
       scrollIntent: false,
-      startAt: Date.now(),
+      startAtMs: performance.now(),
       startClientX: event.clientX,
       startClientY: event.clientY,
       startX: point.x,
       startY: point.y,
-      swipeDispatched: false,
+      systemGesture: null,
+      systemGestureDeferred: false,
+      systemGestureTimer: null,
+      systemGestureTriggered: false,
       touchDownSent: false,
       touchTimer: null,
       x: point.x,
       y: point.y,
     };
     pointerGestureStartedAtRef.current = performance.now();
-    // Favor immediate touch feedback in live mode; fallback is screenshot-bound anyway.
-    const touchDownDelayMs = mediaModeRef.current === "live"
-      ? IOS_TOUCH_DOWN_DELAY_LIVE_MS
-      : IOS_TOUCH_DOWN_DELAY_FALLBACK_MS;
+
     const touchTimer = window.setTimeout(() => {
       const activeDrag = dragStateRef.current;
       if (!activeDrag || activeDrag.pointerId !== event.pointerId || activeDrag.moved || activeDrag.touchDownSent) {
@@ -2155,31 +1776,9 @@ export function IosSimulatorViewer({
         touchDownSent: true,
         touchTimer: null,
       };
-    }, touchDownDelayMs);
+    }, IOS_TOUCH_DOWN_DELAY_LIVE_MS);
     dragStateRef.current.touchTimer = touchTimer;
     event.currentTarget.setPointerCapture(event.pointerId);
-  };
-
-  const dispatchSwipeGesture = (activeDrag: DragState, point: { x: number; y: number }) => {
-    const gestureStartedAt = pointerGestureStartedAtRef.current;
-    if (activeDrag.touchDownSent) {
-      sendControl({
-        phase: "up",
-        t: "touch",
-        x: activeDrag.startX,
-        y: activeDrag.startY,
-      });
-      pointerGestureStartedAtRef.current = gestureStartedAt;
-    }
-
-    sendControl(buildIosSwipePayload({
-      currentX: point.x,
-      currentY: point.y,
-      deviceHeight: pointSizeRef.current.height,
-      gestureDurationMs: Math.max(Date.now() - (activeDrag.moveStartedAt ?? activeDrag.startAt), 1),
-      startX: activeDrag.startX,
-      startY: activeDrag.startY,
-    }));
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLElement>) => {
@@ -2197,41 +1796,107 @@ export function IosSimulatorViewer({
       return;
     }
 
+    const now = Date.now();
+    const nowMs = performance.now();
     const clientDx = event.clientX - activeDrag.startClientX;
     const clientDy = event.clientY - activeDrag.startClientY;
-    const clientDistance = Math.sqrt(clientDx * clientDx + clientDy * clientDy);
-    const dominantAxisDistance = Math.max(Math.abs(clientDx), Math.abs(clientDy));
-    const scrollIntent = activeDrag.scrollIntent
-      || dominantAxisDistance >= IOS_GESTURE_SCROLL_INTENT_DISTANCE_CSS_PX;
-    const moved = activeDrag.moved || clientDistance > IOS_GESTURE_TAP_SLOP_CSS_PX;
+    const clientDistance = Math.hypot(clientDx, clientDy);
+    const axis = resolveIosGestureAxis({
+      clientDx,
+      clientDy,
+      edge: activeDrag.edge,
+      lockedAxis: activeDrag.axis,
+    });
+    const systemGesture = !activeDrag.touchDownSent && !activeDrag.dragActive
+      ? resolveIosSystemGesture({
+        axis,
+        clientDx,
+        clientDy,
+        edge: activeDrag.edge,
+      })
+      : null;
+    const scrollIntent = activeDrag.scrollIntent || axis !== null;
+    const moved = activeDrag.moved || clientDistance > IOS_GESTURE_TAP_SLOP_CSS_PX || scrollIntent;
     const moveStartedAt = moved
-      ? activeDrag.moveStartedAt ?? Date.now()
+      ? activeDrag.moveStartedAt ?? now
       : activeDrag.moveStartedAt;
-    const shouldCancelTouchDown = moved || clientDistance >= IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX;
-    if (shouldCancelTouchDown && activeDrag.touchTimer != null) {
-      window.clearTimeout(activeDrag.touchTimer);
+    const shouldCancelTouchDown = scrollIntent || clientDistance >= IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX;
+    if (shouldCancelTouchDown) {
+      clearDragTouchTimer(activeDrag);
     }
 
     const nextDragState: DragState = {
       ...activeDrag,
+      axis,
       moved,
       moveStartedAt,
       scrollIntent,
-      swipeDispatched: activeDrag.swipeDispatched,
+      systemGesture,
       touchTimer: shouldCancelTouchDown ? null : activeDrag.touchTimer,
       x: point.x,
       y: point.y,
     };
 
-    if (
-      moved
-      && !activeDrag.swipeDispatched
-      && clientDistance >= IOS_GESTURE_EAGER_SWIPE_DISTANCE_CSS_PX
-    ) {
-      dispatchSwipeGesture(nextDragState, point);
-      dragStateRef.current = null;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-        event.currentTarget.releasePointerCapture(event.pointerId);
+    if (activeDrag.systemGestureDeferred && !activeDrag.systemGestureTriggered && systemGesture == null) {
+      clearSystemGestureTimer(nextDragState);
+      nextDragState.systemGesture = null;
+      nextDragState.systemGestureDeferred = false;
+      dragStateRef.current = nextDragState;
+      if (!nextDragState.dragActive && nextDragState.dragPoints.length > 0) {
+        flushDragGesture(nextDragState, false);
+      }
+      return;
+    }
+
+    if (systemGesture) {
+      if (!nextDragState.dragActive && nextDragState.dragPoints.length === 0) {
+        nextDragState.dragPoints.push({
+          atMs: nextDragState.startAtMs,
+          x: nextDragState.startX,
+          y: nextDragState.startY,
+        });
+      }
+
+      queueDragPoint({
+        activeDrag: nextDragState,
+        atMs: nowMs,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        point,
+      });
+      deferSystemGesture(nextDragState, systemGesture);
+      dragStateRef.current = nextDragState;
+      return;
+    }
+
+    const shouldContinueAsDrag = (!nextDragState.touchDownSent && scrollIntent)
+      || (nextDragState.touchDownSent && clientDistance >= IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX);
+
+    if (shouldContinueAsDrag) {
+      if (!nextDragState.touchDownSent && !nextDragState.dragActive && nextDragState.dragPoints.length === 0) {
+        nextDragState.dragPoints.push({
+          atMs: nextDragState.startAtMs,
+          x: nextDragState.startX,
+          y: nextDragState.startY,
+        });
+      }
+
+      const queued = queueDragPoint({
+        activeDrag: nextDragState,
+        atMs: nowMs,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        point,
+      });
+      dragStateRef.current = nextDragState;
+      if (!queued) {
+        return;
+      }
+
+      if (!nextDragState.dragActive) {
+        flushDragGesture(nextDragState, false);
+      } else {
+        scheduleDragFlush(nextDragState);
       }
       return;
     }
@@ -2253,20 +1918,25 @@ export function IosSimulatorViewer({
       return;
     }
     if (activeDrag.touchTimer != null) {
-      window.clearTimeout(activeDrag.touchTimer);
+      clearDragTouchTimer(activeDrag);
+    }
+    clearDragFlushTimer(activeDrag);
+    clearSystemGestureTimer(activeDrag);
+
+    if (activeDrag.systemGestureTriggered) {
+      return;
+    }
+    if (activeDrag.systemGestureDeferred) {
+      activeDrag.systemGesture = null;
+      activeDrag.systemGestureDeferred = false;
     }
 
     const point = getInteractivePoint(event.clientX, event.clientY) ?? { x: activeDrag.x, y: activeDrag.y };
     const clientDx = event.clientX - activeDrag.startClientX;
     const clientDy = event.clientY - activeDrag.startClientY;
-    const clientDistance = Math.sqrt(clientDx * clientDx + clientDy * clientDy);
+    const clientDistance = Math.hypot(clientDx, clientDy);
 
-    if (clientDistance <= IOS_GESTURE_TAP_SLOP_CSS_PX) {
-      if (activeDrag.scrollIntent) {
-        dispatchSwipeGesture(activeDrag, point);
-        return;
-      }
-
+    if (!activeDrag.scrollIntent && clientDistance <= IOS_GESTURE_TAP_SLOP_CSS_PX) {
       if (activeDrag.touchDownSent) {
         sendControl({
           phase: "up",
@@ -2274,44 +1944,81 @@ export function IosSimulatorViewer({
           x: point.x,
           y: point.y,
         });
-      } else {
-        sendControl({
-          t: "tap",
-          x: point.x,
-          y: point.y,
-        });
+        return;
       }
+
+      sendControl({
+        t: "tap",
+        x: point.x,
+        y: point.y,
+      });
       return;
     }
 
-    dispatchSwipeGesture(activeDrag, point);
+    if (!activeDrag.touchDownSent) {
+      const shouldStartDrag = activeDrag.scrollIntent || clientDistance > IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX;
+      if (!shouldStartDrag) {
+        return;
+      }
+
+      if (!activeDrag.dragActive && activeDrag.dragPoints.length === 0) {
+        activeDrag.dragPoints.push({
+          atMs: activeDrag.startAtMs,
+          x: activeDrag.startX,
+          y: activeDrag.startY,
+        });
+      }
+      queueDragPoint({
+        activeDrag,
+        atMs: performance.now(),
+        clientX: event.clientX,
+        clientY: event.clientY,
+        point,
+      });
+      flushDragGesture(activeDrag, true);
+      return;
+    }
+
+    const shouldEndTouchAsDrag = activeDrag.dragActive
+      || activeDrag.scrollIntent
+      || clientDistance >= IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX;
+    if (shouldEndTouchAsDrag) {
+      queueDragPoint({
+        activeDrag,
+        atMs: performance.now(),
+        clientX: event.clientX,
+        clientY: event.clientY,
+        point,
+      });
+      flushDragGesture(activeDrag, true);
+      return;
+    }
+
+    if (activeDrag.touchDownSent) {
+      sendControl({
+        phase: "up",
+        t: "touch",
+        x: point.x,
+        y: point.y,
+      });
+    }
   };
 
   const statusLabel = connectionState === "connected"
-    ? mediaMode === "live"
-      ? isWebRtcStream
-        ? "WebRTC"
-        : liveViewportAligned
-          ? "Live"
-          : "Aligning"
-      : "Fallback"
+    ? liveViewportAligned
+      ? "Streaming"
+      : "Aligning"
     : connectionState === "connecting"
       ? "Connecting"
       : connectionState === "disconnected"
         ? "Disconnected"
         : "Error";
 
-  const overlayMessage = error ?? (
-    mediaMode === "live"
-      ? controlEnabled
-        ? isWebRtcStream
-          ? "Starting the iOS WebRTC stream directly in this panel."
-          : "Starting the iOS live stream directly in this panel."
-        : isWebRtcStream
-          ? "Streaming iOS WebRTC video directly in this panel. Control is temporarily unavailable."
-          : "Streaming live video directly in this panel. Control is temporarily unavailable."
-      : "Using the compatibility renderer while the live stream is unavailable."
-  );
+  const overlayMessage = error
+    ? normalizeIosStreamMessage(error)
+    : connectionState === "connecting"
+      ? "Starting the iOS stream directly in this panel."
+      : "Streaming iOS directly in this panel.";
 
   return (
     <div
@@ -2337,22 +2044,9 @@ export function IosSimulatorViewer({
       </div>
 
       <div ref={containerRef} className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-3 pt-3">
-        <video
-          ref={webrtcVideoRef}
-          autoPlay
-          muted
-          playsInline
-          className={`${isWebRtcStream && mediaMode === "live" ? "block" : "hidden"} max-h-full max-w-full touch-none rounded-[22px] bg-black shadow-[0_24px_90px_rgba(0,0,0,0.55)] outline-none`}
-          tabIndex={0}
-          onContextMenu={(event) => event.preventDefault()}
-          onPointerCancel={finishPointerGesture}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={finishPointerGesture}
-        />
         <canvas
           ref={canvasRef}
-          className={`${isWebRtcStream && mediaMode === "live" ? "hidden" : "block"} max-h-full max-w-full touch-none rounded-[22px] bg-black shadow-[0_24px_90px_rgba(0,0,0,0.55)] outline-none`}
+          className="block max-h-full max-w-full touch-none rounded-[22px] bg-black shadow-[0_24px_90px_rgba(0,0,0,0.55)] outline-none"
           tabIndex={0}
           onContextMenu={(event) => event.preventDefault()}
           onPointerCancel={finishPointerGesture}
@@ -2375,7 +2069,7 @@ export function IosSimulatorViewer({
           </div>
         ) : null}
 
-        {hasFrame && mediaMode === "live" && !isWebRtcStream && !liveViewportAligned ? (
+        {hasFrame && !liveViewportAligned ? (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/10 px-6">
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[11px] font-medium text-white/80 shadow-[0_16px_48px_rgba(0,0,0,0.28)] backdrop-blur-md">
               <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
@@ -2404,7 +2098,6 @@ export function IosSimulatorViewer({
             className="h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
             aria-label="iOS Home"
             onClick={() => sendControl({ t: "button", button: "home" })}
-            disabled={!controlEnabled}
           >
             <House className="h-4 w-4" />
           </Button>
@@ -2415,7 +2108,6 @@ export function IosSimulatorViewer({
             className="h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
             aria-label="iOS Lock"
             onClick={() => sendControl({ t: "button", button: "lock" })}
-            disabled={!controlEnabled}
           >
             <Lock className="h-4 w-4" />
           </Button>

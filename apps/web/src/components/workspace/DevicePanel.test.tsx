@@ -6,6 +6,9 @@ import { DevicePanel } from "./DevicePanel";
 const { useDevicesMock } = vi.hoisted(() => ({
   useDevicesMock: vi.fn(),
 }));
+const { openExternalUrlMock } = vi.hoisted(() => ({
+  openExternalUrlMock: vi.fn(),
+}));
 
 const startStream = vi.fn();
 const stopStream = vi.fn();
@@ -18,7 +21,8 @@ vi.mock("../../lib/api", () => ({
 }));
 
 vi.mock("../../lib/openExternalUrl", () => ({
-  openExternalUrl: vi.fn(),
+  isTauriDesktop: () => true,
+  openExternalUrl: openExternalUrlMock,
 }));
 
 vi.mock("./AndroidDeviceViewer", () => ({
@@ -197,5 +201,121 @@ describe("DevicePanel", () => {
 
     expect(container.querySelector('[data-device-viewer="ios-native"]')).toBeTruthy();
     expect(container.querySelector("iframe")).toBeNull();
+    expect(container.textContent).not.toContain("WebRTC");
+    expect(container.textContent).not.toContain("Bridge WS");
+    expect(container.textContent).not.toContain("iOS stream mode");
+  });
+
+  it("starts iOS streaming without exposing a mode selector", async () => {
+    useDevicesMock.mockImplementation(() => ({
+      snapshot: {
+        devices: [
+          {
+            id: "ios-simulator:abc123",
+            name: "iPhone 15 Pro",
+            platform: "ios-simulator",
+            status: "available",
+            connectionKind: "simulator",
+            supportsEmbeddedStream: true,
+            supportsControl: true,
+            serial: "ABC123",
+            lastError: null,
+          },
+        ],
+        activeSessions: [],
+        issues: [],
+        refreshedAt: new Date().toISOString(),
+      },
+      loading: false,
+      error: null,
+      refresh,
+      startStream,
+      stopStream,
+      startingDeviceId: null,
+      stoppingSessionId: null,
+    }));
+
+    await act(async () => {
+      root.render(<DevicePanel onClose={() => {}} />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain("Auto");
+    expect(container.textContent).not.toContain("WebRTC");
+    expect(container.textContent).not.toContain("Bridge WS");
+
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent?.includes("Start Stream"));
+    expect(button).toBeTruthy();
+
+    await act(async () => {
+      (button as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    expect(startStream).toHaveBeenCalledWith("ios-simulator:abc123");
+  });
+
+  it("shows macOS screen recording guidance for packaged iOS streaming", async () => {
+    useDevicesMock.mockImplementation(() => ({
+      snapshot: {
+        devices: [
+          {
+            id: "ios-simulator:abc123",
+            name: "iPhone 15 Pro",
+            platform: "ios-simulator",
+            status: "streaming",
+            connectionKind: "simulator",
+            supportsEmbeddedStream: true,
+            supportsControl: true,
+            serial: "ABC123",
+            lastError: null,
+          },
+        ],
+        activeSessions: [
+          {
+            sessionId: "ios-stream-1",
+            deviceId: "ios-simulator:abc123",
+            platform: "ios-simulator",
+            viewerUrl: "/api/device-streams/ios-stream-1/viewer",
+            controlTransport: "websocket",
+            startedAt: new Date().toISOString(),
+          },
+        ],
+        issues: [
+          {
+            id: "ios-simulator:tcc",
+            platform: "ios-simulator",
+            severity: "warning",
+            message: "Native iOS simulator streaming is unavailable: The user declined TCCs for application, window, display capture",
+          },
+        ],
+        refreshedAt: new Date().toISOString(),
+      },
+      loading: false,
+      error: null,
+      refresh,
+      startStream,
+      stopStream,
+      startingDeviceId: null,
+      stoppingSessionId: null,
+    }));
+
+    await act(async () => {
+      root.render(<DevicePanel onClose={() => {}} />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Screen Recording required");
+    expect(container.textContent).toContain("Grant Screen Recording to CodeSymphony");
+
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent?.includes("Open Settings"));
+    expect(button).toBeTruthy();
+
+    await act(async () => {
+      (button as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+
+    expect(openExternalUrlMock).toHaveBeenCalledWith("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
   });
 });

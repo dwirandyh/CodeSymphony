@@ -48,6 +48,7 @@ function clamp(value: number, min: number, max: number): number {
 function supportsAndroidNativeViewer(): boolean {
   return typeof window !== "undefined"
     && typeof WebSocket === "function"
+    && window.isSecureContext === true
     && typeof VideoDecoder === "function"
     && typeof EncodedVideoChunk === "function";
 }
@@ -132,7 +133,7 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
       return;
     }
 
-    const decoder = new VideoDecoder({
+    const createDecoder = () => new VideoDecoder({
       output: (frame) => {
         if (disposed) {
           frame.close();
@@ -163,6 +164,19 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
         setError(decodeError.message || "Failed to decode Android stream.");
       },
     });
+
+    let decoder: VideoDecoder;
+    try {
+      decoder = createDecoder();
+    } catch (decodeError) {
+      setConnectionState("error");
+      setError(
+        decodeError instanceof Error
+          ? decodeError.message
+          : "Failed to initialize Android stream decoder.",
+      );
+      return;
+    }
 
     decoderRef.current = decoder;
     setConnectionState("connecting");
@@ -279,39 +293,17 @@ export function AndroidDeviceViewer({ deviceName, serial, sessionId }: AndroidDe
               });
             } catch {
               decoder.close();
-              decoderRef.current = new VideoDecoder({
-                output: (frame) => {
-                  if (disposed) {
-                    frame.close();
-                    return;
-                  }
-
-                  const renderCanvas = canvasRef.current;
-                  const renderContext = renderCanvas?.getContext("2d");
-                  if (!renderCanvas || !renderContext) {
-                    frame.close();
-                    return;
-                  }
-                  if (renderCanvas.width !== frame.displayWidth || renderCanvas.height !== frame.displayHeight) {
-                    renderCanvas.width = frame.displayWidth;
-                    renderCanvas.height = frame.displayHeight;
-                  }
-                  renderContext.drawImage(frame, 0, 0, renderCanvas.width, renderCanvas.height);
-                  frame.close();
-                  deviceSizeRef.current = { height: renderCanvas.height, width: renderCanvas.width };
-                  setConnectionState("connected");
-                  setHasFrame(true);
-                  setError(null);
-                },
-                error: (decodeError) => {
-                  if (disposed) {
-                    return;
-                  }
-
-                  setConnectionState("error");
-                  setError(decodeError.message || "Failed to decode Android stream.");
-                },
-              });
+              try {
+                decoderRef.current = createDecoder();
+              } catch (decodeError) {
+                setConnectionState("error");
+                setError(
+                  decodeError instanceof Error
+                    ? decodeError.message
+                    : "Failed to reinitialize Android stream decoder.",
+                );
+                return;
+              }
               decoderRef.current.configure({
                 codec: decoderConfig.codec,
                 optimizeForLatency: true,
