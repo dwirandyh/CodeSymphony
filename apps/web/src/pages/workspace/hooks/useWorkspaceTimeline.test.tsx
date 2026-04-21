@@ -812,6 +812,47 @@ describe("useWorkspaceTimeline", () => {
     expect(items[items.length - 1]?.kind).toBe("plan-file-output");
   });
 
+  it("renders post-approval implementation activity after the plan card", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "Plan it"),
+      makeMessage("m2", 2, "assistant", "# My Plan\n- Step 1"),
+      makeMessage("m3", 3, "assistant", "Implementing the approved plan."),
+    ];
+    const events = [
+      makeEvent(0, "plan.created", {
+        messageId: "m2",
+        content: "# My Plan\n- Step 1",
+        filePath: ".claude/plans/my-plan.md",
+      }, "m2"),
+      makeEvent(1, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }, "m2"),
+      makeEvent(2, "tool.finished", { precedingToolUseIds: ["exit-1"] }, "m2"),
+      makeEvent(3, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "edit-1",
+        toolInput: {
+          file_path: "src/app.ts",
+          old_string: "const value = 1;",
+          new_string: "const value = 2;",
+        },
+      }, "m3"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const planIndex = items.findIndex((item) => item.kind === "plan-file-output");
+    const editedIndex = items.findIndex((item) => item.kind === "edited-diff");
+
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(editedIndex).toBeGreaterThan(-1);
+    expect(planIndex).toBeLessThan(editedIndex);
+    expect(items[editedIndex]).toMatchObject({
+      kind: "edited-diff",
+      status: "running",
+      changedFiles: ["src/app.ts"],
+    });
+    expect(items[items.length - 1]?.kind).not.toBe("plan-file-output");
+    expect(items.slice(planIndex + 1).some((item) => item.kind === "edited-diff")).toBe(true);
+  });
+
   it("skips bogus streaming fallback plan events without a real plan write", () => {
     const messages = [makeMessage("m1", 1, "user", "hi"), makeMessage("m2", 2, "assistant", "Hello there")];
     const events = [
