@@ -295,7 +295,7 @@ describe("extractEditedRuns", () => {
     expect(runs[1].diff).not.toContain("README.md");
   });
 
-  it("keeps a single actual run when duplicate candidates target the same changed file", () => {
+  it("merges permission and tool edit events into a single actual run", () => {
     const events = [
       makeEvent({
         id: "e1",
@@ -351,9 +351,10 @@ describe("extractEditedRuns", () => {
     const readmeRuns = runs.filter((run) => run.changedFiles.some((file) => file.includes("README.md")));
     const actualReadmeRuns = readmeRuns.filter((run) => run.diffKind === "actual");
 
-    expect(readmeRuns).toHaveLength(2);
+    expect(readmeRuns).toHaveLength(1);
     expect(actualReadmeRuns).toHaveLength(1);
     expect(actualReadmeRuns[0]?.diff).toContain("README.md");
+    expect(actualReadmeRuns[0]?.eventIds).toEqual(new Set(["e1", "e2", "e3", "e4"]));
   });
 
   it("creates proposed diff from tool input on permission request", () => {

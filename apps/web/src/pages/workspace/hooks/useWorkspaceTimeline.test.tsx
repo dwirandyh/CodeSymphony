@@ -1093,6 +1093,45 @@ describe("useWorkspaceTimeline", () => {
     expect(firstExploreIndex).toBeLessThan(firstMessageIndex);
   });
 
+  it("keeps the first explore card above all fallback paragraphs when incomplete deltas force a full-text fallback", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "investigate"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        [
+          "Betul, saat ini bukan dari API detail page.",
+          "",
+          "Yang terjadi sekarang:",
+          "",
+          "- ProgramDetailAndaActivity ambil title dari Intent extra.",
+        ].join("\n"),
+      ),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "src/ProgramDetailAndaActivity.java" } }, "m2"),
+      makeEvent(2, "tool.finished", { toolName: "Read", summary: "Read src/ProgramDetailAndaActivity.java", precedingToolUseIds: ["r1"] }, "m2"),
+      makeEvent(20, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Betul, saat ini bukan dari API detail page.\n\nYang",
+      }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreIndex = items.findIndex((item) => item.kind === "explore-activity");
+    const firstAssistantIndex = items.findIndex((item) => item.kind === "message" && item.message.role === "assistant");
+    const assistantBeforeExplore = items.findIndex(
+      (item, index) => index < exploreIndex && item.kind === "message" && item.message.role === "assistant",
+    );
+
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(firstAssistantIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeLessThan(firstAssistantIndex);
+    expect(assistantBeforeExplore).toBe(-1);
+  });
+
   it("keeps fallback-anchored explore and edit cards with their assistant turn instead of drifting to the tail", () => {
     const messages = [
       makeMessage("m1", 1, "user", "inspect"),

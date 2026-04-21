@@ -129,7 +129,25 @@ export function useWorkspaceFileEditor({
     }),
     [activeWorktreeEditorStates, activeWorktreeFileTabs],
   );
-  const activeEditorFileState = activeFilePath ? activeWorktreeEditorStates[activeFilePath] ?? null : null;
+  const activeEditorFileState = useMemo(() => {
+    if (!activeFilePath) {
+      return null;
+    }
+
+    const existingState = activeWorktreeEditorStates[activeFilePath];
+    if (existingState) {
+      return existingState;
+    }
+
+    if (selectedWorktreeId && activeView === "file") {
+      return {
+        ...createInitialEditorFileState(),
+        loading: true,
+      };
+    }
+
+    return null;
+  }, [activeFilePath, activeView, activeWorktreeEditorStates, selectedWorktreeId]);
   const activeEditorGitBaselineState = activeFilePath ? activeWorktreeGitBaselines[activeFilePath] ?? null : null;
   const recentFilePaths = selectedWorktreeId ? recentFilePathsByWorktreeId[selectedWorktreeId] ?? [] : [];
   const activeFileDirty = !!(
@@ -768,8 +786,11 @@ export function useWorkspaceFileEditor({
 
     const worktreeId = selectedWorktreeId;
     const fileState = getEditorFileState(worktreeId, filePath);
+    if (!fileState.loaded) {
+      return;
+    }
 
-    if (fileState.loaded && nextContent !== fileState.savedContent) {
+    if (nextContent !== fileState.savedContent) {
       setOpenFileTabsByWorktreeId((current) => {
         const tabs = current[worktreeId] ?? [];
         const targetTab = tabs.find((tab) => tab.path === filePath);
@@ -790,7 +811,6 @@ export function useWorkspaceFileEditor({
     updateEditorFileState(selectedWorktreeId, filePath, (current) => ({
       ...current,
       draftContent: nextContent,
-      loaded: true,
       error: null,
     }));
   }, [getEditorFileState, selectedWorktreeId, updateEditorFileState]);
