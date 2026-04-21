@@ -49,6 +49,7 @@ export type PendingPermissionEntry = {
   resolve?: (result: PermissionDecisionResult) => void;
   reject?: (error: Error) => void;
   result?: PermissionDecisionResult;
+  assistantMessageId: string | null;
   toolName: string;
   command: string | null;
   subagentOwnerToolUseId: string | null;
@@ -64,6 +65,7 @@ export type PendingQuestionEntry = {
   promise: Promise<QuestionAnswerResult>;
   resolve?: (result: QuestionAnswerResult) => void;
   reject?: (error: Error) => void;
+  assistantMessageId: string | null;
 };
 
 export type PendingPlanEntry = {

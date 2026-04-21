@@ -187,6 +187,95 @@ describe("chatService early session persistence", () => {
     expect(capturedSessionIds).toEqual([null, "session-stop-resume"]);
   });
 
+  it("emits resumed tool events against the new assistant message after continue", async () => {
+    let runCount = 0;
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ sessionId, onSessionId, onText, onToolStarted, onToolFinished, abortController }) => {
+      runCount += 1;
+
+      if (runCount === 1) {
+        expect(sessionId).toBeNull();
+        await onSessionId?.("session-stop-resume-tools");
+        await onText("Partial output before stop.");
+
+        await new Promise<void>((resolve) => {
+          if (abortController?.signal.aborted) {
+            resolve();
+            return;
+          }
+          abortController?.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+
+        throw new Error("Aborted by user.");
+      }
+
+      expect(sessionId).toBe("session-stop-resume-tools");
+      await onToolStarted({
+        toolName: "Bash",
+        toolUseId: "bash-continue",
+        parentToolUseId: null,
+        command: "ls",
+        shell: "bash",
+        isBash: true,
+      });
+      await onToolFinished({
+        toolName: "Bash",
+        summary: "Ran ls",
+        precedingToolUseIds: ["bash-continue"],
+        command: "ls",
+        shell: "bash",
+        isBash: true,
+      });
+
+      return {
+        output: "",
+        sessionId,
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread("Stopped run with resumed tools");
+
+    await chatService.sendMessage(threadId, {
+      content: "jalankan proses sampai saya stop",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) =>
+        event.type === "message.delta"
+        && event.payload.role === "assistant"
+        && String(event.payload.delta ?? "").includes("Partial output before stop."),
+    );
+
+    await chatService.stopRun(threadId);
+    const stopEvents = await waitForTerminalEventAfter(chatService, threadId, 0);
+    const afterStopIdx = stopEvents[stopEvents.length - 1]?.idx ?? 0;
+
+    await chatService.sendMessage(threadId, {
+      content: "continue",
+    });
+
+    const continueEvents = await waitForTerminalEventAfter(chatService, threadId, afterStopIdx);
+    const messages = await chatService.listMessages(threadId);
+    const assistantMessages = messages.filter((message) => message.role === "assistant");
+    expect(assistantMessages).toHaveLength(2);
+
+    const resumedAssistantMessage = assistantMessages[1];
+    expect(resumedAssistantMessage?.content).toBe("");
+
+    const resumedToolEvents = continueEvents.filter((event) =>
+      event.type === "tool.started" || event.type === "tool.finished"
+    );
+    expect(resumedToolEvents).toHaveLength(2);
+    expect(resumedToolEvents.every((event) => event.payload.messageId === resumedAssistantMessage?.id)).toBe(true);
+  });
+
   it("persists an early session id on stop so the next message resumes the same Codex session", async () => {
     let runCount = 0;
     const capturedSessionIds: Array<string | null> = [];

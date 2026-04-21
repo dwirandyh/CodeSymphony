@@ -456,6 +456,15 @@ export function getCompletedMessageId(event: ChatEvent): string | null {
   return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
 }
 
+export function getInlineEventMessageId(event: ChatEvent): string | null {
+  if (!INLINE_TOOL_EVENT_TYPES.has(event.type)) {
+    return null;
+  }
+
+  const messageId = event.payload.messageId;
+  return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
+}
+
 function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
   if (event.type === "chat.completed" || event.type === "chat.failed") {
     return true;
