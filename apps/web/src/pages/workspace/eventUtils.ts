@@ -46,7 +46,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
   const rawSource = payload.source;
-  if (rawSource === "claude_plan_file") {
+  if (rawSource === "claude_plan_file" || rawSource === "codex_plan_item") {
     return true;
   }
 

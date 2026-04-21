@@ -637,6 +637,20 @@ describe("usePendingGates", () => {
   });
 
   describe("streaming fallback plan handling", () => {
+    it("treats codex_plan_item as a canonical reviewable plan", () => {
+      const events = [
+        makeEvent(0, "plan.created", {
+          content: "Codex plan content",
+          filePath: "codex-plan-item",
+          source: "codex_plan_item",
+        }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+      expect(hookResult.pendingPlan).not.toBeNull();
+      expect(hookResult.pendingPlan?.content).toBe("Codex plan content");
+    });
+
     it("handles streaming_fallback with matching real write", () => {
       const events = [
         makeEvent(0, "plan.created", {

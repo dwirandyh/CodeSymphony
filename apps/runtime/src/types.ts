@@ -70,7 +70,7 @@ export type ClaudeRunnerResult = {
 
 export type ChatAgentRunnerResult = ClaudeRunnerResult;
 
-export type PlanDetectionSource = "claude_plan_file" | "streaming_fallback";
+export type PlanDetectionSource = "claude_plan_file" | "codex_plan_item" | "streaming_fallback";
 export type ClaudeSessionPermissionMode = ClaudeSdkPermissionMode;
 
 export type ClaudeOwnershipReason =
