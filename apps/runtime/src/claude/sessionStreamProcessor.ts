@@ -4,6 +4,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeOwnershipDiagnostics, ClaudeToolInstrumentationEvent } from "../types.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 
+import { captureDiagnosticLine } from "./executableResolver.js";
 import { isBashTool, skillNameFromUnknownToolInput } from "./toolClassification.js";
 import type { ToolMetadata } from "./toolClassification.js";
 import { completionSummaryFromMetadata } from "./toolSummary.js";
@@ -273,6 +274,65 @@ function extractSubagentResponse(
   return undefined;
 }
 
+function captureSystemDiagnostic(state: SessionState, message: SDKMessage): void {
+  if (message.type !== "system") {
+    return;
+  }
+
+  const systemMessage = message as unknown as {
+    subtype?: string;
+    attempt?: number;
+    max_retries?: number;
+    error_status?: number;
+    error?: string;
+    model?: string;
+    apiKeySource?: string;
+  };
+
+  if (systemMessage.subtype === "api_retry") {
+    captureDiagnosticLine(
+      state.recentDiagnostics,
+      `api_retry attempt ${systemMessage.attempt ?? "?"}/${systemMessage.max_retries ?? "?"}: status ${systemMessage.error_status ?? "unknown"} ${systemMessage.error ?? "unknown_error"}`,
+    );
+    return;
+  }
+
+  if (systemMessage.subtype === "init") {
+    const details = [
+      typeof systemMessage.model === "string" && systemMessage.model.length > 0 ? `model=${systemMessage.model}` : "",
+      typeof systemMessage.apiKeySource === "string" && systemMessage.apiKeySource.length > 0
+        ? `apiKeySource=${systemMessage.apiKeySource}`
+        : "",
+    ].filter(Boolean);
+    if (details.length > 0) {
+      captureDiagnosticLine(state.recentDiagnostics, `init: ${details.join(", ")}`);
+    }
+  }
+}
+
+function fatalSystemErrorFromMessage(message: SDKMessage): string | null {
+  if (message.type !== "system") {
+    return null;
+  }
+
+  const systemMessage = message as unknown as {
+    subtype?: string;
+    error?: string;
+    error_status?: number;
+  };
+
+  if (systemMessage.subtype !== "api_retry" || typeof systemMessage.error !== "string") {
+    return null;
+  }
+
+  if (/unknown provider for model/i.test(systemMessage.error)) {
+    const status = systemMessage.error_status ?? 502;
+    return `Claude API routing error (${status}): ${systemMessage.error}`;
+  }
+
+  return null;
+}
+
 export async function processStreamMessages(
   stream: AsyncIterable<SDKMessage>,
   deps: StreamProcessorDeps,
@@ -292,6 +352,13 @@ export async function processStreamMessages(
   } = deps;
 
   for await (const message of stream) {
+    captureSystemDiagnostic(state, message);
+
+    const fatalSystemError = fatalSystemErrorFromMessage(message);
+    if (fatalSystemError) {
+      throw new Error(fatalSystemError);
+    }
+
     if (message.type === "system" && message.subtype === "init") {
       latestSessionId = message.session_id;
       if (typeof latestSessionId === "string" && latestSessionId.length > 0) {
@@ -328,6 +395,12 @@ export async function processStreamMessages(
         permissionDenialCount: message.permission_denials.length,
         errorCount: "errors" in message ? message.errors.length : 0,
       };
+      if (message.is_error && "errors" in message && Array.isArray(message.errors) && message.errors.length > 0) {
+        for (const error of message.errors) {
+          const normalized = typeof error === "string" ? error : JSON.stringify(error);
+          captureDiagnosticLine(state.recentDiagnostics, `result_error: ${normalized}`);
+        }
+      }
       if (message.subtype === "success" && state.finalOutput.trim().length === 0 && message.result.trim().length > 0) {
         state.finalOutput = message.result.trim();
       }

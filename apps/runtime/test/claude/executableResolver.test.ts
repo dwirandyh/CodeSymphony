@@ -3,6 +3,7 @@ import {
     dedupePreserveOrder,
     isSpawnEnoent,
     captureStderrLine,
+    captureDiagnosticLine,
     withClaudeSetupHint,
 } from "../../src/claude/executableResolver";
 
@@ -69,34 +70,56 @@ describe("captureStderrLine", () => {
     });
 });
 
+describe("captureDiagnosticLine", () => {
+    it("reuses stderr capture rules for diagnostics", () => {
+        const buffer: string[] = [];
+        captureDiagnosticLine(buffer, "  api_retry attempt 1/11: status 502 server_error  ");
+        expect(buffer).toEqual(["api_retry attempt 1/11: status 502 server_error"]);
+    });
+});
+
 describe("withClaudeSetupHint", () => {
     it("adds hint for ENOENT errors", () => {
         const error = new Error("spawn /usr/bin/claude ENOENT");
-        const result = withClaudeSetupHint(error, [], "/usr/bin/claude") as Error;
+        const result = withClaudeSetupHint(error, [], [], "/usr/bin/claude") as Error;
         expect(result.message).toContain("Claude Code executable was not found");
         expect(result.message).toContain("CLAUDE_CODE_EXECUTABLE");
     });
 
     it("adds hint for exit code 1 errors", () => {
         const error = new Error("Claude Code process exited with code 1");
-        const result = withClaudeSetupHint(error, ["some stderr"], "/usr/bin/claude") as Error;
+        const result = withClaudeSetupHint(error, ["some stderr"], [], "/usr/bin/claude") as Error;
         expect(result.message).toContain("Claude Code failed to start");
         expect(result.message).toContain("some stderr");
     });
 
     it("includes stderr lines for exit code 1", () => {
         const error = new Error("Claude Code process exited with code 1");
-        const result = withClaudeSetupHint(error, ["err1", "err2"], "claude") as Error;
+        const result = withClaudeSetupHint(error, ["err1", "err2"], [], "claude") as Error;
         expect(result.message).toContain("err1");
         expect(result.message).toContain("err2");
     });
 
+    it("prefers Claude diagnostics over login hint when startup succeeded", () => {
+        const error = new Error("Claude Code process exited with code 1");
+        const result = withClaudeSetupHint(
+            error,
+            [],
+            ["api_retry attempt 1/11: status 502 server_error", "result_error: unknown provider for model claude-sonnet-4-6"],
+            "claude",
+        ) as Error;
+
+        expect(result.message).toContain("request failed before producing a response");
+        expect(result.message).toContain("unknown provider for model claude-sonnet-4-6");
+        expect(result.message).not.toContain("run `claude login`");
+    });
+
     it("returns non-Error values unchanged", () => {
-        expect(withClaudeSetupHint("just a string", [], "claude")).toBe("just a string");
+        expect(withClaudeSetupHint("just a string", [], [], "claude")).toBe("just a string");
     });
 
     it("returns unrelated errors unchanged", () => {
         const error = new Error("Network timeout");
-        expect(withClaudeSetupHint(error, [], "claude")).toBe(error);
+        expect(withClaudeSetupHint(error, [], [], "claude")).toBe(error);
     });
 });

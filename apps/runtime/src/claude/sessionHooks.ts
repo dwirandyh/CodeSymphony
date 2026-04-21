@@ -641,6 +641,7 @@ export type SessionState = {
   planFileDetected: boolean;
   queryStartTimestamp: number;
   promptSuggestions: string[];
+  recentDiagnostics: string[];
   resultSummary: {
     subtype: string;
     isError: boolean;
