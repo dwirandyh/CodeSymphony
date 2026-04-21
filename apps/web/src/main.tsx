@@ -4,8 +4,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 import { createQueryClient } from "./lib/queryClient";
+import { installDesktopShellVitePreloadGuard } from "./lib/vitePreloadGuard";
 import { AppCrashFallback } from "./components/error/AppCrashFallback";
 import "./styles.css";
+installDesktopShellVitePreloadGuard();
 
 const queryClient = createQueryClient();
 
