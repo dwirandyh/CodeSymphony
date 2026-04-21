@@ -782,6 +782,47 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
   });
 
+  it("targets the newly created thread for immediate follow-up composer actions", async () => {
+    threadsState.data = [{
+      ...makeThread("thread-a", true),
+      agent: "codex",
+      model: "gpt-5.4",
+    }];
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+      agent: "claude",
+      model: "glm-4.7",
+    });
+    vi.mocked(api.updateThreadAgentSelection).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.createAdditionalThread();
+      await hookResult.setComposerAgentSelection({
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+      });
+    });
+
+    expect(api.updateThreadAgentSelection).toHaveBeenCalledWith("thread-new", {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+    });
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.composerAgent).toBe("codex");
+    expect(hookResult.composerModel).toBe("gpt-5.4");
+  });
+
   it("marks a requested thread as loading while selection bootstrap is unresolved", () => {
     threadsState.data = undefined;
 
@@ -997,6 +1038,116 @@ describe("useChatSession", () => {
       },
     ]);
     expect(hookResult.events.map((event) => event.id)).toEqual(["event-1", "event-3"]);
+  });
+
+  it("prefers a fresh authoritative server timeline while idle even when derived local timeline drifts", async () => {
+    const serverTimelineItems: ChatTimelineItem[] = [
+      {
+        kind: "explore-activity",
+        id: "explore-1",
+        status: "success",
+        fileCount: 1,
+        searchCount: 0,
+        entries: [
+          {
+            kind: "read",
+            label: "src/foo.ts",
+            openPath: "src/foo.ts",
+            pending: false,
+            orderIdx: 0,
+          },
+        ],
+      },
+      {
+        kind: "message",
+        message: {
+          id: "assistant-1",
+          threadId: "thread-a",
+          seq: 1,
+          role: "assistant",
+          content: "Canonical answer",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+        context: [],
+      },
+    ];
+
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
+      summary: {
+        oldestRenderableKey: "explore-activity:explore-1",
+        oldestRenderableKind: "explore-activity",
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical answer",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [
+        {
+          kind: "message",
+          message: {
+            id: "assistant-1:segment:0",
+            threadId: "thread-a",
+            seq: 1,
+            role: "assistant",
+            content: "Corrupted local order",
+            attachments: [],
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+          renderHint: "markdown",
+          isCompleted: true,
+          context: [],
+        },
+      ] as ChatTimelineItem[],
+      summary: {
+        oldestRenderableKey: "message:assistant-1:segment:0",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-1:segment:0",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    } as any);
+
+    renderHook("thread-a");
+    expect(hookResult.timelineItems).toEqual(serverTimelineItems);
+
+    act(() => {
+      const { messagesCollection } = getThreadCollections("thread-a");
+      messagesCollection.update("assistant-1", (draft) => {
+        draft.content = "Locally corrupted but not ahead";
+      });
+      setThreadLastMessageSeq("thread-a", 1);
+      setThreadLastEventIdx("thread-a", 1);
+    });
+
+    renderHook("thread-a");
+
+    expect(hookResult.selectedThreadUiStatus).toBe("idle");
+    expect(hookResult.timelineItems).toEqual(serverTimelineItems);
   });
 
   it("shows a submitted follow-up user message immediately from the send response", async () => {
