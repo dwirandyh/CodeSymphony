@@ -354,6 +354,17 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       pendingEventsRef.current.push(payload);
 
+      const eventScopedMessageId = payload.type !== "message.delta"
+        ? payloadStringOrNull(payload.payload.messageId)
+        : null;
+      if (eventScopedMessageId) {
+        pendingMessageMutationsRef.current.push({
+          kind: "ensure-placeholder",
+          id: eventScopedMessageId,
+          threadId: selectedThreadId,
+        });
+      }
+
       if (payload.type === "message.delta") {
         const messageId = String(payload.payload.messageId ?? "");
         const role =

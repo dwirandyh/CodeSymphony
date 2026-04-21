@@ -876,6 +876,44 @@ describe("useThreadEventStream", () => {
     expect(storedMessages[0]?.content).toBe("Hello");
   });
 
+  it("creates an assistant placeholder when tool events arrive before assistant text", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "tool.started",
+        makeEvent({
+          id: "e-tool-1",
+          threadId,
+          idx: 1,
+          type: "tool.started",
+          payload: {
+            messageId: "assistant-1",
+            toolName: "Bash",
+            toolUseId: "bash-1",
+            command: "ls",
+          },
+        }),
+      );
+    });
+
+    const storedMessages = getThreadMessagesCollection(threadId).toArray;
+    expect(storedMessages).toHaveLength(1);
+    expect(storedMessages[0]).toMatchObject({
+      id: "assistant-1",
+      role: "assistant",
+      content: "",
+    });
+  });
+
   it("reconnects with afterIdx from the local thread registry", async () => {
     vi.useFakeTimers();
 

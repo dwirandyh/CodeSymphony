@@ -292,4 +292,60 @@ describe("buildTimelineFromSeed", () => {
     });
     expect(editedItems[0]?.diff).toContain("+new");
   });
+
+  it("attaches resumed tool events to the new assistant turn when tool activity starts before text deltas", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Start the task."),
+      makeMessage("m2", 1, "assistant", "Partial output before stop."),
+      makeMessage("m3", 2, "user", "continue"),
+      makeMessage("m4", 3, "assistant", ""),
+    ];
+    const events = [
+      makeEvent(0, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Partial output before stop.",
+      }),
+      makeEvent(1, "chat.completed", {
+        messageId: "m2",
+        cancelled: true,
+      }),
+      makeEvent(2, "message.delta", {
+        role: "user",
+        messageId: "m3",
+        delta: "continue",
+      }),
+      makeEvent(3, "tool.started", {
+        messageId: "m4",
+        toolName: "Bash",
+        toolUseId: "bash-2",
+        command: "ls",
+      }),
+      makeEvent(4, "tool.finished", {
+        messageId: "m4",
+        toolName: "Bash",
+        summary: "Ran ls",
+        precedingToolUseIds: ["bash-2"],
+      }),
+      makeEvent(5, "chat.completed", {
+        messageId: "m4",
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const resumedTool = result.items.find(
+      (item): item is Extract<ChatTimelineItem, { kind: "tool" }> =>
+        item.kind === "tool" && item.toolUseId === "bash-2",
+    );
+
+    expect(resumedTool).toBeTruthy();
+    expect(resumedTool?.id.startsWith("m4:")).toBe(true);
+    expect(resumedTool?.id.startsWith("m2:")).toBe(false);
+  });
 });

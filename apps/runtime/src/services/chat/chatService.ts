@@ -486,6 +486,7 @@ export function createChatService(deps: RuntimeDeps) {
       if (completedThreadTitle) {
         try {
           await deps.eventHub.emit(threadId, "tool.finished", {
+            messageId: assistantMessageId,
             source: "chat.thread.metadata",
             summary: "Updated thread title",
             threadTitle: completedThreadTitle,
@@ -513,6 +514,7 @@ export function createChatService(deps: RuntimeDeps) {
       if (completedWorktreeBranch) {
         try {
           await deps.eventHub.emit(threadId, "tool.finished", {
+            messageId: assistantMessageId,
             source: "chat.thread.metadata",
             summary: "Updated worktree branch",
             worktreeBranch: completedWorktreeBranch,
@@ -680,13 +682,19 @@ export function createChatService(deps: RuntimeDeps) {
             editTarget: payload.editTarget ?? null,
             isBash: payload.isBash === true,
           });
-          await deps.eventHub.emit(threadId, "tool.started", payload);
+          await deps.eventHub.emit(threadId, "tool.started", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onToolOutput: async (payload) => {
           trackWorktreeMutation(worktreeMutationTracker, worktreePath, {
             toolName: payload.toolName,
           });
-          await deps.eventHub.emit(threadId, "tool.output", payload);
+          await deps.eventHub.emit(threadId, "tool.output", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onToolFinished: async (payload) => {
           trackWorktreeMutation(worktreeMutationTracker, worktreePath, {
@@ -696,13 +704,22 @@ export function createChatService(deps: RuntimeDeps) {
             summary: payload.summary,
             isBash: payload.isBash === true,
           });
-          await deps.eventHub.emit(threadId, "tool.finished", payload);
+          await deps.eventHub.emit(threadId, "tool.finished", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onSubagentStarted: async (payload) => {
-          await deps.eventHub.emit(threadId, "subagent.started", payload);
+          await deps.eventHub.emit(threadId, "subagent.started", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onSubagentStopped: async (payload) => {
-          await deps.eventHub.emit(threadId, "subagent.finished", payload);
+          await deps.eventHub.emit(threadId, "subagent.finished", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onToolInstrumentation: async (event) => {
           if (!deps.logService) {
@@ -735,6 +752,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           const entry = {} as PendingQuestionEntry;
           entry.status = "pending";
+          entry.assistantMessageId = assistantMessage.id;
           entry.promise = new Promise<QuestionAnswerResult>((resolve, reject) => {
             entry.resolve = resolve;
             entry.reject = reject;
@@ -743,6 +761,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           try {
             await deps.eventHub.emit(threadId, "question.requested", {
+              messageId: assistantMessage.id,
               requestId: payload.requestId,
               questions: payload.questions,
             });
@@ -783,6 +802,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           const entry = {} as PendingPermissionEntry;
           entry.status = "pending";
+          entry.assistantMessageId = assistantMessage.id;
           entry.toolName = payload.toolName;
           const command = payload.toolInput.command;
           entry.command = typeof command === "string" && command.trim().length > 0 ? command.trim() : null;
@@ -799,6 +819,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           try {
             await deps.eventHub.emit(threadId, "permission.requested", {
+              messageId: assistantMessage.id,
               requestId: payload.requestId,
               toolName: payload.toolName,
               toolInput: payload.toolInput,
@@ -880,6 +901,7 @@ export function createChatService(deps: RuntimeDeps) {
               ? `Detected worktree changes in ${fileCount} file${fileCount === 1 ? "" : "s"}`
               : "Captured worktree diff";
             await deps.eventHub.emit(threadId, "tool.finished", {
+              messageId: assistantMessage.id,
               summary,
               precedingToolUseIds: [],
               source: "worktree.diff",
@@ -957,6 +979,7 @@ export function createChatService(deps: RuntimeDeps) {
         }
       } else {
         await deps.eventHub.emit(threadId, "chat.failed", {
+          ...(assistantMessageId ? { messageId: assistantMessageId } : {}),
           message: errorMessage,
           threadMode: mode,
         });
@@ -1500,6 +1523,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       try {
         await deps.eventHub.emit(threadId, "permission.resolved", {
+          ...(entry.assistantMessageId ? { messageId: entry.assistantMessageId } : {}),
           requestId: input.requestId,
           decision: input.decision,
           resolver: "user",
@@ -1577,8 +1601,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const pendingMap = pendingQuestionsByThread.get(threadId);
       const entry = pendingMap?.get(input.requestId);
-      const isPending = Boolean(entry && entry.status === "pending" && entry.resolve);
-      if (!isPending) {
+      if (!entry || entry.status !== "pending" || !entry.resolve) {
         await deps.eventHub.emit(threadId, "question.dismissed", {
           requestId: input.requestId,
           resolver: "system",
@@ -1590,6 +1613,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const normalizedReason = input.reason?.trim();
       await deps.eventHub.emit(threadId, "question.dismissed", {
+        ...(entry.assistantMessageId ? { messageId: entry.assistantMessageId } : {}),
         requestId: input.requestId,
         resolver: "user",
         reason: normalizedReason && normalizedReason.length > 0 ? normalizedReason : "Question dismissed by user.",

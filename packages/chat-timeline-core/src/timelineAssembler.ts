@@ -10,6 +10,7 @@ import {
   finishedToolUseIds,
   getCompletedMessageId,
   getEventMessageId,
+  getInlineEventMessageId,
   hasUnclosedCodeFence,
   isBashToolEvent,
   isExploreLikeBashEvent,
@@ -299,6 +300,19 @@ export function buildTimelineFromSeed(params: {
   const inlineToolEvents = orderedEventsByIdx.filter((event) =>
     INLINE_TOOL_EVENT_TYPES.has(event.type) && !isTodoWriteToolEvent(event),
   );
+  const explicitInlineEventsByMessageId = new Map<string, ChatEvent[]>();
+  const fallbackInlineToolEvents: ChatEvent[] = [];
+  for (const event of inlineToolEvents) {
+    const messageId = getInlineEventMessageId(event);
+    if (!messageId) {
+      fallbackInlineToolEvents.push(event);
+      continue;
+    }
+
+    const existing = explicitInlineEventsByMessageId.get(messageId) ?? [];
+    existing.push(event);
+    explicitInlineEventsByMessageId.set(messageId, existing);
+  }
   const semanticContextEvents = orderedEventsByIdx.filter((event) =>
     ((event.type === "tool.started"
       || event.type === "tool.output"
@@ -364,7 +378,9 @@ export function buildTimelineFromSeed(params: {
         : typeof nextAssistantStartIdx === "number"
           ? nextAssistantStartIdx - 1
           : Number.POSITIVE_INFINITY;
-    const context = inlineToolEvents.filter((event) => event.idx > lowerBoundaryIdx && event.idx <= upperBoundaryIdx);
+    const heuristicContext = fallbackInlineToolEvents.filter((event) => event.idx > lowerBoundaryIdx && event.idx <= upperBoundaryIdx);
+    const explicitContext = explicitInlineEventsByMessageId.get(message.id) ?? [];
+    const context = [...explicitContext, ...heuristicContext].sort((a, b) => a.idx - b.idx);
     assistantContextById.set(message.id, context);
     if (Number.isFinite(upperBoundaryIdx)) {
       previousAssistantBoundaryIdx = Math.max(previousAssistantBoundaryIdx, upperBoundaryIdx);
