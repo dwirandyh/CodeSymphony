@@ -672,8 +672,13 @@ export function useChatSession(
       return;
     }
 
+    const snapshotCanAuthoritativelyReplaceLocalState =
+      selectedThread?.active !== true
+      && waitingAssistant?.threadId !== selectedThreadId
+      && !hasPendingUserGate;
     const shouldReplaceSnapshotSeed = threadChanged
-      || (queriedThreadSnapshot.messages.length === 0 && queriedThreadSnapshot.events.length === 0);
+      || (queriedThreadSnapshot.messages.length === 0 && queriedThreadSnapshot.events.length === 0)
+      || snapshotCanAuthoritativelyReplaceLocalState;
 
     hydrateThreadFromSnapshot({
       threadId: selectedThreadId,
@@ -690,7 +695,7 @@ export function useChatSession(
     }
 
     setThreadLastAppliedSnapshotKey(selectedThreadId, seedDecision.snapshotKey);
-  }, [hasPendingUserGate, messages, onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId, waitingAssistant]);
+  }, [hasPendingUserGate, messages, onBranchRenamed, queriedThreadSnapshot, selectedThread?.active, selectedThreadId, selectedWorktreeId, waitingAssistant]);
 
   useEffect(() => {
     pruneThreadCollections({

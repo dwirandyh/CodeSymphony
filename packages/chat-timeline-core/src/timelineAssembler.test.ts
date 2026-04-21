@@ -219,4 +219,77 @@ describe("buildTimelineFromSeed", () => {
     expect(messageItems[0]?.message.content).toBe(content);
     expect(messageItems[0]?.renderHint).toBe("markdown");
   });
+
+  it("renders a single edited diff after manual edit approval and later worktree diff", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Update HomeActivity."),
+      makeMessage("m2", 1, "assistant", "Selesai."),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "edit-1",
+        editTarget: "/repo/app/src/HomeActivity.java",
+      }),
+      makeEvent(1, "permission.requested", {
+        requestId: "perm-1",
+        toolName: "Edit",
+        blockedPath: "/repo/app/src/HomeActivity.java",
+        toolInput: { file_path: "/repo/app/src/HomeActivity.java" },
+      }),
+      makeEvent(2, "permission.resolved", {
+        requestId: "perm-1",
+        decision: "allow",
+      }),
+      makeEvent(3, "tool.output", {
+        toolName: "Edit",
+        toolUseId: "edit-1",
+      }),
+      makeEvent(4, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/app/src/HomeActivity.java",
+        precedingToolUseIds: ["edit-1"],
+        editTarget: "/repo/app/src/HomeActivity.java",
+        toolInput: { file_path: "/repo/app/src/HomeActivity.java" },
+      }),
+      makeEvent(5, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Selesai.",
+      }),
+      makeEvent(6, "tool.finished", {
+        source: "worktree.diff",
+        changedFiles: ["app/src/HomeActivity.java"],
+        diff: [
+          "diff --git a/app/src/HomeActivity.java b/app/src/HomeActivity.java",
+          "--- a/app/src/HomeActivity.java",
+          "+++ b/app/src/HomeActivity.java",
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ].join("\n"),
+      }),
+      makeEvent(7, "chat.completed", { messageId: "m2" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const editedItems = result.items.filter(
+      (item): item is Extract<ChatTimelineItem, { kind: "edited-diff" }> =>
+        item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("HomeActivity.java")),
+    );
+
+    expect(editedItems).toHaveLength(1);
+    expect(editedItems[0]).toMatchObject({
+      kind: "edited-diff",
+      diffKind: "actual",
+      status: "success",
+    });
+    expect(editedItems[0]?.diff).toContain("+new");
+  });
 });

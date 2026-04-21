@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage, ChatThread, ChatTimelineItem, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
+import { getThreadCollections } from "../../../../collections/threadCollections";
+import { setThreadLastEventIdx, setThreadLastMessageSeq } from "../../../../collections/threadStreamState";
 import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useChatSession";
 
 const { threadsState, snapshotState } = vi.hoisted(() => ({
@@ -889,6 +891,112 @@ describe("useChatSession", () => {
 
     expect(hookResult.messages).toEqual([]);
     expect(hookResult.events).toEqual([]);
+  });
+
+  it("replaces corrupted local assistant output with the final authoritative snapshot once the thread is idle", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Flow canonical.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    renderHook("thread-a");
+    expect(hookResult.messages[0]?.content).toBe("Flow canonical.");
+    expect(hookResult.selectedThreadUiStatus).toBe("idle");
+
+    act(() => {
+      const { messagesCollection, eventsCollection } = getThreadCollections("thread-a");
+      messagesCollection.update("assistant-1", (draft) => {
+        draft.content = "Flow canonical. Flow canonical. Flow canonical with duplicated streamed text.";
+      });
+      eventsCollection.insert({
+        id: "event-local-stale",
+        threadId: "thread-a",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          toolName: "Read",
+          summary: "Read stale-local.txt",
+          precedingToolUseIds: ["read-local-1"],
+        },
+        createdAt: "2026-01-01T00:00:02Z",
+      });
+      setThreadLastMessageSeq("thread-a", 1);
+      setThreadLastEventIdx("thread-a", 2);
+    });
+
+    expect(hookResult.messages[0]?.content).toContain("duplicated streamed text");
+    expect(hookResult.events.map((event) => event.id)).toContain("event-local-stale");
+
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 3,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Flow canonical.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [
+        {
+          id: "event-1",
+          threadId: "thread-a",
+          idx: 1,
+          type: "chat.completed",
+          payload: { messageId: "assistant-1" },
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+        {
+          id: "event-3",
+          threadId: "thread-a",
+          idx: 3,
+          type: "tool.finished",
+          payload: {
+            toolName: "Read",
+            summary: "Read canonical.txt",
+            precedingToolUseIds: ["read-final-1"],
+          },
+          createdAt: "2026-01-01T00:00:03Z",
+        },
+      ],
+    });
+
+    renderHook("thread-a");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.messages).toEqual([
+      {
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Flow canonical.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    expect(hookResult.events.map((event) => event.id)).toEqual(["event-1", "event-3"]);
   });
 
   it("shows a submitted follow-up user message immediately from the send response", async () => {
