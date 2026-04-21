@@ -1,5 +1,4 @@
 import {
-  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -298,6 +297,27 @@ function toPlainChatEvent(event: ChatEvent): ChatEvent {
   };
 }
 
+function isSnapshotFreshEnoughForAuthoritativeTimeline(params: {
+  snapshot: ChatTimelineSnapshot | null | undefined;
+  messages: ChatMessage[];
+  events: ChatEvent[];
+}): boolean {
+  const { snapshot, messages, events } = params;
+  if (!snapshot) {
+    return false;
+  }
+
+  const snapshotNewestIdx = snapshot.newestIdx ?? snapshot.events[snapshot.events.length - 1]?.idx ?? null;
+  const snapshotNewestSeq = snapshot.newestSeq ?? snapshot.messages[snapshot.messages.length - 1]?.seq ?? null;
+  const localNewestIdx = events[events.length - 1]?.idx ?? null;
+  const localNewestSeq = messages[messages.length - 1]?.seq ?? null;
+
+  const eventCoverage = localNewestIdx == null || (snapshotNewestIdx != null && snapshotNewestIdx >= localNewestIdx);
+  const messageCoverage = localNewestSeq == null || (snapshotNewestSeq != null && snapshotNewestSeq >= localNewestSeq);
+
+  return eventCoverage && messageCoverage;
+}
+
 export function deriveSelectedThreadUiState(params: {
   selectedThreadId: string | null;
   threads: ChatThread[];
@@ -335,7 +355,7 @@ export function useChatSession(
   const timelineEnabled = options?.timelineEnabled !== false;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [selectedThreadId, setSelectedThreadIdState] = useState<string | null>(null);
+  const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(null);
 
   const [sendingMessage, setSendingMessage] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
@@ -350,6 +370,7 @@ export function useChatSession(
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
+  const selectedThreadIdOverrideRef = useRef<string | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
   const threadByIdRef = useRef<Map<string, ChatThread>>(new Map());
   const creatingThreadRef = useRef(false);
@@ -364,6 +385,7 @@ export function useChatSession(
   const mountedRef = useRef(true);
   const pendingAgentSelectionUpdatesRef = useRef<Map<string, Promise<void>>>(new Map());
 
+  const selectedThreadId = selectedThreadIdOverrideRef.current ?? selectedThreadIdState;
   activeThreadIdRef.current = selectedThreadId;
   threadsRef.current = threads;
 
@@ -380,10 +402,15 @@ export function useChatSession(
   const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
 
   const setSelectedThreadId = useCallback((threadId: string | null) => {
-    startTransition(() => {
-      setSelectedThreadIdState(threadId);
-    });
+    selectedThreadIdOverrideRef.current = threadId;
+    setSelectedThreadIdState(threadId);
   }, []);
+
+  useEffect(() => {
+    if (selectedThreadIdOverrideRef.current === selectedThreadIdState) {
+      selectedThreadIdOverrideRef.current = null;
+    }
+  }, [selectedThreadIdState]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -975,6 +1002,7 @@ export function useChatSession(
       if (!result) return null;
       const { created, worktreeId } = result;
       optimisticCreatedThreadIdsRef.current.add(created.id);
+      activeThreadIdRef.current = created.id;
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         locallyDeletedThreadIdsRef.current.delete(created.id);
@@ -997,6 +1025,7 @@ export function useChatSession(
       if (!result) return;
       const { created, worktreeId } = result;
       optimisticCreatedThreadIdsRef.current.add(created.id);
+      activeThreadIdRef.current = created.id;
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         locallyDeletedThreadIdsRef.current.delete(created.id);
@@ -1061,6 +1090,7 @@ export function useChatSession(
       });
       createdThreadId = created.id;
       optimisticCreatedThreadIdsRef.current.add(created.id);
+      activeThreadIdRef.current = created.id;
       setThreads((current) => {
         const existingIndex = current.findIndex((thread) => thread.id === created.id);
         locallyDeletedThreadIdsRef.current.delete(created.id);
@@ -1300,7 +1330,11 @@ export function useChatSession(
 
   async function setComposerPermissionMode(permissionMode: ChatThreadPermissionMode) {
     const normalizedMode = permissionMode === "full_access" ? "full_access" : "default";
-    const activeThread = findThreadForWorktree(threads, selectedThreadId, selectedWorktreeId);
+    const activeThread = findThreadForWorktree(
+      threadsRef.current,
+      activeThreadIdRef.current,
+      selectedWorktreeId,
+    );
 
     if (!activeThread) {
       setPendingComposerPermissionMode(normalizedMode);
@@ -1356,9 +1390,9 @@ export function useChatSession(
       source: att.source,
     }));
 
-    if (!selectedThreadId || (!content.trim() && attachmentsToSend.length === 0)) return false;
+    const threadId = activeThreadIdRef.current;
+    if (!threadId || (!content.trim() && attachmentsToSend.length === 0)) return false;
 
-    const threadId = selectedThreadId;
     const pendingAgentSelectionUpdate = pendingAgentSelectionUpdatesRef.current.get(threadId);
     if (pendingAgentSelectionUpdate) {
       await pendingAgentSelectionUpdate;
@@ -1421,6 +1455,24 @@ export function useChatSession(
     }
   }
 
+  async function setComposerMode(mode: ChatMode) {
+    const threadId = activeThreadIdRef.current;
+    if (!threadId) {
+      return;
+    }
+
+    await setThreadMode(threadId, mode);
+  }
+
+  async function setComposerAgentSelection(selection: UpdateChatThreadAgentSelectionInput) {
+    const threadId = activeThreadIdRef.current;
+    if (!threadId) {
+      return;
+    }
+
+    await setThreadAgentSelection(threadId, selection);
+  }
+
   async function stopAssistantRun(targetThreadId?: string) {
     const threadId = targetThreadId ?? selectedThreadId;
     if (!threadId) return;
@@ -1478,6 +1530,15 @@ export function useChatSession(
       messages,
       events,
     });
+  const serverTimelineFreshEnough = isSnapshotFreshEnoughForAuthoritativeTimeline({
+    snapshot: queriedThreadSnapshot,
+    messages,
+    events,
+  });
+  const selectedThreadIdleForAuthoritativeTimeline =
+    selectedThreadUiStatus === "idle"
+    && waitingAssistant?.threadId !== selectedThreadId
+    && !hasPendingUserGate;
 
   const derivedTimeline = useWorkspaceTimeline(messages, events, selectedThreadId, {
     streamingMessageIds: streamingMessageIdsRef.current,
@@ -1511,8 +1572,8 @@ export function useChatSession(
   }, [derivedTimeline.items, serverTimelineItems]);
 
   const useServerTimeline = timelineEnabled
-    && timelineSeedMatchesLiveState
     && serverTimelineSummary != null
+    && (timelineSeedMatchesLiveState || (selectedThreadIdleForAuthoritativeTimeline && serverTimelineFreshEnough))
     && !timelineComparison.preferDerivedBecauseServerLooksStale;
 
   const timelineData: {
@@ -1541,6 +1602,8 @@ export function useChatSession(
         selectedThreadId,
         timelineEnabled,
         timelineSeedMatchesLiveState,
+        serverTimelineFreshEnough,
+        selectedThreadIdleForAuthoritativeTimeline,
         useServerTimeline,
         signaturesMatch: timelineComparison.signaturesMatch,
         preferDerivedBecauseServerLooksStale: timelineComparison.preferDerivedBecauseServerLooksStale,
@@ -1553,6 +1616,8 @@ export function useChatSession(
     timelineComparison,
     timelineEnabled,
     timelineSeedMatchesLiveState,
+    serverTimelineFreshEnough,
+    selectedThreadIdleForAuthoritativeTimeline,
     useServerTimeline,
   ]);
 
@@ -1631,6 +1696,8 @@ export function useChatSession(
     renameThreadTitle,
     setThreadAgentSelection,
     setThreadMode,
+    setComposerAgentSelection,
+    setComposerMode,
     setComposerPermissionMode,
     submitMessage,
     loadOlderHistory: async () => {},

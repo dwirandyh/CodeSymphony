@@ -1594,15 +1594,11 @@ export function WorkspacePage() {
                     hasMessages={chat.messages.length > 0}
                     onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
                     onModeChange={(mode) => {
-                      if (chat.selectedThreadId) {
-                        void chat.setThreadMode(chat.selectedThreadId, mode);
-                      }
+                      void chat.setComposerMode(mode);
                     }}
                     onStop={() => void chat.stopAssistantRun()}
                     onAgentSelectionChange={(selection) => {
-                      if (chat.selectedThreadId) {
-                        void chat.setThreadAgentSelection(chat.selectedThreadId, selection);
-                      }
+                      void chat.setComposerAgentSelection(selection);
                     }}
                     onPermissionModeChange={(permissionMode) => {
                       void chat.setComposerPermissionMode(permissionMode);
