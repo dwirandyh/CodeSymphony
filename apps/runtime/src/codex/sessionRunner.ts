@@ -336,12 +336,35 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   let completed = false;
   let finished = false;
   let completionError: Error | null = null;
+  let resolveCompletion: (() => void) | null = null;
+  let rejectCompletion: ((error: Error) => void) | null = null;
+
+  const resolveComplete = () => {
+    if (completed) {
+      return;
+    }
+    completed = true;
+    resolveCompletion?.();
+  };
+
+  const rejectWith = (error: Error) => {
+    if (completed) {
+      return;
+    }
+    completed = true;
+    completionError = error;
+    rejectCompletion?.(error);
+  };
 
   const finish = (error?: Error) => {
     if (finished) {
       return;
     }
     finished = true;
+
+    if (error) {
+      rejectWith(error);
+    }
 
     for (const entry of pending.values()) {
       clearTimeout(entry.timeout);
@@ -395,22 +418,8 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   };
 
   const completionPromise = new Promise<void>((resolve, reject) => {
-    const rejectWith = (error: Error) => {
-      if (completed) {
-        return;
-      }
-      completed = true;
-      completionError = error;
-      reject(error);
-    };
-
-    const resolveComplete = () => {
-      if (completed) {
-        return;
-      }
-      completed = true;
-      resolve();
-    };
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
 
     child.on("error", (error) => {
       rejectWith(error);
