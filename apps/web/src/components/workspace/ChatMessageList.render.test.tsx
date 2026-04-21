@@ -499,6 +499,44 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Thinking...");
   });
 
+  it("keeps post-plan activity visible when thinking placeholder is enabled", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "plan-file-output",
+        id: "plan-1",
+        messageId: "m-plan",
+        content: "# Plan\n\nStep 1: Update src/app.ts",
+        filePath: ".claude/plans/my-plan.md",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "edited-diff",
+        id: "diff-1",
+        eventId: "ev-edit-1",
+        status: "running",
+        diffKind: "actual",
+        changedFiles: ["src/app.ts"],
+        diff: "+const value = 2;\n-const value = 1;",
+        diffTruncated: false,
+        additions: 1,
+        deletions: 1,
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} showThinkingPlaceholder={true} />);
+    });
+
+    const rows = getTimelineRowWrappers();
+    expect(rows).toHaveLength(3);
+    expect(container.textContent).toContain("Plan");
+    expect(container.textContent).toContain("app.ts");
+    expect(container.querySelector("[data-testid='timeline-plan-file-output']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='timeline-edited-diff']")).toBeTruthy();
+    expect(container.querySelector("[data-testid='thinking-placeholder']")).toBeTruthy();
+  });
+
   it("renders unified collapsible tool item for bash output", () => {
     const event: ChatEvent = {
       id: "ev-bash",
