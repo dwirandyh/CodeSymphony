@@ -19,7 +19,8 @@ Local-first conductor.build-style workspace with:
 Default ports:
 
 - Web dev + runtime dev: `4331`
-- Installed desktop bundle runtime: `4321`
+- Desktop dev runtime: `4321`
+- Installed desktop bundle runtime: `4322`
 
 ## Docker Compose
 
