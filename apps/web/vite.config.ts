@@ -1,6 +1,10 @@
 import { defineConfig, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
+import {
+  getConfiguredRuntimeProxyTarget,
+  getConfiguredWebDevPort,
+} from "./runtimeConfig";
 
 export default defineConfig(({ mode }) => {
   const plugins: PluginOption[] = [
@@ -23,11 +27,11 @@ export default defineConfig(({ mode }) => {
   return {
     plugins,
     server: {
-      port: parseInt(process.env.VITE_DEV_PORT ?? "5173"),
+      port: parseInt(getConfiguredWebDevPort(process.env), 10),
       host: true,
       proxy: {
         "/api": {
-          target: process.env.VITE_RUNTIME_PROXY_TARGET ?? "http://127.0.0.1:4331",
+          target: getConfiguredRuntimeProxyTarget(process.env),
           changeOrigin: true,
         },
       },
