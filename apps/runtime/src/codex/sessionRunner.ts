@@ -6,7 +6,43 @@ import { join } from "node:path";
 import readline from "node:readline";
 import type { PermissionDecision } from "@codesymphony/shared-types";
 import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
-import type { ChatAgentRunner, ChatAgentRunnerResult, ClaudeOwnershipReason } from "../types.js";
+import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
+import {
+  buildCollaborationMode,
+  resolveCodexRuntimePolicy,
+  shouldAutoDeclineCodexPlanApproval,
+} from "./collaborationMode.js";
+import {
+  PLAN_FILE_PATH,
+  type CodexPlanStep,
+  findPlanTextInTurn,
+  resolveCodexPlanContent,
+  type CodexStructuredPlan,
+} from "./plan.js";
+import { asArray, asNumber, asObject, asString } from "./protocolUtils.js";
+import {
+  buildSummaryFromCommandExecution,
+  buildSummaryFromFileChange,
+  classifyCommandExecution,
+  classifyFileChange,
+  getToolContext,
+  selectPrimaryCodexFileChange,
+  toOwnership,
+  type ToolContext,
+} from "./toolContext.js";
+
+export {
+  CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+  CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  requestedPermissionsIncludeFileWrite,
+  resolveCodexRuntimePolicy,
+  shouldAutoDeclineCodexPlanApproval,
+} from "./collaborationMode.js";
+export {
+  buildCodexPlanMarkdown,
+  resolveCodexPlanContent,
+} from "./plan.js";
+export { selectPrimaryCodexFileChange } from "./toolContext.js";
 
 type JsonRpcRequest = {
   id: string | number;
@@ -34,106 +70,10 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
-type ToolContext = {
-  toolName: string;
-  command?: string;
-  searchParams?: string;
-  editTarget?: string;
-  toolInput?: Record<string, unknown>;
-  isBash?: true;
-  shell?: "bash";
-  ownership?: {
-    parentToolUseId: string | null;
-    subagentOwnerToolUseId: string | null;
-    launcherToolUseId: string | null;
-    ownershipReason?: ClaudeOwnershipReason;
-  };
-};
-
 const CODEX_BINARY = process.env.CODEX_BINARY_PATH ?? "codex";
 const REQUEST_TIMEOUT_MS = 20_000;
-const PLAN_FILE_PATH = ".claude/plans/codex-plan.md";
 const CODEX_CUSTOM_PROVIDER_ID = "codesymphony_custom";
 const CODEX_CUSTOM_PROVIDER_API_KEY_ENV = "CODESYMPHONY_CODEX_API_KEY";
-const PROPOSED_PLAN_BLOCK_REGEX = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i;
-const PLAN_APPROVAL_BOILERPLATE_PATTERNS = [
-  /^reply with approval if you want me to execute it\.?$/gim,
-  /^reply with approval to execute(?: the plan)?\.?$/gim,
-  /^approve this plan to continue\.?$/gim,
-  /^let me know if you want me to proceed\.?$/gim,
-];
-
-type CodexPlanStep = {
-  step: string;
-  status: "pending" | "inProgress" | "completed";
-};
-
-type CodexStructuredPlan = {
-  explanation: string | null;
-  steps: CodexPlanStep[];
-};
-
-export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
-
-You work in phases, and you should chat your way to a great plan before finalizing it. A great plan is implementation-ready and decision-complete.
-
-Mode rules:
-- You are in Plan Mode until a developer message explicitly ends it.
-- If the user asks for execution while still in Plan Mode, treat it as a request to plan the execution, not perform it.
-
-Plan Mode constraints:
-- You may explore and execute non-mutating actions that improve the plan.
-- You must not perform mutating actions or change repo-tracked state.
-
-Allowed exploration:
-- Read or search files, configs, manifests, and docs.
-- Run non-mutating inspection commands.
-- Run tests/builds/checks when they do not edit repo-tracked files.
-
-Not allowed:
-- Editing or writing files.
-- Running commands whose purpose is to implement the change instead of refining the plan.
-- Applying patches, migrations, or codegen that modifies repo-tracked files.
-
-Planning workflow:
-- Ground yourself in the actual environment before finalizing the plan.
-- Resolve what you can through exploration before asking follow-up questions.
-- Briefly summarize what you inspected before the final plan when that helps the user follow the reasoning.
-
-Plan requirements:
-- Clarify assumptions only when needed.
-- Keep the plan decision-complete.
-- Include interfaces, data flow, edge cases, and tests.
-- Wrap the final plan in <proposed_plan> tags.
-</collaboration_mode>`;
-
-export const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Collaboration Mode: Default
-
-You are now in Default mode. Execute the user's request directly when possible.
-
-Default mode constraints:
-- Prefer making progress over asking follow-up questions.
-- Only request user input when the runtime explicitly asks you to.
-</collaboration_mode>`;
-
-function asObject(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
-
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
 
 function normalizeCodexCommandApprovalDecision(decision: PermissionDecision): "accept" | "acceptForSession" | "decline" {
   if (decision === "allow_always") {
@@ -244,148 +184,6 @@ function buildCodexRuntimeEnv(params: {
   return env;
 }
 
-function extractProposedPlanMarkdown(text: string | undefined): string | undefined {
-  const match = text ? PROPOSED_PLAN_BLOCK_REGEX.exec(text) : null;
-  const planMarkdown = match?.[1]?.trim();
-  return planMarkdown && planMarkdown.length > 0 ? planMarkdown : undefined;
-}
-
-function stripPlanApprovalBoilerplate(text: string): string {
-  let normalized = text;
-  for (const pattern of PLAN_APPROVAL_BOILERPLATE_PATTERNS) {
-    normalized = normalized.replace(pattern, "");
-  }
-  return normalized
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function normalizePlanCandidate(text: string | null | undefined): string | null {
-  const proposedPlan = extractProposedPlanMarkdown(text ?? undefined);
-  const candidate = stripPlanApprovalBoilerplate((proposedPlan ?? text ?? "").trim());
-  return candidate.length > 0 ? candidate : null;
-}
-
-function hasActionablePlanContent(text: string | null | undefined): boolean {
-  const candidate = normalizePlanCandidate(text);
-  if (!candidate) {
-    return false;
-  }
-
-  const lines = candidate
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const listLines = lines.filter((line) => /^([-*]|\d+\.)\s+/.test(line));
-
-  if (listLines.length >= 2) {
-    return true;
-  }
-
-  if (lines.some((line) => /^#{1,6}\s+\S+/.test(line)) && lines.length >= 2) {
-    return true;
-  }
-
-  return candidate.length >= 120 && lines.length >= 3;
-}
-
-export function buildCodexPlanMarkdown(plan: CodexStructuredPlan | null | undefined): string | null {
-  if (!plan) {
-    return null;
-  }
-
-  const lines: string[] = [];
-  const explanation = normalizePlanCandidate(plan.explanation);
-  if (explanation) {
-    lines.push(explanation);
-  }
-
-  const formattedSteps = plan.steps
-    .map((entry, index) => {
-      const step = entry.step.trim();
-      if (!step) {
-        return null;
-      }
-      const suffix = entry.status === "completed"
-        ? " (completed)"
-        : entry.status === "inProgress"
-          ? " (in progress)"
-          : "";
-      return `${index + 1}. ${step}${suffix}`;
-    })
-    .filter((entry): entry is string => entry !== null);
-
-  if (formattedSteps.length > 0) {
-    if (lines.length > 0) {
-      lines.push("");
-    }
-    lines.push(...formattedSteps);
-  }
-
-  const content = lines.join("\n").trim();
-  return hasActionablePlanContent(content) ? content : null;
-}
-
-function findPlanTextInTurn(turn: Record<string, unknown> | undefined): string | null {
-  const items = asArray(turn?.items)
-    .map(asObject)
-    .filter((entry): entry is Record<string, unknown> => entry !== undefined);
-
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    const itemType = asString(item?.type)?.trim().toLowerCase();
-    if (itemType !== "plan") {
-      continue;
-    }
-
-    const text = asString(item?.text)?.trim();
-    if (text && text.length > 0) {
-      return text;
-    }
-  }
-
-  return null;
-}
-
-export function resolveCodexPlanContent(input: {
-  planText?: string | null;
-  structuredPlan?: CodexStructuredPlan | null;
-  agentOutput?: string | null;
-}): string | null {
-  const candidates = [
-    normalizePlanCandidate(input.planText),
-    buildCodexPlanMarkdown(input.structuredPlan),
-    normalizePlanCandidate(input.agentOutput),
-  ];
-
-  for (const candidate of candidates) {
-    if (hasActionablePlanContent(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-export function resolveCodexRuntimePolicy(params: {
-  permissionMode: "default" | "plan" | undefined;
-  threadPermissionMode: "default" | "full_access" | undefined;
-}): {
-  approvalPolicy: "on-request" | "never";
-  sandbox: "read-only" | "danger-full-access";
-} {
-  const permissionMode = params.permissionMode ?? "default";
-  const threadPermissionMode = params.threadPermissionMode ?? "default";
-  const approvalRequired = threadPermissionMode !== "full_access" || permissionMode === "plan";
-
-  return {
-    approvalPolicy: approvalRequired ? "on-request" : "never",
-    sandbox: threadPermissionMode === "full_access" && permissionMode !== "plan"
-      ? "danger-full-access"
-      : "read-only",
-  };
-}
-
 function createAbortError(): Error {
   const error = new Error("Aborted");
   error.name = "AbortError";
@@ -405,235 +203,6 @@ function isServerRequest(value: unknown): value is JsonRpcRequest {
 function isServerNotification(value: unknown): value is JsonRpcNotification {
   const candidate = asObject(value);
   return Boolean(candidate && typeof candidate.method === "string" && candidate.id === undefined);
-}
-
-function toOwnership(toolUseId: string | null): NonNullable<ToolContext["ownership"]> {
-  if (!toolUseId) {
-    return {
-      parentToolUseId: null,
-      subagentOwnerToolUseId: null,
-      launcherToolUseId: null,
-    };
-  }
-
-  return {
-    parentToolUseId: toolUseId,
-    subagentOwnerToolUseId: toolUseId,
-    launcherToolUseId: toolUseId,
-    ownershipReason: "resolved_tool_use_id",
-  };
-}
-
-function buildSearchParams(action: Record<string, unknown>, command: string | undefined): string | undefined {
-  const parts: string[] = [];
-  const query = asString(action.query)?.trim();
-  const path = asString(action.path)?.trim();
-
-  if (query) {
-    parts.push(`pattern=${query}`);
-  }
-  if (path) {
-    parts.push(`path=${path}`);
-  }
-  if (parts.length > 0) {
-    return parts.join(" ");
-  }
-
-  return command?.trim() || undefined;
-}
-
-function buildSummaryFromCommandExecution(item: Record<string, unknown>, toolName: string): string {
-  const command = asString(item.command)?.trim();
-  const exitCode = asNumber(item.exitCode);
-  const actions = asArray(item.commandActions).map(asObject).filter((entry): entry is Record<string, unknown> => entry !== undefined);
-
-  if (toolName === "Read") {
-    const paths = actions
-      .map((action) => asString(action.path))
-      .filter((path): path is string => typeof path === "string" && path.trim().length > 0);
-    if (paths.length === 1) {
-      return `Read ${paths[0]}`;
-    }
-    if (paths.length > 1) {
-      return `Read ${paths.length} files`;
-    }
-  }
-
-  if (toolName === "Grep" || toolName === "Glob" || toolName === "Search") {
-    return `Completed ${toolName}`;
-  }
-
-  if (toolName === "Bash") {
-    if (command && command.length > 0) {
-      return exitCode != null && exitCode !== 0 ? `Command failed: ${command}` : `Ran ${command}`;
-    }
-    return exitCode != null && exitCode !== 0 ? "Command failed" : "Ran command";
-  }
-
-  return `Completed ${toolName}`;
-}
-
-export function selectPrimaryCodexFileChange(item: Record<string, unknown>): { path?: string; kind?: string } {
-  const changes = asArray(item.changes).map(asObject).filter((entry): entry is Record<string, unknown> => entry !== undefined);
-  const rankedChanges = changes
-    .map((change) => {
-      const path = asString(change.path);
-      const kind = asString(asObject(change.kind)?.type);
-      let score = 0;
-
-      if (kind === "add" || kind === "create") {
-        score += 20;
-      } else if (kind === "update") {
-        score += 10;
-      }
-
-      if (path?.endsWith(".codex-permission-probe")) {
-        score -= 100;
-      }
-
-      return { path, kind, score };
-    })
-    .sort((left, right) => right.score - left.score);
-
-  const selected = rankedChanges[0];
-  return selected ? { path: selected.path, kind: selected.kind } : {};
-}
-
-function buildSummaryFromFileChange(item: Record<string, unknown>, toolName: string): string {
-  const { path: firstPath } = selectPrimaryCodexFileChange(item);
-
-  if (toolName === "Write" && firstPath) {
-    return `Created ${firstPath}`;
-  }
-  if (toolName === "Edit" && firstPath) {
-    return `Edited ${firstPath}`;
-  }
-  return toolName === "Write" ? "Created files" : "Edited files";
-}
-
-function classifyCommandExecution(item: Record<string, unknown>, ownerToolUseId: string | null): ToolContext {
-  const command = asString(item.command);
-  const actions = asArray(item.commandActions).map(asObject).filter((entry): entry is Record<string, unknown> => entry !== undefined);
-  const actionTypes = new Set(actions.map((action) => asString(action.type) ?? "unknown"));
-
-  if (actions.length > 0 && actionTypes.size === 1 && actionTypes.has("read")) {
-    const firstPath = asString(actions[0]?.path);
-    return {
-      toolName: "Read",
-      command,
-      toolInput: firstPath ? { file_path: firstPath } : undefined,
-      editTarget: firstPath,
-      ownership: toOwnership(ownerToolUseId),
-    };
-  }
-
-  if (actions.length > 0 && actionTypes.size === 1 && actionTypes.has("search")) {
-    const loweredCommand = command?.toLowerCase() ?? "";
-    const toolName = loweredCommand.includes("rg ") || loweredCommand.includes("grep ") ? "Grep" : loweredCommand.includes("find ") ? "Glob" : "Search";
-    return {
-      toolName,
-      command,
-      searchParams: buildSearchParams(actions[0] ?? {}, command),
-      ownership: toOwnership(ownerToolUseId),
-    };
-  }
-
-  return {
-    toolName: "Bash",
-    command,
-    toolInput: command ? { command } : undefined,
-    isBash: true,
-    shell: "bash",
-    ownership: toOwnership(ownerToolUseId),
-  };
-}
-
-function classifyFileChange(item: Record<string, unknown>, ownerToolUseId: string | null): ToolContext {
-  const { path: firstPath, kind: changeKind } = selectPrimaryCodexFileChange(item);
-  const toolName = changeKind === "add" || changeKind === "create" ? "Write" : "Edit";
-
-  return {
-    toolName,
-    editTarget: firstPath,
-    toolInput: firstPath ? { file_path: firstPath } : undefined,
-    ownership: toOwnership(ownerToolUseId),
-  };
-}
-
-function classifyGenericTool(item: Record<string, unknown>, ownerToolUseId: string | null): ToolContext | null {
-  const type = asString(item.type);
-  if (!type) {
-    return null;
-  }
-  const normalizedType = type.trim().toLowerCase();
-
-  if (type === "commandExecution") {
-    return classifyCommandExecution(item, ownerToolUseId);
-  }
-
-  if (type === "fileChange") {
-    return classifyFileChange(item, ownerToolUseId);
-  }
-
-  if (normalizedType === "fileread" || normalizedType === "file_read" || normalizedType === "read") {
-    const readPath = asString(item.path) ?? asString(item.filePath) ?? asString(item.file_path);
-    return {
-      toolName: "Read",
-      editTarget: readPath,
-      toolInput: readPath ? { file_path: readPath } : undefined,
-      ownership: toOwnership(ownerToolUseId),
-    };
-  }
-
-  if (
-    normalizedType === "search"
-    || normalizedType === "grep"
-    || normalizedType === "glob"
-    || normalizedType === "websearch"
-  ) {
-    const toolName = normalizedType === "glob"
-      ? "Glob"
-      : normalizedType === "grep"
-        ? "Grep"
-        : normalizedType === "websearch"
-          ? "WebSearch"
-          : "Search";
-    return {
-      toolName,
-      searchParams: asString(item.query) ?? asString(item.pattern) ?? asString(item.path) ?? asString(item.title),
-      ownership: toOwnership(ownerToolUseId),
-    };
-  }
-
-  if (type === "collabAgentToolCall") {
-    const description = asString(item.description) ?? asString(item.prompt) ?? asString(item.title) ?? "Delegated task";
-    return {
-      toolName: "Task",
-      command: description,
-      ownership: toOwnership(ownerToolUseId),
-    };
-  }
-
-  if (type === "webSearch") {
-    return {
-      toolName: "WebSearch",
-      searchParams: asString(item.query) ?? asString(item.title),
-      ownership: toOwnership(ownerToolUseId),
-    };
-  }
-
-  if (type === "mcpToolCall" || type === "dynamicToolCall") {
-    return {
-      toolName: asString(item.title) ?? asString(item.name) ?? "Tool",
-      ownership: toOwnership(ownerToolUseId),
-    };
-  }
-
-  return null;
-}
-
-function getToolContext(item: Record<string, unknown>, ownerToolUseId: string | null): ToolContext | null {
-  return classifyGenericTool(item, ownerToolUseId);
 }
 
 function extractOwnerToolUseId(
@@ -696,49 +265,6 @@ function toCodexAnswers(answers: Record<string, string>): Record<string, { answe
       },
     ]),
   );
-}
-
-function buildCollaborationMode(model: string, permissionMode: string | undefined) {
-  return {
-    mode: permissionMode === "plan" ? "plan" as const : "default" as const,
-    settings: {
-      model,
-      reasoning_effort: "medium",
-      developer_instructions: permissionMode === "plan"
-        ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
-        : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-    },
-  };
-}
-
-export function requestedPermissionsIncludeFileWrite(
-  requestedPermissions: Record<string, unknown> | undefined,
-): boolean {
-  const fileSystem = asObject(requestedPermissions?.fileSystem);
-  const writeEntries = asArray(fileSystem?.write)
-    .map(asString)
-    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
-  return writeEntries.length > 0;
-}
-
-export function shouldAutoDeclineCodexPlanApproval(params: {
-  permissionMode: "default" | "plan" | undefined;
-  requestMethod: string;
-  requestedPermissions?: Record<string, unknown> | undefined;
-}): boolean {
-  if (params.permissionMode !== "plan") {
-    return false;
-  }
-
-  if (params.requestMethod === "item/fileChange/requestApproval") {
-    return true;
-  }
-
-  if (params.requestMethod === "item/permissions/requestApproval") {
-    return requestedPermissionsIncludeFileWrite(params.requestedPermissions);
-  }
-
-  return false;
 }
 
 function killChildProcess(child: ChildProcessWithoutNullStreams): void {
