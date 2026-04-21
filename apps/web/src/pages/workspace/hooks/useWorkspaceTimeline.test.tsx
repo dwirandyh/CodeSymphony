@@ -767,6 +767,28 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items[hookResult.items.length - 1]?.kind).toBe("plan-file-output");
   });
 
+  it("renders a codex plan card at the bottom after completion without Claude plan-file heuristics", () => {
+    const messages = [makeMessage("m1", 1, "user", "Plan"), makeMessage("m2", 2, "assistant", "Here's the plan")];
+    const events = [
+      makeEvent(0, "plan.created", {
+        messageId: "m2",
+        content: "# Codex Plan\n- Step 1",
+        filePath: "codex-plan-item",
+        source: "codex_plan_item",
+      }, "m2"),
+      makeEvent(1, "chat.completed", {}, "m2"),
+    ];
+    act(() => {
+      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
+    });
+    const planItems = hookResult.items.filter((i) => i.kind === "plan-file-output");
+    expect(planItems).toHaveLength(1);
+    expect(planItems[0]).toMatchObject({
+      content: "# Codex Plan\n- Step 1",
+      filePath: "codex-plan-item",
+    });
+  });
+
   it("keeps pre-plan activity visible and still renders the plan card last", () => {
     const messages = [
       makeMessage("m1", 1, "user", "Plan it"),

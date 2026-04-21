@@ -153,7 +153,7 @@ export function persistAlwaysAllowRule(worktreePath: string, rule: string): { se
 }
 
 export function inferPlanDetectionSource(filePath: string, source?: PlanDetectionSource): PlanDetectionSource {
-  if (source === "claude_plan_file" || source === "streaming_fallback") {
+  if (source === "claude_plan_file" || source === "codex_plan_item" || source === "streaming_fallback") {
     return source;
   }
 

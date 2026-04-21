@@ -946,6 +946,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
       await onPlanFileDetected({
         filePath: PLAN_FILE_PATH,
         content: detectedPlanContent,
+        source: "codex_plan_item",
       });
     }
 
