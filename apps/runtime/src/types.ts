@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import type {
   ChatEvent,
   ChatEventType,
+  CliAgent,
   ChatMode,
   ChatThreadPermissionMode,
   ChatThreadPermissionProfile,
@@ -66,6 +67,8 @@ export type ClaudeRunnerResult = {
     errorCount: number;
   };
 };
+
+export type ChatAgentRunnerResult = ClaudeRunnerResult;
 
 export type PlanDetectionSource = "claude_plan_file" | "streaming_fallback";
 export type ClaudeSessionPermissionMode = ClaudeSdkPermissionMode;
@@ -247,10 +250,13 @@ export type ClaudeRunner = (args: {
   onToolInstrumentation?: (event: ClaudeToolInstrumentationEvent) => Promise<void> | void;
 }) => Promise<ClaudeRunnerResult>;
 
+export type ChatAgentRunner = ClaudeRunner;
+
 export type RuntimeDeps = {
   prisma: PrismaClient;
   eventHub: RuntimeEventHub;
   claudeRunner: ClaudeRunner;
+  codexRunner?: ChatAgentRunner;
   logService?: {
     log: (
       level: LogLevel,
@@ -261,6 +267,22 @@ export type RuntimeDeps = {
     ) => void;
   };
   modelProviderService: {
-    getActiveProvider: () => Promise<{ apiKey: string; baseUrl: string; name: string; modelId: string } | null>;
+    getActiveProvider: (agent?: CliAgent) => Promise<{
+      id: string;
+      agent: CliAgent;
+      apiKey: string | null;
+      baseUrl: string | null;
+      name: string;
+      modelId: string;
+    } | null>;
+    getProviderById: (id: string) => Promise<{
+      id: string;
+      agent: CliAgent;
+      apiKey: string | null;
+      baseUrl: string | null;
+      name: string;
+      modelId: string;
+      isActive: boolean;
+    } | null>;
   };
 };

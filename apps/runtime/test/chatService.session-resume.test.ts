@@ -187,6 +187,90 @@ describe("chatService early session persistence", () => {
     expect(capturedSessionIds).toEqual([null, "session-stop-resume"]);
   });
 
+  it("persists an early session id on stop so the next message resumes the same Codex session", async () => {
+    let runCount = 0;
+    const capturedSessionIds: Array<string | null> = [];
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const codexRunner: ClaudeRunner = vi.fn(async ({ sessionId, onSessionId, onText, abortController }) => {
+      runCount += 1;
+
+      if (runCount === 1) {
+        capturedSessionIds.push(sessionId);
+        await onSessionId?.("codex-stop-resume");
+        await onText("Codex partial output before stop.");
+
+        await new Promise<void>((resolve) => {
+          if (abortController?.signal.aborted) {
+            resolve();
+            return;
+          }
+          abortController?.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+
+        throw new Error("Aborted by user.");
+      }
+
+      capturedSessionIds.push(sessionId);
+      await onText("Codex resumed successfully.");
+      return {
+        output: "Codex resumed successfully.",
+        sessionId: sessionId,
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      codexRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread("Stopped Codex run thread");
+
+    await chatService.updateThreadAgentSelection(threadId, {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+    });
+
+    await chatService.sendMessage(threadId, {
+      content: "tolong lanjutkan lewat codex",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) =>
+        event.type === "message.delta"
+        && event.payload.role === "assistant"
+        && String(event.payload.delta ?? "").includes("Codex partial output before stop."),
+    );
+
+    await chatService.stopRun(threadId);
+    const stopEvents = await waitForTerminalEventAfter(chatService, threadId, 0);
+    const stopCompleted = stopEvents.find((event) => event.type === "chat.completed" && event.payload.cancelled === true);
+    expect(stopCompleted).toBeDefined();
+
+    const stoppedThread = await chatService.getThreadById(threadId);
+    expect(stoppedThread?.codexSessionId).toBe("codex-stop-resume");
+    expect(stoppedThread?.claudeSessionId).toBeNull();
+
+    const afterStopIdx = stopEvents[stopEvents.length - 1]?.idx ?? 0;
+    await chatService.sendMessage(threadId, {
+      content: "continue",
+    });
+
+    const continueEvents = await waitForTerminalEventAfter(chatService, threadId, afterStopIdx);
+    const continueCompleted = continueEvents.find((event) => event.type === "chat.completed" && event.payload.cancelled !== true);
+    expect(continueCompleted).toBeDefined();
+    expect(capturedSessionIds).toEqual([null, "codex-stop-resume"]);
+    expect(codexRunner).toHaveBeenCalledTimes(2);
+    expect(claudeRunner).not.toHaveBeenCalled();
+  });
+
   it("marks interrupted runs as failed during startup recovery before clients hydrate thread history", async () => {
     const chatService = createChatService({
       prisma,

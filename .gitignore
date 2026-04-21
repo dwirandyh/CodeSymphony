@@ -18,3 +18,4 @@ apps/desktop/src-tauri/runtime-bundle/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
 *.tsbuildinfo
+.factory

@@ -502,7 +502,7 @@ describe("api", () => {
 
     it("tests provider", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ success: true }));
-      const result = await api.testModelProvider({ baseUrl: "http://localhost", apiKey: "key", modelId: "m1" });
+      const result = await api.testModelProvider({ agent: "codex", baseUrl: "http://localhost", apiKey: "key", modelId: "m1" });
       expect(result.success).toBe(true);
     });
   });

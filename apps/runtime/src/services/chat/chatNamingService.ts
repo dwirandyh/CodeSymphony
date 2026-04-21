@@ -1,3 +1,4 @@
+import { DEFAULT_CHAT_MODEL_BY_AGENT, type CliAgent } from "@codesymphony/shared-types";
 import type { RuntimeDeps } from "../../types.js";
 import type { ProviderOptions } from "./chatService.types.js";
 import { isDefaultBranchName } from "../worktreeService.js";
@@ -53,6 +54,18 @@ function normalizeGeneratedThreadTitle(raw: string): string | null {
   return clamped.length >= 3 ? clamped : null;
 }
 
+function resolveAgent(agent: CliAgent | undefined): CliAgent {
+  return agent === "codex" ? "codex" : "claude";
+}
+
+function toRunnerOptional(value: string | null | undefined): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
+  return agent === "codex" ? (deps.codexRunner ?? deps.claudeRunner) : deps.claudeRunner;
+}
+
 async function buildThreadTitleWithAi(
   deps: RuntimeDeps,
   threadId: string,
@@ -79,17 +92,19 @@ async function buildThreadTitleWithAi(
   const timeout = setTimeout(() => {
     abortController.abort();
   }, TITLE_GENERATION_TIMEOUT_MS);
+  const agent = resolveAgent(providerOptions?.agent);
+  const runner = getRunnerForAgent(deps, agent);
 
   try {
-    const result = await deps.claudeRunner({
+    const result = await runner({
       prompt,
       sessionId: null,
       cwd: worktreePath,
       abortController,
       permissionMode: "plan",
-      model: providerOptions?.model,
-      providerApiKey: providerOptions?.providerApiKey,
-      providerBaseUrl: providerOptions?.providerBaseUrl,
+      model: providerOptions?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+      providerApiKey: toRunnerOptional(providerOptions?.providerApiKey),
+      providerBaseUrl: toRunnerOptional(providerOptions?.providerBaseUrl),
       onText: (chunk) => {
         streamedOutput += chunk;
       },
@@ -268,6 +283,7 @@ async function buildBranchNameWithAi(
   worktreePath: string,
   firstUserContent: string,
   firstAssistantContent: string,
+  providerOptions?: ProviderOptions,
 ): Promise<string | null> {
   const prompt = [
     "You generate concise git branch names.",
@@ -288,14 +304,19 @@ async function buildBranchNameWithAi(
   const timeout = setTimeout(() => {
     abortController.abort();
   }, BRANCH_GENERATION_TIMEOUT_MS);
+  const agent = resolveAgent(providerOptions?.agent);
+  const runner = getRunnerForAgent(deps, agent);
 
   try {
-    const result = await deps.claudeRunner({
+    const result = await runner({
       prompt,
       sessionId: null,
       cwd: worktreePath,
       abortController,
       permissionMode: "plan",
+      model: providerOptions?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+      providerApiKey: toRunnerOptional(providerOptions?.providerApiKey),
+      providerBaseUrl: toRunnerOptional(providerOptions?.providerBaseUrl),
       onText: (chunk) => {
         streamedOutput += chunk;
       },
@@ -335,6 +356,7 @@ export async function maybeAutoRenameBranchAfterFirstAssistantReply(
   deps: RuntimeDeps,
   threadId: string,
   expectedAssistantMessageId: string,
+  providerOptions?: ProviderOptions,
 ): Promise<string | null> {
   try {
     const thread = await deps.prisma.chatThread.findUnique({
@@ -383,6 +405,7 @@ export async function maybeAutoRenameBranchAfterFirstAssistantReply(
       worktree.path,
       firstUserMessage.content,
       firstAssistantMessage.content,
+      providerOptions,
     );
 
     if (!newBranch || newBranch === worktree.branch) {
