@@ -5,6 +5,7 @@ import {
   AnswerQuestionInputSchema,
   CreateChatThreadInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
+  DismissPlanInputSchema,
   DismissQuestionInputSchema,
   PlanRevisionInputSchema,
   RenameChatThreadTitleInputSchema,
@@ -26,6 +27,7 @@ import {
   type ChatThreadPermissionProfile,
   type ChatThreadSnapshot,
   type CreateChatThreadInput,
+  type DismissPlanInput,
   type DismissQuestionInput,
   type PlanRevisionInput,
   type RenameChatThreadTitleInput,
@@ -1633,6 +1635,35 @@ export function createChatService(deps: RuntimeDeps) {
 
       const executePrompt = `The user has approved the following plan. Please execute it now:\n\n${plan.content}`;
       scheduleAssistant(threadId, executePrompt, "default", { autoAcceptTools: true });
+    },
+
+    async dismissPlan(threadId: string, rawInput: unknown): Promise<void> {
+      const input: DismissPlanInput = DismissPlanInputSchema.parse(rawInput);
+
+      const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      let plan = pendingPlanByThread.get(threadId);
+      if (!plan) {
+        plan = await recoverPendingPlan(deps.eventHub, threadId) ?? undefined;
+        if (!plan) {
+          throw new Error("No pending plan to dismiss for this thread");
+        }
+      }
+
+      if (isThreadActive(threadId)) {
+        throw new Error("Assistant is still processing");
+      }
+
+      pendingPlanByThread.delete(threadId);
+
+      const normalizedReason = input.reason?.trim();
+      await deps.eventHub.emit(threadId, "plan.dismissed", {
+        filePath: plan.filePath,
+        reason: normalizedReason && normalizedReason.length > 0 ? normalizedReason : "Plan dismissed by user.",
+      });
     },
 
     async revisePlan(threadId: string, rawInput: unknown): Promise<void> {

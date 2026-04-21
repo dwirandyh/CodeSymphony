@@ -1066,6 +1066,34 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Plan");
   });
 
+  it("renders footer content after the timeline items", () => {
+    const items: ChatTimelineItem[] = [
+      makeMessageItem("m1", 1),
+      {
+        kind: "plan-file-output",
+        id: "plan-1",
+        messageId: "m2",
+        content: "# Plan\n\nStep 1",
+        filePath: ".claude/plans/my-plan.md",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    act(() => {
+      root.render(
+        <ChatMessageList
+          {...baseProps}
+          items={items}
+          footer={<div data-testid="plan-footer">Plan decision footer</div>}
+        />,
+      );
+    });
+
+    const rows = getTimelineRowWrappers();
+    expect(rows).toHaveLength(3);
+    expect(rows[rows.length - 1]?.querySelector("[data-testid='plan-footer']")).toBeTruthy();
+  });
+
   it("shows streaming indicator when thinking placeholder is enabled", () => {
     act(() => {
       root.render(<ChatMessageList {...baseProps} showThinkingPlaceholder={true} />);
@@ -1386,6 +1414,18 @@ describe("ChatMessageList", () => {
 
     triggerScroll(560);
     mountChatMessageList({ items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)] });
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("auto-follows to the footer when footer content is present", () => {
+    mountChatMessageList({
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      footer: <div data-testid="plan-footer">Plan decision footer</div>,
+    });
+
+    setScrollMetrics();
 
     expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
     expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });

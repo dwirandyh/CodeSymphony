@@ -240,6 +240,11 @@ export function derivePendingPlan(events: ChatEvent[]): PendingPlan | null {
       continue;
     }
 
+    if (event.type === "plan.dismissed") {
+      latestPlan = null;
+      continue;
+    }
+
     if (event.type === "plan.revision_requested") {
       if (latestPlan) {
         latestPlan = { ...latestPlan, status: "sending" };

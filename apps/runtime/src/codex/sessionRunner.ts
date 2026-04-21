@@ -73,15 +73,32 @@ type CodexStructuredPlan = {
   steps: CodexPlanStep[];
 };
 
-const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
+export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
 
-You are in Plan Mode. Produce a concrete implementation plan only.
+You work in phases, and you should chat your way to a great plan before finalizing it. A great plan is implementation-ready and decision-complete.
 
-Plan mode constraints:
-- Do not edit files.
-- Do not run shell commands.
-- Do not read files or use tools.
-- Base the plan on the user's request and visible conversation context only.
+Mode rules:
+- You are in Plan Mode until a developer message explicitly ends it.
+- If the user asks for execution while still in Plan Mode, treat it as a request to plan the execution, not perform it.
+
+Plan Mode constraints:
+- You may explore and execute non-mutating actions that improve the plan.
+- You must not perform mutating actions or change repo-tracked state.
+
+Allowed exploration:
+- Read or search files, configs, manifests, and docs.
+- Run non-mutating inspection commands.
+- Run tests/builds/checks when they do not edit repo-tracked files.
+
+Not allowed:
+- Editing or writing files.
+- Running commands whose purpose is to implement the change instead of refining the plan.
+- Applying patches, migrations, or codegen that modifies repo-tracked files.
+
+Planning workflow:
+- Ground yourself in the actual environment before finalizing the plan.
+- Resolve what you can through exploration before asking follow-up questions.
+- Briefly summarize what you inspected before the final plan when that helps the user follow the reasoning.
 
 Plan requirements:
 - Clarify assumptions only when needed.
@@ -90,7 +107,7 @@ Plan requirements:
 - Wrap the final plan in <proposed_plan> tags.
 </collaboration_mode>`;
 
-const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Collaboration Mode: Default
+export const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Collaboration Mode: Default
 
 You are now in Default mode. Execute the user's request directly when possible.
 
@@ -548,6 +565,7 @@ function classifyGenericTool(item: Record<string, unknown>, ownerToolUseId: stri
   if (!type) {
     return null;
   }
+  const normalizedType = type.trim().toLowerCase();
 
   if (type === "commandExecution") {
     return classifyCommandExecution(item, ownerToolUseId);
@@ -555,6 +573,36 @@ function classifyGenericTool(item: Record<string, unknown>, ownerToolUseId: stri
 
   if (type === "fileChange") {
     return classifyFileChange(item, ownerToolUseId);
+  }
+
+  if (normalizedType === "fileread" || normalizedType === "file_read" || normalizedType === "read") {
+    const readPath = asString(item.path) ?? asString(item.filePath) ?? asString(item.file_path);
+    return {
+      toolName: "Read",
+      editTarget: readPath,
+      toolInput: readPath ? { file_path: readPath } : undefined,
+      ownership: toOwnership(ownerToolUseId),
+    };
+  }
+
+  if (
+    normalizedType === "search"
+    || normalizedType === "grep"
+    || normalizedType === "glob"
+    || normalizedType === "websearch"
+  ) {
+    const toolName = normalizedType === "glob"
+      ? "Glob"
+      : normalizedType === "grep"
+        ? "Grep"
+        : normalizedType === "websearch"
+          ? "WebSearch"
+          : "Search";
+    return {
+      toolName,
+      searchParams: asString(item.query) ?? asString(item.pattern) ?? asString(item.path) ?? asString(item.title),
+      ownership: toOwnership(ownerToolUseId),
+    };
   }
 
   if (type === "collabAgentToolCall") {
@@ -661,6 +709,36 @@ function buildCollaborationMode(model: string, permissionMode: string | undefine
         : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
     },
   };
+}
+
+export function requestedPermissionsIncludeFileWrite(
+  requestedPermissions: Record<string, unknown> | undefined,
+): boolean {
+  const fileSystem = asObject(requestedPermissions?.fileSystem);
+  const writeEntries = asArray(fileSystem?.write)
+    .map(asString)
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  return writeEntries.length > 0;
+}
+
+export function shouldAutoDeclineCodexPlanApproval(params: {
+  permissionMode: "default" | "plan" | undefined;
+  requestMethod: string;
+  requestedPermissions?: Record<string, unknown> | undefined;
+}): boolean {
+  if (params.permissionMode !== "plan") {
+    return false;
+  }
+
+  if (params.requestMethod === "item/fileChange/requestApproval") {
+    return true;
+  }
+
+  if (params.requestMethod === "item/permissions/requestApproval") {
+    return requestedPermissionsIncludeFileWrite(params.requestedPermissions);
+  }
+
+  return false;
 }
 
 function killChildProcess(child: ChildProcessWithoutNullStreams): void {
@@ -869,7 +947,11 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
             || parsed.method === "item/fileChange/requestApproval"
             || parsed.method === "item/permissions/requestApproval"
           ) {
-            if (permissionMode === "plan") {
+            if (shouldAutoDeclineCodexPlanApproval({
+              permissionMode,
+              requestMethod: parsed.method,
+              requestedPermissions: asObject(params?.permissions),
+            })) {
               writeMessage({
                 id: parsed.id,
                 result: parsed.method === "item/permissions/requestApproval"

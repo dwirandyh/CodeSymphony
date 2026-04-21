@@ -854,7 +854,7 @@ function detectSemanticBoundaryFromEvents(events: ChatEvent[]): SemanticBoundary
       continue;
     }
 
-    if (event.type === "plan.approved" || event.type === "plan.revision_requested") {
+    if (event.type === "plan.approved" || event.type === "plan.dismissed" || event.type === "plan.revision_requested") {
       continue;
     }
 

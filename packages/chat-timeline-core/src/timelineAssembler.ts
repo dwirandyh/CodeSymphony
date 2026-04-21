@@ -308,6 +308,7 @@ export function buildTimelineFromSeed(params: {
     || event.type === "subagent.finished"
     || event.type === "plan.created"
     || event.type === "plan.approved"
+    || event.type === "plan.dismissed"
     || event.type === "plan.revision_requested"
   );
   const assistantDeltaEventsByMessageId = new Map<string, ChatEvent[]>();

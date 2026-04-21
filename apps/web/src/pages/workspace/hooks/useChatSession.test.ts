@@ -463,6 +463,23 @@ describe("deriveSelectedThreadUiState", () => {
     expect(state.composerDisabled).toBe(true);
   });
 
+  it("returns idle again after a pending plan is dismissed", () => {
+    const state = deriveSelectedThreadUiState({
+      selectedThreadId: "thread-1",
+      threads: [{ ...makeThread("New Thread"), active: false }],
+      events: [
+        makeEvent(1, "plan.created", { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" }),
+        makeEvent(2, "chat.completed", {}),
+        makeEvent(3, "plan.dismissed", { filePath: "/tmp/.claude/plans/plan.md" }),
+      ],
+      sendingMessage: false,
+      waitingAssistant: null,
+    });
+
+    expect(state.selectedThreadUiStatus).toBe("idle");
+    expect(state.composerDisabled).toBe(false);
+  });
+
   it("disables the composer only while a send request is in flight", () => {
     const state = deriveSelectedThreadUiState({
       selectedThreadId: "thread-1",

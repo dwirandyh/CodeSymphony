@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
   buildCodexPlanMarkdown,
+  requestedPermissionsIncludeFileWrite,
   resolveCodexPlanContent,
   resolveCodexRuntimePolicy,
   selectPrimaryCodexFileChange,
+  shouldAutoDeclineCodexPlanApproval,
 } from "../src/codex/sessionRunner";
 
 describe("codex session runner plan helpers", () => {
@@ -78,6 +81,53 @@ describe("codex session runner plan helpers", () => {
       approvalPolicy: "never",
       sandbox: "danger-full-access",
     });
+  });
+
+  it("allows non-mutating exploration in Codex plan mode instructions", () => {
+    expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS).toContain("You may explore and execute non-mutating actions that improve the plan.");
+    expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS).toContain("Read or search files, configs, manifests, and docs.");
+    expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS).not.toContain("Do not read files or use tools.");
+  });
+
+  it("detects when requested Codex permissions include file writes", () => {
+    expect(requestedPermissionsIncludeFileWrite({
+      fileSystem: {
+        write: ["/tmp/output.txt"],
+      },
+    })).toBe(true);
+
+    expect(requestedPermissionsIncludeFileWrite({
+      fileSystem: {
+        read: ["/tmp/input.txt"],
+      },
+    })).toBe(false);
+  });
+
+  it("only auto-declines mutating Codex approvals in plan mode", () => {
+    expect(shouldAutoDeclineCodexPlanApproval({
+      permissionMode: "plan",
+      requestMethod: "item/fileRead/requestApproval",
+    })).toBe(false);
+
+    expect(shouldAutoDeclineCodexPlanApproval({
+      permissionMode: "plan",
+      requestMethod: "item/commandExecution/requestApproval",
+    })).toBe(false);
+
+    expect(shouldAutoDeclineCodexPlanApproval({
+      permissionMode: "plan",
+      requestMethod: "item/fileChange/requestApproval",
+    })).toBe(true);
+
+    expect(shouldAutoDeclineCodexPlanApproval({
+      permissionMode: "plan",
+      requestMethod: "item/permissions/requestApproval",
+      requestedPermissions: {
+        fileSystem: {
+          write: ["/tmp/output.txt"],
+        },
+      },
+    })).toBe(true);
   });
 
   it("prefers the user-facing file over codex permission probes in multi-file changes", () => {

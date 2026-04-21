@@ -18,6 +18,7 @@ export const ChatEventTypeSchema = z.enum([
   "question.dismissed",
   "plan.created",
   "plan.approved",
+  "plan.dismissed",
   "plan.revision_requested",
   "subagent.started",
   "subagent.finished",
@@ -473,6 +474,11 @@ export const DismissQuestionInputSchema = z.object({
   reason: z.string().trim().optional(),
 });
 export type DismissQuestionInput = z.infer<typeof DismissQuestionInputSchema>;
+
+export const DismissPlanInputSchema = z.object({
+  reason: z.string().trim().optional(),
+});
+export type DismissPlanInput = z.infer<typeof DismissPlanInputSchema>;
 
 export const PlanRevisionInputSchema = z.object({
   feedback: z.string().trim().min(1),

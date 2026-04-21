@@ -116,6 +116,7 @@ export function ChatMessageList({
   showThinkingPlaceholder = false,
   onOpenReadFile,
   worktreePath = null,
+  footer = null,
 }: ChatMessageListProps) {
   const vlistRef = useRef<VListHandle>(null);
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(() => new Set());
@@ -169,12 +170,15 @@ export function ChatMessageList({
   }, []);
 
   const displayItems = useMemo(() => {
-    const result: Array<ChatTimelineItem | "thinking-placeholder"> = [...items];
+    const result: Array<ChatTimelineItem | "thinking-placeholder" | "footer"> = [...items];
     if (showThinkingPlaceholder) {
       result.push("thinking-placeholder");
     }
+    if (footer) {
+      result.push("footer");
+    }
     return result;
-  }, [items, showThinkingPlaceholder]);
+  }, [footer, items, showThinkingPlaceholder]);
 
   const getAutoFollowTargetIndex = useCallback((mode: "preserve-user-anchor" | "bottom" = "preserve-user-anchor") => {
     if (displayItems.length === 0) {
@@ -182,6 +186,10 @@ export function ChatMessageList({
     }
 
     if (mode === "bottom") {
+      return displayItems.length - 1;
+    }
+
+    if (footer) {
       return displayItems.length - 1;
     }
 
@@ -195,7 +203,7 @@ export function ChatMessageList({
     }
 
     return displayItems.length - 1;
-  }, [displayItems.length, items, showThinkingPlaceholder]);
+  }, [displayItems.length, footer, items, showThinkingPlaceholder]);
 
   const scrollToBottom = useCallback((mode: "preserve-user-anchor" | "bottom" = "preserve-user-anchor") => {
     const handle = vlistRef.current;
@@ -280,7 +288,7 @@ export function ChatMessageList({
       className="relative h-full min-h-0"
       data-testid="chat-scroll"
     >
-      {items.length === 0 && !showThinkingPlaceholder ? (
+      {displayItems.length === 0 ? (
         emptyState ? <EmptyStateCard state={emptyState} /> : null
       ) : (
         <VList
@@ -296,6 +304,13 @@ export function ChatMessageList({
               return (
                 <div key="thinking-placeholder" className={`mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}pb-4`}>
                   <ThinkingPlaceholder />
+                </div>
+              );
+            }
+            if (item === "footer") {
+              return (
+                <div key="chat-message-list-footer" data-testid="chat-message-list-footer">
+                  {footer}
                 </div>
               );
             }

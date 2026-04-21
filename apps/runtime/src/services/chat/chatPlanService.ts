@@ -15,7 +15,11 @@ export async function recoverPendingPlan(
       if (content.length > 0) {
         lastPlan = { content, filePath };
       }
-    } else if (event.type === "plan.approved" || event.type === "plan.revision_requested") {
+    } else if (
+      event.type === "plan.approved"
+      || event.type === "plan.dismissed"
+      || event.type === "plan.revision_requested"
+    ) {
       lastPlan = null;
     }
   }

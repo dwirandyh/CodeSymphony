@@ -579,6 +579,7 @@ export function WorkspacePage() {
     || mobilePanelOpen === "utilities"
     || mobilePanelOpen === "device";
   const mobileUtilitiesFullscreen = mobilePanelOpen === "utilities";
+  const mobileReposDrawerOpen = mobilePanelOpen === "repos";
   const mobileTitle = mobilePanelOpen === "files"
     ? "Files"
     : mobilePanelOpen === "git"
@@ -1229,7 +1230,9 @@ export function WorkspacePage() {
           className={cn(
             "workspace-main flex min-h-0 min-w-0 flex-1 flex-col px-0 pb-0 pt-0",
             activeView !== "file" && "lg:px-3 lg:pb-0 lg:pt-3",
+            mobileReposDrawerOpen && "pointer-events-none select-none lg:pointer-events-auto lg:select-auto",
           )}
+          aria-hidden={mobileReposDrawerOpen ? "true" : undefined}
         >
           {/* ── Mobile top bar ── */}
           <div
@@ -1491,6 +1494,14 @@ export function WorkspacePage() {
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       onOpenReadFile={openReadFile}
                       worktreePath={repos.selectedWorktree?.path ?? null}
+                      footer={gates.showPlanDecisionComposer ? (
+                        <PlanDecisionComposer
+                          busy={gates.planActionBusy}
+                          onApprove={() => void gates.handleApprovePlan()}
+                          onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
+                          onDismiss={() => void gates.handleDismissPlan()}
+                        />
+                      ) : null}
                     />
                   </div>
                 </section>
@@ -1563,14 +1574,7 @@ export function WorkspacePage() {
                 ) : null}
                 {!gates.showPlanDecisionComposer && gates.isWaitingForUserGate ? <div className="pb-2 pt-1" /> : null}
 
-                {gates.showPlanDecisionComposer ? (
-                  <PlanDecisionComposer
-                    busy={gates.planActionBusy}
-                    onApprove={() => void gates.handleApprovePlan()}
-                    onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
-                    onDismiss={() => gates.handleDismissPlan()}
-                  />
-                ) : !gates.isWaitingForUserGate ? (
+                {!gates.isWaitingForUserGate ? (
                   <Composer
                     disabled={chat.composerDisabled || gates.planActionBusy}
                     sending={chat.sendingMessage}
@@ -1618,7 +1622,7 @@ export function WorkspacePage() {
             />
           </Suspense>
 
-          {mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen ? (
+          {mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen && !mobileReposDrawerOpen ? (
             <Suspense fallback={null}>
               <MobileActionBar
                 hasWorktree={!!repos.selectedWorktreeId}
@@ -1696,10 +1700,10 @@ export function WorkspacePage() {
       <div
         className={cn(
           "fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300 lg:hidden",
-          mobilePanelOpen === "repos" ? "opacity-100" : "pointer-events-none opacity-0",
+          mobileReposDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0",
         )}
         onClick={() => {
-          if (mobilePanelOpen === "repos") {
+          if (mobileReposDrawerOpen) {
             handleCloseMobileRepositories();
           }
         }}
@@ -1710,8 +1714,11 @@ export function WorkspacePage() {
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-50 flex w-[85vw] max-w-[320px] flex-col bg-card shadow-2xl drawer-slide safe-top lg:hidden",
-          mobilePanelOpen === "repos" ? "translate-x-0" : "-translate-x-full",
+          mobileReposDrawerOpen ? "translate-x-0" : "-translate-x-full",
         )}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Repositories"
       >
         <div className="flex items-center justify-between px-4 pb-2 pt-4">
           <div>
