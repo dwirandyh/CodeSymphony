@@ -135,7 +135,16 @@ export function captureStderrLine(buffer: string[], data: string) {
     }
 }
 
-export function withClaudeSetupHint(error: unknown, recentStderr: string[], claudeExecutable: string) {
+export function captureDiagnosticLine(buffer: string[], data: string) {
+    captureStderrLine(buffer, data);
+}
+
+export function withClaudeSetupHint(
+    error: unknown,
+    recentStderr: string[],
+    recentDiagnostics: string[],
+    claudeExecutable: string,
+) {
     if (!(error instanceof Error)) {
         return error;
     }
@@ -152,6 +161,23 @@ export function withClaudeSetupHint(error: unknown, recentStderr: string[], clau
 
     if (!/Claude Code process exited with code 1/i.test(error.message)) {
         return error;
+    }
+
+    if (recentDiagnostics.length > 0) {
+        const hintLines = [
+            `Claude Code started, but the request failed before producing a response. Runtime is using Claude CLI (${claudeExecutable}).`,
+            "This looks like a Claude request or model-routing failure, not a missing executable or missing `claude login`.",
+            "If Claude is routed through a proxy, verify that the selected model is supported by that proxy.",
+            "",
+            "Recent Claude diagnostics:",
+            ...recentDiagnostics,
+        ];
+
+        if (recentStderr.length > 0) {
+            hintLines.push("", "Recent Claude stderr:", ...recentStderr);
+        }
+
+        return new Error(hintLines.join("\n"), { cause: error });
     }
 
     const hintLines = [
