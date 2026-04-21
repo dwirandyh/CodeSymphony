@@ -138,6 +138,35 @@ describe("worktreeThreadStatus", () => {
     expect(deriveThreadUiStatus(thread, snapshot)).toBe("review_plan");
   });
 
+  it("returns idle after a pending plan is dismissed", () => {
+    const thread = makeThread();
+    const snapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: thread.id,
+        idx: 1,
+        type: "plan.created",
+        payload: { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: thread.id,
+        idx: 2,
+        type: "chat.completed",
+        payload: {},
+      }),
+      makeEvent({
+        id: "e3",
+        threadId: thread.id,
+        idx: 3,
+        type: "plan.dismissed",
+        payload: { filePath: "/tmp/.claude/plans/plan.md" },
+      }),
+    ]);
+
+    expect(deriveThreadUiStatus(thread, snapshot)).toBe("idle");
+  });
+
   it("returns idle for bogus streaming fallback plans without a real write", () => {
     const thread = makeThread();
     const snapshot = makeSnapshot([

@@ -453,6 +453,18 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to approve plan");
     }
   },
+  dismissPlan: async (threadId: string) => {
+    const response = await runtimeFetch(`/threads/${threadId}/plan/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to dismiss plan");
+    }
+  },
   revisePlan: async (threadId: string, input: PlanRevisionInput) => {
     const response = await runtimeFetch(`/threads/${threadId}/plan/revise`, {
       method: "POST",

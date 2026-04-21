@@ -239,6 +239,17 @@ describe("api", () => {
     });
   });
 
+  describe("plan operations", () => {
+    it("dismisses a plan", async () => {
+      mockFetch.mockReturnValueOnce(mock204());
+      await api.dismissPlan("t1");
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toContain("/threads/t1/plan/dismiss");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBe(JSON.stringify({}));
+    });
+  });
+
   describe("messages", () => {
     it("lists messages", async () => {
       mockFetch.mockReturnValueOnce(mockOk([]));

@@ -767,6 +767,29 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items[hookResult.items.length - 1]?.kind).toBe("plan-file-output");
   });
 
+  it("keeps pre-plan activity visible and still renders the plan card last", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "Plan it"),
+      makeMessage("m2", 2, "assistant", "# My Plan\n- Step 1"),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", { toolName: "Read", toolUseId: "read-1" }, "m2"),
+      makeEvent(1, "tool.finished", { toolName: "Read", summary: "Read /src/example.ts", precedingToolUseIds: ["read-1"] }, "m2"),
+      makeEvent(2, "plan.created", { messageId: "m2", content: "# My Plan\n- Step 1", filePath: ".claude/plans/my-plan.md" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }, "m2"),
+      makeEvent(4, "tool.finished", { precedingToolUseIds: ["exit-1"] }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreIndex = items.findIndex((item) => item.kind === "explore-activity");
+    const planIndex = items.findIndex((item) => item.kind === "plan-file-output");
+
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeLessThan(planIndex);
+    expect(items[items.length - 1]?.kind).toBe("plan-file-output");
+  });
+
   it("skips bogus streaming fallback plan events without a real plan write", () => {
     const messages = [makeMessage("m1", 1, "user", "hi"), makeMessage("m2", 2, "assistant", "Hello there")];
     const events = [

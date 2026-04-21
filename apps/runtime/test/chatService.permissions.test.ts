@@ -1390,6 +1390,52 @@ describe("chatService permission flow", () => {
     expect(staleDismissed.payload.resolver).toBe("system");
   });
 
+  it("dismisses a pending plan and records a persisted lifecycle event", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPlanFileDetected, onText, permissionMode }) => {
+      if (permissionMode === "plan") {
+        await onText("Drafting plan...");
+        await onPlanFileDetected({
+          filePath: ".claude/plans/plan.md",
+          content: "# Plan\n\n1. Ship it",
+          source: "claude_plan_file",
+        });
+        await onText("# Plan\n\n1. Ship it");
+        return {
+          output: "# Plan\n\n1. Ship it",
+          sessionId: "session-plan-dismissed",
+        };
+      }
+
+      await onText("Done.");
+      return { output: "Done.", sessionId: "session-plan-dismissed-default" };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "plan something",
+      mode: "plan",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+
+    await chatService.dismissPlan(threadId, {});
+
+    const dismissed = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "plan.dismissed" && event.payload.filePath === ".claude/plans/plan.md",
+    );
+
+    expect(dismissed.payload.reason).toBe("Plan dismissed by user.");
+  });
+
   it("normalizes relative file mentions against the selected worktree root before scheduling the assistant", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, cwd, onText }) => {
       expect(cwd).toContain("codesymphony-worktree-");
