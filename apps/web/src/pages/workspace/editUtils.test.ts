@@ -149,12 +149,16 @@ describe("isEditToolLifecycleEvent", () => {
     expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.output", payload: { toolName: "Write" } }))).toBe(true);
   });
 
-  it("returns true for tool.finished with editTarget", () => {
-    expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.finished", payload: { editTarget: "file.ts" } }))).toBe(true);
+  it("returns true for tool.finished with edit tool name", () => {
+    expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.finished", payload: { toolName: "Edit", editTarget: "file.ts" } }))).toBe(true);
   });
 
   it("returns true for tool.finished with Edited summary", () => {
     expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.finished", payload: { summary: "Edited src/file.ts" } }))).toBe(true);
+  });
+
+  it("returns false for tool.finished with editTarget on non-edit tools", () => {
+    expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.finished", payload: { toolName: "Read", editTarget: "file.ts" } }))).toBe(false);
   });
 
   it("returns false for worktree.diff tool.finished", () => {
@@ -404,5 +408,33 @@ describe("extractEditedRuns", () => {
     const runs = extractEditedRuns(events);
     expect(runs.length).toBe(1);
     expect(runs[0].status).toBe("failed");
+  });
+
+  it("ignores read completions that include editTarget metadata", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: {
+          toolName: "Read",
+          toolUseId: "r1",
+          toolInput: { file_path: "/repo/README.md" },
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "tool.finished",
+        idx: 2,
+        payload: {
+          toolName: "Read",
+          summary: "Read /repo/README.md",
+          precedingToolUseIds: ["r1"],
+          editTarget: "/repo/README.md",
+        },
+      }),
+    ];
+
+    expect(extractEditedRuns(events)).toEqual([]);
   });
 });

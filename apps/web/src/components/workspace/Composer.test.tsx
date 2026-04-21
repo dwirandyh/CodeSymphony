@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FileEntry, SlashCommand } from "@codesymphony/shared-types";
+import type { FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { Composer } from "./composer";
 import { getPlainTextFromEditor } from "./composer/composerEditorUtils";
@@ -50,12 +50,15 @@ const defaultProps = {
   slashCommands: sampleSlashCommands,
   slashCommandsLoading: false,
   providers: [],
+  agent: "claude" as const,
+  model: "claude-sonnet-4-6",
+  modelProviderId: null,
   permissionMode: "default" as const,
   hasMessages: false,
   onSubmitMessage: vi.fn().mockResolvedValue(true),
   onModeChange: vi.fn(),
   onStop: vi.fn(),
-  onSelectProvider: vi.fn(),
+  onAgentSelectionChange: vi.fn(),
   onPermissionModeChange: vi.fn(),
 };
 
@@ -108,8 +111,7 @@ describe("Composer", () => {
   }
 
   function getModelSelectorButton(): HTMLButtonElement {
-    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
-    const modelButton = buttons.find((button) => button.textContent?.trim() === "CLI");
+    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label="Select CLI agent and model"]');
     if (!modelButton) {
       throw new Error("Model selector button not found");
     }
@@ -132,6 +134,15 @@ describe("Composer", () => {
       throw new Error(`${label} option not found`);
     }
     return optionButton;
+  }
+
+  function getButtonByExactText(label: string): HTMLButtonElement {
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+    const button = buttons.find((entry) => entry.textContent?.trim() === label);
+    if (!button) {
+      throw new Error(`${label} button not found`);
+    }
+    return button;
   }
 
   function typeInEditor(editor: HTMLDivElement, text: string) {
@@ -203,6 +214,24 @@ describe("Composer", () => {
     const buttons = container.querySelectorAll("button[data-index]");
     expect(buttons.length).toBeGreaterThan(0);
     expect(container.textContent).toContain("Create a commit");
+  });
+
+  it("closes slash command suggestions on outside click without changing the draft", async () => {
+    renderComposer();
+    const editor = getEditor();
+
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+
+    expect(container.textContent).toContain("Create a commit");
+
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(container.textContent).not.toContain("Create a commit");
+    expect(getPlainTextFromEditor(editor)).toBe("/");
   });
 
   it("shows no suggestions when worktreeId is null (empty fileIndex)", async () => {
@@ -438,7 +467,142 @@ describe("Composer", () => {
 
     const modelButton = getModelSelectorButton();
     expect(modelButton.disabled).toBe(true);
-    expect(modelButton.title).toContain("Model is locked for this thread");
+    expect(modelButton.title).toContain("CLI agent is locked for this thread");
+  });
+
+  it("shows Claude and Codex icons with a compact desktop agent list", () => {
+    renderComposer();
+
+    const modelButton = getModelSelectorButton();
+    expect(modelButton.textContent).toContain("Claude · Sonnet 4.6");
+
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('svg[data-agent-icon="claude"]')).not.toBeNull();
+    expect(container.querySelector('svg[data-agent-icon="codex"]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-model-panel="overlay"]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-model-panel="stacked"]')).toBeNull();
+    expect(container.textContent).not.toContain("CLI Agent");
+    expect(container.textContent).not.toContain("Claude Models");
+    expect(container.textContent).not.toContain("Codex Models");
+
+    const agentList = container.querySelector('[data-cli-agent-list="true"]');
+    expect(agentList?.querySelectorAll("button")).toHaveLength(2);
+  });
+
+  it("shows agent-specific model options and emits thread agent selection updates", () => {
+    const onAgentSelectionChange = vi.fn();
+    const providers: ModelProvider[] = [
+      {
+        id: "provider-codex-1",
+        agent: "codex",
+        name: "Team Codex",
+        modelId: "gpt-5.3-codex-enterprise",
+        baseUrl: null,
+        apiKeyMasked: "",
+        isActive: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+
+    renderComposer({
+      providers,
+      onAgentSelectionChange,
+    });
+
+    const modelButton = getModelSelectorButton();
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const codexButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("Codex"));
+    if (!codexButton) {
+      throw new Error("Codex agent button not found");
+    }
+
+    act(() => {
+      codexButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    const customModelButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("GPT-5.3 Codex Enterprise") && button.textContent?.includes("Team Codex"));
+    if (!customModelButton) {
+      throw new Error("Custom Codex model button not found");
+    }
+    expect(container.querySelector('[data-model-separator="custom"]')).not.toBeNull();
+
+    act(() => {
+      customModelButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(onAgentSelectionChange).toHaveBeenCalledWith({
+      agent: "codex",
+      model: "gpt-5.3-codex-enterprise",
+      modelProviderId: "provider-codex-1",
+    });
+  });
+
+  it("switches the model preview list when hovering between CLI agents", () => {
+    const providers: ModelProvider[] = [
+      {
+        id: "provider-claude-1",
+        agent: "claude",
+        name: "z.ai",
+        modelId: "glm-4.7",
+        baseUrl: null,
+        apiKeyMasked: "",
+        isActive: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        id: "provider-codex-1",
+        agent: "codex",
+        name: "OpenAI QA",
+        modelId: "gpt-5.4-custom",
+        baseUrl: null,
+        apiKeyMasked: "",
+        isActive: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+
+    renderComposer({
+      providers,
+      agent: "codex",
+      model: "gpt-5.4",
+    });
+
+    const modelButton = getModelSelectorButton();
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("GPT-5.4 Custom");
+    expect(container.textContent).not.toContain("GLM-4.7");
+
+    const claudeButton = getButtonByExactText("Claude");
+    act(() => {
+      claudeButton.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Sonnet 4.6");
+    expect(container.textContent).toContain("GLM-4.7");
+    expect(container.textContent).not.toContain("GPT-5.4 Custom");
+
+    const codexButton = getButtonByExactText("Codex");
+    act(() => {
+      codexButton.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("GPT-5.4");
+    expect(container.textContent).toContain("GPT-5.4 Custom");
+    expect(container.textContent).not.toContain("GLM-4.7");
   });
 
   it("changes permission mode from the selector", () => {
@@ -488,6 +652,19 @@ describe("Composer", () => {
 
     expect(container.textContent).toContain("Always allow approval-gated actions");
     expect(container.textContent).not.toContain("Ask before approval-gated actions");
+  });
+
+  it("shows inline permission descriptions on mobile", () => {
+    setMobileViewport(true);
+    renderComposer();
+
+    const permissionButton = getPermissionSelectorButton();
+    act(() => {
+      permissionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Ask before approval-gated actions");
+    expect(container.textContent).toContain("Always allow approval-gated actions");
   });
 
   it("filters out already-mentioned files from suggestions", async () => {

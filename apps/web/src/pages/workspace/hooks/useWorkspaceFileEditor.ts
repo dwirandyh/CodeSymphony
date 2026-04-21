@@ -5,6 +5,7 @@ import type { WorkspaceFileTab } from "../../../components/workspace/WorkspaceHe
 import { buildQuickFileItems, filterQuickFileItems } from "../../../components/workspace/quickFilePickerUtils";
 import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
+import { parseFileLocation, resolveWorktreeRelativePath } from "../../../lib/worktree";
 import type { WorkspaceSearch } from "../../../routes/index";
 
 type EditorFileState = {
@@ -67,6 +68,7 @@ interface UseWorkspaceFileEditorOptions {
   onOpenQuickFilePicker?: () => void;
   selectedThreadId: string | null;
   selectedWorktreeId: string | null;
+  selectedWorktreePath: string | null;
   updateSearch: (partial: Partial<WorkspaceSearch>) => void;
 }
 
@@ -79,6 +81,7 @@ export function useWorkspaceFileEditor({
   onOpenQuickFilePicker,
   selectedThreadId,
   selectedWorktreeId,
+  selectedWorktreePath,
   updateSearch,
 }: UseWorkspaceFileEditorOptions) {
   const queryClient = useQueryClient();
@@ -333,6 +336,23 @@ export function useWorkspaceFileEditor({
     return window.confirm(`Switch away from ${filename} without saving yet?`);
   }, [activeFilePath, isFileDirty, selectedWorktreeId]);
 
+  const normalizeOpenFileTarget = useCallback((filePath: string) => {
+    const location = parseFileLocation(filePath);
+    const relativePath = selectedWorktreePath
+      ? resolveWorktreeRelativePath(
+        selectedWorktreePath,
+        location.path,
+        fileEntries.map((entry) => entry.path),
+      )
+      : null;
+
+    return {
+      path: relativePath && relativePath.length > 0 ? relativePath : location.path,
+      line: location.line,
+      column: location.column,
+    };
+  }, [fileEntries, selectedWorktreePath]);
+
   const loadEditorFile = useCallback((worktreeId: string, filePath: string) => {
     const currentFileState = editorFileStateRef.current[worktreeId]?.[filePath] ?? createInitialEditorFileState();
     if (currentFileState.loading || currentFileState.loaded) {
@@ -540,23 +560,34 @@ export function useWorkspaceFileEditor({
       return;
     }
 
+    const normalizedTarget = normalizeOpenFileTarget(filePath);
+    if (normalizedTarget.path.length === 0) {
+      onError("Unable to resolve file path");
+      return;
+    }
+
     if (
       activeView === "file"
       && activeFilePath
-      && activeFilePath !== filePath
+      && activeFilePath !== normalizedTarget.path
       && !confirmSwitchAwayFromActiveFile()
     ) {
       return;
     }
 
-    const result = ensureFileTab(selectedWorktreeId, filePath, { pin: false });
+    const result = ensureFileTab(selectedWorktreeId, normalizedTarget.path, { pin: false });
     if (!result.ok) {
       return;
     }
-    pushRecentFile(selectedWorktreeId, filePath);
-    updateSearch({ view: "file", file: filePath });
+    pushRecentFile(selectedWorktreeId, normalizedTarget.path);
+    updateSearch({
+      view: "file",
+      file: normalizedTarget.path,
+      fileLine: normalizedTarget.line ?? undefined,
+      fileColumn: normalizedTarget.column ?? undefined,
+    });
     onError(null);
-  }, [activeFilePath, activeView, confirmSwitchAwayFromActiveFile, ensureFileTab, onError, pushRecentFile, selectedWorktreeId, updateSearch]);
+  }, [activeFilePath, activeView, confirmSwitchAwayFromActiveFile, ensureFileTab, normalizeOpenFileTarget, onError, pushRecentFile, selectedWorktreeId, updateSearch]);
 
   const closeQuickFilePicker = useCallback(() => {
     setQuickFilePicker({
@@ -652,7 +683,7 @@ export function useWorkspaceFileEditor({
       return;
     }
 
-    updateSearch({ view: "file", file: filePath });
+    updateSearch({ view: "file", file: filePath, fileLine: undefined, fileColumn: undefined });
   }, [activeFilePath, activeView, confirmSwitchAwayFromActiveFile, pushRecentFile, selectedWorktreeId, updateSearch]);
 
   const handlePinFileTab = useCallback((filePath: string) => {
@@ -665,7 +696,7 @@ export function useWorkspaceFileEditor({
       return;
     }
 
-    updateSearch({ view: "file", file: filePath });
+    updateSearch({ view: "file", file: filePath, fileLine: undefined, fileColumn: undefined });
     pushRecentFile(selectedWorktreeId, filePath);
   }, [ensureFileTab, pushRecentFile, selectedWorktreeId, updateSearch]);
 
@@ -717,11 +748,17 @@ export function useWorkspaceFileEditor({
       ?? nextTabs[currentIndex - 1]?.path
       ?? null;
     if (nextActivePath) {
-      updateSearch({ view: "file", file: nextActivePath });
+      updateSearch({ view: "file", file: nextActivePath, fileLine: undefined, fileColumn: undefined });
       return;
     }
 
-    updateSearch({ view: undefined, file: undefined, threadId: selectedThreadId ?? undefined });
+    updateSearch({
+      view: undefined,
+      file: undefined,
+      fileLine: undefined,
+      fileColumn: undefined,
+      threadId: selectedThreadId ?? undefined,
+    });
   }, [activeFilePath, activeWorktreeFileTabs, closeFileTabState, confirmDiscardDirtyFile, selectedThreadId, selectedWorktreeId, updateSearch]);
 
   const handleEditorDraftChange = useCallback((filePath: string, nextContent: string) => {

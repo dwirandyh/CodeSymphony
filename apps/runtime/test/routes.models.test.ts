@@ -97,6 +97,34 @@ describe("model provider routes", () => {
     vi.unstubAllGlobals();
   });
 
+  it("POST /api/model-providers/test uses the responses API contract for Codex", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/model-providers/test",
+      payload: { agent: "codex", baseUrl: "http://localhost:9999/v1", apiKey: "key", modelId: "gpt-5.4" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:9999/v1/responses",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer key",
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          model: "gpt-5.4",
+          input: "Hi",
+          max_output_tokens: 1,
+        }),
+      }),
+    );
+    vi.unstubAllGlobals();
+  });
+
   it("POST /api/model-providers/test handles non-ok response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: false,

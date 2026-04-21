@@ -35,6 +35,7 @@ async function resetDatabase(): Promise<void> {
   await prisma.chatEvent.deleteMany();
   await prisma.chatMessage.deleteMany();
   await prisma.chatThread.deleteMany();
+  await prisma.modelProvider.deleteMany();
   await prisma.worktree.deleteMany();
   await prisma.repository.deleteMany();
 }
@@ -255,7 +256,7 @@ describe("chatService permission flow", () => {
     expect(thread?.title).toBe("Summarize README.md");
   });
 
-  it("passes active provider config to AI title generation", async () => {
+  it("passes selected provider config to AI title generation", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({
       onText,
       prompt,
@@ -287,14 +288,44 @@ describe("chatService permission flow", () => {
       claudeRunner,
       modelProviderService: {
         getActiveProvider: async () => ({
+          id: "provider-1",
+          agent: "claude",
           apiKey: "provider-key",
           baseUrl: "https://provider.example.com/v1",
           name: "Custom Provider",
           modelId: "claude-3-7-sonnet",
         }),
+        getProviderById: async () => ({
+          id: "provider-1",
+          agent: "claude",
+          apiKey: "provider-key",
+          baseUrl: "https://provider.example.com/v1",
+          name: "Custom Provider",
+          modelId: "claude-3-7-sonnet",
+          isActive: true,
+        }),
       },
     });
     const { threadId } = await seedThread();
+    await prisma.modelProvider.create({
+      data: {
+        id: "provider-1",
+        agent: "claude",
+        name: "Custom Provider",
+        modelId: "claude-3-7-sonnet",
+        baseUrl: "https://provider.example.com/v1",
+        apiKey: "provider-key",
+        isActive: true,
+      },
+    });
+    await prisma.chatThread.update({
+      where: { id: threadId },
+      data: {
+        agent: "claude",
+        model: "claude-3-7-sonnet",
+        modelProviderId: "provider-1",
+      },
+    });
 
     await chatService.sendMessage(threadId, {
       content: "Summarize project setup flow",

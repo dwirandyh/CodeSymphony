@@ -128,8 +128,8 @@ function isEditToolLifecycleEvent(event: ChatEvent): boolean {
     if (event.payload.source === "worktree.diff") {
       return false;
     }
-    const explicitTarget = payloadStringOrNull(event.payload.editTarget);
-    if (explicitTarget) {
+    const toolName = payloadStringOrNull(event.payload.toolName);
+    if (isEditToolName(toolName)) {
       return true;
     }
     const summary = payloadStringOrNull(event.payload.summary);
@@ -147,6 +147,21 @@ function isEditToolLifecycleEvent(event: ChatEvent): boolean {
 export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): EditedRun[] {
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
   const byRunKey = new Map<string, EditedRun>();
+  const toolNameByUseId = new Map<string, string>();
+
+  for (const event of [...(fullContext ?? ordered)].sort((a, b) => a.idx - b.idx)) {
+    if (event.type !== "tool.started" && event.type !== "tool.output") {
+      continue;
+    }
+
+    const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+    const toolName = payloadStringOrNull(event.payload.toolName);
+    if (!toolUseId || !toolName) {
+      continue;
+    }
+
+    toolNameByUseId.set(toolUseId, toolName);
+  }
 
   function ensureRun(
     runKey: string,
@@ -327,32 +342,40 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
 
     if (event.type === "tool.finished" && !isWorktreeDiffEvent(event)) {
       const runIds = finishedToolUseIds(event);
+      const finishedToolName = payloadStringOrNull(event.payload.toolName)
+        ?? runIds.map((runId) => toolNameByUseId.get(runId) ?? null).find((toolName) => toolName != null)
+        ?? null;
       const summary = payloadStringOrNull(event.payload.summary);
       const summaryTarget = summary ? extractEditTargetFromSummary(summary) : null;
       const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
       const explicitTarget =
         payloadStringOrNull(event.payload.editTarget)
-        ?? extractEditTargetFromUnknownToolInput(toolInput)
+        ?? (isEditToolName(finishedToolName) ? extractEditTargetFromUnknownToolInput(toolInput) : null)
         ?? summaryTarget;
+      const proposedDiff =
+        toolInput && explicitTarget
+          ? buildProposedEditDiffFromToolInput(toolInput, explicitTarget)
+          : null;
+      const isEditFinishedEvent =
+        isEditToolName(finishedToolName)
+        || summaryTarget != null
+        || proposedDiff != null;
 
       function applyProposedDiffIfNeeded(run: EditedRun): void {
-        if (toolInput && explicitTarget && run.diffKind === "none" && run.status !== "failed") {
-          const proposedDiff = buildProposedEditDiffFromToolInput(toolInput, explicitTarget);
-          if (proposedDiff) {
-            run.diff = proposedDiff;
-            run.diffKind = "proposed";
-            run.diffTruncated = false;
-            const { additions, deletions } = countDiffStats(proposedDiff);
-            run.additions = additions;
-            run.deletions = deletions;
-          }
+        if (proposedDiff && run.diffKind === "none" && run.status !== "failed") {
+          run.diff = proposedDiff;
+          run.diffKind = "proposed";
+          run.diffTruncated = false;
+          const { additions, deletions } = countDiffStats(proposedDiff);
+          run.additions = additions;
+          run.deletions = deletions;
         }
       }
 
       let matchedRun = false;
       for (const runId of runIds) {
         const existing = byRunKey.get(runId);
-        const shouldTrack = existing || isEditToolLifecycleEvent(event) || explicitTarget != null;
+        const shouldTrack = existing || isEditFinishedEvent;
         if (!shouldTrack) {
           continue;
         }
@@ -364,7 +387,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
         matchedRun = true;
       }
 
-      if (!matchedRun && (isEditToolLifecycleEvent(event) || explicitTarget != null)) {
+      if (!matchedRun && isEditFinishedEvent) {
         const fallbackKey = `finished:${event.id}`;
         const run = ensureRun(fallbackKey, event);
         setRunTargetIfPresent(run, explicitTarget);

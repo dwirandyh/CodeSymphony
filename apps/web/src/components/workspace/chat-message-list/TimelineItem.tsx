@@ -812,7 +812,12 @@ export const TimelineItem = memo(function TimelineItem({
 
                   {item.lastMessage && (
                     <div className="px-1 text-sm text-foreground">
-                      <MarkdownBody content={item.lastMessage} testId="subagent-response-markdown" />
+                      <MarkdownBody
+                        content={item.lastMessage}
+                        testId="subagent-response-markdown"
+                        onOpenFilePath={ctx.onOpenReadFile}
+                        worktreePath={ctx.worktreePath}
+                      />
                     </div>
                   )}
 
@@ -979,6 +984,8 @@ export const TimelineItem = memo(function TimelineItem({
                 renderHint={item.renderHint}
                 rawFileLanguage={item.rawFileLanguage}
                 isCompleted={item.isCompleted}
+                onOpenFilePath={ctx.onOpenReadFile}
+                worktreePath={ctx.worktreePath}
               />
             )}
           </div>

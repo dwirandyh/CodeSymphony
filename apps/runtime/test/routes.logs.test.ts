@@ -102,7 +102,11 @@ describe("log routes", () => {
       mockLogService.getEntries.mockReturnValue([]);
       const res = await app.inject({ method: "GET", url: "/api/logs?since=2026-01-01" });
       expect(res.statusCode).toBe(200);
-      expect(mockLogService.getEntries).toHaveBeenCalledWith("2026-01-01");
+      expect(mockLogService.getEntries).toHaveBeenCalledWith({
+        since: "2026-01-01",
+        worktreeId: undefined,
+        threadId: undefined,
+      });
     });
   });
 

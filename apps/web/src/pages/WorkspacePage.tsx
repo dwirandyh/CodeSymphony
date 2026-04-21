@@ -228,7 +228,6 @@ export function WorkspacePage() {
 
   const {
     providers: modelProviders,
-    selectProvider,
   } = useModelProviders();
 
   useEffect(() => {
@@ -246,12 +245,6 @@ export function WorkspacePage() {
 
     window.localStorage.setItem(REPOSITORY_PANEL_PREFERENCES_STORAGE_KEY, JSON.stringify(repositoryPanelPreferences));
   }, [repositoryPanelPreferences]);
-
-  const handleSelectProvider = useCallback(async (id: string | null) => {
-    try {
-      await selectProvider(id);
-    } catch {}
-  }, [selectProvider]);
 
   const updateBottomPanelState = useCallback((worktreeId: string | null | undefined, updater: (current: BottomPanelWorktreeState) => BottomPanelWorktreeState) => {
     if (!worktreeId) {
@@ -482,6 +475,8 @@ export function WorkspacePage() {
 
   const activeView = search.view ?? "chat";
   const activeFilePath = activeView === "file" ? search.file ?? null : null;
+  const activeFileLine = activeView === "file" ? search.fileLine ?? null : null;
+  const activeFileColumn = activeView === "file" ? search.fileColumn ?? null : null;
   const selectedDiffFilePath = search.file ?? null;
   const reviewTabOpen = activeView === "review";
   const queryClient = useQueryClient();
@@ -624,7 +619,7 @@ export function WorkspacePage() {
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
 
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
-  const slashCommands = useSlashCommands(repos.selectedWorktreeId);
+  const slashCommands = useSlashCommands(chat.composerAgent === "claude" ? repos.selectedWorktreeId : null);
 
   useEffect(() => {
     if (!repos.selectedWorktreeId) return;
@@ -665,6 +660,7 @@ export function WorkspacePage() {
     onOpenQuickFilePicker: () => setMobilePanelOpen(null),
     selectedThreadId: chat.selectedThreadId,
     selectedWorktreeId: repos.selectedWorktreeId,
+    selectedWorktreePath: repos.selectedWorktree?.path ?? null,
     updateSearch,
   });
 
@@ -1462,6 +1458,8 @@ export function WorkspacePage() {
                   <CodeEditorPanel
                     key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
                     filePath={activeFilePath}
+                    targetLine={activeFileLine ?? undefined}
+                    targetColumn={activeFileColumn ?? undefined}
                     fileEntries={fileIndex.entries}
                     content={activeEditorFileState?.draftContent ?? ""}
                     mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
@@ -1492,6 +1490,7 @@ export function WorkspacePage() {
                       emptyState={chat.messageListEmptyState}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       onOpenReadFile={openReadFile}
+                      worktreePath={repos.selectedWorktree?.path ?? null}
                     />
                   </div>
                 </section>
@@ -1584,6 +1583,9 @@ export function WorkspacePage() {
                     slashCommands={slashCommands.commands}
                     slashCommandsLoading={slashCommands.loading}
                     providers={modelProviders}
+                    agent={chat.composerAgent}
+                    model={chat.composerModel}
+                    modelProviderId={chat.composerModelProviderId}
                     permissionMode={chat.composerPermissionMode}
                     hasMessages={chat.messages.length > 0}
                     onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
@@ -1593,7 +1595,11 @@ export function WorkspacePage() {
                       }
                     }}
                     onStop={() => void chat.stopAssistantRun()}
-                    onSelectProvider={(id) => void handleSelectProvider(id)}
+                    onAgentSelectionChange={(selection) => {
+                      if (chat.selectedThreadId) {
+                        void chat.setThreadAgentSelection(chat.selectedThreadId, selection);
+                      }
+                    }}
                     onPermissionModeChange={(permissionMode) => {
                       void chat.setComposerPermissionMode(permissionMode);
                     }}

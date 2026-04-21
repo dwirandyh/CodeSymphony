@@ -6,7 +6,7 @@ import { Button } from "../ui/button";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
-import type { ModelProvider, Repository } from "@codesymphony/shared-types";
+import type { CliAgent, ModelProvider, Repository } from "@codesymphony/shared-types";
 import { useModelProviders } from "../../pages/workspace/hooks/useModelProviders";
 
 type SettingsTab = "workspace" | "models" | "licenses";
@@ -17,6 +17,31 @@ type RepositoryFormState = {
   teardownText: string;
   defaultBranchValue: string;
 };
+
+type ApiCompatibility = "anthropic" | "openai";
+
+const API_COMPATIBILITY_BY_AGENT: Record<CliAgent, ApiCompatibility> = {
+  claude: "anthropic",
+  codex: "openai",
+};
+
+const AGENT_BY_API_COMPATIBILITY: Record<ApiCompatibility, CliAgent> = {
+  anthropic: "claude",
+  openai: "codex",
+};
+
+const API_COMPATIBILITY_LABELS: Record<ApiCompatibility, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+};
+
+function getProviderCompatibility(agent: CliAgent | undefined | null): ApiCompatibility {
+  return API_COMPATIBILITY_BY_AGENT[agent ?? "claude"];
+}
+
+function getProviderCompatibilityLabel(agent: CliAgent | undefined | null): string {
+  return API_COMPATIBILITY_LABELS[getProviderCompatibility(agent)];
+}
 
 function buildRepositoryFormState(
   repository: Repository,
@@ -70,6 +95,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   // Provider form state
   const [showProviderForm, setShowProviderForm] = useState(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
+  const [providerAgent, setProviderAgent] = useState<CliAgent>("claude");
   const [providerName, setProviderName] = useState("");
   const [providerModelId, setProviderModelId] = useState("");
   const [providerBaseUrl, setProviderBaseUrl] = useState("");
@@ -77,6 +103,31 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   const [savingProvider, setSavingProvider] = useState(false);
   const [testingProvider, setTestingProvider] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
+  const providerCompatibility = getProviderCompatibility(providerAgent);
+  const trimmedProviderName = providerName.trim();
+  const trimmedProviderModelId = providerModelId.trim();
+  const trimmedProviderBaseUrl = providerBaseUrl.trim();
+  const trimmedProviderApiKey = providerApiKey.trim();
+  const providerUsesCustomEndpoint = trimmedProviderBaseUrl.length > 0 || trimmedProviderApiKey.length > 0;
+  const canSaveProvider = trimmedProviderName.length > 0
+    && trimmedProviderModelId.length > 0
+    && (
+      providerAgent === "codex"
+      || !providerUsesCustomEndpoint
+      || (trimmedProviderBaseUrl.length > 0 && (editingProviderId !== null || trimmedProviderApiKey.length > 0))
+    );
+  const canTestProvider = trimmedProviderBaseUrl.length > 0
+    && trimmedProviderApiKey.length > 0
+    && trimmedProviderModelId.length > 0;
+  const providerModelPlaceholder = providerCompatibility === "anthropic"
+    ? 'e.g. "claude-sonnet-4-6", "glm-4.7"'
+    : 'e.g. "gpt-5.4", "gpt-5.3-codex"';
+  const providerFootnote = providerCompatibility === "anthropic"
+    ? "Add Anthropic-compatible model entries here, then choose them per thread under Claude in the composer. Endpoint tests validate Anthropic Messages API compatible backends."
+    : "Add OpenAI-compatible model entries here, then choose them per thread under Codex in the composer. Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts.";
+  const providerTestSuccessMessage = providerCompatibility === "anthropic"
+    ? "Connection successful — provider is Anthropic-compatible."
+    : "Connection successful — provider is Responses API compatible.";
 
   // ── Workspace: Select first repo ──
   useEffect(() => {
@@ -152,6 +203,17 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     onProvidersChanged?.(providers);
   }, [onProvidersChanged, providers]);
 
+  const resetProviderForm = useCallback((nextAgent: CliAgent = "claude") => {
+    setEditingProviderId(null);
+    setProviderAgent(nextAgent);
+    setProviderName("");
+    setProviderModelId("");
+    setProviderBaseUrl("");
+    setProviderApiKey("");
+    setShowProviderForm(false);
+    setTestResult(null);
+  }, []);
+
   const parseScriptLines = useCallback((scriptText: string): string[] | null => {
     const lines = scriptText.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
     return lines.length > 0 ? lines : null;
@@ -222,31 +284,28 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   }, [dirty, handleSave]);
 
   const handleSaveProvider = useCallback(async () => {
-    if (!providerName.trim() || !providerModelId.trim() || !providerBaseUrl.trim() || (!editingProviderId && !providerApiKey.trim())) return;
+    if (!canSaveProvider) return;
     setSavingProvider(true);
     try {
       let nextProvider: ModelProvider;
       if (editingProviderId) {
         nextProvider = await api.updateModelProvider(editingProviderId, {
-          name: providerName,
-          modelId: providerModelId,
-          baseUrl: providerBaseUrl,
-          ...(providerApiKey.trim() ? { apiKey: providerApiKey } : {}),
+          agent: providerAgent,
+          name: trimmedProviderName,
+          modelId: trimmedProviderModelId,
+          baseUrl: trimmedProviderBaseUrl || null,
+          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : trimmedProviderBaseUrl.length === 0 ? { apiKey: null } : {}),
         });
       } else {
         nextProvider = await api.createModelProvider({
-          name: providerName,
-          modelId: providerModelId,
-          baseUrl: providerBaseUrl,
-          apiKey: providerApiKey,
+          agent: providerAgent,
+          name: trimmedProviderName,
+          modelId: trimmedProviderModelId,
+          ...(trimmedProviderBaseUrl ? { baseUrl: trimmedProviderBaseUrl } : {}),
+          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : {}),
         });
       }
-      setShowProviderForm(false);
-      setEditingProviderId(null);
-      setProviderName("");
-      setProviderModelId("");
-      setProviderBaseUrl("");
-      setProviderApiKey("");
+      resetProviderForm(providerAgent);
       replaceProviders([
         ...providers.filter((provider) => provider.id !== nextProvider.id),
         nextProvider,
@@ -256,7 +315,18 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     } finally {
       setSavingProvider(false);
     }
-  }, [editingProviderId, providerApiKey, providerBaseUrl, providerModelId, providerName, providers, replaceProviders]);
+  }, [
+    canSaveProvider,
+    editingProviderId,
+    providerAgent,
+    providers,
+    replaceProviders,
+    resetProviderForm,
+    trimmedProviderApiKey,
+    trimmedProviderBaseUrl,
+    trimmedProviderModelId,
+    trimmedProviderName,
+  ]);
 
   const handleDeleteProvider = useCallback(async (id: string) => {
     try {
@@ -267,23 +337,25 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
 
   const handleEditProvider = useCallback((provider: ModelProvider) => {
     setEditingProviderId(provider.id);
+    setProviderAgent(provider.agent ?? "claude");
     setProviderName(provider.name);
     setProviderModelId(provider.modelId);
-    setProviderBaseUrl(provider.baseUrl);
+    setProviderBaseUrl(provider.baseUrl ?? "");
     setProviderApiKey("");
     setShowProviderForm(true);
     setTestResult(null);
   }, []);
 
   const handleTestProvider = useCallback(async () => {
-    if (!providerBaseUrl.trim() || !providerApiKey.trim() || !providerModelId.trim()) return;
+    if (!canTestProvider) return;
     setTestingProvider(true);
     setTestResult(null);
     try {
       const result = await api.testModelProvider({
-        baseUrl: providerBaseUrl,
-        apiKey: providerApiKey,
-        modelId: providerModelId,
+        agent: providerAgent,
+        baseUrl: trimmedProviderBaseUrl,
+        apiKey: trimmedProviderApiKey,
+        modelId: trimmedProviderModelId,
       });
       setTestResult(result);
     } catch {
@@ -291,7 +363,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     } finally {
       setTestingProvider(false);
     }
-  }, [providerBaseUrl, providerApiKey, providerModelId]);
+  }, [canTestProvider, providerAgent, trimmedProviderApiKey, trimmedProviderBaseUrl, trimmedProviderModelId]);
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId) ?? null;
 
@@ -482,12 +554,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                         variant="ghost"
                         className="h-6 gap-1 px-2 text-xs"
                         onClick={() => {
-                          setEditingProviderId(null);
-                          setProviderName("");
-                          setProviderModelId("");
-                          setProviderBaseUrl("");
-                          setProviderApiKey("");
-                          setTestResult(null);
+                          resetProviderForm("claude");
                           setShowProviderForm(true);
                         }}
                       >
@@ -498,8 +565,8 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
 
                     {providers.length === 0 && !showProviderForm && (
                       <p className="text-[10px] text-muted-foreground">
-                        No model providers configured. Using Claude CLI authentication (default).
-                        Add a provider to use a custom Anthropic-compatible API with a specific model.
+                        No custom models configured yet. Add Anthropic- or OpenAI-compatible entries here.
+                        Anthropic entries can target Claude-compatible backends; OpenAI entries appear under Codex in the composer.
                       </p>
                     )}
 
@@ -512,6 +579,9 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                           >
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
+                                <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                                  {getProviderCompatibilityLabel(provider.agent)}
+                                </span>
                                 <span className="font-medium">{provider.modelId}</span>
                                 <span className="text-muted-foreground">·</span>
                                 <span className="text-muted-foreground">{provider.name}</span>
@@ -520,7 +590,8 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                                 <button
                                   type="button"
                                   className="rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                                  title="Edit"
+                                  aria-label={`Edit ${getProviderCompatibilityLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
+                                  title={`Edit ${provider.name}`}
                                   onClick={() => handleEditProvider(provider)}
                                 >
                                   <Pencil className="h-3 w-3" />
@@ -528,7 +599,8 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                                 <button
                                   type="button"
                                   className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                                  title="Delete"
+                                  aria-label={`Delete ${getProviderCompatibilityLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
+                                  title={`Delete ${provider.name}`}
                                   onClick={() => void handleDeleteProvider(provider.id)}
                                 >
                                   <Trash2 className="h-3 w-3" />
@@ -536,9 +608,17 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                               </div>
                             </div>
                             <div className="mt-1 text-muted-foreground">
-                              <span className="break-all">{provider.baseUrl}</span>
-                              <span className="mx-1.5">·</span>
-                              <span className="font-mono">{provider.apiKeyMasked}</span>
+                              {provider.baseUrl ? (
+                                <>
+                                  <span className="break-all">{provider.baseUrl}</span>
+                                  <span className="mx-1.5">·</span>
+                                </>
+                              ) : null}
+                              {provider.apiKeyMasked ? (
+                                <span className="font-mono">{provider.apiKeyMasked}</span>
+                              ) : (
+                                <span>No endpoint override</span>
+                              )}
                             </div>
                           </div>
                         ))}
@@ -555,12 +635,26 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                           <button
                             type="button"
                             className="rounded-md p-0.5 text-muted-foreground hover:text-foreground"
-                            onClick={() => setShowProviderForm(false)}
+                            onClick={() => resetProviderForm(providerAgent)}
                           >
                             <X className="h-3 w-3" />
                           </button>
                         </div>
                         <div className="space-y-2">
+                          <div>
+                            <label className="mb-0.5 block text-[10px] text-muted-foreground">API Compatibility</label>
+                            <select
+                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              value={providerCompatibility}
+                              onChange={(e) => {
+                                setProviderAgent(AGENT_BY_API_COMPATIBILITY[e.target.value as ApiCompatibility]);
+                                setTestResult(null);
+                              }}
+                            >
+                              <option value="anthropic">Anthropic</option>
+                              <option value="openai">OpenAI</option>
+                            </select>
+                          </div>
                           <div>
                             <label className="mb-0.5 block text-[10px] text-muted-foreground">Provider Name</label>
                             <input
@@ -576,34 +670,39 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                             <input
                               type="text"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder='e.g. "claude-sonnet-4-6", "glm-4.7"'
+                              placeholder={providerModelPlaceholder}
                               value={providerModelId}
                               onChange={(e) => setProviderModelId(e.target.value)}
                             />
                           </div>
                           <div>
-                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Base URL</label>
+                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Base URL (optional)</label>
                             <input
                               type="text"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder="e.g. https://api.z.ai/v1"
+                              placeholder={providerCompatibility === "anthropic" ? "e.g. https://api.z.ai/v1" : "Leave empty to use Codex CLI defaults"}
                               value={providerBaseUrl}
                               onChange={(e) => setProviderBaseUrl(e.target.value)}
                             />
                           </div>
                           <div>
-                            <label className="mb-0.5 block text-[10px] text-muted-foreground">API Key</label>
+                            <label className="mb-0.5 block text-[10px] text-muted-foreground">API Key (optional)</label>
                             <input
                               type="password"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder={editingProviderId ? "Leave empty to keep current" : "API Key"}
+                              placeholder={editingProviderId ? "Leave empty to keep current" : providerCompatibility === "anthropic" ? "API Key" : "Only if your Codex setup needs it"}
                               value={providerApiKey}
                               onChange={(e) => setProviderApiKey(e.target.value)}
                             />
                           </div>
+                          <p className="text-[10px] leading-relaxed text-muted-foreground">
+                            {providerCompatibility === "anthropic"
+                              ? "Use an empty Base URL and API key to register a Claude-side model alias that relies on local CLI auth. Provide both when targeting an Anthropic-compatible remote endpoint."
+                              : "OpenAI-compatible entries can be simple model aliases like gpt-5.4 or point to a custom endpoint if your environment requires it."}
+                          </p>
                           {testResult && (
                             <div className={`rounded-md px-2.5 py-1.5 text-xs ${testResult.success ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
-                              {testResult.success ? "Connection successful — provider is Anthropic-compatible." : testResult.error}
+                              {testResult.success ? providerTestSuccessMessage : testResult.error}
                             </div>
                           )}
                           <div className="flex justify-end gap-2 pt-1">
@@ -611,7 +710,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                               size="sm"
                               variant="ghost"
                               className="h-7 text-xs"
-                              onClick={() => { setShowProviderForm(false); setTestResult(null); }}
+                              onClick={() => resetProviderForm(providerAgent)}
                             >
                               Cancel
                             </Button>
@@ -619,7 +718,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                               size="sm"
                               variant="outline"
                               className="h-7 text-xs"
-                              disabled={testingProvider || !providerModelId.trim() || !providerBaseUrl.trim() || !providerApiKey.trim()}
+                              disabled={!canTestProvider || testingProvider}
                               onClick={() => void handleTestProvider()}
                             >
                               {testingProvider ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
@@ -627,7 +726,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                             <Button
                               size="sm"
                               className="h-7 text-xs"
-                              disabled={savingProvider || !providerName.trim() || !providerModelId.trim() || !providerBaseUrl.trim() || (!editingProviderId && !providerApiKey.trim())}
+                              disabled={!canSaveProvider || savingProvider}
                               onClick={() => void handleSaveProvider()}
                             >
                               {savingProvider ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
@@ -638,9 +737,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                     )}
 
                     <p className="mt-3 text-[10px] text-muted-foreground">
-                      Providers must use the Anthropic Messages API format (/v1/messages).
-                      OpenAI-compatible providers (x.ai, OpenAI, etc.) are not supported.
-                      Add and edit providers here, then choose the model you want from the composer.
+                      {providerFootnote}
                     </p>
                   </div>
                 )}

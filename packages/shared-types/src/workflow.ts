@@ -63,6 +63,19 @@ export type ChatThreadPermissionMode = z.infer<typeof ChatThreadPermissionModeSc
 export const ChatModeSchema = z.enum(["default", "plan"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
 
+export const CliAgentSchema = z.enum(["claude", "codex"]);
+export type CliAgent = z.infer<typeof CliAgentSchema>;
+
+export const BUILTIN_CHAT_MODELS_BY_AGENT = {
+  claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+  codex: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"],
+} as const satisfies Record<CliAgent, readonly string[]>;
+
+export const DEFAULT_CHAT_MODEL_BY_AGENT = {
+  claude: "claude-sonnet-4-6",
+  codex: "gpt-5.4",
+} as const satisfies Record<CliAgent, string>;
+
 export const ChatThreadSchema = z.object({
   id: z.string(),
   worktreeId: z.string(),
@@ -72,7 +85,11 @@ export const ChatThreadSchema = z.object({
   permissionMode: ChatThreadPermissionModeSchema,
   mode: ChatModeSchema,
   titleEditedManually: z.boolean(),
+  agent: CliAgentSchema.optional(),
+  model: z.string().min(1).optional(),
+  modelProviderId: z.string().nullable().optional(),
   claudeSessionId: z.string().nullable(),
+  codexSessionId: z.string().nullable().optional(),
   active: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -399,6 +416,9 @@ export const CreateChatThreadInputSchema = z.object({
   kind: ChatThreadKindSchema.optional(),
   permissionProfile: ChatThreadPermissionProfileSchema.optional(),
   permissionMode: ChatThreadPermissionModeSchema.optional(),
+  agent: CliAgentSchema.optional(),
+  model: z.string().trim().min(1).optional(),
+  modelProviderId: z.string().trim().min(1).nullable().optional(),
 });
 
 export const RenameChatThreadTitleInputSchema = z.object({
@@ -415,6 +435,13 @@ export const UpdateChatThreadPermissionModeInputSchema = z.object({
   permissionMode: ChatThreadPermissionModeSchema,
 });
 export type UpdateChatThreadPermissionModeInput = z.infer<typeof UpdateChatThreadPermissionModeInputSchema>;
+
+export const UpdateChatThreadAgentSelectionInputSchema = z.object({
+  agent: CliAgentSchema,
+  model: z.string().trim().min(1),
+  modelProviderId: z.string().trim().min(1).nullable().optional(),
+});
+export type UpdateChatThreadAgentSelectionInput = z.infer<typeof UpdateChatThreadAgentSelectionInputSchema>;
 
 export const SendChatMessageInputSchema = z.object({
   content: z.string().trim(),
@@ -682,9 +709,10 @@ export type OpenInAppInput = z.infer<typeof OpenInAppInputSchema>;
 
 export const ModelProviderSchema = z.object({
   id: z.string(),
+  agent: CliAgentSchema.optional(),
   name: z.string(),
   modelId: z.string(),
-  baseUrl: z.string(),
+  baseUrl: z.string().nullable().optional(),
   apiKeyMasked: z.string(),
   isActive: z.boolean(),
   createdAt: z.string().datetime(),
@@ -693,24 +721,27 @@ export const ModelProviderSchema = z.object({
 export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 
 export const CreateModelProviderInputSchema = z.object({
+  agent: CliAgentSchema.optional().default("claude"),
   name: z.string().trim().min(1),
   modelId: z.string().trim().min(1),
-  baseUrl: z.string().trim().min(1),
-  apiKey: z.string().trim().min(1),
+  baseUrl: z.string().trim().optional(),
+  apiKey: z.string().trim().optional(),
 });
-export type CreateModelProviderInput = z.infer<typeof CreateModelProviderInputSchema>;
+export type CreateModelProviderInput = z.input<typeof CreateModelProviderInputSchema>;
 
 export const UpdateModelProviderInputSchema = z.object({
+  agent: CliAgentSchema.optional(),
   name: z.string().trim().min(1).optional(),
   modelId: z.string().trim().min(1).optional(),
-  baseUrl: z.string().trim().min(1).optional(),
-  apiKey: z.string().trim().min(1).optional(),
+  baseUrl: z.string().trim().nullable().optional(),
+  apiKey: z.string().trim().nullable().optional(),
 });
-export type UpdateModelProviderInput = z.infer<typeof UpdateModelProviderInputSchema>;
+export type UpdateModelProviderInput = z.input<typeof UpdateModelProviderInputSchema>;
 
 export const TestModelProviderInputSchema = z.object({
+  agent: CliAgentSchema.optional().default("claude"),
   baseUrl: z.string().trim().min(1),
   apiKey: z.string().trim().min(1),
   modelId: z.string().trim().min(1),
 });
-export type TestModelProviderInput = z.infer<typeof TestModelProviderInputSchema>;
+export type TestModelProviderInput = z.input<typeof TestModelProviderInputSchema>;

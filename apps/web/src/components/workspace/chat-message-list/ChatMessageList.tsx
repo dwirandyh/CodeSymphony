@@ -115,6 +115,7 @@ export function ChatMessageList({
   emptyState = "existing-thread-empty",
   showThinkingPlaceholder = false,
   onOpenReadFile,
+  worktreePath = null,
 }: ChatMessageListProps) {
   const vlistRef = useRef<VListHandle>(null);
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(() => new Set());
@@ -249,6 +250,7 @@ export function ChatMessageList({
     copyOutput,
     copyDebugLog,
     onOpenReadFile,
+    worktreePath,
     toolExpandedById,
     setToolExpandedById,
     editedExpandedById,

@@ -61,6 +61,7 @@ vi.mock("../../../../lib/api", () => ({
     getOrCreatePrMrThread: vi.fn(),
     renameThreadTitle: vi.fn(),
     updateThreadMode: vi.fn(),
+    updateThreadAgentSelection: vi.fn(),
     updateThreadPermissionMode: vi.fn(),
     deleteThread: vi.fn(),
     sendMessage: vi.fn(),
@@ -96,7 +97,11 @@ function makeThread(id: string, active = false): ChatThread {
     permissionMode: "default",
     mode: "default",
     titleEditedManually: false,
+    agent: "claude",
+    model: "claude-sonnet-4-6",
+    modelProviderId: null,
     claudeSessionId: null,
+    codexSessionId: null,
     active,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
@@ -176,6 +181,7 @@ beforeEach(() => {
   vi.mocked(api.getOrCreatePrMrThread).mockReset();
   vi.mocked(api.renameThreadTitle).mockReset();
   vi.mocked(api.updateThreadMode).mockReset();
+  vi.mocked(api.updateThreadAgentSelection).mockReset();
   vi.mocked(api.updateThreadPermissionMode).mockReset();
   vi.mocked(api.deleteThread).mockReset();
   vi.mocked(api.sendMessage).mockReset();
@@ -321,7 +327,12 @@ describe("useChatSession", () => {
       expect(created?.id).toBe(prMrThread.id);
     });
 
-    expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1", { permissionMode: "default" });
+    expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1", {
+      permissionMode: "default",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+    });
     expect(api.sendMessage).toHaveBeenCalledWith(prMrThread.id, {
       content: "Create PR",
       mode: "default",
@@ -345,6 +356,66 @@ describe("useChatSession", () => {
         (call) => JSON.stringify(call[0]) === JSON.stringify({ queryKey: queryKeys.repositories.reviews("repo-1") }),
       ),
     ).toHaveLength(2);
+  });
+
+  it("waits for a pending agent selection update before sending a message", async () => {
+    const selectionDeferred = createDeferred<ChatThread>();
+    vi.mocked(api.updateThreadAgentSelection).mockReturnValue(selectionDeferred.promise);
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "message-codex",
+      threadId: "thread-a",
+      seq: 1,
+      role: "user",
+      content: "Use Codex",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:02Z",
+    });
+
+    renderHook("thread-a");
+
+    let selectionPromise: Promise<void> | undefined;
+    let submitPromise: Promise<boolean> | undefined;
+    await act(async () => {
+      selectionPromise = hookResult.setThreadAgentSelection("thread-a", {
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+      });
+      submitPromise = hookResult.submitMessage("Use Codex", "default", []);
+      await Promise.resolve();
+    });
+
+    expect(api.updateThreadAgentSelection).toHaveBeenCalledWith("thread-a", {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+    });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      selectionDeferred.resolve({
+        ...makeThread("thread-a"),
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith("thread-a", {
+      content: "Use Codex",
+      mode: "default",
+      attachments: [],
+      expectedWorktreeId: "wt-1",
+    });
+
+    await act(async () => {
+      expect(await submitPromise).toBe(true);
+      await selectionPromise;
+    });
+
+    expect(hookResult.composerAgent).toBe("codex");
+    expect(hookResult.composerModel).toBe("gpt-5.4");
   });
 
   it("invalidates repository reviews when closing a PR/MR thread", async () => {
@@ -682,6 +753,9 @@ describe("useChatSession", () => {
     expect(api.createThread).toHaveBeenCalledWith("wt-1", {
       title: "New Thread",
       permissionMode: "default",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
     });
   });
 

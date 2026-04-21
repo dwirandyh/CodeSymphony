@@ -126,6 +126,33 @@ describe("useWorkspaceTimeline", () => {
     expect(assistantItems.length).toBeGreaterThan(0);
   });
 
+  it("does not surface read completions with editTarget as edited-diff cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "cek file"),
+      makeMessage("m2", 2, "assistant", "Ini hasil bacanya."),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", {
+        toolName: "Read",
+        toolUseId: "r1",
+        toolInput: { file_path: "/repo/README.md" },
+      }, "m2"),
+      makeEvent(2, "tool.finished", {
+        toolName: "Read",
+        summary: "Read /repo/README.md",
+        precedingToolUseIds: ["r1"],
+        editTarget: "/repo/README.md",
+      }, "m2"),
+      makeEvent(3, "message.delta", { role: "assistant", messageId: "m2", delta: "Ini hasil bacanya." }, "m2"),
+      makeEvent(4, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+
+    expect(items.some((item) => item.kind === "edited-diff")).toBe(false);
+    expect(items.some((item) => item.kind === "message" && item.message.content.includes("Ini hasil bacanya."))).toBe(true);
+  });
+
   it("recomputes when message content changes without changing counts", () => {
     const initialMessages = [
       makeMessage("m1", 1, "user", "Hello"),

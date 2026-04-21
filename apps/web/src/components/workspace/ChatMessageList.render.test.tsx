@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { ChatTimelineItem } from "./chat-message-list";
 import { MarkdownBody, ChatMessageList } from "./chat-message-list";
+import { AssistantContent } from "./chat-message-list/AssistantContent";
 import { getTimelineItemKey } from "./chat-message-list/toolEventUtils";
 
 vi.mock("@pierre/diffs", () => ({
@@ -55,7 +56,33 @@ vi.mock("../../lib/renderDebug", () => ({
 
 
 vi.mock("react-markdown", () => ({
-  default: ({ children }: any) => <div data-testid="markdown">{children}</div>,
+  default: ({ children, components }: any) => {
+    const content = typeof children === "string" ? children : String(children ?? "");
+    const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
+    const nodes: any[] = [];
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = linkPattern.exec(content)) !== null) {
+      if (match.index > lastIndex) {
+        nodes.push(content.slice(lastIndex, match.index));
+      }
+
+      const Anchor = components?.a ?? "a";
+      nodes.push(
+        <Anchor key={`link-${match.index}`} href={match[2]}>
+          {match[1]}
+        </Anchor>,
+      );
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (lastIndex < content.length) {
+      nodes.push(content.slice(lastIndex));
+    }
+
+    return <div data-testid="markdown">{nodes.length > 0 ? nodes : children}</div>;
+  },
 }));
 
 vi.mock("rehype-sanitize", () => ({
@@ -215,6 +242,95 @@ describe("MarkdownBody", () => {
       root.render(<MarkdownBody content="" />);
     });
     expect(container).toBeTruthy();
+  });
+});
+
+describe("AssistantContent", () => {
+  it("collapses trailing incomplete markdown links while streaming", () => {
+    act(() => {
+      root.render(
+        <AssistantContent
+          content={"Referensi:\n[plan.md](/repo/.claude/plans/rede"}
+          renderHint="markdown"
+          isCompleted={false}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Referensi:\nplan.md");
+    expect(container.textContent).not.toContain("[plan.md]");
+    expect(container.textContent).not.toContain("](/repo");
+  });
+
+  it("preserves completed markdown links", () => {
+    act(() => {
+      root.render(
+        <AssistantContent
+          content={"Referensi:\n[plan.md](/repo/.claude/plans/redeem-plan.md)"}
+          renderHint="markdown"
+          isCompleted={true}
+        />,
+      );
+    });
+
+    const completedLink = container.querySelector("a");
+    expect(completedLink?.textContent).toBe("plan.md");
+    expect(completedLink?.getAttribute("href")).toBe("/repo/.claude/plans/redeem-plan.md");
+  });
+
+  it("opens worktree file links in the internal editor flow", () => {
+    const onOpenFilePath = vi.fn();
+
+    act(() => {
+      root.render(
+        <AssistantContent
+          content={"Lihat file ini: [Shopkeeper2025RedeemShopkeeperFragment.java](/Users/dwirandyh/Work/algostudio/philips-marketing-2019-android/app/src/main/java/com/algostudio/marketingprogram/module/shopkeeper/view/fragment/shopkeeper_side/shopkeeper_tab/Shopkeeper2025RedeemShopkeeperFragment.java#L407)"}
+          renderHint="markdown"
+          isCompleted={true}
+          onOpenFilePath={onOpenFilePath}
+          worktreePath="/Users/dwirandyh/Work/algostudio/philips-marketing-2019-android"
+        />,
+      );
+    });
+
+    const fileLink = container.querySelector("a") as HTMLAnchorElement | null;
+    expect(fileLink).toBeTruthy();
+
+    act(() => {
+      fileLink?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    expect(onOpenFilePath).toHaveBeenCalledWith(
+      "app/src/main/java/com/algostudio/marketingprogram/module/shopkeeper/view/fragment/shopkeeper_side/shopkeeper_tab/Shopkeeper2025RedeemShopkeeperFragment.java#L407",
+    );
+  });
+
+  it("keeps absolute file-system links inside the internal editor flow even when the root path differs", () => {
+    const onOpenFilePath = vi.fn();
+    const sameOriginUrl = `${window.location.origin}/Users/dwirandyh/Work/algostudio/marketing-2019-android/app/src/main/java/com/algostudio/marketingprogram/module/shopkeeper/presenter/SummaryRedeemShopkeeperPresenter.java#L53`;
+
+    act(() => {
+      root.render(
+        <AssistantContent
+          content={`Buka ini: [SummaryRedeemShopkeeperPresenter.java](${sameOriginUrl})`}
+          renderHint="markdown"
+          isCompleted={true}
+          onOpenFilePath={onOpenFilePath}
+          worktreePath="/Users/dwirandyh/Work/algostudio/philips-marketing-2019-android"
+        />,
+      );
+    });
+
+    const fileLink = container.querySelector("a") as HTMLAnchorElement | null;
+    expect(fileLink).toBeTruthy();
+
+    act(() => {
+      fileLink?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    expect(onOpenFilePath).toHaveBeenCalledWith(
+      "/Users/dwirandyh/Work/algostudio/marketing-2019-android/app/src/main/java/com/algostudio/marketingprogram/module/shopkeeper/presenter/SummaryRedeemShopkeeperPresenter.java#L53",
+    );
   });
 });
 
