@@ -3,6 +3,7 @@ import type {
   ChatEvent,
   ChatThreadSnapshot,
   ChatTimelineSnapshot,
+  CliAgent,
 } from "@codesymphony/shared-types";
 import { z } from "zod";
 import { appendRuntimeDebugLog } from "./debug.js";
@@ -12,6 +13,9 @@ const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
 const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
+const slashCommandQuery = z.object({
+  agent: z.enum(["claude", "codex"]).optional(),
+}).strict();
 const inFlightSnapshotRequests = new Map<string, Promise<ChatThreadSnapshot>>();
 const inFlightTimelineSnapshotRequests = new Map<string, Promise<ChatTimelineSnapshot>>();
 
@@ -105,9 +109,11 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
   app.get("/worktrees/:id/slash-commands", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
+    const query = slashCommandQuery.parse(request.query);
+    const agent: CliAgent = query.agent ?? "claude";
 
     try {
-      const slashCommands = await app.chatService.listSlashCommands(params.id);
+      const slashCommands = await app.chatService.listSlashCommands(params.id, agent);
       return { data: slashCommands };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list slash commands";

@@ -28,7 +28,7 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
   if (event.worktreeId && event.type === "worktree.updated") {
     void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(event.worktreeId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileIndex(event.worktreeId) });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.slashCommands(event.worktreeId) });
+    void queryClient.invalidateQueries({ queryKey: ["worktrees", event.worktreeId, "slashCommands"] });
   }
 
   if (!event.threadId) {

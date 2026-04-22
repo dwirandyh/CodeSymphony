@@ -436,7 +436,8 @@ describe("api", () => {
         commands: [{ name: "commit", description: "Create a commit", argumentHint: "" }],
         updatedAt: "2026-01-01T00:00:00.000Z",
       }));
-      await api.getSlashCommands("w1");
+      await api.getSlashCommands("w1", "codex");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/slash-commands?agent=codex");
     });
 
     it("gets worktree file content", async () => {

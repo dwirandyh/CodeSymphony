@@ -1,7 +1,14 @@
-import { Prisma } from "@prisma/client";
-import type { ChatEvent as DbChatEvent, ChatEventType as DbChatEventType, PrismaClient } from "@prisma/client";
+import prismaClientPkg from "@prisma/client";
+import type {
+  ChatEvent as DbChatEvent,
+  ChatEventType as DbChatEventType,
+  Prisma as PrismaNamespace,
+  PrismaClient,
+} from "@prisma/client";
 import type { ChatEvent, ChatEventType } from "@codesymphony/shared-types";
 import type { RuntimeEventHub } from "../types.js";
+
+const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
 
 const typeToDb: Record<ChatEventType, DbChatEventType> = {
   "message.delta": "message_delta",
@@ -79,7 +86,7 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
     return next;
   }
 
-  async function nextIdx(tx: Prisma.TransactionClient, threadId: string): Promise<number> {
+  async function nextIdx(tx: PrismaNamespace.TransactionClient, threadId: string): Promise<number> {
     const result = await tx.chatEvent.aggregate({
       where: { threadId },
       _max: { idx: true },
@@ -97,7 +104,7 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
             threadId,
             idx,
             type: typeToDb[type],
-            payload: payload as Prisma.InputJsonValue,
+            payload: payload as PrismaNamespace.InputJsonValue,
           },
         });
       });

@@ -494,16 +494,10 @@ function ComposerContent({
   } = useComposerSlashCommand({
     editorRef,
     popoverRef,
-    slashCommands: agent === "claude" ? slashCommands : [],
-    slashCommandsLoading: agent === "claude" ? slashCommandsLoading : false,
+    slashCommands,
+    slashCommandsLoading,
     onChange: setDraftText,
   });
-
-  useEffect(() => {
-    if (agent !== "claude") {
-      closeSlashCommand();
-    }
-  }, [agent, closeSlashCommand]);
 
   useEffect(() => {
     if (!mention.active && !slashCommand.active) {
@@ -532,9 +526,7 @@ function ComposerContent({
     || (draftText.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
   const composerPlaceholder = isPlan
     ? "Describe what you want to plan..."
-    : agent === "claude"
-      ? "Message CodeSymphony... (type / for commands, @ to mention files)"
-      : "Message CodeSymphony... (@ to mention files)";
+    : "Message CodeSymphony... (type / for commands, @ to mention files)";
   const selectedAttachmentPreview = useMemo(
     () => attachments.find((attachment) => attachment.id === attachmentPreviewId) ?? null,
     [attachmentPreviewId, attachments],

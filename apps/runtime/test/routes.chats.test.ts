@@ -174,7 +174,18 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/slash-commands" });
       expect(res.statusCode).toBe(200);
       expect(res.json().data.commands).toHaveLength(1);
-      expect(mockChatService.listSlashCommands).toHaveBeenCalledWith("w1");
+      expect(mockChatService.listSlashCommands).toHaveBeenCalledWith("w1", "claude");
+    });
+
+    it("passes the selected agent through to slash command listing", async () => {
+      mockChatService.listSlashCommands.mockResolvedValue({
+        commands: [{ name: "dogfood", description: "QA a web app", argumentHint: "" }],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/slash-commands?agent=codex" });
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.listSlashCommands).toHaveBeenCalledWith("w1", "codex");
     });
 
     it("returns 404 when worktree is missing", async () => {

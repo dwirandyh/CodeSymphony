@@ -625,7 +625,7 @@ export function WorkspacePage() {
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
 
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
-  const slashCommands = useSlashCommands(chat.composerAgent === "claude" ? repos.selectedWorktreeId : null);
+  const slashCommands = useSlashCommands(repos.selectedWorktreeId, chat.composerAgent);
 
   useEffect(() => {
     if (!repos.selectedWorktreeId) return;

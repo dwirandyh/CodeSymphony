@@ -1,4 +1,4 @@
-import { defineConfig, type PluginOption } from "vite";
+import { defineConfig, loadEnv, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import {
@@ -7,6 +7,10 @@ import {
 } from "./runtimeConfig";
 
 export default defineConfig(({ mode }) => {
+  const env = {
+    ...process.env,
+    ...loadEnv(mode, process.cwd(), ""),
+  };
   const plugins: PluginOption[] = [
     TanStackRouterVite({
       routesDirectory: "./src/routes",
@@ -27,11 +31,11 @@ export default defineConfig(({ mode }) => {
   return {
     plugins,
     server: {
-      port: parseInt(getConfiguredWebDevPort(process.env), 10),
+      port: parseInt(getConfiguredWebDevPort(env), 10),
       host: true,
       proxy: {
         "/api": {
-          target: getConfiguredRuntimeProxyTarget(process.env),
+          target: getConfiguredRuntimeProxyTarget(env),
           changeOrigin: true,
         },
       },
