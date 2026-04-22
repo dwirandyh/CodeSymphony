@@ -15,6 +15,7 @@ const chatEventTypeFromDb: Partial<Record<DbChatEventType, ChatEvent["type"]>> =
   question_dismissed: "question.dismissed",
   plan_created: "plan.created",
   plan_approved: "plan.approved",
+  plan_dismissed: "plan.dismissed",
   plan_revision_requested: "plan.revision_requested",
   subagent_started: "subagent.started",
   subagent_finished: "subagent.finished",

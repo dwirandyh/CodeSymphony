@@ -1,9 +1,28 @@
 import type { FastifyInstance } from "fastify";
 import {
+  type CliAgent,
   CreateModelProviderInputSchema,
   TestModelProviderInputSchema,
   UpdateModelProviderInputSchema,
 } from "@codesymphony/shared-types";
+
+function normalizeProviderTestUrl(baseUrl: string, agent: CliAgent): string {
+  const trimmedBaseUrl = baseUrl.replace(/\/+$/, "");
+
+  if (agent === "codex") {
+    return trimmedBaseUrl.endsWith("/responses")
+      ? trimmedBaseUrl
+      : `${trimmedBaseUrl}/responses`;
+  }
+
+  if (trimmedBaseUrl.endsWith("/v1/messages")) {
+    return trimmedBaseUrl;
+  }
+
+  return trimmedBaseUrl.endsWith("/v1")
+    ? `${trimmedBaseUrl}/messages`
+    : `${trimmedBaseUrl}/v1/messages`;
+}
 
 export async function registerModelRoutes(app: FastifyInstance) {
   app.get("/model-providers", async () => {
@@ -43,22 +62,36 @@ export async function registerModelRoutes(app: FastifyInstance) {
 
   app.post("/model-providers/test", async (request) => {
     const input = TestModelProviderInputSchema.parse(request.body);
-    const { baseUrl, apiKey, modelId } = input;
+    const { agent, baseUrl, apiKey, modelId } = input;
 
     try {
-      const url = `${baseUrl.replace(/\/+$/, "")}/v1/messages`;
+      const url = normalizeProviderTestUrl(baseUrl, agent);
       const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
+          ...(agent === "codex"
+            ? {
+                Authorization: `Bearer ${apiKey}`,
+              }
+            : {
+                "x-api-key": apiKey,
+                "anthropic-version": "2023-06-01",
+              }),
         },
-        body: JSON.stringify({
-          model: modelId,
-          max_tokens: 1,
-          messages: [{ role: "user", content: "Hi" }],
-        }),
+        body: JSON.stringify(
+          agent === "codex"
+            ? {
+                model: modelId,
+                input: "Hi",
+                max_output_tokens: 1,
+              }
+            : {
+                model: modelId,
+                max_tokens: 1,
+                messages: [{ role: "user", content: "Hi" }],
+              },
+        ),
         signal: AbortSignal.timeout(15_000),
       });
 

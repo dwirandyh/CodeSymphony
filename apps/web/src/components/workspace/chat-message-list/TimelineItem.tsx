@@ -424,6 +424,7 @@ export const TimelineItem = memo(function TimelineItem({
     const parsedFiles = hasDiffContent ? parsePatchFiles(item.diff).flatMap((p) => p.files) : [];
     const diffFileNames = parsedFiles.map((f) => f.name);
     const resolvedFiles = item.changedFiles.length > 0 ? item.changedFiles : diffFileNames;
+    const isFileDeletion = parsedFiles.length > 0 && parsedFiles.every((file) => file.type === "deleted");
     const summaryLabel = editedSummaryLabel({
       changeSource: item.changeSource,
       status: item.status,
@@ -431,6 +432,7 @@ export const TimelineItem = memo(function TimelineItem({
       changedFiles: resolvedFiles,
       additions: item.additions,
       deletions: item.deletions,
+      isFileDeletion,
       rejectedByUser: item.rejectedByUser,
     });
 
@@ -812,7 +814,12 @@ export const TimelineItem = memo(function TimelineItem({
 
                   {item.lastMessage && (
                     <div className="px-1 text-sm text-foreground">
-                      <MarkdownBody content={item.lastMessage} testId="subagent-response-markdown" />
+                      <MarkdownBody
+                        content={item.lastMessage}
+                        testId="subagent-response-markdown"
+                        onOpenFilePath={ctx.onOpenReadFile}
+                        worktreePath={ctx.worktreePath}
+                      />
                     </div>
                   )}
 
@@ -979,6 +986,8 @@ export const TimelineItem = memo(function TimelineItem({
                 renderHint={item.renderHint}
                 rawFileLanguage={item.rawFileLanguage}
                 isCompleted={item.isCompleted}
+                onOpenFilePath={ctx.onOpenReadFile}
+                worktreePath={ctx.worktreePath}
               />
             )}
           </div>

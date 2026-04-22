@@ -855,6 +855,8 @@ export const insertSoftTabOrIndentSelection: StateCommand = ({ state, dispatch }
 
 export interface CodeEditorPanelProps {
   filePath: string;
+  targetLine?: number;
+  targetColumn?: number;
   fileEntries?: FileEntry[];
   content: string;
   mimeType?: string;
@@ -954,6 +956,8 @@ function BreadcrumbPopover({
 
 export function CodeEditorPanel({
   filePath,
+  targetLine,
+  targetColumn,
   fileEntries = [],
   content,
   mimeType = "text/plain",
@@ -974,6 +978,7 @@ export function CodeEditorPanel({
 }: CodeEditorPanelProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const lastAppliedLocationRef = useRef<string | null>(null);
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
   const languageCompartmentRef = useRef(new Compartment());
@@ -1104,6 +1109,30 @@ export function CodeEditorPanel({
     view.dispatch({
       selection: EditorSelection.cursor(line.from),
       scrollIntoView: true,
+    });
+    view.focus();
+    setCursorLine(line.number);
+  };
+
+  const focusEditorLocation = (lineNumber: number, columnNumber?: number) => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const clampedLineNumber = Math.min(Math.max(lineNumber, 1), view.state.doc.lines);
+    const line = view.state.doc.line(clampedLineNumber);
+    const columnOffset = Math.min(
+      Math.max((columnNumber ?? 1) - 1, 0),
+      line.to - line.from,
+    );
+    const cursorPosition = line.from + columnOffset;
+    view.dispatch({
+      selection: EditorSelection.cursor(cursorPosition),
+      effects: EditorView.scrollIntoView(cursorPosition, {
+        y: "center",
+        x: "nearest",
+      }),
     });
     view.focus();
     setCursorLine(line.number);
@@ -1321,6 +1350,29 @@ export function CodeEditorPanel({
       changes: { from: 0, to: currentValue.length, insert: content },
     });
   }, [content, isImageFile]);
+
+  useEffect(() => {
+    if (isImageFile || !targetLine || loading) {
+      return;
+    }
+
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    if (view.state.doc.lines < targetLine) {
+      return;
+    }
+
+    const locationKey = `${filePath}:${targetLine}:${targetColumn ?? 1}`;
+    if (lastAppliedLocationRef.current === locationKey) {
+      return;
+    }
+
+    focusEditorLocation(targetLine, targetColumn);
+    lastAppliedLocationRef.current = locationKey;
+  }, [content, filePath, focusEditorLocation, isImageFile, loading, targetColumn, targetLine]);
 
   return (
     <section className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">

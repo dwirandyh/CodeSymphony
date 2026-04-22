@@ -2,6 +2,7 @@ import type { ChatMessage } from "@codesymphony/shared-types";
 
 export function computeMessageAnchorIdxById(
   sortedMessages: ChatMessage[],
+  firstScopedEventIdxByMessageId: Map<string, number>,
   firstMessageEventIdxById: Map<string, number>,
   completedEventIdxByMessageId: Map<string, number>,
 ): Map<string, number> {
@@ -10,7 +11,7 @@ export function computeMessageAnchorIdxById(
 
   for (let index = 0; index < sortedMessages.length; index += 1) {
     const message = sortedMessages[index];
-    const anchorIdx = firstMessageEventIdxById.get(message.id)
+    const anchorIdx = firstScopedEventIdxByMessageId.get(message.id)
       ?? completedEventIdxByMessageId.get(message.id)
       ?? null;
     if (anchorIdx == null) {

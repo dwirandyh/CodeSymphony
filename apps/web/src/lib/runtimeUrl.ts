@@ -1,3 +1,9 @@
+import {
+  getConfiguredWebDevPort,
+  getConfiguredWebRuntimePort,
+  type RuntimeConfigViteEnv,
+} from "../../runtimeConfig";
+
 declare global {
   interface Window {
     __CS_RUNTIME_API_BASE?: string;
@@ -11,9 +17,6 @@ function isDesktopRuntimeWindow(windowRef: Window): boolean {
   // Tauri production can use a non-http(s) protocol (e.g. "tauri:").
   return windowRef.location.protocol !== "http:" && windowRef.location.protocol !== "https:";
 }
-
-const WEB_RUNTIME_PORT = 4331;
-const DESKTOP_RUNTIME_PORT = 4321;
 
 function getInjectedDesktopRuntimePort(windowRef: Window): number | null {
   const port = windowRef.__CS_RUNTIME_PORT;
@@ -33,24 +36,12 @@ function getInjectedDesktopRuntimeApiBase(windowRef: Window): string | null {
   return apiBase;
 }
 
-function getViteEnv(): {
-  VITE_RUNTIME_URL?: string;
-  VITE_DEV_PORT?: string;
-  DEV?: boolean;
-} {
+function getViteEnv(): RuntimeConfigViteEnv {
   const meta = import.meta as ImportMeta & {
-    env?: {
-      VITE_RUNTIME_URL?: string;
-      VITE_DEV_PORT?: string;
-      DEV?: boolean;
-    };
+    env?: RuntimeConfigViteEnv;
   };
 
   return meta.env ?? {};
-}
-
-function getWebDevPort(viteEnv: { VITE_DEV_PORT?: string }): string {
-  return viteEnv.VITE_DEV_PORT ?? "5173";
 }
 
 function looksLikeViteDevPort(port: string): boolean {
@@ -60,44 +51,42 @@ function looksLikeViteDevPort(port: string): boolean {
 
 function isWebDevServerWindow(
   windowRef: Window,
-  viteEnv: { VITE_DEV_PORT?: string; DEV?: boolean },
+  viteEnv: RuntimeConfigViteEnv,
 ): boolean {
   if (
-    windowRef.location.port === getWebDevPort(viteEnv)
+    windowRef.location.port === getConfiguredWebDevPort(viteEnv)
     || looksLikeViteDevPort(windowRef.location.port)
   ) {
     return true;
   }
 
   return viteEnv.DEV === true
-    && windowRef.location.port !== String(WEB_RUNTIME_PORT)
-    && windowRef.location.port !== String(DESKTOP_RUNTIME_PORT);
+    && windowRef.location.port !== String(getConfiguredWebRuntimePort(viteEnv));
 }
 
-function isDesktopDevFallbackWindow(windowRef: Window, viteEnv: { VITE_DEV_PORT?: string }): boolean {
-  return windowRef.location.port === String(DESKTOP_RUNTIME_PORT)
-    && getWebDevPort(viteEnv) !== String(DESKTOP_RUNTIME_PORT);
+function toHostRuntimeApiBase(windowRef: Window, runtimePort: number): string {
+  return `${windowRef.location.protocol}//${windowRef.location.hostname}:${runtimePort}/api`;
 }
 
 export function resolveRuntimeApiBase(): string {
   const viteEnv = getViteEnv();
   if (viteEnv.VITE_RUNTIME_URL) return viteEnv.VITE_RUNTIME_URL;
-  if (typeof window === "undefined") return `http://127.0.0.1:${WEB_RUNTIME_PORT}/api`;
+  if (typeof window === "undefined") {
+    return `http://127.0.0.1:${getConfiguredWebRuntimePort(viteEnv)}/api`;
+  }
   const injectedDesktopRuntimeApiBase = getInjectedDesktopRuntimeApiBase(window);
   if (injectedDesktopRuntimeApiBase) return injectedDesktopRuntimeApiBase;
   const injectedDesktopRuntimePort = getInjectedDesktopRuntimePort(window);
   if (isDesktopRuntimeWindow(window) && injectedDesktopRuntimePort != null) {
     return `http://127.0.0.1:${injectedDesktopRuntimePort}/api`;
   }
-  if (isDesktopRuntimeWindow(window)) return `http://127.0.0.1:${DESKTOP_RUNTIME_PORT}/api`;
-  if (isDesktopDevFallbackWindow(window, viteEnv)) {
-    return `${window.location.protocol}//${window.location.hostname}:${DESKTOP_RUNTIME_PORT}/api`;
-  }
-  // Vite dev server → point to runtime on known port.
+
+  // Desktop must trust the shell-injected runtime base instead of guessing fixed ports.
+  // Web dev is the only mode where the frontend should infer a runtime port on its own.
   if (isWebDevServerWindow(window, viteEnv)) {
-    return `${window.location.protocol}//${window.location.hostname}:${WEB_RUNTIME_PORT}/api`;
+    return toHostRuntimeApiBase(window, getConfiguredWebRuntimePort(viteEnv));
   }
-  // Production build served from runtime → same origin
+
   return `${window.location.origin}/api`;
 }
 
@@ -113,20 +102,19 @@ export function resolveRuntimeApiBases(): string[] {
     return [primary];
   }
 
-  if (getInjectedDesktopRuntimeApiBase(window) || getInjectedDesktopRuntimePort(window) != null) {
+  if (
+    getInjectedDesktopRuntimeApiBase(window)
+    || getInjectedDesktopRuntimePort(window) != null
+    || isDesktopRuntimeWindow(window)
+  ) {
     return [primary];
   }
 
-  if (isDesktopDevFallbackWindow(window, viteEnv)) {
+  if (!isWebDevServerWindow(window, viteEnv)) {
     return [primary];
   }
 
-  if (isDesktopRuntimeWindow(window) || !isWebDevServerWindow(window, viteEnv)) {
-    return [primary];
-  }
+  const webBase = toHostRuntimeApiBase(window, getConfiguredWebRuntimePort(viteEnv));
 
-  const webBase = `${window.location.protocol}//${window.location.hostname}:${WEB_RUNTIME_PORT}/api`;
-  const desktopBase = `${window.location.protocol}//${window.location.hostname}:${DESKTOP_RUNTIME_PORT}/api`;
-
-  return Array.from(new Set([primary, webBase, desktopBase]));
+  return Array.from(new Set([primary, webBase]));
 }

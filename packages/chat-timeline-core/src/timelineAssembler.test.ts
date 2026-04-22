@@ -219,4 +219,186 @@ describe("buildTimelineFromSeed", () => {
     expect(messageItems[0]?.message.content).toBe(content);
     expect(messageItems[0]?.renderHint).toBe("markdown");
   });
+
+  it("renders a single edited diff after manual edit approval and later worktree diff", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Update HomeActivity."),
+      makeMessage("m2", 1, "assistant", "Selesai."),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "edit-1",
+        editTarget: "/repo/app/src/HomeActivity.java",
+      }),
+      makeEvent(1, "permission.requested", {
+        requestId: "perm-1",
+        toolName: "Edit",
+        blockedPath: "/repo/app/src/HomeActivity.java",
+        toolInput: { file_path: "/repo/app/src/HomeActivity.java" },
+      }),
+      makeEvent(2, "permission.resolved", {
+        requestId: "perm-1",
+        decision: "allow",
+      }),
+      makeEvent(3, "tool.output", {
+        toolName: "Edit",
+        toolUseId: "edit-1",
+      }),
+      makeEvent(4, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/app/src/HomeActivity.java",
+        precedingToolUseIds: ["edit-1"],
+        editTarget: "/repo/app/src/HomeActivity.java",
+        toolInput: { file_path: "/repo/app/src/HomeActivity.java" },
+      }),
+      makeEvent(5, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Selesai.",
+      }),
+      makeEvent(6, "tool.finished", {
+        source: "worktree.diff",
+        changedFiles: ["app/src/HomeActivity.java"],
+        diff: [
+          "diff --git a/app/src/HomeActivity.java b/app/src/HomeActivity.java",
+          "--- a/app/src/HomeActivity.java",
+          "+++ b/app/src/HomeActivity.java",
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ].join("\n"),
+      }),
+      makeEvent(7, "chat.completed", { messageId: "m2" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const editedItems = result.items.filter(
+      (item): item is Extract<ChatTimelineItem, { kind: "edited-diff" }> =>
+        item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("HomeActivity.java")),
+    );
+
+    expect(editedItems).toHaveLength(1);
+    expect(editedItems[0]).toMatchObject({
+      kind: "edited-diff",
+      diffKind: "actual",
+      status: "success",
+    });
+    expect(editedItems[0]?.diff).toContain("+new");
+  });
+
+  it("attaches resumed tool events to the new assistant turn when tool activity starts before text deltas", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Start the task."),
+      makeMessage("m2", 1, "assistant", "Partial output before stop."),
+      makeMessage("m3", 2, "user", "continue"),
+      makeMessage("m4", 3, "assistant", ""),
+    ];
+    const events = [
+      makeEvent(0, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Partial output before stop.",
+      }),
+      makeEvent(1, "chat.completed", {
+        messageId: "m2",
+        cancelled: true,
+      }),
+      makeEvent(2, "message.delta", {
+        role: "user",
+        messageId: "m3",
+        delta: "continue",
+      }),
+      makeEvent(3, "tool.started", {
+        messageId: "m4",
+        toolName: "Bash",
+        toolUseId: "bash-2",
+        command: "ls",
+      }),
+      makeEvent(4, "tool.finished", {
+        messageId: "m4",
+        toolName: "Bash",
+        summary: "Ran ls",
+        precedingToolUseIds: ["bash-2"],
+      }),
+      makeEvent(5, "chat.completed", {
+        messageId: "m4",
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const resumedTool = result.items.find(
+      (item): item is Extract<ChatTimelineItem, { kind: "tool" }> =>
+        item.kind === "tool" && item.toolUseId === "bash-2",
+    );
+
+    expect(resumedTool).toBeTruthy();
+    expect(resumedTool?.id.startsWith("m4:")).toBe(true);
+    expect(resumedTool?.id.startsWith("m2:")).toBe(false);
+  });
+
+  it("keeps post-approval tool-only activity after a revealed plan card before the first execution delta", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Plan it."),
+      makeMessage("m2", 1, "assistant", "Here is the implementation plan with extra context."),
+      makeMessage("m3", 2, "assistant", ""),
+    ];
+    const events = [
+      makeEvent(10, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Plan context",
+      }),
+      makeEvent(11, "plan.created", {
+        messageId: "m2",
+        content: "1. Update the wording\n2. Tighten the spacing",
+        filePath: ".claude/plans/codex-plan.md",
+        source: "codex_plan_item",
+      }),
+      makeEvent(12, "chat.completed", { messageId: "m2", threadMode: "plan" }),
+      makeEvent(13, "plan.approved", {
+        filePath: ".claude/plans/codex-plan.md",
+      }),
+      makeEvent(14, "tool.started", {
+        messageId: "m3",
+        toolName: "Edit",
+        toolUseId: "edit-1",
+        editTarget: "/repo/src/app.ts",
+      }),
+      makeEvent(15, "tool.finished", {
+        messageId: "m3",
+        toolName: "Edit",
+        summary: "Edited /repo/src/app.ts",
+        precedingToolUseIds: ["edit-1"],
+        editTarget: "/repo/src/app.ts",
+        toolInput: { file_path: "/repo/src/app.ts" },
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const planIndex = result.items.findIndex((item) => item.kind === "plan-file-output");
+    const editedIndex = result.items.findIndex((item) => item.kind === "edited-diff" && item.changedFiles.includes("/repo/src/app.ts"));
+
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(editedIndex).toBeGreaterThan(-1);
+    expect(planIndex).toBeLessThan(editedIndex);
+  });
 });

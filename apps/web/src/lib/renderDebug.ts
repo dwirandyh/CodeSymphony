@@ -43,6 +43,20 @@ function getWindow(): WindowWithRenderDebug | null {
   return window as WindowWithRenderDebug;
 }
 
+function readLocalStorageFlag(key: string): string | null {
+  const currentWindow = getWindow();
+  const storage = currentWindow?.localStorage;
+  if (!storage || typeof storage.getItem !== "function") {
+    return null;
+  }
+
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 export function isRenderDebugEnabled(): boolean {
   const currentWindow = getWindow();
   if (!currentWindow) {
@@ -54,7 +68,7 @@ export function isRenderDebugEnabled(): boolean {
     return true;
   }
 
-  return currentWindow.localStorage.getItem("cs.debug.render") === "1";
+  return readLocalStorageFlag("cs.debug.render") === "1";
 }
 
 function ensureRenderDebugApi(): RenderDebugApi | null {

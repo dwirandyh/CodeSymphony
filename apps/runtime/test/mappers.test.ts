@@ -37,6 +37,14 @@ describe("mappers", () => {
         setupScript: JSON.stringify(["npm install"]),
         teardownScript: null,
         runScript: null,
+        saveAutomation: JSON.stringify({
+          enabled: true,
+          target: "workspace_terminal",
+          filePatterns: ["lib/**/*.dart"],
+          actionType: "send_stdin",
+          payload: "r",
+          debounceMs: 400,
+        }),
         createdAt: now,
         updatedAt: now,
         worktrees: [
@@ -56,6 +64,14 @@ describe("mappers", () => {
       expect(result.id).toBe("r1");
       expect(result.name).toBe("test-repo");
       expect(result.setupScript).toEqual(["npm install"]);
+      expect(result.saveAutomation).toEqual({
+        enabled: true,
+        target: "workspace_terminal",
+        filePatterns: ["lib/**/*.dart"],
+        actionType: "send_stdin",
+        payload: "r",
+        debounceMs: 400,
+      });
       expect(result.teardownScript).toBeNull();
       expect(result.worktrees.length).toBe(1);
       expect(result.worktrees[0].id).toBe("w1");
@@ -70,6 +86,7 @@ describe("mappers", () => {
         setupScript: null,
         teardownScript: null,
         runScript: null,
+        saveAutomation: null,
         createdAt: now,
         updatedAt: now,
         worktrees: [],
@@ -77,6 +94,7 @@ describe("mappers", () => {
       expect(result.setupScript).toBeNull();
       expect(result.teardownScript).toBeNull();
       expect(result.runScript).toBeNull();
+      expect(result.saveAutomation).toBeNull();
     });
   });
 

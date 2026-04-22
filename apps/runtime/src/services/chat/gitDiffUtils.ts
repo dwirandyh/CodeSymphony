@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { execFile as execFileRaw } from "node:child_process";
 import { promisify } from "node:util";
 import type { ParsedDiffSections, WorktreeDiffDelta, WorktreeStateSnapshot } from "./chatService.types.js";
@@ -108,12 +111,28 @@ function appendUnique(items: string[], seen: Set<string>, candidate: string): vo
   items.push(candidate);
 }
 
+function normalizeGitPath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.\/+/, "");
+}
+
+function toDirectoryPrefix(filePath: string): string {
+  const normalized = normalizeGitPath(filePath);
+  return normalized.endsWith("/") ? normalized : `${normalized}/`;
+}
+
 function matchesTargetFile(filePath: string, targetFiles: string[]): boolean {
-  return targetFiles.some((target) => (
-    filePath === target
-    || filePath.endsWith(`/${target}`)
-    || target.endsWith(`/${filePath}`)
-  ));
+  const normalizedFilePath = normalizeGitPath(filePath);
+  const filePathDirectoryPrefix = toDirectoryPrefix(normalizedFilePath);
+
+  return targetFiles.some((target) => {
+    const normalizedTarget = normalizeGitPath(target);
+    const targetDirectoryPrefix = toDirectoryPrefix(normalizedTarget);
+    return normalizedFilePath === normalizedTarget
+      || normalizedFilePath.endsWith(`/${normalizedTarget}`)
+      || normalizedTarget.endsWith(`/${normalizedFilePath}`)
+      || normalizedFilePath.startsWith(targetDirectoryPrefix)
+      || normalizedTarget.startsWith(filePathDirectoryPrefix);
+  });
 }
 
 function symmetricStatusDelta(before: string[], after: string[]): string[] {
@@ -134,6 +153,114 @@ function symmetricStatusDelta(before: string[], after: string[]): string[] {
   }
 
   return delta;
+}
+
+function mergeChangedFiles(statusFiles: string[], untrackedFilePaths: string[]): string[] {
+  if (untrackedFilePaths.length === 0) {
+    return statusFiles;
+  }
+
+  const merged: string[] = [];
+  const seen = new Set<string>();
+
+  for (const statusFile of statusFiles) {
+    const statusDirectoryPrefix = toDirectoryPrefix(statusFile);
+    const representedByUntrackedFile = untrackedFilePaths.some((untrackedFilePath) => (
+      normalizeGitPath(untrackedFilePath).startsWith(statusDirectoryPrefix)
+    ));
+    if (representedByUntrackedFile) {
+      continue;
+    }
+    appendUnique(merged, seen, normalizeGitPath(statusFile));
+  }
+
+  for (const untrackedFilePath of untrackedFilePaths) {
+    appendUnique(merged, seen, normalizeGitPath(untrackedFilePath));
+  }
+
+  return merged;
+}
+
+async function listUntrackedFilePaths(worktreePath: string): Promise<string[]> {
+  try {
+    const output = await runGit(worktreePath, ["ls-files", "--others", "--exclude-standard", "-z"]);
+    if (output.length === 0) {
+      return [];
+    }
+
+    return output
+      .split("\u0000")
+      .map((filePath) => normalizeGitPath(filePath))
+      .filter((filePath) => filePath.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function computeFileSignature(worktreePath: string, relativePath: string): string | null {
+  try {
+    const content = readFileSync(join(worktreePath, relativePath));
+    return createHash("sha256").update(content).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function captureUntrackedFileSignatures(worktreePath: string, untrackedFilePaths: string[]): Map<string, string> {
+  const signatures = new Map<string, string>();
+
+  for (const untrackedFilePath of untrackedFilePaths) {
+    const signature = computeFileSignature(worktreePath, untrackedFilePath);
+    if (!signature) {
+      continue;
+    }
+    signatures.set(untrackedFilePath, signature);
+  }
+
+  return signatures;
+}
+
+function captureUntrackedFileContents(worktreePath: string, untrackedFilePaths: string[]): Map<string, string> {
+  const contents = new Map<string, string>();
+
+  for (const untrackedFilePath of untrackedFilePaths) {
+    try {
+      contents.set(untrackedFilePath, readFileSync(join(worktreePath, untrackedFilePath), "utf8"));
+    } catch {
+      continue;
+    }
+  }
+
+  return contents;
+}
+
+function collectUntrackedDeltaFiles(
+  beforeSignatures: Map<string, string>,
+  afterSignatures: Map<string, string>,
+): { current: string[]; all: string[] } {
+  const current: string[] = [];
+  const currentSeen = new Set<string>();
+  const all: string[] = [];
+  const allSeen = new Set<string>();
+  const queue = [
+    ...afterSignatures.keys(),
+    ...Array.from(beforeSignatures.keys()).filter((filePath) => !afterSignatures.has(filePath)),
+  ];
+
+  for (const filePath of queue) {
+    const beforeSignature = beforeSignatures.get(filePath) ?? null;
+    const afterSignature = afterSignatures.get(filePath) ?? null;
+    if (beforeSignature === afterSignature) {
+      continue;
+    }
+
+    appendUnique(all, allSeen, filePath);
+    if (afterSignature) {
+      appendUnique(current, currentSeen, filePath);
+    }
+  }
+
+  return { current, all };
 }
 
 export function filterDiffByFiles(diff: string, targetFiles: string[]): string {
@@ -187,28 +314,84 @@ export function truncateDiffPreview(diff: string): { diff: string; diffTruncated
 
 export async function captureWorktreeState(worktreePath: string): Promise<WorktreeStateSnapshot | null> {
   try {
-    const [statusOutput, unstagedDiff, stagedDiff] = await Promise.all([
-      runGit(worktreePath, ["status", "--porcelain"]),
+    const [statusOutput, unstagedDiff, stagedDiff, untrackedFilePaths] = await Promise.all([
+      runGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"]),
       runGit(worktreePath, ["diff", "--no-color"]),
       runGit(worktreePath, ["diff", "--cached", "--no-color"]),
+      listUntrackedFilePaths(worktreePath),
     ]);
 
     return {
       statusOutput,
       unstagedDiff,
       stagedDiff,
-      changedFiles: parseChangedFiles(statusOutput),
+      changedFiles: mergeChangedFiles(parseChangedFiles(statusOutput), untrackedFilePaths),
+      untrackedFileSignatures: captureUntrackedFileSignatures(worktreePath, untrackedFilePaths),
+      untrackedFileContents: captureUntrackedFileContents(worktreePath, untrackedFilePaths),
     };
   } catch {
     return null;
   }
 }
 
+function splitDiffContentLines(content: string): string[] {
+  if (content.length === 0) {
+    return [];
+  }
+
+  const normalized = content.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  if (normalized.endsWith("\n")) {
+    lines.pop();
+  }
+  return lines;
+}
+
+function renderSyntheticDiffSection(filePath: string, beforeContent: string | null, afterContent: string | null): string {
+  const beforeLines = beforeContent == null ? [] : splitDiffContentLines(beforeContent);
+  const afterLines = afterContent == null ? [] : splitDiffContentLines(afterContent);
+  const beforeHeader = beforeLines.length === 0 ? "0,0" : beforeLines.length === 1 ? "1" : `1,${beforeLines.length}`;
+  const afterHeader = afterLines.length === 0 ? "0,0" : afterLines.length === 1 ? "1" : `1,${afterLines.length}`;
+
+  const lines = [
+    `diff --git a/${filePath} b/${filePath}`,
+    ...(beforeContent == null ? ["new file mode 100644"] : []),
+    ...(afterContent == null ? ["deleted file mode 100644"] : []),
+    `--- ${beforeContent == null ? "/dev/null" : `a/${filePath}`}`,
+    `+++ ${afterContent == null ? "/dev/null" : `b/${filePath}`}`,
+    `@@ -${beforeHeader} +${afterHeader} @@`,
+    ...beforeLines.map((line) => `-${line}`),
+    ...afterLines.map((line) => `+${line}`),
+  ];
+
+  return lines.join("\n");
+}
+
+function buildUntrackedDiffDelta(
+  beforeContents: Map<string, string>,
+  afterContents: Map<string, string>,
+  currentFiles: string[],
+): string {
+  if (currentFiles.length === 0) {
+    return "";
+  }
+
+  return currentFiles
+    .map((filePath) =>
+      renderSyntheticDiffSection(filePath, beforeContents.get(filePath) ?? null, afterContents.get(filePath) ?? null))
+    .join("\n\n");
+}
+
 export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeStateSnapshot): WorktreeDiffDelta | null {
   const beforeCombinedDiff = [before.unstagedDiff, before.stagedDiff].filter((part) => part.length > 0).join("\n\n");
   const afterCombinedDiff = [after.unstagedDiff, after.stagedDiff].filter((part) => part.length > 0).join("\n\n");
+  const untrackedDeltaFiles = collectUntrackedDeltaFiles(before.untrackedFileSignatures, after.untrackedFileSignatures);
 
-  if (before.statusOutput === after.statusOutput && beforeCombinedDiff === afterCombinedDiff) {
+  if (
+    before.statusOutput === after.statusOutput
+    && beforeCombinedDiff === afterCombinedDiff
+    && untrackedDeltaFiles.all.length === 0
+  ) {
     return null;
   }
 
@@ -258,7 +441,14 @@ export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeSta
   const deltaSections = currentDiffFiles
     .map((file) => afterSections.byFile.get(file) ?? "")
     .filter((section) => section.length > 0);
-  const diffDelta = deltaSections.join("\n\n");
+  const untrackedDiffDelta = buildUntrackedDiffDelta(
+    before.untrackedFileContents,
+    after.untrackedFileContents,
+    untrackedDeltaFiles.current,
+  );
+  const diffDelta = [...deltaSections, untrackedDiffDelta]
+    .filter((section) => section.length > 0)
+    .join("\n\n");
 
   const statusDeltaFiles = symmetricStatusDelta(before.changedFiles, after.changedFiles);
   const afterChangedFiles = new Set(after.changedFiles);
@@ -273,12 +463,18 @@ export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeSta
       appendUnique(changedFiles, changedFilesSeen, file);
     }
   }
+  for (const file of untrackedDeltaFiles.current) {
+    appendUnique(changedFiles, changedFilesSeen, file);
+  }
 
   if (changedFiles.length === 0 && diffDelta.length === 0) {
     for (const file of orderedDiffDeltaFiles) {
       appendUnique(changedFiles, changedFilesSeen, file);
     }
     for (const file of statusDeltaFiles) {
+      appendUnique(changedFiles, changedFilesSeen, file);
+    }
+    for (const file of untrackedDeltaFiles.all) {
       appendUnique(changedFiles, changedFilesSeen, file);
     }
   }

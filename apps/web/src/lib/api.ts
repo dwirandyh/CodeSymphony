@@ -12,6 +12,7 @@ import type {
   DeviceInventorySnapshot,
   DeviceStreamSession,
   DismissQuestionInput,
+  UpdateChatThreadAgentSelectionInput,
   UpdateChatThreadPermissionModeInput,
   UpdateChatThreadModeInput,
   ExternalApp,
@@ -37,6 +38,7 @@ import type {
   SendChatMessageInput,
   StartDeviceStreamInput,
   StopDeviceStreamInput,
+  TestModelProviderInput,
   UpdateWorktreeFileContentInput,
   UpdateModelProviderInput,
   UpdateRepositoryScriptsInput,
@@ -361,6 +363,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
+  updateThreadAgentSelection: (threadId: string, input: UpdateChatThreadAgentSelectionInput) =>
+    request<ChatThread>(`/threads/${threadId}/agent-selection`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
   deleteThread: async (threadId: string) => {
     const response = await runtimeFetch(`/threads/${threadId}`, {
       method: "DELETE",
@@ -444,6 +451,18 @@ export const api = {
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to approve plan");
+    }
+  },
+  dismissPlan: async (threadId: string) => {
+    const response = await runtimeFetch(`/threads/${threadId}/plan/dismiss`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to dismiss plan");
     }
   },
   revisePlan: async (threadId: string, input: PlanRevisionInput) => {
@@ -614,7 +633,7 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to deactivate providers");
     }
   },
-  testModelProvider: (input: { baseUrl: string; apiKey: string; modelId: string }) =>
+  testModelProvider: (input: TestModelProviderInput) =>
     request<{ success: boolean; error?: string }>("/model-providers/test", {
       method: "POST",
       body: JSON.stringify(input),

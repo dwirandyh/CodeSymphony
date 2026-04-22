@@ -1,5 +1,4 @@
 import {
-  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -8,6 +7,7 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
+import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
 import type {
   AttachmentInput,
   ChatAttachment,
@@ -19,6 +19,9 @@ import type {
   ChatTimelineItem,
   ChatTimelineSnapshot,
   ChatTimelineSummary,
+  CliAgent,
+  CreateChatThreadInput,
+  UpdateChatThreadAgentSelectionInput,
 } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import {
@@ -125,6 +128,50 @@ function applyThreadActiveUpdate(
   return updated;
 }
 
+function applyThreadAgentSelectionUpdate(
+  threads: ChatThread[],
+  threadId: string,
+  selection: UpdateChatThreadAgentSelectionInput,
+): ChatThread[] {
+  const index = threads.findIndex((thread) => thread.id === threadId);
+  if (index === -1) {
+    return threads;
+  }
+
+  const current = threads[index];
+  if (
+    current?.agent === selection.agent
+    && current.model === selection.model
+    && current.modelProviderId === (selection.modelProviderId ?? null)
+    && current.claudeSessionId === null
+    && current.codexSessionId === null
+  ) {
+    return threads;
+  }
+
+  const updated = [...threads];
+  updated[index] = {
+    ...current!,
+    agent: selection.agent,
+    model: selection.model,
+    modelProviderId: selection.modelProviderId ?? null,
+    claudeSessionId: null,
+    codexSessionId: null,
+  };
+  return updated;
+}
+
+function replaceThread(threads: ChatThread[], nextThread: ChatThread): ChatThread[] {
+  const index = threads.findIndex((thread) => thread.id === nextThread.id);
+  if (index === -1) {
+    return [...threads, nextThread];
+  }
+
+  const updated = [...threads];
+  updated[index] = nextThread;
+  return updated;
+}
+
 function resolvePreferredThreadId(threads: ChatThread[]): string | null {
   for (let index = threads.length - 1; index >= 0; index -= 1) {
     if (threads[index]?.active) {
@@ -150,6 +197,18 @@ function findThreadForWorktree(
   }
 
   return thread;
+}
+
+function buildThreadSelectionInput(thread: ChatThread | null): Pick<CreateChatThreadInput, "agent" | "model" | "modelProviderId"> {
+  if (!thread) {
+    return {};
+  }
+
+  return {
+    agent: thread.agent,
+    model: thread.model,
+    modelProviderId: thread.modelProviderId,
+  };
 }
 
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
@@ -238,6 +297,27 @@ function toPlainChatEvent(event: ChatEvent): ChatEvent {
   };
 }
 
+function isSnapshotFreshEnoughForAuthoritativeTimeline(params: {
+  snapshot: ChatTimelineSnapshot | null | undefined;
+  messages: ChatMessage[];
+  events: ChatEvent[];
+}): boolean {
+  const { snapshot, messages, events } = params;
+  if (!snapshot) {
+    return false;
+  }
+
+  const snapshotNewestIdx = snapshot.newestIdx ?? snapshot.events[snapshot.events.length - 1]?.idx ?? null;
+  const snapshotNewestSeq = snapshot.newestSeq ?? snapshot.messages[snapshot.messages.length - 1]?.seq ?? null;
+  const localNewestIdx = events[events.length - 1]?.idx ?? null;
+  const localNewestSeq = messages[messages.length - 1]?.seq ?? null;
+
+  const eventCoverage = localNewestIdx == null || (snapshotNewestIdx != null && snapshotNewestIdx >= localNewestIdx);
+  const messageCoverage = localNewestSeq == null || (snapshotNewestSeq != null && snapshotNewestSeq >= localNewestSeq);
+
+  return eventCoverage && messageCoverage;
+}
+
 export function deriveSelectedThreadUiState(params: {
   selectedThreadId: string | null;
   threads: ChatThread[];
@@ -275,7 +355,7 @@ export function useChatSession(
   const timelineEnabled = options?.timelineEnabled !== false;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [selectedThreadId, setSelectedThreadIdState] = useState<string | null>(null);
+  const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(null);
 
   const [sendingMessage, setSendingMessage] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
@@ -290,6 +370,7 @@ export function useChatSession(
   const loggedOrphanEventIdsByThreadRef = useRef<Map<string, Set<string>>>(new Map());
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
+  const selectedThreadIdOverrideRef = useRef<string | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
   const threadByIdRef = useRef<Map<string, ChatThread>>(new Map());
   const creatingThreadRef = useRef(false);
@@ -302,7 +383,9 @@ export function useChatSession(
   const restoredActiveThreadIdsRef = useRef<Set<string>>(new Set());
   const restoredWaitingThreadIdsRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
+  const pendingAgentSelectionUpdatesRef = useRef<Map<string, Promise<void>>>(new Map());
 
+  const selectedThreadId = selectedThreadIdOverrideRef.current ?? selectedThreadIdState;
   activeThreadIdRef.current = selectedThreadId;
   threadsRef.current = threads;
 
@@ -319,10 +402,15 @@ export function useChatSession(
   const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
 
   const setSelectedThreadId = useCallback((threadId: string | null) => {
-    startTransition(() => {
-      setSelectedThreadIdState(threadId);
-    });
+    selectedThreadIdOverrideRef.current = threadId;
+    setSelectedThreadIdState(threadId);
   }, []);
+
+  useEffect(() => {
+    if (selectedThreadIdOverrideRef.current === selectedThreadIdState) {
+      selectedThreadIdOverrideRef.current = null;
+    }
+  }, [selectedThreadIdState]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -341,6 +429,7 @@ export function useChatSession(
       setWaitingAssistant(null);
       setThreads([]);
       setSelectedThreadId(null);
+      pendingAgentSelectionUpdatesRef.current.clear();
       disposeAllThreadCollections();
       clearAllThreadStreamState();
       setPendingComposerPermissionMode("default");
@@ -351,6 +440,7 @@ export function useChatSession(
       setWaitingAssistant(null);
       setThreads([]);
       setSelectedThreadId(null);
+      pendingAgentSelectionUpdatesRef.current.clear();
       disposeAllThreadCollections();
       clearAllThreadStreamState();
       setPendingComposerPermissionMode("default");
@@ -368,7 +458,19 @@ export function useChatSession(
         locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
       });
 
-      if (current.length === mergedThreads.length && current.every((t, i) => t.id === mergedThreads[i].id && t.title === mergedThreads[i].title && t.mode === mergedThreads[i].mode && t.permissionMode === mergedThreads[i].permissionMode && t.claudeSessionId === mergedThreads[i].claudeSessionId && t.active === mergedThreads[i].active && t.updatedAt === mergedThreads[i].updatedAt)) {
+      if (current.length === mergedThreads.length && current.every((t, i) => (
+        t.id === mergedThreads[i].id
+        && t.title === mergedThreads[i].title
+        && t.mode === mergedThreads[i].mode
+        && t.permissionMode === mergedThreads[i].permissionMode
+        && t.agent === mergedThreads[i].agent
+        && t.model === mergedThreads[i].model
+        && t.modelProviderId === mergedThreads[i].modelProviderId
+        && t.claudeSessionId === mergedThreads[i].claudeSessionId
+        && t.codexSessionId === mergedThreads[i].codexSessionId
+        && t.active === mergedThreads[i].active
+        && t.updatedAt === mergedThreads[i].updatedAt
+      ))) {
         return current;
       }
       return mergedThreads;
@@ -518,6 +620,9 @@ export function useChatSession(
   const selectedThread = selectedThreadId
     ? threadByIdRef.current.get(selectedThreadId) ?? null
     : null;
+  const composerAgent: CliAgent = selectedThread?.agent ?? "claude";
+  const composerModel = selectedThread?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[composerAgent];
+  const composerModelProviderId = selectedThread?.modelProviderId ?? null;
   const composerMode = selectedThreadUiStatus === "review_plan"
     ? "plan"
     : selectedThread?.mode ?? "default";
@@ -594,8 +699,13 @@ export function useChatSession(
       return;
     }
 
+    const snapshotCanAuthoritativelyReplaceLocalState =
+      selectedThread?.active !== true
+      && waitingAssistant?.threadId !== selectedThreadId
+      && !hasPendingUserGate;
     const shouldReplaceSnapshotSeed = threadChanged
-      || (queriedThreadSnapshot.messages.length === 0 && queriedThreadSnapshot.events.length === 0);
+      || (queriedThreadSnapshot.messages.length === 0 && queriedThreadSnapshot.events.length === 0)
+      || snapshotCanAuthoritativelyReplaceLocalState;
 
     hydrateThreadFromSnapshot({
       threadId: selectedThreadId,
@@ -612,7 +722,7 @@ export function useChatSession(
     }
 
     setThreadLastAppliedSnapshotKey(selectedThreadId, seedDecision.snapshotKey);
-  }, [hasPendingUserGate, messages, onBranchRenamed, queriedThreadSnapshot, selectedThreadId, selectedWorktreeId, waitingAssistant]);
+  }, [hasPendingUserGate, messages, onBranchRenamed, queriedThreadSnapshot, selectedThread?.active, selectedThreadId, selectedWorktreeId, waitingAssistant]);
 
   useEffect(() => {
     pruneThreadCollections({
@@ -868,9 +978,20 @@ export function useChatSession(
       }
     }
 
+    const selectionInput = buildThreadSelectionInput(
+      findThreadForWorktree(threadsRef.current, activeThreadIdRef.current, selectedWorktreeId),
+    );
+
     const created = options?.sendDefaultTitle === false
-      ? await api.createThread(selectedWorktreeId, { permissionMode: composerPermissionMode })
-      : await api.createThread(selectedWorktreeId, { title: trimmedTitle, permissionMode: composerPermissionMode });
+      ? await api.createThread(selectedWorktreeId, {
+          permissionMode: composerPermissionMode,
+          ...selectionInput,
+        })
+      : await api.createThread(selectedWorktreeId, {
+          title: trimmedTitle,
+          permissionMode: composerPermissionMode,
+          ...selectionInput,
+        });
     return { created, worktreeId: selectedWorktreeId };
   }
 
@@ -881,6 +1002,7 @@ export function useChatSession(
       if (!result) return null;
       const { created, worktreeId } = result;
       optimisticCreatedThreadIdsRef.current.add(created.id);
+      activeThreadIdRef.current = created.id;
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         locallyDeletedThreadIdsRef.current.delete(created.id);
@@ -903,6 +1025,7 @@ export function useChatSession(
       if (!result) return;
       const { created, worktreeId } = result;
       optimisticCreatedThreadIdsRef.current.add(created.id);
+      activeThreadIdRef.current = created.id;
       setThreads((current) => {
         if (current.some((t) => t.id === created.id)) return current;
         locallyDeletedThreadIdsRef.current.delete(created.id);
@@ -961,9 +1084,13 @@ export function useChatSession(
     try {
       const created = await api.getOrCreatePrMrThread(selectedWorktreeId, {
         permissionMode: composerPermissionMode,
+        ...buildThreadSelectionInput(
+          findThreadForWorktree(threadsRef.current, activeThreadIdRef.current, selectedWorktreeId),
+        ),
       });
       createdThreadId = created.id;
       optimisticCreatedThreadIdsRef.current.add(created.id);
+      activeThreadIdRef.current = created.id;
       setThreads((current) => {
         const existingIndex = current.findIndex((thread) => thread.id === created.id);
         locallyDeletedThreadIdsRef.current.delete(created.id);
@@ -1145,9 +1272,69 @@ export function useChatSession(
     }
   }
 
+  async function setThreadAgentSelection(threadId: string, selection: UpdateChatThreadAgentSelectionInput) {
+    const previousPendingUpdate = pendingAgentSelectionUpdatesRef.current.get(threadId);
+    const mutationPromise = (previousPendingUpdate ?? Promise.resolve())
+      .catch(() => {})
+      .then(async () => {
+        const currentThread = threadByIdRef.current.get(threadId) ?? null;
+        if (
+          currentThread?.agent === selection.agent
+          && currentThread.model === selection.model
+          && currentThread.modelProviderId === (selection.modelProviderId ?? null)
+        ) {
+          return;
+        }
+
+        onError(null);
+        const previousThreads = threadsRef.current;
+        const cacheWorktreeId = selectedWorktreeId ?? (currentThread?.worktreeId ?? null);
+
+        setThreads((current) => applyThreadAgentSelectionUpdate(current, threadId, selection));
+        if (cacheWorktreeId) {
+          queryClient.setQueryData<ChatThread[] | undefined>(
+            queryKeys.threads.list(cacheWorktreeId),
+            (current) => current ? applyThreadAgentSelectionUpdate(current, threadId, selection) : current,
+          );
+        }
+
+        try {
+          const updated = await api.updateThreadAgentSelection(threadId, selection);
+          setThreads((current) => replaceThread(current, updated));
+          const updatedCacheWorktreeId = selectedWorktreeId ?? updated.worktreeId;
+          if (updatedCacheWorktreeId) {
+            queryClient.setQueryData<ChatThread[] | undefined>(
+              queryKeys.threads.list(updatedCacheWorktreeId),
+              (current) => current ? replaceThread(current, updated) : current,
+            );
+          }
+        } catch (e) {
+          setThreads(previousThreads);
+          if (cacheWorktreeId) {
+            queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(cacheWorktreeId), previousThreads);
+          }
+          onError(e instanceof Error ? e.message : "Failed to update thread agent selection");
+        }
+      });
+
+    pendingAgentSelectionUpdatesRef.current.set(threadId, mutationPromise);
+
+    try {
+      await mutationPromise;
+    } finally {
+      if (pendingAgentSelectionUpdatesRef.current.get(threadId) === mutationPromise) {
+        pendingAgentSelectionUpdatesRef.current.delete(threadId);
+      }
+    }
+  }
+
   async function setComposerPermissionMode(permissionMode: ChatThreadPermissionMode) {
     const normalizedMode = permissionMode === "full_access" ? "full_access" : "default";
-    const activeThread = findThreadForWorktree(threads, selectedThreadId, selectedWorktreeId);
+    const activeThread = findThreadForWorktree(
+      threadsRef.current,
+      activeThreadIdRef.current,
+      selectedWorktreeId,
+    );
 
     if (!activeThread) {
       setPendingComposerPermissionMode(normalizedMode);
@@ -1203,9 +1390,15 @@ export function useChatSession(
       source: att.source,
     }));
 
-    if (!selectedThreadId || (!content.trim() && attachmentsToSend.length === 0)) return false;
+    const threadId = activeThreadIdRef.current;
+    if (!threadId || (!content.trim() && attachmentsToSend.length === 0)) return false;
 
-    const activeThread = findThreadForWorktree(threads, selectedThreadId, selectedWorktreeId);
+    const pendingAgentSelectionUpdate = pendingAgentSelectionUpdatesRef.current.get(threadId);
+    if (pendingAgentSelectionUpdate) {
+      await pendingAgentSelectionUpdate;
+    }
+
+    const activeThread = findThreadForWorktree(threadsRef.current, threadId, selectedWorktreeId);
     if (!activeThread) {
       onError("Selected thread is stale for the active worktree. Please retry.");
       return false;
@@ -1260,6 +1453,24 @@ export function useChatSession(
     } finally {
       setSendingMessage(false);
     }
+  }
+
+  async function setComposerMode(mode: ChatMode) {
+    const threadId = activeThreadIdRef.current;
+    if (!threadId) {
+      return;
+    }
+
+    await setThreadMode(threadId, mode);
+  }
+
+  async function setComposerAgentSelection(selection: UpdateChatThreadAgentSelectionInput) {
+    const threadId = activeThreadIdRef.current;
+    if (!threadId) {
+      return;
+    }
+
+    await setThreadAgentSelection(threadId, selection);
   }
 
   async function stopAssistantRun(targetThreadId?: string) {
@@ -1319,6 +1530,15 @@ export function useChatSession(
       messages,
       events,
     });
+  const serverTimelineFreshEnough = isSnapshotFreshEnoughForAuthoritativeTimeline({
+    snapshot: queriedThreadSnapshot,
+    messages,
+    events,
+  });
+  const selectedThreadIdleForAuthoritativeTimeline =
+    selectedThreadUiStatus === "idle"
+    && waitingAssistant?.threadId !== selectedThreadId
+    && !hasPendingUserGate;
 
   const derivedTimeline = useWorkspaceTimeline(messages, events, selectedThreadId, {
     streamingMessageIds: streamingMessageIdsRef.current,
@@ -1352,8 +1572,8 @@ export function useChatSession(
   }, [derivedTimeline.items, serverTimelineItems]);
 
   const useServerTimeline = timelineEnabled
-    && timelineSeedMatchesLiveState
     && serverTimelineSummary != null
+    && (timelineSeedMatchesLiveState || (selectedThreadIdleForAuthoritativeTimeline && serverTimelineFreshEnough))
     && !timelineComparison.preferDerivedBecauseServerLooksStale;
 
   const timelineData: {
@@ -1382,6 +1602,8 @@ export function useChatSession(
         selectedThreadId,
         timelineEnabled,
         timelineSeedMatchesLiveState,
+        serverTimelineFreshEnough,
+        selectedThreadIdleForAuthoritativeTimeline,
         useServerTimeline,
         signaturesMatch: timelineComparison.signaturesMatch,
         preferDerivedBecauseServerLooksStale: timelineComparison.preferDerivedBecauseServerLooksStale,
@@ -1394,6 +1616,8 @@ export function useChatSession(
     timelineComparison,
     timelineEnabled,
     timelineSeedMatchesLiveState,
+    serverTimelineFreshEnough,
+    selectedThreadIdleForAuthoritativeTimeline,
     useServerTimeline,
   ]);
 
@@ -1448,6 +1672,9 @@ export function useChatSession(
     sendingMessage,
     waitingAssistant,
     selectedThreadUiStatus,
+    composerAgent,
+    composerModel,
+    composerModelProviderId,
     composerMode,
     composerPermissionMode,
     composerModeLocked,
@@ -1467,7 +1694,10 @@ export function useChatSession(
     createOrSelectPrMrThreadAndSendMessage,
     closeThread,
     renameThreadTitle,
+    setThreadAgentSelection,
     setThreadMode,
+    setComposerAgentSelection,
+    setComposerMode,
     setComposerPermissionMode,
     submitMessage,
     loadOlderHistory: async () => {},

@@ -375,6 +375,62 @@ describe("chatService snapshot", () => {
     expect(assembly.items.filter((item) => item.kind === "plan-file-output")).toHaveLength(0);
   });
 
+  it("treats codex plan items as canonical plan outputs in runtime snapshot assembly", async () => {
+    const messages = [
+      {
+        id: "m1",
+        threadId: "t1",
+        seq: 1,
+        role: "user" as const,
+        content: "plan it",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "m2",
+        threadId: "t1",
+        seq: 2,
+        role: "assistant" as const,
+        content: "Drafting",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+    ];
+    const events = [
+      {
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "plan.created" as const,
+        payload: {
+          messageId: "m2",
+          content: "# Codex Plan\n- Step 1",
+          filePath: "codex-plan-item",
+          source: "codex_plan_item",
+        },
+        createdAt: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        idx: 2,
+        type: "chat.completed" as const,
+        payload: { messageId: "m2" },
+        createdAt: "2026-01-01T00:00:02Z",
+      },
+    ];
+
+    const assembly = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(assembly.items.filter((item) => item.kind === "plan-file-output")).toHaveLength(1);
+    expect(assembly.items[assembly.items.length - 1]?.kind).toBe("plan-file-output");
+  });
+
   it("matches runtime snapshot assembly for subagent-owned explore activity", async () => {
     const messages = [
       {

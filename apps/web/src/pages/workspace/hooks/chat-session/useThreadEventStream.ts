@@ -50,12 +50,6 @@ import { computeAssistantDeltaSuffix } from "./messageEventMerge";
 import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
 
-const ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES = new Set<ChatEvent["type"]>([
-  "permission.requested",
-  "question.requested",
-  "plan.created",
-]);
-
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
   "tool.started",
@@ -360,6 +354,17 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       pendingEventsRef.current.push(payload);
 
+      const eventScopedMessageId = payload.type !== "message.delta"
+        ? payloadStringOrNull(payload.payload.messageId)
+        : null;
+      if (eventScopedMessageId) {
+        pendingMessageMutationsRef.current.push({
+          kind: "ensure-placeholder",
+          id: eventScopedMessageId,
+          threadId: selectedThreadId,
+        });
+      }
+
       if (payload.type === "message.delta") {
         const messageId = String(payload.payload.messageId ?? "");
         const role =
@@ -408,10 +413,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
-        const skipInvalidation = ACTIVE_THREAD_SNAPSHOT_INVALIDATION_SKIP_EVENT_TYPES.has(payload.type);
-        if (!skipInvalidation) {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
-        }
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
       }
 
       if (selectedWorktreeId && GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {

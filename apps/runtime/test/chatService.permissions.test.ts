@@ -35,6 +35,7 @@ async function resetDatabase(): Promise<void> {
   await prisma.chatEvent.deleteMany();
   await prisma.chatMessage.deleteMany();
   await prisma.chatThread.deleteMany();
+  await prisma.modelProvider.deleteMany();
   await prisma.worktree.deleteMany();
   await prisma.repository.deleteMany();
 }
@@ -255,7 +256,7 @@ describe("chatService permission flow", () => {
     expect(thread?.title).toBe("Summarize README.md");
   });
 
-  it("passes active provider config to AI title generation", async () => {
+  it("passes selected provider config to AI title generation", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({
       onText,
       prompt,
@@ -287,14 +288,44 @@ describe("chatService permission flow", () => {
       claudeRunner,
       modelProviderService: {
         getActiveProvider: async () => ({
+          id: "provider-1",
+          agent: "claude",
           apiKey: "provider-key",
           baseUrl: "https://provider.example.com/v1",
           name: "Custom Provider",
           modelId: "claude-3-7-sonnet",
         }),
+        getProviderById: async () => ({
+          id: "provider-1",
+          agent: "claude",
+          apiKey: "provider-key",
+          baseUrl: "https://provider.example.com/v1",
+          name: "Custom Provider",
+          modelId: "claude-3-7-sonnet",
+          isActive: true,
+        }),
       },
     });
     const { threadId } = await seedThread();
+    await prisma.modelProvider.create({
+      data: {
+        id: "provider-1",
+        agent: "claude",
+        name: "Custom Provider",
+        modelId: "claude-3-7-sonnet",
+        baseUrl: "https://provider.example.com/v1",
+        apiKey: "provider-key",
+        isActive: true,
+      },
+    });
+    await prisma.chatThread.update({
+      where: { id: threadId },
+      data: {
+        agent: "claude",
+        model: "claude-3-7-sonnet",
+        modelProviderId: "provider-1",
+      },
+    });
 
     await chatService.sendMessage(threadId, {
       content: "Summarize project setup flow",
@@ -1357,6 +1388,52 @@ describe("chatService permission flow", () => {
     );
 
     expect(staleDismissed.payload.resolver).toBe("system");
+  });
+
+  it("dismisses a pending plan and records a persisted lifecycle event", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPlanFileDetected, onText, permissionMode }) => {
+      if (permissionMode === "plan") {
+        await onText("Drafting plan...");
+        await onPlanFileDetected({
+          filePath: ".claude/plans/plan.md",
+          content: "# Plan\n\n1. Ship it",
+          source: "claude_plan_file",
+        });
+        await onText("# Plan\n\n1. Ship it");
+        return {
+          output: "# Plan\n\n1. Ship it",
+          sessionId: "session-plan-dismissed",
+        };
+      }
+
+      await onText("Done.");
+      return { output: "Done.", sessionId: "session-plan-dismissed-default" };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "plan something",
+      mode: "plan",
+    });
+
+    await waitForTerminalEvent(chatService, threadId);
+
+    await chatService.dismissPlan(threadId, {});
+
+    const dismissed = await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "plan.dismissed" && event.payload.filePath === ".claude/plans/plan.md",
+    );
+
+    expect(dismissed.payload.reason).toBe("Plan dismissed by user.");
   });
 
   it("normalizes relative file mentions against the selected worktree root before scheduling the assistant", async () => {

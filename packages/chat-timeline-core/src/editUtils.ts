@@ -128,8 +128,8 @@ function isEditToolLifecycleEvent(event: ChatEvent): boolean {
     if (event.payload.source === "worktree.diff") {
       return false;
     }
-    const explicitTarget = payloadStringOrNull(event.payload.editTarget);
-    if (explicitTarget) {
+    const toolName = payloadStringOrNull(event.payload.toolName);
+    if (isEditToolName(toolName)) {
       return true;
     }
     const summary = payloadStringOrNull(event.payload.summary);
@@ -147,6 +147,24 @@ function isEditToolLifecycleEvent(event: ChatEvent): boolean {
 export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[]): EditedRun[] {
   const ordered = [...context].sort((a, b) => a.idx - b.idx);
   const byRunKey = new Map<string, EditedRun>();
+  const toolNameByUseId = new Map<string, string>();
+  const permissionRequestIds = new Set<string>();
+  const claimedPermissionRequestIds = new Set<string>();
+  const toolLifecycleRunKeys = new Set<string>();
+
+  for (const event of [...(fullContext ?? ordered)].sort((a, b) => a.idx - b.idx)) {
+    if (event.type !== "tool.started" && event.type !== "tool.output") {
+      continue;
+    }
+
+    const toolUseId = payloadStringOrNull(event.payload.toolUseId);
+    const toolName = payloadStringOrNull(event.payload.toolName);
+    if (!toolUseId || !toolName) {
+      continue;
+    }
+
+    toolNameByUseId.set(toolUseId, toolName);
+  }
 
   function ensureRun(
     runKey: string,
@@ -185,11 +203,103 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
     return created;
   }
 
+  function uniqueRuns(): EditedRun[] {
+    return Array.from(new Set(byRunKey.values()));
+  }
+
+  function targetsLikelyMatch(left: string, right: string): boolean {
+    return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
+  }
+
+  function runTargetsFile(run: EditedRun, target: string): boolean {
+    return run.changedFiles.some((changedFile) => targetsLikelyMatch(changedFile, target));
+  }
+
+  function claimPermissionRunForToolKey(
+    runKey: string,
+    target: string | null,
+    event: ChatEvent,
+  ): EditedRun | null {
+    if (byRunKey.has(runKey)) {
+      return byRunKey.get(runKey) ?? null;
+    }
+
+    const candidates = Array.from(permissionRequestIds)
+      .filter((requestId) => !claimedPermissionRequestIds.has(requestId))
+      .map((requestId) => ({ requestId, run: byRunKey.get(requestId) ?? null }))
+      .filter((entry): entry is { requestId: string; run: EditedRun } =>
+        entry.run != null
+        && entry.run.startIdx <= event.idx
+        && entry.run.status !== "failed",
+      )
+      .filter((entry) => target == null || runTargetsFile(entry.run, target))
+      .sort((a, b) => b.run.startIdx - a.run.startIdx);
+
+    const matched = candidates[0];
+    if (!matched) {
+      return null;
+    }
+
+    claimedPermissionRequestIds.add(matched.requestId);
+    matched.run.id = `edited:${runKey}`;
+    byRunKey.set(runKey, matched.run);
+    return matched.run;
+  }
+
+  function attachPermissionKeyToExistingToolRun(
+    requestId: string,
+    target: string | null,
+    event: ChatEvent,
+  ): EditedRun | null {
+    if (byRunKey.has(requestId)) {
+      return byRunKey.get(requestId) ?? null;
+    }
+
+    if (target == null) {
+      return null;
+    }
+
+    const candidates = Array.from(toolLifecycleRunKeys)
+      .map((runKey) => byRunKey.get(runKey) ?? null)
+      .filter((run): run is EditedRun =>
+        run != null
+        && run.startIdx <= event.idx
+        && run.status === "running"
+        && runTargetsFile(run, target),
+      )
+      .sort((a, b) => b.startIdx - a.startIdx);
+
+    const matched = candidates[0];
+    if (!matched) {
+      return null;
+    }
+
+    byRunKey.set(requestId, matched);
+    return matched;
+  }
+
+  function ensureToolRun(
+    runKey: string,
+    event: ChatEvent,
+    explicitTarget: string | null,
+  ): EditedRun {
+    toolLifecycleRunKeys.add(runKey);
+    const claimedRun = claimPermissionRunForToolKey(runKey, explicitTarget, event);
+    if (claimedRun) {
+      claimedRun.startIdx = Math.min(claimedRun.startIdx, event.idx);
+      claimedRun.anchorIdx = Math.min(claimedRun.anchorIdx, event.idx);
+      claimedRun.eventIds.add(event.id);
+      return claimedRun;
+    }
+
+    return ensureRun(runKey, event);
+  }
+
   function setRunTargetIfPresent(run: EditedRun, target: string | null): void {
     if (!target) {
       return;
     }
-    if (!run.changedFiles.includes(target)) {
+    if (!run.changedFiles.some((changedFile) => targetsLikelyMatch(changedFile, target))) {
       run.changedFiles.push(target);
     }
   }
@@ -252,15 +362,16 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
         continue;
       }
       const requestId = payloadStringOrNull(event.payload.requestId) ?? `permission:${event.id}`;
-      const run = ensureRun(requestId, event);
-      run.status = "running";
-      run.rejectedByUser = false;
-
       const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
       const target =
         payloadStringOrNull(event.payload.editTarget)
+        ?? payloadStringOrNull(event.payload.blockedPath)
         ?? extractEditTargetFromUnknownToolInput(toolInput)
         ?? null;
+      permissionRequestIds.add(requestId);
+      const run = attachPermissionKeyToExistingToolRun(requestId, target, event) ?? ensureRun(requestId, event);
+      run.status = "running";
+      run.rejectedByUser = false;
       setRunTargetIfPresent(run, target);
       if (toolInput && target) {
         const proposedDiff = buildProposedEditDiffFromToolInput(toolInput, target);
@@ -301,15 +412,16 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
         continue;
       }
       const toolUseId = payloadStringOrNull(event.payload.toolUseId) ?? `${event.type}:${event.id}`;
-      const run = ensureRun(toolUseId, event);
-      if (run.status !== "failed") {
-        run.status = "running";
-      }
       const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
       const explicitTarget =
         payloadStringOrNull(event.payload.editTarget)
+        ?? payloadStringOrNull(event.payload.blockedPath)
         ?? extractEditTargetFromUnknownToolInput(toolInput)
         ?? null;
+      const run = ensureToolRun(toolUseId, event, explicitTarget);
+      if (run.status !== "failed") {
+        run.status = "running";
+      }
       setRunTargetIfPresent(run, explicitTarget);
       if (toolInput && explicitTarget && run.diffKind === "none") {
         const proposedDiff = buildProposedEditDiffFromToolInput(toolInput, explicitTarget);
@@ -327,36 +439,44 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
 
     if (event.type === "tool.finished" && !isWorktreeDiffEvent(event)) {
       const runIds = finishedToolUseIds(event);
+      const finishedToolName = payloadStringOrNull(event.payload.toolName)
+        ?? runIds.map((runId) => toolNameByUseId.get(runId) ?? null).find((toolName) => toolName != null)
+        ?? null;
       const summary = payloadStringOrNull(event.payload.summary);
       const summaryTarget = summary ? extractEditTargetFromSummary(summary) : null;
       const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
       const explicitTarget =
         payloadStringOrNull(event.payload.editTarget)
-        ?? extractEditTargetFromUnknownToolInput(toolInput)
+        ?? (isEditToolName(finishedToolName) ? extractEditTargetFromUnknownToolInput(toolInput) : null)
         ?? summaryTarget;
+      const proposedDiff =
+        toolInput && explicitTarget
+          ? buildProposedEditDiffFromToolInput(toolInput, explicitTarget)
+          : null;
+      const isEditFinishedEvent =
+        isEditToolName(finishedToolName)
+        || summaryTarget != null
+        || proposedDiff != null;
 
       function applyProposedDiffIfNeeded(run: EditedRun): void {
-        if (toolInput && explicitTarget && run.diffKind === "none" && run.status !== "failed") {
-          const proposedDiff = buildProposedEditDiffFromToolInput(toolInput, explicitTarget);
-          if (proposedDiff) {
-            run.diff = proposedDiff;
-            run.diffKind = "proposed";
-            run.diffTruncated = false;
-            const { additions, deletions } = countDiffStats(proposedDiff);
-            run.additions = additions;
-            run.deletions = deletions;
-          }
+        if (proposedDiff && run.diffKind === "none" && run.status !== "failed") {
+          run.diff = proposedDiff;
+          run.diffKind = "proposed";
+          run.diffTruncated = false;
+          const { additions, deletions } = countDiffStats(proposedDiff);
+          run.additions = additions;
+          run.deletions = deletions;
         }
       }
 
       let matchedRun = false;
       for (const runId of runIds) {
         const existing = byRunKey.get(runId);
-        const shouldTrack = existing || isEditToolLifecycleEvent(event) || explicitTarget != null;
+        const shouldTrack = existing || isEditFinishedEvent;
         if (!shouldTrack) {
           continue;
         }
-        const run = ensureRun(runId, event);
+        const run = ensureToolRun(runId, event, explicitTarget);
         setRunTargetIfPresent(run, explicitTarget);
         run.endIdx = Math.max(run.endIdx, event.idx);
         markRunFinishedFromEvent(run, event);
@@ -364,9 +484,9 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
         matchedRun = true;
       }
 
-      if (!matchedRun && (isEditToolLifecycleEvent(event) || explicitTarget != null)) {
+      if (!matchedRun && isEditFinishedEvent) {
         const fallbackKey = `finished:${event.id}`;
-        const run = ensureRun(fallbackKey, event);
+        const run = ensureToolRun(fallbackKey, event, explicitTarget);
         setRunTargetIfPresent(run, explicitTarget);
         run.endIdx = Math.max(run.endIdx, event.idx);
         markRunFinishedFromEvent(run, event);
@@ -381,7 +501,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
 
     const diff = payloadStringOrNull(event.payload.diff) ?? "";
     const changedFiles = payloadStringArray(event.payload.changedFiles);
-    const eligibleRuns = Array.from(byRunKey.values())
+    const eligibleRuns = uniqueRuns()
       .filter((run) => run.startIdx <= event.idx && (run.diffKind === "none" || run.diffKind === "proposed") && run.status !== "failed")
       .sort((a, b) => b.startIdx - a.startIdx);
 
@@ -407,7 +527,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
     const targetRun = eligibleRuns[0];
 
     if (!targetRun) {
-      const hasRunsWithDiffs = Array.from(byRunKey.values()).some(r => r.diffKind !== "none");
+      const hasRunsWithDiffs = uniqueRuns().some((run) => run.diffKind !== "none");
       if (hasRunsWithDiffs) {
         continue;
       }
@@ -422,6 +542,6 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
     applyActualDiffToRun(run, event, diff, changedFiles);
   }
 
-  const result = Array.from(byRunKey.values()).sort((a, b) => a.startIdx - b.startIdx);
+  const result = uniqueRuns().sort((a, b) => a.startIdx - b.startIdx);
   return result;
 }

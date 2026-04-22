@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { EditorState, type Transaction } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import type { FileEntry } from "@codesymphony/shared-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodeEditorPanel, insertSoftTabOrIndentSelection } from "./CodeEditorPanel";
@@ -161,6 +162,51 @@ describe("CodeEditorPanel", () => {
     });
 
     expect(onOpenFile).toHaveBeenCalledWith("packages/course/docs/CHANGELOG.md");
+  });
+
+  it("jumps to the requested target line when opening a file", () => {
+    const scrollIntoViewSpy = vi.spyOn(EditorView, "scrollIntoView");
+    renderEditor({
+      content: "first line\nsecond line\nthird line\n",
+      targetLine: 2,
+    });
+
+    const activeLine = container.querySelector(".cm-line.cm-activeLine");
+    expect(activeLine?.textContent).toContain("second line");
+    expect(scrollIntoViewSpy.mock.calls.some(([, options]) =>
+      options?.y === "center" && options?.x === "nearest"
+    )).toBe(true);
+  });
+
+  it("applies the target line after async file content loads", () => {
+    act(() => {
+      root.render(
+        <CodeEditorPanel
+          filePath="src/example.ts"
+          content=""
+          loading={true}
+          targetLine={3}
+          onChange={vi.fn()}
+          onSave={vi.fn()}
+        />,
+      );
+    });
+
+    act(() => {
+      root.render(
+        <CodeEditorPanel
+          filePath="src/example.ts"
+          content={"first line\nsecond line\nthird line\n"}
+          loading={false}
+          targetLine={3}
+          onChange={vi.fn()}
+          onSave={vi.fn()}
+        />,
+      );
+    });
+
+    const activeLine = container.querySelector(".cm-line.cm-activeLine");
+    expect(activeLine?.textContent).toContain("third line");
   });
 
   it("shows supported language labels for dart, java, and swift files", () => {

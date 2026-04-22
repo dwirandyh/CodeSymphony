@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ModelProvider, Repository } from "@codesymphony/shared-types";
+import type { ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
 
 const apiMocks = vi.hoisted(() => ({
@@ -45,6 +45,7 @@ beforeEach(() => {
     ...(payload.runScript ? { runScript: payload.runScript as string[] } : {}),
     ...(payload.setupScript ? { setupScript: payload.setupScript as string[] } : {}),
     ...(payload.teardownScript ? { teardownScript: payload.teardownScript as string[] } : {}),
+    ...(payload.saveAutomation !== undefined ? { saveAutomation: payload.saveAutomation as SaveAutomationConfig | null } : {}),
     ...(payload.defaultBranch ? { defaultBranch: payload.defaultBranch as string } : {}),
   }));
   apiMocks.listBranches.mockResolvedValue(["main", "dev"]);
@@ -71,6 +72,7 @@ function makeRepo(overrides: Partial<Repository> = {}): Repository {
     setupScript: null,
     teardownScript: null,
     runScript: null,
+    saveAutomation: null,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
     worktrees: [],
@@ -98,9 +100,36 @@ function renderDialog(
   });
 }
 
+async function openModelsTab() {
+  const modelsButton = Array.from(document.body.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Models",
+  );
+  if (!modelsButton) {
+    throw new Error("Models tab not found");
+  }
+
+  await act(async () => {
+    modelsButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
 async function flushEffects() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function setInputValue(input: HTMLInputElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (!valueSetter) {
+    throw new Error("Input value setter not available");
+  }
+
+  await act(async () => {
+    valueSetter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
   });
 }
 
@@ -197,8 +226,115 @@ describe("SettingsDialog", () => {
 
     expect(document.body.textContent).toContain("Default Branch");
     expect(document.body.textContent).toContain("Run Script");
+    expect(document.body.textContent).toContain("Save Automation");
     expect(document.body.textContent).toContain("Setup Scripts");
     expect(document.body.textContent).toContain("Teardown Scripts");
+  });
+
+  it("keeps save automation enabled after autosave even before fields are filled", async () => {
+    vi.useFakeTimers();
+    try {
+      renderDialog([makeRepo()]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const enabledCheckbox = document.body.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+      if (!enabledCheckbox) {
+        throw new Error("Save automation toggle not found");
+      }
+
+      await act(async () => {
+        enabledCheckbox.click();
+      });
+
+      expect(enabledCheckbox.checked).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(apiMocks.updateRepositoryScripts).toHaveBeenCalledWith("r1", expect.objectContaining({
+        saveAutomation: {
+          enabled: true,
+          target: "active_run_session",
+          filePatterns: [],
+          actionType: "send_stdin",
+          payload: "",
+          debounceMs: 400,
+        },
+      }));
+      expect((document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(true);
+      expect(document.body.textContent).toContain("Preset");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies the Flutter template and autosaves generic save automation settings", async () => {
+    vi.useFakeTimers();
+    try {
+      renderDialog([makeRepo()]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const enabledCheckbox = document.body.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+      if (!enabledCheckbox) {
+        throw new Error("Save automation toggle not found");
+      }
+
+      await act(async () => {
+        enabledCheckbox.click();
+      });
+
+      const templateSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
+        Array.from(select.options).some((option) => option.value === "flutter_hot_reload"),
+      ) as HTMLSelectElement | undefined;
+      if (!templateSelect) {
+        throw new Error("Save automation template select not found");
+      }
+
+      await act(async () => {
+        templateSelect.value = "flutter_hot_reload";
+        templateSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+
+      const payloadInput = document.body.querySelector('input[placeholder="reload"]') as HTMLInputElement | null;
+      const filePatternsTextarea = Array.from(document.body.querySelectorAll("textarea")).find((textarea) =>
+        textarea.getAttribute("placeholder")?.includes("lib/**/*.dart"),
+      ) as HTMLTextAreaElement | undefined;
+
+      if (!payloadInput || !filePatternsTextarea) {
+        throw new Error("Save automation inputs not found");
+      }
+
+      expect(filePatternsTextarea.value).toBe("lib/**/*.dart");
+      expect(payloadInput.value).toBe("r");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(apiMocks.updateRepositoryScripts).toHaveBeenCalledWith("r1", expect.objectContaining({
+        saveAutomation: {
+          enabled: true,
+          target: "active_run_session",
+          filePatterns: ["lib/**/*.dart"],
+          actionType: "send_stdin",
+          payload: "r",
+          debounceMs: 400,
+        },
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("calls onClose when close triggered", async () => {
@@ -275,6 +411,7 @@ describe("SettingsDialog", () => {
   it("syncs fetched model providers back to the parent when the Models tab opens", async () => {
     const providers = [{
       id: "provider-1",
+      agent: "claude" as const,
       name: "Custom",
       modelId: "claude-custom",
       baseUrl: "https://example.com",
@@ -287,22 +424,16 @@ describe("SettingsDialog", () => {
     const onProvidersChanged = vi.fn();
 
     renderDialog([makeRepo()], vi.fn(), onProvidersChanged);
+    await openModelsTab();
 
-    const modelsButton = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Models");
-    expect(modelsButton).toBeDefined();
-
-    await act(async () => {
-      modelsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushEffects();
-
-    expect(onProvidersChanged).toHaveBeenCalledWith(providers);
+    expect(onProvidersChanged).toHaveBeenLastCalledWith(providers);
     expect(document.body.textContent).toContain("claude-custom");
   });
 
   it("does not show active or inactive controls in the Models tab", async () => {
     const providers = [{
       id: "provider-1",
+      agent: "claude" as const,
       name: "Custom",
       modelId: "claude-custom",
       baseUrl: "https://example.com",
@@ -314,17 +445,135 @@ describe("SettingsDialog", () => {
     apiMocks.listModelProviders.mockResolvedValueOnce(providers);
 
     renderDialog([makeRepo()]);
-
-    const modelsButton = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Models");
-    expect(modelsButton).toBeDefined();
-
-    await act(async () => {
-      modelsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushEffects();
+    await openModelsTab();
 
     expect(document.body.textContent).not.toContain("Active");
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.title === "Activate" || button.title === "Deactivate")).toBe(false);
-    expect(document.body.textContent).toContain("choose the model you want from the composer");
+    expect(document.body.textContent).toContain("choose them per thread under Claude in the composer");
+  });
+
+  it("switches provider placeholders based on API compatibility and supports endpoint tests for OpenAI entries", async () => {
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    );
+    if (!addButton) {
+      throw new Error("Add provider button not found");
+    }
+
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const compatibilitySelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
+      Array.from(select.options).some((option) => option.value === "openai"),
+    ) as HTMLSelectElement | undefined;
+    if (!compatibilitySelect) {
+      throw new Error("API compatibility select not found");
+    }
+
+    expect(document.body.textContent).toContain("API Compatibility");
+    expect(document.body.querySelector('input[placeholder=\'e.g. "claude-sonnet-4-6", "glm-4.7"\']')).not.toBeNull();
+    expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
+
+    await act(async () => {
+      compatibilitySelect.value = "openai";
+      compatibilitySelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Leave empty to use Codex CLI defaults"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Only if your Codex setup needs it"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("OpenAI-compatible entries can be simple model aliases like gpt-5.4");
+    expect(document.body.textContent).toContain("Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts.");
+    expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
+  });
+
+  it("maps OpenAI compatibility back to the codex agent when testing a provider", async () => {
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    );
+    if (!addButton) {
+      throw new Error("Add provider button not found");
+    }
+
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const compatibilitySelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
+      Array.from(select.options).some((option) => option.value === "openai"),
+    ) as HTMLSelectElement | undefined;
+    const providerNameInput = document.body.querySelector('input[placeholder=\'e.g. "z.ai", "OpenRouter"\']') as HTMLInputElement | null;
+    if (!compatibilitySelect || !providerNameInput) {
+      throw new Error("Provider form fields not found");
+    }
+
+    await act(async () => {
+      compatibilitySelect.value = "openai";
+      compatibilitySelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const modelIdInput = document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']') as HTMLInputElement | null;
+    const baseUrlInput = document.body.querySelector('input[placeholder="Leave empty to use Codex CLI defaults"]') as HTMLInputElement | null;
+    const apiKeyInput = document.body.querySelector('input[placeholder="Only if your Codex setup needs it"]') as HTMLInputElement | null;
+    if (!modelIdInput || !baseUrlInput || !apiKeyInput) {
+      throw new Error("Codex test controls not found");
+    }
+
+    await setInputValue(providerNameInput, "OpenAI QA");
+    await setInputValue(modelIdInput, "gpt-5.4");
+    await setInputValue(baseUrlInput, "https://api.openai.com/v1");
+    await setInputValue(apiKeyInput, "sk-test");
+    await flushEffects();
+
+    const testButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    ) as HTMLButtonElement | undefined;
+    if (!testButton) {
+      throw new Error("Test button not found");
+    }
+    expect(testButton.disabled).toBe(false);
+
+    await act(async () => {
+      testButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(apiMocks.testModelProvider).toHaveBeenCalledWith({
+      agent: "codex",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      modelId: "gpt-5.4",
+    });
+  });
+
+  it("adds explicit labels to provider edit and delete actions", async () => {
+    const providers = [{
+      id: "provider-1",
+      agent: "codex" as const,
+      name: "OpenAI",
+      modelId: "gpt-5.4",
+      baseUrl: null,
+      apiKeyMasked: null,
+      isActive: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }];
+    apiMocks.listModelProviders.mockResolvedValueOnce(providers);
+
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    expect(document.body.querySelector('button[aria-label="Edit OpenAI provider OpenAI (gpt-5.4)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Delete OpenAI provider OpenAI (gpt-5.4)"]')).not.toBeNull();
   });
 });

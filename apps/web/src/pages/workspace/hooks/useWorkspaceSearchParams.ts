@@ -25,6 +25,13 @@ export function useWorkspaceSearchParams() {
             to: "/",
             search: (prev: WorkspaceSearch) => {
               const next = { ...prev, ...merged };
+              if (next.view !== "file" || !next.file) {
+                next.fileLine = undefined;
+                next.fileColumn = undefined;
+              } else if (!next.fileLine) {
+                next.fileColumn = undefined;
+              }
+
               // Remove undefined/null keys and default values to keep URL clean
               const cleaned: Record<string, unknown> = {};
               for (const [key, value] of Object.entries(next)) {

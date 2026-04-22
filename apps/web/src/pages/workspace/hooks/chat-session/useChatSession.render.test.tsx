@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage, ChatThread, ChatTimelineItem, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
+import { getThreadCollections } from "../../../../collections/threadCollections";
+import { setThreadLastEventIdx, setThreadLastMessageSeq } from "../../../../collections/threadStreamState";
 import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useChatSession";
 
 const { threadsState, snapshotState } = vi.hoisted(() => ({
@@ -61,6 +63,7 @@ vi.mock("../../../../lib/api", () => ({
     getOrCreatePrMrThread: vi.fn(),
     renameThreadTitle: vi.fn(),
     updateThreadMode: vi.fn(),
+    updateThreadAgentSelection: vi.fn(),
     updateThreadPermissionMode: vi.fn(),
     deleteThread: vi.fn(),
     sendMessage: vi.fn(),
@@ -96,7 +99,11 @@ function makeThread(id: string, active = false): ChatThread {
     permissionMode: "default",
     mode: "default",
     titleEditedManually: false,
+    agent: "claude",
+    model: "claude-sonnet-4-6",
+    modelProviderId: null,
     claudeSessionId: null,
+    codexSessionId: null,
     active,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
@@ -176,6 +183,7 @@ beforeEach(() => {
   vi.mocked(api.getOrCreatePrMrThread).mockReset();
   vi.mocked(api.renameThreadTitle).mockReset();
   vi.mocked(api.updateThreadMode).mockReset();
+  vi.mocked(api.updateThreadAgentSelection).mockReset();
   vi.mocked(api.updateThreadPermissionMode).mockReset();
   vi.mocked(api.deleteThread).mockReset();
   vi.mocked(api.sendMessage).mockReset();
@@ -321,7 +329,12 @@ describe("useChatSession", () => {
       expect(created?.id).toBe(prMrThread.id);
     });
 
-    expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1", { permissionMode: "default" });
+    expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1", {
+      permissionMode: "default",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+    });
     expect(api.sendMessage).toHaveBeenCalledWith(prMrThread.id, {
       content: "Create PR",
       mode: "default",
@@ -345,6 +358,66 @@ describe("useChatSession", () => {
         (call) => JSON.stringify(call[0]) === JSON.stringify({ queryKey: queryKeys.repositories.reviews("repo-1") }),
       ),
     ).toHaveLength(2);
+  });
+
+  it("waits for a pending agent selection update before sending a message", async () => {
+    const selectionDeferred = createDeferred<ChatThread>();
+    vi.mocked(api.updateThreadAgentSelection).mockReturnValue(selectionDeferred.promise);
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "message-codex",
+      threadId: "thread-a",
+      seq: 1,
+      role: "user",
+      content: "Use Codex",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:02Z",
+    });
+
+    renderHook("thread-a");
+
+    let selectionPromise: Promise<void> | undefined;
+    let submitPromise: Promise<boolean> | undefined;
+    await act(async () => {
+      selectionPromise = hookResult.setThreadAgentSelection("thread-a", {
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+      });
+      submitPromise = hookResult.submitMessage("Use Codex", "default", []);
+      await Promise.resolve();
+    });
+
+    expect(api.updateThreadAgentSelection).toHaveBeenCalledWith("thread-a", {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+    });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      selectionDeferred.resolve({
+        ...makeThread("thread-a"),
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith("thread-a", {
+      content: "Use Codex",
+      mode: "default",
+      attachments: [],
+      expectedWorktreeId: "wt-1",
+    });
+
+    await act(async () => {
+      expect(await submitPromise).toBe(true);
+      await selectionPromise;
+    });
+
+    expect(hookResult.composerAgent).toBe("codex");
+    expect(hookResult.composerModel).toBe("gpt-5.4");
   });
 
   it("invalidates repository reviews when closing a PR/MR thread", async () => {
@@ -682,6 +755,9 @@ describe("useChatSession", () => {
     expect(api.createThread).toHaveBeenCalledWith("wt-1", {
       title: "New Thread",
       permissionMode: "default",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
     });
   });
 
@@ -704,6 +780,47 @@ describe("useChatSession", () => {
 
     expect(hookResult.selectedThreadId).toBe("thread-new");
     expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
+  });
+
+  it("targets the newly created thread for immediate follow-up composer actions", async () => {
+    threadsState.data = [{
+      ...makeThread("thread-a", true),
+      agent: "codex",
+      model: "gpt-5.4",
+    }];
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+      agent: "claude",
+      model: "glm-4.7",
+    });
+    vi.mocked(api.updateThreadAgentSelection).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.createAdditionalThread();
+      await hookResult.setComposerAgentSelection({
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+      });
+    });
+
+    expect(api.updateThreadAgentSelection).toHaveBeenCalledWith("thread-new", {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+    });
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.composerAgent).toBe("codex");
+    expect(hookResult.composerModel).toBe("gpt-5.4");
   });
 
   it("marks a requested thread as loading while selection bootstrap is unresolved", () => {
@@ -815,6 +932,222 @@ describe("useChatSession", () => {
 
     expect(hookResult.messages).toEqual([]);
     expect(hookResult.events).toEqual([]);
+  });
+
+  it("replaces corrupted local assistant output with the final authoritative snapshot once the thread is idle", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Flow canonical.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    renderHook("thread-a");
+    expect(hookResult.messages[0]?.content).toBe("Flow canonical.");
+    expect(hookResult.selectedThreadUiStatus).toBe("idle");
+
+    act(() => {
+      const { messagesCollection, eventsCollection } = getThreadCollections("thread-a");
+      messagesCollection.update("assistant-1", (draft) => {
+        draft.content = "Flow canonical. Flow canonical. Flow canonical with duplicated streamed text.";
+      });
+      eventsCollection.insert({
+        id: "event-local-stale",
+        threadId: "thread-a",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          toolName: "Read",
+          summary: "Read stale-local.txt",
+          precedingToolUseIds: ["read-local-1"],
+        },
+        createdAt: "2026-01-01T00:00:02Z",
+      });
+      setThreadLastMessageSeq("thread-a", 1);
+      setThreadLastEventIdx("thread-a", 2);
+    });
+
+    expect(hookResult.messages[0]?.content).toContain("duplicated streamed text");
+    expect(hookResult.events.map((event) => event.id)).toContain("event-local-stale");
+
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 3,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Flow canonical.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [
+        {
+          id: "event-1",
+          threadId: "thread-a",
+          idx: 1,
+          type: "chat.completed",
+          payload: { messageId: "assistant-1" },
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+        {
+          id: "event-3",
+          threadId: "thread-a",
+          idx: 3,
+          type: "tool.finished",
+          payload: {
+            toolName: "Read",
+            summary: "Read canonical.txt",
+            precedingToolUseIds: ["read-final-1"],
+          },
+          createdAt: "2026-01-01T00:00:03Z",
+        },
+      ],
+    });
+
+    renderHook("thread-a");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.messages).toEqual([
+      {
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Flow canonical.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    expect(hookResult.events.map((event) => event.id)).toEqual(["event-1", "event-3"]);
+  });
+
+  it("prefers a fresh authoritative server timeline while idle even when derived local timeline drifts", async () => {
+    const serverTimelineItems: ChatTimelineItem[] = [
+      {
+        kind: "explore-activity",
+        id: "explore-1",
+        status: "success",
+        fileCount: 1,
+        searchCount: 0,
+        entries: [
+          {
+            kind: "read",
+            label: "src/foo.ts",
+            openPath: "src/foo.ts",
+            pending: false,
+            orderIdx: 0,
+          },
+        ],
+      },
+      {
+        kind: "message",
+        message: {
+          id: "assistant-1",
+          threadId: "thread-a",
+          seq: 1,
+          role: "assistant",
+          content: "Canonical answer",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+        context: [],
+      },
+    ];
+
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
+      summary: {
+        oldestRenderableKey: "explore-activity:explore-1",
+        oldestRenderableKind: "explore-activity",
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical answer",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [
+        {
+          kind: "message",
+          message: {
+            id: "assistant-1:segment:0",
+            threadId: "thread-a",
+            seq: 1,
+            role: "assistant",
+            content: "Corrupted local order",
+            attachments: [],
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+          renderHint: "markdown",
+          isCompleted: true,
+          context: [],
+        },
+      ] as ChatTimelineItem[],
+      summary: {
+        oldestRenderableKey: "message:assistant-1:segment:0",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-1:segment:0",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    } as any);
+
+    renderHook("thread-a");
+    expect(hookResult.timelineItems).toEqual(serverTimelineItems);
+
+    act(() => {
+      const { messagesCollection } = getThreadCollections("thread-a");
+      messagesCollection.update("assistant-1", (draft) => {
+        draft.content = "Locally corrupted but not ahead";
+      });
+      setThreadLastMessageSeq("thread-a", 1);
+      setThreadLastEventIdx("thread-a", 1);
+    });
+
+    renderHook("thread-a");
+
+    expect(hookResult.selectedThreadUiStatus).toBe("idle");
+    expect(hookResult.timelineItems).toEqual(serverTimelineItems);
   });
 
   it("shows a submitted follow-up user message immediately from the send response", async () => {

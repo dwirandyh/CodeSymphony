@@ -1,3 +1,4 @@
+import type { CliAgent } from "@codesymphony/shared-types";
 import type { ClaudeOwnershipReason } from "../../types.js";
 
 export type WorktreeStateSnapshot = {
@@ -5,6 +6,8 @@ export type WorktreeStateSnapshot = {
   unstagedDiff: string;
   stagedDiff: string;
   changedFiles: string[];
+  untrackedFileSignatures: Map<string, string>;
+  untrackedFileContents: Map<string, string>;
 };
 
 export type WorktreeDiffDelta = {
@@ -21,13 +24,16 @@ export type WorktreeMutationTracker = {
 };
 
 export type ActiveModelProvider = {
-  apiKey: string;
-  baseUrl: string;
+  id: string;
+  agent: CliAgent;
+  apiKey: string | null;
+  baseUrl: string | null;
   name: string;
   modelId: string;
 };
 
 export type ProviderOptions = {
+  agent?: CliAgent;
   model?: string;
   providerApiKey?: string;
   providerBaseUrl?: string;
@@ -45,6 +51,7 @@ export type PendingPermissionEntry = {
   resolve?: (result: PermissionDecisionResult) => void;
   reject?: (error: Error) => void;
   result?: PermissionDecisionResult;
+  assistantMessageId: string | null;
   toolName: string;
   command: string | null;
   subagentOwnerToolUseId: string | null;
@@ -60,6 +67,7 @@ export type PendingQuestionEntry = {
   promise: Promise<QuestionAnswerResult>;
   resolve?: (result: QuestionAnswerResult) => void;
   reject?: (error: Error) => void;
+  assistantMessageId: string | null;
 };
 
 export type PendingPlanEntry = {

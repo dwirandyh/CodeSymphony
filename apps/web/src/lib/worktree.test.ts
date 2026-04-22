@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
 import type { Repository, Worktree } from "@codesymphony/shared-types";
-import { areLikelySameFsPath, isRootWorktree, findRootWorktree } from "./worktree";
+import {
+  areLikelySameFsPath,
+  findRootWorktree,
+  isRootWorktree,
+  parseFileLocation,
+  resolveWorktreeRelativePath,
+  serializeFileLocation,
+  stripFileLocationSuffix,
+  toWorktreeRelativePath,
+} from "./worktree";
 
 function makeWorktree(overrides: Partial<Worktree> = {}): Worktree {
   return {
@@ -117,5 +126,96 @@ describe("findRootWorktree", () => {
   it("returns null for empty worktrees", () => {
     const repo = makeRepository({ rootPath: "/home/project", worktrees: [] });
     expect(findRootWorktree(repo)).toBeNull();
+  });
+});
+
+describe("stripFileLocationSuffix", () => {
+  it("removes markdown line anchors", () => {
+    expect(stripFileLocationSuffix("/home/project/src/file.ts#L42")).toBe("/home/project/src/file.ts");
+  });
+
+  it("removes line and column suffixes", () => {
+    expect(stripFileLocationSuffix("/home/project/src/file.ts:42:7")).toBe("/home/project/src/file.ts");
+  });
+});
+
+describe("parseFileLocation", () => {
+  it("parses GitHub-style line anchors", () => {
+    expect(parseFileLocation("/home/project/src/file.ts#L42")).toEqual({
+      path: "/home/project/src/file.ts",
+      line: 42,
+      column: null,
+    });
+  });
+
+  it("parses GitHub-style line and column anchors", () => {
+    expect(parseFileLocation("/home/project/src/file.ts#L42C7")).toEqual({
+      path: "/home/project/src/file.ts",
+      line: 42,
+      column: 7,
+    });
+  });
+
+  it("parses line and column suffixes", () => {
+    expect(parseFileLocation("/home/project/src/file.ts:42:7")).toEqual({
+      path: "/home/project/src/file.ts",
+      line: 42,
+      column: 7,
+    });
+  });
+});
+
+describe("serializeFileLocation", () => {
+  it("serializes a line anchor", () => {
+    expect(serializeFileLocation("src/file.ts", 42)).toBe("src/file.ts#L42");
+  });
+
+  it("serializes a line and column anchor", () => {
+    expect(serializeFileLocation("src/file.ts", 42, 7)).toBe("src/file.ts#L42C7");
+  });
+});
+
+describe("toWorktreeRelativePath", () => {
+  it("returns a relative path for files inside the worktree", () => {
+    expect(
+      toWorktreeRelativePath("/home/project", "/home/project/src/file.ts"),
+    ).toBe("src/file.ts");
+  });
+
+  it("handles file references with line anchors", () => {
+    expect(
+      toWorktreeRelativePath("/home/project", "/home/project/src/file.ts#L42"),
+    ).toBe("src/file.ts");
+  });
+
+  it("returns null for files outside the worktree", () => {
+    expect(
+      toWorktreeRelativePath("/home/project", "/home/other/file.ts"),
+    ).toBeNull();
+  });
+});
+
+describe("resolveWorktreeRelativePath", () => {
+  it("falls back to a unique suffix match when the absolute root differs", () => {
+    expect(
+      resolveWorktreeRelativePath(
+        "/Users/dwirandyh/Work/algostudio/philips-marketing-2019-android",
+        "/Users/dwirandyh/Work/algostudio/marketing-2019-android/app/src/main/java/com/example/MainActivity.java#L53",
+        [
+          "app/src/main/java/com/example/MainActivity.java",
+          "app/src/main/java/com/example/OtherActivity.java",
+        ],
+      ),
+    ).toBe("app/src/main/java/com/example/MainActivity.java");
+  });
+
+  it("returns null when the suffix match is ambiguous or missing", () => {
+    expect(
+      resolveWorktreeRelativePath(
+        "/Users/dwirandyh/Work/algostudio/philips-marketing-2019-android",
+        "/Users/dwirandyh/Work/algostudio/marketing-2019-android/app/src/main/java/com/example/MainActivity.java",
+        [],
+      ),
+    ).toBeNull();
   });
 });

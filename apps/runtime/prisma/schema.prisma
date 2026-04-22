@@ -31,6 +31,7 @@ enum ChatEventType {
   question_dismissed
   plan_created
   plan_approved
+  plan_dismissed
   plan_revision_requested
   subagent_started
   subagent_finished
@@ -58,6 +59,11 @@ enum ChatThreadPermissionMode {
   full_access
 }
 
+enum CliAgent {
+  claude
+  codex
+}
+
 model Repository {
   id            String     @id @default(cuid())
   name          String
@@ -66,6 +72,7 @@ model Repository {
   setupScript    String?
   teardownScript String?
   runScript      String?
+  saveAutomation String?
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   worktrees     Worktree[]
@@ -98,16 +105,22 @@ model ChatThread {
   permissionMode      ChatThreadPermissionMode    @default(default)
   mode                ChatMode                    @default(default)
   titleEditedManually Boolean                     @default(false)
+  agent               CliAgent                    @default(claude)
+  model               String                      @default("claude-sonnet-4-6")
+  modelProviderId     String?
   claudeSessionId     String?
+  codexSessionId      String?
   createdAt           DateTime                    @default(now())
   updatedAt           DateTime                    @updatedAt
 
-  worktree Worktree      @relation(fields: [worktreeId], references: [id], onDelete: Cascade)
-  messages ChatMessage[]
-  events   ChatEvent[]
+  worktree      Worktree       @relation(fields: [worktreeId], references: [id], onDelete: Cascade)
+  modelProvider ModelProvider? @relation(fields: [modelProviderId], references: [id], onDelete: SetNull)
+  messages      ChatMessage[]
+  events        ChatEvent[]
 
   @@index([worktreeId])
   @@index([worktreeId, kind, createdAt])
+  @@index([modelProviderId])
 }
 
 model ChatMessage {
@@ -156,13 +169,18 @@ model ChatEvent {
 
 model ModelProvider {
   id        String   @id @default(cuid())
+  agent     CliAgent @default(claude)
   name      String
   modelId   String   @default("")
-  baseUrl   String
-  apiKey    String
+  baseUrl   String?
+  apiKey    String?
   isActive  Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  threads ChatThread[]
+
+  @@index([agent, isActive])
 }
 
 model AppSettings {

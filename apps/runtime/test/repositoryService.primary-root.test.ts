@@ -123,6 +123,45 @@ describe("repositoryService primary root workspace", () => {
     expect(persisted?.baseBranch).toBe("develop");
   });
 
+  it("persists save automation settings on repository updates", async () => {
+    const repositoryPath = createGitRepository();
+    const repositoryService = createRepositoryService(prisma);
+
+    const created = await repositoryService.create({ path: repositoryPath });
+    const updated = await repositoryService.updateScripts(created.id, {
+      saveAutomation: {
+        enabled: true,
+        target: "workspace_terminal",
+        filePatterns: ["lib/**/*.dart"],
+        actionType: "send_stdin",
+        payload: "r",
+        debounceMs: 250,
+      },
+    });
+
+    expect(updated.saveAutomation).toEqual({
+      enabled: true,
+      target: "workspace_terminal",
+      filePatterns: ["lib/**/*.dart"],
+      actionType: "send_stdin",
+      payload: "r",
+      debounceMs: 250,
+    });
+
+    const persisted = await prisma.repository.findUnique({
+      where: { id: created.id },
+    });
+
+    expect(persisted?.saveAutomation).toBe(JSON.stringify({
+      enabled: true,
+      target: "workspace_terminal",
+      filePatterns: ["lib/**/*.dart"],
+      actionType: "send_stdin",
+      payload: "r",
+      debounceMs: 250,
+    }));
+  });
+
   it("repairs a stale root worktree base branch on repository list", async () => {
     const repositoryPath = createGitRepository();
     const canonicalRepositoryPath = realpathSync(repositoryPath);

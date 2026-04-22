@@ -62,7 +62,16 @@ function respondForChatRouteError(reply: { code: (statusCode: number) => { send:
   if (message === "Worktree not found") {
     return reply.code(404).send({ error: message });
   }
+  if (message === "Selected model provider not found") {
+    return reply.code(404).send({ error: message });
+  }
   if (message === "Cannot delete a thread while assistant is processing") {
+    return reply.code(409).send({ error: message });
+  }
+  if (
+    message === "Cannot change agent or model while assistant is processing"
+    || message === "Cannot change agent or model after the thread has messages"
+  ) {
     return reply.code(409).send({ error: message });
   }
   return reply.code(400).send({ error: message });
@@ -209,6 +218,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.patch("/threads/:id/agent-selection", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      const thread = await app.chatService.updateThreadAgentSelection(params.id, request.body);
+      await emitThreadWorkspaceEvent(app, "thread.updated", thread);
+      return { data: thread };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to update thread agent selection");
+    }
+  });
+
   app.delete("/threads/:id", async (request, reply) => {
     const params = threadParams.parse(request.params);
 
@@ -349,6 +370,18 @@ export async function registerChatRoutes(app: FastifyInstance) {
       return reply.code(204).send();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to approve plan";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/threads/:id/plan/dismiss", async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      await app.chatService.dismissPlan(params.id, request.body ?? {});
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to dismiss plan";
       return reply.code(400).send({ error: message });
     }
   });

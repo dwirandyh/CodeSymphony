@@ -149,12 +149,16 @@ describe("isEditToolLifecycleEvent", () => {
     expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.output", payload: { toolName: "Write" } }))).toBe(true);
   });
 
-  it("returns true for tool.finished with editTarget", () => {
-    expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.finished", payload: { editTarget: "file.ts" } }))).toBe(true);
+  it("returns true for tool.finished with edit tool name", () => {
+    expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.finished", payload: { toolName: "Edit", editTarget: "file.ts" } }))).toBe(true);
   });
 
   it("returns true for tool.finished with Edited summary", () => {
     expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.finished", payload: { summary: "Edited src/file.ts" } }))).toBe(true);
+  });
+
+  it("returns false for tool.finished with editTarget on non-edit tools", () => {
+    expect(isEditToolLifecycleEvent(makeEvent({ type: "tool.finished", payload: { toolName: "Read", editTarget: "file.ts" } }))).toBe(false);
   });
 
   it("returns false for worktree.diff tool.finished", () => {
@@ -291,7 +295,7 @@ describe("extractEditedRuns", () => {
     expect(runs[1].diff).not.toContain("README.md");
   });
 
-  it("keeps a single actual run when duplicate candidates target the same changed file", () => {
+  it("merges permission and tool edit events into a single actual run", () => {
     const events = [
       makeEvent({
         id: "e1",
@@ -347,9 +351,97 @@ describe("extractEditedRuns", () => {
     const readmeRuns = runs.filter((run) => run.changedFiles.some((file) => file.includes("README.md")));
     const actualReadmeRuns = readmeRuns.filter((run) => run.diffKind === "actual");
 
-    expect(readmeRuns).toHaveLength(2);
+    expect(readmeRuns).toHaveLength(1);
     expect(actualReadmeRuns).toHaveLength(1);
     expect(actualReadmeRuns[0]?.diff).toContain("README.md");
+    expect(actualReadmeRuns[0]?.eventIds).toEqual(new Set(["e1", "e2", "e3", "e4"]));
+  });
+
+  it("keeps later permission-gated edits on the same file as separate runs", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "permission.requested",
+        idx: 1,
+        payload: {
+          toolName: "Edit",
+          requestId: "perm-1",
+          editTarget: "/repo/README.md",
+          toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "permission.resolved",
+        idx: 2,
+        payload: { requestId: "perm-1", decision: "allow" },
+      }),
+      makeEvent({
+        id: "e3",
+        type: "tool.started",
+        idx: 3,
+        payload: {
+          toolName: "Edit",
+          toolUseId: "t1",
+          toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+        },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "tool.finished",
+        idx: 4,
+        payload: {
+          toolName: "Edit",
+          summary: "Edited /repo/README.md",
+          precedingToolUseIds: ["t1"],
+          editTarget: "/repo/README.md",
+        },
+      }),
+      makeEvent({
+        id: "e5",
+        type: "permission.requested",
+        idx: 5,
+        payload: {
+          toolName: "Edit",
+          requestId: "perm-2",
+          editTarget: "/repo/README.md",
+          toolInput: { file_path: "/repo/README.md", old_string: "b", new_string: "c" },
+        },
+      }),
+      makeEvent({
+        id: "e6",
+        type: "permission.resolved",
+        idx: 6,
+        payload: { requestId: "perm-2", decision: "allow" },
+      }),
+      makeEvent({
+        id: "e7",
+        type: "tool.started",
+        idx: 7,
+        payload: {
+          toolName: "Edit",
+          toolUseId: "t2",
+          toolInput: { file_path: "/repo/README.md", old_string: "b", new_string: "c" },
+        },
+      }),
+      makeEvent({
+        id: "e8",
+        type: "tool.finished",
+        idx: 8,
+        payload: {
+          toolName: "Edit",
+          summary: "Edited /repo/README.md",
+          precedingToolUseIds: ["t2"],
+          editTarget: "/repo/README.md",
+        },
+      }),
+    ];
+
+    const runs = extractEditedRuns(events);
+
+    expect(runs).toHaveLength(2);
+    expect(runs.map((run) => run.startIdx)).toEqual([1, 5]);
+    expect(runs.every((run) => run.changedFiles.includes("/repo/README.md"))).toBe(true);
   });
 
   it("creates proposed diff from tool input on permission request", () => {
@@ -404,5 +496,33 @@ describe("extractEditedRuns", () => {
     const runs = extractEditedRuns(events);
     expect(runs.length).toBe(1);
     expect(runs[0].status).toBe("failed");
+  });
+
+  it("ignores read completions that include editTarget metadata", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: {
+          toolName: "Read",
+          toolUseId: "r1",
+          toolInput: { file_path: "/repo/README.md" },
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "tool.finished",
+        idx: 2,
+        payload: {
+          toolName: "Read",
+          summary: "Read /repo/README.md",
+          precedingToolUseIds: ["r1"],
+          editTarget: "/repo/README.md",
+        },
+      }),
+    ];
+
+    expect(extractEditedRuns(events)).toEqual([]);
   });
 });

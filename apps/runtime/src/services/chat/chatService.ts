@@ -4,12 +4,15 @@ import { basename, isAbsolute, join, normalize, relative, resolve } from "node:p
 import {
   AnswerQuestionInputSchema,
   CreateChatThreadInputSchema,
+  DEFAULT_CHAT_MODEL_BY_AGENT,
+  DismissPlanInputSchema,
   DismissQuestionInputSchema,
   PlanRevisionInputSchema,
   RenameChatThreadTitleInputSchema,
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   SlashCommandCatalogSchema,
+  UpdateChatThreadAgentSelectionInputSchema,
   UpdateChatThreadModeInputSchema,
   UpdateChatThreadPermissionModeInputSchema,
   type AnswerQuestionInput,
@@ -19,10 +22,12 @@ import {
   type ChatMode,
   type ChatThread,
   type ChatThreadKind,
+  type CliAgent,
   type ChatThreadPermissionMode,
   type ChatThreadPermissionProfile,
   type ChatThreadSnapshot,
   type CreateChatThreadInput,
+  type DismissPlanInput,
   type DismissQuestionInput,
   type PlanRevisionInput,
   type RenameChatThreadTitleInput,
@@ -30,6 +35,7 @@ import {
   type ReviewProvider,
   type SendChatMessageInput,
   type SlashCommandCatalog,
+  type UpdateChatThreadAgentSelectionInput,
   type UpdateChatThreadModeInput,
   type UpdateChatThreadPermissionModeInput,
 } from "@codesymphony/shared-types";
@@ -80,6 +86,7 @@ import {
 } from "./chatNamingService.js";
 import { recoverPendingPlan } from "./chatPlanService.js";
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
+import { buildCodexCliProviderHint } from "../../codex/config.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
@@ -165,6 +172,31 @@ function normalizeOwnedWorktreePath(worktreePath: string, candidate: string | nu
   return cleanPath;
 }
 
+function collectOwnedWorktreePaths(
+  worktreePath: string,
+  payload: {
+    toolName?: string | null;
+    editTarget?: string | null;
+    toolInput?: Record<string, unknown> | null;
+    summary?: string | null;
+    isBash?: boolean;
+  },
+): string[] {
+  const toolName = typeof payload.toolName === "string" ? payload.toolName.trim() : "";
+  const bashTool = payload.isBash === true || (toolName.length > 0 && isBashTool(toolName));
+  if (bashTool) {
+    return [];
+  }
+
+  const editTool = toolName.length > 0 && isEditTool(toolName);
+  const target = payload.editTarget
+    ?? (editTool ? editTargetFromUnknownToolInput(toolName, payload.toolInput) ?? null : null)
+    ?? extractEditedPathFromSummary(payload.summary);
+  const normalizedTarget = normalizeOwnedWorktreePath(worktreePath, target);
+
+  return normalizedTarget ? [normalizedTarget] : [];
+}
+
 function trackWorktreeMutation(
   tracker: WorktreeMutationTracker,
   worktreePath: string,
@@ -184,18 +216,15 @@ function trackWorktreeMutation(
     return;
   }
 
+  const ownedPaths = collectOwnedWorktreePaths(worktreePath, payload);
   const editTool = toolName.length > 0 && isEditTool(toolName);
-  const target = payload.editTarget
-    ?? (editTool ? editTargetFromUnknownToolInput(toolName, payload.toolInput) ?? null : null)
-    ?? extractEditedPathFromSummary(payload.summary);
-  if (!editTool && !target) {
+  if (!editTool && ownedPaths.length === 0) {
     return;
   }
 
   tracker.sawMutatingTool = true;
-  const normalizedTarget = normalizeOwnedWorktreePath(worktreePath, target);
-  if (normalizedTarget) {
-    tracker.ownedPaths.add(normalizedTarget);
+  for (const ownedPath of ownedPaths) {
+    tracker.ownedPaths.add(ownedPath);
   }
 }
 
@@ -225,6 +254,146 @@ function normalizePermissionProfile(kind: ChatThreadKind): ChatThreadPermissionP
 
 function normalizePermissionMode(permissionMode: ChatThreadPermissionMode | undefined): ChatThreadPermissionMode {
   return permissionMode === "full_access" ? "full_access" : "default";
+}
+
+function normalizeAgent(agent: CliAgent | null | undefined): CliAgent {
+  return agent === "codex" ? "codex" : "claude";
+}
+
+function normalizeOptionalModelId(model: string | null | undefined): string | null {
+  if (typeof model !== "string") {
+    return null;
+  }
+
+  const normalized = model.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function toRunnerOptional(value: string | null | undefined): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function toActiveModelProvider(provider: {
+  id: string;
+  agent: CliAgent;
+  apiKey: string | null;
+  baseUrl: string | null;
+  name: string;
+  modelId: string;
+}): ActiveModelProvider {
+  return {
+    id: provider.id,
+    agent: provider.agent,
+    apiKey: provider.apiKey,
+    baseUrl: provider.baseUrl,
+    name: provider.name,
+    modelId: provider.modelId,
+  };
+}
+
+type ResolvedThreadSelection = {
+  agent: CliAgent;
+  model: string;
+  modelProviderId: string | null;
+  provider: ActiveModelProvider | null;
+};
+
+async function resolveThreadSelection(
+  deps: RuntimeDeps,
+  input: {
+    agent?: CliAgent | null;
+    model?: string | null;
+    modelProviderId?: string | null;
+    preferActiveProvider?: boolean;
+  },
+): Promise<ResolvedThreadSelection> {
+  const agent = normalizeAgent(input.agent);
+  const requestedProviderId = normalizeOptionalModelId(input.modelProviderId);
+  if (requestedProviderId) {
+    const provider = await deps.modelProviderService.getProviderById(requestedProviderId);
+    if (!provider) {
+      throw new Error("Selected model provider not found");
+    }
+    if (provider.agent !== agent) {
+      throw new Error(`Selected model provider belongs to ${provider.agent}, not ${agent}`);
+    }
+
+    return {
+      agent,
+      model: provider.modelId,
+      modelProviderId: provider.id,
+      provider: toActiveModelProvider(provider),
+    };
+  }
+
+  const explicitModel = normalizeOptionalModelId(input.model);
+  if (explicitModel) {
+    return {
+      agent,
+      model: explicitModel,
+      modelProviderId: null,
+      provider: null,
+    };
+  }
+
+  if (input.preferActiveProvider) {
+    const activeProvider = await deps.modelProviderService.getActiveProvider(agent);
+    if (activeProvider) {
+      return {
+        agent,
+        model: activeProvider.modelId,
+        modelProviderId: activeProvider.id,
+        provider: toActiveModelProvider(activeProvider),
+      };
+    }
+  }
+
+  return {
+    agent,
+    model: DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+    modelProviderId: null,
+    provider: null,
+  };
+}
+
+function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
+  return agent === "codex" ? (deps.codexRunner ?? deps.claudeRunner) : deps.claudeRunner;
+}
+
+function getThreadSessionId(
+  thread: { claudeSessionId: string | null; codexSessionId: string | null },
+  agent: CliAgent,
+): string | null {
+  return agent === "codex" ? thread.codexSessionId : thread.claudeSessionId;
+}
+
+function buildSessionIdUpdate(agent: CliAgent, sessionId: string | null) {
+  return agent === "codex"
+    ? { codexSessionId: sessionId }
+    : { claudeSessionId: sessionId };
+}
+
+function buildSelectionUpdate(selection: ResolvedThreadSelection) {
+  return {
+    agent: selection.agent,
+    model: selection.model,
+    modelProviderId: selection.modelProviderId,
+    claudeSessionId: null,
+    codexSessionId: null,
+  };
+}
+
+function hasSameSelection(
+  thread: {
+    agent: CliAgent;
+    model: string;
+    modelProviderId: string | null;
+  },
+  selection: ResolvedThreadSelection,
+): boolean {
+  return thread.agent === selection.agent
+    && thread.model === selection.model
+    && thread.modelProviderId === selection.modelProviderId;
 }
 
 function getReviewThreadTitle(provider: ReviewProvider): string {
@@ -319,25 +488,28 @@ export function createChatService(deps: RuntimeDeps) {
     threadId: string;
     assistantMessageId: string;
     mode: ChatMode;
-    activeProvider: ActiveModelProvider | null;
+    selection: ResolvedThreadSelection;
     hasFileChanges: boolean;
   }): Promise<void> {
-    const { threadId, assistantMessageId, mode, activeProvider, hasFileChanges } = params;
+    const { threadId, assistantMessageId, mode, selection, hasFileChanges } = params;
+    const providerOptions = {
+      agent: selection.agent,
+      model: selection.model,
+      providerApiKey: selection.provider?.apiKey ?? undefined,
+      providerBaseUrl: selection.provider?.baseUrl ?? undefined,
+    };
 
     try {
       const completedThreadTitle = await maybeAutoRenameThreadAfterFirstAssistantReply(
         deps,
         threadId,
         assistantMessageId,
-        {
-          model: activeProvider?.modelId,
-          providerApiKey: activeProvider?.apiKey,
-          providerBaseUrl: activeProvider?.baseUrl,
-        },
+        providerOptions,
       );
       if (completedThreadTitle) {
         try {
           await deps.eventHub.emit(threadId, "tool.finished", {
+            messageId: assistantMessageId,
             source: "chat.thread.metadata",
             summary: "Updated thread title",
             threadTitle: completedThreadTitle,
@@ -356,10 +528,16 @@ export function createChatService(deps: RuntimeDeps) {
         return;
       }
 
-      const completedWorktreeBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(deps, threadId, assistantMessageId);
+      const completedWorktreeBranch = await maybeAutoRenameBranchAfterFirstAssistantReply(
+        deps,
+        threadId,
+        assistantMessageId,
+        providerOptions,
+      );
       if (completedWorktreeBranch) {
         try {
           await deps.eventHub.emit(threadId, "tool.finished", {
+            messageId: assistantMessageId,
             source: "chat.thread.metadata",
             summary: "Updated worktree branch",
             worktreeBranch: completedWorktreeBranch,
@@ -390,7 +568,12 @@ export function createChatService(deps: RuntimeDeps) {
     });
     let assistantMessageId: string | null = null;
     let fullOutput = "";
-    let activeProvider: ActiveModelProvider | null = null;
+    let selection: ResolvedThreadSelection = {
+      agent: "claude",
+      model: DEFAULT_CHAT_MODEL_BY_AGENT.claude,
+      modelProviderId: null,
+      provider: null,
+    };
     let threadWorktreePath: string | null = null;
     let completionEmitted = false;
     const abortController = new AbortController();
@@ -429,6 +612,8 @@ export function createChatService(deps: RuntimeDeps) {
 
       const beforeState = await captureWorktreeState(worktreePath);
       const worktreeMutationTracker = createWorktreeMutationTracker();
+      let diffBaselineState = beforeState;
+      let runProducedFileChanges = false;
 
       const assistantSeq = await nextMessageSeq(deps.prisma, threadId);
       const assistantMessage = await deps.prisma.chatMessage.create({
@@ -442,7 +627,13 @@ export function createChatService(deps: RuntimeDeps) {
 
       assistantMessageId = assistantMessage.id;
 
-      activeProvider = await deps.modelProviderService.getActiveProvider();
+      selection = await resolveThreadSelection(deps, {
+        agent: thread.agent,
+        model: thread.model,
+        modelProviderId: thread.modelProviderId,
+      });
+      const runner = getRunnerForAgent(deps, selection.agent);
+      const currentSessionId = getThreadSessionId(thread, selection.agent);
 
       function scheduleFlush() {
         if (flushTimer !== null) return;
@@ -462,26 +653,106 @@ export function createChatService(deps: RuntimeDeps) {
         }, FLUSH_INTERVAL_MS);
       }
 
-      const result = await deps.claudeRunner({
+      async function emitWorktreeDiffEvent(
+        diffSnapshot: WorktreeDiffDelta,
+        precedingToolUseIds: string[],
+      ): Promise<void> {
+        if (diffSnapshot.changedFiles.length > 0) {
+          runProducedFileChanges = true;
+        }
+
+        const fileCount = diffSnapshot.changedFiles.length;
+        const summary = fileCount > 0
+          ? `Detected worktree changes in ${fileCount} file${fileCount === 1 ? "" : "s"}`
+          : "Captured worktree diff";
+        await deps.eventHub.emit(threadId, "tool.finished", {
+          messageId: assistantMessage.id,
+          summary,
+          precedingToolUseIds,
+          source: "worktree.diff",
+          changedFiles: diffSnapshot.changedFiles,
+          diff: diffSnapshot.diff,
+          diffTruncated: diffSnapshot.diffTruncated,
+        });
+      }
+
+      async function maybeEmitIncrementalWorktreeDiff(payload: {
+        toolName?: string;
+        precedingToolUseIds: string[];
+        editTarget?: string;
+        toolInput?: Record<string, unknown>;
+        summary?: string;
+        isBash?: true;
+      }): Promise<void> {
+        if (!threadWorktreePath || !diffBaselineState) {
+          return;
+        }
+
+        const ownedPaths = collectOwnedWorktreePaths(threadWorktreePath, {
+          toolName: payload.toolName ?? null,
+          editTarget: payload.editTarget ?? null,
+          toolInput: payload.toolInput ?? null,
+          summary: payload.summary ?? null,
+          isBash: payload.isBash === true,
+        });
+        if (ownedPaths.length === 0) {
+          return;
+        }
+
+        try {
+          const afterState = await captureWorktreeState(threadWorktreePath);
+          if (!afterState) {
+            return;
+          }
+
+          const diffSnapshot = buildDiffDelta(diffBaselineState, afterState);
+          diffBaselineState = afterState;
+          if (!diffSnapshot) {
+            return;
+          }
+
+          const scopedDiffSnapshot = filterWorktreeDiffDelta(diffSnapshot, ownedPaths);
+          if (!scopedDiffSnapshot) {
+            return;
+          }
+
+          await emitWorktreeDiffEvent(scopedDiffSnapshot, payload.precedingToolUseIds);
+        } catch (error) {
+          deps.logService?.log("warn", "chat.lifecycle", "Incremental worktree diff enrichment failed", {
+            threadId,
+            toolName: payload.toolName ?? null,
+            precedingToolUseIds: payload.precedingToolUseIds,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      const result = await runner({
         prompt,
-        sessionId: thread.claudeSessionId,
-        sessionWorktreePath: thread.claudeSessionId ? worktreePath : null,
+        sessionId: currentSessionId,
+        sessionWorktreePath: currentSessionId ? worktreePath : null,
         cwd: worktreePath,
         abortController,
         onSessionId: async (nextSessionId) => {
-          if (!nextSessionId || nextSessionId === thread.claudeSessionId) {
+          const previousSessionId = getThreadSessionId(thread, selection.agent);
+          if (!nextSessionId || nextSessionId === previousSessionId) {
             return;
           }
 
           try {
             await deps.prisma.chatThread.update({
               where: { id: threadId },
-              data: { claudeSessionId: nextSessionId },
+              data: buildSessionIdUpdate(selection.agent, nextSessionId),
             });
-            thread.claudeSessionId = nextSessionId;
+            if (selection.agent === "codex") {
+              thread.codexSessionId = nextSessionId;
+            } else {
+              thread.claudeSessionId = nextSessionId;
+            }
           } catch (error) {
             deps.logService?.log("warn", "chat.persist", "Failed to persist session id during streaming", {
               threadId,
+              agent: selection.agent,
               sessionId: nextSessionId,
               error: error instanceof Error ? error.message : String(error),
             });
@@ -491,9 +762,9 @@ export function createChatService(deps: RuntimeDeps) {
         threadPermissionMode: thread.permissionMode,
         permissionProfile: thread.permissionProfile,
         autoAcceptTools,
-        model: activeProvider?.modelId || undefined,
-        providerApiKey: activeProvider?.apiKey,
-        providerBaseUrl: activeProvider?.baseUrl,
+        model: selection.model,
+        providerApiKey: toRunnerOptional(selection.provider?.apiKey),
+        providerBaseUrl: toRunnerOptional(selection.provider?.baseUrl),
         onText: async (chunk) => {
           fullOutput += chunk;
           scheduleFlush();
@@ -510,13 +781,19 @@ export function createChatService(deps: RuntimeDeps) {
             editTarget: payload.editTarget ?? null,
             isBash: payload.isBash === true,
           });
-          await deps.eventHub.emit(threadId, "tool.started", payload);
+          await deps.eventHub.emit(threadId, "tool.started", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onToolOutput: async (payload) => {
           trackWorktreeMutation(worktreeMutationTracker, worktreePath, {
             toolName: payload.toolName,
           });
-          await deps.eventHub.emit(threadId, "tool.output", payload);
+          await deps.eventHub.emit(threadId, "tool.output", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onToolFinished: async (payload) => {
           trackWorktreeMutation(worktreeMutationTracker, worktreePath, {
@@ -526,13 +803,23 @@ export function createChatService(deps: RuntimeDeps) {
             summary: payload.summary,
             isBash: payload.isBash === true,
           });
-          await deps.eventHub.emit(threadId, "tool.finished", payload);
+          await deps.eventHub.emit(threadId, "tool.finished", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
+          await maybeEmitIncrementalWorktreeDiff(payload);
         },
         onSubagentStarted: async (payload) => {
-          await deps.eventHub.emit(threadId, "subagent.started", payload);
+          await deps.eventHub.emit(threadId, "subagent.started", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onSubagentStopped: async (payload) => {
-          await deps.eventHub.emit(threadId, "subagent.finished", payload);
+          await deps.eventHub.emit(threadId, "subagent.finished", {
+            ...payload,
+            messageId: assistantMessage.id,
+          });
         },
         onToolInstrumentation: async (event) => {
           if (!deps.logService) {
@@ -565,6 +852,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           const entry = {} as PendingQuestionEntry;
           entry.status = "pending";
+          entry.assistantMessageId = assistantMessage.id;
           entry.promise = new Promise<QuestionAnswerResult>((resolve, reject) => {
             entry.resolve = resolve;
             entry.reject = reject;
@@ -573,6 +861,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           try {
             await deps.eventHub.emit(threadId, "question.requested", {
+              messageId: assistantMessage.id,
               requestId: payload.requestId,
               questions: payload.questions,
             });
@@ -613,6 +902,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           const entry = {} as PendingPermissionEntry;
           entry.status = "pending";
+          entry.assistantMessageId = assistantMessage.id;
           entry.toolName = payload.toolName;
           const command = payload.toolInput.command;
           entry.command = typeof command === "string" && command.trim().length > 0 ? command.trim() : null;
@@ -629,6 +919,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           try {
             await deps.eventHub.emit(threadId, "permission.requested", {
+              messageId: assistantMessage.id,
               requestId: payload.requestId,
               toolName: payload.toolName,
               toolInput: payload.toolInput,
@@ -670,9 +961,7 @@ export function createChatService(deps: RuntimeDeps) {
 
           await tx.chatThread.update({
             where: { id: threadId },
-            data: {
-              claudeSessionId: result.sessionId,
-            },
+            data: buildSessionIdUpdate(selection.agent, result.sessionId),
           });
         });
       } catch (txError) {
@@ -689,14 +978,17 @@ export function createChatService(deps: RuntimeDeps) {
         try {
           await deps.prisma.chatThread.update({
             where: { id: threadId },
-            data: { claudeSessionId: result.sessionId },
+            data: buildSessionIdUpdate(selection.agent, result.sessionId),
           });
         } catch { /* session id is non-critical */ }
       }
-      let diffSnapshot: ReturnType<typeof buildDiffDelta> | null = null;
+      let diffSnapshot: WorktreeDiffDelta | null = null;
       try {
         const afterState = threadWorktreePath ? await captureWorktreeState(threadWorktreePath) : null;
-        diffSnapshot = beforeState && afterState ? buildDiffDelta(beforeState, afterState) : null;
+        diffSnapshot = diffBaselineState && afterState ? buildDiffDelta(diffBaselineState, afterState) : null;
+        if (afterState) {
+          diffBaselineState = afterState;
+        }
         if (diffSnapshot) {
           const ownedPaths = Array.from(worktreeMutationTracker.ownedPaths);
           const scopedDiffSnapshot = ownedPaths.length > 0
@@ -707,18 +999,7 @@ export function createChatService(deps: RuntimeDeps) {
             : worktreeMutationTracker.sawBashTool;
           if (shouldEmitWorktreeDiff && scopedDiffSnapshot) {
             diffSnapshot = scopedDiffSnapshot;
-            const fileCount = diffSnapshot.changedFiles.length;
-            const summary = fileCount > 0
-              ? `Detected worktree changes in ${fileCount} file${fileCount === 1 ? "" : "s"}`
-              : "Captured worktree diff";
-            await deps.eventHub.emit(threadId, "tool.finished", {
-              summary,
-              precedingToolUseIds: [],
-              source: "worktree.diff",
-              changedFiles: diffSnapshot.changedFiles,
-              diff: diffSnapshot.diff,
-              diffTruncated: diffSnapshot.diffTruncated,
-            });
+            await emitWorktreeDiffEvent(diffSnapshot, []);
           } else {
             diffSnapshot = null;
           }
@@ -730,7 +1011,7 @@ export function createChatService(deps: RuntimeDeps) {
         });
       }
 
-      const hasFileChanges = (diffSnapshot?.changedFiles.length ?? 0) > 0;
+      const hasFileChanges = runProducedFileChanges || (diffSnapshot?.changedFiles.length ?? 0) > 0;
       deps.logService?.log("debug", "chat.lifecycle", "run about to emit chat.completed", {
         threadId,
         assistantMessageId: assistantMessage.id,
@@ -747,7 +1028,7 @@ export function createChatService(deps: RuntimeDeps) {
           threadId,
           assistantMessageId: assistantMessage.id,
           mode,
-          activeProvider,
+          selection,
           hasFileChanges,
         });
       });
@@ -759,8 +1040,17 @@ export function createChatService(deps: RuntimeDeps) {
       let errorMessage = error instanceof Error ? error.message : "Unknown chat error";
       const wasCancelled = abortController.signal.aborted || isAbortError(error);
 
-      if (!wasCancelled && activeProvider) {
-        errorMessage += `\n\nActive model provider: "${activeProvider.name}" (${activeProvider.modelId}) at ${activeProvider.baseUrl}.\nTry deactivating the provider in Settings → Models to verify if the issue is provider-related.`;
+      if (!wasCancelled && selection.provider) {
+        const providerLocation = selection.provider.baseUrl ?? "default endpoint";
+        errorMessage += `\n\nSelected ${selection.agent} model provider: "${selection.provider.name}" (${selection.provider.modelId}) via ${providerLocation}.\nTry switching the thread to a built-in model or deactivating the provider in Settings → Models to isolate provider issues.`;
+      } else if (!wasCancelled) {
+        errorMessage += `\n\nSelected ${selection.agent} model: "${selection.model}".`;
+        if (selection.agent === "codex") {
+          const codexCliProviderHint = buildCodexCliProviderHint();
+          if (codexCliProviderHint) {
+            errorMessage += `\n${codexCliProviderHint}`;
+          }
+        }
       }
 
       if (assistantMessageId) {
@@ -786,6 +1076,7 @@ export function createChatService(deps: RuntimeDeps) {
         }
       } else {
         await deps.eventHub.emit(threadId, "chat.failed", {
+          ...(assistantMessageId ? { messageId: assistantMessageId } : {}),
           message: errorMessage,
           threadMode: mode,
         });
@@ -868,6 +1159,12 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Worktree not found");
       }
       const permissionMode = normalizePermissionMode(input.permissionMode);
+      const selection = await resolveThreadSelection(deps, {
+        agent: input.agent,
+        model: input.model,
+        modelProviderId: input.modelProviderId,
+        preferActiveProvider: input.model == null && input.modelProviderId == null,
+      });
 
       const existingCandidates = await deps.prisma.chatThread.findMany({
         where: {
@@ -887,13 +1184,32 @@ export function createChatService(deps: RuntimeDeps) {
         const shouldUpgradePermissionProfile = existing.permissionProfile !== "review_git";
         const shouldUpgradeLegacyTitle = !existing.titleEditedManually && isLegacyReviewThreadTitle(existing.title);
         const shouldUpgradePermissionMode = existing.permissionMode !== permissionMode;
-        if (!shouldUpgradePermissionProfile && !shouldUpgradeLegacyTitle && !shouldUpgradePermissionMode) {
+        const shouldUpdateSelection = !hasSameSelection(existing, selection);
+        let canUpdateSelection = false;
+        if (shouldUpdateSelection && !isThreadActive(existing.id)) {
+          const messageCount = await deps.prisma.chatMessage.count({
+            where: { threadId: existing.id },
+          });
+          canUpdateSelection = messageCount === 0;
+        }
+
+        if (
+          !shouldUpgradePermissionProfile
+          && !shouldUpgradeLegacyTitle
+          && !shouldUpgradePermissionMode
+          && !canUpdateSelection
+        ) {
           return mapChatThread(existing, isThreadActive(existing.id));
         }
 
         const reviewTitle = shouldUpgradeLegacyTitle ? await resolveReviewThreadTitle(worktree.path) : null;
         const shouldUpgradeTitle = reviewTitle !== null && reviewTitle !== existing.title;
-        if (!shouldUpgradePermissionProfile && !shouldUpgradeTitle && !shouldUpgradePermissionMode) {
+        if (
+          !shouldUpgradePermissionProfile
+          && !shouldUpgradeTitle
+          && !shouldUpgradePermissionMode
+          && !canUpdateSelection
+        ) {
           return mapChatThread(existing, isThreadActive(existing.id));
         }
 
@@ -903,6 +1219,7 @@ export function createChatService(deps: RuntimeDeps) {
             ...(shouldUpgradePermissionProfile ? { permissionProfile: "review_git" } : {}),
             ...(shouldUpgradeTitle ? { title: reviewTitle } : {}),
             ...(shouldUpgradePermissionMode ? { permissionMode } : {}),
+            ...(canUpdateSelection ? buildSelectionUpdate(selection) : {}),
           },
         });
         return mapChatThread(updated, isThreadActive(updated.id));
@@ -917,6 +1234,7 @@ export function createChatService(deps: RuntimeDeps) {
           permissionProfile: "review_git",
           permissionMode,
           mode: "default",
+          ...buildSelectionUpdate(selection),
         },
       });
 
@@ -936,6 +1254,12 @@ export function createChatService(deps: RuntimeDeps) {
       const permissionMode = normalizePermissionMode(input.permissionMode);
       const reviewTitle = kind === "review" && !input.title ? await resolveReviewThreadTitle(worktree.path) : null;
       const normalizedTitle = input.title?.trim() ?? reviewTitle ?? DEFAULT_THREAD_TITLE;
+      const selection = await resolveThreadSelection(deps, {
+        agent: input.agent,
+        model: input.model,
+        modelProviderId: input.modelProviderId,
+        preferActiveProvider: input.model == null && input.modelProviderId == null,
+      });
 
       const createThreadOperation = async (): Promise<ChatThread> => {
         if (input.title == null) {
@@ -951,6 +1275,18 @@ export function createChatService(deps: RuntimeDeps) {
             ],
           });
           if (existingThread) {
+            if (!isThreadActive(existingThread.id) && !hasSameSelection(existingThread, selection)) {
+              const messageCount = await deps.prisma.chatMessage.count({
+                where: { threadId: existingThread.id },
+              });
+              if (messageCount === 0) {
+                const updatedThread = await deps.prisma.chatThread.update({
+                  where: { id: existingThread.id },
+                  data: buildSelectionUpdate(selection),
+                });
+                return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
+              }
+            }
             return mapChatThread(existingThread, isThreadActive(existingThread.id));
           }
         }
@@ -963,6 +1299,7 @@ export function createChatService(deps: RuntimeDeps) {
             permissionProfile,
             permissionMode,
             mode: "default",
+            ...buildSelectionUpdate(selection),
           },
         });
 
@@ -973,7 +1310,7 @@ export function createChatService(deps: RuntimeDeps) {
         return createThreadOperation();
       }
 
-      const createKey = `${worktreeId}:${kind}:${normalizedTitle}`;
+      const createKey = `${worktreeId}:${kind}:${normalizedTitle}:${selection.agent}:${selection.model}:${selection.modelProviderId ?? "builtin"}`;
       const existingCreate = pendingThreadCreatesByKey.get(createKey);
       if (existingCreate) {
         return existingCreate;
@@ -1088,6 +1425,39 @@ export function createChatService(deps: RuntimeDeps) {
         data: {
           permissionMode: input.permissionMode,
         },
+      });
+
+      return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
+    },
+
+    async updateThreadAgentSelection(threadId: string, rawInput: unknown): Promise<ChatThread> {
+      const input: UpdateChatThreadAgentSelectionInput = UpdateChatThreadAgentSelectionInputSchema.parse(rawInput);
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      if (isThreadActive(threadId)) {
+        throw new Error("Cannot change agent or model while assistant is processing");
+      }
+
+      const messageCount = await deps.prisma.chatMessage.count({
+        where: { threadId },
+      });
+      if (messageCount > 0) {
+        throw new Error("Cannot change agent or model after the thread has messages");
+      }
+
+      const selection = await resolveThreadSelection(deps, input);
+      if (hasSameSelection(thread, selection)) {
+        return mapChatThread(thread, isThreadActive(thread.id));
+      }
+
+      const updatedThread = await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: buildSelectionUpdate(selection),
       });
 
       return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
@@ -1250,6 +1620,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       try {
         await deps.eventHub.emit(threadId, "permission.resolved", {
+          ...(entry.assistantMessageId ? { messageId: entry.assistantMessageId } : {}),
           requestId: input.requestId,
           decision: input.decision,
           resolver: "user",
@@ -1327,8 +1698,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const pendingMap = pendingQuestionsByThread.get(threadId);
       const entry = pendingMap?.get(input.requestId);
-      const isPending = Boolean(entry && entry.status === "pending" && entry.resolve);
-      if (!isPending) {
+      if (!entry || entry.status !== "pending" || !entry.resolve) {
         await deps.eventHub.emit(threadId, "question.dismissed", {
           requestId: input.requestId,
           resolver: "system",
@@ -1340,6 +1710,7 @@ export function createChatService(deps: RuntimeDeps) {
 
       const normalizedReason = input.reason?.trim();
       await deps.eventHub.emit(threadId, "question.dismissed", {
+        ...(entry.assistantMessageId ? { messageId: entry.assistantMessageId } : {}),
         requestId: input.requestId,
         resolver: "user",
         reason: normalizedReason && normalizedReason.length > 0 ? normalizedReason : "Question dismissed by user.",
@@ -1385,6 +1756,35 @@ export function createChatService(deps: RuntimeDeps) {
 
       const executePrompt = `The user has approved the following plan. Please execute it now:\n\n${plan.content}`;
       scheduleAssistant(threadId, executePrompt, "default", { autoAcceptTools: true });
+    },
+
+    async dismissPlan(threadId: string, rawInput: unknown): Promise<void> {
+      const input: DismissPlanInput = DismissPlanInputSchema.parse(rawInput);
+
+      const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      let plan = pendingPlanByThread.get(threadId);
+      if (!plan) {
+        plan = await recoverPendingPlan(deps.eventHub, threadId) ?? undefined;
+        if (!plan) {
+          throw new Error("No pending plan to dismiss for this thread");
+        }
+      }
+
+      if (isThreadActive(threadId)) {
+        throw new Error("Assistant is still processing");
+      }
+
+      pendingPlanByThread.delete(threadId);
+
+      const normalizedReason = input.reason?.trim();
+      await deps.eventHub.emit(threadId, "plan.dismissed", {
+        filePath: plan.filePath,
+        reason: normalizedReason && normalizedReason.length > 0 ? normalizedReason : "Plan dismissed by user.",
+      });
     },
 
     async revisePlan(threadId: string, rawInput: unknown): Promise<void> {
