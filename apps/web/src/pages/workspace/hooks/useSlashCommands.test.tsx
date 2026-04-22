@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 function TestComponent({ worktreeId }: { worktreeId: string | null }) {
-  const { commands, loading } = useSlashCommands(worktreeId);
+  const { commands, loading } = useSlashCommands(worktreeId, "codex");
   return <div>{loading ? "loading" : `count:${commands.length}`}</div>;
 }
 

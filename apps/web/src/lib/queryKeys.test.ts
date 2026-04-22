@@ -31,7 +31,7 @@ describe("queryKeys", () => {
   });
 
   it("worktrees.slashCommands returns key", () => {
-    expect(queryKeys.worktrees.slashCommands("w1")).toEqual(["worktrees", "w1", "slashCommands"]);
+    expect(queryKeys.worktrees.slashCommands("w1", "codex")).toEqual(["worktrees", "w1", "slashCommands", "codex"]);
   });
 
   it("worktrees.fileContents includes path", () => {

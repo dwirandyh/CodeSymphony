@@ -216,6 +216,24 @@ describe("Composer", () => {
     expect(container.textContent).toContain("Create a commit");
   });
 
+  it("shows Codex skill suggestions when the active agent is codex", async () => {
+    renderComposer({
+      agent: "codex",
+      slashCommands: [
+        { name: "dogfood", description: "QA a web app", argumentHint: "" },
+        { name: "Excel", description: "Spreadsheet work", argumentHint: "" },
+      ],
+    });
+    const editor = getEditor();
+
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+
+    const texts = Array.from(container.querySelectorAll("button[data-index]")).map((button) => button.textContent);
+    expect(texts.some((text) => text?.includes("dogfood"))).toBe(true);
+    expect(texts.some((text) => text?.includes("Spreadsheet work"))).toBe(true);
+  });
+
   it("closes slash command suggestions on outside click without changing the draft", async () => {
     renderComposer();
     const editor = getEditor();
