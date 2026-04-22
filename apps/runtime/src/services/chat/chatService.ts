@@ -172,6 +172,31 @@ function normalizeOwnedWorktreePath(worktreePath: string, candidate: string | nu
   return cleanPath;
 }
 
+function collectOwnedWorktreePaths(
+  worktreePath: string,
+  payload: {
+    toolName?: string | null;
+    editTarget?: string | null;
+    toolInput?: Record<string, unknown> | null;
+    summary?: string | null;
+    isBash?: boolean;
+  },
+): string[] {
+  const toolName = typeof payload.toolName === "string" ? payload.toolName.trim() : "";
+  const bashTool = payload.isBash === true || (toolName.length > 0 && isBashTool(toolName));
+  if (bashTool) {
+    return [];
+  }
+
+  const editTool = toolName.length > 0 && isEditTool(toolName);
+  const target = payload.editTarget
+    ?? (editTool ? editTargetFromUnknownToolInput(toolName, payload.toolInput) ?? null : null)
+    ?? extractEditedPathFromSummary(payload.summary);
+  const normalizedTarget = normalizeOwnedWorktreePath(worktreePath, target);
+
+  return normalizedTarget ? [normalizedTarget] : [];
+}
+
 function trackWorktreeMutation(
   tracker: WorktreeMutationTracker,
   worktreePath: string,
@@ -191,18 +216,15 @@ function trackWorktreeMutation(
     return;
   }
 
+  const ownedPaths = collectOwnedWorktreePaths(worktreePath, payload);
   const editTool = toolName.length > 0 && isEditTool(toolName);
-  const target = payload.editTarget
-    ?? (editTool ? editTargetFromUnknownToolInput(toolName, payload.toolInput) ?? null : null)
-    ?? extractEditedPathFromSummary(payload.summary);
-  if (!editTool && !target) {
+  if (!editTool && ownedPaths.length === 0) {
     return;
   }
 
   tracker.sawMutatingTool = true;
-  const normalizedTarget = normalizeOwnedWorktreePath(worktreePath, target);
-  if (normalizedTarget) {
-    tracker.ownedPaths.add(normalizedTarget);
+  for (const ownedPath of ownedPaths) {
+    tracker.ownedPaths.add(ownedPath);
   }
 }
 
@@ -590,6 +612,8 @@ export function createChatService(deps: RuntimeDeps) {
 
       const beforeState = await captureWorktreeState(worktreePath);
       const worktreeMutationTracker = createWorktreeMutationTracker();
+      let diffBaselineState = beforeState;
+      let runProducedFileChanges = false;
 
       const assistantSeq = await nextMessageSeq(deps.prisma, threadId);
       const assistantMessage = await deps.prisma.chatMessage.create({
@@ -627,6 +651,80 @@ export function createChatService(deps: RuntimeDeps) {
             }
           }
         }, FLUSH_INTERVAL_MS);
+      }
+
+      async function emitWorktreeDiffEvent(
+        diffSnapshot: WorktreeDiffDelta,
+        precedingToolUseIds: string[],
+      ): Promise<void> {
+        if (diffSnapshot.changedFiles.length > 0) {
+          runProducedFileChanges = true;
+        }
+
+        const fileCount = diffSnapshot.changedFiles.length;
+        const summary = fileCount > 0
+          ? `Detected worktree changes in ${fileCount} file${fileCount === 1 ? "" : "s"}`
+          : "Captured worktree diff";
+        await deps.eventHub.emit(threadId, "tool.finished", {
+          messageId: assistantMessage.id,
+          summary,
+          precedingToolUseIds,
+          source: "worktree.diff",
+          changedFiles: diffSnapshot.changedFiles,
+          diff: diffSnapshot.diff,
+          diffTruncated: diffSnapshot.diffTruncated,
+        });
+      }
+
+      async function maybeEmitIncrementalWorktreeDiff(payload: {
+        toolName?: string;
+        precedingToolUseIds: string[];
+        editTarget?: string;
+        toolInput?: Record<string, unknown>;
+        summary?: string;
+        isBash?: true;
+      }): Promise<void> {
+        if (!threadWorktreePath || !diffBaselineState) {
+          return;
+        }
+
+        const ownedPaths = collectOwnedWorktreePaths(threadWorktreePath, {
+          toolName: payload.toolName ?? null,
+          editTarget: payload.editTarget ?? null,
+          toolInput: payload.toolInput ?? null,
+          summary: payload.summary ?? null,
+          isBash: payload.isBash === true,
+        });
+        if (ownedPaths.length === 0) {
+          return;
+        }
+
+        try {
+          const afterState = await captureWorktreeState(threadWorktreePath);
+          if (!afterState) {
+            return;
+          }
+
+          const diffSnapshot = buildDiffDelta(diffBaselineState, afterState);
+          diffBaselineState = afterState;
+          if (!diffSnapshot) {
+            return;
+          }
+
+          const scopedDiffSnapshot = filterWorktreeDiffDelta(diffSnapshot, ownedPaths);
+          if (!scopedDiffSnapshot) {
+            return;
+          }
+
+          await emitWorktreeDiffEvent(scopedDiffSnapshot, payload.precedingToolUseIds);
+        } catch (error) {
+          deps.logService?.log("warn", "chat.lifecycle", "Incremental worktree diff enrichment failed", {
+            threadId,
+            toolName: payload.toolName ?? null,
+            precedingToolUseIds: payload.precedingToolUseIds,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       const result = await runner({
@@ -709,6 +807,7 @@ export function createChatService(deps: RuntimeDeps) {
             ...payload,
             messageId: assistantMessage.id,
           });
+          await maybeEmitIncrementalWorktreeDiff(payload);
         },
         onSubagentStarted: async (payload) => {
           await deps.eventHub.emit(threadId, "subagent.started", {
@@ -883,10 +982,13 @@ export function createChatService(deps: RuntimeDeps) {
           });
         } catch { /* session id is non-critical */ }
       }
-      let diffSnapshot: ReturnType<typeof buildDiffDelta> | null = null;
+      let diffSnapshot: WorktreeDiffDelta | null = null;
       try {
         const afterState = threadWorktreePath ? await captureWorktreeState(threadWorktreePath) : null;
-        diffSnapshot = beforeState && afterState ? buildDiffDelta(beforeState, afterState) : null;
+        diffSnapshot = diffBaselineState && afterState ? buildDiffDelta(diffBaselineState, afterState) : null;
+        if (afterState) {
+          diffBaselineState = afterState;
+        }
         if (diffSnapshot) {
           const ownedPaths = Array.from(worktreeMutationTracker.ownedPaths);
           const scopedDiffSnapshot = ownedPaths.length > 0
@@ -897,19 +999,7 @@ export function createChatService(deps: RuntimeDeps) {
             : worktreeMutationTracker.sawBashTool;
           if (shouldEmitWorktreeDiff && scopedDiffSnapshot) {
             diffSnapshot = scopedDiffSnapshot;
-            const fileCount = diffSnapshot.changedFiles.length;
-            const summary = fileCount > 0
-              ? `Detected worktree changes in ${fileCount} file${fileCount === 1 ? "" : "s"}`
-              : "Captured worktree diff";
-            await deps.eventHub.emit(threadId, "tool.finished", {
-              messageId: assistantMessage.id,
-              summary,
-              precedingToolUseIds: [],
-              source: "worktree.diff",
-              changedFiles: diffSnapshot.changedFiles,
-              diff: diffSnapshot.diff,
-              diffTruncated: diffSnapshot.diffTruncated,
-            });
+            await emitWorktreeDiffEvent(diffSnapshot, []);
           } else {
             diffSnapshot = null;
           }
@@ -921,7 +1011,7 @@ export function createChatService(deps: RuntimeDeps) {
         });
       }
 
-      const hasFileChanges = (diffSnapshot?.changedFiles.length ?? 0) > 0;
+      const hasFileChanges = runProducedFileChanges || (diffSnapshot?.changedFiles.length ?? 0) > 0;
       deps.logService?.log("debug", "chat.lifecycle", "run about to emit chat.completed", {
         threadId,
         assistantMessageId: assistantMessage.id,

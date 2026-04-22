@@ -117,6 +117,10 @@ function worktreeDiffEvent(events: ChatEvent[]): ChatEvent | undefined {
   return events.find((event) => event.type === "tool.finished" && event.payload.source === "worktree.diff");
 }
 
+function worktreeDiffEvents(events: ChatEvent[]): ChatEvent[] {
+  return events.filter((event) => event.type === "tool.finished" && event.payload.source === "worktree.diff");
+}
+
 describe("chatService worktree diff delta", () => {
   beforeEach(async () => {
     await resetDatabase();
@@ -183,6 +187,77 @@ describe("chatService worktree diff delta", () => {
     expect(diffEvent?.payload.changedFiles).toEqual(["src/b.ts"]);
     expect(diffEvent?.payload.diff).toContain("diff --git a/src/b.ts b/src/b.ts");
     expect(diffEvent?.payload.diff).not.toContain("diff --git a/src/a.ts b/src/a.ts");
+  });
+
+  it("emits edit-owned worktree diff before later tool activity in the same run", async () => {
+    const worktreePath = createGitWorktree({
+      "src/main.ts": "export const main = 1;\n",
+      "src/helper.ts": "export const helper = 1;\n",
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      await onToolStarted({
+        toolName: "Edit",
+        toolUseId: "edit-main",
+        parentToolUseId: null,
+        editTarget: "src/main.ts",
+      });
+      writeFileSync(join(worktreePath, "src/main.ts"), "export const main = 2;\n", "utf8");
+      await onToolFinished({
+        toolName: "Edit",
+        summary: "Edited src/main.ts",
+        precedingToolUseIds: ["edit-main"],
+        editTarget: "src/main.ts",
+        toolInput: {
+          file_path: "src/main.ts",
+          old_string: "export const main = 1;\n",
+          new_string: "export const main = 2;\n",
+        },
+      });
+      await onToolStarted({
+        toolName: "Read",
+        toolUseId: "read-helper",
+        parentToolUseId: null,
+      });
+      await onToolFinished({
+        toolName: "Read",
+        summary: "Read src/helper.ts",
+        precedingToolUseIds: ["read-helper"],
+      });
+      await onText("Updated src/main.ts and inspected src/helper.ts");
+      return {
+        output: "Updated src/main.ts and inspected src/helper.ts",
+        sessionId: "session-worktree-edit-midrun",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree Mid-run Edit Diff");
+
+    await chatService.sendMessage(threadId, {
+      content: "update src/main.ts and then inspect src/helper.ts",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const diffEvents = worktreeDiffEvents(events);
+    const readStartedEvent = events.find((event) => (
+      event.type === "tool.started" && event.payload.toolUseId === "read-helper"
+    ));
+    const completedEvent = events.find((event) => event.type === "chat.completed");
+
+    expect(diffEvents).toHaveLength(1);
+    expect(readStartedEvent).toBeDefined();
+    expect(completedEvent).toBeDefined();
+    expect((diffEvents[0]?.idx ?? Number.POSITIVE_INFINITY)).toBeLessThan(readStartedEvent?.idx ?? Number.NEGATIVE_INFINITY);
+    expect((diffEvents[0]?.idx ?? Number.POSITIVE_INFINITY)).toBeLessThan(completedEvent?.idx ?? Number.NEGATIVE_INFINITY);
+    expect(diffEvents[0]?.payload.changedFiles).toEqual(["src/main.ts"]);
+    expect(diffEvents[0]?.payload.precedingToolUseIds).toEqual(["edit-main"]);
+    expect(diffEvents[0]?.payload.diff).toContain("diff --git a/src/main.ts b/src/main.ts");
   });
 
   it("does not emit worktree diff when no file changes occur", async () => {
