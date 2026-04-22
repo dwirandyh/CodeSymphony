@@ -10,6 +10,7 @@ import {
   finishedToolUseIds,
   getCompletedMessageId,
   getEventMessageId,
+  getScopedMessageId,
   getInlineEventMessageId,
   hasUnclosedCodeFence,
   isBashToolEvent,
@@ -237,9 +238,18 @@ export function buildTimelineFromSeed(params: {
   const orderedEventsByIdx = [...events].sort((a, b) => a.idx - b.idx);
 
   const firstMessageEventIdxById = new Map<string, number>();
+  const firstScopedEventIdxByMessageId = new Map<string, number>();
   const completedMessageIds = new Set<string>();
   const completedEventIdxByMessageId = new Map<string, number>();
   for (const event of orderedEventsByIdx) {
+    const scopedMessageId = getScopedMessageId(event);
+    if (scopedMessageId) {
+      const currentScopedIdx = firstScopedEventIdxByMessageId.get(scopedMessageId);
+      if (currentScopedIdx == null || event.idx < currentScopedIdx) {
+        firstScopedEventIdxByMessageId.set(scopedMessageId, event.idx);
+      }
+    }
+
     const messageId = getEventMessageId(event);
     if (messageId) {
       const currentIdx = firstMessageEventIdxById.get(messageId);
@@ -281,6 +291,7 @@ export function buildTimelineFromSeed(params: {
 
   const messageAnchorIdxById = computeMessageAnchorIdxById(
     sortedMessages,
+    firstScopedEventIdxByMessageId,
     firstMessageEventIdxById,
     completedEventIdxByMessageId,
   );
@@ -331,7 +342,7 @@ export function buildTimelineFromSeed(params: {
       continue;
     }
 
-    const messageId = typeof event.payload.messageId === "string" ? event.payload.messageId : null;
+    const messageId = getScopedMessageId(event);
     if (!messageId) {
       continue;
     }
@@ -346,7 +357,7 @@ export function buildTimelineFromSeed(params: {
   const assistantStartIdxByMessageId = new Map<string, number>();
   const nextAssistantStartIdxByMessageId = new Map<string, number>();
   for (const message of assistantMessages) {
-    const startIdx = firstMessageEventIdxById.get(message.id);
+    const startIdx = firstScopedEventIdxByMessageId.get(message.id);
     if (typeof startIdx === "number") {
       assistantStartIdxByMessageId.set(message.id, startIdx);
     }
@@ -692,7 +703,7 @@ export function buildTimelineFromSeed(params: {
       const hasInlineSubagentRuns = subagentGroups.length > 0;
       const inlineInserts = buildInlineInserts(bashRuns, editedRuns, subagentGroups, exploreActivityGroups, planFileOutput);
       const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
-      const hasDirectMessageAnchor = firstMessageEventIdxById.has(message.id) || completedEventIdxByMessageId.has(message.id);
+      const hasDirectMessageAnchor = firstScopedEventIdxByMessageId.has(message.id) || completedEventIdxByMessageId.has(message.id);
       const forcedInlineAnchorIdx = hasDirectMessageAnchor ? undefined : anchorIdx;
       const planResult = filterPostPlanDeltaEvents(messageDeltaEvents, inlineInserts, cleanedContent);
       const effectiveDeltaEvents = planResult.effectiveDeltaEvents;

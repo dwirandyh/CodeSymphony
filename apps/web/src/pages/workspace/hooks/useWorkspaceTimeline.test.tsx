@@ -827,6 +827,7 @@ describe("useWorkspaceTimeline", () => {
       makeEvent(1, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }, "m2"),
       makeEvent(2, "tool.finished", { precedingToolUseIds: ["exit-1"] }, "m2"),
       makeEvent(3, "tool.started", {
+        messageId: "m3",
         toolName: "Edit",
         toolUseId: "edit-1",
         toolInput: {
@@ -1511,6 +1512,73 @@ describe("useWorkspaceTimeline", () => {
     expect(clauseIndex).toBeGreaterThan(-1);
     expect(firstEditedIndex).toBeGreaterThan(-1);
     expect(clauseIndex).toBeLessThan(firstEditedIndex);
+  });
+
+  it("renders separate edited cards for repeated permission-gated edits on the same file", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "apply the fixes"),
+      makeMessage("m2", 2, "assistant", "Selesai, perubahan sudah diterapkan."),
+    ];
+    const events = [
+      makeEvent(1, "permission.requested", {
+        toolName: "Edit",
+        requestId: "perm-1",
+        editTarget: "/repo/README.md",
+        toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+      }, "m2"),
+      makeEvent(2, "permission.resolved", { requestId: "perm-1", decision: "allow" }, "m2"),
+      makeEvent(3, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e1",
+        toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+      }, "m2"),
+      makeEvent(4, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/README.md",
+        precedingToolUseIds: ["e1"],
+        editTarget: "/repo/README.md",
+      }, "m2"),
+      makeEvent(5, "permission.requested", {
+        toolName: "Edit",
+        requestId: "perm-2",
+        editTarget: "/repo/README.md",
+        toolInput: { file_path: "/repo/README.md", old_string: "b", new_string: "c" },
+      }, "m2"),
+      makeEvent(6, "permission.resolved", { requestId: "perm-2", decision: "allow" }, "m2"),
+      makeEvent(7, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e2",
+        toolInput: { file_path: "/repo/README.md", old_string: "b", new_string: "c" },
+      }, "m2"),
+      makeEvent(8, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/README.md",
+        precedingToolUseIds: ["e2"],
+        editTarget: "/repo/README.md",
+      }, "m2"),
+      makeEvent(9, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e3",
+        toolInput: { file_path: "/repo/build.gradle", old_string: "x", new_string: "y" },
+      }, "m2"),
+      makeEvent(10, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/build.gradle",
+        precedingToolUseIds: ["e3"],
+        editTarget: "/repo/build.gradle",
+      }, "m2"),
+      makeEvent(11, "message.delta", { role: "assistant", messageId: "m2", delta: "Selesai, perubahan sudah diterapkan." }, "m2"),
+      makeEvent(12, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const editedItems = items.filter((item): item is Extract<typeof item, { kind: "edited-diff" }> => item.kind === "edited-diff");
+    const readmeItems = editedItems.filter((item) => item.changedFiles.includes("/repo/README.md"));
+    const gradleItems = editedItems.filter((item) => item.changedFiles.includes("/repo/build.gradle"));
+
+    expect(editedItems).toHaveLength(3);
+    expect(readmeItems).toHaveLength(2);
+    expect(gradleItems).toHaveLength(1);
   });
 
   it("keeps a single-edit completion message after the edit card when the edit starts mid-sentence", () => {

@@ -348,4 +348,57 @@ describe("buildTimelineFromSeed", () => {
     expect(resumedTool?.id.startsWith("m4:")).toBe(true);
     expect(resumedTool?.id.startsWith("m2:")).toBe(false);
   });
+
+  it("keeps post-approval tool-only activity after a revealed plan card before the first execution delta", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Plan it."),
+      makeMessage("m2", 1, "assistant", "Here is the implementation plan with extra context."),
+      makeMessage("m3", 2, "assistant", ""),
+    ];
+    const events = [
+      makeEvent(10, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Plan context",
+      }),
+      makeEvent(11, "plan.created", {
+        messageId: "m2",
+        content: "1. Update the wording\n2. Tighten the spacing",
+        filePath: ".claude/plans/codex-plan.md",
+        source: "codex_plan_item",
+      }),
+      makeEvent(12, "chat.completed", { messageId: "m2", threadMode: "plan" }),
+      makeEvent(13, "plan.approved", {
+        filePath: ".claude/plans/codex-plan.md",
+      }),
+      makeEvent(14, "tool.started", {
+        messageId: "m3",
+        toolName: "Edit",
+        toolUseId: "edit-1",
+        editTarget: "/repo/src/app.ts",
+      }),
+      makeEvent(15, "tool.finished", {
+        messageId: "m3",
+        toolName: "Edit",
+        summary: "Edited /repo/src/app.ts",
+        precedingToolUseIds: ["edit-1"],
+        editTarget: "/repo/src/app.ts",
+        toolInput: { file_path: "/repo/src/app.ts" },
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const planIndex = result.items.findIndex((item) => item.kind === "plan-file-output");
+    const editedIndex = result.items.findIndex((item) => item.kind === "edited-diff" && item.changedFiles.includes("/repo/src/app.ts"));
+
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(editedIndex).toBeGreaterThan(-1);
+    expect(planIndex).toBeLessThan(editedIndex);
+  });
 });

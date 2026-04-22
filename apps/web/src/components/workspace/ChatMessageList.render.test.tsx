@@ -2,6 +2,7 @@ import { act, forwardRef, useImperativeHandle, type ComponentProps } from "react
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync } from "react-dom";
+import { parsePatchFiles } from "@pierre/diffs";
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { ChatTimelineItem } from "./chat-message-list";
 import { MarkdownBody, ChatMessageList } from "./chat-message-list";
@@ -735,6 +736,84 @@ describe("ChatMessageList", () => {
     });
     expect(container.textContent).toContain("Command changed build.gradle.kts");
     expect(container.textContent).not.toContain("Edited build.gradle.kts");
+  });
+
+  it("keeps delete-only line removals labeled as edited changes", () => {
+    vi.mocked(parsePatchFiles).mockReturnValueOnce([{
+      files: [{
+        name: "SharedRewardPackageAdapter.java",
+        type: "changed",
+        hunks: [{ hunkContent: [{ type: "deletion", additions: [], deletions: [{ lineNumber: 1, content: "-line" }] }] }],
+      }],
+    }] as never);
+
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "edited-diff",
+        id: "diff-delete-line",
+        eventId: "ev-delete-line",
+        status: "success",
+        diffKind: "actual",
+        changedFiles: ["SharedRewardPackageAdapter.java"],
+        diff: [
+          "diff --git a/SharedRewardPackageAdapter.java b/SharedRewardPackageAdapter.java",
+          "--- a/SharedRewardPackageAdapter.java",
+          "+++ b/SharedRewardPackageAdapter.java",
+          "@@ -1 +0,0 @@",
+          "-line",
+        ].join("\n"),
+        diffTruncated: false,
+        additions: 0,
+        deletions: 1,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Edited SharedRewardPackageAdapter.java");
+    expect(container.textContent).not.toContain("Deleted SharedRewardPackageAdapter.java");
+  });
+
+  it("labels actual file deletions as deleted", () => {
+    vi.mocked(parsePatchFiles).mockReturnValueOnce([{
+      files: [{
+        name: "SharedRewardPackageAdapter.java",
+        type: "deleted",
+        hunks: [{ hunkContent: [{ type: "deletion", additions: [], deletions: [{ lineNumber: 1, content: "-line" }] }] }],
+      }],
+    }] as never);
+
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "edited-diff",
+        id: "diff-delete-file",
+        eventId: "ev-delete-file",
+        status: "success",
+        diffKind: "actual",
+        changedFiles: ["SharedRewardPackageAdapter.java"],
+        diff: [
+          "diff --git a/SharedRewardPackageAdapter.java b/SharedRewardPackageAdapter.java",
+          "deleted file mode 100644",
+          "--- a/SharedRewardPackageAdapter.java",
+          "+++ /dev/null",
+          "@@ -1 +0,0 @@",
+          "-line",
+        ].join("\n"),
+        diffTruncated: false,
+        additions: 0,
+        deletions: 1,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Deleted SharedRewardPackageAdapter.java");
   });
 
   it("renders explore-activity summary", () => {

@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -20,6 +21,7 @@ const DESKTOP_DEV_RUNTIME_PORT: u16 = 4321;
 const DESKTOP_PROD_RUNTIME_PORT: u16 = 4322;
 const LOCALHOST_RUNTIME_HOST: &str = "127.0.0.1";
 const LAN_RUNTIME_HOST: &str = "0.0.0.0";
+const COMMON_RUNTIME_EXECUTABLE_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 
 fn desktop_runtime_host(is_dev: bool) -> &'static str {
     if is_dev {
@@ -164,6 +166,27 @@ fn desktop_runtime_init_script(port: u16) -> String {
     )
 }
 
+fn build_runtime_path_env() -> Option<OsString> {
+    let mut paths = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    for candidate in COMMON_RUNTIME_EXECUTABLE_DIRS {
+        let candidate_path = PathBuf::from(candidate);
+        if !candidate_path.is_dir() {
+            continue;
+        }
+
+        if paths.iter().any(|existing| existing == &candidate_path) {
+            continue;
+        }
+
+        paths.push(candidate_path);
+    }
+
+    std::env::join_paths(paths).ok()
+}
+
 fn desktop_dev_runtime_db_path(workspace_root: &Path) -> PathBuf {
     workspace_root
         .join("apps")
@@ -234,21 +257,35 @@ fn spawn_runtime_dev(port: u16) -> Option<Child> {
         .env("CODESYMPHONY_DEBUG_LOG_PATH", runtime_dir.join("debug.log"))
         .current_dir(workspace_root);
 
+    if let Some(runtime_path) = build_runtime_path_env() {
+        cmd.env("PATH", runtime_path);
+    }
+    if let Some(codex_bin) = resolve_codex_binary() {
+        cmd.env("CODEX_BINARY_PATH", &codex_bin);
+    }
+
     #[cfg(unix)]
     cmd.process_group(0);
 
     cmd.spawn().ok()
 }
 
-fn resolve_claude_binary() -> Option<PathBuf> {
-    let candidates = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude"];
-    for candidate in candidates {
-        let path = Path::new(candidate);
+fn resolve_common_binary(binary_name: &str) -> Option<PathBuf> {
+    for candidate_dir in COMMON_RUNTIME_EXECUTABLE_DIRS {
+        let path = Path::new(candidate_dir).join(binary_name);
         if path.is_file() {
-            return Some(path.to_path_buf());
+            return Some(path);
         }
     }
     None
+}
+
+fn resolve_claude_binary() -> Option<PathBuf> {
+    resolve_common_binary("claude")
+}
+
+fn resolve_codex_binary() -> Option<PathBuf> {
+    resolve_common_binary("codex")
 }
 
 fn runtime_stdout_log_path(app_data_dir: &Path) -> PathBuf {
@@ -350,8 +387,14 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
             resource_dir.join("runtime-bundle").join("web-dist"),
         );
 
+    if let Some(runtime_path) = build_runtime_path_env() {
+        cmd.env("PATH", runtime_path);
+    }
     if let Some(claude_bin) = resolve_claude_binary() {
         cmd.env("CLAUDE_CODE_EXECUTABLE", &claude_bin);
+    }
+    if let Some(codex_bin) = resolve_codex_binary() {
+        cmd.env("CODEX_BINARY_PATH", &codex_bin);
     }
 
     if let Err(error) = configure_runtime_stdio(&mut cmd, &app_data_dir) {
@@ -599,7 +642,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{desktop_runtime_host, runtime_stderr_log_path, runtime_stdout_log_path};
+    use super::{
+        build_runtime_path_env, desktop_runtime_host, resolve_codex_binary,
+        runtime_stderr_log_path, runtime_stdout_log_path,
+    };
     use std::path::Path;
 
     #[test]
@@ -623,5 +669,19 @@ mod tests {
             runtime_stderr_log_path(app_data_dir),
             Path::new("/tmp/codesymphony/runtime.stderr.log")
         );
+    }
+
+    #[test]
+    fn runtime_path_includes_homebrew_locations_when_available() {
+        let path = build_runtime_path_env().expect("runtime PATH should be buildable");
+        let path_text = path.to_string_lossy();
+        assert!(path_text.contains("/opt/homebrew/bin") || path_text.contains("/usr/local/bin"));
+    }
+
+    #[test]
+    fn codex_binary_resolution_uses_common_install_locations() {
+        if let Some(path) = resolve_codex_binary() {
+            assert!(path.ends_with("codex"));
+        }
     }
 }

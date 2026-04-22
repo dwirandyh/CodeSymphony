@@ -8,6 +8,7 @@ import {
   selectPrimaryCodexFileChange,
   shouldAutoDeclineCodexPlanApproval,
 } from "../src/codex/sessionRunner";
+import { classifyFileChange } from "../src/codex/toolContext";
 
 describe("codex session runner plan helpers", () => {
   it("formats structured plans into actionable markdown", () => {
@@ -142,9 +143,53 @@ describe("codex session runner plan helpers", () => {
           kind: { type: "add" },
         },
       ],
-    })).toEqual({
+    })).toMatchObject({
       path: "/Users/dwirandyh/Work/Personal/codesymphony/dogfood-permission-test-7.txt",
       kind: "add",
+    });
+  });
+
+  it("preserves diff-like file change payload fields when Codex provides them", () => {
+    expect(classifyFileChange({
+      changes: [
+        {
+          path: "/tmp/example.txt",
+          kind: {
+            type: "update",
+          },
+          old_string: "before",
+          new_string: "after",
+          edits: [{ old_string: "before", new_string: "after" }],
+        },
+      ],
+    }, null)).toMatchObject({
+      toolName: "Edit",
+      editTarget: "/tmp/example.txt",
+      toolInput: {
+        file_path: "/tmp/example.txt",
+        old_string: "before",
+        new_string: "after",
+        edits: [{ old_string: "before", new_string: "after" }],
+      },
+    });
+
+    expect(classifyFileChange({
+      changes: [
+        {
+          path: "/tmp/new-file.txt",
+          kind: {
+            type: "add",
+            newContent: "hello world",
+          },
+        },
+      ],
+    }, null)).toMatchObject({
+      toolName: "Write",
+      editTarget: "/tmp/new-file.txt",
+      toolInput: {
+        file_path: "/tmp/new-file.txt",
+        new_content: "hello world",
+      },
     });
   });
 });

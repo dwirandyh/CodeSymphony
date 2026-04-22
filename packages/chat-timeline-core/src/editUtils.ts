@@ -264,7 +264,7 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
       .filter((run): run is EditedRun =>
         run != null
         && run.startIdx <= event.idx
-        && run.status !== "failed"
+        && run.status === "running"
         && runTargetsFile(run, target),
       )
       .sort((a, b) => b.startIdx - a.startIdx);
