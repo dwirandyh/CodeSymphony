@@ -7,6 +7,7 @@ export type WorktreeStateSnapshot = {
   stagedDiff: string;
   changedFiles: string[];
   untrackedFileSignatures: Map<string, string>;
+  untrackedFileContents: Map<string, string>;
 };
 
 export type WorktreeDiffDelta = {

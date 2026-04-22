@@ -220,6 +220,20 @@ function captureUntrackedFileSignatures(worktreePath: string, untrackedFilePaths
   return signatures;
 }
 
+function captureUntrackedFileContents(worktreePath: string, untrackedFilePaths: string[]): Map<string, string> {
+  const contents = new Map<string, string>();
+
+  for (const untrackedFilePath of untrackedFilePaths) {
+    try {
+      contents.set(untrackedFilePath, readFileSync(join(worktreePath, untrackedFilePath), "utf8"));
+    } catch {
+      continue;
+    }
+  }
+
+  return contents;
+}
+
 function collectUntrackedDeltaFiles(
   beforeSignatures: Map<string, string>,
   afterSignatures: Map<string, string>,
@@ -301,7 +315,7 @@ export function truncateDiffPreview(diff: string): { diff: string; diffTruncated
 export async function captureWorktreeState(worktreePath: string): Promise<WorktreeStateSnapshot | null> {
   try {
     const [statusOutput, unstagedDiff, stagedDiff, untrackedFilePaths] = await Promise.all([
-      runGit(worktreePath, ["status", "--porcelain"]),
+      runGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"]),
       runGit(worktreePath, ["diff", "--no-color"]),
       runGit(worktreePath, ["diff", "--cached", "--no-color"]),
       listUntrackedFilePaths(worktreePath),
@@ -313,10 +327,59 @@ export async function captureWorktreeState(worktreePath: string): Promise<Worktr
       stagedDiff,
       changedFiles: mergeChangedFiles(parseChangedFiles(statusOutput), untrackedFilePaths),
       untrackedFileSignatures: captureUntrackedFileSignatures(worktreePath, untrackedFilePaths),
+      untrackedFileContents: captureUntrackedFileContents(worktreePath, untrackedFilePaths),
     };
   } catch {
     return null;
   }
+}
+
+function splitDiffContentLines(content: string): string[] {
+  if (content.length === 0) {
+    return [];
+  }
+
+  const normalized = content.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  if (normalized.endsWith("\n")) {
+    lines.pop();
+  }
+  return lines;
+}
+
+function renderSyntheticDiffSection(filePath: string, beforeContent: string | null, afterContent: string | null): string {
+  const beforeLines = beforeContent == null ? [] : splitDiffContentLines(beforeContent);
+  const afterLines = afterContent == null ? [] : splitDiffContentLines(afterContent);
+  const beforeHeader = beforeLines.length === 0 ? "0,0" : beforeLines.length === 1 ? "1" : `1,${beforeLines.length}`;
+  const afterHeader = afterLines.length === 0 ? "0,0" : afterLines.length === 1 ? "1" : `1,${afterLines.length}`;
+
+  const lines = [
+    `diff --git a/${filePath} b/${filePath}`,
+    ...(beforeContent == null ? ["new file mode 100644"] : []),
+    ...(afterContent == null ? ["deleted file mode 100644"] : []),
+    `--- ${beforeContent == null ? "/dev/null" : `a/${filePath}`}`,
+    `+++ ${afterContent == null ? "/dev/null" : `b/${filePath}`}`,
+    `@@ -${beforeHeader} +${afterHeader} @@`,
+    ...beforeLines.map((line) => `-${line}`),
+    ...afterLines.map((line) => `+${line}`),
+  ];
+
+  return lines.join("\n");
+}
+
+function buildUntrackedDiffDelta(
+  beforeContents: Map<string, string>,
+  afterContents: Map<string, string>,
+  currentFiles: string[],
+): string {
+  if (currentFiles.length === 0) {
+    return "";
+  }
+
+  return currentFiles
+    .map((filePath) =>
+      renderSyntheticDiffSection(filePath, beforeContents.get(filePath) ?? null, afterContents.get(filePath) ?? null))
+    .join("\n\n");
 }
 
 export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeStateSnapshot): WorktreeDiffDelta | null {
@@ -378,7 +441,14 @@ export function buildDiffDelta(before: WorktreeStateSnapshot, after: WorktreeSta
   const deltaSections = currentDiffFiles
     .map((file) => afterSections.byFile.get(file) ?? "")
     .filter((section) => section.length > 0);
-  const diffDelta = deltaSections.join("\n\n");
+  const untrackedDiffDelta = buildUntrackedDiffDelta(
+    before.untrackedFileContents,
+    after.untrackedFileContents,
+    untrackedDeltaFiles.current,
+  );
+  const diffDelta = [...deltaSections, untrackedDiffDelta]
+    .filter((section) => section.length > 0)
+    .join("\n\n");
 
   const statusDeltaFiles = symmetricStatusDelta(before.changedFiles, after.changedFiles);
   const afterChangedFiles = new Set(after.changedFiles);

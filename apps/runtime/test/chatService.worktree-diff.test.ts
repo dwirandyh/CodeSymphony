@@ -293,7 +293,10 @@ describe("chatService worktree diff delta", () => {
     const diffEvent = worktreeDiffEvent(events);
     expect(diffEvent).toBeDefined();
     expect(diffEvent?.payload.changedFiles).toEqual(["src/generated/new.ts"]);
-    expect(diffEvent?.payload.diff).toBe("");
+    expect(diffEvent?.payload.diff).toContain("diff --git a/src/generated/new.ts b/src/generated/new.ts");
+    expect(diffEvent?.payload.diff).toContain("--- /dev/null");
+    expect(diffEvent?.payload.diff).toContain("+++ b/src/generated/new.ts");
+    expect(diffEvent?.payload.diff).toContain("+export const generated = true;");
   });
 
   it("emits worktree diff when the current run edits an existing untracked file", async () => {
@@ -347,7 +350,9 @@ describe("chatService worktree diff delta", () => {
     const diffEvent = worktreeDiffEvent(events);
     expect(diffEvent).toBeDefined();
     expect(diffEvent?.payload.changedFiles).toEqual(["src/generated/new.ts"]);
-    expect(diffEvent?.payload.diff).toBe("");
+    expect(diffEvent?.payload.diff).toContain("diff --git a/src/generated/new.ts b/src/generated/new.ts");
+    expect(diffEvent?.payload.diff).toContain("-export const generated = 1;");
+    expect(diffEvent?.payload.diff).toContain("+export const generated = 2;");
   });
 
   it("rejects sends when expected worktree id does not match the thread worktree", async () => {

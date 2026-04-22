@@ -308,6 +308,7 @@ export function editedSummaryLabel({
   changedFiles,
   additions,
   deletions,
+  isFileDeletion,
   rejectedByUser,
 }: {
   changeSource?: "edit-tool" | "worktree-diff";
@@ -316,6 +317,7 @@ export function editedSummaryLabel({
   changedFiles: string[];
   additions: number;
   deletions: number;
+  isFileDeletion?: boolean;
   rejectedByUser?: boolean;
 }): React.ReactNode {
   const firstFile = basenameFromTokenPath(changedFiles[0] ?? "file");
@@ -333,10 +335,9 @@ export function editedSummaryLabel({
     return isWorktreeDiff ? `Failed detecting changes for ${firstFile}${fileCount}` : `Failed editing ${firstFile}${fileCount}`;
   }
 
-  const isDeleteOnly = additions === 0 && deletions > 0;
   const verb = isWorktreeDiff
-    ? (isDeleteOnly ? "Command deleted" : "Command changed")
-    : (isDeleteOnly ? "Deleted" : "Edited");
+    ? (isFileDeletion ? "Command deleted" : "Command changed")
+    : (isFileDeletion ? "Deleted" : "Edited");
 
   if (diffKind === "none") {
     return `${verb} ${firstFile}${fileCount}`;

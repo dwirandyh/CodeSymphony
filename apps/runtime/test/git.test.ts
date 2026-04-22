@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -121,6 +121,18 @@ describe("git utilities", () => {
       expect(untracked).toBeTruthy();
       expect(untracked!.status).toBe("untracked");
       git("clean -f untracked.txt");
+    });
+
+    it("detects untracked files inside a new directory individually", async () => {
+      const nestedDir = join(repoDir, "src/generated");
+      await mkdir(nestedDir, { recursive: true });
+      await writeFile(join(nestedDir, "nested.ts"), "export const nested = true;\n");
+
+      const status = await getGitStatus(repoDir);
+      const untracked = status.entries.find((entry) => entry.path === "src/generated/nested.ts");
+      expect(untracked).toBeTruthy();
+      expect(untracked?.status).toBe("untracked");
+      git("clean -fd src");
     });
 
     it("reports upstream sync state", async () => {

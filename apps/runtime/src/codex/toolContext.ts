@@ -83,7 +83,58 @@ export function buildSummaryFromCommandExecution(item: Record<string, unknown>, 
   return `Completed ${toolName}`;
 }
 
-export function selectPrimaryCodexFileChange(item: Record<string, unknown>): { path?: string; kind?: string } {
+type CodexFileChangeSelection = {
+  path?: string;
+  kind?: string;
+  change?: Record<string, unknown>;
+};
+
+function copyKnownFileChangeField(
+  target: Record<string, unknown>,
+  source: Record<string, unknown> | undefined,
+  sourceKey: string,
+  targetKey = sourceKey,
+): void {
+  if (!source || target[targetKey] !== undefined) {
+    return;
+  }
+
+  const value = source[sourceKey];
+  if (typeof value === "string" || Array.isArray(value)) {
+    target[targetKey] = value;
+  }
+}
+
+function extractCodexFileChangeToolInput(
+  item: Record<string, unknown>,
+  selectedChange: Record<string, unknown> | undefined,
+  firstPath: string | undefined,
+): Record<string, unknown> | undefined {
+  const selectedKind = asObject(selectedChange?.kind);
+  const toolInput: Record<string, unknown> = {};
+
+  if (firstPath) {
+    toolInput.file_path = firstPath;
+  }
+
+  const candidateSources = [selectedChange, selectedKind, item];
+  for (const source of candidateSources) {
+    copyKnownFileChangeField(toolInput, source, "old_string");
+    copyKnownFileChangeField(toolInput, source, "new_string");
+    copyKnownFileChangeField(toolInput, source, "old_text");
+    copyKnownFileChangeField(toolInput, source, "new_text");
+    copyKnownFileChangeField(toolInput, source, "old");
+    copyKnownFileChangeField(toolInput, source, "new");
+    copyKnownFileChangeField(toolInput, source, "content");
+    copyKnownFileChangeField(toolInput, source, "new_content");
+    copyKnownFileChangeField(toolInput, source, "newContent", "new_content");
+    copyKnownFileChangeField(toolInput, source, "edits");
+  }
+
+  return Object.keys(toolInput).length > 0 ? toolInput : undefined;
+}
+
+export function selectPrimaryCodexFileChange(item: Record<string, unknown>): CodexFileChangeSelection {
   const changes = asArray(item.changes).map(asObject).filter((entry): entry is Record<string, unknown> => entry !== undefined);
   const rankedChanges = changes
     .map((change) => {
@@ -101,12 +152,12 @@ export function selectPrimaryCodexFileChange(item: Record<string, unknown>): { p
         score -= 100;
       }
 
-      return { path, kind, score };
+      return { path, kind, score, change };
     })
     .sort((left, right) => right.score - left.score);
 
   const selected = rankedChanges[0];
-  return selected ? { path: selected.path, kind: selected.kind } : {};
+  return selected ? { path: selected.path, kind: selected.kind, change: selected.change } : {};
 }
 
 export function buildSummaryFromFileChange(item: Record<string, unknown>, toolName: string): string {
@@ -159,13 +210,13 @@ export function classifyCommandExecution(item: Record<string, unknown>, ownerToo
 }
 
 export function classifyFileChange(item: Record<string, unknown>, ownerToolUseId: string | null): ToolContext {
-  const { path: firstPath, kind: changeKind } = selectPrimaryCodexFileChange(item);
+  const { path: firstPath, kind: changeKind, change } = selectPrimaryCodexFileChange(item);
   const toolName = changeKind === "add" || changeKind === "create" ? "Write" : "Edit";
 
   return {
     toolName,
     editTarget: firstPath,
-    toolInput: firstPath ? { file_path: firstPath } : undefined,
+    toolInput: extractCodexFileChangeToolInput(item, change, firstPath),
     ownership: toOwnership(ownerToolUseId),
   };
 }

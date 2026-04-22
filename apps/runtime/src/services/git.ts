@@ -558,7 +558,9 @@ export async function getGitStatus(cwd: string): Promise<{
   ]);
   let porcelain = "";
   try {
-    porcelain = await runGit(["status", "--porcelain"], cwd, { timeoutMs: STATUS_GIT_TIMEOUT_MS });
+    porcelain = await runGit(["status", "--porcelain", "--untracked-files=all"], cwd, {
+      timeoutMs: STATUS_GIT_TIMEOUT_MS,
+    });
   } catch {
     return { branch, ...syncStatus, entries: [] };
   }
@@ -681,7 +683,7 @@ export async function getGitBranchDiffSummary(cwd: string, baseBranch: string): 
 }
 
 export async function discardGitChange(cwd: string, filePath: string): Promise<void> {
-  const status = await runGit(["status", "--porcelain", filePath], cwd);
+  const status = await runGit(["status", "--porcelain", "--untracked-files=all", "--", filePath], cwd);
   if (status.startsWith("??")) {
     await runGit(["clean", "-f", filePath], cwd);
   } else {
@@ -707,7 +709,7 @@ async function getUntrackedFilePaths(cwd: string, filePath?: string): Promise<st
   const pathArgs = filePath ? ["--", filePath] : [];
 
   try {
-    const status = await runGit(["status", "--porcelain", ...pathArgs], cwd, {
+    const status = await runGit(["status", "--porcelain", "--untracked-files=all", ...pathArgs], cwd, {
       timeoutMs: STATUS_GIT_TIMEOUT_MS,
     });
     return status

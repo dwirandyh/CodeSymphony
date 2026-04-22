@@ -42,6 +42,10 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value != null && !Array.isArray(value);
 }
 
+export function getScopedMessageId(event: ChatEvent): string | null {
+  return isRecord(event.payload) ? payloadStringOrNull(event.payload.messageId) : null;
+}
+
 // ── Event classification ──
 
 function isClaudePlanFilePayload(payload: Record<string, unknown>): boolean {
@@ -73,7 +77,7 @@ export function normalizePlanCreatedEvent(event: ChatEvent, orderedEvents: ChatE
     return null;
   }
 
-  const messageId = payloadStringOrNull(event.payload.messageId) ?? "";
+  const messageId = getScopedMessageId(event) ?? "";
   let content = payloadStringOrNull(event.payload.content) ?? "";
   let filePath = payloadStringOrNull(event.payload.filePath) ?? "plan.md";
   if (content.trim().length === 0) {
@@ -443,8 +447,7 @@ export function getEventMessageId(event: ChatEvent): string | null {
     return null;
   }
 
-  const messageId = event.payload.messageId;
-  return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
+  return getScopedMessageId(event);
 }
 
 export function getCompletedMessageId(event: ChatEvent): string | null {
@@ -452,8 +455,7 @@ export function getCompletedMessageId(event: ChatEvent): string | null {
     return null;
   }
 
-  const messageId = event.payload.messageId;
-  return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
+  return getScopedMessageId(event);
 }
 
 export function getInlineEventMessageId(event: ChatEvent): string | null {
@@ -461,8 +463,7 @@ export function getInlineEventMessageId(event: ChatEvent): string | null {
     return null;
   }
 
-  const messageId = event.payload.messageId;
-  return typeof messageId === "string" && messageId.length > 0 ? messageId : null;
+  return getScopedMessageId(event);
 }
 
 function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
