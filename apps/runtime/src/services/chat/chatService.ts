@@ -72,6 +72,7 @@ import {
   persistAlwaysAllowRule,
   inferPlanDetectionSource,
 } from "./chatAttachmentUtils.js";
+import { listCodexSkills, normalizeCodexSkillSlashCommandsForPrompt } from "./codexSkills.js";
 import {
   ensureThreadPermissionMap,
   ensureThreadQuestionMap,
@@ -1330,10 +1331,17 @@ export function createChatService(deps: RuntimeDeps) {
       return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
     },
 
-    async listSlashCommands(worktreeId: string): Promise<SlashCommandCatalog> {
+    async listSlashCommands(worktreeId: string, agent: CliAgent = "claude"): Promise<SlashCommandCatalog> {
       const worktree = await deps.prisma.worktree.findUnique({ where: { id: worktreeId } });
       if (!worktree) {
         throw new Error("Worktree not found");
+      }
+
+      if (agent === "codex") {
+        return SlashCommandCatalogSchema.parse({
+          commands: listCodexSkills(worktree.path),
+          updatedAt: new Date().toISOString(),
+        });
       }
 
       try {
@@ -1930,7 +1938,10 @@ export function createChatService(deps: RuntimeDeps) {
           delta: input.content,
         });
 
-        const prompt = buildPromptWithAttachments(input.content, attachmentRecords, {
+        const normalizedContent = thread.agent === "codex"
+          ? normalizeCodexSkillSlashCommandsForPrompt(input.content, listCodexSkills(thread.worktree.path))
+          : input.content;
+        const prompt = buildPromptWithAttachments(normalizedContent, attachmentRecords, {
           workspaceRoot: thread.worktree.path,
         });
         scheduleAssistant(threadId, prompt, input.mode);
