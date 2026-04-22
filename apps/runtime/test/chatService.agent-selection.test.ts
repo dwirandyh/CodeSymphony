@@ -1,5 +1,7 @@
 import { PrismaClient } from "@prisma/client";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
@@ -142,6 +144,67 @@ describe("chatService agent selection", () => {
     const persistedThread = await chatService.getThreadById(thread.id);
     expect(persistedThread?.codexSessionId).toBe("codex-session-1");
     expect(persistedThread?.claudeSessionId).toBeNull();
+  });
+
+  it("includes the effective Codex CLI provider in runtime errors for built-in Codex threads", async () => {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const codexHome = mkdtempSync(join(tmpdir(), "codesymphony-codex-home-"));
+    writeFileSync(join(codexHome, "config.toml"), [
+      "model_provider = \"cliproxyapi\"",
+      "model = \"gpt-5.4\"",
+      "",
+      "[model_providers.cliproxyapi]",
+      "name = \"cliproxyapi\"",
+      "base_url = \"http://127.0.0.1:8317/v1\"",
+      "wire_api = \"responses\"",
+      "",
+    ].join("\n"));
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      }));
+      const codexRunner: ClaudeRunner = vi.fn(async () => {
+        throw new Error("stream disconnected before completion");
+      });
+
+      const chatService = createChatService({
+        prisma,
+        eventHub: createEventHub(prisma),
+        claudeRunner,
+        codexRunner,
+        modelProviderService: stubModelProviderService,
+      });
+      const { thread } = await seedThread("Codex CLI override error");
+
+      await chatService.updateThreadAgentSelection(thread.id, {
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+      });
+
+      await chatService.sendMessage(thread.id, {
+        content: "Trigger the runtime error path",
+      });
+      const events = await waitForCompletion(chatService, thread.id);
+
+      expect(events.at(-1)?.type).toBe("chat.failed");
+      expect(codexRunner).toHaveBeenCalledTimes(1);
+
+      const messages = await chatService.listMessages(thread.id);
+      const assistantMessage = messages.find((message) => message.role === "assistant");
+      expect(assistantMessage?.content).toContain("Selected codex model: \"gpt-5.4\".");
+      expect(assistantMessage?.content).toContain("Effective Codex CLI provider: \"cliproxyapi\" via http://127.0.0.1:8317/v1 using responses.");
+      expect(assistantMessage?.content).toContain("not Settings → Models.");
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+    }
   });
 
   it("rejects agent changes once a thread already has messages", async () => {
