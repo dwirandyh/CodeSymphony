@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SaveAutomationConfig } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
 import { useWorkspaceFileEditor } from "./useWorkspaceFileEditor";
 
@@ -9,6 +10,7 @@ vi.mock("../../../lib/api", () => ({
   api: {
     getFileContents: vi.fn().mockResolvedValue({ oldContent: null, newContent: null }),
     getWorktreeFileContent: vi.fn(),
+    runTerminalCommand: vi.fn(),
     saveWorktreeFileContent: vi.fn(),
   },
 }));
@@ -17,6 +19,11 @@ let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
 let hookResult: ReturnType<typeof useWorkspaceFileEditor>;
+let testActiveFilePath: string;
+let testFileEntries: Array<{ path: string; type: "file" }>;
+let testSaveAutomation: SaveAutomationConfig | null;
+let resolveSaveAutomationTargetSessionId: ReturnType<typeof vi.fn>;
+let onError: ReturnType<typeof vi.fn>;
 
 function flushPromises() {
   return new Promise((resolve) => {
@@ -38,11 +45,13 @@ function createDeferred<T>() {
 
 function TestComponent() {
   hookResult = useWorkspaceFileEditor({
-    activeFilePath: "src/example.ts",
+    activeFilePath: testActiveFilePath,
     activeGitBaselineVersionKey: "main:clean:0:0",
     activeView: "file",
-    fileEntries: [{ path: "src/example.ts", type: "file" }],
-    onError: vi.fn(),
+    fileEntries: testFileEntries,
+    onError,
+    resolveSaveAutomationTargetSessionId,
+    saveAutomation: testSaveAutomation,
     selectedThreadId: null,
     selectedWorktreeId: "worktree-1",
     selectedWorktreePath: "/repo",
@@ -64,6 +73,12 @@ beforeEach(() => {
     },
   });
   vi.clearAllMocks();
+  vi.mocked(api.runTerminalCommand).mockResolvedValue(undefined);
+  testActiveFilePath = "src/example.ts";
+  testFileEntries = [{ path: "src/example.ts", type: "file" }];
+  testSaveAutomation = null;
+  resolveSaveAutomationTargetSessionId = vi.fn().mockReturnValue(null);
+  onError = vi.fn();
 });
 
 afterEach(() => {
@@ -144,5 +159,64 @@ describe("useWorkspaceFileEditor", () => {
       loading: false,
       mimeType: "text/typescript",
     });
+  });
+
+  it("sends save automation payload after saving a matching file", async () => {
+    vi.useFakeTimers();
+    testActiveFilePath = "lib/main.dart";
+    testFileEntries = [{ path: "lib/main.dart", type: "file" }];
+    testSaveAutomation = {
+      enabled: true,
+      target: "active_run_session",
+      filePatterns: ["lib/**/*.dart"],
+      actionType: "send_stdin",
+      payload: "r",
+      debounceMs: 250,
+    };
+    resolveSaveAutomationTargetSessionId.mockReturnValue("run-session-1");
+    vi.mocked(api.getWorktreeFileContent).mockResolvedValue({
+      path: "lib/main.dart",
+      content: "void main() {}\n",
+      mimeType: "text/x-dart",
+    });
+    vi.mocked(api.saveWorktreeFileContent).mockResolvedValue({
+      path: "lib/main.dart",
+      content: "void main() { runApp(App()); }\n",
+      mimeType: "text/x-dart",
+    });
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <TestComponent />
+          </QueryClientProvider>,
+        );
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      act(() => {
+        hookResult.handleEditorDraftChange("lib/main.dart", "void main() { runApp(App()); }\n");
+      });
+
+      await act(async () => {
+        await hookResult.handleSaveActiveFile();
+      });
+
+      expect(api.runTerminalCommand).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+
+      expect(resolveSaveAutomationTargetSessionId).toHaveBeenCalledWith("worktree-1");
+      expect(api.runTerminalCommand).toHaveBeenCalledWith({
+        sessionId: "run-session-1",
+        command: "r",
+        cwd: "/repo",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

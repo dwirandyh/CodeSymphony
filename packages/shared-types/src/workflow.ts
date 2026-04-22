@@ -39,6 +39,22 @@ export const WorktreeSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 
+export const SaveAutomationTargetSchema = z.enum(["active_run_session", "workspace_terminal"]);
+export type SaveAutomationTarget = z.infer<typeof SaveAutomationTargetSchema>;
+
+export const SaveAutomationActionTypeSchema = z.enum(["send_stdin"]);
+export type SaveAutomationActionType = z.infer<typeof SaveAutomationActionTypeSchema>;
+
+export const SaveAutomationConfigSchema = z.object({
+  enabled: z.boolean(),
+  target: SaveAutomationTargetSchema,
+  filePatterns: z.array(z.string().trim().min(1)).default([]),
+  actionType: SaveAutomationActionTypeSchema.default("send_stdin"),
+  payload: z.string().trim(),
+  debounceMs: z.number().int().min(0).max(5000).default(400),
+});
+export type SaveAutomationConfig = z.infer<typeof SaveAutomationConfigSchema>;
+
 export const RepositorySchema = z.object({
   id: z.string(),
   name: z.string().min(1),
@@ -47,6 +63,7 @@ export const RepositorySchema = z.object({
   setupScript: z.array(z.string()).nullable().optional(),
   teardownScript: z.array(z.string()).nullable().optional(),
   runScript: z.array(z.string()).nullable().optional(),
+  saveAutomation: SaveAutomationConfigSchema.nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   worktrees: z.array(WorktreeSchema),
@@ -525,6 +542,7 @@ export const UpdateRepositoryScriptsInputSchema = z.object({
   setupScript: z.array(z.string()).nullable().optional(),
   teardownScript: z.array(z.string()).nullable().optional(),
   runScript: z.array(z.string()).nullable().optional(),
+  saveAutomation: SaveAutomationConfigSchema.nullable().optional(),
   defaultBranch: z.string().trim().min(1).optional(),
 });
 export type UpdateRepositoryScriptsInput = z.infer<typeof UpdateRepositoryScriptsInputSchema>;

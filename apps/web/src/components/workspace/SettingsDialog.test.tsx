@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ModelProvider, Repository } from "@codesymphony/shared-types";
+import type { ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
 
 const apiMocks = vi.hoisted(() => ({
@@ -45,6 +45,7 @@ beforeEach(() => {
     ...(payload.runScript ? { runScript: payload.runScript as string[] } : {}),
     ...(payload.setupScript ? { setupScript: payload.setupScript as string[] } : {}),
     ...(payload.teardownScript ? { teardownScript: payload.teardownScript as string[] } : {}),
+    ...(payload.saveAutomation !== undefined ? { saveAutomation: payload.saveAutomation as SaveAutomationConfig | null } : {}),
     ...(payload.defaultBranch ? { defaultBranch: payload.defaultBranch as string } : {}),
   }));
   apiMocks.listBranches.mockResolvedValue(["main", "dev"]);
@@ -71,6 +72,7 @@ function makeRepo(overrides: Partial<Repository> = {}): Repository {
     setupScript: null,
     teardownScript: null,
     runScript: null,
+    saveAutomation: null,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
     worktrees: [],
@@ -224,8 +226,115 @@ describe("SettingsDialog", () => {
 
     expect(document.body.textContent).toContain("Default Branch");
     expect(document.body.textContent).toContain("Run Script");
+    expect(document.body.textContent).toContain("Save Automation");
     expect(document.body.textContent).toContain("Setup Scripts");
     expect(document.body.textContent).toContain("Teardown Scripts");
+  });
+
+  it("keeps save automation enabled after autosave even before fields are filled", async () => {
+    vi.useFakeTimers();
+    try {
+      renderDialog([makeRepo()]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const enabledCheckbox = document.body.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+      if (!enabledCheckbox) {
+        throw new Error("Save automation toggle not found");
+      }
+
+      await act(async () => {
+        enabledCheckbox.click();
+      });
+
+      expect(enabledCheckbox.checked).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(apiMocks.updateRepositoryScripts).toHaveBeenCalledWith("r1", expect.objectContaining({
+        saveAutomation: {
+          enabled: true,
+          target: "active_run_session",
+          filePatterns: [],
+          actionType: "send_stdin",
+          payload: "",
+          debounceMs: 400,
+        },
+      }));
+      expect((document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(true);
+      expect(document.body.textContent).toContain("Preset");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies the Flutter template and autosaves generic save automation settings", async () => {
+    vi.useFakeTimers();
+    try {
+      renderDialog([makeRepo()]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const enabledCheckbox = document.body.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+      if (!enabledCheckbox) {
+        throw new Error("Save automation toggle not found");
+      }
+
+      await act(async () => {
+        enabledCheckbox.click();
+      });
+
+      const templateSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
+        Array.from(select.options).some((option) => option.value === "flutter_hot_reload"),
+      ) as HTMLSelectElement | undefined;
+      if (!templateSelect) {
+        throw new Error("Save automation template select not found");
+      }
+
+      await act(async () => {
+        templateSelect.value = "flutter_hot_reload";
+        templateSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+
+      const payloadInput = document.body.querySelector('input[placeholder="reload"]') as HTMLInputElement | null;
+      const filePatternsTextarea = Array.from(document.body.querySelectorAll("textarea")).find((textarea) =>
+        textarea.getAttribute("placeholder")?.includes("lib/**/*.dart"),
+      ) as HTMLTextAreaElement | undefined;
+
+      if (!payloadInput || !filePatternsTextarea) {
+        throw new Error("Save automation inputs not found");
+      }
+
+      expect(filePatternsTextarea.value).toBe("lib/**/*.dart");
+      expect(payloadInput.value).toBe("r");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(apiMocks.updateRepositoryScripts).toHaveBeenCalledWith("r1", expect.objectContaining({
+        saveAutomation: {
+          enabled: true,
+          target: "active_run_session",
+          filePatterns: ["lib/**/*.dart"],
+          actionType: "send_stdin",
+          payload: "r",
+          debounceMs: 400,
+        },
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("calls onClose when close triggered", async () => {

@@ -6,16 +6,26 @@ import { Button } from "../ui/button";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
-import type { CliAgent, ModelProvider, Repository } from "@codesymphony/shared-types";
+import type { CliAgent, ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
 import { useModelProviders } from "../../pages/workspace/hooks/useModelProviders";
 
 type SettingsTab = "workspace" | "models" | "licenses";
+type SaveAutomationTemplate = "custom_generic" | "flutter_hot_reload";
+
+const DEFAULT_SAVE_AUTOMATION_TARGET = "active_run_session" as const;
+const DEFAULT_SAVE_AUTOMATION_DEBOUNCE_MS = 400;
+const FLUTTER_HOT_RELOAD_PATTERN = "lib/**/*.dart";
+const FLUTTER_HOT_RELOAD_PAYLOAD = "r";
 
 type RepositoryFormState = {
   runScriptText: string;
   setupText: string;
   teardownText: string;
   defaultBranchValue: string;
+  saveAutomationEnabled: boolean;
+  saveAutomationTemplate: SaveAutomationTemplate;
+  saveAutomationFilePatternsText: string;
+  saveAutomationPayload: string;
 };
 
 type ApiCompatibility = "anthropic" | "openai";
@@ -56,7 +66,57 @@ function buildRepositoryFormState(
     setupText: repository.setupScript?.join("\n") ?? "",
     teardownText: repository.teardownScript?.join("\n") ?? "",
     defaultBranchValue: repository.defaultBranch,
+    saveAutomationEnabled: repository.saveAutomation?.enabled ?? false,
+    saveAutomationTemplate: inferSaveAutomationTemplate({
+      filePatternsText: repository.saveAutomation?.filePatterns.join("\n") ?? "",
+      payload: repository.saveAutomation?.payload ?? "",
+    }),
+    saveAutomationFilePatternsText: repository.saveAutomation?.filePatterns.join("\n") ?? "",
+    saveAutomationPayload: repository.saveAutomation?.payload ?? "",
   };
+}
+
+function parseMultilineInput(value: string): string[] {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function buildSaveAutomationInput(state: {
+  enabled: boolean;
+  filePatternsText: string;
+  payload: string;
+}): SaveAutomationConfig | null {
+  if (!state.enabled) {
+    return null;
+  }
+
+  const filePatterns = parseMultilineInput(state.filePatternsText);
+  const payload = state.payload.trim();
+
+  return {
+    enabled: true,
+    target: DEFAULT_SAVE_AUTOMATION_TARGET,
+    filePatterns,
+    actionType: "send_stdin",
+    payload,
+    debounceMs: DEFAULT_SAVE_AUTOMATION_DEBOUNCE_MS,
+  };
+}
+
+function inferSaveAutomationTemplate(state: {
+  filePatternsText: string;
+  payload: string;
+}): SaveAutomationTemplate {
+  const filePatterns = parseMultilineInput(state.filePatternsText);
+  const payload = state.payload.trim();
+
+  if (filePatterns.length === 1 && filePatterns[0] === FLUTTER_HOT_RELOAD_PATTERN && payload === FLUTTER_HOT_RELOAD_PAYLOAD) {
+    return "flutter_hot_reload";
+  }
+
+  return "custom_generic";
 }
 
 interface SettingsDialogProps {
@@ -77,6 +137,10 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   const [setupText, setSetupText] = useState("");
   const [teardownText, setTeardownText] = useState("");
   const [defaultBranchValue, setDefaultBranchValue] = useState("");
+  const [saveAutomationEnabled, setSaveAutomationEnabled] = useState(false);
+  const [saveAutomationTemplate, setSaveAutomationTemplate] = useState<SaveAutomationTemplate>("custom_generic");
+  const [saveAutomationFilePatternsText, setSaveAutomationFilePatternsText] = useState("");
+  const [saveAutomationPayload, setSaveAutomationPayload] = useState("");
   const [branches, setBranches] = useState<string[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -174,6 +238,10 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     setSetupText(nextState.setupText);
     setTeardownText(nextState.teardownText);
     setDefaultBranchValue(nextState.defaultBranchValue);
+    setSaveAutomationEnabled(nextState.saveAutomationEnabled);
+    setSaveAutomationTemplate(nextState.saveAutomationTemplate);
+    setSaveAutomationFilePatternsText(nextState.saveAutomationFilePatternsText);
+    setSaveAutomationPayload(nextState.saveAutomationPayload);
     hydratedRepoIdRef.current = selectedRepoId;
     setDirty(false);
     setShowRemoveDialog(false);
@@ -215,7 +283,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   }, []);
 
   const parseScriptLines = useCallback((scriptText: string): string[] | null => {
-    const lines = scriptText.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+    const lines = parseMultilineInput(scriptText);
     return lines.length > 0 ? lines : null;
   }, []);
 
@@ -232,12 +300,18 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
         const runScriptLines = parseScriptLines(runScriptText);
         const setupLines = parseScriptLines(setupText);
         const teardownLines = parseScriptLines(teardownText);
+        const saveAutomation = buildSaveAutomationInput({
+          enabled: saveAutomationEnabled,
+          filePatternsText: saveAutomationFilePatternsText,
+          payload: saveAutomationPayload,
+        });
         const repo = repositories.find((r) => r.id === selectedRepoId);
         const branchChanged = repo && defaultBranchValue !== repo.defaultBranch;
         const updatedRepository = await api.updateRepositoryScripts(selectedRepoId, {
           runScript: runScriptLines,
           setupScript: setupLines,
           teardownScript: teardownLines,
+          saveAutomation,
           ...(branchChanged ? { defaultBranch: defaultBranchValue } : {}),
         });
 
@@ -254,6 +328,13 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
           setupText: updatedRepository.setupScript?.join("\n") ?? "",
           teardownText: updatedRepository.teardownScript?.join("\n") ?? "",
           defaultBranchValue: updatedRepository.defaultBranch,
+          saveAutomationEnabled: updatedRepository.saveAutomation?.enabled ?? false,
+          saveAutomationTemplate: inferSaveAutomationTemplate({
+            filePatternsText: updatedRepository.saveAutomation?.filePatterns.join("\n") ?? "",
+            payload: updatedRepository.saveAutomation?.payload ?? "",
+          }),
+          saveAutomationFilePatternsText: updatedRepository.saveAutomation?.filePatterns.join("\n") ?? "",
+          saveAutomationPayload: updatedRepository.saveAutomation?.payload ?? "",
         };
         hydratedRepoIdRef.current = selectedRepoId;
         setDirty(false);
@@ -267,7 +348,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
 
     savePromiseRef.current = savePromise;
     await savePromise;
-  }, [defaultBranchValue, parseScriptLines, queryClient, repositories, runScriptText, selectedRepoId, setupText, teardownText]);
+  }, [defaultBranchValue, parseScriptLines, queryClient, repositories, runScriptText, saveAutomationEnabled, saveAutomationFilePatternsText, saveAutomationPayload, selectedRepoId, setupText, teardownText]);
 
   const handleCloseSettings = useCallback(async () => {
     if (dirty || savePromiseRef.current) {
@@ -479,6 +560,101 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                       <p className="mt-1 text-[10px] text-muted-foreground">
                         One command per line. Executed when you tap the Run button in the chat panel.
                       </p>
+                    </div>
+
+                    <div className="mb-4 rounded-xl border border-border/40 bg-secondary/10 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <label className="mb-1 block text-xs font-medium">Save Automation</label>
+                          <p className="text-[10px] text-muted-foreground">
+                            When a saved file matches, send text to the active Run session or workspace terminal.
+                          </p>
+                        </div>
+                        <label className="mt-0.5 flex items-center gap-2 text-[11px] text-foreground">
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 rounded border-border/50"
+                            checked={saveAutomationEnabled}
+                            onChange={(e) => { setSaveAutomationEnabled(e.target.checked); setDirty(true); }}
+                          />
+                          Enabled
+                        </label>
+                      </div>
+
+                      {saveAutomationEnabled ? (
+                        <>
+                          <div className="mt-3">
+                            <label className="mb-1.5 block text-[11px] font-medium">Preset</label>
+                            <select
+                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              value={saveAutomationTemplate}
+                              onChange={(e) => {
+                                const nextTemplate = e.target.value as SaveAutomationTemplate;
+                                setSaveAutomationTemplate(nextTemplate);
+                                if (nextTemplate === "flutter_hot_reload") {
+                                  setSaveAutomationFilePatternsText(FLUTTER_HOT_RELOAD_PATTERN);
+                                  setSaveAutomationPayload(FLUTTER_HOT_RELOAD_PAYLOAD);
+                                }
+                                setDirty(true);
+                              }}
+                            >
+                              <option value="custom_generic">No preset</option>
+                              <option value="flutter_hot_reload">Flutter hot reload</option>
+                            </select>
+                            <p className="mt-1 text-[10px] text-muted-foreground">
+                              Optional. Presets only fill the fields below.
+                            </p>
+                          </div>
+
+                          <div className="mt-3">
+                            <label className="mb-1.5 block text-[11px] font-medium">File Patterns</label>
+                            <textarea
+                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              rows={3}
+                              placeholder={"lib/**/*.dart\nsrc/**/*.tsx"}
+                              value={saveAutomationFilePatternsText}
+                              onChange={(e) => {
+                                const nextValue = e.target.value;
+                                setSaveAutomationFilePatternsText(nextValue);
+                                setSaveAutomationTemplate(inferSaveAutomationTemplate({
+                                  filePatternsText: nextValue,
+                                  payload: saveAutomationPayload,
+                                }));
+                                setDirty(true);
+                              }}
+                            />
+                            <p className="mt-1 text-[10px] text-muted-foreground">
+                              One glob per line. Only matching saved files will trigger the action.
+                            </p>
+                          </div>
+
+                          <div className="mt-3">
+                            <label className="mb-1.5 block text-[11px] font-medium">Text To Send</label>
+                            <input
+                              type="text"
+                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                              placeholder="reload"
+                              value={saveAutomationPayload}
+                              onChange={(e) => {
+                                const nextValue = e.target.value;
+                                setSaveAutomationPayload(nextValue);
+                                setSaveAutomationTemplate(inferSaveAutomationTemplate({
+                                  filePatternsText: saveAutomationFilePatternsText,
+                                  payload: nextValue,
+                                }));
+                                setDirty(true);
+                              }}
+                            />
+                            <p className="mt-1 text-[10px] text-muted-foreground">
+                              Examples: `reload`, `rs`, or `r`. Sent to the active Run session first, then the workspace terminal.
+                            </p>
+                          </div>
+                        </>
+                      ) : (
+                        <p className="mt-3 text-[10px] text-muted-foreground">
+                          Example pairs: `src/**/*.tsx` + `rs`, or `lib/**/*.dart` + `r`.
+                        </p>
+                      )}
                     </div>
 
                     <div className="mb-4">
