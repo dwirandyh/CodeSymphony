@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isRenderDebugEnabled,
   pushRenderDebug,
@@ -31,9 +31,32 @@ function disableRenderDebug() {
 }
 
 describe("renderDebug", () => {
+  const originalLocation = window.location;
+  const originalLocalStorage = window.localStorage;
+  const originalClipboard = navigator.clipboard;
+
   beforeEach(() => {
     delete (window as any).__CS_RENDER_DEBUG__;
     vi.spyOn(console, "debug").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "localStorage", {
+      value: originalLocalStorage,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      value: originalClipboard,
+      configurable: true,
+    });
+    delete (window as any).__CS_RENDER_DEBUG__;
+    vi.restoreAllMocks();
   });
 
   describe("isRenderDebugEnabled", () => {

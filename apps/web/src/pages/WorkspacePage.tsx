@@ -228,7 +228,6 @@ export function WorkspacePage() {
 
   const {
     providers: modelProviders,
-    selectProvider,
   } = useModelProviders();
 
   useEffect(() => {
@@ -247,12 +246,6 @@ export function WorkspacePage() {
     window.localStorage.setItem(REPOSITORY_PANEL_PREFERENCES_STORAGE_KEY, JSON.stringify(repositoryPanelPreferences));
   }, [repositoryPanelPreferences]);
 
-  const handleSelectProvider = useCallback(async (id: string | null) => {
-    try {
-      await selectProvider(id);
-    } catch {}
-  }, [selectProvider]);
-
   const updateBottomPanelState = useCallback((worktreeId: string | null | undefined, updater: (current: BottomPanelWorktreeState) => BottomPanelWorktreeState) => {
     if (!worktreeId) {
       return;
@@ -263,6 +256,11 @@ export function WorkspacePage() {
       [worktreeId]: updater(getBottomPanelState(prev, worktreeId)),
     }));
   }, []);
+
+  const resolveSaveAutomationTargetSessionId = useCallback((worktreeId: string) => {
+    return getBottomPanelState(bottomPanelStateByWorktreeId, worktreeId).runScriptSessionId
+      ?? `${worktreeId}:terminal`;
+  }, [bottomPanelStateByWorktreeId]);
 
   const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
     setScriptOutputs((prev) => upsertScriptOutputEntry(prev, event));
@@ -482,6 +480,8 @@ export function WorkspacePage() {
 
   const activeView = search.view ?? "chat";
   const activeFilePath = activeView === "file" ? search.file ?? null : null;
+  const activeFileLine = activeView === "file" ? search.fileLine ?? null : null;
+  const activeFileColumn = activeView === "file" ? search.fileColumn ?? null : null;
   const selectedDiffFilePath = search.file ?? null;
   const reviewTabOpen = activeView === "review";
   const queryClient = useQueryClient();
@@ -584,6 +584,7 @@ export function WorkspacePage() {
     || mobilePanelOpen === "utilities"
     || mobilePanelOpen === "device";
   const mobileUtilitiesFullscreen = mobilePanelOpen === "utilities";
+  const mobileReposDrawerOpen = mobilePanelOpen === "repos";
   const mobileTitle = mobilePanelOpen === "files"
     ? "Files"
     : mobilePanelOpen === "git"
@@ -624,7 +625,7 @@ export function WorkspacePage() {
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
 
   const fileIndex = useFileIndex(repos.selectedWorktreeId);
-  const slashCommands = useSlashCommands(repos.selectedWorktreeId);
+  const slashCommands = useSlashCommands(chat.composerAgent === "claude" ? repos.selectedWorktreeId : null);
 
   useEffect(() => {
     if (!repos.selectedWorktreeId) return;
@@ -663,8 +664,11 @@ export function WorkspacePage() {
     fileEntries: fileIndex.entries,
     onError: setError,
     onOpenQuickFilePicker: () => setMobilePanelOpen(null),
+    resolveSaveAutomationTargetSessionId,
+    saveAutomation: repos.selectedRepository?.saveAutomation ?? null,
     selectedThreadId: chat.selectedThreadId,
     selectedWorktreeId: repos.selectedWorktreeId,
+    selectedWorktreePath: repos.selectedWorktree?.path ?? null,
     updateSearch,
   });
 
@@ -1233,7 +1237,9 @@ export function WorkspacePage() {
           className={cn(
             "workspace-main flex min-h-0 min-w-0 flex-1 flex-col px-0 pb-0 pt-0",
             activeView !== "file" && "lg:px-3 lg:pb-0 lg:pt-3",
+            mobileReposDrawerOpen && "pointer-events-none select-none lg:pointer-events-auto lg:select-auto",
           )}
+          aria-hidden={mobileReposDrawerOpen ? "true" : undefined}
         >
           {/* ── Mobile top bar ── */}
           <div
@@ -1462,6 +1468,8 @@ export function WorkspacePage() {
                   <CodeEditorPanel
                     key={`${repos.selectedWorktreeId ?? "none"}:${activeFilePath}`}
                     filePath={activeFilePath}
+                    targetLine={activeFileLine ?? undefined}
+                    targetColumn={activeFileColumn ?? undefined}
                     fileEntries={fileIndex.entries}
                     content={activeEditorFileState?.draftContent ?? ""}
                     mimeType={activeEditorFileState?.mimeType ?? "text/plain"}
@@ -1492,6 +1500,15 @@ export function WorkspacePage() {
                       emptyState={chat.messageListEmptyState}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       onOpenReadFile={openReadFile}
+                      worktreePath={repos.selectedWorktree?.path ?? null}
+                      footer={gates.showPlanDecisionComposer ? (
+                        <PlanDecisionComposer
+                          busy={gates.planActionBusy}
+                          onApprove={() => void gates.handleApprovePlan()}
+                          onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
+                          onDismiss={() => void gates.handleDismissPlan()}
+                        />
+                      ) : null}
                     />
                   </div>
                 </section>
@@ -1564,14 +1581,7 @@ export function WorkspacePage() {
                 ) : null}
                 {!gates.showPlanDecisionComposer && gates.isWaitingForUserGate ? <div className="pb-2 pt-1" /> : null}
 
-                {gates.showPlanDecisionComposer ? (
-                  <PlanDecisionComposer
-                    busy={gates.planActionBusy}
-                    onApprove={() => void gates.handleApprovePlan()}
-                    onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
-                    onDismiss={() => gates.handleDismissPlan()}
-                  />
-                ) : !gates.isWaitingForUserGate ? (
+                {!gates.isWaitingForUserGate ? (
                   <Composer
                     disabled={chat.composerDisabled || gates.planActionBusy}
                     sending={chat.sendingMessage}
@@ -1584,16 +1594,19 @@ export function WorkspacePage() {
                     slashCommands={slashCommands.commands}
                     slashCommandsLoading={slashCommands.loading}
                     providers={modelProviders}
+                    agent={chat.composerAgent}
+                    model={chat.composerModel}
+                    modelProviderId={chat.composerModelProviderId}
                     permissionMode={chat.composerPermissionMode}
                     hasMessages={chat.messages.length > 0}
                     onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
                     onModeChange={(mode) => {
-                      if (chat.selectedThreadId) {
-                        void chat.setThreadMode(chat.selectedThreadId, mode);
-                      }
+                      void chat.setComposerMode(mode);
                     }}
                     onStop={() => void chat.stopAssistantRun()}
-                    onSelectProvider={(id) => void handleSelectProvider(id)}
+                    onAgentSelectionChange={(selection) => {
+                      void chat.setComposerAgentSelection(selection);
+                    }}
                     onPermissionModeChange={(permissionMode) => {
                       void chat.setComposerPermissionMode(permissionMode);
                     }}
@@ -1612,7 +1625,7 @@ export function WorkspacePage() {
             />
           </Suspense>
 
-          {mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen ? (
+          {mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen && !mobileReposDrawerOpen ? (
             <Suspense fallback={null}>
               <MobileActionBar
                 hasWorktree={!!repos.selectedWorktreeId}
@@ -1690,10 +1703,10 @@ export function WorkspacePage() {
       <div
         className={cn(
           "fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300 lg:hidden",
-          mobilePanelOpen === "repos" ? "opacity-100" : "pointer-events-none opacity-0",
+          mobileReposDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0",
         )}
         onClick={() => {
-          if (mobilePanelOpen === "repos") {
+          if (mobileReposDrawerOpen) {
             handleCloseMobileRepositories();
           }
         }}
@@ -1704,8 +1717,11 @@ export function WorkspacePage() {
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-50 flex w-[85vw] max-w-[320px] flex-col bg-card shadow-2xl drawer-slide safe-top lg:hidden",
-          mobilePanelOpen === "repos" ? "translate-x-0" : "-translate-x-full",
+          mobileReposDrawerOpen ? "translate-x-0" : "-translate-x-full",
         )}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Repositories"
       >
         <div className="flex items-center justify-between px-4 pb-2 pt-4">
           <div>

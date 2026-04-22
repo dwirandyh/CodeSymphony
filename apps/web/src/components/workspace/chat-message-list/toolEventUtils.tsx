@@ -3,6 +3,8 @@ import type { ChatTimelineItem } from "./ChatMessageList.types";
 
 const WHITESPACE_REGEX = /\s/;
 const MCP_TOOL_PREFIX = "mcp__";
+const SHELL_WRAPPER_FLAGS = new Set(["-c", "-lc"]);
+const SHELL_WRAPPER_NAMES = new Set(["bash", "sh", "zsh", "fish"]);
 
 function isMcpToolName(value: unknown): value is string {
   return typeof value === "string" && value.toLowerCase().startsWith(MCP_TOOL_PREFIX);
@@ -232,6 +234,25 @@ function shortenCommandToken(token: string): string {
   return token;
 }
 
+function unwrapShellWrapperCommand(tokens: string[]): string | null {
+  if (tokens.length < 3) {
+    return null;
+  }
+
+  const shellName = basenameFromTokenPath(tokens[0] ?? "").toLowerCase();
+  if (!SHELL_WRAPPER_NAMES.has(shellName)) {
+    return null;
+  }
+
+  const flagIndex = tokens.findIndex((token, index) => index > 0 && SHELL_WRAPPER_FLAGS.has(token));
+  if (flagIndex === -1 || flagIndex >= tokens.length - 1) {
+    return null;
+  }
+
+  const innerCommand = tokens.slice(flagIndex + 1).join(" ").trim();
+  return innerCommand.length > 0 ? innerCommand : null;
+}
+
 function truncateSummaryText(text: string, maxLength: number): string {
   if (text.length <= maxLength) {
     return text;
@@ -255,6 +276,11 @@ export function shortenCommandForSummary(command: string | null): string | null 
   const tokens = tokenizeCommand(trimmed);
   if (tokens.length === 0) {
     return truncateSummaryText(trimmed, 90);
+  }
+
+  const wrappedCommand = unwrapShellWrapperCommand(tokens);
+  if (wrappedCommand) {
+    return shortenCommandForSummary(wrappedCommand);
   }
 
   const shortened = tokens.map(shortenCommandToken).join(" ");
@@ -282,6 +308,7 @@ export function editedSummaryLabel({
   changedFiles,
   additions,
   deletions,
+  isFileDeletion,
   rejectedByUser,
 }: {
   changeSource?: "edit-tool" | "worktree-diff";
@@ -290,6 +317,7 @@ export function editedSummaryLabel({
   changedFiles: string[];
   additions: number;
   deletions: number;
+  isFileDeletion?: boolean;
   rejectedByUser?: boolean;
 }): React.ReactNode {
   const firstFile = basenameFromTokenPath(changedFiles[0] ?? "file");
@@ -307,10 +335,9 @@ export function editedSummaryLabel({
     return isWorktreeDiff ? `Failed detecting changes for ${firstFile}${fileCount}` : `Failed editing ${firstFile}${fileCount}`;
   }
 
-  const isDeleteOnly = additions === 0 && deletions > 0;
   const verb = isWorktreeDiff
-    ? (isDeleteOnly ? "Command deleted" : "Command changed")
-    : (isDeleteOnly ? "Deleted" : "Edited");
+    ? (isFileDeletion ? "Command deleted" : "Command changed")
+    : (isFileDeletion ? "Deleted" : "Edited");
 
   if (diffKind === "none") {
     return `${verb} ${firstFile}${fileCount}`;

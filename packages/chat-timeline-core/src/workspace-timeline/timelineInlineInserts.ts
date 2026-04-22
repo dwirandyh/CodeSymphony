@@ -756,26 +756,8 @@ export function processInlineInsertLoop(
       ) {
         const textIsAfterInsert = (bucket.anchorIdx ?? 0) > inlineInserts[0].startIdx;
         if (textIsAfterInsert && !hasAnyTrailingText) {
-          const splitSegment = splitAtContentBoundary(bucket.content)
-            ?? (hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null);
-          if (splitSegment && splitSegment.tail.length > 0) {
-            doPushMessageSegment(
-              splitSegment.head,
-              `${bucketIndex}:explore-head`,
-              inlineInserts[0].startIdx - 0.5,
-              bucket.timestamp,
-            );
-            doPushInlineInsert(inlineInserts[0], bucket.timestamp);
-            doPushMessageSegment(
-              splitSegment.tail,
-              `${bucketIndex}:explore-tail`,
-              bucket.anchorIdx,
-              bucket.timestamp,
-            );
-          } else {
-            doPushInlineInsert(inlineInserts[0], bucket.timestamp);
-            doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
-          }
+          doPushInlineInsert(inlineInserts[0], bucket.timestamp);
+          doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
           nextInsertIndex = 1;
           shouldDelayFirstInsert = false;
           segmentRendered = true;

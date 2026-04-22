@@ -11,9 +11,10 @@ function compareProviders(left: ModelProvider, right: ModelProvider) {
 export function toPlainModelProvider(provider: ModelProvider): ModelProvider {
   return {
     id: provider.id,
+    agent: provider.agent ?? "claude",
     name: provider.name,
     modelId: provider.modelId,
-    baseUrl: provider.baseUrl,
+    baseUrl: provider.baseUrl ?? null,
     apiKeyMasked: provider.apiKeyMasked,
     isActive: provider.isActive,
     createdAt: provider.createdAt,

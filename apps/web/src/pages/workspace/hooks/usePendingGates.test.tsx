@@ -10,12 +10,14 @@ const {
   mockResolvePermission,
   mockAnswerQuestion,
   mockApprovePlan,
+  mockDismissPlan,
   mockRevisePlan,
   mockDismissQuestion,
 } = vi.hoisted(() => ({
   mockResolvePermission: vi.fn().mockResolvedValue(undefined),
   mockAnswerQuestion: vi.fn().mockResolvedValue(undefined),
   mockApprovePlan: vi.fn().mockResolvedValue(undefined),
+  mockDismissPlan: vi.fn().mockResolvedValue(undefined),
   mockRevisePlan: vi.fn().mockResolvedValue(undefined),
   mockDismissQuestion: vi.fn().mockResolvedValue(undefined),
 }));
@@ -25,6 +27,7 @@ vi.mock("../../../lib/api", () => ({
     resolvePermission: mockResolvePermission,
     answerQuestion: mockAnswerQuestion,
     approvePlan: mockApprovePlan,
+    dismissPlan: mockDismissPlan,
     revisePlan: mockRevisePlan,
     dismissQuestion: mockDismissQuestion,
   },
@@ -578,7 +581,7 @@ describe("usePendingGates", () => {
   });
 
   describe("handleDismissPlan", () => {
-    it("optimistically hides plan decision", () => {
+    it("dismisses the plan and hides the decision", async () => {
       const events = [
         makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
         makeEvent(1, "chat.completed", {}),
@@ -586,18 +589,36 @@ describe("usePendingGates", () => {
       render(events);
       expect(hookResult.showPlanDecisionComposer).toBe(true);
 
-      act(() => {
-        hookResult.handleDismissPlan();
+      await act(async () => {
+        await hookResult.handleDismissPlan();
       });
+
+      expect(mockDismissPlan).toHaveBeenCalledWith("t1");
       expect(hookResult.showPlanDecisionComposer).toBe(false);
     });
 
     it("does nothing when no thread or plan", () => {
       render([], null);
       act(() => {
-        hookResult.handleDismissPlan();
+        void hookResult.handleDismissPlan();
       });
       expect(hookResult.showPlanDecisionComposer).toBe(false);
+    });
+
+    it("restores the decision when dismiss fails", async () => {
+      mockDismissPlan.mockRejectedValueOnce(new Error("Dismiss failed"));
+      const events = [
+        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+
+      await act(async () => {
+        await hookResult.handleDismissPlan();
+      });
+
+      expect(hookResult.showPlanDecisionComposer).toBe(true);
+      expect(mockDeps.onError).toHaveBeenCalledWith("Dismiss failed");
     });
   });
 
@@ -616,6 +637,20 @@ describe("usePendingGates", () => {
   });
 
   describe("streaming fallback plan handling", () => {
+    it("treats codex_plan_item as a canonical reviewable plan", () => {
+      const events = [
+        makeEvent(0, "plan.created", {
+          content: "Codex plan content",
+          filePath: "codex-plan-item",
+          source: "codex_plan_item",
+        }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+      expect(hookResult.pendingPlan).not.toBeNull();
+      expect(hookResult.pendingPlan?.content).toBe("Codex plan content");
+    });
+
     it("handles streaming_fallback with matching real write", () => {
       const events = [
         makeEvent(0, "plan.created", {

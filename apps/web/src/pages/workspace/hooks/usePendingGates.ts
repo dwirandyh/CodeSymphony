@@ -218,9 +218,27 @@ export function usePendingGates(
     }
   }
 
-  function handleDismissPlan() {
+  async function handleDismissPlan() {
     if (!selectedThreadId || !pendingPlan) return;
-    setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
+
+    const nextClosedPlanDecision = { threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx };
+    setClosedPlanDecision(nextClosedPlanDecision);
+    setPlanActionBusy(true);
+    onError(null);
+
+    try {
+      await api.dismissPlan(selectedThreadId);
+    } catch (e) {
+      setClosedPlanDecision((current) => (
+        current?.threadId === nextClosedPlanDecision.threadId
+        && current.createdIdx === nextClosedPlanDecision.createdIdx
+          ? null
+          : current
+      ));
+      onError(e instanceof Error ? e.message : "Failed to dismiss plan");
+    } finally {
+      setPlanActionBusy(false);
+    }
   }
 
   // ── Derived ──

@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const mockQuery = vi.fn();
 
@@ -3035,6 +3038,160 @@ describe("thinking_delta", () => {
     expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("claude-3-7-sonnet");
     expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("claude-3-7-sonnet");
     expect(options.model).toBe("opus");
+  });
+
+  it("preemptively maps native Claude models to CLI aliases when Claude settings use a proxy base URL", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "codesymphony-claude-proxy-"));
+    const tempHome = join(tempRoot, "home");
+    const tempCwd = join(tempRoot, "worktree");
+    mkdirSync(join(tempHome, ".claude"), { recursive: true });
+    mkdirSync(tempCwd, { recursive: true });
+    writeFileSync(
+      join(tempHome, ".claude", "settings.json"),
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:8317",
+        },
+      }),
+    );
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = tempHome;
+    try {
+      expect(__testing.resolveRequestedNativeClaudeCliModel("claude-sonnet-4-6", tempCwd)).toBe("sonnet");
+      expect(__testing.resolveRequestedNativeClaudeCliModel("claude-opus-4-6", tempCwd)).toBe("opus");
+    } finally {
+      process.env.HOME = previousHome;
+    }
+  });
+
+  it("retries native Claude runs with CLI aliases when proxy rejects canonical model ids", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "codesymphony-claude-retry-"));
+    const tempHome = join(tempRoot, "home");
+    mkdirSync(tempHome, { recursive: true });
+    mockQuery
+      .mockImplementationOnce(() => {
+        return attachQueryControls((async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "session-native-proxy-fail",
+            model: "claude-sonnet-4-6",
+            apiKeySource: "none",
+          };
+          yield {
+            type: "system",
+            subtype: "api_retry",
+            attempt: 1,
+            max_retries: 11,
+            error_status: 502,
+            error: "server_error: unknown provider for model claude-sonnet-4-6",
+          };
+          throw new Error("Claude Code process exited with code 1");
+        })());
+      })
+      .mockImplementationOnce(() => {
+        return attachQueryControls((async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "session-native-proxy-success",
+            model: "sonnet",
+            apiKeySource: "none",
+          };
+          yield {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "done" }],
+            },
+          };
+        })());
+      });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = tempHome;
+    try {
+      const result = await runClaudeWithStreaming({
+        prompt: "say done",
+        sessionId: null,
+        cwd: process.cwd(),
+        model: "claude-sonnet-4-6",
+        onText: () => { },
+        onThinking: () => { },
+        onToolStarted: () => { },
+        onToolOutput: () => { },
+        onToolFinished: () => { },
+        onQuestionRequest: async () => ({ answers: {} }),
+        onPermissionRequest: async () => ({ decision: "allow" }),
+        onPlanFileDetected: () => { },
+        onToolInstrumentation: () => { },
+      });
+
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      const firstOptions = (mockQuery.mock.calls[0]?.[0] as { options: Record<string, unknown> }).options;
+      const secondOptions = (mockQuery.mock.calls[1]?.[0] as { options: Record<string, unknown> }).options;
+      expect(firstOptions.model).toBe("claude-sonnet-4-6");
+      expect(secondOptions.model).toBe("sonnet");
+      expect(result.output).toBe("done");
+      expect(result.sessionId).toBe("session-native-proxy-success");
+    } finally {
+      process.env.HOME = previousHome;
+    }
+  });
+
+  it("exposes proxy model routing failures instead of generic login hints", async () => {
+    mockQuery.mockImplementation(() => {
+      return attachQueryControls((async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "session-native-proxy-only",
+          model: "claude-custom-model",
+          apiKeySource: "none",
+        };
+        yield {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 11,
+          error_status: 502,
+          error: "server_error: unknown provider for model claude-custom-model",
+        };
+        throw new Error("Claude Code process exited with code 1");
+      })());
+    });
+
+    await expect(runClaudeWithStreaming({
+      prompt: "say done",
+      sessionId: null,
+      cwd: process.cwd(),
+      model: "claude-custom-model",
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    })).rejects.toThrow("unknown provider for model claude-custom-model");
+
+    await expect(runClaudeWithStreaming({
+      prompt: "say done",
+      sessionId: null,
+      cwd: process.cwd(),
+      model: "claude-custom-model",
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    })).rejects.not.toThrow("run `claude login`");
   });
 
   it("includes toolName on finished payloads for generic tools", async () => {

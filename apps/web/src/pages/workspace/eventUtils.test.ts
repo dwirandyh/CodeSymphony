@@ -99,6 +99,10 @@ describe("isClaudePlanFilePayload", () => {
     expect(isClaudePlanFilePayload({ source: "claude_plan_file" })).toBe(true);
   });
 
+  it("returns true for codex_plan_item source", () => {
+    expect(isClaudePlanFilePayload({ source: "codex_plan_item" })).toBe(true);
+  });
+
   it("returns true for plan file path", () => {
     expect(isClaudePlanFilePayload({ source: "other", filePath: "/project/.claude/plans/plan.md" })).toBe(true);
   });
@@ -158,6 +162,31 @@ describe("normalizePlanCreatedEvent", () => {
       content: "# Real Plan",
       filePath: ".claude/plans/real-plan.md",
       idx: 2,
+      createdAt: "2025-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("accepts codex plan items without requiring a Claude plan file path", () => {
+    const events = [
+      makeEvent({
+        id: "plan-1",
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          messageId: "m2",
+          content: "# Codex Plan\n- Step 1",
+          filePath: "codex-plan-item",
+          source: "codex_plan_item",
+        },
+      }),
+    ];
+
+    expect(normalizePlanCreatedEvent(events[0]!, events)).toEqual({
+      id: "plan-1",
+      messageId: "m2",
+      content: "# Codex Plan\n- Step 1",
+      filePath: "codex-plan-item",
+      idx: 1,
       createdAt: "2025-01-01T00:00:00.000Z",
     });
   });

@@ -126,6 +126,33 @@ describe("useWorkspaceTimeline", () => {
     expect(assistantItems.length).toBeGreaterThan(0);
   });
 
+  it("does not surface read completions with editTarget as edited-diff cards", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "cek file"),
+      makeMessage("m2", 2, "assistant", "Ini hasil bacanya."),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", {
+        toolName: "Read",
+        toolUseId: "r1",
+        toolInput: { file_path: "/repo/README.md" },
+      }, "m2"),
+      makeEvent(2, "tool.finished", {
+        toolName: "Read",
+        summary: "Read /repo/README.md",
+        precedingToolUseIds: ["r1"],
+        editTarget: "/repo/README.md",
+      }, "m2"),
+      makeEvent(3, "message.delta", { role: "assistant", messageId: "m2", delta: "Ini hasil bacanya." }, "m2"),
+      makeEvent(4, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+
+    expect(items.some((item) => item.kind === "edited-diff")).toBe(false);
+    expect(items.some((item) => item.kind === "message" && item.message.content.includes("Ini hasil bacanya."))).toBe(true);
+  });
+
   it("recomputes when message content changes without changing counts", () => {
     const initialMessages = [
       makeMessage("m1", 1, "user", "Hello"),
@@ -740,6 +767,93 @@ describe("useWorkspaceTimeline", () => {
     expect(hookResult.items[hookResult.items.length - 1]?.kind).toBe("plan-file-output");
   });
 
+  it("renders a codex plan card at the bottom after completion without Claude plan-file heuristics", () => {
+    const messages = [makeMessage("m1", 1, "user", "Plan"), makeMessage("m2", 2, "assistant", "Here's the plan")];
+    const events = [
+      makeEvent(0, "plan.created", {
+        messageId: "m2",
+        content: "# Codex Plan\n- Step 1",
+        filePath: "codex-plan-item",
+        source: "codex_plan_item",
+      }, "m2"),
+      makeEvent(1, "chat.completed", {}, "m2"),
+    ];
+    act(() => {
+      root.render(<TestComponent messages={messages} events={events} threadId="t1" refs={makeRefs()} />);
+    });
+    const planItems = hookResult.items.filter((i) => i.kind === "plan-file-output");
+    expect(planItems).toHaveLength(1);
+    expect(planItems[0]).toMatchObject({
+      content: "# Codex Plan\n- Step 1",
+      filePath: "codex-plan-item",
+    });
+  });
+
+  it("keeps pre-plan activity visible and still renders the plan card last", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "Plan it"),
+      makeMessage("m2", 2, "assistant", "# My Plan\n- Step 1"),
+    ];
+    const events = [
+      makeEvent(0, "tool.started", { toolName: "Read", toolUseId: "read-1" }, "m2"),
+      makeEvent(1, "tool.finished", { toolName: "Read", summary: "Read /src/example.ts", precedingToolUseIds: ["read-1"] }, "m2"),
+      makeEvent(2, "plan.created", { messageId: "m2", content: "# My Plan\n- Step 1", filePath: ".claude/plans/my-plan.md" }, "m2"),
+      makeEvent(3, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }, "m2"),
+      makeEvent(4, "tool.finished", { precedingToolUseIds: ["exit-1"] }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreIndex = items.findIndex((item) => item.kind === "explore-activity");
+    const planIndex = items.findIndex((item) => item.kind === "plan-file-output");
+
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeLessThan(planIndex);
+    expect(items[items.length - 1]?.kind).toBe("plan-file-output");
+  });
+
+  it("renders post-approval implementation activity after the plan card", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "Plan it"),
+      makeMessage("m2", 2, "assistant", "# My Plan\n- Step 1"),
+      makeMessage("m3", 3, "assistant", "Implementing the approved plan."),
+    ];
+    const events = [
+      makeEvent(0, "plan.created", {
+        messageId: "m2",
+        content: "# My Plan\n- Step 1",
+        filePath: ".claude/plans/my-plan.md",
+      }, "m2"),
+      makeEvent(1, "tool.started", { toolName: "ExitPlanMode", toolUseId: "exit-1" }, "m2"),
+      makeEvent(2, "tool.finished", { precedingToolUseIds: ["exit-1"] }, "m2"),
+      makeEvent(3, "tool.started", {
+        messageId: "m3",
+        toolName: "Edit",
+        toolUseId: "edit-1",
+        toolInput: {
+          file_path: "src/app.ts",
+          old_string: "const value = 1;",
+          new_string: "const value = 2;",
+        },
+      }, "m3"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const planIndex = items.findIndex((item) => item.kind === "plan-file-output");
+    const editedIndex = items.findIndex((item) => item.kind === "edited-diff");
+
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(editedIndex).toBeGreaterThan(-1);
+    expect(planIndex).toBeLessThan(editedIndex);
+    expect(items[editedIndex]).toMatchObject({
+      kind: "edited-diff",
+      status: "running",
+      changedFiles: ["src/app.ts"],
+    });
+    expect(items[items.length - 1]?.kind).not.toBe("plan-file-output");
+    expect(items.slice(planIndex + 1).some((item) => item.kind === "edited-diff")).toBe(true);
+  });
+
   it("skips bogus streaming fallback plan events without a real plan write", () => {
     const messages = [makeMessage("m1", 1, "user", "hi"), makeMessage("m2", 2, "assistant", "Hello there")];
     const events = [
@@ -978,6 +1092,45 @@ describe("useWorkspaceTimeline", () => {
     expect(firstExploreIndex).toBeGreaterThan(-1);
     expect(firstMessageIndex).toBeGreaterThan(-1);
     expect(firstExploreIndex).toBeLessThan(firstMessageIndex);
+  });
+
+  it("keeps the first explore card above all fallback paragraphs when incomplete deltas force a full-text fallback", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "investigate"),
+      makeMessage(
+        "m2",
+        2,
+        "assistant",
+        [
+          "Betul, saat ini bukan dari API detail page.",
+          "",
+          "Yang terjadi sekarang:",
+          "",
+          "- ProgramDetailAndaActivity ambil title dari Intent extra.",
+        ].join("\n"),
+      ),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", { toolName: "Read", toolUseId: "r1", toolInput: { file_path: "src/ProgramDetailAndaActivity.java" } }, "m2"),
+      makeEvent(2, "tool.finished", { toolName: "Read", summary: "Read src/ProgramDetailAndaActivity.java", precedingToolUseIds: ["r1"] }, "m2"),
+      makeEvent(20, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Betul, saat ini bukan dari API detail page.\n\nYang",
+      }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const exploreIndex = items.findIndex((item) => item.kind === "explore-activity");
+    const firstAssistantIndex = items.findIndex((item) => item.kind === "message" && item.message.role === "assistant");
+    const assistantBeforeExplore = items.findIndex(
+      (item, index) => index < exploreIndex && item.kind === "message" && item.message.role === "assistant",
+    );
+
+    expect(exploreIndex).toBeGreaterThan(-1);
+    expect(firstAssistantIndex).toBeGreaterThan(-1);
+    expect(exploreIndex).toBeLessThan(firstAssistantIndex);
+    expect(assistantBeforeExplore).toBe(-1);
   });
 
   it("keeps fallback-anchored explore and edit cards with their assistant turn instead of drifting to the tail", () => {
@@ -1359,6 +1512,73 @@ describe("useWorkspaceTimeline", () => {
     expect(clauseIndex).toBeGreaterThan(-1);
     expect(firstEditedIndex).toBeGreaterThan(-1);
     expect(clauseIndex).toBeLessThan(firstEditedIndex);
+  });
+
+  it("renders separate edited cards for repeated permission-gated edits on the same file", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "apply the fixes"),
+      makeMessage("m2", 2, "assistant", "Selesai, perubahan sudah diterapkan."),
+    ];
+    const events = [
+      makeEvent(1, "permission.requested", {
+        toolName: "Edit",
+        requestId: "perm-1",
+        editTarget: "/repo/README.md",
+        toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+      }, "m2"),
+      makeEvent(2, "permission.resolved", { requestId: "perm-1", decision: "allow" }, "m2"),
+      makeEvent(3, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e1",
+        toolInput: { file_path: "/repo/README.md", old_string: "a", new_string: "b" },
+      }, "m2"),
+      makeEvent(4, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/README.md",
+        precedingToolUseIds: ["e1"],
+        editTarget: "/repo/README.md",
+      }, "m2"),
+      makeEvent(5, "permission.requested", {
+        toolName: "Edit",
+        requestId: "perm-2",
+        editTarget: "/repo/README.md",
+        toolInput: { file_path: "/repo/README.md", old_string: "b", new_string: "c" },
+      }, "m2"),
+      makeEvent(6, "permission.resolved", { requestId: "perm-2", decision: "allow" }, "m2"),
+      makeEvent(7, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e2",
+        toolInput: { file_path: "/repo/README.md", old_string: "b", new_string: "c" },
+      }, "m2"),
+      makeEvent(8, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/README.md",
+        precedingToolUseIds: ["e2"],
+        editTarget: "/repo/README.md",
+      }, "m2"),
+      makeEvent(9, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e3",
+        toolInput: { file_path: "/repo/build.gradle", old_string: "x", new_string: "y" },
+      }, "m2"),
+      makeEvent(10, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/build.gradle",
+        precedingToolUseIds: ["e3"],
+        editTarget: "/repo/build.gradle",
+      }, "m2"),
+      makeEvent(11, "message.delta", { role: "assistant", messageId: "m2", delta: "Selesai, perubahan sudah diterapkan." }, "m2"),
+      makeEvent(12, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const editedItems = items.filter((item): item is Extract<typeof item, { kind: "edited-diff" }> => item.kind === "edited-diff");
+    const readmeItems = editedItems.filter((item) => item.changedFiles.includes("/repo/README.md"));
+    const gradleItems = editedItems.filter((item) => item.changedFiles.includes("/repo/build.gradle"));
+
+    expect(editedItems).toHaveLength(3);
+    expect(readmeItems).toHaveLength(2);
+    expect(gradleItems).toHaveLength(1);
   });
 
   it("keeps a single-edit completion message after the edit card when the edit starts mid-sentence", () => {

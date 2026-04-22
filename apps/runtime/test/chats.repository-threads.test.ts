@@ -12,6 +12,12 @@ describe("POST /api/repositories/:id/threads", () => {
     app.decorate("repositoryService", {
       getById: repositoryGetById,
     } as never);
+    app.decorate("worktreeService", {
+      getById: vi.fn(async () => ({ repositoryId: "repo-1" })),
+    } as never);
+    app.decorate("workspaceEventHub", {
+      emit: vi.fn(),
+    } as never);
     app.decorate("chatService", {
       listThreads: vi.fn(),
       createThread: chatCreateThread,
@@ -70,7 +76,12 @@ describe("POST /api/repositories/:id/threads", () => {
       permissionProfile: "default",
       permissionMode: "default",
       mode: "default",
+      titleEditedManually: false,
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
       claudeSessionId: null,
+      codexSessionId: null,
       active: false,
       createdAt: "2026-02-27T00:00:00.000Z",
       updatedAt: "2026-02-27T00:00:00.000Z",

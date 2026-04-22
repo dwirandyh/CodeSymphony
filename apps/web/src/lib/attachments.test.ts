@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   countTextLines,
   generateAttachmentId,
@@ -14,14 +14,32 @@ import {
 } from "./attachments";
 
 describe("generateAttachmentId", () => {
-  it("returns a UUID-like string", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns a session-local attachment ID", () => {
     const id = generateAttachmentId();
-    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(id).toMatch(/^attachment-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+$/);
   });
 
   it("returns unique IDs", () => {
     const ids = new Set(Array.from({ length: 10 }, () => generateAttachmentId()));
     expect(ids.size).toBe(10);
+  });
+
+  it("does not depend on crypto availability", () => {
+    vi.stubGlobal("crypto", {
+      randomUUID: vi.fn(() => {
+        throw new Error("randomUUID should not be called");
+      }),
+      getRandomValues: vi.fn(() => {
+        throw new Error("getRandomValues should not be called");
+      }),
+    });
+
+    const id = generateAttachmentId();
+    expect(id.startsWith("attachment-")).toBe(true);
   });
 });
 

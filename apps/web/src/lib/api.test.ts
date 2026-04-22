@@ -76,10 +76,31 @@ describe("api", () => {
     it("patches repository scripts", async () => {
       const updated = { id: "r1" };
       mockFetch.mockReturnValueOnce(mockOk(updated));
-      await api.updateRepositoryScripts("r1", { setupScript: ["npm install"] });
+      await api.updateRepositoryScripts("r1", {
+        setupScript: ["npm install"],
+        saveAutomation: {
+          enabled: true,
+          target: "workspace_terminal",
+          filePatterns: ["lib/**/*.dart"],
+          actionType: "send_stdin",
+          payload: "r",
+          debounceMs: 400,
+        },
+      });
       const [url, init] = mockFetch.mock.calls[0];
       expect(url).toContain("/repositories/r1/scripts");
       expect(init.method).toBe("PATCH");
+      expect(init.body).toBe(JSON.stringify({
+        setupScript: ["npm install"],
+        saveAutomation: {
+          enabled: true,
+          target: "workspace_terminal",
+          filePatterns: ["lib/**/*.dart"],
+          actionType: "send_stdin",
+          payload: "r",
+          debounceMs: 400,
+        },
+      }));
     });
   });
 
@@ -236,6 +257,17 @@ describe("api", () => {
     it("delete thread throws on error", async () => {
       mockFetch.mockReturnValueOnce(mockError(500, "fail"));
       await expect(api.deleteThread("t1")).rejects.toThrow("fail");
+    });
+  });
+
+  describe("plan operations", () => {
+    it("dismisses a plan", async () => {
+      mockFetch.mockReturnValueOnce(mock204());
+      await api.dismissPlan("t1");
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toContain("/threads/t1/plan/dismiss");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBe(JSON.stringify({}));
     });
   });
 
@@ -502,7 +534,7 @@ describe("api", () => {
 
     it("tests provider", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ success: true }));
-      const result = await api.testModelProvider({ baseUrl: "http://localhost", apiKey: "key", modelId: "m1" });
+      const result = await api.testModelProvider({ agent: "codex", baseUrl: "http://localhost", apiKey: "key", modelId: "m1" });
       expect(result.success).toBe(true);
     });
   });

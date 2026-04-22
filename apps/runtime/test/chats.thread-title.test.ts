@@ -12,6 +12,12 @@ describe("PATCH /api/threads/:id/title", () => {
     app.decorate("repositoryService", {
       getById: vi.fn(),
     } as never);
+    app.decorate("worktreeService", {
+      getById: vi.fn(async () => ({ repositoryId: "repo-1" })),
+    } as never);
+    app.decorate("workspaceEventHub", {
+      emit: vi.fn(),
+    } as never);
     app.decorate("chatService", {
       listThreads: vi.fn(),
       createThread: vi.fn(),
@@ -51,7 +57,11 @@ describe("PATCH /api/threads/:id/title", () => {
       permissionMode: "default",
       mode: "default",
       titleEditedManually: true,
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
       claudeSessionId: null,
+      codexSessionId: null,
       active: false,
       createdAt: "2026-02-28T00:00:00.000Z",
       updatedAt: "2026-02-28T00:00:00.000Z",
@@ -97,6 +107,12 @@ describe("PATCH /api/threads/:id/mode", () => {
     app.decorate("repositoryService", {
       getById: vi.fn(),
     } as never);
+    app.decorate("worktreeService", {
+      getById: vi.fn(async () => ({ repositoryId: "repo-1" })),
+    } as never);
+    app.decorate("workspaceEventHub", {
+      emit: vi.fn(),
+    } as never);
     app.decorate("chatService", {
       listThreads: vi.fn(),
       createThread: vi.fn(),
@@ -136,7 +152,11 @@ describe("PATCH /api/threads/:id/mode", () => {
       permissionMode: "default",
       mode: "plan",
       titleEditedManually: true,
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
       claudeSessionId: null,
+      codexSessionId: null,
       active: false,
       createdAt: "2026-02-28T00:00:00.000Z",
       updatedAt: "2026-02-28T00:00:00.000Z",

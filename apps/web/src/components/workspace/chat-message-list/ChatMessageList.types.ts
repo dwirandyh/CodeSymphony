@@ -1,4 +1,4 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from "react";
 import type { ChatAttachment, ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { SubagentStep } from "../../../pages/workspace/types";
 
@@ -127,6 +127,8 @@ export type ChatMessageListProps = {
   emptyState?: ChatMessageListEmptyState | null;
   showThinkingPlaceholder?: boolean;
   onOpenReadFile?: (path: string) => void | Promise<void>;
+  worktreePath?: string | null;
+  footer?: ReactNode;
 };
 
 export type AnsiSegment = {
@@ -151,6 +153,7 @@ export type TimelineCtx = {
   copyOutput: (id: string, content: string) => void;
   copyDebugLog: () => void;
   onOpenReadFile?: (path: string) => void | Promise<void>;
+  worktreePath: string | null;
   toolExpandedById: Map<string, boolean>;
   setToolExpandedById: Dispatch<SetStateAction<Map<string, boolean>>>;
   editedExpandedById: Map<string, boolean>;
