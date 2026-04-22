@@ -86,6 +86,7 @@ import {
 } from "./chatNamingService.js";
 import { recoverPendingPlan } from "./chatPlanService.js";
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
+import { buildCodexCliProviderHint } from "../../codex/config.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
@@ -954,6 +955,12 @@ export function createChatService(deps: RuntimeDeps) {
         errorMessage += `\n\nSelected ${selection.agent} model provider: "${selection.provider.name}" (${selection.provider.modelId}) via ${providerLocation}.\nTry switching the thread to a built-in model or deactivating the provider in Settings → Models to isolate provider issues.`;
       } else if (!wasCancelled) {
         errorMessage += `\n\nSelected ${selection.agent} model: "${selection.model}".`;
+        if (selection.agent === "codex") {
+          const codexCliProviderHint = buildCodexCliProviderHint();
+          if (codexCliProviderHint) {
+            errorMessage += `\n${codexCliProviderHint}`;
+          }
+        }
       }
 
       if (assistantMessageId) {
