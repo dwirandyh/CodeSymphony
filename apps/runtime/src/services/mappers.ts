@@ -1,5 +1,13 @@
 import type { ChatMessage as DbChatMessage, ChatThread as DbChatThread, Repository as DbRepository, Worktree as DbWorktree, ChatAttachment as DbChatAttachment } from "@prisma/client";
-import type { ChatAttachment, ChatMessage, ChatThread, Repository, Worktree } from "@codesymphony/shared-types";
+import { SaveAutomationConfigSchema, type ChatAttachment, type ChatMessage, type ChatThread, type Repository, type Worktree } from "@codesymphony/shared-types";
+
+function parseSerializedJson<T>(value: string | null, parser: (input: unknown) => T): T | null {
+  if (!value) {
+    return null;
+  }
+
+  return parser(JSON.parse(value));
+}
 
 export function mapWorktree(worktree: DbWorktree): Worktree {
   return {
@@ -21,9 +29,10 @@ export function mapRepository(repository: DbRepository & { worktrees: DbWorktree
     name: repository.name,
     rootPath: repository.rootPath,
     defaultBranch: repository.defaultBranch,
-    setupScript: repository.setupScript ? JSON.parse(repository.setupScript) : null,
-    teardownScript: repository.teardownScript ? JSON.parse(repository.teardownScript) : null,
-    runScript: repository.runScript ? JSON.parse(repository.runScript) : null,
+    setupScript: parseSerializedJson(repository.setupScript, (input) => input as string[]),
+    teardownScript: parseSerializedJson(repository.teardownScript, (input) => input as string[]),
+    runScript: parseSerializedJson(repository.runScript, (input) => input as string[]),
+    saveAutomation: parseSerializedJson(repository.saveAutomation, (input) => SaveAutomationConfigSchema.parse(input)),
     createdAt: repository.createdAt.toISOString(),
     updatedAt: repository.updatedAt.toISOString(),
     worktrees: repository.worktrees.map(mapWorktree),

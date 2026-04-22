@@ -257,6 +257,11 @@ export function WorkspacePage() {
     }));
   }, []);
 
+  const resolveSaveAutomationTargetSessionId = useCallback((worktreeId: string) => {
+    return getBottomPanelState(bottomPanelStateByWorktreeId, worktreeId).runScriptSessionId
+      ?? `${worktreeId}:terminal`;
+  }, [bottomPanelStateByWorktreeId]);
+
   const handleScriptUpdate = useCallback((event: ScriptUpdateEvent) => {
     setScriptOutputs((prev) => upsertScriptOutputEntry(prev, event));
     if (event.type === "run") {
@@ -659,6 +664,8 @@ export function WorkspacePage() {
     fileEntries: fileIndex.entries,
     onError: setError,
     onOpenQuickFilePicker: () => setMobilePanelOpen(null),
+    resolveSaveAutomationTargetSessionId,
+    saveAutomation: repos.selectedRepository?.saveAutomation ?? null,
     selectedThreadId: chat.selectedThreadId,
     selectedWorktreeId: repos.selectedWorktreeId,
     selectedWorktreePath: repos.selectedWorktree?.path ?? null,

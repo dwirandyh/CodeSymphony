@@ -76,10 +76,31 @@ describe("api", () => {
     it("patches repository scripts", async () => {
       const updated = { id: "r1" };
       mockFetch.mockReturnValueOnce(mockOk(updated));
-      await api.updateRepositoryScripts("r1", { setupScript: ["npm install"] });
+      await api.updateRepositoryScripts("r1", {
+        setupScript: ["npm install"],
+        saveAutomation: {
+          enabled: true,
+          target: "workspace_terminal",
+          filePatterns: ["lib/**/*.dart"],
+          actionType: "send_stdin",
+          payload: "r",
+          debounceMs: 400,
+        },
+      });
       const [url, init] = mockFetch.mock.calls[0];
       expect(url).toContain("/repositories/r1/scripts");
       expect(init.method).toBe("PATCH");
+      expect(init.body).toBe(JSON.stringify({
+        setupScript: ["npm install"],
+        saveAutomation: {
+          enabled: true,
+          target: "workspace_terminal",
+          filePatterns: ["lib/**/*.dart"],
+          actionType: "send_stdin",
+          payload: "r",
+          debounceMs: 400,
+        },
+      }));
     });
   });
 

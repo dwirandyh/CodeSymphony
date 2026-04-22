@@ -244,6 +244,112 @@ describe("chatService worktree diff delta", () => {
     expect(worktreeDiffEvent(events)).toBeUndefined();
   });
 
+  it("emits worktree diff for newly created untracked files inside a new directory", async () => {
+    const worktreePath = createGitWorktree({
+      "src/main.ts": "export const main = () => 1;\n",
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      const relativePath = "src/generated/new.ts";
+      const absolutePath = join(worktreePath, relativePath);
+      await onToolStarted({
+        toolName: "Write",
+        toolUseId: "write-untracked-new",
+        parentToolUseId: null,
+        editTarget: relativePath,
+      });
+      mkdirSync(dirname(absolutePath), { recursive: true });
+      writeFileSync(absolutePath, "export const generated = true;\n", "utf8");
+      await onToolFinished({
+        toolName: "Write",
+        summary: `Created ${relativePath}`,
+        precedingToolUseIds: ["write-untracked-new"],
+        editTarget: relativePath,
+        toolInput: {
+          file_path: relativePath,
+          content: "export const generated = true;\n",
+        },
+      });
+      await onText("Created src/generated/new.ts");
+      return {
+        output: "Created src/generated/new.ts",
+        sessionId: "session-worktree-untracked-new-file",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree New Untracked File");
+
+    await chatService.sendMessage(threadId, {
+      content: "create src/generated/new.ts",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const diffEvent = worktreeDiffEvent(events);
+    expect(diffEvent).toBeDefined();
+    expect(diffEvent?.payload.changedFiles).toEqual(["src/generated/new.ts"]);
+    expect(diffEvent?.payload.diff).toBe("");
+  });
+
+  it("emits worktree diff when the current run edits an existing untracked file", async () => {
+    const worktreePath = createGitWorktree({
+      "src/main.ts": "export const main = () => 1;\n",
+    });
+    const relativePath = "src/generated/new.ts";
+    const absolutePath = join(worktreePath, relativePath);
+    mkdirSync(dirname(absolutePath), { recursive: true });
+    writeFileSync(absolutePath, "export const generated = 1;\n", "utf8");
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      await onToolStarted({
+        toolName: "Edit",
+        toolUseId: "edit-existing-untracked",
+        parentToolUseId: null,
+        editTarget: relativePath,
+      });
+      writeFileSync(absolutePath, "export const generated = 2;\n", "utf8");
+      await onToolFinished({
+        toolName: "Edit",
+        summary: `Edited ${relativePath}`,
+        precedingToolUseIds: ["edit-existing-untracked"],
+        editTarget: relativePath,
+        toolInput: {
+          file_path: relativePath,
+          old_string: "export const generated = 1;\n",
+          new_string: "export const generated = 2;\n",
+        },
+      });
+      await onText("Updated src/generated/new.ts");
+      return {
+        output: "Updated src/generated/new.ts",
+        sessionId: "session-worktree-edit-existing-untracked",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree Existing Untracked File");
+
+    await chatService.sendMessage(threadId, {
+      content: "update src/generated/new.ts",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const diffEvent = worktreeDiffEvent(events);
+    expect(diffEvent).toBeDefined();
+    expect(diffEvent?.payload.changedFiles).toEqual(["src/generated/new.ts"]);
+    expect(diffEvent?.payload.diff).toBe("");
+  });
+
   it("rejects sends when expected worktree id does not match the thread worktree", async () => {
     const worktreePath = createGitWorktree({
       "src/main.ts": "export const main = () => 1;\n",

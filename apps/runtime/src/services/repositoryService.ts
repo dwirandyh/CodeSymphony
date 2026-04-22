@@ -308,6 +308,7 @@ export function createRepositoryService(prisma: PrismaClient) {
       if (input.setupScript !== undefined) data.setupScript = input.setupScript ? JSON.stringify(input.setupScript) : null;
       if (input.teardownScript !== undefined) data.teardownScript = input.teardownScript ? JSON.stringify(input.teardownScript) : null;
       if (input.runScript !== undefined) data.runScript = input.runScript ? JSON.stringify(input.runScript) : null;
+      if (input.saveAutomation !== undefined) data.saveAutomation = input.saveAutomation ? JSON.stringify(input.saveAutomation) : null;
       if (input.defaultBranch) data.defaultBranch = input.defaultBranch;
       const updated = await prisma.repository.update({ where: { id }, data, include: { worktrees: true } });
       await syncPrimaryWorktreeBaseBranch(updated);

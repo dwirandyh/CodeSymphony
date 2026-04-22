@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { FileEntry } from "@codesymphony/shared-types";
+import type { FileEntry, SaveAutomationConfig } from "@codesymphony/shared-types";
 import { useQueryClient } from "@tanstack/react-query";
 import type { WorkspaceFileTab } from "../../../components/workspace/WorkspaceHeader";
 import { buildQuickFileItems, filterQuickFileItems } from "../../../components/workspace/quickFilePickerUtils";
@@ -37,6 +37,51 @@ type QuickFilePickerState = {
   selectedIndex: number;
 };
 
+function escapeRegExpCharacter(value: string): string {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+}
+
+function createGlobPatternMatcher(pattern: string): RegExp {
+  const normalizedPattern = pattern.trim().replace(/\\/g, "/");
+  let source = "^";
+
+  for (let index = 0; index < normalizedPattern.length; index += 1) {
+    const character = normalizedPattern[index];
+    const nextCharacter = normalizedPattern[index + 1];
+    const nextNextCharacter = normalizedPattern[index + 2];
+
+    if (character === "*" && nextCharacter === "*") {
+      if (nextNextCharacter === "/") {
+        source += "(?:.*/)?";
+        index += 2;
+      } else {
+        source += ".*";
+        index += 1;
+      }
+      continue;
+    }
+
+    if (character === "*") {
+      source += "[^/]*";
+      continue;
+    }
+
+    if (character === "?") {
+      source += "[^/]";
+      continue;
+    }
+
+    source += escapeRegExpCharacter(character);
+  }
+
+  return new RegExp(`${source}$`);
+}
+
+function matchesSaveAutomationPattern(filePath: string, patterns: string[]): boolean {
+  const normalizedFilePath = filePath.replace(/\\/g, "/");
+  return patterns.some((pattern) => createGlobPatternMatcher(pattern).test(normalizedFilePath));
+}
+
 function createInitialEditorFileState(): EditorFileState {
   return {
     savedContent: "",
@@ -66,6 +111,8 @@ interface UseWorkspaceFileEditorOptions {
   fileEntries: FileEntry[];
   onError: (message: string | null) => void;
   onOpenQuickFilePicker?: () => void;
+  resolveSaveAutomationTargetSessionId?: (worktreeId: string) => string | null;
+  saveAutomation?: SaveAutomationConfig | null;
   selectedThreadId: string | null;
   selectedWorktreeId: string | null;
   selectedWorktreePath: string | null;
@@ -79,6 +126,8 @@ export function useWorkspaceFileEditor({
   fileEntries,
   onError,
   onOpenQuickFilePicker,
+  resolveSaveAutomationTargetSessionId,
+  saveAutomation,
   selectedThreadId,
   selectedWorktreeId,
   selectedWorktreePath,
@@ -98,6 +147,7 @@ export function useWorkspaceFileEditor({
   const editorFileStateRef = useRef(editorFileStateByWorktreeId);
   const editorGitBaselineStateRef = useRef(editorGitBaselineStateByWorktreeId);
   const closingActiveFileRef = useRef<{ worktreeId: string; filePath: string } | null>(null);
+  const saveAutomationTimeoutsRef = useRef<Record<string, number>>({});
 
   const quickFileItems = useMemo(
     () => buildQuickFileItems(fileEntries),
@@ -171,6 +221,12 @@ export function useWorkspaceFileEditor({
   useEffect(() => {
     editorGitBaselineStateRef.current = editorGitBaselineStateByWorktreeId;
   }, [editorGitBaselineStateByWorktreeId]);
+
+  useEffect(() => () => {
+    Object.values(saveAutomationTimeoutsRef.current).forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+  }, []);
 
   const updateEditorFileState = useCallback((
     worktreeId: string,
@@ -829,6 +885,39 @@ export function useWorkspaceFileEditor({
     loadEditorFile(selectedWorktreeId, activeFilePath);
   }, [activeFilePath, loadEditorFile, selectedWorktreeId, updateEditorFileState]);
 
+  const scheduleSaveAutomation = useCallback((worktreeId: string, filePath: string, worktreePath: string | null) => {
+    if (!saveAutomation?.enabled) {
+      return;
+    }
+
+    const payload = saveAutomation.payload.trim();
+    if (payload.length === 0 || saveAutomation.filePatterns.length === 0 || !matchesSaveAutomationPattern(filePath, saveAutomation.filePatterns)) {
+      return;
+    }
+
+    const timeoutKey = worktreeId;
+    const existingTimeoutId = saveAutomationTimeoutsRef.current[timeoutKey];
+    if (existingTimeoutId !== undefined) {
+      window.clearTimeout(existingTimeoutId);
+    }
+
+    saveAutomationTimeoutsRef.current[timeoutKey] = window.setTimeout(() => {
+      delete saveAutomationTimeoutsRef.current[timeoutKey];
+
+      const sessionId = resolveSaveAutomationTargetSessionId?.(worktreeId)
+        ?? `${worktreeId}:terminal`;
+      if (!sessionId) {
+        return;
+      }
+
+      void Promise.resolve(api.runTerminalCommand({
+        sessionId,
+        command: payload,
+        cwd: worktreePath ?? undefined,
+      })).catch(() => {});
+    }, saveAutomation.debounceMs);
+  }, [resolveSaveAutomationTargetSessionId, saveAutomation]);
+
   const handleSaveActiveFile = useCallback(async () => {
     if (!selectedWorktreeId || !activeFilePath) {
       return;
@@ -861,6 +950,7 @@ export function useWorkspaceFileEditor({
       }));
       void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(selectedWorktreeId) });
       void queryClient.invalidateQueries({ queryKey: ["worktrees", selectedWorktreeId, "gitBranchDiffSummary"] });
+      scheduleSaveAutomation(selectedWorktreeId, activeFilePath, selectedWorktreePath);
       onError(null);
     } catch (error) {
       updateEditorFileState(selectedWorktreeId, activeFilePath, (current) => ({
@@ -869,7 +959,7 @@ export function useWorkspaceFileEditor({
         error: error instanceof Error ? error.message : "Unable to save file",
       }));
     }
-  }, [activeFilePath, getEditorFileState, onError, queryClient, selectedWorktreeId, updateEditorFileState]);
+  }, [activeFilePath, getEditorFileState, onError, queryClient, scheduleSaveAutomation, selectedWorktreeId, selectedWorktreePath, updateEditorFileState]);
 
   useEffect(() => {
     if (activeView !== "file" || !activeFilePath) {

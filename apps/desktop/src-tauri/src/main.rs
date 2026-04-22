@@ -1,6 +1,7 @@
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 
 struct RuntimeProcess(Mutex<Option<Child>>);
+struct AppShutdown(AtomicBool);
 
 const WEB_RUNTIME_PORT: u16 = 4331;
 const DESKTOP_DEV_RUNTIME_PORT: u16 = 4321;
@@ -249,6 +251,29 @@ fn resolve_claude_binary() -> Option<PathBuf> {
     None
 }
 
+fn runtime_stdout_log_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("runtime.stdout.log")
+}
+
+fn runtime_stderr_log_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("runtime.stderr.log")
+}
+
+fn configure_runtime_stdio(cmd: &mut Command, app_data_dir: &Path) -> std::io::Result<()> {
+    let stdout = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(runtime_stdout_log_path(app_data_dir))?;
+    let stderr = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(runtime_stderr_log_path(app_data_dir))?;
+
+    cmd.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
+
+    Ok(())
+}
+
 fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child> {
     let resource_dir = match app_handle.path().resource_dir() {
         Ok(path) => path,
@@ -329,6 +354,14 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         cmd.env("CLAUDE_CODE_EXECUTABLE", &claude_bin);
     }
 
+    if let Err(error) = configure_runtime_stdio(&mut cmd, &app_data_dir) {
+        eprintln!(
+            "Failed to configure runtime stdio logs in {}: {error}",
+            app_data_dir.display()
+        );
+        return None;
+    }
+
     #[cfg(unix)]
     cmd.process_group(0);
 
@@ -344,6 +377,14 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
     }
 }
 
+fn spawn_managed_runtime(app_handle: &tauri::AppHandle, port: u16, is_dev: bool) -> Option<Child> {
+    if is_dev {
+        spawn_runtime_dev(port)
+    } else {
+        spawn_runtime_prod(app_handle, port)
+    }
+}
+
 fn wait_for_runtime(timeout: Duration, port: u16) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
@@ -352,6 +393,61 @@ fn wait_for_runtime(timeout: Duration, port: u16) -> bool {
         }
         thread::sleep(Duration::from_millis(200));
     }
+    false
+}
+
+fn ensure_managed_runtime(app_handle: &tauri::AppHandle, port: u16, is_dev: bool) -> bool {
+    let Some(state) = app_handle.try_state::<RuntimeProcess>() else {
+        eprintln!("Managed runtime state is unavailable.");
+        return false;
+    };
+
+    let mut guard = match state.0.lock() {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("Failed to lock managed runtime state: {error}");
+            return false;
+        }
+    };
+
+    if let Some(child) = guard.as_mut() {
+        match child.try_wait() {
+            Ok(None) => return true,
+            Ok(Some(status)) => {
+                eprintln!("Managed runtime exited unexpectedly with status: {status}");
+                *guard = None;
+            }
+            Err(error) => {
+                eprintln!("Failed to inspect managed runtime status: {error}");
+                *guard = None;
+            }
+        }
+    }
+
+    let child = spawn_managed_runtime(app_handle, port, is_dev);
+    if child.is_none() {
+        eprintln!("Managed runtime spawn attempt failed on port {port}");
+    }
+    *guard = child;
+
+    guard.is_some()
+}
+
+fn wait_for_managed_runtime(
+    app_handle: &tauri::AppHandle,
+    port: u16,
+    is_dev: bool,
+    timeout: Duration,
+) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if wait_for_runtime(Duration::from_millis(200), port) {
+            return true;
+        }
+
+        let _ = ensure_managed_runtime(app_handle, port, is_dev);
+    }
+
     false
 }
 
@@ -389,7 +485,34 @@ fn stop_managed_runtime(app_handle: &tauri::AppHandle) {
     }
 }
 
+fn request_runtime_shutdown(app_handle: &tauri::AppHandle) {
+    if let Some(state) = app_handle.try_state::<AppShutdown>() {
+        state.0.store(true, Ordering::Relaxed);
+    }
+}
+
+fn monitor_managed_runtime(app_handle: tauri::AppHandle, port: u16, is_dev: bool) {
+    loop {
+        thread::sleep(Duration::from_secs(2));
+
+        let shutdown_requested = app_handle
+            .try_state::<AppShutdown>()
+            .map(|state| state.0.load(Ordering::Relaxed))
+            .unwrap_or(true);
+        if shutdown_requested {
+            break;
+        }
+
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            continue;
+        }
+
+        let _ = ensure_managed_runtime(&app_handle, port, is_dev);
+    }
+}
+
 fn main() {
+    let is_dev = cfg!(debug_assertions);
     let runtime_port = if cfg!(debug_assertions) {
         DESKTOP_DEV_RUNTIME_PORT
     } else {
@@ -400,21 +523,22 @@ fn main() {
         .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(true).build())
         .append_invoke_initialization_script(desktop_runtime_init_script(runtime_port))
         .setup(move |app| {
-            let child = if cfg!(debug_assertions) {
-                spawn_runtime_dev(runtime_port)
-            } else {
-                spawn_runtime_prod(app.handle(), runtime_port)
-            };
-
-            app.manage(RuntimeProcess(Mutex::new(child)));
+            app.manage(RuntimeProcess(Mutex::new(None)));
+            app.manage(AppShutdown(AtomicBool::new(false)));
+            let _ = ensure_managed_runtime(app.handle(), runtime_port, is_dev);
 
             // Wait for the runtime to be ready, then show the window
             let app_handle = app.handle().clone();
             thread::spawn(move || {
-                let ready = wait_for_runtime(Duration::from_secs(30), runtime_port);
+                let ready = wait_for_managed_runtime(
+                    &app_handle,
+                    runtime_port,
+                    is_dev,
+                    Duration::from_secs(30),
+                );
                 if let Some(window) = app_handle.get_webview_window("main") {
                     if ready {
-                        if !cfg!(debug_assertions) {
+                        if !is_dev {
                             let runtime_url = format!("http://127.0.0.1:{runtime_port}");
                             match Url::parse(&runtime_url) {
                                 Ok(url) => {
@@ -445,10 +569,18 @@ fn main() {
                 }
             });
 
+            if !is_dev {
+                let app_handle = app.handle().clone();
+                thread::spawn(move || {
+                    monitor_managed_runtime(app_handle, runtime_port, is_dev);
+                });
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
+                request_runtime_shutdown(&window.app_handle());
                 stop_managed_runtime(&window.app_handle());
             }
         })
@@ -459,6 +591,7 @@ fn main() {
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
+                request_runtime_shutdown(app_handle);
                 stop_managed_runtime(app_handle);
             }
         });
@@ -466,7 +599,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::desktop_runtime_host;
+    use super::{desktop_runtime_host, runtime_stderr_log_path, runtime_stdout_log_path};
+    use std::path::Path;
 
     #[test]
     fn desktop_dev_runtime_stays_localhost() {
@@ -476,5 +610,18 @@ mod tests {
     #[test]
     fn desktop_prod_runtime_binds_to_lan() {
         assert_eq!(desktop_runtime_host(false), "0.0.0.0");
+    }
+
+    #[test]
+    fn runtime_log_paths_live_in_app_data_dir() {
+        let app_data_dir = Path::new("/tmp/codesymphony");
+        assert_eq!(
+            runtime_stdout_log_path(app_data_dir),
+            Path::new("/tmp/codesymphony/runtime.stdout.log")
+        );
+        assert_eq!(
+            runtime_stderr_log_path(app_data_dir),
+            Path::new("/tmp/codesymphony/runtime.stderr.log")
+        );
     }
 }
