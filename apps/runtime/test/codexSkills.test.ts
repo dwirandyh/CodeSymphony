@@ -60,13 +60,13 @@ describe("normalizeCodexSkillSlashCommandsForPrompt", () => {
 
   it("turns skill slash commands into an explicit Codex instruction", () => {
     expect(normalizeCodexSkillSlashCommandsForPrompt("/dogfood audit halaman settings", skills)).toBe(
-      "Use the dogfood skill for this task.\n\naudit halaman settings",
+      "Use $dogfood for this task.\n\naudit halaman settings",
     );
   });
 
   it("supports multiple skills and preserves non-skill slash tokens", () => {
     expect(normalizeCodexSkillSlashCommandsForPrompt("/dogfood pakai /Users/test dan /Excel", skills)).toBe(
-      "Use these skills for this task: dogfood, Excel.\n\npakai /Users/test dan",
+      "Use these skills for this task: $dogfood, $Excel.\n\npakai /Users/test dan",
     );
   });
 
