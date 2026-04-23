@@ -248,5 +248,7 @@ describe("CodeEditorPanel", () => {
     expect(image).not.toBeNull();
     expect(image?.getAttribute("src")).toBe("data:image/svg+xml;base64,PHN2Zy8+");
     expect(image?.getAttribute("alt")).toBe("logo.svg");
+    expect(container.textContent).toContain("Pinch or scroll to zoom");
+    expect(container.querySelector("button[aria-label='Zoom in']")).not.toBeNull();
   });
 });

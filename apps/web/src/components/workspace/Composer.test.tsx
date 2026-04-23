@@ -796,13 +796,28 @@ describe("Composer", () => {
     setMobileViewport(true);
     renderComposer();
 
-    const permissionButton = getPermissionSelectorButton();
+    const sessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open session settings"]');
+    if (!sessionButton) {
+      throw new Error("Session settings button not found");
+    }
     act(() => {
-      permissionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      sessionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
+    expect(container.textContent).toContain("Session settings");
     expect(container.textContent).toContain("Ask before approval-gated actions");
     expect(container.textContent).toContain("Always allow approval-gated actions");
+  });
+
+  it("collapses model and permission controls into one mobile session button", () => {
+    setMobileViewport(true);
+    renderComposer({ permissionMode: "full_access" });
+
+    const sessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open session settings"]');
+    expect(sessionButton).not.toBeNull();
+    expect(sessionButton?.textContent).toContain("Claude");
+    expect(container.querySelector('button[aria-label="Select CLI agent and model"]')).toBeNull();
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Full Access")).toBe(false);
   });
 
   it("filters out already-mentioned files from suggestions", async () => {

@@ -1,9 +1,45 @@
-import { memo, useState, useCallback } from "react";
+import type { ReactNode } from "react";
+import { memo, useState, useCallback, useMemo } from "react";
 import type { ChatAttachment } from "@codesymphony/shared-types";
 import { Check, Copy, FileText, Paperclip } from "lucide-react";
 import { getAttachmentDisplayLabel } from "../../../lib/attachments";
 import { Popover, PopoverTrigger, PopoverContent } from "../../ui/popover";
+import { Dialog, DialogContent, DialogTrigger } from "../../ui/dialog";
+import { ZoomableImage } from "../ZoomableImage";
 import { formatFileSize } from "./toolEventUtils";
+
+function getImageSource(attachment: AttachmentPreviewAttachment): string | null {
+  if (!attachment.mimeType.startsWith("image/") || attachment.content.length === 0) {
+    return null;
+  }
+
+  if (attachment.content.startsWith("data:")) {
+    return attachment.content;
+  }
+
+  if (attachment.mimeType === "image/svg+xml" && attachment.content.trimStart().startsWith("<svg")) {
+    return `data:${attachment.mimeType};utf8,${encodeURIComponent(attachment.content)}`;
+  }
+
+  return `data:${attachment.mimeType};base64,${attachment.content}`;
+}
+
+const ImageAttachmentDialog = memo(function ImageAttachmentDialog({ attachment, children }: {
+  attachment: ChatAttachment;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const imageSource = useMemo(() => getImageSource(attachment), [attachment]);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>{children}</DialogTrigger>
+      <DialogContent className="h-[100dvh] w-[100vw] max-w-none gap-0 border-none bg-black/95 p-0 shadow-none sm:rounded-none">
+        {imageSource ? <ZoomableImage src={imageSource} alt={attachment.filename} /> : null}
+      </DialogContent>
+    </Dialog>
+  );
+});
 
 type AttachmentPreviewAttachment = {
   filename: string;
@@ -83,50 +119,65 @@ const AttachmentPopoverContent = memo(function AttachmentPopoverContent({ attach
 
 export const AttachmentBlock = memo(function AttachmentBlock({ attachment }: { attachment: ChatAttachment }) {
   const isImage = attachment.mimeType.startsWith("image/");
+  const button = (
+    <button
+      type="button"
+      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-secondary/40"
+    >
+      {isImage ? (
+        <Paperclip className="h-3 w-3 shrink-0 text-purple-400" />
+      ) : (
+        <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
+      )}
+      <span className="truncate font-medium">{attachment.filename}</span>
+      <span className="shrink-0 rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+        {formatFileSize(attachment.sizeBytes)}
+      </span>
+    </button>
+  );
 
   return (
     <div className="overflow-hidden rounded-lg border border-border/30 bg-secondary/20">
-      <Popover>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-secondary/40"
-          >
-            {isImage ? (
-              <Paperclip className="h-3 w-3 shrink-0 text-purple-400" />
-            ) : (
-              <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
-            )}
-            <span className="truncate font-medium">{attachment.filename}</span>
-            <span className="shrink-0 rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-              {formatFileSize(attachment.sizeBytes)}
-            </span>
-          </button>
-        </PopoverTrigger>
-        <AttachmentPopoverContent attachment={attachment} />
-      </Popover>
+      {isImage ? (
+        <ImageAttachmentDialog attachment={attachment}>
+          {button}
+        </ImageAttachmentDialog>
+      ) : (
+        <Popover>
+          <PopoverTrigger asChild>{button}</PopoverTrigger>
+          <AttachmentPopoverContent attachment={attachment} />
+        </Popover>
+      )}
     </div>
   );
 });
 
 export const InlineAttachmentChip = memo(function InlineAttachmentChip({ attachment }: { attachment: ChatAttachment }) {
   const label = getAttachmentDisplayLabel(attachment);
+  const isImage = attachment.mimeType.startsWith("image/");
+  const chip = (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded-md border border-purple-500/30 bg-purple-500/15 px-1.5 py-0 text-xs text-purple-400 cursor-pointer select-none hover:bg-purple-500/25"
+      title={`${attachment.filename} (${formatFileSize(attachment.sizeBytes)})`}
+    >
+      <Paperclip className="h-3 w-3 shrink-0 inline-block" />
+      <span className="max-w-[140px] truncate">{label}</span>
+    </button>
+  );
 
   return (
     <span className="inline-flex align-baseline mx-0.5">
-      <Popover>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-md border border-purple-500/30 bg-purple-500/15 px-1.5 py-0 text-xs text-purple-400 cursor-pointer select-none hover:bg-purple-500/25"
-            title={`${attachment.filename} (${formatFileSize(attachment.sizeBytes)})`}
-          >
-            <Paperclip className="h-3 w-3 shrink-0 inline-block" />
-            <span className="max-w-[140px] truncate">{label}</span>
-          </button>
-        </PopoverTrigger>
-        <AttachmentPopoverContent attachment={attachment} />
-      </Popover>
+      {isImage ? (
+        <ImageAttachmentDialog attachment={attachment}>
+          {chip}
+        </ImageAttachmentDialog>
+      ) : (
+        <Popover>
+          <PopoverTrigger asChild>{chip}</PopoverTrigger>
+          <AttachmentPopoverContent attachment={attachment} />
+        </Popover>
+      )}
     </span>
   );
 });

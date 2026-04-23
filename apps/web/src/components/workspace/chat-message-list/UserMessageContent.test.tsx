@@ -219,4 +219,46 @@ describe("UserMessageContent", () => {
     expect(document.body.textContent).toContain("line 1");
     expect(document.body.textContent).toContain("pasted-1");
   });
+
+  it("opens image attachments in a zoomable dialog", () => {
+    act(() => {
+      root.render(
+        <UserMessageContent
+          content="Here is an image"
+          attachments={[{
+            id: "att-image-1",
+            messageId: "msg-1",
+            filename: "diagram.png",
+            mimeType: "image/png",
+            sizeBytes: 128,
+            content: "ZmFrZS1pbWFnZQ==",
+            storagePath: "/tmp/diagram.png",
+            source: "file_picker",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }]}
+        />,
+      );
+    });
+
+    const trigger = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("diagram.png"));
+    expect(trigger).toBeTruthy();
+
+    act(() => {
+      trigger?.click();
+    });
+
+    expect(document.body.textContent).toContain("Pinch or scroll to zoom");
+    const image = document.body.querySelector("img[alt='diagram.png']") as HTMLImageElement | null;
+    expect(image).toBeTruthy();
+    expect(image?.style.transform).toContain("scale(1)");
+
+    const zoomInButton = document.body.querySelector("button[aria-label='Zoom in']") as HTMLButtonElement | null;
+    expect(zoomInButton).toBeTruthy();
+
+    act(() => {
+      zoomInButton?.click();
+    });
+
+    expect(image?.style.transform).toContain("scale(1.5)");
+  });
 });
