@@ -1387,7 +1387,7 @@ function ComposerContent({
                   <span className="max-w-[96px] truncate">{mobileSessionSummaryLabel}</span>
                   {permissionMode === "full_access" ? <ShieldCheck className="h-3.5 w-3.5 shrink-0" /> : null}
                 </button>
-                <DialogContent className="left-0 top-auto grid w-full max-w-none translate-x-0 translate-y-0 gap-3 rounded-b-none rounded-t-3xl border-border/70 bg-card/98 px-4 pb-4 pt-5 shadow-2xl md:left-[50%] md:top-[50%] md:w-full md:max-w-lg md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl">
+                <DialogContent className="bottom-0 left-0 top-auto grid w-full max-w-none translate-x-0 translate-y-0 gap-3 rounded-b-none rounded-t-3xl border-border/70 bg-card/98 px-4 pb-4 pt-5 shadow-2xl md:bottom-auto md:left-[50%] md:top-[50%] md:w-full md:max-w-lg md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl">
                   <DialogTitle className="text-base">Session settings</DialogTitle>
                   <DialogDescription className="text-xs">
                     Choose agent, model, and permission mode for this thread.
