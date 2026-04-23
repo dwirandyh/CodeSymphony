@@ -248,9 +248,8 @@ const OpenAiIcon = (props: SVGProps<SVGSVGElement>) => (
 );
 
 const OpenCodeIcon = (props: SVGProps<SVGSVGElement>) => (
-  <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 24 24" fill="none">
-    <path d="M21.6 24H2.4V0h19.2v24Z" fill="currentColor" />
-    <path d="M16.8 19.2H7.2V9.6h9.6v9.6Z" fill="currentColor" opacity="0.35" />
+  <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 24 24" fill="currentColor">
+    <path fillRule="evenodd" d="M16 6H8v12h8V6zm4 16H4V2h16v20z" />
   </svg>
 );
 

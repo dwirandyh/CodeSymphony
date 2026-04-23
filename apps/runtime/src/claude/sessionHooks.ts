@@ -25,6 +25,7 @@ import { completionSummaryFromMetadata, failureSummaryFromMetadata } from "./too
 import { extractBashToolResult } from "./bashResult.js";
 import { parseSubagentTranscript, extractSubagentResponse } from "./subagentTranscript.js";
 import { findDetectedPlanFile } from "./planFile.js";
+import { shouldAutoApproveWorkspaceEdit } from "../services/chat/workspaceEditPermissions.js";
 
 import type { InstrumentContext, SessionMaps } from "./sessionInstrumentation.js";
 import { buildMetadataFromHookInput, buildFinishedTimingPreview, buildToolFinishedPayload } from "./sessionInstrumentation.js";
@@ -899,7 +900,12 @@ export function createCanUseTool(
       options.blockedPath || options.decisionReason || (options.suggestions?.length ?? 0) > 0,
     );
 
-    if (requiresUserApproval && isEditTool(toolName)) {
+    if (requiresUserApproval && shouldAutoApproveWorkspaceEdit({
+      workspaceRoot: instrumentContext.cwd,
+      toolName,
+      toolInput: input,
+      blockedPath: options.blockedPath ?? null,
+    })) {
       await emitDecision(toolUseId, "auto_allow", toolName, permissionParentToolUseId, {
         ...(command ? { command } : {}),
         input: sanitizeForLog(input),

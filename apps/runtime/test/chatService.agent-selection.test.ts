@@ -171,12 +171,12 @@ describe("chatService agent selection", () => {
 
     const updatedThread = await chatService.updateThreadAgentSelection(thread.id, {
       agent: "opencode",
-      model: "openai/gpt-5",
+      model: "opencode/minimax-m2.5-free",
       modelProviderId: null,
     });
 
     expect(updatedThread.agent).toBe("opencode");
-    expect(updatedThread.model).toBe("openai/gpt-5");
+    expect(updatedThread.model).toBe("opencode/minimax-m2.5-free");
     expect(updatedThread.claudeSessionId).toBeNull();
     expect(updatedThread.opencodeSessionId).toBeNull();
 

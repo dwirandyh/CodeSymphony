@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { __testing } from "../src/opencode/sessionRunner";
+import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
 
 describe("opencode session runner config", () => {
+  it("defaults OpenCode threads to a free built-in model", () => {
+    expect(DEFAULT_CHAT_MODEL_BY_AGENT.opencode).toBe("opencode/minimax-m2.5-free");
+  });
+
   it("applies ask permissions to both build and plan agents for default threads", () => {
     const { config, agent, model } = __testing.buildOpencodeRuntimeConfig({
       permissionMode: "default",
