@@ -22,6 +22,7 @@ import {
   type CliAgent,
   type FileEntry,
   type ModelProvider,
+  type OpencodeModelCatalogEntry,
   type SlashCommand,
   type UpdateChatThreadAgentSelectionInput,
 } from "@codesymphony/shared-types";
@@ -61,6 +62,7 @@ type ComposerProps = {
   slashCommands: SlashCommand[];
   slashCommandsLoading: boolean;
   providers: ModelProvider[];
+  opencodeModels: readonly OpencodeModelCatalogEntry[];
   agent?: CliAgent;
   model?: string;
   modelProviderId?: string | null;
@@ -108,6 +110,7 @@ const PERMISSION_OPTIONS: PermissionOption[] = [
 const AGENT_LABELS: Record<CliAgent, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
 };
 
 const MODEL_DISPLAY_NAMES_BY_AGENT: Record<CliAgent, Record<string, string>> = {
@@ -122,6 +125,7 @@ const MODEL_DISPLAY_NAMES_BY_AGENT: Record<CliAgent, Record<string, string>> = {
     "gpt-5.3-codex": "GPT-5.3 Codex",
     "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
   },
+  opencode: {},
 };
 
 const MODEL_TOKEN_LABELS: Record<string, string> = {
@@ -171,12 +175,18 @@ function formatModelToken(token: string): string {
 }
 
 function formatFriendlyModelName(agent: CliAgent, modelId: string): string {
+  if (agent === "opencode") {
+    return modelId;
+  }
+
   const exact = MODEL_DISPLAY_NAMES_BY_AGENT[agent][modelId];
   if (exact) {
     return exact;
   }
 
-  const tokens = modelId
+  const normalizedModelId = modelId;
+
+  const tokens = normalizedModelId
     .trim()
     .split(/[-_\s]+/)
     .filter(Boolean);
@@ -236,13 +246,24 @@ const OpenAiIcon = (props: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+const OpenCodeIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 24 24" fill="none">
+    <path d="M21.6 24H2.4V0h19.2v24Z" fill="currentColor" />
+    <path d="M16.8 19.2H7.2V9.6h9.6v9.6Z" fill="currentColor" opacity="0.35" />
+  </svg>
+);
+
 const AGENT_ICONS = {
   claude: ClaudeAiIcon,
   codex: OpenAiIcon,
+  opencode: OpenCodeIcon,
 } as const;
 
 function agentIconClassName(agent: CliAgent): string {
-  return agent === "claude" ? "text-[#d97757]" : "text-foreground/85";
+  if (agent === "claude") {
+    return "text-[#d97757]";
+  }
+  return "text-foreground/85";
 }
 
 function AgentIcon({
@@ -299,6 +320,7 @@ function ComposerContent({
   slashCommands,
   slashCommandsLoading,
   providers,
+  opencodeModels,
   agent: providedAgent,
   model: providedModel,
   modelProviderId: providedModelProviderId,
@@ -410,7 +432,29 @@ function ComposerContent({
           source: "custom" as const,
         })),
     ],
-  }), [providers]);
+    opencode: [
+      ...opencodeModels.map((entry) => ({
+        id: `opencode:${entry.id}:builtin`,
+        agent: "opencode" as const,
+        model: entry.id,
+        modelProviderId: null,
+        label: entry.name,
+        detail: entry.providerId,
+        source: "builtin" as const,
+      })),
+      ...providers
+        .filter((provider) => provider.agent === "opencode")
+        .map((provider) => ({
+          id: provider.id,
+          agent: "opencode" as const,
+          model: provider.modelId,
+          modelProviderId: provider.id,
+          label: provider.modelId,
+          detail: provider.name,
+          source: "custom" as const,
+        })),
+    ],
+  }), [opencodeModels, providers]);
   const modelPreviewOptions = agentOptions[modelPreviewAgent];
   const currentSelection = useMemo(() => {
     return agentOptions[agent].find((option) => (
@@ -1179,7 +1223,9 @@ function ComposerContent({
                   setModelPopoverOpen(!modelPopoverOpen);
                 }}
                 disabled={selectionLocked}
-                title={selectionLocked ? "CLI agent is locked for this thread. Start a new thread to change it." : undefined}
+                title={selectionLocked
+                  ? "CLI agent is locked for this thread. Start a new thread to change it."
+                  : currentSelection.model}
                 className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors ${
                   selectionLocked
                     ? "cursor-not-allowed opacity-50"
@@ -1258,6 +1304,7 @@ function ComposerContent({
                                   ) : null}
                                   <button
                                     type="button"
+                                    title={option.model}
                                     className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                                       selected
                                         ? "bg-accent text-accent-foreground"
@@ -1274,11 +1321,9 @@ function ComposerContent({
                                     }}
                                   >
                                     <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-                                    {option.source === "custom" ? (
-                                      <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                                        {option.detail}
-                                      </span>
-                                    ) : null}
+                                    <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
+                                      {option.detail}
+                                    </span>
                                     {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
                                   </button>
                                 </div>
@@ -1311,6 +1356,7 @@ function ComposerContent({
                                 ) : null}
                                 <button
                                   type="button"
+                                  title={option.model}
                                   className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                                     selected
                                       ? "bg-accent text-accent-foreground"
@@ -1327,11 +1373,9 @@ function ComposerContent({
                                   }}
                                 >
                                   <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-                                  {option.source === "custom" ? (
-                                    <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                                      {option.detail}
-                                    </span>
-                                  ) : null}
+                                  <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
+                                    {option.detail}
+                                  </span>
                                   {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
                                 </button>
                               </div>

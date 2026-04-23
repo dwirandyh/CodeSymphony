@@ -6,6 +6,23 @@ import { FileDiff } from "@pierre/diffs/react";
 const DIFF_HEADER_REGEX = /^(diff --git .+|--- [^\r\n]+|\+\+\+ [^\r\n]+|@@ .+ @@)/m;
 const CODE_FENCE_REGEX = /(^|\n)```/g;
 const CLOSE_FENCE_REGEX = /^`{3,}$/;
+const TRUNCATED_DIFF_MARKER = "... [diff truncated]";
+const TRUNCATED_DIFF_TRAILER_REGEX = /(?:\r?\n){1,2}\.\.\. \[diff truncated\]\s*$/;
+
+export function normalizePatchForRender(patch: string): {
+  patch: string;
+  diffTruncated: boolean;
+} {
+  const diffTruncated = TRUNCATED_DIFF_TRAILER_REGEX.test(patch);
+  if (!diffTruncated) {
+    return { patch, diffTruncated: false };
+  }
+
+  return {
+    patch: patch.replace(TRUNCATED_DIFF_TRAILER_REGEX, "").replace(/(?:\r?\n)+$/, ""),
+    diffTruncated: true,
+  };
+}
 
 export function isLikelyDiff(code: string, language?: string): boolean {
   if (language === "diff") {
@@ -22,19 +39,29 @@ export const SafePatchDiff = memo(function SafePatchDiff({
   patch: string;
   options: React.ComponentProps<typeof FileDiff>["options"];
 }) {
+  const { patch: normalizedPatch, diffTruncated } = useMemo(() => normalizePatchForRender(patch), [patch]);
   const files = useMemo(() => {
+    if (normalizedPatch.trim().length === 0) {
+      return [];
+    }
+
     try {
-      return parsePatchFiles(patch).flatMap((p) => p.files);
+      return parsePatchFiles(normalizedPatch).flatMap((p) => p.files);
     } catch {
       return null;
     }
-  }, [patch]);
+  }, [normalizedPatch]);
 
   if (!files || files.length === 0) {
     return (
-      <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
-        {patch}
-      </pre>
+      <>
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+          {normalizedPatch}
+        </pre>
+        {diffTruncated ? (
+          <div className="px-3 pt-1.5 pb-2 text-[11px] text-muted-foreground">{TRUNCATED_DIFF_MARKER}</div>
+        ) : null}
+      </>
     );
   }
 
@@ -43,6 +70,9 @@ export const SafePatchDiff = memo(function SafePatchDiff({
       {files.map((file, index) => (
         <FileDiff key={`${file.name}:${index}`} fileDiff={file} options={options} />
       ))}
+      {diffTruncated ? (
+        <div className="px-3 pt-1.5 pb-2 text-[11px] text-muted-foreground">{TRUNCATED_DIFF_MARKER}</div>
+      ) : null}
     </>
   );
 });

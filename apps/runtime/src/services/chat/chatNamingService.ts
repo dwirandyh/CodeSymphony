@@ -55,7 +55,10 @@ function normalizeGeneratedThreadTitle(raw: string): string | null {
 }
 
 function resolveAgent(agent: CliAgent | undefined): CliAgent {
-  return agent === "codex" ? "codex" : "claude";
+  if (agent === "codex" || agent === "opencode") {
+    return agent;
+  }
+  return "claude";
 }
 
 function toRunnerOptional(value: string | null | undefined): string | undefined {
@@ -63,7 +66,17 @@ function toRunnerOptional(value: string | null | undefined): string | undefined 
 }
 
 function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
-  return agent === "codex" ? (deps.codexRunner ?? deps.claudeRunner) : deps.claudeRunner;
+  if (agent === "codex") {
+    return deps.codexRunner ?? deps.claudeRunner;
+  }
+  if (agent === "opencode") {
+    return deps.opencodeRunner ?? deps.claudeRunner;
+  }
+  return deps.claudeRunner;
+}
+
+function resolveNamingPermissionMode(agent: CliAgent): "default" | "plan" {
+  return agent === "opencode" ? "default" : "plan";
 }
 
 async function buildThreadTitleWithAi(
@@ -101,7 +114,7 @@ async function buildThreadTitleWithAi(
       sessionId: null,
       cwd: worktreePath,
       abortController,
-      permissionMode: "plan",
+      permissionMode: resolveNamingPermissionMode(agent),
       model: providerOptions?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
       providerApiKey: toRunnerOptional(providerOptions?.providerApiKey),
       providerBaseUrl: toRunnerOptional(providerOptions?.providerBaseUrl),
@@ -313,7 +326,7 @@ async function buildBranchNameWithAi(
       sessionId: null,
       cwd: worktreePath,
       abortController,
-      permissionMode: "plan",
+      permissionMode: resolveNamingPermissionMode(agent),
       model: providerOptions?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
       providerApiKey: toRunnerOptional(providerOptions?.providerApiKey),
       providerBaseUrl: toRunnerOptional(providerOptions?.providerBaseUrl),
@@ -351,6 +364,10 @@ async function buildBranchNameWithAi(
     clearTimeout(timeout);
   }
 }
+
+export const __testing = {
+  resolveNamingPermissionMode,
+};
 
 export async function maybeAutoRenameBranchAfterFirstAssistantReply(
   deps: RuntimeDeps,

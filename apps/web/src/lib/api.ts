@@ -26,6 +26,7 @@ import type {
   RepositoryReviewState,
   ModelProvider,
   OpenInAppInput,
+  OpencodeModelCatalog,
   OpenWorktreeFileInput,
   PlanRevisionInput,
   SlashCommandCatalog,
@@ -600,6 +601,7 @@ export const api = {
 
   // ── Model Providers ──
 
+  listOpencodeModels: () => request<OpencodeModelCatalog>("/opencode/models"),
   listModelProviders: () => request<ModelProvider[]>("/model-providers"),
   createModelProvider: (input: CreateModelProviderInput) =>
     request<ModelProvider>("/model-providers", {

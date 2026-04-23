@@ -52,6 +52,10 @@ describe("extractEditTargetFromUnknownToolInput", () => {
     expect(extractEditTargetFromUnknownToolInput({ path: "/src/app.ts" })).toBe("/src/app.ts");
   });
 
+  it("extracts from filePath key", () => {
+    expect(extractEditTargetFromUnknownToolInput({ filePath: "/src/opencode.ts" })).toBe("/src/opencode.ts");
+  });
+
   it("extracts from file key", () => {
     expect(extractEditTargetFromUnknownToolInput({ file: "/src/main.ts" })).toBe("/src/main.ts");
   });
@@ -355,6 +359,94 @@ describe("extractEditedRuns", () => {
     expect(actualReadmeRuns).toHaveLength(1);
     expect(actualReadmeRuns[0]?.diff).toContain("README.md");
     expect(actualReadmeRuns[0]?.eventIds).toEqual(new Set(["e1", "e2", "e3", "e4"]));
+  });
+
+  it("merges a late-target write approval into the original tool run", () => {
+    const absolutePath = "/Users/test/project/dogfood-output/edit-approval-smoke.txt";
+    const relativePath = "dogfood-output/edit-approval-smoke.txt";
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: {
+          toolName: "write",
+          toolUseId: "write-1",
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "permission.requested",
+        idx: 2,
+        payload: {
+          requestId: "perm-1",
+          toolName: "write",
+          blockedPath: relativePath,
+          toolInput: {
+            filepath: absolutePath,
+            diff: [
+              `Index: ${absolutePath}`,
+              "===================================================================",
+              `--- ${absolutePath}`,
+              `+++ ${absolutePath}`,
+              "@@ -0,0 +1,1 @@",
+              "+EDIT_OK",
+            ].join("\n"),
+          },
+        },
+      }),
+      makeEvent({
+        id: "e3",
+        type: "permission.resolved",
+        idx: 3,
+        payload: {
+          requestId: "perm-1",
+          decision: "allow",
+        },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "tool.finished",
+        idx: 4,
+        payload: {
+          toolName: "write",
+          summary: relativePath,
+          precedingToolUseIds: ["write-1"],
+          toolInput: {
+            content: "EDIT_OK",
+            filePath: absolutePath,
+          },
+        },
+      }),
+      makeEvent({
+        id: "e5",
+        type: "tool.finished",
+        idx: 5,
+        payload: {
+          source: "worktree.diff",
+          changedFiles: [relativePath],
+          diff: [
+            `diff --git a/${relativePath} b/${relativePath}`,
+            "new file mode 100644",
+            "--- /dev/null",
+            `+++ b/${relativePath}`,
+            "@@ -0,0 +1 @@",
+            "+EDIT_OK",
+          ].join("\n"),
+        },
+      }),
+    ];
+
+    const runs = extractEditedRuns(events);
+
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      diffKind: "actual",
+      status: "success",
+    });
+    expect(runs[0]?.changedFiles.some((file) => file.includes("edit-approval-smoke.txt"))).toBe(true);
+    expect(runs[0]?.eventIds).toEqual(new Set(["e1", "e2", "e3", "e4", "e5"]));
+    expect(runs[0]?.diff).toContain("+EDIT_OK");
   });
 
   it("keeps later permission-gated edits on the same file as separate runs", () => {

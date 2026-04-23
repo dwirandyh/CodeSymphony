@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as opencodeModelCatalog from "../src/opencode/modelCatalog.js";
 import { registerModelRoutes } from "../src/routes/models";
 
 describe("model provider routes", () => {
@@ -30,6 +31,37 @@ describe("model provider routes", () => {
     const res = await app.inject({ method: "GET", url: "/api/model-providers" });
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toEqual([{ id: "p1", name: "Test" }]);
+  });
+
+  it("GET /api/opencode/models lists the OpenCode catalog with display metadata", async () => {
+    vi.spyOn(opencodeModelCatalog, "listOpencodeModels")
+      .mockResolvedValue([
+        {
+          id: "opencode/minimax-m2.5-free",
+          name: "MiniMax M2.5 Free",
+          providerId: "opencode",
+        },
+        {
+          id: "zai/glm-4.7-flash",
+          name: "GLM-4.7-Flash",
+          providerId: "zai",
+        },
+      ]);
+    const res = await app.inject({ method: "GET", url: "/api/opencode/models" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.models).toEqual([
+      {
+        id: "opencode/minimax-m2.5-free",
+        name: "MiniMax M2.5 Free",
+        providerId: "opencode",
+      },
+      {
+        id: "zai/glm-4.7-flash",
+        name: "GLM-4.7-Flash",
+        providerId: "zai",
+      },
+    ]);
+    expect(typeof res.json().data.fetchedAt).toBe("string");
   });
 
   it("POST /api/model-providers creates provider", async () => {
@@ -117,6 +149,34 @@ describe("model provider routes", () => {
         }),
         body: JSON.stringify({
           model: "gpt-5.4",
+          input: "Hi",
+          max_output_tokens: 1,
+        }),
+      }),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("POST /api/model-providers/test uses the responses API contract for OpenCode", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/model-providers/test",
+      payload: { agent: "opencode", baseUrl: "http://localhost:9999/v1", apiKey: "key", modelId: "gpt-5-custom" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.success).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:9999/v1/responses",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer key",
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          model: "gpt-5-custom",
           input: "Hi",
           max_output_tokens: 1,
         }),
