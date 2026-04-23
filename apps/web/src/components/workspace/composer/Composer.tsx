@@ -8,6 +8,7 @@ import {
   Folder,
   Lightbulb,
   Paperclip,
+  SlidersHorizontal,
   ShieldCheck,
   Square,
   X,
@@ -323,6 +324,7 @@ function ComposerContent({
   const [permissionPopoverOpen, setPermissionPopoverOpen] = useState(false);
   const permissionPopoverRef = useRef<HTMLDivElement>(null);
   const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
+  const [mobileSessionSheetOpen, setMobileSessionSheetOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return false;
@@ -363,6 +365,21 @@ function ComposerContent({
   useEffect(() => {
     setModelPreviewAgent(agent);
   }, [agent]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileSessionSheetOpen(false);
+    }
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (!mobileSessionSheetOpen) {
+      return;
+    }
+    setModelPopoverOpen(false);
+    setPermissionPopoverOpen(false);
+    setPermissionPreviewMode(null);
+  }, [mobileSessionSheetOpen]);
 
   const selectionLocked = hasMessages || !threadId;
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => ({
@@ -436,6 +453,7 @@ function ComposerContent({
     [permissionPreviewMode],
   );
   const permissionTriggerClassName = permissionMode === "full_access" ? "text-orange-500" : "text-muted-foreground";
+  const mobileSessionSummaryLabel = permissionMode === "full_access" ? `${AGENT_LABELS[agent]} · Full Access` : AGENT_LABELS[agent];
 
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -973,6 +991,146 @@ function ComposerContent({
     resetDraft();
   }, [threadId, worktreeId, resetDraft]);
 
+  const renderModelOptions = (mobile: boolean) => (
+    <>
+      <div className="space-y-1" data-cli-agent-list="true">
+        {(Object.keys(AGENT_LABELS) as CliAgent[]).map((entryAgent) => {
+          const selectedAgent = modelPreviewAgent === entryAgent;
+          const currentAgent = agent === entryAgent;
+
+          return (
+            <button
+              key={entryAgent}
+              type="button"
+              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
+                selectedAgent
+                  ? "bg-accent text-accent-foreground"
+                  : "text-foreground hover:bg-accent/50"
+              }`}
+              aria-current={currentAgent ? "true" : undefined}
+              onMouseEnter={() => {
+                if (!mobile) {
+                  setModelPreviewAgent(entryAgent);
+                }
+              }}
+              onFocus={() => setModelPreviewAgent(entryAgent)}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setModelPreviewAgent(entryAgent);
+              }}
+            >
+              <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
+              <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
+              {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+            </button>
+          );
+        })}
+      </div>
+
+      {mobile ? (
+        <div
+          data-agent-model-panel="stacked"
+          className="mt-1 border-t border-border/60 pt-1"
+        >
+          <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto pt-1">
+            {modelPreviewOptions.map((option, index) => {
+              const selected = option.agent === agent
+                && option.model === model
+                && option.modelProviderId === modelProviderId;
+              const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
+
+              return (
+                <div key={option.id}>
+                  {showCustomSeparator ? (
+                    <div
+                      data-model-separator="custom"
+                      className="mx-2.5 my-1 border-t border-border/60"
+                    />
+                  ) : null}
+                  <button
+                    type="button"
+                    className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                      selected
+                        ? "bg-accent text-accent-foreground"
+                        : "text-foreground hover:bg-accent/50"
+                    }`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      onAgentSelectionChange({
+                        agent: option.agent,
+                        model: option.model,
+                        modelProviderId: option.modelProviderId,
+                      });
+                      setModelPopoverOpen(false);
+                      setMobileSessionSheetOpen(false);
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
+                    {option.source === "custom" ? (
+                      <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
+                        {option.detail}
+                      </span>
+                    ) : null}
+                    {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+
+  const renderPermissionOptions = (mobile: boolean) => (
+    <div
+      className={cn(
+        "rounded-lg border border-border/60 bg-popover p-1 shadow-lg",
+        mobile ? "w-full" : "w-[220px]",
+      )}
+      onMouseLeave={() => setPermissionPreviewMode(null)}
+    >
+      <div className="max-h-48 overflow-y-auto">
+        {PERMISSION_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
+              permissionMode === option.value
+                ? "bg-accent text-accent-foreground"
+                : "text-foreground hover:bg-accent/50"
+            }`}
+            aria-label={`${option.label}. ${option.description}`}
+            aria-current={permissionMode === option.value ? "true" : undefined}
+            onMouseEnter={() => setPermissionPreviewMode(option.value)}
+            onFocus={() => setPermissionPreviewMode(option.value)}
+            onBlur={() => setPermissionPreviewMode((current) => (current === option.value ? null : current))}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onPermissionModeChange(option.value);
+              setPermissionPreviewMode(null);
+              setPermissionPopoverOpen(false);
+              if (mobile) {
+                setMobileSessionSheetOpen(false);
+              }
+            }}
+          >
+            <option.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{option.label}</span>
+              {mobile ? (
+                <span className="mt-0.5 block whitespace-normal text-[10px] leading-relaxed text-muted-foreground">
+                  {option.description}
+                </span>
+              ) : null}
+            </span>
+            {permissionMode === option.value ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
@@ -1138,7 +1296,7 @@ function ComposerContent({
             }`}
           />
 
-          <div className="absolute bottom-2 left-2.5 flex items-center gap-2 lg:bottom-3 lg:left-3">
+          <div className="absolute bottom-2 left-2.5 right-12 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:bottom-3 lg:left-3 lg:right-auto lg:overflow-visible">
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
@@ -1166,82 +1324,96 @@ function ComposerContent({
               {isPlan ? <Lightbulb className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
               {isPlan ? "Plan" : "Execute"}
             </button>
-            <div className="relative" ref={modelPopoverRef}>
-              <button
-                type="button"
-                onClick={() => {
-                  if (selectionLocked) {
-                    return;
-                  }
-                  if (!modelPopoverOpen) {
+            {isMobile ? (
+              <Dialog open={mobileSessionSheetOpen} onOpenChange={setMobileSessionSheetOpen}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectionLocked || disabled) {
+                      return;
+                    }
                     setModelPreviewAgent(agent);
-                  }
-                  setModelPopoverOpen(!modelPopoverOpen);
-                }}
-                disabled={selectionLocked}
-                title={selectionLocked ? "CLI agent is locked for this thread. Start a new thread to change it." : undefined}
-                className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors ${
-                  selectionLocked
-                    ? "cursor-not-allowed opacity-50"
-                    : "hover:bg-secondary/70 hover:text-foreground"
-                }`}
-                aria-label="Select CLI agent and model"
-              >
-                <AgentIcon agent={agent} aria-hidden="true" className="h-3.5 w-3.5" />
-                <span className="max-w-[160px] truncate">{modelLabel}</span>
-                <ChevronDown className="h-3 w-3 shrink-0" />
-              </button>
-
-              {modelPopoverOpen && (
-                <div
-                  className={`absolute bottom-full left-0 z-50 mb-1.5 ${
-                    isMobile
-                      ? "w-[min(22rem,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)]"
-                      : "w-[210px]"
-                  }`}
+                    setMobileSessionSheetOpen(true);
+                  }}
+                  disabled={selectionLocked || disabled}
+                  title={selectionLocked ? "CLI agent is locked for this thread. Start a new thread to change it." : undefined}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium transition-colors",
+                    selectionLocked || disabled
+                      ? "cursor-not-allowed opacity-50"
+                      : "hover:bg-secondary/70 hover:text-foreground",
+                    permissionMode === "full_access" ? "text-orange-500" : "text-muted-foreground",
+                  )}
+                  aria-label="Open session settings"
                 >
-                  <div className="relative">
-                    <div className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg">
-                      <div className="space-y-1" data-cli-agent-list="true">
-                        {(Object.keys(AGENT_LABELS) as CliAgent[]).map((entryAgent) => {
-                          const selectedAgent = modelPreviewAgent === entryAgent;
-                          const currentAgent = agent === entryAgent;
-
-                          return (
-                            <button
-                              key={entryAgent}
-                              type="button"
-                              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
-                                selectedAgent
-                                  ? "bg-accent text-accent-foreground"
-                                  : "text-foreground hover:bg-accent/50"
-                              }`}
-                              aria-current={currentAgent ? "true" : undefined}
-                              onMouseEnter={() => {
-                                if (!isMobile) {
-                                  setModelPreviewAgent(entryAgent);
-                                }
-                              }}
-                              onFocus={() => setModelPreviewAgent(entryAgent)}
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                setModelPreviewAgent(entryAgent);
-                              }}
-                            >
-                              <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
-                              <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
-                              {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                            </button>
-                          );
-                        })}
+                  <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
+                  <AgentIcon agent={agent} aria-hidden="true" className="h-3.5 w-3.5" />
+                  <span className="max-w-[96px] truncate">{mobileSessionSummaryLabel}</span>
+                  {permissionMode === "full_access" ? <ShieldCheck className="h-3.5 w-3.5 shrink-0" /> : null}
+                </button>
+                <DialogContent className="left-0 top-auto grid w-full max-w-none translate-x-0 translate-y-0 gap-3 rounded-b-none rounded-t-3xl border-border/70 bg-card/98 px-4 pb-4 pt-5 shadow-2xl md:left-[50%] md:top-[50%] md:w-full md:max-w-lg md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl">
+                  <DialogTitle className="text-base">Session settings</DialogTitle>
+                  <DialogDescription className="text-xs">
+                    Choose agent, model, and permission mode for this thread.
+                  </DialogDescription>
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <div className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                        Agent and model
                       </div>
+                      <div className="rounded-2xl border border-border/60 bg-background/40 p-1">
+                        {renderModelOptions(true)}
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                        Permission mode
+                      </div>
+                      {renderPermissionOptions(true)}
+                    </div>
+                  </div>
+                </DialogContent>
+              </Dialog>
+            ) : (
+              <>
+                <div className="relative" ref={modelPopoverRef}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selectionLocked) {
+                        return;
+                      }
+                      if (!modelPopoverOpen) {
+                        setModelPreviewAgent(agent);
+                      }
+                      setModelPopoverOpen(!modelPopoverOpen);
+                    }}
+                    disabled={selectionLocked}
+                    title={selectionLocked ? "CLI agent is locked for this thread. Start a new thread to change it." : undefined}
+                    className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors ${
+                      selectionLocked
+                        ? "cursor-not-allowed opacity-50"
+                        : "hover:bg-secondary/70 hover:text-foreground"
+                    }`}
+                    aria-label="Select CLI agent and model"
+                  >
+                    <AgentIcon agent={agent} aria-hidden="true" className="h-3.5 w-3.5" />
+                    <span className="max-w-[160px] truncate">{modelLabel}</span>
+                    <ChevronDown className="h-3 w-3 shrink-0" />
+                  </button>
 
-                      {isMobile ? (
+                  {modelPopoverOpen && (
+                    <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[210px]">
+                      <div className="relative">
+                        <div className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg">
+                          {renderModelOptions(false)}
+                        </div>
+
                         <div
-                          data-agent-model-panel="stacked"
-                          className="mt-1 border-t border-border/60 pt-1"
+                          data-agent-model-panel="overlay"
+                          className="absolute bottom-0 left-full z-10 ml-2 w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
                         >
-                          <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto pt-1">
+                          <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
                             {modelPreviewOptions.map((option, index) => {
                               const selected = option.agent === agent
                                 && option.model === model
@@ -1286,150 +1458,51 @@ function ComposerContent({
                             })}
                           </div>
                         </div>
-                      ) : null}
-                    </div>
-
-                    {!isMobile ? (
-                      <div
-                        data-agent-model-panel="overlay"
-                        className="absolute bottom-0 left-full z-10 ml-2 w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
-                      >
-                        <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
-                          {modelPreviewOptions.map((option, index) => {
-                            const selected = option.agent === agent
-                              && option.model === model
-                              && option.modelProviderId === modelProviderId;
-                            const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
-
-                            return (
-                              <div key={option.id}>
-                                {showCustomSeparator ? (
-                                  <div
-                                    data-model-separator="custom"
-                                    className="mx-2.5 my-1 border-t border-border/60"
-                                  />
-                                ) : null}
-                                <button
-                                  type="button"
-                                  className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                                    selected
-                                      ? "bg-accent text-accent-foreground"
-                                      : "text-foreground hover:bg-accent/50"
-                                  }`}
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    onAgentSelectionChange({
-                                      agent: option.agent,
-                                      model: option.model,
-                                      modelProviderId: option.modelProviderId,
-                                    });
-                                    setModelPopoverOpen(false);
-                                  }}
-                                >
-                                  <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-                                  {option.source === "custom" ? (
-                                    <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                                      {option.detail}
-                                    </span>
-                                  ) : null}
-                                  {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="relative" ref={permissionPopoverRef}>
-              <button
-                type="button"
-                onClick={() => {
-                  setPermissionPopoverOpen((open) => {
-                    const nextOpen = !open;
-                    if (!nextOpen) {
-                      setPermissionPreviewMode(null);
-                    }
-                    return nextOpen;
-                  });
-                }}
-                disabled={disabled}
-                className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary/70 disabled:cursor-not-allowed disabled:opacity-50 ${permissionTriggerClassName} ${
-                  permissionMode === "full_access" ? "hover:text-orange-400" : "hover:text-foreground"
-                }`}
-                aria-label="Select permission mode"
-              >
-                <activePermissionOption.icon className="h-3.5 w-3.5 shrink-0" />
-                <span className="max-w-[160px] truncate">{activePermissionOption.label}</span>
-                <ChevronDown className="h-3 w-3 shrink-0" />
-              </button>
-
-              {permissionPopoverOpen && (
-                <div className="absolute bottom-full left-0 z-50 mb-1.5">
-                  <div className="relative">
-                    <div
-                      className={`rounded-lg border border-border/60 bg-popover p-1 shadow-lg ${
-                        isMobile
-                          ? "w-[min(18rem,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)]"
-                          : "w-[220px]"
-                      }`}
-                      onMouseLeave={() => setPermissionPreviewMode(null)}
-                    >
-                      <div className="max-h-48 overflow-y-auto">
-                        {PERMISSION_OPTIONS.map((option) => (
-                          <button
-                            key={option.value}
-                            type="button"
-                            className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
-                              permissionMode === option.value
-                                ? "bg-accent text-accent-foreground"
-                                : "text-foreground hover:bg-accent/50"
-                            }`}
-                            aria-label={`${option.label}. ${option.description}`}
-                            aria-current={permissionMode === option.value ? "true" : undefined}
-                            onMouseEnter={() => setPermissionPreviewMode(option.value)}
-                            onFocus={() => setPermissionPreviewMode(option.value)}
-                            onBlur={() => setPermissionPreviewMode((current) => (current === option.value ? null : current))}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              onPermissionModeChange(option.value);
-                              setPermissionPreviewMode(null);
-                              setPermissionPopoverOpen(false);
-                            }}
-                          >
-                            <option.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate">{option.label}</span>
-                              {isMobile ? (
-                                <span className="mt-0.5 block whitespace-normal text-[10px] leading-relaxed text-muted-foreground">
-                                  {option.description}
-                                </span>
-                              ) : null}
-                            </span>
-                            {permissionMode === option.value ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                          </button>
-                        ))}
                       </div>
                     </div>
-                    {!isMobile && previewPermissionOption ? (
-                      <div
-                        className={`mt-2 w-[220px] rounded-lg border border-border/60 bg-popover/95 p-3 shadow-lg ${
-                          isMobile ? "" : "absolute left-full top-0 ml-2 mt-0"
-                        }`}
-                      >
-                        <p className="text-[11px] leading-relaxed text-muted-foreground">
-                          {previewPermissionOption.description}
-                        </p>
-                      </div>
-                    ) : null}
-                  </div>
+                  )}
                 </div>
-              )}
-            </div>
+
+                <div className="relative" ref={permissionPopoverRef}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPermissionPopoverOpen((open) => {
+                        const nextOpen = !open;
+                        if (!nextOpen) {
+                          setPermissionPreviewMode(null);
+                        }
+                        return nextOpen;
+                      });
+                    }}
+                    disabled={disabled}
+                    className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary/70 disabled:cursor-not-allowed disabled:opacity-50 ${permissionTriggerClassName} ${
+                      permissionMode === "full_access" ? "hover:text-orange-400" : "hover:text-foreground"
+                    }`}
+                    aria-label="Select permission mode"
+                  >
+                    <activePermissionOption.icon className="h-3.5 w-3.5 shrink-0" />
+                    <span className="max-w-[160px] truncate">{activePermissionOption.label}</span>
+                    <ChevronDown className="h-3 w-3 shrink-0" />
+                  </button>
+
+                  {permissionPopoverOpen && (
+                    <div className="absolute bottom-full left-0 z-50 mb-1.5">
+                      <div className="relative">
+                        {renderPermissionOptions(false)}
+                        {previewPermissionOption ? (
+                          <div className="absolute left-full top-0 ml-2 w-[220px] rounded-lg border border-border/60 bg-popover/95 p-3 shadow-lg">
+                            <p className="text-[11px] leading-relaxed text-muted-foreground">
+                              {previewPermissionOption.description}
+                            </p>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
 
           <div className="absolute bottom-2 right-2.5 flex items-center gap-2 lg:bottom-3 lg:right-3">

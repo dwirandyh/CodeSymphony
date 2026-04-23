@@ -13,6 +13,7 @@ import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../../lib/utils";
 import { SafePatchDiff } from "./chat-message-list/diffUtils";
+import { ZoomableImage } from "./ZoomableImage";
 import {
   buildEditorGitModel,
   buildEditorGitPeekPatch,
@@ -1422,10 +1423,11 @@ export function CodeEditorPanel({
             {isImageFile ? (
               <div className="flex h-full w-full min-w-0 items-center justify-center overflow-auto bg-background p-4">
                 {imageSource ? (
-                  <img
+                  <ZoomableImage
                     src={imageSource}
                     alt={fileNameLabel(filePath)}
-                    className="max-h-full max-w-full object-contain shadow-[0_12px_40px_rgba(0,0,0,0.28)]"
+                    containerClassName="min-h-0 min-w-0"
+                    imageClassName="shadow-[0_12px_40px_rgba(0,0,0,0.28)]"
                   />
                 ) : null}
               </div>
