@@ -5,6 +5,7 @@ import type {
   ChatThread,
   ChatThreadSnapshot,
   ChatTimelineSnapshot,
+  CliAgent,
   CreateChatThreadInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
@@ -26,6 +27,7 @@ import type {
   RepositoryReviewState,
   ModelProvider,
   OpenInAppInput,
+  OpencodeModelCatalog,
   OpenWorktreeFileInput,
   PlanRevisionInput,
   SlashCommandCatalog,
@@ -517,8 +519,8 @@ export const api = {
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`, { signal }),
   getFileIndex: (worktreeId: string, signal?: AbortSignal) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files/index`, { signal }),
-  getSlashCommands: (worktreeId: string, signal?: AbortSignal) =>
-    request<SlashCommandCatalog>(`/worktrees/${worktreeId}/slash-commands`, { signal }),
+  getSlashCommands: (worktreeId: string, agent: CliAgent, signal?: AbortSignal) =>
+    request<SlashCommandCatalog>(`/worktrees/${worktreeId}/slash-commands?agent=${encodeURIComponent(agent)}`, { signal }),
   getWorktreeFileContent: (worktreeId: string, filePath: string, signal?: AbortSignal) => {
     const params = `?path=${encodeURIComponent(filePath)}`;
     return request<WorktreeFileContent>(`/worktrees/${worktreeId}/files/content${params}`, { signal });
@@ -600,6 +602,7 @@ export const api = {
 
   // ── Model Providers ──
 
+  listOpencodeModels: () => request<OpencodeModelCatalog>("/opencode/models"),
   listModelProviders: () => request<ModelProvider[]>("/model-providers"),
   createModelProvider: (input: CreateModelProviderInput) =>
     request<ModelProvider>("/model-providers", {

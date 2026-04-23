@@ -28,29 +28,30 @@ type RepositoryFormState = {
   saveAutomationPayload: string;
 };
 
-type ApiCompatibility = "anthropic" | "openai";
+type ProviderProtocol = "anthropic" | "responses";
 
-const API_COMPATIBILITY_BY_AGENT: Record<CliAgent, ApiCompatibility> = {
+const PROVIDER_PROTOCOL_BY_AGENT: Record<CliAgent, ProviderProtocol> = {
   claude: "anthropic",
-  codex: "openai",
+  codex: "responses",
+  opencode: "responses",
 };
 
-const AGENT_BY_API_COMPATIBILITY: Record<ApiCompatibility, CliAgent> = {
-  anthropic: "claude",
-  openai: "codex",
+const PROVIDER_AGENT_LABELS: Record<CliAgent, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  opencode: "OpenCode",
 };
 
-const API_COMPATIBILITY_LABELS: Record<ApiCompatibility, string> = {
-  anthropic: "Anthropic",
-  openai: "OpenAI",
-};
-
-function getProviderCompatibility(agent: CliAgent | undefined | null): ApiCompatibility {
-  return API_COMPATIBILITY_BY_AGENT[agent ?? "claude"];
+function getProviderProtocol(agent: CliAgent | undefined | null): ProviderProtocol {
+  return PROVIDER_PROTOCOL_BY_AGENT[agent ?? "claude"];
 }
 
-function getProviderCompatibilityLabel(agent: CliAgent | undefined | null): string {
-  return API_COMPATIBILITY_LABELS[getProviderCompatibility(agent)];
+function getProviderAgentLabel(agent: CliAgent | undefined | null): string {
+  return PROVIDER_AGENT_LABELS[agent ?? "claude"];
+}
+
+function isOpencodeBuiltinAlias(modelId: string): boolean {
+  return /^[^/\s]+\/[^/\s].+$/.test(modelId.trim());
 }
 
 function buildRepositoryFormState(
@@ -167,31 +168,60 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
   const [savingProvider, setSavingProvider] = useState(false);
   const [testingProvider, setTestingProvider] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
-  const providerCompatibility = getProviderCompatibility(providerAgent);
+  const providerProtocol = getProviderProtocol(providerAgent);
   const trimmedProviderName = providerName.trim();
   const trimmedProviderModelId = providerModelId.trim();
   const trimmedProviderBaseUrl = providerBaseUrl.trim();
   const trimmedProviderApiKey = providerApiKey.trim();
   const providerUsesCustomEndpoint = trimmedProviderBaseUrl.length > 0 || trimmedProviderApiKey.length > 0;
+  const opencodeUsesBuiltinAlias = providerAgent === "opencode"
+    && trimmedProviderBaseUrl.length === 0
+    && trimmedProviderApiKey.length === 0
+    && isOpencodeBuiltinAlias(trimmedProviderModelId);
   const canSaveProvider = trimmedProviderName.length > 0
     && trimmedProviderModelId.length > 0
     && (
       providerAgent === "codex"
-      || !providerUsesCustomEndpoint
-      || (trimmedProviderBaseUrl.length > 0 && (editingProviderId !== null || trimmedProviderApiKey.length > 0))
+      || (providerAgent === "opencode"
+        ? trimmedProviderBaseUrl.length > 0 || opencodeUsesBuiltinAlias
+        : !providerUsesCustomEndpoint
+          || (trimmedProviderBaseUrl.length > 0 && (editingProviderId !== null || trimmedProviderApiKey.length > 0)))
     );
   const canTestProvider = trimmedProviderBaseUrl.length > 0
     && trimmedProviderApiKey.length > 0
     && trimmedProviderModelId.length > 0;
-  const providerModelPlaceholder = providerCompatibility === "anthropic"
+  const providerModelPlaceholder = providerAgent === "claude"
     ? 'e.g. "claude-sonnet-4-6", "glm-4.7"'
-    : 'e.g. "gpt-5.4", "gpt-5.3-codex"';
-  const providerFootnote = providerCompatibility === "anthropic"
+    : providerAgent === "codex"
+      ? 'e.g. "gpt-5.4", "gpt-5.3-codex"'
+      : 'e.g. "openai/gpt-5" or "gpt-5-custom"';
+  const providerBaseUrlPlaceholder = providerAgent === "claude"
+    ? "e.g. https://api.z.ai/v1"
+    : providerAgent === "codex"
+      ? "Leave empty to use Codex CLI defaults"
+      : "Leave empty when Model ID already uses provider/model";
+  const providerApiKeyPlaceholder = editingProviderId
+    ? "Leave empty to keep current"
+    : providerAgent === "claude"
+      ? "API Key"
+      : providerAgent === "codex"
+        ? "Only if your Codex setup needs it"
+        : "Only for custom OpenCode endpoints";
+  const providerInlineHelp = providerAgent === "claude"
+    ? "Use an empty Base URL and API key to register a Claude-side model alias that relies on local CLI auth. Provide both when targeting an Anthropic-compatible remote endpoint."
+    : providerAgent === "codex"
+      ? "Responses-compatible entries can be simple model aliases like gpt-5.4 or point to a custom endpoint if your Codex CLI setup needs it."
+      : "For built-in OpenCode providers, enter Model ID as provider/model, for example openai/gpt-5. If you provide a Base URL, the runtime registers a custom Responses-compatible provider for the OpenCode SDK.";
+  const providerFootnote = providerAgent === "claude"
     ? "Add Anthropic-compatible model entries here, then choose them per thread under Claude in the composer. Endpoint tests validate Anthropic Messages API compatible backends."
-    : "Add OpenAI-compatible model entries here, then choose them per thread under Codex in the composer. Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts.";
-  const providerTestSuccessMessage = providerCompatibility === "anthropic"
+    : providerAgent === "codex"
+      ? "Add Responses-compatible model entries here, then choose them per thread under Codex in the composer. Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts."
+      : "Add OpenCode aliases or custom Responses-compatible providers here, then choose them per thread under OpenCode in the composer. Built-in OpenCode auth and /connect flows still work even if you never add an entry here.";
+  const providerTestSuccessMessage = providerProtocol === "anthropic"
     ? "Connection successful — provider is Anthropic-compatible."
-    : "Connection successful — provider is Responses API compatible.";
+    : providerAgent === "opencode"
+      ? "Connection successful — provider is Responses API compatible for OpenCode."
+      : "Connection successful — provider is Responses API compatible.";
 
   // ── Workspace: Select first repo ──
   useEffect(() => {
@@ -741,8 +771,8 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
 
                     {providers.length === 0 && !showProviderForm && (
                       <p className="text-[10px] text-muted-foreground">
-                        No custom models configured yet. Add Anthropic- or OpenAI-compatible entries here.
-                        Anthropic entries can target Claude-compatible backends; OpenAI entries appear under Codex in the composer.
+                        No custom models configured yet. Add Claude, Codex, or OpenCode entries here.
+                        Claude uses Anthropic-compatible backends; Codex and OpenCode custom endpoints use the Responses API.
                       </p>
                     )}
 
@@ -756,7 +786,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                 <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                                  {getProviderCompatibilityLabel(provider.agent)}
+                                  {getProviderAgentLabel(provider.agent)}
                                 </span>
                                 <span className="font-medium">{provider.modelId}</span>
                                 <span className="text-muted-foreground">·</span>
@@ -766,7 +796,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                                 <button
                                   type="button"
                                   className="rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                                  aria-label={`Edit ${getProviderCompatibilityLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
+                                  aria-label={`Edit ${getProviderAgentLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
                                   title={`Edit ${provider.name}`}
                                   onClick={() => handleEditProvider(provider)}
                                 >
@@ -775,7 +805,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                                 <button
                                   type="button"
                                   className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                                  aria-label={`Delete ${getProviderCompatibilityLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
+                                  aria-label={`Delete ${getProviderAgentLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
                                   title={`Delete ${provider.name}`}
                                   onClick={() => void handleDeleteProvider(provider.id)}
                                 >
@@ -818,17 +848,18 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                         </div>
                         <div className="space-y-2">
                           <div>
-                            <label className="mb-0.5 block text-[10px] text-muted-foreground">API Compatibility</label>
+                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Agent</label>
                             <select
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              value={providerCompatibility}
+                              value={providerAgent}
                               onChange={(e) => {
-                                setProviderAgent(AGENT_BY_API_COMPATIBILITY[e.target.value as ApiCompatibility]);
+                                setProviderAgent(e.target.value as CliAgent);
                                 setTestResult(null);
                               }}
                             >
-                              <option value="anthropic">Anthropic</option>
-                              <option value="openai">OpenAI</option>
+                              <option value="claude">Claude</option>
+                              <option value="codex">Codex</option>
+                              <option value="opencode">OpenCode</option>
                             </select>
                           </div>
                           <div>
@@ -856,7 +887,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                             <input
                               type="text"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder={providerCompatibility === "anthropic" ? "e.g. https://api.z.ai/v1" : "Leave empty to use Codex CLI defaults"}
+                              placeholder={providerBaseUrlPlaceholder}
                               value={providerBaseUrl}
                               onChange={(e) => setProviderBaseUrl(e.target.value)}
                             />
@@ -866,15 +897,13 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
                             <input
                               type="password"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder={editingProviderId ? "Leave empty to keep current" : providerCompatibility === "anthropic" ? "API Key" : "Only if your Codex setup needs it"}
+                              placeholder={providerApiKeyPlaceholder}
                               value={providerApiKey}
                               onChange={(e) => setProviderApiKey(e.target.value)}
                             />
                           </div>
                           <p className="text-[10px] leading-relaxed text-muted-foreground">
-                            {providerCompatibility === "anthropic"
-                              ? "Use an empty Base URL and API key to register a Claude-side model alias that relies on local CLI auth. Provide both when targeting an Anthropic-compatible remote endpoint."
-                              : "OpenAI-compatible entries can be simple model aliases like gpt-5.4 or point to a custom endpoint if your environment requires it."}
+                            {providerInlineHelp}
                           </p>
                           {testResult && (
                             <div className={`rounded-md px-2.5 py-1.5 text-xs ${testResult.success ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}>

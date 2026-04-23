@@ -7,7 +7,7 @@ import { FileDiff } from "@pierre/diffs/react";
 import { pushRenderDebug } from "../../../lib/renderDebug";
 import type { ChatTimelineItem, TimelineCtx } from "./ChatMessageList.types";
 import { TerminalOutputPre } from "./ansiUtils";
-import { SafePatchDiff } from "./diffUtils";
+import { SafePatchDiff, normalizePatchForRender } from "./diffUtils";
 import { setBooleanMapEntry } from "./toggleMapState";
 import {
   toolTitle,
@@ -419,9 +419,10 @@ export const TimelineItem = memo(function TimelineItem({
   }
 
   if (item.kind === "edited-diff") {
-    const hasDiffContent = item.diff.trim().length > 0;
+    const { patch: renderableDiff } = normalizePatchForRender(item.diff);
+    const hasDiffContent = renderableDiff.trim().length > 0;
     const expanded = hasDiffContent ? (ctx.editedExpandedById.get(item.id) ?? false) : false;
-    const parsedFiles = hasDiffContent ? parsePatchFiles(item.diff).flatMap((p) => p.files) : [];
+    const parsedFiles = hasDiffContent ? parsePatchFiles(renderableDiff).flatMap((p) => p.files) : [];
     const diffFileNames = parsedFiles.map((f) => f.name);
     const resolvedFiles = item.changedFiles.length > 0 ? item.changedFiles : diffFileNames;
     const isFileDeletion = parsedFiles.length > 0 && parsedFiles.every((file) => file.type === "deleted");

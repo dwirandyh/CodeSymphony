@@ -50,6 +50,28 @@ const defaultProps = {
   slashCommands: sampleSlashCommands,
   slashCommandsLoading: false,
   providers: [],
+  opencodeModels: [
+    {
+      id: "opencode/minimax-m2.5-free",
+      name: "MiniMax M2.5 Free",
+      providerId: "opencode",
+    },
+    {
+      id: "opencode/ling-2.6-flash-free",
+      name: "Ling 2.6 Flash Free",
+      providerId: "opencode",
+    },
+    {
+      id: "opencode/nemotron-3-super-free",
+      name: "Nemotron 3 Super Free",
+      providerId: "opencode",
+    },
+    {
+      id: "zai/glm-4.7-flash",
+      name: "GLM-4.7-Flash",
+      providerId: "zai",
+    },
+  ],
   agent: "claude" as const,
   model: "claude-sonnet-4-6",
   modelProviderId: null,
@@ -214,6 +236,24 @@ describe("Composer", () => {
     const buttons = container.querySelectorAll("button[data-index]");
     expect(buttons.length).toBeGreaterThan(0);
     expect(container.textContent).toContain("Create a commit");
+  });
+
+  it("shows Codex skill suggestions when the active agent is codex", async () => {
+    renderComposer({
+      agent: "codex",
+      slashCommands: [
+        { name: "dogfood", description: "QA a web app", argumentHint: "" },
+        { name: "Excel", description: "Spreadsheet work", argumentHint: "" },
+      ],
+    });
+    const editor = getEditor();
+
+    typeInEditor(editor, "/");
+    await flushMicrotasks();
+
+    const texts = Array.from(container.querySelectorAll("button[data-index]")).map((button) => button.textContent);
+    expect(texts.some((text) => text?.includes("dogfood"))).toBe(true);
+    expect(texts.some((text) => text?.includes("Spreadsheet work"))).toBe(true);
   });
 
   it("closes slash command suggestions on outside click without changing the draft", async () => {
@@ -470,7 +510,7 @@ describe("Composer", () => {
     expect(modelButton.title).toContain("CLI agent is locked for this thread");
   });
 
-  it("shows Claude and Codex icons with a compact desktop agent list", () => {
+  it("shows Claude, Codex, and OpenCode icons with a compact desktop agent list", () => {
     renderComposer();
 
     const modelButton = getModelSelectorButton();
@@ -482,14 +522,16 @@ describe("Composer", () => {
 
     expect(container.querySelector('svg[data-agent-icon="claude"]')).not.toBeNull();
     expect(container.querySelector('svg[data-agent-icon="codex"]')).not.toBeNull();
+    expect(container.querySelector('svg[data-agent-icon="opencode"]')).not.toBeNull();
     expect(container.querySelector('[data-agent-model-panel="overlay"]')).not.toBeNull();
     expect(container.querySelector('[data-agent-model-panel="stacked"]')).toBeNull();
     expect(container.textContent).not.toContain("CLI Agent");
     expect(container.textContent).not.toContain("Claude Models");
     expect(container.textContent).not.toContain("Codex Models");
+    expect(container.textContent).not.toContain("OpenCode Models");
 
     const agentList = container.querySelector('[data-cli-agent-list="true"]');
-    expect(agentList?.querySelectorAll("button")).toHaveLength(2);
+    expect(agentList?.querySelectorAll("button")).toHaveLength(3);
   });
 
   it("shows agent-specific model options and emits thread agent selection updates", () => {
@@ -546,6 +588,60 @@ describe("Composer", () => {
     });
   });
 
+  it("shows OpenCode model options and emits thread agent selection updates", () => {
+    const onAgentSelectionChange = vi.fn();
+    const providers: ModelProvider[] = [
+      {
+        id: "provider-opencode-1",
+        agent: "opencode",
+        name: "OpenCode QA",
+        modelId: "gpt-5-custom",
+        baseUrl: "https://api.openai.com/v1",
+        apiKeyMasked: "",
+        isActive: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+
+    renderComposer({
+      providers,
+      onAgentSelectionChange,
+    });
+
+    const modelButton = getModelSelectorButton();
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const opencodeButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("OpenCode"));
+    if (!opencodeButton) {
+      throw new Error("OpenCode agent button not found");
+    }
+
+    act(() => {
+      opencodeButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    const customModelButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("gpt-5-custom") && button.textContent?.includes("OpenCode QA"));
+    if (!customModelButton) {
+      throw new Error("Custom OpenCode model button not found");
+    }
+    expect(container.querySelector('[data-model-separator="custom"]')).not.toBeNull();
+
+    act(() => {
+      customModelButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(onAgentSelectionChange).toHaveBeenCalledWith({
+      agent: "opencode",
+      model: "gpt-5-custom",
+      modelProviderId: "provider-opencode-1",
+    });
+  });
+
   it("switches the model preview list when hovering between CLI agents", () => {
     const providers: ModelProvider[] = [
       {
@@ -565,6 +661,17 @@ describe("Composer", () => {
         name: "OpenAI QA",
         modelId: "gpt-5.4-custom",
         baseUrl: null,
+        apiKeyMasked: "",
+        isActive: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        id: "provider-opencode-1",
+        agent: "opencode",
+        name: "OpenCode QA",
+        modelId: "gpt-5-custom",
+        baseUrl: "https://api.openai.com/v1",
         apiKeyMasked: "",
         isActive: false,
         createdAt: new Date().toISOString(),
@@ -603,6 +710,37 @@ describe("Composer", () => {
     expect(container.textContent).toContain("GPT-5.4");
     expect(container.textContent).toContain("GPT-5.4 Custom");
     expect(container.textContent).not.toContain("GLM-4.7");
+
+    const opencodeButton = getButtonByExactText("OpenCode");
+    act(() => {
+      opencodeButton.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("MiniMax M2.5 Free");
+    expect(container.textContent).toContain("opencode");
+    expect(container.textContent).toContain("gpt-5-custom");
+    expect(container.textContent).not.toContain("z.ai");
+  });
+
+  it("shows OpenCode display names with source labels in the selector", () => {
+    renderComposer({
+      agent: "opencode",
+      model: "opencode/minimax-m2.5-free",
+    });
+
+    const modelButton = getModelSelectorButton();
+    expect(modelButton.textContent).toContain("OpenCode · MiniMax M2.5 Free");
+    expect(modelButton.title).toBe("opencode/minimax-m2.5-free");
+
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("MiniMax M2.5 Free");
+    expect(container.textContent).toContain("Ling 2.6 Flash Free");
+    expect(container.textContent).toContain("GLM-4.7-Flash");
+    expect(container.textContent).toContain("opencode");
+    expect(container.textContent).toContain("zai");
   });
 
   it("changes permission mode from the selector", () => {

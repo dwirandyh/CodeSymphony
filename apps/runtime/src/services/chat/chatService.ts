@@ -72,6 +72,7 @@ import {
   persistAlwaysAllowRule,
   inferPlanDetectionSource,
 } from "./chatAttachmentUtils.js";
+import { listCodexSkills, normalizeCodexSkillSlashCommandsForPrompt } from "./codexSkills.js";
 import {
   ensureThreadPermissionMap,
   ensureThreadQuestionMap,
@@ -257,7 +258,10 @@ function normalizePermissionMode(permissionMode: ChatThreadPermissionMode | unde
 }
 
 function normalizeAgent(agent: CliAgent | null | undefined): CliAgent {
-  return agent === "codex" ? "codex" : "claude";
+  if (agent === "codex" || agent === "opencode") {
+    return agent;
+  }
+  return "claude";
 }
 
 function normalizeOptionalModelId(model: string | null | undefined): string | null {
@@ -357,20 +361,36 @@ async function resolveThreadSelection(
 }
 
 function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
-  return agent === "codex" ? (deps.codexRunner ?? deps.claudeRunner) : deps.claudeRunner;
+  if (agent === "codex") {
+    return deps.codexRunner ?? deps.claudeRunner;
+  }
+  if (agent === "opencode") {
+    return deps.opencodeRunner ?? deps.claudeRunner;
+  }
+  return deps.claudeRunner;
 }
 
 function getThreadSessionId(
-  thread: { claudeSessionId: string | null; codexSessionId: string | null },
+  thread: { claudeSessionId: string | null; codexSessionId: string | null; opencodeSessionId?: string | null },
   agent: CliAgent,
 ): string | null {
-  return agent === "codex" ? thread.codexSessionId : thread.claudeSessionId;
+  if (agent === "codex") {
+    return thread.codexSessionId;
+  }
+  if (agent === "opencode") {
+    return thread.opencodeSessionId ?? null;
+  }
+  return thread.claudeSessionId;
 }
 
 function buildSessionIdUpdate(agent: CliAgent, sessionId: string | null) {
-  return agent === "codex"
-    ? { codexSessionId: sessionId }
-    : { claudeSessionId: sessionId };
+  if (agent === "codex") {
+    return { codexSessionId: sessionId };
+  }
+  if (agent === "opencode") {
+    return { opencodeSessionId: sessionId };
+  }
+  return { claudeSessionId: sessionId };
 }
 
 function buildSelectionUpdate(selection: ResolvedThreadSelection) {
@@ -380,6 +400,7 @@ function buildSelectionUpdate(selection: ResolvedThreadSelection) {
     modelProviderId: selection.modelProviderId,
     claudeSessionId: null,
     codexSessionId: null,
+    opencodeSessionId: null,
   };
 }
 
@@ -746,6 +767,8 @@ export function createChatService(deps: RuntimeDeps) {
             });
             if (selection.agent === "codex") {
               thread.codexSessionId = nextSessionId;
+            } else if (selection.agent === "opencode") {
+              thread.opencodeSessionId = nextSessionId;
             } else {
               thread.claudeSessionId = nextSessionId;
             }
@@ -1330,10 +1353,17 @@ export function createChatService(deps: RuntimeDeps) {
       return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
     },
 
-    async listSlashCommands(worktreeId: string): Promise<SlashCommandCatalog> {
+    async listSlashCommands(worktreeId: string, agent: CliAgent = "claude"): Promise<SlashCommandCatalog> {
       const worktree = await deps.prisma.worktree.findUnique({ where: { id: worktreeId } });
       if (!worktree) {
         throw new Error("Worktree not found");
+      }
+
+      if (agent === "codex") {
+        return SlashCommandCatalogSchema.parse({
+          commands: listCodexSkills(worktree.path),
+          updatedAt: new Date().toISOString(),
+        });
       }
 
       try {
@@ -1602,7 +1632,7 @@ export function createChatService(deps: RuntimeDeps) {
       let persisted = false;
       let settingsPath: string | null = null;
       let permissionRule: string | null = null;
-      if (isAlwaysAllow) {
+      if (isAlwaysAllow && thread.agent === "claude") {
         if (!entry.command) {
           throw new Error("Always allow requires a command in the permission request.");
         }
@@ -1930,7 +1960,10 @@ export function createChatService(deps: RuntimeDeps) {
           delta: input.content,
         });
 
-        const prompt = buildPromptWithAttachments(input.content, attachmentRecords, {
+        const normalizedContent = thread.agent === "codex"
+          ? normalizeCodexSkillSlashCommandsForPrompt(input.content, listCodexSkills(thread.worktree.path))
+          : input.content;
+        const prompt = buildPromptWithAttachments(normalizedContent, attachmentRecords, {
           workspaceRoot: thread.worktree.path,
         });
         scheduleAssistant(threadId, prompt, input.mode);

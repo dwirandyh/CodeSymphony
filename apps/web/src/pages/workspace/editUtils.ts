@@ -24,7 +24,7 @@ export function extractEditTargetFromUnknownToolInput(input: unknown): string | 
     return null;
   }
 
-  const keyCandidates = ["file_path", "path", "file", "filepath", "target", "filename"];
+  const keyCandidates = ["file_path", "filePath", "path", "file", "filepath", "target", "filename"];
   for (const key of keyCandidates) {
     const value = payloadStringOrNull(input[key]);
     if (value) {
@@ -211,19 +211,74 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
     return left === right || left.endsWith(`/${right}`) || right.endsWith(`/${left}`);
   }
 
+  function diffKindPriority(diffKind: EditedRun["diffKind"]): number {
+    if (diffKind === "actual") {
+      return 2;
+    }
+    if (diffKind === "proposed") {
+      return 1;
+    }
+    return 0;
+  }
+
   function runTargetsFile(run: EditedRun, target: string): boolean {
     return run.changedFiles.some((changedFile) => targetsLikelyMatch(changedFile, target));
   }
 
-  function claimPermissionRunForToolKey(
-    runKey: string,
-    target: string | null,
-    event: ChatEvent,
-  ): EditedRun | null {
-    if (byRunKey.has(runKey)) {
-      return byRunKey.get(runKey) ?? null;
+  function mergeRunInto(destination: EditedRun, source: EditedRun): void {
+    const sourceStartsEarlier = source.startIdx < destination.startIdx
+      || (source.startIdx === destination.startIdx && source.anchorIdx < destination.anchorIdx);
+    destination.startIdx = Math.min(destination.startIdx, source.startIdx);
+    destination.anchorIdx = Math.min(destination.anchorIdx, source.anchorIdx);
+    destination.endIdx = Math.max(destination.endIdx, source.endIdx);
+    if (sourceStartsEarlier) {
+      destination.createdAt = source.createdAt;
     }
 
+    source.eventIds.forEach((eventId) => destination.eventIds.add(eventId));
+    for (const changedFile of source.changedFiles) {
+      if (!destination.changedFiles.some((existing) => targetsLikelyMatch(existing, changedFile))) {
+        destination.changedFiles.push(changedFile);
+      }
+    }
+
+    if (source.changeSource === "worktree-diff") {
+      destination.changeSource = "worktree-diff";
+    }
+
+    const destinationDiffRank = diffKindPriority(destination.diffKind);
+    const sourceDiffRank = diffKindPriority(source.diffKind);
+    if (
+      sourceDiffRank > destinationDiffRank
+      || (
+        sourceDiffRank === destinationDiffRank
+        && destination.diff.trim().length === 0
+        && source.diff.trim().length > 0
+      )
+    ) {
+      destination.eventId = source.eventId;
+      destination.diffKind = source.diffKind;
+      destination.diff = source.diff;
+      destination.diffTruncated = source.diffTruncated;
+      destination.additions = source.additions;
+      destination.deletions = source.deletions;
+    }
+
+    if (destination.status !== "failed") {
+      if (source.status === "failed") {
+        destination.status = "failed";
+      } else if (source.status === "success") {
+        destination.status = "success";
+      }
+    }
+
+    destination.rejectedByUser = destination.rejectedByUser || source.rejectedByUser;
+  }
+
+  function findClaimablePermissionRun(
+    target: string | null,
+    event: ChatEvent,
+  ): { requestId: string; run: EditedRun } | null {
     const candidates = Array.from(permissionRequestIds)
       .filter((requestId) => !claimedPermissionRequestIds.has(requestId))
       .map((requestId) => ({ requestId, run: byRunKey.get(requestId) ?? null }))
@@ -235,7 +290,37 @@ export function extractEditedRuns(context: ChatEvent[], fullContext?: ChatEvent[
       .filter((entry) => target == null || runTargetsFile(entry.run, target))
       .sort((a, b) => b.run.startIdx - a.run.startIdx);
 
-    const matched = candidates[0];
+    return candidates[0] ?? null;
+  }
+
+  function claimPermissionRunForToolKey(
+    runKey: string,
+    target: string | null,
+    event: ChatEvent,
+  ): EditedRun | null {
+    const existing = byRunKey.get(runKey) ?? null;
+    if (existing) {
+      if (target == null) {
+        return existing;
+      }
+
+      const matched = findClaimablePermissionRun(target, event);
+      if (!matched) {
+        return existing;
+      }
+      if (matched.run === existing) {
+        return existing;
+      }
+
+      claimedPermissionRequestIds.add(matched.requestId);
+      existing.id = `edited:${runKey}`;
+      mergeRunInto(existing, matched.run);
+      byRunKey.set(matched.requestId, existing);
+      byRunKey.set(runKey, existing);
+      return existing;
+    }
+
+    const matched = findClaimablePermissionRun(target, event);
     if (!matched) {
       return null;
     }

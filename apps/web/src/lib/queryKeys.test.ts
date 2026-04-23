@@ -31,7 +31,7 @@ describe("queryKeys", () => {
   });
 
   it("worktrees.slashCommands returns key", () => {
-    expect(queryKeys.worktrees.slashCommands("w1")).toEqual(["worktrees", "w1", "slashCommands"]);
+    expect(queryKeys.worktrees.slashCommands("w1", "codex")).toEqual(["worktrees", "w1", "slashCommands", "codex"]);
   });
 
   it("worktrees.fileContents includes path", () => {
@@ -64,6 +64,10 @@ describe("queryKeys", () => {
 
   it("filesystem.browse without path uses __root__", () => {
     expect(queryKeys.filesystem.browse()).toEqual(["filesystem", "browse", "__root__"]);
+  });
+
+  it("models.opencodeCatalog is correct", () => {
+    expect(queryKeys.models.opencodeCatalog).toEqual(["models", "opencode", "catalog"]);
   });
 
   it("system.installedApps is correct", () => {

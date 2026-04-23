@@ -23,6 +23,7 @@ import {
   type CliAgent,
   type FileEntry,
   type ModelProvider,
+  type OpencodeModelCatalogEntry,
   type SlashCommand,
   type UpdateChatThreadAgentSelectionInput,
 } from "@codesymphony/shared-types";
@@ -62,6 +63,7 @@ type ComposerProps = {
   slashCommands: SlashCommand[];
   slashCommandsLoading: boolean;
   providers: ModelProvider[];
+  opencodeModels: readonly OpencodeModelCatalogEntry[];
   agent?: CliAgent;
   model?: string;
   modelProviderId?: string | null;
@@ -109,6 +111,7 @@ const PERMISSION_OPTIONS: PermissionOption[] = [
 const AGENT_LABELS: Record<CliAgent, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
 };
 
 const MODEL_DISPLAY_NAMES_BY_AGENT: Record<CliAgent, Record<string, string>> = {
@@ -123,6 +126,7 @@ const MODEL_DISPLAY_NAMES_BY_AGENT: Record<CliAgent, Record<string, string>> = {
     "gpt-5.3-codex": "GPT-5.3 Codex",
     "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
   },
+  opencode: {},
 };
 
 const MODEL_TOKEN_LABELS: Record<string, string> = {
@@ -172,12 +176,18 @@ function formatModelToken(token: string): string {
 }
 
 function formatFriendlyModelName(agent: CliAgent, modelId: string): string {
+  if (agent === "opencode") {
+    return modelId;
+  }
+
   const exact = MODEL_DISPLAY_NAMES_BY_AGENT[agent][modelId];
   if (exact) {
     return exact;
   }
 
-  const tokens = modelId
+  const normalizedModelId = modelId;
+
+  const tokens = normalizedModelId
     .trim()
     .split(/[-_\s]+/)
     .filter(Boolean);
@@ -237,13 +247,24 @@ const OpenAiIcon = (props: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+const OpenCodeIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 24 24" fill="none">
+    <path d="M21.6 24H2.4V0h19.2v24Z" fill="currentColor" />
+    <path d="M16.8 19.2H7.2V9.6h9.6v9.6Z" fill="currentColor" opacity="0.35" />
+  </svg>
+);
+
 const AGENT_ICONS = {
   claude: ClaudeAiIcon,
   codex: OpenAiIcon,
+  opencode: OpenCodeIcon,
 } as const;
 
 function agentIconClassName(agent: CliAgent): string {
-  return agent === "claude" ? "text-[#d97757]" : "text-foreground/85";
+  if (agent === "claude") {
+    return "text-[#d97757]";
+  }
+  return "text-foreground/85";
 }
 
 function AgentIcon({
@@ -300,6 +321,7 @@ function ComposerContent({
   slashCommands,
   slashCommandsLoading,
   providers,
+  opencodeModels,
   agent: providedAgent,
   model: providedModel,
   modelProviderId: providedModelProviderId,
@@ -427,7 +449,29 @@ function ComposerContent({
           source: "custom" as const,
         })),
     ],
-  }), [providers]);
+    opencode: [
+      ...opencodeModels.map((entry) => ({
+        id: `opencode:${entry.id}:builtin`,
+        agent: "opencode" as const,
+        model: entry.id,
+        modelProviderId: null,
+        label: entry.name,
+        detail: entry.providerId,
+        source: "builtin" as const,
+      })),
+      ...providers
+        .filter((provider) => provider.agent === "opencode")
+        .map((provider) => ({
+          id: provider.id,
+          agent: "opencode" as const,
+          model: provider.modelId,
+          modelProviderId: provider.id,
+          label: provider.modelId,
+          detail: provider.name,
+          source: "custom" as const,
+        })),
+    ],
+  }), [opencodeModels, providers]);
   const modelPreviewOptions = agentOptions[modelPreviewAgent];
   const currentSelection = useMemo(() => {
     return agentOptions[agent].find((option) => (
@@ -512,16 +556,10 @@ function ComposerContent({
   } = useComposerSlashCommand({
     editorRef,
     popoverRef,
-    slashCommands: agent === "claude" ? slashCommands : [],
-    slashCommandsLoading: agent === "claude" ? slashCommandsLoading : false,
+    slashCommands,
+    slashCommandsLoading,
     onChange: setDraftText,
   });
-
-  useEffect(() => {
-    if (agent !== "claude") {
-      closeSlashCommand();
-    }
-  }, [agent, closeSlashCommand]);
 
   useEffect(() => {
     if (!mention.active && !slashCommand.active) {
@@ -550,9 +588,7 @@ function ComposerContent({
     || (draftText.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
   const composerPlaceholder = isPlan
     ? "Describe what you want to plan..."
-    : agent === "claude"
-      ? "Message CodeSymphony... (type / for commands, @ to mention files)"
-      : "Message CodeSymphony... (@ to mention files)";
+    : "Message CodeSymphony... (type / for commands, @ to mention files)";
   const selectedAttachmentPreview = useMemo(
     () => attachments.find((attachment) => attachment.id === attachmentPreviewId) ?? null,
     [attachmentPreviewId, attachments],
@@ -1333,6 +1369,7 @@ function ComposerContent({
                       return;
                     }
                     setModelPreviewAgent(agent);
+<<<<<<< HEAD
                     setMobileSessionSheetOpen(true);
                   }}
                   disabled={selectionLocked || disabled}
@@ -1345,6 +1382,34 @@ function ComposerContent({
                     permissionMode === "full_access" ? "text-orange-500" : "text-muted-foreground",
                   )}
                   aria-label="Open session settings"
+=======
+                  }
+                  setModelPopoverOpen(!modelPopoverOpen);
+                }}
+                disabled={selectionLocked}
+                title={selectionLocked
+                  ? "CLI agent is locked for this thread. Start a new thread to change it."
+                  : currentSelection.model}
+                className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors ${
+                  selectionLocked
+                    ? "cursor-not-allowed opacity-50"
+                    : "hover:bg-secondary/70 hover:text-foreground"
+                }`}
+                aria-label="Select CLI agent and model"
+              >
+                <AgentIcon agent={agent} aria-hidden="true" className="h-3.5 w-3.5" />
+                <span className="max-w-[160px] truncate">{modelLabel}</span>
+                <ChevronDown className="h-3 w-3 shrink-0" />
+              </button>
+
+              {modelPopoverOpen && (
+                <div
+                  className={`absolute bottom-full left-0 z-50 mb-1.5 ${
+                    isMobile
+                      ? "w-[min(22rem,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)]"
+                      : "w-[210px]"
+                  }`}
+>>>>>>> 3e325520614de4b03b995d4a227fa181840e7887
                 >
                   <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
                   <AgentIcon agent={agent} aria-hidden="true" className="h-3.5 w-3.5" />
@@ -1430,6 +1495,7 @@ function ComposerContent({
                                   ) : null}
                                   <button
                                     type="button"
+                                    title={option.model}
                                     className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                                       selected
                                         ? "bg-accent text-accent-foreground"
@@ -1446,11 +1512,9 @@ function ComposerContent({
                                     }}
                                   >
                                     <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-                                    {option.source === "custom" ? (
-                                      <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                                        {option.detail}
-                                      </span>
-                                    ) : null}
+                                    <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
+                                      {option.detail}
+                                    </span>
                                     {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
                                   </button>
                                 </div>
@@ -1458,6 +1522,135 @@ function ComposerContent({
                             })}
                           </div>
                         </div>
+<<<<<<< HEAD
+=======
+                      ) : null}
+                    </div>
+
+                    {!isMobile ? (
+                      <div
+                        data-agent-model-panel="overlay"
+                        className="absolute bottom-0 left-full z-10 ml-2 w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+                      >
+                        <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
+                          {modelPreviewOptions.map((option, index) => {
+                            const selected = option.agent === agent
+                              && option.model === model
+                              && option.modelProviderId === modelProviderId;
+                            const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
+
+                            return (
+                              <div key={option.id}>
+                                {showCustomSeparator ? (
+                                  <div
+                                    data-model-separator="custom"
+                                    className="mx-2.5 my-1 border-t border-border/60"
+                                  />
+                                ) : null}
+                                <button
+                                  type="button"
+                                  title={option.model}
+                                  className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                                    selected
+                                      ? "bg-accent text-accent-foreground"
+                                      : "text-foreground hover:bg-accent/50"
+                                  }`}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    onAgentSelectionChange({
+                                      agent: option.agent,
+                                      model: option.model,
+                                      modelProviderId: option.modelProviderId,
+                                    });
+                                    setModelPopoverOpen(false);
+                                  }}
+                                >
+                                  <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
+                                  <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
+                                    {option.detail}
+                                  </span>
+                                  {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="relative" ref={permissionPopoverRef}>
+              <button
+                type="button"
+                onClick={() => {
+                  setPermissionPopoverOpen((open) => {
+                    const nextOpen = !open;
+                    if (!nextOpen) {
+                      setPermissionPreviewMode(null);
+                    }
+                    return nextOpen;
+                  });
+                }}
+                disabled={disabled}
+                className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-secondary/70 disabled:cursor-not-allowed disabled:opacity-50 ${permissionTriggerClassName} ${
+                  permissionMode === "full_access" ? "hover:text-orange-400" : "hover:text-foreground"
+                }`}
+                aria-label="Select permission mode"
+              >
+                <activePermissionOption.icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="max-w-[160px] truncate">{activePermissionOption.label}</span>
+                <ChevronDown className="h-3 w-3 shrink-0" />
+              </button>
+
+              {permissionPopoverOpen && (
+                <div className="absolute bottom-full left-0 z-50 mb-1.5">
+                  <div className="relative">
+                    <div
+                      className={`rounded-lg border border-border/60 bg-popover p-1 shadow-lg ${
+                        isMobile
+                          ? "w-[min(18rem,calc(100vw-1.5rem))] max-w-[calc(100vw-1.5rem)]"
+                          : "w-[220px]"
+                      }`}
+                      onMouseLeave={() => setPermissionPreviewMode(null)}
+                    >
+                      <div className="max-h-48 overflow-y-auto">
+                        {PERMISSION_OPTIONS.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
+                              permissionMode === option.value
+                                ? "bg-accent text-accent-foreground"
+                                : "text-foreground hover:bg-accent/50"
+                            }`}
+                            aria-label={`${option.label}. ${option.description}`}
+                            aria-current={permissionMode === option.value ? "true" : undefined}
+                            onMouseEnter={() => setPermissionPreviewMode(option.value)}
+                            onFocus={() => setPermissionPreviewMode(option.value)}
+                            onBlur={() => setPermissionPreviewMode((current) => (current === option.value ? null : current))}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              onPermissionModeChange(option.value);
+                              setPermissionPreviewMode(null);
+                              setPermissionPopoverOpen(false);
+                            }}
+                          >
+                            <option.icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate">{option.label}</span>
+                              {isMobile ? (
+                                <span className="mt-0.5 block whitespace-normal text-[10px] leading-relaxed text-muted-foreground">
+                                  {option.description}
+                                </span>
+                              ) : null}
+                            </span>
+                            {permissionMode === option.value ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+                          </button>
+                        ))}
+>>>>>>> 3e325520614de4b03b995d4a227fa181840e7887
                       </div>
                     </div>
                   )}

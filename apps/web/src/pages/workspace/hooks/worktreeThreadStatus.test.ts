@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatThread, ChatThreadSnapshot } from "@codesymphony/shared-types";
 import {
   aggregateWorktreeStatus,
+  derivePendingPermissionRequests,
   deriveThreadUiStatus,
   hasRunningAssistantActivity,
 } from "./worktreeThreadStatus";
@@ -70,6 +71,30 @@ describe("worktreeThreadStatus", () => {
     ]);
 
     expect(deriveThreadUiStatus(thread, snapshot)).toBe("waiting_approval");
+  });
+
+  it("extracts edit target from OpenCode-style filePath permission payloads", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        threadId: "t1",
+        idx: 1,
+        type: "permission.requested",
+        payload: {
+          requestId: "perm-1",
+          toolName: "Write",
+          toolInput: { filePath: "src/opencode.ts" },
+        },
+      }),
+    ];
+
+    expect(derivePendingPermissionRequests(events)).toEqual([
+      expect.objectContaining({
+        requestId: "perm-1",
+        toolName: "Write",
+        editTarget: "opencode.ts",
+      }),
+    ]);
   });
 
   it("returns waiting_approval for unresolved question", () => {

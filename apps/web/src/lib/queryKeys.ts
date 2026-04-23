@@ -1,3 +1,5 @@
+import type { CliAgent } from "@codesymphony/shared-types";
+
 export const queryKeys = {
   repositories: {
     all: ["repositories"] as const,
@@ -13,7 +15,7 @@ export const queryKeys = {
     gitDiffRaw: (worktreeId: string, filePath?: string) =>
       ["worktrees", worktreeId, "gitDiffRaw", filePath ?? "__all__"] as const,
     fileIndex: (worktreeId: string) => ["worktrees", worktreeId, "fileIndex"] as const,
-    slashCommands: (worktreeId: string) => ["worktrees", worktreeId, "slashCommands"] as const,
+    slashCommands: (worktreeId: string, agent: CliAgent) => ["worktrees", worktreeId, "slashCommands", agent] as const,
     fileContents: (worktreeId: string, filePath: string) =>
       ["worktrees", worktreeId, "fileContents", filePath] as const,
   },
@@ -26,6 +28,9 @@ export const queryKeys = {
   },
   filesystem: {
     browse: (path?: string) => ["filesystem", "browse", path ?? "__root__"] as const,
+  },
+  models: {
+    opencodeCatalog: ["models", "opencode", "catalog"] as const,
   },
   system: {
     installedApps: ["system", "installedApps"] as const,

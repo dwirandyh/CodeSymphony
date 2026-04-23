@@ -145,6 +145,7 @@ function applyThreadAgentSelectionUpdate(
     && current.modelProviderId === (selection.modelProviderId ?? null)
     && current.claudeSessionId === null
     && current.codexSessionId === null
+    && current.opencodeSessionId === null
   ) {
     return threads;
   }
@@ -157,6 +158,7 @@ function applyThreadAgentSelectionUpdate(
     modelProviderId: selection.modelProviderId ?? null,
     claudeSessionId: null,
     codexSessionId: null,
+    opencodeSessionId: null,
   };
   return updated;
 }
@@ -468,6 +470,7 @@ export function useChatSession(
         && t.modelProviderId === mergedThreads[i].modelProviderId
         && t.claudeSessionId === mergedThreads[i].claudeSessionId
         && t.codexSessionId === mergedThreads[i].codexSessionId
+        && t.opencodeSessionId === mergedThreads[i].opencodeSessionId
         && t.active === mergedThreads[i].active
         && t.updatedAt === mergedThreads[i].updatedAt
       ))) {
