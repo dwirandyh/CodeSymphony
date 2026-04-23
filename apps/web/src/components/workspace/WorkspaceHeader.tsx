@@ -20,6 +20,8 @@ type WorkspaceHeaderProps = {
   selectedRepositoryName: string;
   selectedWorktreeLabel: string;
   worktreePath: string | null;
+  runtimeLabel?: string | null;
+  runtimeTitle?: string | null;
   threads: ChatThread[];
   selectedThreadId: string | null;
   fileTabs: WorkspaceFileTab[];
@@ -65,6 +67,8 @@ export function WorkspaceHeader({
   selectedRepositoryName,
   selectedWorktreeLabel,
   worktreePath,
+  runtimeLabel,
+  runtimeTitle,
   threads,
   selectedThreadId,
   fileTabs,
@@ -179,6 +183,29 @@ export function WorkspaceHeader({
           )}
         </div>
       </div>
+
+      {(runtimeLabel || worktreePath) && (
+        <div className="flex min-w-0 items-center gap-2 px-0.5 text-[10px] sm:text-[11px]">
+          {runtimeLabel ? (
+            <span
+              className="inline-flex shrink-0 items-center rounded-full border border-border/50 bg-secondary/35 px-2 py-0.5 font-medium text-foreground/80"
+              title={runtimeTitle ?? undefined}
+              data-testid="workspace-runtime-context"
+            >
+              {runtimeLabel}
+            </span>
+          ) : null}
+          {worktreePath ? (
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-muted-foreground/85"
+              title={worktreePath}
+              data-testid="workspace-worktree-path"
+            >
+              {worktreePath}
+            </span>
+          ) : null}
+        </div>
+      )}
 
       <div className="flex items-center gap-1">
         <div

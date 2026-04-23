@@ -60,6 +60,40 @@ describe("api", () => {
     });
   });
 
+  describe("getRuntimeInfo", () => {
+    it("fetches runtime metadata", async () => {
+      const runtimeInfo = {
+        pid: 1,
+        cwd: "/runtime",
+        nodeVersion: "v22.14.0",
+        runtimeHost: "0.0.0.0",
+        runtimePort: 4322,
+        uptimeSec: 12.3,
+        database: {
+          urlKind: "file",
+          resolvedPath: "/db.sqlite",
+          urlPreview: "file:/db.sqlite",
+        },
+        listenAddress: {
+          kind: "tcp",
+          value: "0.0.0.0",
+          family: "IPv4",
+          port: 4322,
+        },
+      };
+
+      mockFetch.mockReturnValueOnce(mockOk(runtimeInfo));
+
+      const result = await api.getRuntimeInfo();
+
+      expect(result).toEqual(runtimeInfo);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/debug/runtime-info"),
+        expect.objectContaining({ headers: expect.any(Headers) }),
+      );
+    });
+  });
+
   describe("createRepository", () => {
     it("posts new repository", async () => {
       const newRepo = { id: "r1", name: "new-repo" };
