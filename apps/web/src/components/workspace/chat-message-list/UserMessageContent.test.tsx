@@ -244,10 +244,16 @@ describe("UserMessageContent", () => {
     const textNode = [...container.querySelectorAll("p")].find((node) => node.textContent?.includes("Here is an image"));
     expect(attachmentCard).toBeTruthy();
     expect(textNode).toBeTruthy();
-    expect(attachmentCard?.compareDocumentPosition(textNode as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    if (!attachmentCard || !textNode) {
+      throw new Error("Expected attachment card and text node to be present");
+    }
+    expect(attachmentCard.compareDocumentPosition(textNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     const trigger = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("diagram.png"));
     expect(trigger).toBeTruthy();
+    if (!trigger) {
+      throw new Error("Expected attachment trigger to be present");
+    }
     const thumbnail = container.querySelector("img[alt='diagram.png']") as HTMLImageElement | null;
     expect(thumbnail).toBeTruthy();
     expect(thumbnail?.className).toContain("h-10");
