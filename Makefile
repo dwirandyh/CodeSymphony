@@ -1,4 +1,4 @@
-PNPM ?= pnpm
+PNPM ?= $(shell if command -v pnpm >/dev/null 2>&1; then printf '%s' pnpm; elif command -v npx >/dev/null 2>&1; then printf '%s' "npx pnpm"; else printf '%s' pnpm; fi)
 WORKTREE_DEV_STATE_DIR ?= .codesymphony/dev
 
 .PHONY: help install stop-dev dev dev-runtime dev-web dev-desktop setup-android-streaming start-android-streaming db-generate db-migrate db-seed db-init build test lint setup-worktree setup-worktree-up stop-worktree-up
@@ -92,13 +92,18 @@ setup-worktree:
 ifndef PORT
 	$(error PORT is required. Usage: make setup-worktree PORT=4322)
 endif
-	@RUNTIME_PORT=$(PORT); \
+	@set -e; \
+	RUNTIME_PORT=$(PORT); \
 	WEB_PORT=$$(( $(PORT) + 1000 )); \
 	echo "Setting up worktree ports..."; \
 	echo "  Runtime : $$RUNTIME_PORT"; \
 	echo "  Web     : $$WEB_PORT"; \
 	echo "  API URL : auto-detected from browser hostname on runtime port $$RUNTIME_PORT"; \
 	echo ""; \
+	if [ ! -d node_modules ]; then \
+		echo "Installing workspace dependencies..."; \
+		$(PNPM) install; \
+	fi; \
 	cp -n apps/runtime/.env.example apps/runtime/.env 2>/dev/null || true; \
 	sed -i '' "s/^RUNTIME_PORT=.*/RUNTIME_PORT=$$RUNTIME_PORT/" apps/runtime/.env; \
 	printf "VITE_DEV_PORT=%s\nVITE_RUNTIME_PORT=%s\n" "$$WEB_PORT" "$$RUNTIME_PORT" > apps/web/.env; \
@@ -115,7 +120,8 @@ ifndef PORT
 	$(error PORT is required. Usage: make setup-worktree-up PORT=4322)
 endif
 	@$(MAKE) setup-worktree PORT=$(PORT) PNPM='$(PNPM)'
-	@RUNTIME_PORT=$(PORT); \
+	@set -e; \
+	RUNTIME_PORT=$(PORT); \
 	WEB_PORT=$$(( $(PORT) + 1000 )); \
 	STATE_DIR="$(WORKTREE_DEV_STATE_DIR)"; \
 	LOG_PATH="$$STATE_DIR/dev-$$RUNTIME_PORT.log"; \
@@ -151,7 +157,8 @@ stop-worktree-up:
 ifndef PORT
 	$(error PORT is required. Usage: make stop-worktree-up PORT=4322)
 endif
-	@RUNTIME_PORT=$(PORT); \
+	@set -e; \
+	RUNTIME_PORT=$(PORT); \
 	STATE_DIR="$(WORKTREE_DEV_STATE_DIR)"; \
 	PID_PATH="$$STATE_DIR/dev-$$RUNTIME_PORT.pid"; \
 	if [ ! -f "$$PID_PATH" ]; then \
