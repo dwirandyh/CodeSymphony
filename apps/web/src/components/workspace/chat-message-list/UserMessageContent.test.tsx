@@ -240,8 +240,17 @@ describe("UserMessageContent", () => {
       );
     });
 
+    const attachmentCard = container.querySelector("div.space-y-1\\.5");
+    const textNode = [...container.querySelectorAll("p")].find((node) => node.textContent?.includes("Here is an image"));
+    expect(attachmentCard).toBeTruthy();
+    expect(textNode).toBeTruthy();
+    expect(attachmentCard?.compareDocumentPosition(textNode as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
     const trigger = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("diagram.png"));
     expect(trigger).toBeTruthy();
+    const thumbnail = container.querySelector("img[alt='diagram.png']") as HTMLImageElement | null;
+    expect(thumbnail).toBeTruthy();
+    expect(thumbnail?.className).toContain("h-10");
 
     act(() => {
       trigger?.click();

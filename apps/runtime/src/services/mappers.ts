@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from "node:fs";
 import type { ChatMessage as DbChatMessage, ChatThread as DbChatThread, Repository as DbRepository, Worktree as DbWorktree, ChatAttachment as DbChatAttachment } from "@prisma/client";
 import { SaveAutomationConfigSchema, type ChatAttachment, type ChatMessage, type ChatThread, type Repository, type Worktree } from "@codesymphony/shared-types";
 
@@ -70,13 +71,28 @@ export function mapChatThread(thread: DbChatThread, isActive = false): ChatThrea
 }
 
 export function mapChatAttachment(attachment: DbChatAttachment): ChatAttachment {
+  let content = attachment.content;
+
+  if (
+    content.length === 0
+    && attachment.mimeType.startsWith("image/")
+    && attachment.storagePath
+    && existsSync(attachment.storagePath)
+  ) {
+    try {
+      content = readFileSync(attachment.storagePath).toString("base64");
+    } catch {
+      content = attachment.content;
+    }
+  }
+
   return {
     id: attachment.id,
     messageId: attachment.messageId,
     filename: attachment.filename,
     mimeType: attachment.mimeType,
     sizeBytes: attachment.sizeBytes,
-    content: attachment.content,
+    content,
     storagePath: attachment.storagePath,
     source: attachment.source as ChatAttachment["source"],
     createdAt: attachment.createdAt.toISOString(),

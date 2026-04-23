@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { mapWorktree, mapRepository, mapChatThread, mapChatAttachment, mapChatMessage } from "../src/services/mappers";
 
@@ -155,6 +158,28 @@ describe("mappers", () => {
       expect(result.filename).toBe("test.txt");
       expect(result.mimeType).toBe("text/plain");
       expect(result.source).toBe("file_picker");
+    });
+
+    it("hydrates image content from storage when database content is empty", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codesymphony-mappers-"));
+      const imagePath = join(tempDir, "diagram.png");
+      const imageBytes = Buffer.from([137, 80, 78, 71]);
+      writeFileSync(imagePath, imageBytes);
+
+      const result = mapChatAttachment({
+        id: "a2",
+        messageId: "m1",
+        filename: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: imageBytes.length,
+        content: "",
+        storagePath: imagePath,
+        source: "drag_drop",
+        createdAt: now,
+      });
+
+      expect(result.content).toBe(imageBytes.toString("base64"));
+      expect(result.storagePath).toBe(imagePath);
     });
   });
 
