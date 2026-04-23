@@ -1,6 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu, Settings, X } from "lucide-react";
-import type { ReviewKind } from "@codesymphony/shared-types";
+import {
+  BUILTIN_CHAT_MODELS_BY_AGENT,
+  type OpencodeModelCatalogEntry,
+  type ReviewKind,
+} from "@codesymphony/shared-types";
 import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
@@ -68,6 +72,7 @@ import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
+import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
@@ -77,6 +82,16 @@ import {
   clearLifecycleScriptOutputs,
   upsertScriptOutputEntry,
 } from "./workspace/scriptOutputState";
+
+function createFallbackOpencodeEntry(modelId: string): OpencodeModelCatalogEntry {
+  const [providerId] = modelId.split("/", 1);
+
+  return {
+    id: modelId,
+    name: modelId,
+    providerId: providerId?.trim() || "opencode",
+  };
+}
 import {
   loadRepositoryPanelPreferences,
   normalizeRepositoryPanelPreferences,
@@ -229,6 +244,14 @@ export function WorkspacePage() {
   const {
     providers: modelProviders,
   } = useModelProviders();
+  const opencodeModelsQuery = useOpencodeModels();
+  const opencodeModels = useMemo(
+    () => [
+      ...(opencodeModelsQuery.data?.models
+        ?? BUILTIN_CHAT_MODELS_BY_AGENT.opencode.map(createFallbackOpencodeEntry)),
+    ],
+    [opencodeModelsQuery.data?.models],
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1594,6 +1617,7 @@ export function WorkspacePage() {
                     slashCommands={slashCommands.commands}
                     slashCommandsLoading={slashCommands.loading}
                     providers={modelProviders}
+                    opencodeModels={opencodeModels}
                     agent={chat.composerAgent}
                     model={chat.composerModel}
                     modelProviderId={chat.composerModelProviderId}

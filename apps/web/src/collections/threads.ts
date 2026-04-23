@@ -25,6 +25,7 @@ export function toPlainChatThread(thread: ChatThread): ChatThread {
     modelProviderId: thread.modelProviderId ?? null,
     claudeSessionId: thread.claudeSessionId,
     codexSessionId: thread.codexSessionId ?? null,
+    opencodeSessionId: thread.opencodeSessionId ?? null,
     active: thread.active,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,

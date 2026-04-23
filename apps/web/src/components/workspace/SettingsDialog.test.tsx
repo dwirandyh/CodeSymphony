@@ -452,7 +452,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("choose them per thread under Claude in the composer");
   });
 
-  it("switches provider placeholders based on API compatibility and supports endpoint tests for OpenAI entries", async () => {
+  it("switches provider placeholders based on the selected agent and supports endpoint tests for Codex and OpenCode entries", async () => {
     renderDialog([makeRepo()]);
     await openModelsTab();
 
@@ -468,32 +468,44 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const compatibilitySelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "openai"),
+    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
+      Array.from(select.options).some((option) => option.value === "opencode"),
     ) as HTMLSelectElement | undefined;
-    if (!compatibilitySelect) {
-      throw new Error("API compatibility select not found");
+    if (!agentSelect) {
+      throw new Error("Agent select not found");
     }
 
-    expect(document.body.textContent).toContain("API Compatibility");
+    expect(document.body.textContent).toContain("Agent");
     expect(document.body.querySelector('input[placeholder=\'e.g. "claude-sonnet-4-6", "glm-4.7"\']')).not.toBeNull();
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
     await act(async () => {
-      compatibilitySelect.value = "openai";
-      compatibilitySelect.dispatchEvent(new Event("change", { bubbles: true }));
+      agentSelect.value = "codex";
+      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']')).not.toBeNull();
     expect(document.body.querySelector('input[placeholder="Leave empty to use Codex CLI defaults"]')).not.toBeNull();
     expect(document.body.querySelector('input[placeholder="Only if your Codex setup needs it"]')).not.toBeNull();
-    expect(document.body.textContent).toContain("OpenAI-compatible entries can be simple model aliases like gpt-5.4");
+    expect(document.body.textContent).toContain("Responses-compatible entries can be simple model aliases like gpt-5.4");
     expect(document.body.textContent).toContain("Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts.");
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
+
+    await act(async () => {
+      agentSelect.value = "opencode";
+      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(document.body.querySelector('input[placeholder=\'e.g. "openai/gpt-5" or "gpt-5-custom"\']')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Leave empty when Model ID already uses provider/model"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Only for custom OpenCode endpoints"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("For built-in OpenCode providers, enter Model ID as provider/model");
+    expect(document.body.textContent).toContain("Built-in OpenCode auth and /connect flows still work even if you never add an entry here.");
   });
 
-  it("maps OpenAI compatibility back to the codex agent when testing a provider", async () => {
+  it("passes the selected OpenCode agent when testing a provider", async () => {
     renderDialog([makeRepo()]);
     await openModelsTab();
 
@@ -509,29 +521,29 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const compatibilitySelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "openai"),
+    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
+      Array.from(select.options).some((option) => option.value === "opencode"),
     ) as HTMLSelectElement | undefined;
     const providerNameInput = document.body.querySelector('input[placeholder=\'e.g. "z.ai", "OpenRouter"\']') as HTMLInputElement | null;
-    if (!compatibilitySelect || !providerNameInput) {
+    if (!agentSelect || !providerNameInput) {
       throw new Error("Provider form fields not found");
     }
 
     await act(async () => {
-      compatibilitySelect.value = "openai";
-      compatibilitySelect.dispatchEvent(new Event("change", { bubbles: true }));
+      agentSelect.value = "opencode";
+      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await flushEffects();
 
-    const modelIdInput = document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']') as HTMLInputElement | null;
-    const baseUrlInput = document.body.querySelector('input[placeholder="Leave empty to use Codex CLI defaults"]') as HTMLInputElement | null;
-    const apiKeyInput = document.body.querySelector('input[placeholder="Only if your Codex setup needs it"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[placeholder=\'e.g. "openai/gpt-5" or "gpt-5-custom"\']') as HTMLInputElement | null;
+    const baseUrlInput = document.body.querySelector('input[placeholder="Leave empty when Model ID already uses provider/model"]') as HTMLInputElement | null;
+    const apiKeyInput = document.body.querySelector('input[placeholder="Only for custom OpenCode endpoints"]') as HTMLInputElement | null;
     if (!modelIdInput || !baseUrlInput || !apiKeyInput) {
-      throw new Error("Codex test controls not found");
+      throw new Error("OpenCode test controls not found");
     }
 
-    await setInputValue(providerNameInput, "OpenAI QA");
-    await setInputValue(modelIdInput, "gpt-5.4");
+    await setInputValue(providerNameInput, "OpenCode QA");
+    await setInputValue(modelIdInput, "gpt-5-custom");
     await setInputValue(baseUrlInput, "https://api.openai.com/v1");
     await setInputValue(apiKeyInput, "sk-test");
     await flushEffects();
@@ -549,10 +561,10 @@ describe("SettingsDialog", () => {
     });
 
     expect(apiMocks.testModelProvider).toHaveBeenCalledWith({
-      agent: "codex",
+      agent: "opencode",
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-test",
-      modelId: "gpt-5.4",
+      modelId: "gpt-5-custom",
     });
   });
 
@@ -567,13 +579,25 @@ describe("SettingsDialog", () => {
       isActive: false,
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:00:00Z",
+    }, {
+      id: "provider-2",
+      agent: "opencode" as const,
+      name: "OpenCode QA",
+      modelId: "openai/gpt-5",
+      baseUrl: null,
+      apiKeyMasked: null,
+      isActive: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
     }];
     apiMocks.listModelProviders.mockResolvedValueOnce(providers);
 
     renderDialog([makeRepo()]);
     await openModelsTab();
 
-    expect(document.body.querySelector('button[aria-label="Edit OpenAI provider OpenAI (gpt-5.4)"]')).not.toBeNull();
-    expect(document.body.querySelector('button[aria-label="Delete OpenAI provider OpenAI (gpt-5.4)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Edit Codex provider OpenAI (gpt-5.4)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Delete Codex provider OpenAI (gpt-5.4)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Edit OpenCode provider OpenCode QA (openai/gpt-5)"]')).not.toBeNull();
+    expect(document.body.querySelector('button[aria-label="Delete OpenCode provider OpenCode QA (openai/gpt-5)"]')).not.toBeNull();
   });
 });

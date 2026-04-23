@@ -146,6 +146,53 @@ describe("chatService agent selection", () => {
     expect(persistedThread?.claudeSessionId).toBeNull();
   });
 
+  it("routes OpenCode threads through the OpenCode runner and persists opencodeSessionId", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const opencodeRunner: ClaudeRunner = vi.fn(async ({ onSessionId, onText }) => {
+      await onSessionId?.("opencode-session-1");
+      await onText("OpenCode reply");
+      return {
+        output: "OpenCode reply",
+        sessionId: "opencode-session-1",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      opencodeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("OpenCode selection thread");
+
+    const updatedThread = await chatService.updateThreadAgentSelection(thread.id, {
+      agent: "opencode",
+      model: "openai/gpt-5",
+      modelProviderId: null,
+    });
+
+    expect(updatedThread.agent).toBe("opencode");
+    expect(updatedThread.model).toBe("openai/gpt-5");
+    expect(updatedThread.claudeSessionId).toBeNull();
+    expect(updatedThread.opencodeSessionId).toBeNull();
+
+    await chatService.sendMessage(thread.id, {
+      content: "Run through OpenCode",
+    });
+    await waitForCompletion(chatService, thread.id);
+
+    expect(opencodeRunner).toHaveBeenCalledTimes(1);
+    expect(claudeRunner).not.toHaveBeenCalled();
+
+    const persistedThread = await chatService.getThreadById(thread.id);
+    expect(persistedThread?.opencodeSessionId).toBe("opencode-session-1");
+    expect(persistedThread?.claudeSessionId).toBeNull();
+  });
+
   it("includes the effective Codex CLI provider in runtime errors for built-in Codex threads", async () => {
     const previousCodexHome = process.env.CODEX_HOME;
     const codexHome = mkdtempSync(join(tmpdir(), "codesymphony-codex-home-"));
