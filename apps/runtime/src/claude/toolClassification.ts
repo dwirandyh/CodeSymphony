@@ -104,7 +104,7 @@ export function editTargetFromUnknownToolInput(toolName: string, input: unknown)
     }
 
     const record = input as Record<string, unknown>;
-    const keyCandidates = ["file_path", "path", "file", "filepath", "target", "filename"];
+    const keyCandidates = ["file_path", "filePath", "path", "file", "filepath", "target", "filename"];
     for (const key of keyCandidates) {
         const candidate = stringFromUnknown(record[key]);
         if (candidate) {

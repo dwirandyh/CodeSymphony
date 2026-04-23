@@ -23,7 +23,7 @@ function extractEditTarget(toolName: string, toolInput: unknown): string | null 
     return null;
   }
 
-  const keyCandidates = ["file_path", "path", "file", "filepath", "target", "filename"];
+  const keyCandidates = ["file_path", "filePath", "path", "file", "filepath", "target", "filename"];
   for (const key of keyCandidates) {
     const raw = toolInput[key];
     if (typeof raw !== "string") {

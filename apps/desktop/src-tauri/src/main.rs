@@ -263,6 +263,9 @@ fn spawn_runtime_dev(port: u16) -> Option<Child> {
     if let Some(codex_bin) = resolve_codex_binary() {
         cmd.env("CODEX_BINARY_PATH", &codex_bin);
     }
+    if let Some(opencode_bin) = resolve_opencode_binary() {
+        cmd.env("OPENCODE_BINARY_PATH", &opencode_bin);
+    }
 
     #[cfg(unix)]
     cmd.process_group(0);
@@ -286,6 +289,10 @@ fn resolve_claude_binary() -> Option<PathBuf> {
 
 fn resolve_codex_binary() -> Option<PathBuf> {
     resolve_common_binary("codex")
+}
+
+fn resolve_opencode_binary() -> Option<PathBuf> {
+    resolve_common_binary("opencode")
 }
 
 fn runtime_stdout_log_path(app_data_dir: &Path) -> PathBuf {
@@ -395,6 +402,9 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
     }
     if let Some(codex_bin) = resolve_codex_binary() {
         cmd.env("CODEX_BINARY_PATH", &codex_bin);
+    }
+    if let Some(opencode_bin) = resolve_opencode_binary() {
+        cmd.env("OPENCODE_BINARY_PATH", &opencode_bin);
     }
 
     if let Err(error) = configure_runtime_stdio(&mut cmd, &app_data_dir) {

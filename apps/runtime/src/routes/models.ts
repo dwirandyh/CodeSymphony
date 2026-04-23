@@ -2,14 +2,16 @@ import type { FastifyInstance } from "fastify";
 import {
   type CliAgent,
   CreateModelProviderInputSchema,
+  OpencodeModelCatalogSchema,
   TestModelProviderInputSchema,
   UpdateModelProviderInputSchema,
 } from "@codesymphony/shared-types";
+import * as opencodeModelCatalog from "../opencode/modelCatalog.js";
 
 function normalizeProviderTestUrl(baseUrl: string, agent: CliAgent): string {
   const trimmedBaseUrl = baseUrl.replace(/\/+$/, "");
 
-  if (agent === "codex") {
+  if (agent === "codex" || agent === "opencode") {
     return trimmedBaseUrl.endsWith("/responses")
       ? trimmedBaseUrl
       : `${trimmedBaseUrl}/responses`;
@@ -25,6 +27,19 @@ function normalizeProviderTestUrl(baseUrl: string, agent: CliAgent): string {
 }
 
 export async function registerModelRoutes(app: FastifyInstance) {
+  app.get("/opencode/models", async (_request, reply) => {
+    try {
+      const payload = OpencodeModelCatalogSchema.parse({
+        models: await opencodeModelCatalog.listOpencodeModels(),
+        fetchedAt: new Date().toISOString(),
+      });
+      return { data: payload };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list OpenCode models";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
   app.get("/model-providers", async () => {
     const providers = await app.modelProviderService.listProviders();
     return { data: providers };
@@ -70,7 +85,7 @@ export async function registerModelRoutes(app: FastifyInstance) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(agent === "codex"
+          ...(agent === "codex" || agent === "opencode"
             ? {
                 Authorization: `Bearer ${apiKey}`,
               }
@@ -80,7 +95,7 @@ export async function registerModelRoutes(app: FastifyInstance) {
               }),
         },
         body: JSON.stringify(
-          agent === "codex"
+          agent === "codex" || agent === "opencode"
             ? {
                 model: modelId,
                 input: "Hi",

@@ -33,7 +33,13 @@ function describeSchemaError(error: { code: string; meta?: Record<string, unknow
 export async function assertDatabaseReady(prisma: PrismaClient): Promise<void> {
   try {
     await prisma.chatThread.findFirst({
-      select: { id: true, mode: true },
+      select: {
+        id: true,
+        mode: true,
+        claudeSessionId: true,
+        codexSessionId: true,
+        opencodeSessionId: true,
+      },
     });
   } catch (error) {
     if (isPrismaSchemaNotReadyError(error)) {

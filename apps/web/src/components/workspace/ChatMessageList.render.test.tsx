@@ -116,6 +116,8 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   Element.prototype.scrollIntoView = vi.fn();
+  vi.mocked(parsePatchFiles).mockReset();
+  vi.mocked(parsePatchFiles).mockReturnValue([]);
   scrollToIndexMock.mockReset();
   latestVListPropsRef.current = null;
   latestScrollStateRef.current = {
@@ -712,6 +714,49 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
     expect(container.textContent).toContain("index.ts");
+  });
+
+  it("strips truncated diff markers before parsing edited-diff items", () => {
+    const diff = [
+      "diff --git a/src/index.ts b/src/index.ts",
+      "--- a/src/index.ts",
+      "+++ b/src/index.ts",
+      "@@ -1 +1 @@",
+      "-before",
+      "+after",
+      "",
+      "... [diff truncated]",
+    ].join("\n");
+
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "edited-diff",
+        id: "diff-truncated",
+        eventId: "ev-truncated",
+        status: "success",
+        diffKind: "actual",
+        changedFiles: ["src/index.ts"],
+        diff,
+        diffTruncated: true,
+        additions: 1,
+        deletions: 1,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(vi.mocked(parsePatchFiles)).toHaveBeenCalledWith([
+      "diff --git a/src/index.ts b/src/index.ts",
+      "--- a/src/index.ts",
+      "+++ b/src/index.ts",
+      "@@ -1 +1 @@",
+      "-before",
+      "+after",
+    ].join("\n"));
+    expect(container.textContent).toContain("... [diff truncated]");
   });
 
   it("renders worktree diff items as command changes instead of manual edits", () => {

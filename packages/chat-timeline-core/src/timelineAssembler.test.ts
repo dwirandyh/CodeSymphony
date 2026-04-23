@@ -293,6 +293,101 @@ describe("buildTimelineFromSeed", () => {
     expect(editedItems[0]?.diff).toContain("+new");
   });
 
+  it("renders one edited diff when a write target is only known after approval", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Create the file."),
+      makeMessage("m2", 1, "assistant", "Created."),
+    ];
+    const absolutePath = "/Users/test/project/dogfood-output/edit-approval-smoke.txt";
+    const relativePath = "dogfood-output/edit-approval-smoke.txt";
+    const events = [
+      makeEvent(0, "message.delta", {
+        role: "user",
+        messageId: "m1",
+        delta: "Create the file.",
+      }),
+      makeEvent(1, "tool.started", {
+        toolName: "write",
+        toolUseId: "write-1",
+        messageId: "m2",
+      }),
+      makeEvent(2, "permission.requested", {
+        messageId: "m2",
+        requestId: "perm-1",
+        toolName: "write",
+        blockedPath: relativePath,
+        toolInput: {
+          filepath: absolutePath,
+          diff: [
+            `Index: ${absolutePath}`,
+            "===================================================================",
+            `--- ${absolutePath}`,
+            `+++ ${absolutePath}`,
+            "@@ -0,0 +1,1 @@",
+            "+EDIT_OK",
+          ].join("\n"),
+        },
+      }),
+      makeEvent(3, "permission.resolved", {
+        requestId: "perm-1",
+        decision: "allow",
+      }),
+      makeEvent(4, "tool.output", {
+        toolName: "write",
+        toolUseId: "write-1",
+        messageId: "m2",
+      }),
+      makeEvent(5, "tool.finished", {
+        toolName: "write",
+        summary: relativePath,
+        precedingToolUseIds: ["write-1"],
+        toolInput: {
+          content: "EDIT_OK",
+          filePath: absolutePath,
+        },
+      }),
+      makeEvent(6, "tool.finished", {
+        source: "worktree.diff",
+        summary: "Detected worktree changes in 1 file",
+        changedFiles: [relativePath],
+        diff: [
+          `diff --git a/${relativePath} b/${relativePath}`,
+          "new file mode 100644",
+          "--- /dev/null",
+          `+++ b/${relativePath}`,
+          "@@ -0,0 +1 @@",
+          "+EDIT_OK",
+        ].join("\n"),
+      }),
+      makeEvent(7, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Created.",
+      }),
+      makeEvent(8, "chat.completed", { messageId: "m2" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const editedItems = result.items.filter(
+      (item): item is Extract<ChatTimelineItem, { kind: "edited-diff" }> =>
+        item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("edit-approval-smoke.txt")),
+    );
+
+    expect(editedItems).toHaveLength(1);
+    expect(editedItems[0]).toMatchObject({
+      kind: "edited-diff",
+      diffKind: "actual",
+      status: "success",
+    });
+    expect(editedItems[0]?.diff).toContain("+EDIT_OK");
+  });
+
   it("attaches resumed tool events to the new assistant turn when tool activity starts before text deltas", () => {
     const messages = [
       makeMessage("m1", 0, "user", "Start the task."),

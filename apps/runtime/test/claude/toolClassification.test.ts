@@ -139,6 +139,7 @@ describe("editTargetFromUnknownToolInput", () => {
     it("tries multiple key candidates", () => {
         expect(editTargetFromUnknownToolInput("Write", { path: "a.ts" })).toBe("a.ts");
         expect(editTargetFromUnknownToolInput("MultiEdit", { file: "b.ts" })).toBe("b.ts");
+        expect(editTargetFromUnknownToolInput("Write", { filePath: "c.ts" })).toBe("c.ts");
     });
 
     it("returns undefined for non-edit tools", () => {

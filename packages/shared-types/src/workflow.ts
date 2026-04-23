@@ -81,17 +81,19 @@ export type ChatThreadPermissionMode = z.infer<typeof ChatThreadPermissionModeSc
 export const ChatModeSchema = z.enum(["default", "plan"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
 
-export const CliAgentSchema = z.enum(["claude", "codex"]);
+export const CliAgentSchema = z.enum(["claude", "codex", "opencode"]);
 export type CliAgent = z.infer<typeof CliAgentSchema>;
 
 export const BUILTIN_CHAT_MODELS_BY_AGENT = {
   claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
   codex: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"],
+  opencode: ["openai/gpt-5", "anthropic/claude-sonnet-4-5", "opencode/gpt-5.1-codex"],
 } as const satisfies Record<CliAgent, readonly string[]>;
 
 export const DEFAULT_CHAT_MODEL_BY_AGENT = {
   claude: "claude-sonnet-4-6",
   codex: "gpt-5.4",
+  opencode: "openai/gpt-5",
 } as const satisfies Record<CliAgent, string>;
 
 export const ChatThreadSchema = z.object({
@@ -108,6 +110,7 @@ export const ChatThreadSchema = z.object({
   modelProviderId: z.string().nullable().optional(),
   claudeSessionId: z.string().nullable(),
   codexSessionId: z.string().nullable().optional(),
+  opencodeSessionId: z.string().nullable().optional(),
   active: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -769,3 +772,16 @@ export const TestModelProviderInputSchema = z.object({
   modelId: z.string().trim().min(1),
 });
 export type TestModelProviderInput = z.input<typeof TestModelProviderInputSchema>;
+
+export const OpencodeModelCatalogEntrySchema = z.object({
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  providerId: z.string().trim().min(1),
+});
+export type OpencodeModelCatalogEntry = z.infer<typeof OpencodeModelCatalogEntrySchema>;
+
+export const OpencodeModelCatalogSchema = z.object({
+  models: z.array(OpencodeModelCatalogEntrySchema),
+  fetchedAt: z.string().datetime(),
+});
+export type OpencodeModelCatalog = z.infer<typeof OpencodeModelCatalogSchema>;

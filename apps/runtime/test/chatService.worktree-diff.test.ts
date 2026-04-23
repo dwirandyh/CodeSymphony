@@ -374,6 +374,57 @@ describe("chatService worktree diff delta", () => {
     expect(diffEvent?.payload.diff).toContain("+export const generated = true;");
   });
 
+  it("emits worktree diff for OpenCode write payloads that use camelCase filePath", async () => {
+    const worktreePath = createGitWorktree({
+      "src/main.ts": "export const main = () => 1;\n",
+    });
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, onToolStarted, onToolFinished }) => {
+      const relativePath = "src/opencode-write.ts";
+      const absolutePath = join(worktreePath, relativePath);
+      await onToolStarted({
+        toolName: "Write",
+        toolUseId: "write-opencode-camel-path",
+        parentToolUseId: null,
+      });
+      writeFileSync(absolutePath, "export const opencode = true;\n", "utf8");
+      await onToolFinished({
+        toolName: "Write",
+        summary: `Created ${relativePath}`,
+        precedingToolUseIds: ["write-opencode-camel-path"],
+        toolInput: {
+          filePath: absolutePath,
+          content: "export const opencode = true;\n",
+        },
+      });
+      await onText("Created src/opencode-write.ts");
+      return {
+        output: "Created src/opencode-write.ts",
+        sessionId: "session-worktree-opencode-camel-path",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const threadId = await seedThreadForWorktree(worktreePath, "Worktree OpenCode Camel Path");
+
+    await chatService.sendMessage(threadId, {
+      content: "create src/opencode-write.ts",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    const diffEvent = worktreeDiffEvent(events);
+    expect(diffEvent).toBeDefined();
+    expect(diffEvent?.payload.changedFiles).toEqual(["src/opencode-write.ts"]);
+    expect(diffEvent?.payload.diff).toContain("diff --git a/src/opencode-write.ts b/src/opencode-write.ts");
+    expect(diffEvent?.payload.diff).toContain("+++ b/src/opencode-write.ts");
+    expect(diffEvent?.payload.diff).toContain("+export const opencode = true;");
+  });
+
   it("emits worktree diff when the current run edits an existing untracked file", async () => {
     const worktreePath = createGitWorktree({
       "src/main.ts": "export const main = () => 1;\n",

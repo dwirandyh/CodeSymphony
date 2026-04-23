@@ -66,6 +66,10 @@ describe("queryKeys", () => {
     expect(queryKeys.filesystem.browse()).toEqual(["filesystem", "browse", "__root__"]);
   });
 
+  it("models.opencodeCatalog is correct", () => {
+    expect(queryKeys.models.opencodeCatalog).toEqual(["models", "opencode", "catalog"]);
+  });
+
   it("system.installedApps is correct", () => {
     expect(queryKeys.system.installedApps).toEqual(["system", "installedApps"]);
   });
