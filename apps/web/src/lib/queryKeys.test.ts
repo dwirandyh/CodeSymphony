@@ -70,6 +70,10 @@ describe("queryKeys", () => {
     expect(queryKeys.models.opencodeCatalog).toEqual(["models", "opencode", "catalog"]);
   });
 
+  it("runtime.info is correct", () => {
+    expect(queryKeys.runtime.info).toEqual(["runtime", "info"]);
+  });
+
   it("system.installedApps is correct", () => {
     expect(queryKeys.system.installedApps).toEqual(["system", "installedApps"]);
   });

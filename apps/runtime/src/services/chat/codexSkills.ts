@@ -5,7 +5,7 @@ import type { SlashCommand } from "@codesymphony/shared-types";
 
 const SKILL_FILE_NAME = "SKILL.md";
 const MAX_SCAN_DEPTH = 4;
-const SLASH_COMMAND_TOKEN_REGEX = /(?<!\S)\/(\w[\w-]*)(?=$|[\s.,!?;:])/g;
+const SKILL_COMMAND_TOKEN_REGEX = /(?<!\S)(?:\/|\$)(\w[\w-]*)(?=$|[\s.,!?;:])/g;
 
 type CodexSkill = SlashCommand & {
   sortPriority: number;
@@ -119,7 +119,7 @@ export function normalizeCodexSkillSlashCommandsForPrompt(content: string, skill
     skills.map((skill) => [skill.name.trim().toLowerCase(), skill.name.trim()] as const),
   );
   const referencedSkills: string[] = [];
-  const strippedContent = content.replace(SLASH_COMMAND_TOKEN_REGEX, (match, rawName: string) => {
+  const strippedContent = content.replace(SKILL_COMMAND_TOKEN_REGEX, (match, rawName: string) => {
     const canonicalName = skillNamesByLowercase.get(rawName.toLowerCase());
     if (!canonicalName) {
       return match;

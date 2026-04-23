@@ -52,7 +52,7 @@ const DiffReviewPanel = lazy(() =>
 const preloadCodeEditorPanel = () => import("../components/workspace/CodeEditorPanel");
 const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewPanel");
 
-import { api } from "../lib/api";
+import { api, type RuntimeInfo } from "../lib/api";
 import { openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
 import { findRootWorktree, isRootWorktree } from "../lib/worktree";
@@ -72,6 +72,7 @@ import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
+import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
@@ -111,6 +112,52 @@ import {
   createMobileKeyboardBaseline,
   type MobileKeyboardBaseline,
 } from "./workspace/mobileKeyboard";
+
+function resolveRuntimePort(runtimeInfo: RuntimeInfo | null | undefined): number | null {
+  if (runtimeInfo?.listenAddress?.kind === "tcp") {
+    return runtimeInfo.listenAddress.port;
+  }
+
+  return runtimeInfo?.runtimePort ?? null;
+}
+
+function formatRuntimeLabel(runtimeInfo: RuntimeInfo | null | undefined): string | null {
+  const port = resolveRuntimePort(runtimeInfo);
+  if (port == null) {
+    return null;
+  }
+
+  if (port === 4331) {
+    return "Dev runtime :4331";
+  }
+
+  if (port === 4321) {
+    return "Desktop dev runtime :4321";
+  }
+
+  if (port === 4322) {
+    return "Desktop runtime :4322";
+  }
+
+  return `Runtime :${port}`;
+}
+
+function formatRuntimeTitle(runtimeInfo: RuntimeInfo | null | undefined): string | null {
+  if (!runtimeInfo) {
+    return null;
+  }
+
+  const port = resolveRuntimePort(runtimeInfo);
+  const lines = [
+    port != null ? `Port: ${port}` : null,
+    runtimeInfo.cwd ? `Runtime cwd: ${runtimeInfo.cwd}` : null,
+    runtimeInfo.database.resolvedPath ? `Database: ${runtimeInfo.database.resolvedPath}` : runtimeInfo.database.urlPreview
+      ? `Database: ${runtimeInfo.database.urlPreview}`
+      : null,
+  ].filter((line): line is string => typeof line === "string" && line.length > 0);
+
+  return lines.length > 0 ? lines.join("\n") : null;
+}
 
 const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
 const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
@@ -510,6 +557,7 @@ export function WorkspacePage() {
   const queryClient = useQueryClient();
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
   const repositoryReviews = useRepositoryReviews(repos.selectedRepositoryId);
+  const runtimeInfo = useRuntimeInfo();
   const selectedReviewBranch = resolveReviewBranch(gitChanges.branch, repos.selectedWorktree?.branch ?? null);
   const selectedReviewBaseBranch = resolveReviewBaseBranch(
     repos.selectedWorktree?.baseBranch ?? null,
@@ -558,6 +606,8 @@ export function WorkspacePage() {
     previousThreadId: prevSelectedThreadIdRef.current,
     nextThreadId: chat.selectedThreadId,
   });
+  const runtimeLabel = formatRuntimeLabel(runtimeInfo.data);
+  const runtimeTitle = formatRuntimeTitle(runtimeInfo.data);
 
   if (chatMessageListKey !== chatMessageListKeyRef.current) {
     chatMessageListKeyRef.current = chatMessageListKey;
@@ -1315,6 +1365,8 @@ export function WorkspacePage() {
                 selectedRepositoryName={repos.selectedRepository?.name ?? "No repository selected"}
                 selectedWorktreeLabel={selectedContextLabel}
                 worktreePath={repos.selectedWorktree?.path ?? null}
+                runtimeLabel={runtimeLabel}
+                runtimeTitle={runtimeTitle}
                 threads={chat.threads}
                 selectedThreadId={chat.selectedThreadId}
                 fileTabs={workspaceFileTabs}

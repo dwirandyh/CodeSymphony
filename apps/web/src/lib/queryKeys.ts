@@ -32,6 +32,9 @@ export const queryKeys = {
   models: {
     opencodeCatalog: ["models", "opencode", "catalog"] as const,
   },
+  runtime: {
+    info: ["runtime", "info"] as const,
+  },
   system: {
     installedApps: ["system", "installedApps"] as const,
   },

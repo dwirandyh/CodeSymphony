@@ -1,5 +1,5 @@
-import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatThread } from "@codesymphony/shared-types";
 import { WorkspaceHeader } from "./WorkspaceHeader";
@@ -52,7 +52,7 @@ describe("WorkspaceHeader", () => {
   });
 
   afterEach(() => {
-    act(() => {
+    flushSync(() => {
       root.unmount();
     });
     container.remove();
@@ -81,7 +81,7 @@ describe("WorkspaceHeader", () => {
       onRenameThread: noop,
     };
 
-    act(() => {
+    flushSync(() => {
       root.render(<WorkspaceHeader {...props} {...overrides} />);
     });
   }
@@ -95,7 +95,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Selected tab not found");
     }
 
-    act(() => {
+    flushSync(() => {
       selectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
 
@@ -104,11 +104,12 @@ describe("WorkspaceHeader", () => {
       throw new Error("Rename input not found");
     }
 
-    await act(async () => {
+    flushSync(() => {
       input.value = "  Summarize setup docs  ";
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      await Promise.resolve();
     });
+
+    await Promise.resolve();
 
     expect(onRenameThread).toHaveBeenCalledTimes(1);
     expect(onRenameThread).toHaveBeenCalledWith("thread-1", "Summarize setup docs");
@@ -123,7 +124,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Selected tab not found");
     }
 
-    act(() => {
+    flushSync(() => {
       selectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
 
@@ -132,7 +133,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Rename input not found");
     }
 
-    act(() => {
+    flushSync(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
 
@@ -148,7 +149,7 @@ describe("WorkspaceHeader", () => {
       throw new Error("Unselected tab not found");
     }
 
-    act(() => {
+    flushSync(() => {
       unselectedTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     });
 
@@ -191,11 +192,26 @@ describe("WorkspaceHeader", () => {
 
     expect(scrollRegion.contains(addSessionButton)).toBe(false);
 
-    act(() => {
+    flushSync(() => {
       addSessionButton.click();
     });
 
     expect(onCreateThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders runtime and worktree context metadata", () => {
+    renderHeader({
+      runtimeLabel: "Desktop runtime :4322",
+      runtimeTitle: "Runtime cwd: /bundle/runtime\nDatabase: /db.sqlite",
+      worktreePath: "/tmp/repo",
+    });
+
+    const runtimeContext = container.querySelector<HTMLElement>('[data-testid="workspace-runtime-context"]');
+    const worktreePath = container.querySelector<HTMLElement>('[data-testid="workspace-worktree-path"]');
+
+    expect(runtimeContext?.textContent).toContain("Desktop runtime :4322");
+    expect(runtimeContext?.getAttribute("title")).toContain("Runtime cwd: /bundle/runtime");
+    expect(worktreePath?.textContent).toContain("/tmp/repo");
   });
 
   it("keeps unselected close buttons non-interactive until hovered", () => {
@@ -230,7 +246,7 @@ describe("WorkspaceHeader", () => {
 
     expect(fileTab.className).toContain("italic");
 
-    act(() => {
+    flushSync(() => {
       fileTab.click();
       fileTab.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
       closeButton.click();

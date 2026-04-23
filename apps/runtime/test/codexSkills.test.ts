@@ -64,8 +64,14 @@ describe("normalizeCodexSkillSlashCommandsForPrompt", () => {
     );
   });
 
+  it("accepts $skill aliases without changing the resulting Codex instruction", () => {
+    expect(normalizeCodexSkillSlashCommandsForPrompt("$dogfood audit halaman settings", skills)).toBe(
+      "Use $dogfood for this task.\n\naudit halaman settings",
+    );
+  });
+
   it("supports multiple skills and preserves non-skill slash tokens", () => {
-    expect(normalizeCodexSkillSlashCommandsForPrompt("/dogfood pakai /Users/test dan /Excel", skills)).toBe(
+    expect(normalizeCodexSkillSlashCommandsForPrompt("/dogfood pakai /Users/test dan $Excel", skills)).toBe(
       "Use these skills for this task: $dogfood, $Excel.\n\npakai /Users/test dan",
     );
   });

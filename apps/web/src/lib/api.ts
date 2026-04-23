@@ -209,6 +209,33 @@ export class TeardownFailedError extends Error {
   }
 }
 
+export type RuntimeListenAddress =
+  | {
+    kind: "pipe";
+    value: string;
+  }
+  | {
+    kind: "tcp";
+    value: string;
+    family: string;
+    port: number;
+  };
+
+export type RuntimeInfo = {
+  pid: number;
+  cwd: string;
+  nodeVersion: string;
+  runtimeHost: string | null;
+  runtimePort: number | null;
+  uptimeSec: number;
+  database: {
+    urlKind: string | null;
+    resolvedPath: string | null;
+    urlPreview: string | null;
+  };
+  listenAddress: RuntimeListenAddress | null;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
 
@@ -545,6 +572,7 @@ export const api = {
   get runtimeBaseUrl() {
     return (activeApiBase ?? getCandidateApiBases()[0] ?? DEFAULT_API_BASE).replace(/\/api$/, "");
   },
+  getRuntimeInfo: () => request<RuntimeInfo>("/debug/runtime-info"),
   browseFilesystem: (path?: string) => {
     const params = path ? `?path=${encodeURIComponent(path)}` : "";
     return request<FilesystemBrowseResponse>(`/filesystem/browse${params}`);
