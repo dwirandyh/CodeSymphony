@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import {
   AnswerQuestionInputSchema,
+  BUILTIN_CHAT_MODELS_BY_AGENT,
   CreateChatThreadInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
   DismissPlanInputSchema,
@@ -87,7 +88,8 @@ import {
 } from "./chatNamingService.js";
 import { recoverPendingPlan } from "./chatPlanService.js";
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
-import { buildCodexCliProviderHint } from "../../codex/config.js";
+import { buildCodexCliProviderHint, resolveCodexCliProviderOverride } from "../../codex/config.js";
+import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
 import { shouldAutoApproveWorkspaceEdit } from "./workspaceEditPermissions.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
@@ -278,6 +280,21 @@ function toRunnerOptional(value: string | null | undefined): string | undefined 
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function isBuiltinModelForAgent(agent: CliAgent, model: string): boolean {
+  return (BUILTIN_CHAT_MODELS_BY_AGENT[agent] as readonly string[]).includes(model);
+}
+
+function resolveDefaultModelForAgent(agent: CliAgent): string {
+  if (agent === "codex") {
+    const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
+    if (codexCliModel) {
+      return codexCliModel;
+    }
+  }
+
+  return DEFAULT_CHAT_MODEL_BY_AGENT[agent];
+}
+
 function toActiveModelProvider(provider: {
   id: string;
   agent: CliAgent;
@@ -333,6 +350,18 @@ async function resolveThreadSelection(
 
   const explicitModel = normalizeOptionalModelId(input.model);
   if (explicitModel) {
+    if (agent === "codex" && isBuiltinModelForAgent(agent, explicitModel)) {
+      const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
+      if (codexCliModel) {
+        return {
+          agent,
+          model: codexCliModel,
+          modelProviderId: null,
+          provider: null,
+        };
+      }
+    }
+
     return {
       agent,
       model: explicitModel,
@@ -355,7 +384,7 @@ async function resolveThreadSelection(
 
   return {
     agent,
-    model: DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+    model: resolveDefaultModelForAgent(agent),
     modelProviderId: null,
     provider: null,
   };
@@ -1376,10 +1405,24 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       if (agent === "codex") {
-        return SlashCommandCatalogSchema.parse({
-          commands: listCodexSkills(worktree.path),
-          updatedAt: new Date().toISOString(),
-        });
+        try {
+          return SlashCommandCatalogSchema.parse({
+            commands: await listCodexSlashCommandsFromAppServer({
+              cwd: worktree.path,
+            }),
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (error) {
+          deps.logService?.log("warn", "chat.slashCommands", "failed to load codex slash commands from app-server", {
+            worktreeId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          return SlashCommandCatalogSchema.parse({
+            commands: listCodexSkills(worktree.path),
+            updatedAt: new Date().toISOString(),
+          });
+        }
       }
 
       try {

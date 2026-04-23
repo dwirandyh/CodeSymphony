@@ -137,8 +137,8 @@ export function normalizeCodexSkillSlashCommandsForPrompt(content: string, skill
   }
 
   const instruction = referencedSkills.length === 1
-    ? `Use the ${referencedSkills[0]} skill for this task.`
-    : `Use these skills for this task: ${referencedSkills.join(", ")}.`;
+    ? `Use $${referencedSkills[0]} for this task.`
+    : `Use these skills for this task: ${referencedSkills.map((name) => `$${name}`).join(", ")}.`;
   const cleanedContent = strippedContent
     .replace(/\s{2,}/g, " ")
     .replace(/\s+([.,!?;:])/g, "$1")

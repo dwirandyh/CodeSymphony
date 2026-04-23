@@ -254,6 +254,61 @@ describe("chatService agent selection", () => {
     }
   });
 
+  it("aligns built-in Codex model selection with the local Codex CLI config", async () => {
+    const previousCodexHome = process.env.CODEX_HOME;
+    const codexHome = mkdtempSync(join(tmpdir(), "codesymphony-codex-home-"));
+    writeFileSync(join(codexHome, "config.toml"), [
+      "model_provider = \"cliproxyapi\"",
+      "model = \"gpt-5.4\"",
+      "",
+      "[model_providers.cliproxyapi]",
+      "name = \"cliproxyapi\"",
+      "base_url = \"http://127.0.0.1:8317/v1\"",
+      "wire_api = \"responses\"",
+      "",
+    ].join("\n"));
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      const chatService = createChatService({
+        prisma,
+        eventHub: createEventHub(prisma),
+        claudeRunner: vi.fn(async () => ({
+          output: "",
+          sessionId: null,
+        })),
+        codexRunner: vi.fn(async () => ({
+          output: "",
+          sessionId: null,
+        })),
+        modelProviderService: stubModelProviderService,
+      });
+      const { thread, worktree } = await seedThread("Codex CLI config alignment");
+
+      const updatedThread = await chatService.updateThreadAgentSelection(thread.id, {
+        agent: "codex",
+        model: "gpt-5.3-codex-spark",
+        modelProviderId: null,
+      });
+
+      expect(updatedThread.agent).toBe("codex");
+      expect(updatedThread.model).toBe("gpt-5.4");
+
+      const createdThread = await chatService.createThread(worktree.id, {
+        agent: "codex",
+      });
+
+      expect(createdThread.agent).toBe("codex");
+      expect(createdThread.model).toBe("gpt-5.4");
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+    }
+  });
+
   it("rejects agent changes once a thread already has messages", async () => {
     const chatService = createChatService({
       prisma,

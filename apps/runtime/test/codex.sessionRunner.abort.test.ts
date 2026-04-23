@@ -60,6 +60,16 @@ function attachJsonRpcServer(
         continue;
       }
 
+      if (message.method === "skills/list") {
+        child.stdout.write(`${JSON.stringify({
+          id: message.id,
+          result: {
+            data: [],
+          },
+        })}\n`);
+        continue;
+      }
+
       if (message.method === "turn/start") {
         child.stdout.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
         options?.onTurnStart?.();

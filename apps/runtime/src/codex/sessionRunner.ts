@@ -1,11 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import readline from "node:readline";
 import type { PermissionDecision } from "@codesymphony/shared-types";
-import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
+import { DEFAULT_CHAT_MODEL_BY_AGENT, type SlashCommand } from "@codesymphony/shared-types";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import {
   buildCollaborationMode,
@@ -74,6 +71,7 @@ const CODEX_BINARY = process.env.CODEX_BINARY_PATH ?? "codex";
 const REQUEST_TIMEOUT_MS = 20_000;
 const CODEX_CUSTOM_PROVIDER_ID = "codesymphony_custom";
 const CODEX_CUSTOM_PROVIDER_API_KEY_ENV = "CODESYMPHONY_CODEX_API_KEY";
+const CODEX_APP_SERVER_INITIALIZED_MESSAGE = { method: "initialized" } as const;
 
 function normalizeCodexCommandApprovalDecision(decision: PermissionDecision): "accept" | "acceptForSession" | "decline" {
   if (decision === "allow_always") {
@@ -113,67 +111,59 @@ function escapeTomlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function buildCodexCustomProviderHome(params: {
+function buildCodexCustomProviderArgs(params: {
   baseUrl: string;
   model: string;
   apiKey?: string;
-}): {
-  homePath: string;
-  env: NodeJS.ProcessEnv;
-} {
+}): string[] {
   const normalizedBaseUrl = params.baseUrl.trim().replace(/\/+$/, "");
-  const providerHash = createHash("sha256")
-    .update(normalizedBaseUrl)
-    .update("\n")
-    .update(params.model.trim())
-    .digest("hex")
-    .slice(0, 16);
-  const homePath = join(tmpdir(), "codesymphony-codex-providers", providerHash);
-  mkdirSync(homePath, { recursive: true });
-
-  const configLines = [
-    `model = ${escapeTomlString(params.model.trim())}`,
-    `model_provider = "${CODEX_CUSTOM_PROVIDER_ID}"`,
-    "",
-    `[model_providers.${CODEX_CUSTOM_PROVIDER_ID}]`,
-    `base_url = ${escapeTomlString(normalizedBaseUrl)}`,
-    'wire_api = "responses"',
-    ...(params.apiKey?.trim()
-      ? [`env_key = "${CODEX_CUSTOM_PROVIDER_API_KEY_ENV}"`]
-      : []),
+  const args = [
+    "-c",
+    `model=${escapeTomlString(params.model.trim())}`,
+    "-c",
+    `model_provider=${escapeTomlString(CODEX_CUSTOM_PROVIDER_ID)}`,
+    "-c",
+    `model_providers.${CODEX_CUSTOM_PROVIDER_ID}.base_url=${escapeTomlString(normalizedBaseUrl)}`,
+    "-c",
+    `model_providers.${CODEX_CUSTOM_PROVIDER_ID}.wire_api=${escapeTomlString("responses")}`,
   ];
 
-  writeFileSync(join(homePath, "config.toml"), `${configLines.join("\n")}\n`, "utf8");
+  if (params.apiKey?.trim()) {
+    args.push(
+      "-c",
+      `model_providers.${CODEX_CUSTOM_PROVIDER_ID}.env_key=${escapeTomlString(CODEX_CUSTOM_PROVIDER_API_KEY_ENV)}`,
+    );
+  }
 
-  return {
-    homePath,
-    env: {
-      CODEX_HOME: homePath,
-      ...(params.apiKey?.trim()
-        ? { [CODEX_CUSTOM_PROVIDER_API_KEY_ENV]: params.apiKey.trim() }
-        : {}),
-    },
-  };
+  return args;
 }
 
-function buildCodexRuntimeEnv(params: {
+function buildCodexRuntimeLaunchConfig(params: {
   model: string;
   providerApiKey?: string;
   providerBaseUrl?: string;
-}): NodeJS.ProcessEnv {
+}): {
+  args: string[];
+  env: NodeJS.ProcessEnv;
+} {
   const env: NodeJS.ProcessEnv = { ...process.env };
   const normalizedBaseUrl = params.providerBaseUrl?.trim();
   const normalizedApiKey = params.providerApiKey?.trim();
 
   if (normalizedBaseUrl) {
-    const customProvider = buildCodexCustomProviderHome({
-      baseUrl: normalizedBaseUrl,
-      model: params.model,
-      ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
-    });
     return {
-      ...env,
-      ...customProvider.env,
+      args: [
+        "app-server",
+        ...buildCodexCustomProviderArgs({
+          baseUrl: normalizedBaseUrl,
+          model: params.model,
+          ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
+        }),
+      ],
+      env: {
+        ...env,
+        ...(normalizedApiKey ? { [CODEX_CUSTOM_PROVIDER_API_KEY_ENV]: normalizedApiKey } : {}),
+      },
     };
   }
 
@@ -181,7 +171,186 @@ function buildCodexRuntimeEnv(params: {
     env.OPENAI_API_KEY = normalizedApiKey;
   }
 
-  return env;
+  return {
+    args: ["app-server"],
+    env,
+  };
+}
+
+function toSlashCommandsFromSkillsResponse(response: unknown): SlashCommand[] {
+  const entries = asArray(asObject(response)?.data);
+  const deduped = new Map<string, SlashCommand>();
+
+  for (const rawEntry of entries) {
+    const skills = asArray(asObject(rawEntry)?.skills);
+    for (const rawSkill of skills) {
+      const skill = asObject(rawSkill);
+      if (!skill || skill.enabled === false) {
+        continue;
+      }
+
+      const name = asString(skill.name)?.trim();
+      if (!name) {
+        continue;
+      }
+
+      const interfaceObject = asObject(skill.interface);
+      const description = (
+        asString(interfaceObject?.shortDescription)
+        ?? asString(skill.shortDescription)
+        ?? asString(skill.description)
+        ?? ""
+      ).trim();
+
+      deduped.set(name.toLowerCase(), {
+        name,
+        description,
+        argumentHint: "",
+      });
+    }
+  }
+
+  return Array.from(deduped.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export async function listCodexSlashCommands(params: {
+  cwd: string;
+  model?: string;
+  providerApiKey?: string;
+  providerBaseUrl?: string;
+}): Promise<SlashCommand[]> {
+  const resolvedModel = params.model?.trim() || DEFAULT_CHAT_MODEL_BY_AGENT.codex;
+  const { args, env } = buildCodexRuntimeLaunchConfig({
+    model: resolvedModel,
+    providerApiKey: params.providerApiKey,
+    providerBaseUrl: params.providerBaseUrl,
+  });
+  const child = spawn(CODEX_BINARY, args, {
+    cwd: params.cwd,
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+    shell: process.platform === "win32",
+  });
+  const output = readline.createInterface({ input: child.stdout });
+  const pending = new Map<string, PendingRequest>();
+  let finished = false;
+
+  const finish = (error?: Error) => {
+    if (finished) {
+      return;
+    }
+    finished = true;
+
+    for (const entry of pending.values()) {
+      clearTimeout(entry.timeout);
+      if (error) {
+        entry.reject(error);
+      }
+    }
+    pending.clear();
+
+    output.removeAllListeners();
+    output.close();
+    child.removeAllListeners();
+    child.stderr.removeAllListeners();
+
+    if (!child.killed) {
+      killChildProcess(child);
+    }
+  };
+
+  const writeMessage = (message: unknown) => {
+    if (!child.stdin.writable) {
+      throw new Error("Cannot write to codex app-server stdin.");
+    }
+
+    child.stdin.write(`${JSON.stringify(message)}\n`);
+  };
+
+  const sendRequest = async <TResponse>(method: string, requestParams: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<TResponse> => {
+    const id = randomUUID();
+    const result = await new Promise<unknown>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`Timed out waiting for ${method}`));
+      }, timeoutMs);
+
+      pending.set(id, {
+        method,
+        timeout,
+        resolve,
+        reject,
+      });
+
+      writeMessage({
+        id,
+        method,
+        params: requestParams,
+      });
+    });
+
+    return result as TResponse;
+  };
+
+  try {
+    output.on("line", (line) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        return;
+      }
+
+      if (!isResponse(parsed)) {
+        return;
+      }
+
+      const entry = pending.get(String(parsed.id));
+      if (!entry) {
+        return;
+      }
+
+      clearTimeout(entry.timeout);
+      pending.delete(String(parsed.id));
+      if (parsed.error?.message) {
+        entry.reject(new Error(parsed.error.message));
+        return;
+      }
+      entry.resolve(parsed.result);
+    });
+
+    child.on("error", (error) => {
+      finish(error);
+    });
+
+    child.on("exit", (code, signal) => {
+      if (finished) {
+        return;
+      }
+      finish(new Error(`codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"})`));
+    });
+
+    await sendRequest("initialize", {
+      clientInfo: {
+        name: "codesymphony-runtime",
+        title: "CodeSymphony Runtime",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+      },
+    });
+    writeMessage(CODEX_APP_SERVER_INITIALIZED_MESSAGE);
+
+    const response = await sendRequest("skills/list", {
+      cwds: [params.cwd],
+      forceReload: true,
+    });
+
+    return toSlashCommandsFromSkillsResponse(response);
+  } finally {
+    finish();
+  }
 }
 
 function createAbortError(): Error {
@@ -306,12 +475,12 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     permissionMode,
     threadPermissionMode,
   });
-  const runtimeEnv = buildCodexRuntimeEnv({
+  const { args: runtimeArgs, env: runtimeEnv } = buildCodexRuntimeLaunchConfig({
     model: resolvedModel,
     providerApiKey,
     providerBaseUrl,
   });
-  const child = spawn(CODEX_BINARY, ["app-server"], {
+  const child = spawn(CODEX_BINARY, runtimeArgs, {
     cwd,
     env: runtimeEnv,
     stdio: ["pipe", "pipe", "pipe"],
@@ -886,7 +1055,17 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         experimentalApi: true,
       },
     });
-    writeMessage({ method: "initialized" });
+    writeMessage(CODEX_APP_SERVER_INITIALIZED_MESSAGE);
+
+    try {
+      await sendRequest("skills/list", {
+        cwds: [cwd],
+        forceReload: true,
+      });
+    } catch {
+      // Skill refresh is best-effort. Turns can still proceed when the runtime
+      // cannot enumerate skills up front.
+    }
 
     const threadParams = {
       model: resolvedModel,
