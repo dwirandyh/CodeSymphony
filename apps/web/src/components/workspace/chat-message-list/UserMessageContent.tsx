@@ -164,12 +164,12 @@ export const UserMessageContent = memo(function UserMessageContent({ content, at
 
   return (
     <div className="space-y-2">
-      {textContent}
       <div className="space-y-1.5">
         {blockAttachments.map((att) => (
           <AttachmentBlock key={att.id} attachment={att} />
         ))}
       </div>
+      {textContent}
     </div>
   );
 });

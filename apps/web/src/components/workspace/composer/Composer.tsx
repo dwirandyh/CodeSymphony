@@ -29,7 +29,6 @@ import {
 } from "@codesymphony/shared-types";
 import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../ui/dialog";
-import { serializeMention } from "../../../lib/mentions";
 import type { PendingAttachment } from "../../../lib/attachments";
 import {
   generateAttachmentId,
@@ -38,6 +37,7 @@ import {
 import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
 import { createAttachmentChipElement } from "./composerChipUtils";
+import { getSerializedTextFromEditor } from "./composerEditorUtils";
 import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
 import { useComposerSlashCommand } from "./useComposerSlashCommand";
@@ -534,6 +534,7 @@ function ComposerContent({
     fileInputRef,
     isDragOver,
     handleFileInputChange,
+    handleDragEnter,
     handleDragOver,
     handleDragLeave,
     handleDrop,
@@ -689,25 +690,7 @@ function ComposerContent({
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
     if (!editor) return draftText;
-
-    const parts: string[] = [];
-    for (const node of editor.childNodes) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        parts.push(node.textContent ?? "");
-      } else if (node instanceof HTMLElement) {
-        if (node.dataset.attachmentId) {
-          parts.push(`{{attachment:${node.dataset.attachmentId}}}`);
-        } else if (node.dataset.mentionPath) {
-          const type = node.dataset.mentionType === "directory" ? "directory" : "file";
-          parts.push(serializeMention(node.dataset.mentionPath, type));
-        } else if (node.tagName === "BR") {
-          parts.push("\n");
-        } else {
-          parts.push(node.textContent ?? "");
-        }
-      }
-    }
-    return parts.join("").replace(/\u00A0/g, " ").trim();
+    return getSerializedTextFromEditor(editor).replace(/\u00A0/g, " ").trim();
   }, [draftText]);
 
   const resetDraft = useCallback(() => {
@@ -1175,7 +1158,7 @@ function ComposerContent({
             isDragOver ? "border-primary/60 bg-primary/5" : "border-input/50"
           }`}
           onDragOver={handleDragOver}
-          onDragEnter={handleDragOver}
+          onDragEnter={handleDragEnter}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >

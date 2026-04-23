@@ -48,6 +48,35 @@ export function useComposerAttachments({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const dragDepthRef = useRef(0);
+
+  const hasDraggedFiles = useCallback((dataTransfer: DataTransfer | null): boolean => {
+    if (!dataTransfer) {
+      return false;
+    }
+
+    const types = Array.from(dataTransfer.types ?? []);
+    if (types.includes("Files")) {
+      return true;
+    }
+
+    return Array.from(dataTransfer.items ?? []).some((item) => item.kind === "file");
+  }, []);
+
+  const extractDraggedFiles = useCallback((dataTransfer: DataTransfer | null): File[] => {
+    if (!dataTransfer) {
+      return [];
+    }
+
+    const filesFromItems = Array.from(dataTransfer.items ?? [])
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file instanceof File);
+    if (filesFromItems.length > 0) {
+      return filesFromItems;
+    }
+
+    return Array.from(dataTransfer.files ?? []);
+  }, []);
 
   const appendBrowserFiles = useCallback(
     async (files: FileList | File[], source: PendingAttachment["source"]) => {
@@ -100,30 +129,63 @@ export function useComposerAttachments({
     [appendBrowserFiles, startAttachmentRead, finishAttachmentRead],
   );
 
-  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+  const handleDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) {
+      return;
+    }
+
     event.preventDefault();
     event.stopPropagation();
+    dragDepthRef.current += 1;
     setIsDragOver(true);
-  }, []);
+  }, [hasDraggedFiles]);
+
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragOver(true);
+  }, [hasDraggedFiles]);
 
   const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) {
+      return;
+    }
+
     event.preventDefault();
     event.stopPropagation();
-    setIsDragOver(false);
-  }, []);
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragOver(false);
+    }
+  }, [hasDraggedFiles]);
 
   const handleDrop = useCallback(
     (event: React.DragEvent<HTMLDivElement>) => {
+      if (!hasDraggedFiles(event.dataTransfer)) {
+        return;
+      }
+
       event.preventDefault();
       event.stopPropagation();
+      dragDepthRef.current = 0;
       setIsDragOver(false);
 
       if (isTauriDesktop()) {
         return;
       }
 
-      const files = event.dataTransfer.files;
-      if (!files || files.length === 0) return;
+      const files = extractDraggedFiles(event.dataTransfer);
+      if (files.length === 0) return;
 
       startAttachmentRead();
       void (async () => {
@@ -134,7 +196,7 @@ export function useComposerAttachments({
         }
       })();
     },
-    [appendBrowserFiles, startAttachmentRead, finishAttachmentRead],
+    [appendBrowserFiles, extractDraggedFiles, finishAttachmentRead, hasDraggedFiles, startAttachmentRead],
   );
 
   const removeAttachment = useCallback(
@@ -192,6 +254,7 @@ export function useComposerAttachments({
             return;
           }
 
+          dragDepthRef.current = 0;
           setIsDragOver(false);
 
           if (payload.type !== "drop") {
@@ -234,6 +297,7 @@ export function useComposerAttachments({
     fileInputRef,
     isDragOver,
     handleFileInputChange,
+    handleDragEnter,
     handleDragOver,
     handleDragLeave,
     handleDrop,

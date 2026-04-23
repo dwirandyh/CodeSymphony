@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { Composer } from "./composer";
-import { getPlainTextFromEditor } from "./composer/composerEditorUtils";
+import { getPlainTextFromEditor, getSerializedTextFromEditor } from "./composer/composerEditorUtils";
 
 const tauriDragDropState = vi.hoisted(() => ({
   handler: null as null | ((event: { payload: { type: string; paths?: string[] } }) => void | Promise<void>),
@@ -198,6 +198,18 @@ describe("Composer", () => {
       configurable: true,
     });
     editor.dispatchEvent(pasteEvent);
+  }
+
+  function buildFileDragData(file: File) {
+    return {
+      types: ["Files"],
+      files: [file],
+      items: [{
+        kind: "file",
+        getAsFile: () => file,
+      }],
+      dropEffect: "none",
+    };
   }
 
   it("renders the editor", () => {
@@ -912,6 +924,46 @@ describe("Composer", () => {
     expect(container.querySelectorAll("button[data-index]").length).toBe(0);
   });
 
+  it("preserves newline characters from block nodes in editor serialization", () => {
+    renderComposer();
+    const editor = getEditor();
+
+    act(() => {
+      editor.innerHTML = "<div>first line</div><div>second line</div><div>third line</div>";
+    });
+
+    expect(getPlainTextFromEditor(editor)).toBe("first line\nsecond line\nthird line\n");
+    expect(getSerializedTextFromEditor(editor)).toBe("first line\nsecond line\nthird line\n");
+  });
+
+  it("submits newline-separated content created by contenteditable block nodes", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage });
+
+    const editor = getEditor();
+
+    act(() => {
+      editor.innerHTML = "<div>first line</div><div>second line</div><div>third line</div>";
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+    expect(sendButton?.disabled).toBe(false);
+
+    await act(async () => {
+      sendButton?.click();
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    const [payload] = onSubmitMessage.mock.calls[0] as [{
+      content: string;
+      mode: string;
+      attachments: Array<{ source: string; content: string }>;
+    }];
+    expect(payload.content).toBe("first line\nsecond line\nthird line");
+  });
+
   it("submits pasted attachment from local composer state", async () => {
     const onSubmitMessage = vi.fn().mockResolvedValue(true);
     renderComposer({ onSubmitMessage });
@@ -968,6 +1020,50 @@ describe("Composer", () => {
 
     expect(api.readLocalAttachments).toHaveBeenCalledWith(["/tmp/dropped.txt"]);
     expect(container.textContent).toContain("dropped.txt");
+  });
+
+  it("handles browser drag/drop image attachments in the composer", async () => {
+    const originalCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = vi.fn(() => "blob:dropped-image");
+
+    try {
+      renderComposer();
+      const editor = getEditor();
+      const imageFile = new File([new Uint8Array([137, 80, 78, 71])], "dropped.png", { type: "image/png" });
+      const dragData = buildFileDragData(imageFile);
+
+      const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+      Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
+
+      act(() => {
+        editor.dispatchEvent(dragEnterEvent);
+      });
+
+      expect(container.textContent).toContain("Drop files here");
+
+      const dragLeaveEvent = new Event("dragleave", { bubbles: true, cancelable: true });
+      Object.defineProperty(dragLeaveEvent, "dataTransfer", { value: dragData, configurable: true });
+      Object.defineProperty(dragLeaveEvent, "relatedTarget", { value: editor, configurable: true });
+
+      act(() => {
+        editor.dispatchEvent(dragLeaveEvent);
+      });
+
+      expect(container.textContent).toContain("Drop files here");
+
+      const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
+
+      await act(async () => {
+        editor.dispatchEvent(dropEvent);
+      });
+      await flushMicrotasks();
+
+      expect(container.textContent).not.toContain("Drop files here");
+      expect(container.textContent).toContain("dropped.png");
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL;
+    }
   });
 
   it("opens pasted text chip details from the composer before sending", async () => {

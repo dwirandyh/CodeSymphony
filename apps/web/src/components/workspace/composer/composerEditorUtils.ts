@@ -1,4 +1,5 @@
 import type { FileEntry } from "@codesymphony/shared-types";
+import { serializeMention } from "../../../lib/mentions";
 
 type TriggerState = {
   active: boolean;
@@ -23,26 +24,73 @@ export function fileName(filePath: string): string {
   return filePath.split("/").pop() ?? filePath;
 }
 
-export function getPlainTextFromEditor(el: HTMLElement): string {
-  let text = "";
-  for (const node of el.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      text += node.textContent ?? "";
-    } else if (node instanceof HTMLElement) {
-      if (node.dataset.attachmentId) {
-        text += `{{attachment:${node.dataset.attachmentId}}}`;
-      } else if (node.dataset.mentionPath) {
-        text += `@${node.dataset.mentionPath}`;
-      } else if (node.dataset.slashCommand) {
-        text += `/${node.dataset.slashCommand}`;
-      } else if (node.tagName === "BR") {
-        text += "\n";
-      } else {
-        text += node.textContent ?? "";
-      }
-    }
+const BLOCK_TAG_NAMES = new Set([
+  "BLOCKQUOTE",
+  "DIV",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "LI",
+  "OL",
+  "P",
+  "PRE",
+  "UL",
+]);
+
+function isBlockElement(node: HTMLElement): boolean {
+  return BLOCK_TAG_NAMES.has(node.tagName);
+}
+
+function getTextFromNode(node: Node, options?: { serializeMentions?: boolean }): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? "";
   }
-  return text;
+
+  if (!(node instanceof HTMLElement)) {
+    return node.textContent ?? "";
+  }
+
+  if (node.dataset.attachmentId) {
+    return `{{attachment:${node.dataset.attachmentId}}}`;
+  }
+
+  if (node.dataset.mentionPath) {
+    if (options?.serializeMentions) {
+      const type = node.dataset.mentionType === "directory" ? "directory" : "file";
+      return serializeMention(node.dataset.mentionPath, type);
+    }
+    return `@${node.dataset.mentionPath}`;
+  }
+
+  if (node.dataset.slashCommand) {
+    return `/${node.dataset.slashCommand}`;
+  }
+
+  if (node.tagName === "BR") {
+    return "\n";
+  }
+
+  const text = Array.from(node.childNodes).map((child) => getTextFromNode(child, options)).join("");
+  if (!isBlockElement(node)) {
+    return text;
+  }
+
+  if (text.endsWith("\n")) {
+    return text;
+  }
+
+  return `${text}\n`;
+}
+
+export function getPlainTextFromEditor(el: HTMLElement): string {
+  return Array.from(el.childNodes).map((node) => getTextFromNode(node)).join("");
+}
+
+export function getSerializedTextFromEditor(el: HTMLElement): string {
+  return Array.from(el.childNodes).map((node) => getTextFromNode(node, { serializeMentions: true })).join("");
 }
 
 export function getMentionedFilesFromEditor(el: HTMLElement): MentionedFile[] {
