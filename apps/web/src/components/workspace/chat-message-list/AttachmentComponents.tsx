@@ -119,20 +119,40 @@ const AttachmentPopoverContent = memo(function AttachmentPopoverContent({ attach
 
 export const AttachmentBlock = memo(function AttachmentBlock({ attachment }: { attachment: ChatAttachment }) {
   const isImage = attachment.mimeType.startsWith("image/");
+  const imageSource = useMemo(() => getImageSource(attachment), [attachment]);
   const button = (
     <button
       type="button"
-      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-secondary/40"
+      className={isImage
+        ? "flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs transition-colors hover:bg-secondary/40"
+        : "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-secondary/40"}
     >
-      {isImage ? (
-        <Paperclip className="h-3 w-3 shrink-0 text-purple-400" />
+      {isImage ? imageSource ? (
+        <img
+          src={imageSource}
+          alt={attachment.filename}
+          className="h-10 w-10 shrink-0 rounded object-cover"
+        />
+      ) : (
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-secondary/60">
+          <Paperclip className="h-3.5 w-3.5 text-purple-400" />
+        </div>
       ) : (
         <FileText className="h-3 w-3 shrink-0 text-muted-foreground" />
       )}
-      <span className="truncate font-medium">{attachment.filename}</span>
-      <span className="shrink-0 rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-        {formatFileSize(attachment.sizeBytes)}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium">{attachment.filename}</span>
+        {isImage ? (
+          <span className="block text-[10px] text-muted-foreground">
+            {formatFileSize(attachment.sizeBytes)}
+          </span>
+        ) : null}
       </span>
+      {!isImage ? (
+        <span className="shrink-0 rounded bg-secondary/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {formatFileSize(attachment.sizeBytes)}
+        </span>
+      ) : null}
     </button>
   );
 
