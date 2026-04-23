@@ -534,7 +534,10 @@ describe("Composer", () => {
 
     expect(container.querySelector('svg[data-agent-icon="claude"]')).not.toBeNull();
     expect(container.querySelector('svg[data-agent-icon="codex"]')).not.toBeNull();
-    expect(container.querySelector('svg[data-agent-icon="opencode"]')).not.toBeNull();
+    const opencodeIcon = container.querySelector('svg[data-agent-icon="opencode"]');
+    expect(opencodeIcon).not.toBeNull();
+    expect(opencodeIcon?.querySelectorAll("path")).toHaveLength(1);
+    expect(opencodeIcon?.querySelector("path")?.getAttribute("d")).toBe("M16 6H8v12h8V6zm4 16H4V2h16v20z");
     expect(container.querySelector('[data-agent-model-panel="overlay"]')).not.toBeNull();
     expect(container.querySelector('[data-agent-model-panel="stacked"]')).toBeNull();
     expect(container.textContent).not.toContain("CLI Agent");

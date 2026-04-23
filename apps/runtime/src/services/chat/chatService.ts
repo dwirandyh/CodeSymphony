@@ -88,6 +88,7 @@ import {
 import { recoverPendingPlan } from "./chatPlanService.js";
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
 import { buildCodexCliProviderHint } from "../../codex/config.js";
+import { shouldAutoApproveWorkspaceEdit } from "./workspaceEditPermissions.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
@@ -913,6 +914,21 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onPermissionRequest: async (payload) => {
+          if (shouldAutoApproveWorkspaceEdit({
+            workspaceRoot: thread.worktree.path,
+            toolName: payload.toolName,
+            toolInput: payload.toolInput,
+            blockedPath: payload.blockedPath,
+          })) {
+            deps.logService?.log("debug", "chat.permission", "Auto-approved in-workspace edit request", {
+              threadId,
+              requestId: payload.requestId,
+              toolName: payload.toolName,
+              blockedPath: payload.blockedPath,
+            });
+            return { decision: "allow" };
+          }
+
           markThreadWaiting(threadId, "waiting_permission");
           const pendingMap = ensureThreadPermissionMap(pendingPermissionsByThread, threadId);
           const existing = pendingMap.get(payload.requestId);

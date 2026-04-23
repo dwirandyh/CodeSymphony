@@ -22,6 +22,7 @@ const DESKTOP_PROD_RUNTIME_PORT: u16 = 4322;
 const LOCALHOST_RUNTIME_HOST: &str = "127.0.0.1";
 const LAN_RUNTIME_HOST: &str = "0.0.0.0";
 const COMMON_RUNTIME_EXECUTABLE_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
+const USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES: [&str; 2] = [".opencode/bin", ".local/bin"];
 
 fn desktop_runtime_host(is_dev: bool) -> &'static str {
     if is_dev {
@@ -166,17 +167,35 @@ fn desktop_runtime_init_script(port: u16) -> String {
     )
 }
 
+fn runtime_executable_dirs(home_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    for candidate in COMMON_RUNTIME_EXECUTABLE_DIRS {
+        let candidate_path = PathBuf::from(candidate);
+        if candidate_path.is_dir() && !dirs.iter().any(|existing| existing == &candidate_path) {
+            dirs.push(candidate_path);
+        }
+    }
+
+    if let Some(home_dir) = home_dir {
+        for suffix in USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES {
+            let candidate_path = home_dir.join(suffix);
+            if candidate_path.is_dir() && !dirs.iter().any(|existing| existing == &candidate_path) {
+                dirs.push(candidate_path);
+            }
+        }
+    }
+
+    dirs
+}
+
 fn build_runtime_path_env() -> Option<OsString> {
     let mut paths = std::env::var_os("PATH")
         .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
         .unwrap_or_default();
+    let home_dir = std::env::var_os("HOME").map(PathBuf::from);
 
-    for candidate in COMMON_RUNTIME_EXECUTABLE_DIRS {
-        let candidate_path = PathBuf::from(candidate);
-        if !candidate_path.is_dir() {
-            continue;
-        }
-
+    for candidate_path in runtime_executable_dirs(home_dir.as_deref()) {
         if paths.iter().any(|existing| existing == &candidate_path) {
             continue;
         }
@@ -274,8 +293,10 @@ fn spawn_runtime_dev(port: u16) -> Option<Child> {
 }
 
 fn resolve_common_binary(binary_name: &str) -> Option<PathBuf> {
-    for candidate_dir in COMMON_RUNTIME_EXECUTABLE_DIRS {
-        let path = Path::new(candidate_dir).join(binary_name);
+    let home_dir = std::env::var_os("HOME").map(PathBuf::from);
+
+    for candidate_dir in runtime_executable_dirs(home_dir.as_deref()) {
+        let path = candidate_dir.join(binary_name);
         if path.is_file() {
             return Some(path);
         }
@@ -654,8 +675,9 @@ fn main() {
 mod tests {
     use super::{
         build_runtime_path_env, desktop_runtime_host, resolve_codex_binary,
-        runtime_stderr_log_path, runtime_stdout_log_path,
+        runtime_executable_dirs, runtime_stderr_log_path, runtime_stdout_log_path,
     };
+    use std::fs;
     use std::path::Path;
 
     #[test]
@@ -686,6 +708,27 @@ mod tests {
         let path = build_runtime_path_env().expect("runtime PATH should be buildable");
         let path_text = path.to_string_lossy();
         assert!(path_text.contains("/opt/homebrew/bin") || path_text.contains("/usr/local/bin"));
+    }
+
+    #[test]
+    fn runtime_executable_dirs_include_user_opencode_bin_when_present() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "codesymphony-tauri-runtime-dirs-{}",
+            std::process::id()
+        ));
+        let opencode_bin_dir = temp_root.join(".opencode").join("bin");
+
+        if temp_root.exists() {
+            let _ = fs::remove_dir_all(&temp_root);
+        }
+
+        fs::create_dir_all(&opencode_bin_dir).expect("temp opencode bin dir should be created");
+
+        let dirs = runtime_executable_dirs(Some(temp_root.as_path()));
+
+        assert!(dirs.contains(&opencode_bin_dir));
+
+        let _ = fs::remove_dir_all(&temp_root);
     }
 
     #[test]

@@ -207,6 +207,56 @@ describe("chatService permission flow", () => {
     expect(claudeRunner).toHaveBeenCalled();
   });
 
+  it("auto-approves in-worktree edit permission requests without user prompt", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Workspace edit");
+        return {
+          output: "Workspace edit",
+          sessionId: null,
+        };
+      }
+
+      const decision = await onPermissionRequest({
+        requestId: "perm-worktree-edit",
+        toolName: "Edit",
+        toolInput: {
+          file_path: "src/main.ts",
+          old_string: "before",
+          new_string: "after",
+        },
+        blockedPath: "src/main.ts",
+        decisionReason: "Path requires approval",
+        suggestions: null,
+        subagentOwnerToolUseId: null,
+        launcherToolUseId: null,
+      });
+      expect(decision).toEqual({ decision: "allow" });
+
+      await onText("Edited inside workspace.");
+      return {
+        output: "Edited inside workspace.",
+        sessionId: "session-workspace-edit",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "edit src/main.ts",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(events.some((event) => event.type === "permission.requested")).toBe(false);
+    expect(events.some((event) => event.type === "permission.resolved")).toBe(false);
+  });
+
   it("auto renames default thread title after first assistant reply via metadata event", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {

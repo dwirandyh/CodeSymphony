@@ -984,7 +984,7 @@ describe("tool instrumentation", () => {
           new_string: "b",
         }, {
           toolUseID: "tool-edit-auto",
-          blockedPath: "/outside-workspace/src/main.ts",
+          blockedPath: `${process.cwd()}/src/main.ts`,
           decisionReason: "Path requires approval",
           suggestions: [{ type: "addRules" }],
         });

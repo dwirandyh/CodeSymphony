@@ -87,13 +87,13 @@ export type CliAgent = z.infer<typeof CliAgentSchema>;
 export const BUILTIN_CHAT_MODELS_BY_AGENT = {
   claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
   codex: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"],
-  opencode: ["openai/gpt-5", "anthropic/claude-sonnet-4-5", "opencode/gpt-5.1-codex"],
+  opencode: ["opencode/minimax-m2.5-free", "opencode/ling-2.6-flash-free", "opencode/nemotron-3-super-free"],
 } as const satisfies Record<CliAgent, readonly string[]>;
 
 export const DEFAULT_CHAT_MODEL_BY_AGENT = {
   claude: "claude-sonnet-4-6",
   codex: "gpt-5.4",
-  opencode: "openai/gpt-5",
+  opencode: "opencode/minimax-m2.5-free",
 } as const satisfies Record<CliAgent, string>;
 
 export const ChatThreadSchema = z.object({
