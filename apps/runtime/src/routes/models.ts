@@ -2,10 +2,12 @@ import type { FastifyInstance } from "fastify";
 import {
   type CliAgent,
   CreateModelProviderInputSchema,
+  CursorModelCatalogSchema,
   OpencodeModelCatalogSchema,
   TestModelProviderInputSchema,
   UpdateModelProviderInputSchema,
 } from "@codesymphony/shared-types";
+import * as cursorSessionRunner from "../cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../opencode/modelCatalog.js";
 
 function normalizeProviderTestUrl(baseUrl: string, agent: CliAgent): string {
@@ -27,6 +29,21 @@ function normalizeProviderTestUrl(baseUrl: string, agent: CliAgent): string {
 }
 
 export async function registerModelRoutes(app: FastifyInstance) {
+  app.get("/cursor/models", async (_request, reply) => {
+    try {
+      const payload = CursorModelCatalogSchema.parse({
+        models: await cursorSessionRunner.listCursorModels({
+          cwd: process.cwd(),
+        }),
+        fetchedAt: new Date().toISOString(),
+      });
+      return { data: payload };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list Cursor models";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
   app.get("/opencode/models", async (_request, reply) => {
     try {
       const payload = OpencodeModelCatalogSchema.parse({
@@ -45,17 +62,27 @@ export async function registerModelRoutes(app: FastifyInstance) {
     return { data: providers };
   });
 
-  app.post("/model-providers", async (request) => {
-    const input = CreateModelProviderInputSchema.parse(request.body);
-    const provider = await app.modelProviderService.createProvider(input);
-    return { data: provider };
+  app.post("/model-providers", async (request, reply) => {
+    try {
+      const input = CreateModelProviderInputSchema.parse(request.body);
+      const provider = await app.modelProviderService.createProvider(input);
+      return { data: provider };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to create model provider";
+      return reply.code(400).send({ error: message });
+    }
   });
 
-  app.patch("/model-providers/:id", async (request) => {
-    const { id } = request.params as { id: string };
-    const input = UpdateModelProviderInputSchema.parse(request.body);
-    const provider = await app.modelProviderService.updateProvider(id, input);
-    return { data: provider };
+  app.patch("/model-providers/:id", async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const input = UpdateModelProviderInputSchema.parse(request.body);
+      const provider = await app.modelProviderService.updateProvider(id, input);
+      return { data: provider };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to update model provider";
+      return reply.code(400).send({ error: message });
+    }
   });
 
   app.delete("/model-providers/:id", async (request, reply) => {
@@ -64,10 +91,15 @@ export async function registerModelRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
-  app.post("/model-providers/:id/activate", async (request) => {
-    const { id } = request.params as { id: string };
-    const provider = await app.modelProviderService.activateProvider(id);
-    return { data: provider };
+  app.post("/model-providers/:id/activate", async (request, reply) => {
+    try {
+      const { id } = request.params as { id: string };
+      const provider = await app.modelProviderService.activateProvider(id);
+      return { data: provider };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to activate model provider";
+      return reply.code(400).send({ error: message });
+    }
   });
 
   app.post("/model-providers/deactivate", async (_request, reply) => {
@@ -75,11 +107,15 @@ export async function registerModelRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
-  app.post("/model-providers/test", async (request) => {
+  app.post("/model-providers/test", async (request, reply) => {
     const input = TestModelProviderInputSchema.parse(request.body);
     const { agent, baseUrl, apiKey, modelId } = input;
 
     try {
+      if (agent === "cursor") {
+        return reply.code(400).send({ error: "Cursor does not support custom model providers" });
+      }
+
       const url = normalizeProviderTestUrl(baseUrl, agent);
       const response = await fetch(url, {
         method: "POST",

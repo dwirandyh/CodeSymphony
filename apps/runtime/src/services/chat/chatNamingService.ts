@@ -55,7 +55,7 @@ function normalizeGeneratedThreadTitle(raw: string): string | null {
 }
 
 function resolveAgent(agent: CliAgent | undefined): CliAgent {
-  if (agent === "codex" || agent === "opencode") {
+  if (agent === "codex" || agent === "cursor" || agent === "opencode") {
     return agent;
   }
   return "claude";
@@ -69,6 +69,9 @@ function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
   if (agent === "codex") {
     return deps.codexRunner ?? deps.claudeRunner;
   }
+  if (agent === "cursor") {
+    return deps.cursorRunner ?? deps.claudeRunner;
+  }
   if (agent === "opencode") {
     return deps.opencodeRunner ?? deps.claudeRunner;
   }
@@ -76,7 +79,7 @@ function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
 }
 
 function resolveNamingPermissionMode(agent: CliAgent): "default" | "plan" {
-  return agent === "opencode" ? "default" : "plan";
+  return agent === "cursor" || agent === "opencode" ? "default" : "plan";
 }
 
 async function buildThreadTitleWithAi(

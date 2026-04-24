@@ -127,7 +127,11 @@ export function normalizePlanCreatedEvent(event: ChatEvent, orderedEvents: ChatE
 
 export function isPlanFilePath(filePath: string): boolean {
   if (!filePath.endsWith(".md")) return false;
-  return filePath.includes(".claude/plans/") || filePath.includes("codesymphony-claude-provider/plans/");
+  return (
+    filePath.includes(".claude/plans/")
+    || filePath.includes(".cursor/plans/")
+    || filePath.includes("codesymphony-claude-provider/plans/")
+  );
 }
 
 export function isPlanModeToolEvent(event: ChatEvent): boolean {

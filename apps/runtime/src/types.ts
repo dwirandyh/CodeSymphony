@@ -257,6 +257,7 @@ export type RuntimeDeps = {
   eventHub: RuntimeEventHub;
   claudeRunner: ClaudeRunner;
   codexRunner?: ChatAgentRunner;
+  cursorRunner?: ChatAgentRunner;
   opencodeRunner?: ChatAgentRunner;
   logService?: {
     log: (

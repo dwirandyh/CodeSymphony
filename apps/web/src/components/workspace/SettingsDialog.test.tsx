@@ -1,5 +1,5 @@
-import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
@@ -34,6 +34,21 @@ vi.mock("../../lib/api", () => ({
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: void | Promise<void> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+
+  if (result && typeof result.then === "function") {
+    return result.then(async () => {
+      await Promise.resolve();
+    });
+  }
+}
 
 beforeEach(() => {
   container = document.createElement("div");
@@ -503,6 +518,76 @@ describe("SettingsDialog", () => {
     expect(document.body.querySelector('input[placeholder="Only for custom OpenCode endpoints"]')).not.toBeNull();
     expect(document.body.textContent).toContain("For built-in OpenCode providers, enter Model ID as provider/model");
     expect(document.body.textContent).toContain("Built-in OpenCode auth and /connect flows still work even if you never add an entry here.");
+  });
+
+  it("does not offer Cursor as a custom provider option and keeps Cursor provider edits non-testable", async () => {
+    const providers = [{
+      id: "provider-cursor-1",
+      agent: "cursor" as const,
+      name: "Cursor Account",
+      modelId: "default[]",
+      baseUrl: null,
+      apiKeyMasked: "",
+      isActive: false,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    }];
+    apiMocks.listModelProviders.mockResolvedValueOnce(providers);
+
+    renderDialog([makeRepo()]);
+    await openModelsTab();
+
+    expect(document.body.textContent).toContain("Cursor Account");
+    expect(document.body.textContent).toContain("Cursor");
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    );
+    if (!addButton) {
+      throw new Error("Add provider button not found");
+    }
+
+    await act(async () => {
+      addButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
+      Array.from(select.options).some((option) => option.value === "opencode"),
+    ) as HTMLSelectElement | undefined;
+    if (!agentSelect) {
+      throw new Error("Agent select not found");
+    }
+
+    expect(Array.from(agentSelect.options).map((option) => option.value)).toEqual(["claude", "codex", "opencode"]);
+
+    const editButton = document.body.querySelector('button[aria-label="Edit Cursor provider Cursor Account (default[])"]') as HTMLButtonElement | null;
+    if (!editButton) {
+      throw new Error("Edit Cursor provider button not found");
+    }
+
+    await act(async () => {
+      editButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(document.body.querySelector('input[placeholder="Cursor built-in models are managed via Cursor account settings"]')).not.toBeNull();
+    expect(document.body.querySelector('input[placeholder="Cursor custom endpoints are not supported"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Cursor models come from the authenticated Cursor account over ACP.");
+
+    const testButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    ) as HTMLButtonElement | undefined;
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Save",
+    ) as HTMLButtonElement | undefined;
+    if (!testButton || !saveButton) {
+      throw new Error("Cursor provider form buttons not found");
+    }
+
+    expect(testButton.disabled).toBe(true);
+    expect(saveButton.disabled).toBe(true);
+    expect(document.body.textContent).toContain("No custom provider rows or endpoint tests are available for Cursor.");
   });
 
   it("passes the selected OpenCode agent when testing a provider", async () => {

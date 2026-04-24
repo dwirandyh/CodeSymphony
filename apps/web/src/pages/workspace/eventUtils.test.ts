@@ -201,6 +201,10 @@ describe("isPlanFilePath", () => {
     expect(isPlanFilePath("/tmp/codesymphony-claude-provider/plans/plan.md")).toBe(true);
   });
 
+  it("returns true for .cursor/plans path", () => {
+    expect(isPlanFilePath("/Users/test/.cursor/plans/ship.plan.md")).toBe(true);
+  });
+
   it("returns false for non-plan paths", () => {
     expect(isPlanFilePath("/project/src/index.md")).toBe(false);
     expect(isPlanFilePath("/project/.claude/plans/plan.ts")).toBe(false);

@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   Clock3,
+  Code2,
   FileText,
   Folder,
   Lightbulb,
@@ -17,6 +18,7 @@ import {
 } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
+  type CursorModelCatalogEntry,
   DEFAULT_CHAT_MODEL_BY_AGENT,
   type ChatMode,
   type ChatThreadPermissionMode,
@@ -63,6 +65,7 @@ type ComposerProps = {
   slashCommands: SlashCommand[];
   slashCommandsLoading: boolean;
   providers: ModelProvider[];
+  cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
   agent?: CliAgent;
   model?: string;
@@ -111,6 +114,7 @@ const PERMISSION_OPTIONS: PermissionOption[] = [
 const AGENT_LABELS: Record<CliAgent, string> = {
   claude: "Claude",
   codex: "Codex",
+  cursor: "Cursor",
   opencode: "OpenCode",
 };
 
@@ -125,6 +129,17 @@ const MODEL_DISPLAY_NAMES_BY_AGENT: Record<CliAgent, Record<string, string>> = {
     "gpt-5.4-mini": "GPT-5.4 Mini",
     "gpt-5.3-codex": "GPT-5.3 Codex",
     "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
+  },
+  cursor: {
+    "default[]": "Auto",
+    "composer-2[fast=true]": "Composer 2",
+    "composer-1.5[]": "Composer 1.5",
+    "gpt-5.4[context=272k,reasoning=medium,fast=false]": "GPT-5.4",
+    "gpt-5.4-mini[reasoning=medium]": "GPT-5.4 Mini",
+    "gpt-5.3-codex[reasoning=medium,fast=false]": "GPT-5.3 Codex",
+    "gpt-5.3-codex-spark[reasoning=medium]": "GPT-5.3 Codex Spark",
+    "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]": "Claude Sonnet 4.6",
+    "claude-opus-4-7[thinking=true,context=200k,effort=high]": "Claude Opus 4.7",
   },
   opencode: {},
 };
@@ -185,7 +200,7 @@ function formatFriendlyModelName(agent: CliAgent, modelId: string): string {
     return exact;
   }
 
-  const normalizedModelId = modelId;
+  const normalizedModelId = modelId.replace(/\[[^\]]*]$/, "");
 
   const tokens = normalizedModelId
     .trim()
@@ -256,6 +271,7 @@ const OpenCodeIcon = (props: SVGProps<SVGSVGElement>) => (
 const AGENT_ICONS = {
   claude: ClaudeAiIcon,
   codex: OpenAiIcon,
+  cursor: Code2,
   opencode: OpenCodeIcon,
 } as const;
 
@@ -320,6 +336,7 @@ function ComposerContent({
   slashCommands,
   slashCommandsLoading,
   providers,
+  cursorModels = [],
   opencodeModels,
   agent: providedAgent,
   model: providedModel,
@@ -448,6 +465,15 @@ function ComposerContent({
           source: "custom" as const,
         })),
     ],
+    cursor: cursorModels.map((entry) => ({
+      id: `cursor:${entry.id}:builtin`,
+      agent: "cursor" as const,
+      model: entry.id,
+      modelProviderId: null,
+      label: entry.name,
+      detail: "Built-in",
+      source: "builtin" as const,
+    })),
     opencode: [
       ...opencodeModels.map((entry) => ({
         id: `opencode:${entry.id}:builtin`,
@@ -470,7 +496,7 @@ function ComposerContent({
           source: "custom" as const,
         })),
     ],
-  }), [opencodeModels, providers]);
+  }), [cursorModels, opencodeModels, providers]);
   const modelPreviewOptions = agentOptions[modelPreviewAgent];
   const currentSelection = useMemo(() => {
     return agentOptions[agent].find((option) => (

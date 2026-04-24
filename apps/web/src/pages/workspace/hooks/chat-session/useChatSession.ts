@@ -145,6 +145,7 @@ function applyThreadAgentSelectionUpdate(
     && current.modelProviderId === (selection.modelProviderId ?? null)
     && current.claudeSessionId === null
     && current.codexSessionId === null
+    && current.cursorSessionId === null
     && current.opencodeSessionId === null
   ) {
     return threads;
@@ -158,6 +159,7 @@ function applyThreadAgentSelectionUpdate(
     modelProviderId: selection.modelProviderId ?? null,
     claudeSessionId: null,
     codexSessionId: null,
+    cursorSessionId: null,
     opencodeSessionId: null,
   };
   return updated;
@@ -386,6 +388,12 @@ export function useChatSession(
   const restoredWaitingThreadIdsRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
   const pendingAgentSelectionUpdatesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const lastThreadSelectionRef = useRef<{
+    worktreeId: string;
+    agent: CliAgent;
+    model: string;
+    modelProviderId: string | null;
+  } | null>(null);
 
   const selectedThreadId = selectedThreadIdOverrideRef.current ?? selectedThreadIdState;
   activeThreadIdRef.current = selectedThreadId;
@@ -470,6 +478,7 @@ export function useChatSession(
         && t.modelProviderId === mergedThreads[i].modelProviderId
         && t.claudeSessionId === mergedThreads[i].claudeSessionId
         && t.codexSessionId === mergedThreads[i].codexSessionId
+        && t.cursorSessionId === mergedThreads[i].cursorSessionId
         && t.opencodeSessionId === mergedThreads[i].opencodeSessionId
         && t.active === mergedThreads[i].active
         && t.updatedAt === mergedThreads[i].updatedAt
@@ -507,12 +516,20 @@ export function useChatSession(
       if (creatingThreadRef.current) return;
       const creationWorktreeId = selectedWorktreeId;
       const creationPermissionMode = pendingComposerPermissionMode;
+      const creationSelection = lastThreadSelectionRef.current?.worktreeId === creationWorktreeId
+        ? lastThreadSelectionRef.current
+        : null;
       pendingAutoCreateWorktreeIds.add(creationWorktreeId);
       creatingThreadRef.current = true;
       void (async () => {
         try {
           const created = await api.createThread(creationWorktreeId, {
             permissionMode: creationPermissionMode,
+            ...(creationSelection ? {
+              agent: creationSelection.agent,
+              model: creationSelection.model,
+              modelProviderId: creationSelection.modelProviderId,
+            } : {}),
           });
           if (!mountedRef.current || prevWorktreeIdRef2.current !== creationWorktreeId) {
             if (prevWorktreeIdRef2.current !== creationWorktreeId) {
@@ -623,9 +640,21 @@ export function useChatSession(
   const selectedThread = selectedThreadId
     ? threadByIdRef.current.get(selectedThreadId) ?? null
     : null;
-  const composerAgent: CliAgent = selectedThread?.agent ?? "claude";
-  const composerModel = selectedThread?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[composerAgent];
-  const composerModelProviderId = selectedThread?.modelProviderId ?? null;
+  if (selectedThread && selectedWorktreeId && selectedThread.worktreeId === selectedWorktreeId) {
+    const selectedThreadAgent = selectedThread.agent ?? "claude";
+    lastThreadSelectionRef.current = {
+      worktreeId: selectedWorktreeId,
+      agent: selectedThreadAgent,
+      model: selectedThread.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[selectedThreadAgent],
+      modelProviderId: selectedThread.modelProviderId ?? null,
+    };
+  }
+  const fallbackThreadSelection = lastThreadSelectionRef.current?.worktreeId === selectedWorktreeId
+    ? lastThreadSelectionRef.current
+    : null;
+  const composerAgent: CliAgent = selectedThread?.agent ?? fallbackThreadSelection?.agent ?? "claude";
+  const composerModel = selectedThread?.model ?? fallbackThreadSelection?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[composerAgent];
+  const composerModelProviderId = selectedThread?.modelProviderId ?? fallbackThreadSelection?.modelProviderId ?? null;
   const composerMode = selectedThreadUiStatus === "review_plan"
     ? "plan"
     : selectedThread?.mode ?? "default";

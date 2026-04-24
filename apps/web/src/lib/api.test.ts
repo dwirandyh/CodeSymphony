@@ -474,6 +474,15 @@ describe("api", () => {
       expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/slash-commands?agent=codex");
     });
 
+    it("gets slash commands for Cursor with an agent-specific query key", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        commands: [{ name: "dogfood", description: "QA a web app", argumentHint: "" }],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      }));
+      await api.getSlashCommands("w1", "cursor");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/slash-commands?agent=cursor");
+    });
+
     it("gets worktree file content", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ path: "src/a.ts", content: "const a = 1;" }));
       await api.getWorktreeFileContent("w1", "src/a.ts");
@@ -527,6 +536,21 @@ describe("api", () => {
   });
 
   describe("model provider operations", () => {
+    it("lists Cursor models", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        models: [{ id: "default[]", name: "Auto" }],
+        fetchedAt: "2026-01-01T00:00:00Z",
+      }));
+      await expect(api.listCursorModels()).resolves.toEqual({
+        models: [{ id: "default[]", name: "Auto" }],
+        fetchedAt: "2026-01-01T00:00:00Z",
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/cursor/models"),
+        expect.objectContaining({ headers: expect.any(Headers) }),
+      );
+    });
+
     it("lists providers", async () => {
       mockFetch.mockReturnValueOnce(mockOk([]));
       await api.listModelProviders();

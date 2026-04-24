@@ -104,6 +104,8 @@ function makeThread(id: string, active = false): ChatThread {
     modelProviderId: null,
     claudeSessionId: null,
     codexSessionId: null,
+    cursorSessionId: null,
+    opencodeSessionId: null,
     active,
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
@@ -420,6 +422,66 @@ describe("useChatSession", () => {
     expect(hookResult.composerModel).toBe("gpt-5.4");
   });
 
+  it("waits for a pending Cursor agent selection update before sending a message", async () => {
+    const selectionDeferred = createDeferred<ChatThread>();
+    vi.mocked(api.updateThreadAgentSelection).mockReturnValue(selectionDeferred.promise);
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "message-cursor",
+      threadId: "thread-a",
+      seq: 1,
+      role: "user",
+      content: "Use Cursor",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:02Z",
+    });
+
+    renderHook("thread-a");
+
+    let selectionPromise: Promise<void> | undefined;
+    let submitPromise: Promise<boolean> | undefined;
+    await act(async () => {
+      selectionPromise = hookResult.setThreadAgentSelection("thread-a", {
+        agent: "cursor",
+        model: "default[]",
+        modelProviderId: null,
+      });
+      submitPromise = hookResult.submitMessage("Use Cursor", "default", []);
+      await Promise.resolve();
+    });
+
+    expect(api.updateThreadAgentSelection).toHaveBeenCalledWith("thread-a", {
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+    });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      selectionDeferred.resolve({
+        ...makeThread("thread-a"),
+        agent: "cursor",
+        model: "default[]",
+        modelProviderId: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(api.sendMessage).toHaveBeenCalledWith("thread-a", {
+      content: "Use Cursor",
+      mode: "default",
+      attachments: [],
+      expectedWorktreeId: "wt-1",
+    });
+
+    await act(async () => {
+      expect(await submitPromise).toBe(true);
+      await selectionPromise;
+    });
+
+    expect(hookResult.composerAgent).toBe("cursor");
+    expect(hookResult.composerModel).toBe("default[]");
+  });
+
   it("invalidates repository reviews when closing a PR/MR thread", async () => {
     const reviewThread = {
       ...makeThread("pr-mr-thread"),
@@ -533,6 +595,45 @@ describe("useChatSession", () => {
     renderHookInStrictMode("thread-new");
 
     expect(hookResult.threads.map((thread) => thread.id)).toEqual(["thread-new"]);
+  });
+
+  it("auto-creates a replacement thread with the last active Cursor selection", async () => {
+    threadsState.data = [{
+      ...makeThread("thread-a", true),
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+      cursorSessionId: "cursor-session-1",
+    }];
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    threadsState.data = [];
+    renderHook();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).toHaveBeenCalledWith("wt-1", {
+      permissionMode: "default",
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+    });
   });
 
   it("does not issue another auto-create while the replacement thread has only local state", async () => {
@@ -821,6 +922,63 @@ describe("useChatSession", () => {
     expect(hookResult.selectedThreadId).toBe("thread-new");
     expect(hookResult.composerAgent).toBe("codex");
     expect(hookResult.composerModel).toBe("gpt-5.4");
+  });
+
+  it("optimistically clears cursorSessionId when updating a Cursor thread selection", async () => {
+    const selectionDeferred = createDeferred<ChatThread>();
+    threadsState.data = [{
+      ...makeThread("thread-a", true),
+      agent: "cursor",
+      model: "default[]",
+      cursorSessionId: "cursor-session-1",
+    }];
+    vi.mocked(api.updateThreadAgentSelection).mockReturnValue(selectionDeferred.promise);
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      void hookResult.setThreadAgentSelection("thread-a", {
+        agent: "cursor",
+        model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+        modelProviderId: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(hookResult.threads.find((thread) => thread.id === "thread-a")).toMatchObject({
+      agent: "cursor",
+      model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      cursorSessionId: null,
+    });
+
+    await act(async () => {
+      selectionDeferred.resolve({
+        ...makeThread("thread-a", true),
+        agent: "cursor",
+        model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+        cursorSessionId: null,
+      });
+      await Promise.resolve();
+    });
+  });
+
+  it("hydrates Cursor thread selection state without losing the agent or model", () => {
+    threadsState.data = [{
+      ...makeThread("thread-a", true),
+      agent: "cursor",
+      model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      cursorSessionId: "cursor-session-7",
+    }];
+
+    renderHook("thread-a");
+
+    expect(hookResult.composerAgent).toBe("cursor");
+    expect(hookResult.composerModel).toBe("gpt-5.4[context=272k,reasoning=medium,fast=false]");
+    expect(hookResult.threads[0]).toMatchObject({
+      agent: "cursor",
+      model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      cursorSessionId: "cursor-session-7",
+    });
   });
 
   it("marks a requested thread as loading while selection bootstrap is unresolved", () => {

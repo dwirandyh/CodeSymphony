@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Menu, Settings, X } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
+  type CursorModelCatalogEntry,
   type OpencodeModelCatalogEntry,
   type ReviewKind,
 } from "@codesymphony/shared-types";
@@ -73,6 +74,7 @@ import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
+import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
 import { queryKeys } from "../lib/queryKeys";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
@@ -91,6 +93,13 @@ function createFallbackOpencodeEntry(modelId: string): OpencodeModelCatalogEntry
     id: modelId,
     name: modelId,
     providerId: providerId?.trim() || "opencode",
+  };
+}
+
+function createFallbackCursorEntry(modelId: string): CursorModelCatalogEntry {
+  return {
+    id: modelId,
+    name: modelId === "default[]" ? "Auto" : modelId.replace(/\[[^\]]*]$/, ""),
   };
 }
 import {
@@ -291,6 +300,14 @@ export function WorkspacePage() {
   const {
     providers: modelProviders,
   } = useModelProviders();
+  const cursorModelsQuery = useCursorModels();
+  const cursorModels = useMemo(
+    () => [
+      ...(cursorModelsQuery.data?.models
+        ?? BUILTIN_CHAT_MODELS_BY_AGENT.cursor.map(createFallbackCursorEntry)),
+    ],
+    [cursorModelsQuery.data?.models],
+  );
   const opencodeModelsQuery = useOpencodeModels();
   const opencodeModels = useMemo(
     () => [
@@ -1669,6 +1686,7 @@ export function WorkspacePage() {
                     slashCommands={slashCommands.commands}
                     slashCommandsLoading={slashCommands.loading}
                     providers={modelProviders}
+                    cursorModels={cursorModels}
                     opencodeModels={opencodeModels}
                     agent={chat.composerAgent}
                     model={chat.composerModel}

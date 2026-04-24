@@ -38,6 +38,7 @@ export async function assertDatabaseReady(prisma: PrismaClient): Promise<void> {
         mode: true,
         claudeSessionId: true,
         codexSessionId: true,
+        cursorSessionId: true,
         opencodeSessionId: true,
       },
     });

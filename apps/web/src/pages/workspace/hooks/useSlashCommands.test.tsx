@@ -1,7 +1,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { CliAgent } from "@codesymphony/shared-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../../../lib/api";
 import { useSlashCommands } from "./useSlashCommands";
 
 vi.mock("../../../lib/api", () => ({
@@ -27,8 +29,8 @@ afterEach(() => {
   container.remove();
 });
 
-function TestComponent({ worktreeId }: { worktreeId: string | null }) {
-  const { commands, loading } = useSlashCommands(worktreeId, "codex");
+function TestComponent({ worktreeId, agent }: { worktreeId: string | null; agent: CliAgent }) {
+  const { commands, loading } = useSlashCommands(worktreeId, agent);
   return <div>{loading ? "loading" : `count:${commands.length}`}</div>;
 }
 
@@ -38,11 +40,28 @@ describe("useSlashCommands", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={qc}>
-          <TestComponent worktreeId="w1" />
+          <TestComponent worktreeId="w1" agent="codex" />
         </QueryClientProvider>
       );
     });
     expect(container.textContent).toMatch(/loading|count:\d+/);
+  });
+
+  it("requests slash commands with the selected Cursor agent", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    act(() => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <TestComponent worktreeId="w1" agent="cursor" />
+        </QueryClientProvider>
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(api.getSlashCommands)).toHaveBeenCalledWith("w1", "cursor");
   });
 
   it("returns empty commands for null worktreeId", () => {
@@ -50,7 +69,7 @@ describe("useSlashCommands", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={qc}>
-          <TestComponent worktreeId={null} />
+          <TestComponent worktreeId={null} agent="codex" />
         </QueryClientProvider>
       );
     });

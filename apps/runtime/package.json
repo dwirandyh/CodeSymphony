@@ -19,6 +19,7 @@
     "prisma:seed": "prisma db seed"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^0.19.1",
     "@anthropic-ai/claude-agent-sdk": "^0.2.42",
     "@codesymphony/chat-timeline-core": "workspace:*",
     "@codesymphony/shared-types": "workspace:*",
@@ -34,8 +35,8 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.1",
     "@types/node": "^22.13.10",
+    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^3.2.4",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",

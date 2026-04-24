@@ -81,18 +81,30 @@ export type ChatThreadPermissionMode = z.infer<typeof ChatThreadPermissionModeSc
 export const ChatModeSchema = z.enum(["default", "plan"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
 
-export const CliAgentSchema = z.enum(["claude", "codex", "opencode"]);
+export const CliAgentSchema = z.enum(["claude", "codex", "cursor", "opencode"]);
 export type CliAgent = z.infer<typeof CliAgentSchema>;
 
 export const BUILTIN_CHAT_MODELS_BY_AGENT = {
   claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
   codex: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"],
+  cursor: [
+    "default[]",
+    "composer-2[fast=true]",
+    "composer-1.5[]",
+    "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+    "gpt-5.4-mini[reasoning=medium]",
+    "gpt-5.3-codex[reasoning=medium,fast=false]",
+    "gpt-5.3-codex-spark[reasoning=medium]",
+    "claude-sonnet-4-6[thinking=true,context=200k,effort=medium]",
+    "claude-opus-4-7[thinking=true,context=200k,effort=high]",
+  ],
   opencode: ["opencode/minimax-m2.5-free", "opencode/ling-2.6-flash-free", "opencode/nemotron-3-super-free"],
 } as const satisfies Record<CliAgent, readonly string[]>;
 
 export const DEFAULT_CHAT_MODEL_BY_AGENT = {
   claude: "claude-sonnet-4-6",
   codex: "gpt-5.4",
+  cursor: "default[]",
   opencode: "opencode/minimax-m2.5-free",
 } as const satisfies Record<CliAgent, string>;
 
@@ -110,6 +122,7 @@ export const ChatThreadSchema = z.object({
   modelProviderId: z.string().nullable().optional(),
   claudeSessionId: z.string().nullable(),
   codexSessionId: z.string().nullable().optional(),
+  cursorSessionId: z.string().nullable().optional(),
   opencodeSessionId: z.string().nullable().optional(),
   active: z.boolean(),
   createdAt: z.string().datetime(),
@@ -785,3 +798,15 @@ export const OpencodeModelCatalogSchema = z.object({
   fetchedAt: z.string().datetime(),
 });
 export type OpencodeModelCatalog = z.infer<typeof OpencodeModelCatalogSchema>;
+
+export const CursorModelCatalogEntrySchema = z.object({
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+});
+export type CursorModelCatalogEntry = z.infer<typeof CursorModelCatalogEntrySchema>;
+
+export const CursorModelCatalogSchema = z.object({
+  models: z.array(CursorModelCatalogEntrySchema),
+  fetchedAt: z.string().datetime(),
+});
+export type CursorModelCatalog = z.infer<typeof CursorModelCatalogSchema>;

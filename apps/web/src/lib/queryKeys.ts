@@ -30,6 +30,7 @@ export const queryKeys = {
     browse: (path?: string) => ["filesystem", "browse", path ?? "__root__"] as const,
   },
   models: {
+    cursorCatalog: ["models", "cursor", "catalog"] as const,
     opencodeCatalog: ["models", "opencode", "catalog"] as const,
   },
   runtime: {

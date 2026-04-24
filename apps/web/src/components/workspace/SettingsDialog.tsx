@@ -33,12 +33,14 @@ type ProviderProtocol = "anthropic" | "responses";
 const PROVIDER_PROTOCOL_BY_AGENT: Record<CliAgent, ProviderProtocol> = {
   claude: "anthropic",
   codex: "responses",
+  cursor: "responses",
   opencode: "responses",
 };
 
 const PROVIDER_AGENT_LABELS: Record<CliAgent, string> = {
   claude: "Claude",
   codex: "Codex",
+  cursor: "Cursor",
   opencode: "OpenCode",
 };
 
@@ -180,6 +182,7 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
     && isOpencodeBuiltinAlias(trimmedProviderModelId);
   const canSaveProvider = trimmedProviderName.length > 0
     && trimmedProviderModelId.length > 0
+    && providerAgent !== "cursor"
     && (
       providerAgent === "codex"
       || (providerAgent === "opencode"
@@ -187,18 +190,23 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
         : !providerUsesCustomEndpoint
           || (trimmedProviderBaseUrl.length > 0 && (editingProviderId !== null || trimmedProviderApiKey.length > 0)))
     );
-  const canTestProvider = trimmedProviderBaseUrl.length > 0
+  const canTestProvider = providerAgent !== "cursor"
+    && trimmedProviderBaseUrl.length > 0
     && trimmedProviderApiKey.length > 0
     && trimmedProviderModelId.length > 0;
   const providerModelPlaceholder = providerAgent === "claude"
     ? 'e.g. "claude-sonnet-4-6", "glm-4.7"'
     : providerAgent === "codex"
       ? 'e.g. "gpt-5.4", "gpt-5.3-codex"'
+      : providerAgent === "cursor"
+        ? "Cursor built-in models are managed via Cursor account settings"
       : 'e.g. "openai/gpt-5" or "gpt-5-custom"';
   const providerBaseUrlPlaceholder = providerAgent === "claude"
     ? "e.g. https://api.z.ai/v1"
     : providerAgent === "codex"
       ? "Leave empty to use Codex CLI defaults"
+      : providerAgent === "cursor"
+        ? "Cursor custom endpoints are not supported"
       : "Leave empty when Model ID already uses provider/model";
   const providerApiKeyPlaceholder = editingProviderId
     ? "Leave empty to keep current"
@@ -206,16 +214,22 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
       ? "API Key"
       : providerAgent === "codex"
         ? "Only if your Codex setup needs it"
+        : providerAgent === "cursor"
+          ? "Cursor custom endpoints are not supported"
         : "Only for custom OpenCode endpoints";
   const providerInlineHelp = providerAgent === "claude"
     ? "Use an empty Base URL and API key to register a Claude-side model alias that relies on local CLI auth. Provide both when targeting an Anthropic-compatible remote endpoint."
     : providerAgent === "codex"
       ? "Responses-compatible entries can be simple model aliases like gpt-5.4 or point to a custom endpoint if your Codex CLI setup needs it."
+      : providerAgent === "cursor"
+        ? "Cursor models come from the authenticated Cursor account over ACP. CodeSymphony does not register custom Cursor providers or custom endpoints."
       : "For built-in OpenCode providers, enter Model ID as provider/model, for example openai/gpt-5. If you provide a Base URL, the runtime registers a custom Responses-compatible provider for the OpenCode SDK.";
   const providerFootnote = providerAgent === "claude"
     ? "Add Anthropic-compatible model entries here, then choose them per thread under Claude in the composer. Endpoint tests validate Anthropic Messages API compatible backends."
     : providerAgent === "codex"
       ? "Add Responses-compatible model entries here, then choose them per thread under Codex in the composer. Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts."
+      : providerAgent === "cursor"
+        ? "Cursor uses built-in models discovered from the authenticated Cursor CLI. No custom provider rows or endpoint tests are available for Cursor."
       : "Add OpenCode aliases or custom Responses-compatible providers here, then choose them per thread under OpenCode in the composer. Built-in OpenCode auth and /connect flows still work even if you never add an entry here.";
   const providerTestSuccessMessage = providerProtocol === "anthropic"
     ? "Connection successful — provider is Anthropic-compatible."

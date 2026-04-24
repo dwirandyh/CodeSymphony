@@ -14,6 +14,12 @@ function normalizeOptionalSecret(value: string | null | undefined): string | nul
   return normalized.length > 0 ? normalized : null;
 }
 
+function assertCustomProviderSupported(agent: CliAgent): void {
+  if (agent === "cursor") {
+    throw new Error("Cursor does not support custom model providers");
+  }
+}
+
 function mapProvider(provider: {
   id: string;
   agent: CliAgent;
@@ -48,6 +54,7 @@ export function createModelProviderService(prisma: PrismaClient) {
     },
 
     async createProvider(input: CreateModelProviderInput): Promise<ModelProvider> {
+      assertCustomProviderSupported(input.agent ?? "claude");
       const provider = await prisma.modelProvider.create({
         data: {
           agent: input.agent ?? "claude",
@@ -61,6 +68,11 @@ export function createModelProviderService(prisma: PrismaClient) {
     },
 
     async updateProvider(id: string, input: UpdateModelProviderInput): Promise<ModelProvider> {
+      const targetAgent = input.agent ?? (await prisma.modelProvider.findUnique({
+        where: { id },
+        select: { agent: true },
+      }))?.agent;
+      assertCustomProviderSupported(targetAgent ?? "claude");
       const provider = await prisma.modelProvider.update({
         where: { id },
         data: {
@@ -84,6 +96,7 @@ export function createModelProviderService(prisma: PrismaClient) {
           where: { id },
           select: { agent: true },
         });
+        assertCustomProviderSupported(selected.agent);
         await tx.modelProvider.updateMany({
           where: {
             isActive: true,
@@ -114,6 +127,9 @@ export function createModelProviderService(prisma: PrismaClient) {
       name: string;
       modelId: string;
     } | null> {
+      if (agent === "cursor") {
+        return null;
+      }
       const provider = await prisma.modelProvider.findFirst({
         where: {
           isActive: true,

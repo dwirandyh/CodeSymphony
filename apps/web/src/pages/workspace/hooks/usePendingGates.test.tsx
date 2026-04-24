@@ -695,5 +695,20 @@ describe("usePendingGates", () => {
       expect(hookResult.pendingPlan).not.toBeNull();
       expect(hookResult.pendingPlan?.content).toBe("Direct plan");
     });
+
+    it("treats Cursor streaming_fallback plan paths as canonical reviewable plans", () => {
+      const events = [
+        makeEvent(0, "plan.created", {
+          content: "Cursor plan",
+          filePath: "/Users/test/.cursor/plans/ship-cursor.plan.md",
+          source: "streaming_fallback",
+        }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+      expect(hookResult.pendingPlan).not.toBeNull();
+      expect(hookResult.pendingPlan?.content).toBe("Cursor plan");
+      expect(hookResult.showPlanDecisionComposer).toBe(true);
+    });
   });
 });

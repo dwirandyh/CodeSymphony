@@ -9,6 +9,9 @@ import {
 import { api } from "../../../lib/api";
 import { isTauriDesktop } from "../../../lib/openExternalUrl";
 
+const DESKTOP_DOM_DROP_FALLBACK_DELAY_MS = 150;
+const DESKTOP_NATIVE_DROP_SUPPRESSION_MS = 500;
+
 export function useComposerAttachments({
   editorRef,
 }: {
@@ -18,6 +21,8 @@ export function useComposerAttachments({
   const attachmentsRef = useRef<PendingAttachment[]>([]);
   const [pendingAttachmentReads, setPendingAttachmentReads] = useState(0);
   const pendingAttachmentReadsRef = useRef(0);
+  const nativeDesktopDropListenerReadyRef = useRef(false);
+  const lastNativeDesktopDropAtRef = useRef<number | null>(null);
 
   const startAttachmentRead = useCallback(() => {
     pendingAttachmentReadsRef.current += 1;
@@ -180,12 +185,27 @@ export function useComposerAttachments({
       dragDepthRef.current = 0;
       setIsDragOver(false);
 
-      if (isTauriDesktop()) {
-        return;
-      }
-
       const files = extractDraggedFiles(event.dataTransfer);
       if (files.length === 0) return;
+
+      if (isTauriDesktop() && nativeDesktopDropListenerReadyRef.current) {
+        window.setTimeout(() => {
+          const lastNativeDropAt = lastNativeDesktopDropAtRef.current;
+          if (lastNativeDropAt !== null && Date.now() - lastNativeDropAt < DESKTOP_NATIVE_DROP_SUPPRESSION_MS) {
+            return;
+          }
+
+          startAttachmentRead();
+          void (async () => {
+            try {
+              await appendBrowserFiles(files, "drag_drop");
+            } finally {
+              finishAttachmentRead();
+            }
+          })();
+        }, DESKTOP_DOM_DROP_FALLBACK_DELAY_MS);
+        return;
+      }
 
       startAttachmentRead();
       void (async () => {
@@ -246,6 +266,7 @@ export function useComposerAttachments({
           return;
         }
 
+        nativeDesktopDropListenerReadyRef.current = true;
         unlisten = await getCurrentWebviewWindow().onDragDropEvent((event) => {
           const payload = event.payload as { type: string; paths?: string[] };
 
@@ -266,6 +287,7 @@ export function useComposerAttachments({
             return;
           }
 
+          lastNativeDesktopDropAtRef.current = Date.now();
           startAttachmentRead();
           void (async () => {
             try {
@@ -276,12 +298,15 @@ export function useComposerAttachments({
           })();
         });
       } catch {
+        nativeDesktopDropListenerReadyRef.current = false;
         // Ignore native desktop drag/drop wiring failures and fall back to the DOM path.
       }
     })();
 
     return () => {
       active = false;
+      nativeDesktopDropListenerReadyRef.current = false;
+      lastNativeDesktopDropAtRef.current = null;
       unlisten?.();
     };
   }, [appendLocalFiles, finishAttachmentRead, startAttachmentRead]);

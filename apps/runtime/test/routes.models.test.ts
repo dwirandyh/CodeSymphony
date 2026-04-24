@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../src/opencode/modelCatalog.js";
 import { registerModelRoutes } from "../src/routes/models";
 
@@ -59,6 +60,33 @@ describe("model provider routes", () => {
         id: "zai/glm-4.7-flash",
         name: "GLM-4.7-Flash",
         providerId: "zai",
+      },
+    ]);
+    expect(typeof res.json().data.fetchedAt).toBe("string");
+  });
+
+  it("GET /api/cursor/models lists the Cursor model catalog with display metadata", async () => {
+    vi.spyOn(cursorSessionRunner, "listCursorModels")
+      .mockResolvedValue([
+        {
+          id: "default[]",
+          name: "Auto",
+        },
+        {
+          id: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+          name: "GPT-5.4",
+        },
+      ]);
+    const res = await app.inject({ method: "GET", url: "/api/cursor/models" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.models).toEqual([
+      {
+        id: "default[]",
+        name: "Auto",
+      },
+      {
+        id: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+        name: "GPT-5.4",
       },
     ]);
     expect(typeof res.json().data.fetchedAt).toBe("string");
@@ -183,6 +211,16 @@ describe("model provider routes", () => {
       }),
     );
     vi.unstubAllGlobals();
+  });
+
+  it("POST /api/model-providers/test rejects Cursor custom provider tests", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/model-providers/test",
+      payload: { agent: "cursor", baseUrl: "http://localhost:9999", apiKey: "key", modelId: "default[]" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("Cursor does not support custom model providers");
   });
 
   it("POST /api/model-providers/test handles non-ok response", async () => {
