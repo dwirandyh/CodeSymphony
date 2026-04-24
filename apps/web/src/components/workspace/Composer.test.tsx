@@ -1,5 +1,5 @@
-import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
@@ -72,6 +72,16 @@ const defaultProps = {
       providerId: "zai",
     },
   ],
+  cursorModels: [
+    {
+      id: "default[]",
+      name: "Auto",
+    },
+    {
+      id: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      name: "GPT-5.4",
+    },
+  ],
   agent: "claude" as const,
   model: "claude-sonnet-4-6",
   modelProviderId: null,
@@ -83,6 +93,21 @@ const defaultProps = {
   onAgentSelectionChange: vi.fn(),
   onPermissionModeChange: vi.fn(),
 };
+
+function act(callback: () => void): void;
+function act(callback: () => Promise<void>): Promise<void>;
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: void | Promise<void> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+
+  if (result && typeof result.then === "function") {
+    return result.then(async () => {
+      await Promise.resolve();
+    });
+  }
+}
 
 describe("Composer", () => {
   let container: HTMLDivElement;
@@ -115,6 +140,7 @@ describe("Composer", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     act(() => root.unmount());
     document.body.removeChild(container);
@@ -522,7 +548,7 @@ describe("Composer", () => {
     expect(modelButton.title).toContain("CLI agent is locked for this thread");
   });
 
-  it("shows Claude, Codex, and OpenCode icons with a compact desktop agent list", () => {
+  it("shows Claude, Codex, Cursor, and OpenCode icons with a compact desktop agent list", () => {
     renderComposer();
 
     const modelButton = getModelSelectorButton();
@@ -534,6 +560,7 @@ describe("Composer", () => {
 
     expect(container.querySelector('svg[data-agent-icon="claude"]')).not.toBeNull();
     expect(container.querySelector('svg[data-agent-icon="codex"]')).not.toBeNull();
+    expect(container.querySelector('svg[data-agent-icon="cursor"]')).not.toBeNull();
     const opencodeIcon = container.querySelector('svg[data-agent-icon="opencode"]');
     expect(opencodeIcon).not.toBeNull();
     expect(opencodeIcon?.querySelectorAll("path")).toHaveLength(1);
@@ -543,10 +570,11 @@ describe("Composer", () => {
     expect(container.textContent).not.toContain("CLI Agent");
     expect(container.textContent).not.toContain("Claude Models");
     expect(container.textContent).not.toContain("Codex Models");
+    expect(container.textContent).not.toContain("Cursor Models");
     expect(container.textContent).not.toContain("OpenCode Models");
 
     const agentList = container.querySelector('[data-cli-agent-list="true"]');
-    expect(agentList?.querySelectorAll("button")).toHaveLength(3);
+    expect(agentList?.querySelectorAll("button")).toHaveLength(4);
   });
 
   it("shows agent-specific model options and emits thread agent selection updates", () => {
@@ -657,6 +685,45 @@ describe("Composer", () => {
     });
   });
 
+  it("shows Cursor model options and emits thread agent selection updates", () => {
+    const onAgentSelectionChange = vi.fn();
+
+    renderComposer({
+      onAgentSelectionChange,
+    });
+
+    const modelButton = getModelSelectorButton();
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const cursorButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("Cursor"));
+    if (!cursorButton) {
+      throw new Error("Cursor agent button not found");
+    }
+
+    act(() => {
+      cursorButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    const cursorModelButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("GPT-5.4") && button.textContent?.includes("Built-in"));
+    if (!cursorModelButton) {
+      throw new Error("Cursor model button not found");
+    }
+
+    act(() => {
+      cursorModelButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(onAgentSelectionChange).toHaveBeenCalledWith({
+      agent: "cursor",
+      model: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      modelProviderId: null,
+    });
+  });
+
   it("switches the model preview list when hovering between CLI agents", () => {
     const providers: ModelProvider[] = [
       {
@@ -725,6 +792,15 @@ describe("Composer", () => {
     expect(container.textContent).toContain("GPT-5.4");
     expect(container.textContent).toContain("GPT-5.4 Custom");
     expect(container.textContent).not.toContain("GLM-4.7");
+
+    const cursorButton = getButtonByExactText("Cursor");
+    act(() => {
+      cursorButton.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Auto");
+    expect(container.textContent).toContain("GPT-5.4");
+    expect(container.textContent).not.toContain("GPT-5.4 Custom");
 
     const opencodeButton = getButtonByExactText("OpenCode");
     act(() => {
@@ -1023,6 +1099,82 @@ describe("Composer", () => {
 
     expect(api.readLocalAttachments).toHaveBeenCalledWith(["/tmp/dropped.txt"]);
     expect(container.textContent).toContain("dropped.txt");
+  });
+
+  it("falls back to DOM drag/drop attachments in desktop mode when native drop handling does not arrive", async () => {
+    vi.useFakeTimers();
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+    renderComposer();
+    await flushMicrotasks();
+
+    const editor = getEditor();
+    const file = new File(["desktop fallback"], "desktop-fallback.txt", { type: "text/plain" });
+    const dragData = buildFileDragData(file);
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    act(() => {
+      editor.dispatchEvent(dropEvent);
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(151);
+    });
+    await flushMicrotasks();
+
+    expect(container.textContent).toContain("desktop-fallback.txt");
+  });
+
+  it("does not duplicate desktop drag/drop attachments when native Tauri handling succeeds", async () => {
+    vi.useFakeTimers();
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    vi.spyOn(api, "readLocalAttachments").mockResolvedValue([{
+      path: "/tmp/desktop-native.txt",
+      filename: "desktop-native.txt",
+      mimeType: "text/plain",
+      sizeBytes: 14,
+      content: "desktop native",
+    }]);
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+
+    renderComposer({ onSubmitMessage });
+    await flushMicrotasks();
+
+    const editor = getEditor();
+    const file = new File(["desktop native"], "desktop-native.txt", { type: "text/plain" });
+    const dragData = buildFileDragData(file);
+    const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
+
+    act(() => {
+      editor.dispatchEvent(dropEvent);
+    });
+
+    await act(async () => {
+      await tauriDragDropState.handler?.({
+        payload: {
+          type: "drop",
+          paths: ["/tmp/desktop-native.txt"],
+        },
+      });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(151);
+    });
+    await flushMicrotasks();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    const [payload] = onSubmitMessage.mock.calls[0] as [{
+      attachments: Array<{ filename: string }>;
+    }];
+    expect(payload.attachments).toHaveLength(1);
+    expect(payload.attachments[0]?.filename).toBe("desktop-native.txt");
   });
 
   it("handles browser drag/drop image attachments in the composer", async () => {

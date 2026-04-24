@@ -34,6 +34,10 @@ describe("queryKeys", () => {
     expect(queryKeys.worktrees.slashCommands("w1", "codex")).toEqual(["worktrees", "w1", "slashCommands", "codex"]);
   });
 
+  it("worktrees.slashCommands varies by agent for Cursor", () => {
+    expect(queryKeys.worktrees.slashCommands("w1", "cursor")).toEqual(["worktrees", "w1", "slashCommands", "cursor"]);
+  });
+
   it("worktrees.fileContents includes path", () => {
     expect(queryKeys.worktrees.fileContents("w1", "a.ts")).toEqual(["worktrees", "w1", "fileContents", "a.ts"]);
   });
@@ -68,6 +72,10 @@ describe("queryKeys", () => {
 
   it("models.opencodeCatalog is correct", () => {
     expect(queryKeys.models.opencodeCatalog).toEqual(["models", "opencode", "catalog"]);
+  });
+
+  it("models.cursorCatalog is correct", () => {
+    expect(queryKeys.models.cursorCatalog).toEqual(["models", "cursor", "catalog"]);
   });
 
   it("runtime.info is correct", () => {

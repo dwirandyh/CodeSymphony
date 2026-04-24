@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
 import type { ClaudeRunner } from "../src/types";
@@ -191,6 +192,125 @@ describe("chatService agent selection", () => {
     const persistedThread = await chatService.getThreadById(thread.id);
     expect(persistedThread?.opencodeSessionId).toBe("opencode-session-1");
     expect(persistedThread?.claudeSessionId).toBeNull();
+  });
+
+  it("routes Cursor threads through the Cursor runner and persists cursorSessionId", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const cursorRunner: ClaudeRunner = vi.fn(async ({ onSessionId, onText }) => {
+      await onSessionId?.("cursor-session-1");
+      await onText("Cursor reply");
+      return {
+        output: "Cursor reply",
+        sessionId: "cursor-session-1",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      cursorRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("Cursor selection thread");
+
+    const updatedThread = await chatService.updateThreadAgentSelection(thread.id, {
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+    });
+
+    expect(updatedThread.agent).toBe("cursor");
+    expect(updatedThread.model).toBe("default[]");
+    expect(updatedThread.claudeSessionId).toBeNull();
+    expect(updatedThread.cursorSessionId).toBeNull();
+
+    await chatService.sendMessage(thread.id, {
+      content: "Run through Cursor",
+    });
+    await waitForCompletion(chatService, thread.id);
+
+    expect(cursorRunner).toHaveBeenCalledTimes(1);
+    expect(claudeRunner).not.toHaveBeenCalled();
+
+    const persistedThread = await chatService.getThreadById(thread.id);
+    expect(persistedThread?.cursorSessionId).toBe("cursor-session-1");
+    expect(persistedThread?.claudeSessionId).toBeNull();
+  });
+
+  it("falls back to local skills when Cursor does not expose a slash-command catalog", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { worktree } = await seedThread("Cursor slash command fallback");
+
+    mkdirSync(join(worktree.path, ".agents/skills/dogfood"), { recursive: true });
+    writeFileSync(
+      join(worktree.path, ".agents/skills/dogfood/SKILL.md"),
+      "---\nname: dogfood\ndescription: QA a web app.\n---\n",
+    );
+
+    vi.spyOn(cursorSessionRunner, "listCursorSlashCommands").mockResolvedValue([]);
+
+    const catalog = await chatService.listSlashCommands(worktree.id, "cursor");
+
+    expect(catalog.commands).toEqual(expect.arrayContaining([
+      { name: "dogfood", description: "QA a web app.", argumentHint: "" },
+    ]));
+  });
+
+  it("normalizes /skill prompts for Cursor threads before invoking the runner", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const cursorRunner: ClaudeRunner = vi.fn(async ({ prompt, onSessionId, onText }) => {
+      expect(prompt).toBe("Use $dogfood for this task.\n\naudit halaman settings");
+      await onSessionId?.("cursor-session-skill");
+      await onText("Cursor reply");
+      return {
+        output: "Cursor reply",
+        sessionId: "cursor-session-skill",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      cursorRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread, worktree } = await seedThread("Cursor slash command rewrite");
+
+    mkdirSync(join(worktree.path, ".agents/skills/dogfood"), { recursive: true });
+    writeFileSync(
+      join(worktree.path, ".agents/skills/dogfood/SKILL.md"),
+      "---\nname: dogfood\ndescription: QA a web app.\n---\n",
+    );
+
+    await chatService.updateThreadAgentSelection(thread.id, {
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+    });
+
+    await chatService.sendMessage(thread.id, {
+      content: "/dogfood audit halaman settings",
+    });
+    await waitForCompletion(chatService, thread.id);
+
+    expect(cursorRunner).toHaveBeenCalledTimes(1);
   });
 
   it("includes the effective Codex CLI provider in runtime errors for built-in Codex threads", async () => {

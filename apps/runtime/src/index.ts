@@ -11,6 +11,7 @@ import { createEventHub } from "./events/eventHub.js";
 import { createWorkspaceEventHub } from "./events/workspaceEventHub.js";
 import { runClaudeWithStreaming } from "./claude/sessionRunner.js";
 import { runCodexWithStreaming } from "./codex/sessionRunner.js";
+import { runCursorWithStreaming } from "./cursor/sessionRunner.js";
 import { runOpencodeWithStreaming } from "./opencode/sessionRunner.js";
 import { createRepositoryService } from "./services/repositoryService.js";
 import { createWorktreeService } from "./services/worktreeService.js";
@@ -75,6 +76,7 @@ function createApp() {
     eventHub,
     claudeRunner: runClaudeWithStreaming,
     codexRunner: runCodexWithStreaming,
+    cursorRunner: runCursorWithStreaming,
     opencodeRunner: runOpencodeWithStreaming,
     logService,
     modelProviderService,

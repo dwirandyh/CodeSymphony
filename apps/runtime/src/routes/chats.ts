@@ -5,6 +5,7 @@ import type {
   ChatTimelineSnapshot,
   CliAgent,
 } from "@codesymphony/shared-types";
+import { CliAgentSchema } from "@codesymphony/shared-types";
 import { z } from "zod";
 import { appendRuntimeDebugLog } from "./debug.js";
 import { areLikelySameFsPath } from "../services/repositoryService.js";
@@ -14,7 +15,7 @@ const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
 const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
 const slashCommandQuery = z.object({
-  agent: z.enum(["claude", "codex"]).optional(),
+  agent: CliAgentSchema.optional(),
 }).strict();
 const inFlightSnapshotRequests = new Map<string, Promise<ChatThreadSnapshot>>();
 const inFlightTimelineSnapshotRequests = new Map<string, Promise<ChatTimelineSnapshot>>();

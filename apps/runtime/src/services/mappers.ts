@@ -63,6 +63,7 @@ export function mapChatThread(thread: DbChatThread, isActive = false): ChatThrea
     modelProviderId: thread.modelProviderId,
     claudeSessionId: thread.claudeSessionId,
     codexSessionId: thread.codexSessionId,
+    cursorSessionId: thread.cursorSessionId,
     opencodeSessionId: thread.opencodeSessionId,
     active: isActive,
     createdAt: thread.createdAt.toISOString(),

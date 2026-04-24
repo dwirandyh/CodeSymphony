@@ -10,6 +10,7 @@ import type {
   CreateModelProviderInput,
   CreateRepositoryInput,
   CreateWorktreeInput,
+  CursorModelCatalog,
   DeviceInventorySnapshot,
   DeviceStreamSession,
   DismissQuestionInput,
@@ -631,6 +632,7 @@ export const api = {
   // ── Model Providers ──
 
   listOpencodeModels: () => request<OpencodeModelCatalog>("/opencode/models"),
+  listCursorModels: () => request<CursorModelCatalog>("/cursor/models"),
   listModelProviders: () => request<ModelProvider[]>("/model-providers"),
   createModelProvider: (input: CreateModelProviderInput) =>
     request<ModelProvider>("/model-providers", {

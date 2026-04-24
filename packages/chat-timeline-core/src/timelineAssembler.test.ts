@@ -496,4 +496,34 @@ describe("buildTimelineFromSeed", () => {
     expect(editedIndex).toBeGreaterThan(-1);
     expect(planIndex).toBeLessThan(editedIndex);
   });
+
+  it("treats Cursor .cursor plan files as canonical plan output", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Plan it."),
+      makeMessage("m2", 1, "assistant", "Drafting the plan."),
+    ];
+    const events = [
+      makeEvent(10, "plan.created", {
+        messageId: "m2",
+        content: "# Cursor Plan\n1. Inspect\n2. Report",
+        filePath: "/Users/test/.cursor/plans/ship-cursor.plan.md",
+        source: "streaming_fallback",
+      }),
+      makeEvent(11, "chat.completed", { messageId: "m2", threadMode: "plan" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const planItem = result.items.find((item) => item.kind === "plan-file-output");
+    expect(planItem).toMatchObject({
+      kind: "plan-file-output",
+      content: "# Cursor Plan\n1. Inspect\n2. Report",
+      filePath: "/Users/test/.cursor/plans/ship-cursor.plan.md",
+    });
+  });
 });

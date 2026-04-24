@@ -83,6 +83,7 @@ describe("chat routes", () => {
     renameThreadTitle: vi.fn(),
     updateThreadMode: vi.fn(),
     updateThreadPermissionMode: vi.fn(),
+    updateThreadAgentSelection: vi.fn(),
     sendMessage: vi.fn(),
     resolvePermission: vi.fn(),
     answerQuestion: vi.fn(),
@@ -188,6 +189,17 @@ describe("chat routes", () => {
       expect(mockChatService.listSlashCommands).toHaveBeenCalledWith("w1", "codex");
     });
 
+    it("accepts Cursor as a valid slash-command agent", async () => {
+      mockChatService.listSlashCommands.mockResolvedValue({
+        commands: [{ name: "bug", description: "Report a bug", argumentHint: "" }],
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/slash-commands?agent=cursor" });
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.listSlashCommands).toHaveBeenCalledWith("w1", "cursor");
+    });
+
     it("returns 404 when worktree is missing", async () => {
       mockChatService.listSlashCommands.mockRejectedValue(new Error("Worktree not found"));
 
@@ -289,6 +301,35 @@ describe("chat routes", () => {
         payload: { mode: "plan" },
       });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe("PATCH /api/threads/:id/agent-selection", () => {
+    it("accepts Cursor as a valid agent selection payload", async () => {
+      mockChatService.updateThreadAgentSelection.mockResolvedValue({
+        id: "t1",
+        title: "Cursor Thread",
+        mode: "default",
+        permissionMode: "default",
+        agent: "cursor",
+        model: "default[]",
+      });
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/threads/t1/agent-selection",
+        payload: {
+          agent: "cursor",
+          model: "default[]",
+          modelProviderId: null,
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.updateThreadAgentSelection).toHaveBeenCalledWith("t1", {
+        agent: "cursor",
+        model: "default[]",
+        modelProviderId: null,
+      });
     });
   });
 

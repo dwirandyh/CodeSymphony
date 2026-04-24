@@ -896,6 +896,27 @@ describe("useWorkspaceTimeline", () => {
     });
   });
 
+  it("renders Cursor plan output directly from a canonical .cursor plan path", () => {
+    const messages = [makeMessage("m1", 1, "user", "plan it"), makeMessage("m2", 2, "assistant", "Drafting")];
+    const events = [
+      makeEvent(0, "plan.created", {
+        messageId: "m2",
+        content: "# Cursor Plan\n- Step 1",
+        filePath: "/Users/test/.cursor/plans/ship-cursor.plan.md",
+        source: "streaming_fallback",
+      }, "m2"),
+      makeEvent(1, "chat.completed", {}, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const planItems = items.filter((item) => item.kind === "plan-file-output");
+    expect(planItems).toHaveLength(1);
+    expect(planItems[0]).toMatchObject({
+      content: "# Cursor Plan\n- Step 1",
+      filePath: "/Users/test/.cursor/plans/ship-cursor.plan.md",
+    });
+  });
+
   it("processes subagent events", () => {
     const messages = [makeMessage("m1", 1, "user", "Do"), makeMessage("m2", 2, "assistant", "Using agent")];
     const events = [

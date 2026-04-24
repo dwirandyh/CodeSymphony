@@ -90,6 +90,7 @@ import { recoverPendingPlan } from "./chatPlanService.js";
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
 import { buildCodexCliProviderHint, resolveCodexCliProviderOverride } from "../../codex/config.js";
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
+import { listCursorSlashCommands } from "../../cursor/sessionRunner.js";
 import { shouldAutoApproveWorkspaceEdit } from "./workspaceEditPermissions.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
@@ -260,8 +261,45 @@ function normalizePermissionMode(permissionMode: ChatThreadPermissionMode | unde
   return permissionMode === "full_access" ? "full_access" : "default";
 }
 
+function mergeSlashCommands(...catalogs: ReadonlyArray<ReadonlyArray<{ name: string; description: string; argumentHint: string }>>): Array<{
+  name: string;
+  description: string;
+  argumentHint: string;
+}> {
+  const merged = new Map<string, { name: string; description: string; argumentHint: string }>();
+
+  for (const catalog of catalogs) {
+    for (const command of catalog) {
+      const name = command.name.trim();
+      if (!name) {
+        continue;
+      }
+
+      const key = name.toLowerCase();
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, {
+          name,
+          description: command.description,
+          argumentHint: command.argumentHint,
+        });
+        continue;
+      }
+
+      if (!existing.description && command.description) {
+        existing.description = command.description;
+      }
+      if (!existing.argumentHint && command.argumentHint) {
+        existing.argumentHint = command.argumentHint;
+      }
+    }
+  }
+
+  return Array.from(merged.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function normalizeAgent(agent: CliAgent | null | undefined): CliAgent {
-  if (agent === "codex" || agent === "opencode") {
+  if (agent === "codex" || agent === "cursor" || agent === "opencode") {
     return agent;
   }
   return "claude";
@@ -336,6 +374,9 @@ async function resolveThreadSelection(
     if (!provider) {
       throw new Error("Selected model provider not found");
     }
+    if (provider.agent === "cursor") {
+      throw new Error("Cursor does not support custom model providers");
+    }
     if (provider.agent !== agent) {
       throw new Error(`Selected model provider belongs to ${provider.agent}, not ${agent}`);
     }
@@ -394,6 +435,9 @@ function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
   if (agent === "codex") {
     return deps.codexRunner ?? deps.claudeRunner;
   }
+  if (agent === "cursor") {
+    return deps.cursorRunner ?? deps.claudeRunner;
+  }
   if (agent === "opencode") {
     return deps.opencodeRunner ?? deps.claudeRunner;
   }
@@ -401,11 +445,19 @@ function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
 }
 
 function getThreadSessionId(
-  thread: { claudeSessionId: string | null; codexSessionId: string | null; opencodeSessionId?: string | null },
+  thread: {
+    claudeSessionId: string | null;
+    codexSessionId: string | null;
+    cursorSessionId?: string | null;
+    opencodeSessionId?: string | null;
+  },
   agent: CliAgent,
 ): string | null {
   if (agent === "codex") {
     return thread.codexSessionId;
+  }
+  if (agent === "cursor") {
+    return thread.cursorSessionId ?? null;
   }
   if (agent === "opencode") {
     return thread.opencodeSessionId ?? null;
@@ -416,6 +468,9 @@ function getThreadSessionId(
 function buildSessionIdUpdate(agent: CliAgent, sessionId: string | null) {
   if (agent === "codex") {
     return { codexSessionId: sessionId };
+  }
+  if (agent === "cursor") {
+    return { cursorSessionId: sessionId };
   }
   if (agent === "opencode") {
     return { opencodeSessionId: sessionId };
@@ -430,6 +485,7 @@ function buildSelectionUpdate(selection: ResolvedThreadSelection) {
     modelProviderId: selection.modelProviderId,
     claudeSessionId: null,
     codexSessionId: null,
+    cursorSessionId: null,
     opencodeSessionId: null,
   };
 }
@@ -797,6 +853,8 @@ export function createChatService(deps: RuntimeDeps) {
             });
             if (selection.agent === "codex") {
               thread.codexSessionId = nextSessionId;
+            } else if (selection.agent === "cursor") {
+              thread.cursorSessionId = nextSessionId;
             } else if (selection.agent === "opencode") {
               thread.opencodeSessionId = nextSessionId;
             } else {
@@ -943,6 +1001,16 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onPermissionRequest: async (payload) => {
+          if (autoAcceptTools) {
+            deps.logService?.log("debug", "chat.permission", "Auto-approved permission request for full access thread", {
+              threadId,
+              requestId: payload.requestId,
+              toolName: payload.toolName,
+              blockedPath: payload.blockedPath,
+            });
+            return { decision: "allow" };
+          }
+
           if (shouldAutoApproveWorkspaceEdit({
             workspaceRoot: thread.worktree.path,
             toolName: payload.toolName,
@@ -1420,6 +1488,31 @@ export function createChatService(deps: RuntimeDeps) {
 
           return SlashCommandCatalogSchema.parse({
             commands: listCodexSkills(worktree.path),
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (agent === "cursor") {
+        const localSkills = listCodexSkills(worktree.path);
+        try {
+          return SlashCommandCatalogSchema.parse({
+            commands: mergeSlashCommands(
+              await listCursorSlashCommands({
+                cwd: worktree.path,
+              }),
+              localSkills,
+            ),
+            updatedAt: new Date().toISOString(),
+          });
+        } catch (error) {
+          deps.logService?.log("warn", "chat.slashCommands", "failed to load cursor slash commands", {
+            worktreeId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+
+          return SlashCommandCatalogSchema.parse({
+            commands: localSkills,
             updatedAt: new Date().toISOString(),
           });
         }
@@ -2019,7 +2112,7 @@ export function createChatService(deps: RuntimeDeps) {
           delta: input.content,
         });
 
-        const normalizedContent = thread.agent === "codex"
+        const normalizedContent = thread.agent === "codex" || thread.agent === "cursor"
           ? normalizeCodexSkillSlashCommandsForPrompt(input.content, listCodexSkills(thread.worktree.path))
           : input.content;
         const prompt = buildPromptWithAttachments(normalizedContent, attachmentRecords, {

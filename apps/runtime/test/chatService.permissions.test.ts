@@ -207,6 +207,55 @@ describe("chatService permission flow", () => {
     expect(claudeRunner).toHaveBeenCalled();
   });
 
+  it("auto-approves permission requests for full access threads without emitting prompts", async () => {
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Full access approval");
+        return {
+          output: "Full access approval",
+          sessionId: null,
+        };
+      }
+
+      const decision = await onPermissionRequest({
+        requestId: "perm-full-access",
+        toolName: "Bash",
+        toolInput: {
+          command: "echo full-access",
+        },
+        blockedPath: null,
+        decisionReason: null,
+        suggestions: null,
+        subagentOwnerToolUseId: null,
+        launcherToolUseId: null,
+      });
+      expect(decision).toEqual({ decision: "allow" });
+
+      await onText("Command auto-approved.");
+      return {
+        output: "Command auto-approved.",
+        sessionId: "session-full-access-permission",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+    await chatService.updateThreadPermissionMode(threadId, { permissionMode: "full_access" });
+
+    await chatService.sendMessage(threadId, {
+      content: "run a command without approval UI",
+    });
+
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(events.some((event) => event.type === "permission.requested")).toBe(false);
+    expect(events.some((event) => event.type === "permission.resolved")).toBe(false);
+  });
+
   it("auto-approves in-worktree edit permission requests without user prompt", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
