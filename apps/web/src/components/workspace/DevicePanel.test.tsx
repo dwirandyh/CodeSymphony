@@ -286,6 +286,65 @@ describe("DevicePanel", () => {
     expect(startStream).toHaveBeenCalledWith("ios-simulator:abc123");
   });
 
+  it("prefers the active session device when another device is currently marked streaming", async () => {
+    useDevicesMock.mockImplementation(() => ({
+      snapshot: {
+        devices: [
+          {
+            id: "android:RRCX6069MLD",
+            name: "SM A556E",
+            platform: "android",
+            status: "connecting",
+            connectionKind: "usb",
+            supportsEmbeddedStream: true,
+            supportsControl: true,
+            serial: "RRCX6069MLD",
+            lastError: "Device is offline. Waiting for adb to reconnect.",
+          },
+          {
+            id: "ios-simulator:abc123",
+            name: "iPhone 15 Pro",
+            platform: "ios-simulator",
+            status: "streaming",
+            connectionKind: "simulator",
+            supportsEmbeddedStream: true,
+            supportsControl: true,
+            serial: "ABC123",
+            lastError: null,
+          },
+        ],
+        activeSessions: [
+          {
+            sessionId: "android-stream-1",
+            deviceId: "android:RRCX6069MLD",
+            platform: "android",
+            viewerUrl: "/api/device-streams/android-stream-1/viewer",
+            controlTransport: "websocket",
+            startedAt: new Date().toISOString(),
+          },
+        ],
+        issues: [],
+        refreshedAt: new Date().toISOString(),
+      },
+      loading: false,
+      error: null,
+      refresh,
+      startStream,
+      stopStream,
+      startingDeviceId: null,
+      stoppingSessionId: null,
+    }));
+
+    await act(async () => {
+      root.render(<DevicePanel onClose={() => {}} />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("SM A556E");
+    expect(container.querySelector('[data-device-viewer="android-native"]')).toBeTruthy();
+    expect(container.querySelector('[data-device-viewer="ios-native"]')).toBeNull();
+  });
+
   it("shows macOS screen recording guidance for packaged iOS streaming", async () => {
     useDevicesMock.mockImplementation(() => ({
       snapshot: {
