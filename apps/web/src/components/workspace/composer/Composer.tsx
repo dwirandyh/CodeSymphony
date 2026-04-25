@@ -4,7 +4,6 @@ import {
   Check,
   ChevronDown,
   Clock3,
-  Code2,
   FileText,
   Folder,
   Lightbulb,
@@ -262,6 +261,15 @@ const OpenAiIcon = (props: SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+const CursorCubeIcon = (props: SVGProps<SVGSVGElement>) => (
+  <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 466.73 532.09">
+    <path
+      fill="#edecec"
+      d="M457.43 125.94 244.42 2.96a22.022 22.022 0 0 0-22.12 0L9.3 125.94A18.61 18.61 0 0 0 0 142.05v247.99a18.61 18.61 0 0 0 9.3 16.11l213.01 122.98a22.022 22.022 0 0 0 22.12 0l213.01-122.98a18.61 18.61 0 0 0 9.3-16.11V142.05a18.61 18.61 0 0 0-9.3-16.11h.01Zm-13.38 26.05L238.42 508.15c-1.39 2.4-5.06 1.42-5.06-1.36V273.58c0-4.66-2.49-8.97-6.53-11.31L24.87 145.67c-2.4-1.39-1.42-5.06 1.36-5.06h411.26c5.84 0 9.49 6.33 6.57 11.39h-.01Z"
+    />
+  </svg>
+);
+
 const OpenCodeIcon = (props: SVGProps<SVGSVGElement>) => (
   <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 24 24" fill="currentColor">
     <path fillRule="evenodd" d="M16 6H8v12h8V6zm4 16H4V2h16v20z" />
@@ -271,7 +279,7 @@ const OpenCodeIcon = (props: SVGProps<SVGSVGElement>) => (
 const AGENT_ICONS = {
   claude: ClaudeAiIcon,
   codex: OpenAiIcon,
-  cursor: Code2,
+  cursor: CursorCubeIcon,
   opencode: OpenCodeIcon,
 } as const;
 

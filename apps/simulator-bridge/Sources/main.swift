@@ -670,8 +670,8 @@ private enum SimulatorDiscovery {
       captureDisplay: captureDisplay,
       device: device,
       absoluteDisplayRect: absoluteDisplayRect,
-      pixelHeight: max(Int(captureRect.height * backingScale), 1),
-      pixelWidth: max(Int(captureRect.width * backingScale), 1),
+      pixelHeight: roundedCapturePixelDimension(captureRect.height * backingScale),
+      pixelWidth: roundedCapturePixelDimension(captureRect.width * backingScale),
       processID: pid_t(processID),
       window: window
     )
@@ -708,8 +708,8 @@ private enum SimulatorDiscovery {
         width: captureRect.width,
         height: captureRect.height
       ),
-      pixelHeight: max(Int(captureRect.height * backingScale), 1),
-      pixelWidth: max(Int(captureRect.width * backingScale), 1),
+      pixelHeight: roundedCapturePixelDimension(captureRect.height * backingScale),
+      pixelWidth: roundedCapturePixelDimension(captureRect.width * backingScale),
       processID: window.processID
     )
   }
@@ -1030,6 +1030,10 @@ private enum WindowDisplayResolver {
 
     return nil
   }
+}
+
+private func roundedCapturePixelDimension(_ value: CGFloat) -> Int {
+  max(Int(value.rounded(.up)), 1)
 }
 
 private enum SimulatorControlSupport {

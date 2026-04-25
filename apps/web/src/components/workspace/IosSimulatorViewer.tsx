@@ -89,6 +89,7 @@ const IOS_LIVE_CALIBRATION_SAMPLE_WIDTH = 28;
 const IOS_LIVE_CALIBRATION_ATTEMPT_INTERVAL_MS = 650;
 const IOS_LIVE_CALIBRATION_RETRY_DELAY_MS = 900;
 const IOS_LIVE_ALIGNMENT_ASPECT_TOLERANCE = 0.012;
+const IOS_LIVE_ALIGNMENT_FULL_FRAME_TOLERANCE_PX = 2;
 const IOS_MAX_RENDER_PIXEL_RATIO = 2;
 const VIDEO_CHUNK_INTERVAL_US = 16_667;
 const IOS_SPECIAL_KEY_MAP: Record<string, string> = {
@@ -257,6 +258,30 @@ function fitViewportToAspect(frameHeight: number, frameWidth: number, aspectRati
     left: 0,
     top: (frameHeight - height) / 2,
     width,
+  };
+}
+
+function viewportCoversFrame(
+  viewport: ViewportRect,
+  frameHeight: number,
+  frameWidth: number,
+): boolean {
+  return (
+    Math.abs(viewport.left) <= IOS_LIVE_ALIGNMENT_FULL_FRAME_TOLERANCE_PX
+    && Math.abs(viewport.top) <= IOS_LIVE_ALIGNMENT_FULL_FRAME_TOLERANCE_PX
+    && Math.abs(frameWidth - (viewport.left + viewport.width)) <= IOS_LIVE_ALIGNMENT_FULL_FRAME_TOLERANCE_PX
+    && Math.abs(frameHeight - (viewport.top + viewport.height)) <= IOS_LIVE_ALIGNMENT_FULL_FRAME_TOLERANCE_PX
+  );
+}
+
+function getElementContentBoxSize(element: HTMLElement): { height: number; width: number } {
+  const computedStyle = window.getComputedStyle(element);
+  const paddingX = parseFloat(computedStyle.paddingLeft || "0") + parseFloat(computedStyle.paddingRight || "0");
+  const paddingY = parseFloat(computedStyle.paddingTop || "0") + parseFloat(computedStyle.paddingBottom || "0");
+
+  return {
+    height: Math.max(element.clientHeight - paddingY, 1),
+    width: Math.max(element.clientWidth - paddingX, 1),
   };
 }
 
@@ -545,8 +570,11 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   ) => {
     const viewport = getVisibleViewport(frameHeight, frameWidth);
     const containerSize = containerSizeRef.current;
-    const boundsWidth = Math.max(containerSize.width || containerRef.current?.clientWidth || viewport.width, 1);
-    const boundsHeight = Math.max(containerSize.height || containerRef.current?.clientHeight || viewport.height, 1);
+    const measuredContainerSize = containerRef.current
+      ? getElementContentBoxSize(containerRef.current)
+      : null;
+    const boundsWidth = Math.max(containerSize.width || measuredContainerSize?.width || viewport.width, 1);
+    const boundsHeight = Math.max(containerSize.height || measuredContainerSize?.height || viewport.height, 1);
     const displayBox = getContainedContentBox(boundsHeight, boundsWidth, viewport.height, viewport.width);
     const displayWidth = Math.max(Math.round(displayBox.width), 1);
     const displayHeight = Math.max(Math.round(displayBox.height), 1);
@@ -576,7 +604,9 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     }
 
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    context.imageSmoothingEnabled = false;
+    context.clearRect(0, 0, displayWidth, displayHeight);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
     context.drawImage(
       source,
       viewport.left,
@@ -652,6 +682,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
 
     const calibrationKey = `${rawCanvas.width}x${rawCanvas.height}:${deviceWidth}x${deviceHeight}`;
     if (frameAlreadyAligned) {
+      clearLiveCalibrationRetryTimer();
       liveViewportRef.current = null;
       liveCalibrationKeyRef.current = calibrationKey;
       return;
@@ -679,9 +710,12 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         rawCanvas.width,
         deviceWidth / deviceHeight,
       );
+      const normalizedFallbackViewport = viewportCoversFrame(fallbackViewport, rawCanvas.height, rawCanvas.width)
+        ? null
+        : fallbackViewport;
 
       if (!response.ok) {
-        liveViewportRef.current = fallbackViewport;
+        liveViewportRef.current = normalizedFallbackViewport;
         redrawLiveFrameRef.current?.();
         updateLiveViewportAligned(frameAlreadyAligned);
         liveCalibrationRetryTimerRef.current = window.setTimeout(() => {
@@ -696,16 +730,22 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         screenshotBlob: await response.blob(),
       });
 
-      liveViewportRef.current = viewport ?? fallbackViewport;
+      const resolvedViewport = viewport ?? fallbackViewport;
+      liveViewportRef.current = viewportCoversFrame(resolvedViewport, rawCanvas.height, rawCanvas.width)
+        ? null
+        : resolvedViewport;
       liveCalibrationKeyRef.current = calibrationKey;
       redrawLiveFrameRef.current?.();
       updateLiveViewportAligned(viewport !== null || frameAlreadyAligned);
     } catch {
-      liveViewportRef.current = fitViewportToAspect(
+      const fallbackViewport = fitViewportToAspect(
         rawCanvas.height,
         rawCanvas.width,
         deviceWidth / deviceHeight,
       );
+      liveViewportRef.current = viewportCoversFrame(fallbackViewport, rawCanvas.height, rawCanvas.width)
+        ? null
+        : fallbackViewport;
       redrawLiveFrameRef.current?.();
       updateLiveViewportAligned(frameAlreadyAligned);
       liveCalibrationRetryTimerRef.current = window.setTimeout(() => {
@@ -773,10 +813,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     }
 
     const updateContainerSize = () => {
-      containerSizeRef.current = {
-        height: Math.max(container.clientHeight, 1),
-        width: Math.max(container.clientWidth, 1),
-      };
+      containerSizeRef.current = getElementContentBoxSize(container);
       redrawLiveFrameRef.current?.();
     };
 
@@ -975,6 +1012,22 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         frameWidth: pixelWidth,
       });
       const calibrationKey = `${pixelWidth}x${pixelHeight}:${deviceWidth}x${deviceHeight}`;
+      const rawFrameSurface = !frameAlreadyAligned
+        ? ensureRawFrameSurface(pixelHeight, pixelWidth)
+        : null;
+
+      if (!frameAlreadyAligned && !rawFrameSurface) {
+        release?.();
+        if (!frameAlreadyAligned && !hasFrameRef.current) {
+          setConnectionState("error");
+          setError("Unable to initialize the iOS stream.");
+        }
+        return;
+      }
+
+      if (rawFrameSurface) {
+        rawFrameSurface.rawContext.drawImage(source, 0, 0, pixelWidth, pixelHeight);
+      }
 
       rawFramePixelSizeRef.current = {
         height: pixelHeight,
@@ -982,16 +1035,21 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       };
 
       if (frameAlreadyAligned) {
-        liveViewportRef.current = null;
-        liveCalibrationKeyRef.current = calibrationKey;
         if (!liveViewportAlignedRef.current) {
           updateLiveViewportAligned(true);
         }
-        redrawLiveFrameRef.current = null;
-        drawLiveSourceToCanvas(context, source, pixelHeight, pixelWidth);
+        if (rawFrameSurface) {
+          redrawLiveFrameRef.current = () => {
+            drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
+          };
+          redrawLiveFrameRef.current();
+        } else {
+          redrawLiveFrameRef.current = null;
+          drawLiveSourceToCanvas(context, source, pixelHeight, pixelWidth);
+        }
       } else {
-        const rawFrameSurface = ensureRawFrameSurface(pixelHeight, pixelWidth);
-        if (!rawFrameSurface) {
+        const requiredRawFrameSurface = rawFrameSurface;
+        if (!requiredRawFrameSurface) {
           release?.();
           if (!hasFrameRef.current) {
             setConnectionState("error");
@@ -1000,10 +1058,8 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
           return;
         }
 
-        rawFrameSurface.rawContext.drawImage(source, 0, 0, pixelWidth, pixelHeight);
-
         redrawLiveFrameRef.current = () => {
-          drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
+          drawLiveSourceToCanvas(context, requiredRawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
         };
         redrawLiveFrameRef.current();
       }
