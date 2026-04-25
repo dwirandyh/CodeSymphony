@@ -99,6 +99,10 @@ function renderDialog(
   repositories: Repository[],
   onClose = vi.fn(),
   onProvidersChanged?: (providers: ModelProvider[]) => void,
+  options?: {
+    runtimeLabel?: string | null;
+    runtimeTitle?: string | null;
+  },
 ) {
   act(() => {
     root.render(
@@ -107,6 +111,8 @@ function renderDialog(
           open={true}
           onClose={onClose}
           repositories={repositories}
+          runtimeLabel={options?.runtimeLabel}
+          runtimeTitle={options?.runtimeTitle}
           onRemoveRepository={vi.fn()}
           onProvidersChanged={onProvidersChanged}
         />
@@ -244,6 +250,24 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Save Automation");
     expect(document.body.textContent).toContain("Setup Scripts");
     expect(document.body.textContent).toContain("Teardown Scripts");
+  });
+
+  it("shows runtime label in the settings sidebar footer", async () => {
+    renderDialog(
+      [makeRepo()],
+      vi.fn(),
+      undefined,
+      {
+        runtimeLabel: "Desktop runtime :4322",
+        runtimeTitle: "Runtime cwd: /bundle/runtime\nDatabase: /db.sqlite",
+      },
+    );
+    await flushEffects();
+
+    const runtimeContext = document.body.querySelector<HTMLElement>('[data-testid="settings-runtime-context"]');
+
+    expect(runtimeContext?.textContent).toContain("Desktop runtime :4322");
+    expect(runtimeContext?.getAttribute("title")).toContain("Runtime cwd: /bundle/runtime");
   });
 
   it("keeps save automation enabled after autosave even before fields are filled", async () => {
