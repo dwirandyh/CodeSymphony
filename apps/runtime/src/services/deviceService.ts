@@ -19,11 +19,13 @@ import WebSocket from "ws";
 import { buildClaudeRuntimeEnv as buildSubprocessEnv } from "../claude/shellEnv.js";
 import type { LogEntry } from "./logService.js";
 import {
+  annotateIosSimulatorBridgeTccError,
   buildAndroidInputTextCommands,
   buildAndroidProxyViewerUrl,
   parseAdbDevicesOutput,
   parseAndroidClipboardBooleanServiceCall,
   parseAndroidClipboardServiceCallOutput,
+  parseCodesignSignatureState,
   parseSimctlDevicesOutput,
   resolveRememberedAndroidDevice,
   shouldRetainMissingAndroidSession,
@@ -436,6 +438,43 @@ function createIosSimulatorBridgeSpawnSpec(udid: string): {
 
   const localSpec = createLocalIosSimulatorBridgeExecSpec(["stream", "--udid", udid, "--fps", String(fps)]);
   return { ...localSpec, shell: false };
+}
+
+function resolveBundledRuntimeNodePath(): string | null {
+  const normalizedExecPath = process.execPath.trim();
+  if (!normalizedExecPath.endsWith("/Contents/MacOS/node")) {
+    return null;
+  }
+
+  return existsSync(normalizedExecPath) ? normalizedExecPath : null;
+}
+
+async function inspectCodesignSignatureState(targetPath: string): Promise<"adhoc" | "signed" | "unsigned" | "unknown"> {
+  try {
+    const { stdout, stderr } = await execFile("codesign", ["-dv", "--verbose=4", targetPath], {
+      encoding: "utf8",
+      env: managedSubprocessEnv,
+      timeout: 5_000,
+    });
+    return parseCodesignSignatureState(`${stdout ?? ""}\n${stderr ?? ""}`);
+  } catch (error) {
+    const stdout = typeof error === "object" && error !== null && "stdout" in error ? String(error.stdout ?? "") : "";
+    const stderr = typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr ?? "") : "";
+    return parseCodesignSignatureState(`${stdout}\n${stderr}`);
+  }
+}
+
+async function annotateIosSimulatorBridgeError(message: string): Promise<string> {
+  const bundledRuntimePath = resolveBundledRuntimeNodePath();
+  if (!bundledRuntimePath) {
+    return message;
+  }
+
+  const bundledRuntimeSignature = await inspectCodesignSignatureState(bundledRuntimePath);
+  return annotateIosSimulatorBridgeTccError(message, {
+    bundledRuntimePath,
+    bundledRuntimeSignature,
+  });
 }
 
 async function resolveAndroidDisplayName(device: ReturnType<typeof parseAdbDevicesOutput>[number]): Promise<string> {
@@ -1182,7 +1221,8 @@ export function createDeviceService(logService?: RuntimeLogService) {
         await refreshAndEmit();
         return toPublicSession(session);
       } catch (error) {
-        const videoBridgeError = error instanceof Error ? error.message : String(error);
+        const rawVideoBridgeError = error instanceof Error ? error.message : String(error);
+        const videoBridgeError = await annotateIosSimulatorBridgeError(rawVideoBridgeError);
         iosSimulatorBridgeIssue = videoBridgeError;
         logService?.log("warn", "devices.ios-simulator-bridge", "Native iOS simulator streaming failed to start", {
           deviceId: device.id,

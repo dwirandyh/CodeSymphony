@@ -65,4 +65,4 @@ fi
 
 while IFS= read -r -d '' path; do
   sign_macho "${path}"
-done < <(find "${TARGET_PATH}" -type f \( -perm -111 -o -name "*.node" -o -name "SimulatorBridge" \) -print0)
+done < <(find "${TARGET_PATH}" -type f \( -perm -111 -o -name "*.node" -o -name "*.dylib" -o -name "SimulatorBridge" \) -print0)

@@ -82,6 +82,10 @@ function deviceStatusLabel(status: DeviceStatus): string {
 const MACOS_SCREEN_RECORDING_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
 function normalizeIssueMessage(issue: DeviceIssue): string {
+  if (issue.platform === "ios-simulator" && /declined TCCs/i.test(issue.message) && /ad-hoc signed/i.test(issue.message)) {
+    return "This installed CodeSymphony build is using an ad-hoc-signed runtime binary, so macOS keeps denying Screen Recording to the simulator bridge. Reinstall the latest signed app, then fully quit and reopen CodeSymphony before reconnecting the stream.";
+  }
+
   if (issue.platform === "ios-simulator" && /declined TCCs/i.test(issue.message)) {
     return "Grant Screen Recording to CodeSymphony in System Settings > Privacy & Security > Screen & System Audio Recording, then fully quit and reopen the app before reconnecting the stream.";
   }
@@ -370,7 +374,8 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
             {activeIssues.length > 0 ? (
               <div className="space-y-2 px-1 pb-2">
                 {activeIssues.map((issue) => {
-                  const isScreenRecordingIssue = issue.platform === "ios-simulator" && /declined TCCs/i.test(issue.message);
+                  const isScreenRecordingIssue = issue.platform === "ios-simulator"
+                    && (/declined TCCs/i.test(issue.message) || /ad-hoc signed/i.test(issue.message));
 
                   return (
                     <div

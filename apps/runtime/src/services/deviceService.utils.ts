@@ -2,6 +2,8 @@ import type { DeviceConnectionKind, DeviceSummary } from "@codesymphony/shared-t
 
 export const ANDROID_VIEWER_WS_PLACEHOLDER = "__DEVICE_WS_PROXY__";
 
+export type CodesignSignatureState = "adhoc" | "signed" | "unsigned" | "unknown";
+
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 export type ParsedAdbDevice = {
@@ -157,6 +159,45 @@ export function buildAndroidProxyViewerUrl(sessionId: string, udid: string, play
   });
 
   return `/api/device-streams/${encodeURIComponent(sessionId)}/viewer/index.html#!${hashParams.toString()}`;
+}
+
+export function parseCodesignSignatureState(output: string): CodesignSignatureState {
+  const normalized = output.trim();
+  if (normalized.length === 0) {
+    return "unknown";
+  }
+
+  if (/Signature=adhoc/im.test(normalized)) {
+    return "adhoc";
+  }
+
+  if (/not signed at all/i.test(normalized)) {
+    return "unsigned";
+  }
+
+  if (/^Authority=/m.test(normalized) || /^TeamIdentifier=(?!not set\b)/m.test(normalized)) {
+    return "signed";
+  }
+
+  return "unknown";
+}
+
+export function annotateIosSimulatorBridgeTccError(
+  message: string,
+  options: {
+    bundledRuntimePath?: string | null;
+    bundledRuntimeSignature?: CodesignSignatureState | null;
+  } = {},
+): string {
+  if (!/declined TCCs/i.test(message)) {
+    return message;
+  }
+
+  if (options.bundledRuntimeSignature !== "adhoc" || !options.bundledRuntimePath) {
+    return message;
+  }
+
+  return `${message} CodeSymphony's bundled runtime binary is ad-hoc signed (${options.bundledRuntimePath}), so macOS can keep denying Screen Recording to the simulator bridge. Reinstall the latest signed app build, then fully quit and reopen CodeSymphony before reconnecting the stream.`;
 }
 
 const ANDROID_INPUT_TEXT_MAX_SEGMENT_LENGTH = 240;

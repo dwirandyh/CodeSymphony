@@ -1,7 +1,11 @@
 PNPM ?= $(shell if command -v pnpm >/dev/null 2>&1; then printf '%s' pnpm; elif command -v npx >/dev/null 2>&1; then printf '%s' "npx pnpm"; else printf '%s' pnpm; fi)
 WORKTREE_DEV_STATE_DIR ?= .codesymphony/dev
+MACOS_APP_PATH ?= apps/desktop/src-tauri/target/release/bundle/macos/CodeSymphony.app
+MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT ?= apps/desktop/scripts/resolve-signing-identity.sh
+MACOS_VERIFY_SIGNING_SCRIPT ?= apps/desktop/scripts/verify-macos-signing.sh
+MACOS_BUILD_ENV_FILE ?= .env
 
-.PHONY: help install stop-dev dev dev-runtime dev-web dev-desktop setup-android-streaming start-android-streaming db-generate db-migrate db-seed db-init build test lint setup-worktree setup-worktree-up stop-worktree-up
+.PHONY: help install stop-dev dev dev-runtime dev-web dev-desktop setup-android-streaming start-android-streaming db-generate db-migrate db-seed db-init build test lint build-macos-prod build-macos-prod-app macos-signing-identity verify-macos-signing setup-worktree setup-worktree-up stop-worktree-up
 
 help:
 	@echo "Available targets:"
@@ -23,9 +27,18 @@ help:
 	@echo "  make lint          - Run typecheck/lint across workspace"
 	@echo "  make test          - Run tests across workspace"
 	@echo "  make build         - Build all workspace packages/apps"
+	@echo "  make macos-signing-identity - Print the macOS signing identity that will be used for release builds"
+	@echo "  make build-macos-prod-app - Build a signed production macOS .app bundle"
+	@echo "  make build-macos-prod - Build a signed production macOS .app bundle and DMG"
+	@echo "  make verify-macos-signing - Verify the built macOS app and nested binaries are not ad-hoc signed"
 	@echo "  make setup-worktree PORT=N - Configure ports for this worktree (runtime=N, web=N+1000)"
 	@echo "  make setup-worktree-up PORT=N - Configure ports, start dev detached, and wait until runtime+web are ready"
 	@echo "  make stop-worktree-up PORT=N - Stop detached dev started for this worktree port"
+	@echo ""
+	@echo "macOS release build notes:"
+	@echo "  Local macOS build overrides can live in $(MACOS_BUILD_ENV_FILE) (gitignored)."
+	@echo "  Override the signing identity with CODESYMPHONY_MACOS_SIGN_IDENTITY='Developer ID Application: ...'"
+	@echo "  If no identity is set, the desktop build scripts auto-detect a usable non-adhoc identity."
 
 install:
 	$(PNPM) install
@@ -87,6 +100,40 @@ test:
 
 build:
 	$(PNPM) build
+
+macos-signing-identity:
+	@set -e; \
+	set -a; \
+	if [ -f "$(MACOS_BUILD_ENV_FILE)" ]; then . "$(MACOS_BUILD_ENV_FILE)"; fi; \
+	set +a; \
+	bash "$(MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT)"
+
+build-macos-prod-app:
+	@set -e; \
+	set -a; \
+	if [ -f "$(MACOS_BUILD_ENV_FILE)" ]; then . "$(MACOS_BUILD_ENV_FILE)"; fi; \
+	set +a; \
+	SIGNING_IDENTITY="$${CODESYMPHONY_MACOS_SIGN_IDENTITY:-$${APPLE_SIGNING_IDENTITY:-$$(bash "$(MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT)")}}"; \
+	echo "Using macOS signing identity: $$SIGNING_IDENTITY"; \
+	CODESYMPHONY_MACOS_SIGN_IDENTITY="$$SIGNING_IDENTITY" $(PNPM) --filter @codesymphony/desktop build:app
+
+build-macos-prod:
+	@set -e; \
+	set -a; \
+	if [ -f "$(MACOS_BUILD_ENV_FILE)" ]; then . "$(MACOS_BUILD_ENV_FILE)"; fi; \
+	set +a; \
+	SIGNING_IDENTITY="$${CODESYMPHONY_MACOS_SIGN_IDENTITY:-$${APPLE_SIGNING_IDENTITY:-$$(bash "$(MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT)")}}"; \
+	echo "Using macOS signing identity: $$SIGNING_IDENTITY"; \
+	CODESYMPHONY_MACOS_SIGN_IDENTITY="$$SIGNING_IDENTITY" $(PNPM) --filter @codesymphony/desktop build
+
+verify-macos-signing:
+	@set -e; \
+	set -a; \
+	if [ -f "$(MACOS_BUILD_ENV_FILE)" ]; then . "$(MACOS_BUILD_ENV_FILE)"; fi; \
+	set +a; \
+	SIGNING_IDENTITY="$${CODESYMPHONY_MACOS_SIGN_IDENTITY:-$${APPLE_SIGNING_IDENTITY:-$$(bash "$(MACOS_RESOLVE_SIGNING_IDENTITY_SCRIPT)")}}"; \
+	echo "Verifying $(MACOS_APP_PATH)"; \
+	CODESYMPHONY_MACOS_SIGN_IDENTITY="$$SIGNING_IDENTITY" bash "$(MACOS_VERIFY_SIGNING_SCRIPT)" "$(MACOS_APP_PATH)" "$$SIGNING_IDENTITY"
 
 setup-worktree:
 ifndef PORT
