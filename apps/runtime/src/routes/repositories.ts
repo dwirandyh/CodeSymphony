@@ -7,6 +7,7 @@ import {
   OpenWorktreeFileInputSchema,
   RenameWorktreeBranchInputSchema,
   UpdateRepositoryScriptsInputSchema,
+  UpdateWorktreeBaseBranchInputSchema,
   UpdateWorktreeFileContentInputSchema,
 } from "@codesymphony/shared-types";
 import { z } from "zod";
@@ -345,6 +346,24 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return { data: worktree };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to rename branch";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.patch("/worktrees/:id/base-branch", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const input = UpdateWorktreeBaseBranchInputSchema.parse(request.body);
+
+    try {
+      const worktree = await app.worktreeService.updateBaseBranch(params.id, input.baseBranch);
+      app.workspaceEventHub.emit("worktree.updated", {
+        repositoryId: worktree.repositoryId,
+        worktreeId: worktree.id,
+      });
+      invalidateCachedWorktreeGitData(worktree.id);
+      return { data: worktree };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to update target branch";
       return reply.code(400).send({ error: message });
     }
   });

@@ -17,6 +17,7 @@ const mockWorktreeService = {
   remove: vi.fn(),
   listThreads: vi.fn(),
   renameBranch: vi.fn(),
+  updateBaseBranch: vi.fn(),
 };
 
 const mockReviewService = {
@@ -227,6 +228,42 @@ describe("repository routes", () => {
       mockChatService.getOrCreatePrMrThread.mockRejectedValue(new Error("Worktree not found"));
       const res = await app.inject({ method: "POST", url: "/api/worktrees/missing/pr-mr-thread" });
       expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("PATCH /api/worktrees/:id/base-branch", () => {
+    it("updates the worktree target branch", async () => {
+      mockWorktreeService.updateBaseBranch.mockResolvedValue({
+        id: "w1",
+        repositoryId: "r1",
+        baseBranch: "develop",
+      });
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/worktrees/w1/base-branch",
+        payload: { baseBranch: "develop" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockWorktreeService.updateBaseBranch).toHaveBeenCalledWith("w1", "develop");
+      expect(mockWorkspaceEventHub.emit).toHaveBeenCalledWith("worktree.updated", {
+        repositoryId: "r1",
+        worktreeId: "w1",
+      });
+    });
+
+    it("returns 400 on base branch update failure", async () => {
+      mockWorktreeService.updateBaseBranch.mockRejectedValue(new Error("Unable to update target branch"));
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/worktrees/w1/base-branch",
+        payload: { baseBranch: "develop" },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "Unable to update target branch" });
     });
   });
 

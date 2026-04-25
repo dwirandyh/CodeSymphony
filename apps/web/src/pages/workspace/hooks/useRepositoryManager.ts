@@ -9,6 +9,8 @@ import { useCreateWorktree } from "../../../hooks/mutations/useCreateWorktree";
 import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
 import { useDeleteRepository } from "../../../hooks/mutations/useDeleteRepository";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
+import { useUpdateWorktreeBaseBranch } from "../../../hooks/mutations/useUpdateWorktreeBaseBranch";
+import { isRootWorktree } from "../../../lib/worktree";
 import { buildRepositoryWorktreeIndex, resolveFallbackWorktreeId } from "../../../collections/worktrees";
 
 export interface TeardownErrorState {
@@ -57,6 +59,7 @@ export function useRepositoryManager(
   const deleteWorktreeMutation = useDeleteWorktree();
   const deleteRepoMutation = useDeleteRepository();
   const renameBranchMutation = useRenameWorktreeBranch();
+  const updateWorktreeBaseBranchMutation = useUpdateWorktreeBaseBranch();
 
   const activeStreamRef = useRef<{ worktreeId: string; eventSource: EventSource } | null>(null);
   const [setupRunning, setSetupRunning] = useState(false);
@@ -105,6 +108,7 @@ export function useRepositoryManager(
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [selectedWorktreeId, setSelectedWorktreeId] = useState<string | null>(null);
   const [fileBrowserOpen, setFileBrowserOpen] = useState(false);
+  const [updatingTargetBranchWorktreeId, setUpdatingTargetBranchWorktreeId] = useState<string | null>(null);
 
   const previousRepositoryCountRef = useRef(0);
   const previousRepositoriesRef = useRef(repositories);
@@ -353,14 +357,60 @@ export function useRepositoryManager(
 
   const updateWorktreeBranch = useCallback((worktreeId: string, newBranch: string) => {
     queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (old) =>
-      old?.map((repo) => ({
+      (old ?? repositories).map((repo) => ({
         ...repo,
         worktrees: repo.worktrees.map((wt) =>
           wt.id === worktreeId ? { ...wt, branch: newBranch } : wt,
         ),
       })),
     );
-  }, [queryClient]);
+  }, [queryClient, repositories]);
+
+  async function updateWorktreeTargetBranch(worktreeId: string, newBaseBranch: string) {
+    onError(null);
+    const worktree = repositoryWorktreeIndex.worktreeById.get(worktreeId);
+
+    if (!worktree) {
+      onError("Worktree not found");
+      return;
+    }
+
+    const trimmedBaseBranch = newBaseBranch.trim();
+    if (!trimmedBaseBranch) {
+      onError("Target branch is required");
+      return;
+    }
+
+    const isRoot = isRootWorktree(worktree, worktree.repository);
+    const currentTargetBranch = isRoot ? worktree.repository.defaultBranch : worktree.baseBranch;
+    if (currentTargetBranch === trimmedBaseBranch) {
+      return;
+    }
+
+    setUpdatingTargetBranchWorktreeId(worktreeId);
+
+    try {
+      if (isRoot) {
+        const updatedRepository = await api.updateRepositoryScripts(worktree.repository.id, {
+          defaultBranch: trimmedBaseBranch,
+        });
+
+        queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (old) =>
+          (old ?? repositories).map((repo) => repo.id === updatedRepository.id ? updatedRepository : repo),
+        );
+        return;
+      }
+
+      await updateWorktreeBaseBranchMutation.mutateAsync({
+        worktreeId,
+        input: { baseBranch: trimmedBaseBranch },
+      });
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Failed to update target branch");
+    } finally {
+      setUpdatingTargetBranchWorktreeId((current) => current === worktreeId ? null : current);
+    }
+  }
 
   return {
     repositories,
@@ -386,6 +436,8 @@ export function useRepositoryManager(
     stopSetup,
     setupRunning,
     renameWorktreeBranch,
+    updateWorktreeTargetBranch,
+    updatingTargetBranchWorktreeId,
     updateWorktreeBranch,
   };
 }

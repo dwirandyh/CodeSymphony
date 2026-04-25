@@ -216,6 +216,43 @@ describe("worktreeService", () => {
     });
   });
 
+  describe("updateBaseBranch", () => {
+    it("updates target branch for a non-root worktree", async () => {
+      const created = await service.create(repositoryId, { branch: "target-base-branch-test" });
+      createdWorktreeIds.push(created.worktree.id);
+
+      const updated = await service.updateBaseBranch(created.worktree.id, "develop");
+
+      expect(updated.baseBranch).toBe("develop");
+    });
+
+    it("returns same worktree when target branch is unchanged", async () => {
+      const created = await service.create(repositoryId, { branch: "same-target-base-branch-test" });
+      createdWorktreeIds.push(created.worktree.id);
+
+      const updated = await service.updateBaseBranch(created.worktree.id, created.worktree.baseBranch);
+
+      expect(updated.baseBranch).toBe(created.worktree.baseBranch);
+    });
+
+    it("throws for the primary worktree", async () => {
+      const root = await prisma.worktree.findFirst({
+        where: { repositoryId, path: repoDir },
+      });
+      if (!root) {
+        throw new Error("Primary worktree not found");
+      }
+
+      await expect(service.updateBaseBranch(root.id, "develop")).rejects.toThrow(
+        "Primary worktree target branch is managed by the repository default branch",
+      );
+    });
+
+    it("throws for non-existent worktree", async () => {
+      await expect(service.updateBaseBranch("non-existent", "develop")).rejects.toThrow("Worktree not found");
+    });
+  });
+
   describe("rerunSetup", () => {
     it("returns success when no setup script configured", async () => {
       const created = await service.create(repositoryId, { branch: "setup-test" });

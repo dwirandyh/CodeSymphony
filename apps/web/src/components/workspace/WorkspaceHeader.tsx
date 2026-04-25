@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
-import { Dot, FileCode2, GitPullRequestArrow, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Dot, FileCode2, GitBranch, GitPullRequestArrow, Loader2, Plus, X } from "lucide-react";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import { OpenInAppButton } from "./OpenInAppButton";
 
@@ -17,11 +20,13 @@ function fileTabLabel(filePath: string): string {
 }
 
 type WorkspaceHeaderProps = {
-  selectedRepositoryName: string;
-  selectedWorktreeLabel: string;
+  selectedWorktreeBranch: string | null;
+  selectedIsRootWorkspace?: boolean;
+  targetBranch?: string | null;
+  targetBranchOptions?: string[];
+  targetBranchLoading?: boolean;
+  targetBranchDisabled?: boolean;
   worktreePath: string | null;
-  runtimeLabel?: string | null;
-  runtimeTitle?: string | null;
   threads: ChatThread[];
   selectedThreadId: string | null;
   fileTabs: WorkspaceFileTab[];
@@ -39,6 +44,7 @@ type WorkspaceHeaderProps = {
   onCreateThread: () => void;
   onCloseThread: (threadId: string) => void;
   onRenameThread: (threadId: string, title: string) => Promise<void> | void;
+  onSelectTargetBranch?: (branch: string) => void;
   onSelectReviewTab?: () => void;
   onCloseReviewTab?: () => void;
   runScriptRunning?: boolean;
@@ -64,11 +70,13 @@ function FilledPauseIcon({ className }: { className?: string }) {
 }
 
 export function WorkspaceHeader({
-  selectedRepositoryName,
-  selectedWorktreeLabel,
+  selectedWorktreeBranch,
+  selectedIsRootWorkspace = false,
+  targetBranch,
+  targetBranchOptions = [],
+  targetBranchLoading = false,
+  targetBranchDisabled = false,
   worktreePath,
-  runtimeLabel,
-  runtimeTitle,
   threads,
   selectedThreadId,
   fileTabs,
@@ -86,13 +94,33 @@ export function WorkspaceHeader({
   onCreateThread,
   onCloseThread,
   onRenameThread,
+  onSelectTargetBranch,
   onSelectReviewTab,
   onCloseReviewTab,
   runScriptRunning,
   onToggleRunScript,
 }: WorkspaceHeaderProps) {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
+  const [targetBranchFilter, setTargetBranchFilter] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const targetBranchFilterInputRef = useRef<HTMLInputElement | null>(null);
+
+  const branchContextLabel = selectedWorktreeBranch
+    ?? (selectedIsRootWorkspace ? "Root worktree" : "Worktree");
+  const branchContextTitle = selectedIsRootWorkspace
+    ? selectedWorktreeBranch
+      ? `Current branch: ${selectedWorktreeBranch} (root worktree)`
+      : "Root worktree"
+    : selectedWorktreeBranch
+      ? `Current branch: ${selectedWorktreeBranch}`
+      : "Worktree";
+  const targetBranchLabel = targetBranch ? `origin/${targetBranch}` : "Select target branch";
+  const canChooseTargetBranch = !!onSelectTargetBranch && (targetBranchOptions.length > 0 || targetBranchLoading);
+  const normalizedTargetBranchFilter = targetBranchFilter.trim().toLowerCase();
+  const filteredTargetBranchOptions = normalizedTargetBranchFilter
+    ? targetBranchOptions.filter((branchOption) => branchOption.toLowerCase().includes(normalizedTargetBranchFilter))
+    : targetBranchOptions;
 
   useEffect(() => {
     if (!editingThreadId) {
@@ -117,6 +145,20 @@ export function WorkspaceHeader({
     input.focus();
     input.select();
   }, [editingThreadId]);
+
+  useEffect(() => {
+    if (!targetBranchSelectorOpen) {
+      setTargetBranchFilter("");
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      targetBranchFilterInputRef.current?.focus();
+      targetBranchFilterInputRef.current?.select();
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [targetBranchSelectorOpen]);
 
   function startThreadRename(threadId: string, isSelected: boolean) {
     if (!isSelected || disabled) {
@@ -150,12 +192,100 @@ export function WorkspaceHeader({
       "workspace-header space-y-1 lg:space-y-1.5",
     )}>
       <div className="hidden items-center justify-between gap-3 lg:flex">
-        <div className="min-w-0 truncate text-[11px]">
-          <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground">Session</span>
-          <span className="px-1.5 text-muted-foreground/80">·</span>
-          <span className="font-semibold text-foreground/90">{selectedRepositoryName}</span>
-          <span className="px-1.5 text-muted-foreground/80">·</span>
-          <span className="text-muted-foreground">{selectedWorktreeLabel}</span>
+        <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-5">
+          <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+          <span
+            className="min-w-0 truncate font-medium text-foreground/90"
+            title={branchContextTitle}
+            data-testid="workspace-header-context"
+          >
+            {branchContextLabel}
+          </span>
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
+          {canChooseTargetBranch ? (
+            <Popover open={targetBranchSelectorOpen} onOpenChange={setTargetBranchSelectorOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 min-w-0 shrink-0 gap-1 rounded-md px-2 text-[12px] font-medium text-foreground/80 hover:bg-secondary/40 hover:text-foreground"
+                  aria-label="Select target branch"
+                  title={targetBranchLoading ? "Loading branches" : `Target branch: ${targetBranchLabel}`}
+                  disabled={targetBranchDisabled}
+                  data-testid="workspace-target-branch-trigger"
+                >
+                  {targetBranchLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  <span className="truncate">{targetBranchLabel}</span>
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                sideOffset={8}
+                className="w-[236px] rounded-lg border-border/60 bg-popover/95 p-1.5 shadow-[0_14px_36px_rgba(15,23,42,0.16)]"
+              >
+                <div className="px-1 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/85">
+                  Target branch
+                </div>
+                <Input
+                  ref={targetBranchFilterInputRef}
+                  value={targetBranchFilter}
+                  onChange={(event) => setTargetBranchFilter(event.target.value)}
+                  placeholder="Filter branches..."
+                  className="mb-1.5 h-7 border-border/60 px-2 text-[11px] focus-visible:border-border/60 focus-visible:ring-0 focus-visible:ring-offset-0"
+                  aria-label="Filter target branches"
+                  data-testid="workspace-target-branch-filter"
+                />
+                <ScrollArea className="max-h-48">
+                  <div className="space-y-0.5 pr-0.5">
+                    {filteredTargetBranchOptions.length > 0 ? filteredTargetBranchOptions.map((branchOption) => {
+                      const selected = branchOption === targetBranch;
+                      return (
+                        <button
+                          key={branchOption}
+                          type="button"
+                          className={cn(
+                            "flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-[11px] transition-colors",
+                            selected
+                              ? "bg-secondary/70 text-foreground"
+                              : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
+                          )}
+                          onClick={() => {
+                            if (!onSelectTargetBranch || branchOption === targetBranch) {
+                              setTargetBranchSelectorOpen(false);
+                              return;
+                            }
+                            onSelectTargetBranch(branchOption);
+                            setTargetBranchSelectorOpen(false);
+                          }}
+                          data-testid={`workspace-target-branch-option-${branchOption}`}
+                        >
+                          <span className="truncate">{`origin/${branchOption}`}</span>
+                          {selected ? <span className="ml-2 shrink-0 text-[9px] uppercase tracking-[0.08em] text-foreground/65">Current</span> : null}
+                        </button>
+                      );
+                    }) : (
+                      <div
+                        className="px-2 py-2 text-[11px] text-muted-foreground"
+                        data-testid="workspace-target-branch-empty"
+                      >
+                        No branches found
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+              </PopoverContent>
+            </Popover>
+          ) : (
+            <span
+              className="truncate text-[12px] font-medium text-foreground/80"
+              title={`Target branch: ${targetBranchLabel}`}
+              data-testid="workspace-target-branch-label"
+            >
+              {targetBranchLabel}
+            </span>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -183,29 +313,6 @@ export function WorkspaceHeader({
           )}
         </div>
       </div>
-
-      {(runtimeLabel || worktreePath) && (
-        <div className="flex min-w-0 items-center gap-2 px-0.5 text-[10px] sm:text-[11px]">
-          {runtimeLabel ? (
-            <span
-              className="inline-flex shrink-0 items-center rounded-full border border-border/50 bg-secondary/35 px-2 py-0.5 font-medium text-foreground/80"
-              title={runtimeTitle ?? undefined}
-              data-testid="workspace-runtime-context"
-            >
-              {runtimeLabel}
-            </span>
-          ) : null}
-          {worktreePath ? (
-            <span
-              className="min-w-0 flex-1 truncate font-mono text-muted-foreground/85"
-              title={worktreePath}
-              data-testid="workspace-worktree-path"
-            >
-              {worktreePath}
-            </span>
-          ) : null}
-        </div>
-      )}
 
       <div className="flex items-center gap-1">
         <div

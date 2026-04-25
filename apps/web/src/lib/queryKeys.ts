@@ -3,6 +3,7 @@ import type { CliAgent } from "@codesymphony/shared-types";
 export const queryKeys = {
   repositories: {
     all: ["repositories"] as const,
+    branches: (repositoryId: string) => ["repositories", repositoryId, "branches"] as const,
     reviews: (repositoryId: string) => ["repositories", repositoryId, "reviews"] as const,
   },
   worktrees: {

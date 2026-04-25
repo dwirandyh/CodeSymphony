@@ -61,8 +61,7 @@ describe("WorkspaceHeader", () => {
 
   function renderHeader(overrides?: Partial<Parameters<typeof WorkspaceHeader>[0]>) {
     const props: Parameters<typeof WorkspaceHeader>[0] = {
-      selectedRepositoryName: "repo",
-      selectedWorktreeLabel: "main",
+      selectedWorktreeBranch: "main",
       worktreePath: "/tmp/repo",
       threads,
       selectedThreadId: "thread-1",
@@ -199,19 +198,59 @@ describe("WorkspaceHeader", () => {
     expect(onCreateThread).toHaveBeenCalledTimes(1);
   });
 
-  it("renders runtime and worktree context metadata", () => {
+  it("does not render runtime or worktree metadata rows", () => {
+    renderHeader({ worktreePath: "/tmp/repo" });
+
+    expect(container.querySelector('[data-testid="workspace-runtime-context"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workspace-worktree-path"]')).toBeNull();
+  });
+
+  it("renders breadcrumb-style context and lets target branch be selected", () => {
+    const onSelectTargetBranch = vi.fn();
     renderHeader({
-      runtimeLabel: "Desktop runtime :4322",
-      runtimeTitle: "Runtime cwd: /bundle/runtime\nDatabase: /db.sqlite",
-      worktreePath: "/tmp/repo",
+      selectedWorktreeBranch: "feature/root-sync",
+      selectedIsRootWorkspace: true,
+      targetBranch: "main",
+      targetBranchOptions: ["main", "develop", "release/2026.04"],
+      onSelectTargetBranch,
     });
 
-    const runtimeContext = container.querySelector<HTMLElement>('[data-testid="workspace-runtime-context"]');
-    const worktreePath = container.querySelector<HTMLElement>('[data-testid="workspace-worktree-path"]');
+    const context = container.querySelector<HTMLElement>('[data-testid="workspace-header-context"]');
+    const trigger = container.querySelector<HTMLButtonElement>('[data-testid="workspace-target-branch-trigger"]');
 
-    expect(runtimeContext?.textContent).toContain("Desktop runtime :4322");
-    expect(runtimeContext?.getAttribute("title")).toContain("Runtime cwd: /bundle/runtime");
-    expect(worktreePath?.textContent).toContain("/tmp/repo");
+    expect(context?.textContent).toBe("feature/root-sync");
+    expect(trigger?.textContent).toContain("origin/main");
+
+    flushSync(() => {
+      trigger?.click();
+    });
+
+    const filter = document.body.querySelector<HTMLInputElement>('[data-testid="workspace-target-branch-filter"]');
+    if (!filter) {
+      throw new Error("Target branch filter not found");
+    }
+
+    flushSync(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      if (!valueSetter) {
+        throw new Error("Input value setter not found");
+      }
+      valueSetter.call(filter, "release");
+      filter.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(document.body.querySelector('[data-testid="workspace-target-branch-option-develop"]')).toBeNull();
+
+    const filteredOption = document.body.querySelector<HTMLButtonElement>('[data-testid="workspace-target-branch-option-release/2026.04"]');
+    if (!filteredOption) {
+      throw new Error("Filtered target branch option not found");
+    }
+
+    flushSync(() => {
+      filteredOption.click();
+    });
+
+    expect(onSelectTargetBranch).toHaveBeenCalledWith("release/2026.04");
   });
 
   it("keeps unselected close buttons non-interactive until hovered", () => {
