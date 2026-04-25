@@ -159,9 +159,12 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
       return;
     }
 
+    const activeSessionDevice = snapshot.activeSessions.find((session) =>
+      snapshot.devices.some((device) => device.id === session.deviceId),
+    );
     const streamingDevice = snapshot.devices.find((device) => device.status === "streaming");
-    setSelectedDeviceId(streamingDevice?.id ?? snapshot.devices[0]?.id ?? null);
-  }, [selectedDeviceId, snapshot.devices]);
+    setSelectedDeviceId(activeSessionDevice?.deviceId ?? streamingDevice?.id ?? snapshot.devices[0]?.id ?? null);
+  }, [selectedDeviceId, snapshot.activeSessions, snapshot.devices]);
 
   const activeDevice = useMemo(
     () => snapshot.devices.find((device) => device.id === selectedDeviceId) ?? null,

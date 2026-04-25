@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly UPSTREAM_URL="https://github.com/NetrisTV/ws-scrcpy.git"
 readonly UPSTREAM_COMMIT="49d26231840cafcde77a3e778b804d8af498a5ac"
+readonly PATCH_REVISION="codesymphony-ws-scrcpy-v3"
 readonly SIDECAR_ROOT="${CODESYMPHONY_SIDECAR_ROOT:-$HOME/.codesymphony/sidecars}"
 readonly SIDECAR_DIR="$SIDECAR_ROOT/ws-scrcpy"
 readonly BUILD_STAMP_PATH="$SIDECAR_DIR/.codesymphony-build"
+readonly BUILD_STAMP_VALUE="${UPSTREAM_COMMIT}:${PATCH_REVISION}"
 readonly CONFIG_PATH="$SIDECAR_ROOT/ws-scrcpy.config.yaml"
 readonly ANDROID_PORT="${ANDROID_WS_SCRCPY_PORT:-8765}"
+readonly FORWARD_PATCH_PATH="${SCRIPT_DIR}/patches/ws-scrcpy-forward-resilience.patch"
 
 require_command() {
   local command_name="$1"
@@ -79,6 +83,19 @@ server:
 EOF
 }
 
+apply_codesymphony_patches() {
+  if [[ ! -f "$FORWARD_PATCH_PATH" ]]; then
+    echo "Missing ws-scrcpy patch file at $FORWARD_PATCH_PATH" >&2
+    exit 1
+  fi
+
+  if git -C "$SIDECAR_DIR" apply --reverse --check "$FORWARD_PATCH_PATH" >/dev/null 2>&1; then
+    return
+  fi
+
+  git -C "$SIDECAR_DIR" apply --whitespace=nowarn "$FORWARD_PATCH_PATH"
+}
+
 ensure_dist_runtime_dependencies() {
   if [[ ! -f "$SIDECAR_DIR/dist/package.json" ]]; then
     echo "ws-scrcpy dist package.json is missing. Re-run the setup." >&2
@@ -128,7 +145,7 @@ needs_rebuild() {
 
   local built_commit
   built_commit="$(cat "$BUILD_STAMP_PATH")"
-  [[ "$built_commit" != "$UPSTREAM_COMMIT" ]]
+  [[ "$built_commit" != "$BUILD_STAMP_VALUE" ]]
 }
 
 main() {
@@ -138,6 +155,7 @@ main() {
   require_command adb
 
   ensure_checkout
+  apply_codesymphony_patches
   write_build_override
   write_node_pty_stub
   patch_package_json
@@ -149,7 +167,7 @@ main() {
       npm install --no-audit --no-fund
       npm run dist
     )
-    printf '%s\n' "$UPSTREAM_COMMIT" >"$BUILD_STAMP_PATH"
+    printf '%s\n' "$BUILD_STAMP_VALUE" >"$BUILD_STAMP_PATH"
   fi
 
   ensure_dist_runtime_dependencies

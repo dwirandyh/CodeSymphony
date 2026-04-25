@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { parseAndroidInitialPacket } from "./androidScrcpy";
+import {
+  buildAndroidGetClipboardMessage,
+  buildAndroidSetClipboardMessage,
+  buildAndroidTextMessage,
+  getAndroidEncodedVideoChunkType,
+  parseAndroidDeviceMessage,
+  parseAndroidInitialPacket,
+} from "./androidScrcpy";
 
 const encoder = new TextEncoder();
 
@@ -83,6 +90,22 @@ function createInitialPacket(): ArrayBuffer {
   return bytes.buffer;
 }
 
+function createClipboardDeviceMessage(text: string): ArrayBuffer {
+  const magic = encoder.encode("scrcpy_message");
+  const encodedText = encoder.encode(text);
+  const bytes = new Uint8Array(magic.length + 1 + 4 + encodedText.length);
+  const view = new DataView(bytes.buffer);
+  let offset = 0;
+
+  bytes.set(magic, offset);
+  offset += magic.length;
+  offset = writeInt8(view, offset, 0);
+  offset = writeInt32(view, offset, encodedText.length);
+  bytes.set(encodedText, offset);
+
+  return bytes.buffer;
+}
+
 describe("parseAndroidInitialPacket", () => {
   it("parses video settings fields with the correct offsets", () => {
     const packet = parseAndroidInitialPacket(createInitialPacket());
@@ -103,5 +126,56 @@ describe("parseAndroidInitialPacket", () => {
       sendFrameMeta: true,
       width: 288,
     });
+  });
+});
+
+describe("Android control messages", () => {
+  it("encodes text input using the UTF-8 payload length", () => {
+    const text = "Halo 👋";
+    const message = buildAndroidTextMessage(text);
+    const encodedText = encoder.encode(text);
+    const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
+
+    expect(view.getUint8(0)).toBe(1);
+    expect(view.getInt32(1)).toBe(encodedText.length);
+    expect(Array.from(message.slice(5))).toEqual(Array.from(encodedText));
+  });
+
+  it("encodes set clipboard commands with the paste flag and UTF-8 payload", () => {
+    const text = "Salin ✂️";
+    const message = buildAndroidSetClipboardMessage(text, true);
+    const encodedText = encoder.encode(text);
+    const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
+
+    expect(view.getUint8(0)).toBe(9);
+    expect(view.getUint8(1)).toBe(1);
+    expect(view.getInt32(2)).toBe(encodedText.length);
+    expect(Array.from(message.slice(6))).toEqual(Array.from(encodedText));
+  });
+
+  it("encodes get clipboard as a single-byte command", () => {
+    expect(Array.from(buildAndroidGetClipboardMessage())).toEqual([8]);
+  });
+});
+
+describe("parseAndroidDeviceMessage", () => {
+  it("parses clipboard messages from ws-scrcpy packets", () => {
+    expect(parseAndroidDeviceMessage(createClipboardDeviceMessage("Disalin dari device"))).toEqual({
+      text: "Disalin dari device",
+      type: "clipboard",
+    });
+  });
+});
+
+describe("Android video packet classification", () => {
+  it("maps H264 slice packets to the correct WebCodecs chunk type", () => {
+    expect(getAndroidEncodedVideoChunkType(1)).toBe("delta");
+    expect(getAndroidEncodedVideoChunkType(2)).toBe("delta");
+    expect(getAndroidEncodedVideoChunkType(3)).toBe("delta");
+    expect(getAndroidEncodedVideoChunkType(4)).toBe("delta");
+    expect(getAndroidEncodedVideoChunkType(5)).toBe("key");
+    expect(getAndroidEncodedVideoChunkType(6)).toBeNull();
+    expect(getAndroidEncodedVideoChunkType(7)).toBeNull();
+    expect(getAndroidEncodedVideoChunkType(8)).toBeNull();
   });
 });

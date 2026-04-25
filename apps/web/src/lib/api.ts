@@ -6,6 +6,7 @@ import type {
   ChatThreadSnapshot,
   ChatTimelineSnapshot,
   CliAgent,
+  ClipboardText,
   CreateChatThreadInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
@@ -42,6 +43,7 @@ import type {
   StartDeviceStreamInput,
   StopDeviceStreamInput,
   TestModelProviderInput,
+  UpdateAndroidClipboardInput,
   UpdateWorktreeFileContentInput,
   UpdateModelProviderInput,
   UpdateRepositoryScriptsInput,
@@ -585,6 +587,20 @@ export const api = {
     }).then((response) => response.attachments),
   getInstalledApps: () =>
     request<{ apps: ExternalApp[] }>("/system/installed-apps").then((r) => r.apps),
+  readHostClipboard: () =>
+    request<ClipboardText>("/system/clipboard").then((response) => response.text),
+  writeHostClipboard: async (text: string): Promise<void> => {
+    const response = await runtimeFetch("/system/clipboard", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to write the host clipboard");
+    }
+  },
   openInApp: async (input: OpenInAppInput) => {
     const response = await runtimeFetch("/system/open-in-app", {
       method: "POST",
@@ -626,6 +642,20 @@ export const api = {
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to send device control");
+    }
+  },
+  readAndroidClipboard: (sessionId: string) =>
+    request<ClipboardText>(`/device-streams/${encodeURIComponent(sessionId)}/android/clipboard`).then((response) => response.text),
+  writeAndroidClipboard: async (sessionId: string, input: UpdateAndroidClipboardInput): Promise<void> => {
+    const response = await runtimeFetch(`/device-streams/${encodeURIComponent(sessionId)}/android/clipboard`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to write the Android clipboard");
     }
   },
 

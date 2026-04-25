@@ -5,6 +5,8 @@ const SCRCPY_INITIAL_MAGIC = textEncoder.encode("scrcpy_initial");
 const SCRCPY_MESSAGE_MAGIC = textEncoder.encode("scrcpy_message");
 const DEFAULT_REMOTE = "tcp:8886";
 
+const CONTROL_TYPE_TEXT = 1;
+const NAL_TYPE_NON_IDR = 1;
 const NAL_TYPE_IDR = 5;
 const NAL_TYPE_SEI = 6;
 const NAL_TYPE_SPS = 7;
@@ -13,15 +15,30 @@ const NAL_TYPE_PPS = 8;
 const CONTROL_TYPE_KEYCODE = 0;
 const CONTROL_TYPE_TOUCH = 2;
 const CONTROL_TYPE_SCROLL = 3;
+const CONTROL_TYPE_GET_CLIPBOARD = 8;
+const CONTROL_TYPE_SET_CLIPBOARD = 9;
 const CONTROL_TYPE_CHANGE_STREAM_PARAMETERS = 101;
+const DEVICE_MESSAGE_TYPE_CLIPBOARD = 0;
 
 export const ANDROID_KEY_ACTION_DOWN = 0;
 export const ANDROID_KEY_ACTION_UP = 1;
 
 export const ANDROID_KEYCODE_HOME = 3;
 export const ANDROID_KEYCODE_BACK = 4;
+export const ANDROID_KEYCODE_DPAD_UP = 19;
+export const ANDROID_KEYCODE_DPAD_DOWN = 20;
+export const ANDROID_KEYCODE_DPAD_LEFT = 21;
+export const ANDROID_KEYCODE_DPAD_RIGHT = 22;
 export const ANDROID_KEYCODE_APP_SWITCH = 187;
 export const ANDROID_KEYCODE_POWER = 26;
+export const ANDROID_KEYCODE_TAB = 61;
+export const ANDROID_KEYCODE_ENTER = 66;
+export const ANDROID_KEYCODE_DEL = 67;
+export const ANDROID_KEYCODE_ESCAPE = 111;
+export const ANDROID_KEYCODE_V = 50;
+export const ANDROID_KEYCODE_CTRL_LEFT = 113;
+export const ANDROID_META_CTRL_ON = 0x1000;
+export const ANDROID_META_CTRL_LEFT_ON = 0x2000;
 
 export type AndroidDisplayInfo = {
   connectionCount: number;
@@ -71,6 +88,16 @@ export type AndroidDecodedVideoConfig = {
   height: number;
   width: number;
 };
+
+export type AndroidDeviceMessage =
+  | {
+    text: string;
+    type: "clipboard";
+  }
+  | {
+    rawType: number;
+    type: "unknown";
+  };
 
 type H264SpsParameters = {
   codec: string;
@@ -437,6 +464,41 @@ export function isAndroidDeviceMessagePacket(data: ArrayBuffer): boolean {
   return arraysEqual(new Uint8Array(data, 0, SCRCPY_MESSAGE_MAGIC.length), SCRCPY_MESSAGE_MAGIC);
 }
 
+export function parseAndroidDeviceMessage(data: ArrayBuffer): AndroidDeviceMessage | null {
+  if (!isAndroidDeviceMessagePacket(data)) {
+    return null;
+  }
+
+  const payloadOffset = SCRCPY_MESSAGE_MAGIC.length;
+  const payload = new Uint8Array(data, payloadOffset);
+  if (payload.byteLength === 0) {
+    return null;
+  }
+
+  const rawType = payload[0];
+  if (rawType !== DEVICE_MESSAGE_TYPE_CLIPBOARD) {
+    return {
+      rawType,
+      type: "unknown",
+    };
+  }
+
+  if (payload.byteLength < 5) {
+    return null;
+  }
+
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const textLength = view.getInt32(1);
+  if (textLength < 0 || payload.byteLength < 5 + textLength) {
+    return null;
+  }
+
+  return {
+    text: textDecoder.decode(payload.subarray(5, 5 + textLength)),
+    type: "clipboard",
+  };
+}
+
 export function parseAndroidInitialPacket(data: ArrayBuffer): AndroidInitialPacket {
   if (!isAndroidInitialPacket(data)) {
     throw new Error("Invalid scrcpy initial packet");
@@ -580,6 +642,18 @@ export function getAndroidVideoPacketType(packet: Uint8Array): number | null {
   return packet[4] & 0x1f;
 }
 
+export function getAndroidEncodedVideoChunkType(packetType: number): "delta" | "key" | null {
+  if (packetType === NAL_TYPE_IDR) {
+    return "key";
+  }
+
+  if (packetType >= NAL_TYPE_NON_IDR && packetType < NAL_TYPE_IDR) {
+    return "delta";
+  }
+
+  return null;
+}
+
 export function shouldBufferAndroidVideoPacket(packetType: number): boolean {
   return packetType === NAL_TYPE_SPS || packetType === NAL_TYPE_PPS || packetType === NAL_TYPE_SEI;
 }
@@ -616,6 +690,19 @@ export function buildAndroidVideoSettingsMessage(settings: AndroidVideoSettings)
   offset = encodeString(buffer, offset, settings.codecOptions ?? "");
   offset = writeInt32(view, offset, encoderNameBytes.length);
   encodeString(buffer, offset, settings.encoderName ?? "");
+
+  return buffer;
+}
+
+export function buildAndroidTextMessage(text: string): Uint8Array {
+  const encodedText = textEncoder.encode(text);
+  const buffer = new Uint8Array(1 + 4 + encodedText.length);
+  const view = new DataView(buffer.buffer);
+  let offset = 0;
+
+  offset = writeUint8(view, offset, CONTROL_TYPE_TEXT);
+  offset = writeInt32(view, offset, encodedText.length);
+  buffer.set(encodedText, offset);
 
   return buffer;
 }
@@ -682,6 +769,27 @@ export function buildAndroidScrollMessage(input: {
   offset = writeInt16(view, offset, input.screenHeight);
   offset = writeInt32(view, offset, input.hScroll);
   writeInt32(view, offset, input.vScroll);
+
+  return buffer;
+}
+
+export function buildAndroidGetClipboardMessage(): Uint8Array {
+  const buffer = new Uint8Array(1);
+  const view = new DataView(buffer.buffer);
+  writeUint8(view, 0, CONTROL_TYPE_GET_CLIPBOARD);
+  return buffer;
+}
+
+export function buildAndroidSetClipboardMessage(text: string, paste = false): Uint8Array {
+  const encodedText = textEncoder.encode(text);
+  const buffer = new Uint8Array(1 + 1 + 4 + encodedText.length);
+  const view = new DataView(buffer.buffer);
+  let offset = 0;
+
+  offset = writeUint8(view, offset, CONTROL_TYPE_SET_CLIPBOARD);
+  offset = writeUint8(view, offset, paste ? 1 : 0);
+  offset = writeInt32(view, offset, encodedText.length);
+  buffer.set(encodedText, offset);
 
   return buffer;
 }

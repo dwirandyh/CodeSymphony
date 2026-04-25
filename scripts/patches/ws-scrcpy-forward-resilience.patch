@@ -1,0 +1,301 @@
+diff --git a/src/server/goog-device/AdbUtils.ts b/src/server/goog-device/AdbUtils.ts
+index d4cdd20..609d60d 100644
+--- a/src/server/goog-device/AdbUtils.ts
++++ b/src/server/goog-device/AdbUtils.ts
+@@ -1,11 +1,10 @@
+-import * as portfinder from 'portfinder';
+ import * as http from 'http';
+ import * as path from 'path';
++import { execFile as execFileCallback } from 'child_process';
+ import { ACTION } from '../../common/Action';
+ import { AdbExtended } from './adb';
+ import { DevtoolsInfo, RemoteBrowserInfo, RemoteTarget, VersionMetadata } from '../../types/RemoteDevtools';
+ import { URL } from 'url';
+-import { Forward } from '@dead50f7/adbkit/lib/Forward';
+ import Entry from '@dead50f7/adbkit/lib/adb/sync/entry';
+ import Stats from '@dead50f7/adbkit/lib/adb/sync/stats';
+ import PullTransfer from '@dead50f7/adbkit/lib/adb/sync/pulltransfer';
+@@ -14,6 +13,7 @@ import Protocol from '@dead50f7/adbkit/lib/adb/protocol';
+ import { Multiplexer } from '../../packages/multiplexer/Multiplexer';
+ import { ReadStream } from 'fs';
+ import PushTransfer from '@dead50f7/adbkit/lib/adb/sync/pushtransfer';
++import { promisify } from 'util';
+ 
+ type IncomingMessage = {
+     statusCode?: number;
+@@ -24,6 +24,20 @@ type IncomingMessage = {
+ const proto = 'http://';
+ const fakeHost = '127.0.0.1:6666';
+ const fakeHostRe = /127\.0\.0\.1:6666/;
++const ADB_FORWARD_RETRY_DELAY_MS = 150;
++const ADB_FORWARD_RETRY_LIMIT = 3;
++const execFile = promisify(execFileCallback);
++
++type AdbForwardInfo = {
++    local: string;
++    remote: string;
++    serial: string;
++};
++
++type AdbForwardHandle = {
++    port: number;
++    release: () => Promise<void>;
++};
+ 
+ export class AdbUtils {
+     private static async formatStatsMin(entry: Entry): Promise<FileStats> {
+@@ -137,20 +151,96 @@ export class AdbUtils {
+         });
+     }
+ 
+-    public static async forward(serial: string, remote: string): Promise<number> {
+-        const client = AdbExtended.createClient();
+-        const forwards = await client.listForwards(serial);
+-        const forward = forwards.find((item: Forward) => {
+-            return item.remote === remote && item.local.startsWith('tcp:') && item.serial === serial;
++    private static async sleep(ms: number): Promise<void> {
++        await new Promise((resolve) => {
++            setTimeout(resolve, ms);
+         });
+-        if (forward) {
+-            const { local } = forward;
+-            return parseInt(local.split('tcp:')[1], 10);
++    }
++
++    private static async runAdbForward(serial: string, args: string[]): Promise<string> {
++        const { stdout } = await execFile('adb', ['-s', serial, 'forward', ...args], {
++            encoding: 'utf8',
++        });
++        return stdout.trim();
++    }
++
++    private static parseForwardList(output: string): AdbForwardInfo[] {
++        return output
++            .split('\n')
++            .map((line) => line.trim())
++            .filter((line) => line.length > 0)
++            .map((line) => {
++                const [serial, local, remote] = line.split(/\s+/);
++                return { local, remote, serial };
++            })
++            .filter((entry) => !!entry.serial && !!entry.local && !!entry.remote);
++    }
++
++    private static async listForwards(serial: string): Promise<AdbForwardInfo[]> {
++        const output = await this.runAdbForward(serial, ['--list']);
++        return this.parseForwardList(output).filter((entry) => entry.serial === serial);
++    }
++
++    private static async removeForward(serial: string, port: number): Promise<void> {
++        await this.runAdbForward(serial, ['--remove', `tcp:${port}`]);
++    }
++
++    private static async removeRemoteForwards(serial: string, remote: string): Promise<void> {
++        const forwards = await this.listForwards(serial);
++        const staleForwards = forwards.filter((entry) => entry.remote === remote && entry.local.startsWith('tcp:'));
++        await Promise.all(staleForwards.map(async (entry) => {
++            const port = parseInt(entry.local.split('tcp:')[1], 10);
++            if (!isNaN(port)) {
++                await this.removeForward(serial, port).catch(() => undefined);
++            }
++        }));
++    }
++
++    private static async createForward(serial: string, remote: string): Promise<number> {
++        const output = await this.runAdbForward(serial, ['tcp:0', remote]);
++        const port = parseInt(output, 10);
++        if (!isNaN(port) && port > 0) {
++            return port;
++        }
++
++        const forwards = await this.listForwards(serial);
++        const createdForward = forwards.find((entry) => entry.remote === remote && entry.local.startsWith('tcp:'));
++        if (createdForward) {
++            const recoveredPort = parseInt(createdForward.local.split('tcp:')[1], 10);
++            if (!isNaN(recoveredPort) && recoveredPort > 0) {
++                return recoveredPort;
++            }
++        }
++
++        throw new Error(`Unable to determine forwarded port for ${serial} ${remote}`);
++    }
++
++    public static async forward(serial: string, remote: string): Promise<AdbForwardHandle> {
++        let lastError: Error | null = null;
++
++        for (let attempt = 1; attempt <= ADB_FORWARD_RETRY_LIMIT; attempt += 1) {
++            try {
++                const port = await this.createForward(serial, remote);
++                return {
++                    port,
++                    release: async () => {
++                        await this.removeForward(serial, port).catch(() => undefined);
++                    },
++                };
++            } catch (error: any) {
++                lastError = error instanceof Error ? error : new Error(String(error));
++                await this.removeRemoteForwards(serial, remote).catch(() => undefined);
++
++                if (attempt < ADB_FORWARD_RETRY_LIMIT) {
++                    console.warn(
++                        `[AdbUtils] adb forward retry ${attempt}/${ADB_FORWARD_RETRY_LIMIT} failed for ${serial} ${remote}: ${lastError.message}`,
++                    );
++                    await this.sleep(ADB_FORWARD_RETRY_DELAY_MS * attempt);
++                }
++            }
+         }
+-        const port = await portfinder.getPortPromise();
+-        const local = `tcp:${port}`;
+-        await client.forward(serial, local, remote);
+-        return port;
++
++        throw lastError ?? new Error(`Unable to forward ${remote} for ${serial}`);
+     }
+ 
+     public static async getDevtoolsRemoteList(serial: string): Promise<string[]> {
+diff --git a/src/server/goog-device/mw/WebsocketProxyOverAdb.ts b/src/server/goog-device/mw/WebsocketProxyOverAdb.ts
+index 4333a31..d1476f0 100644
+--- a/src/server/goog-device/mw/WebsocketProxyOverAdb.ts
++++ b/src/server/goog-device/mw/WebsocketProxyOverAdb.ts
+@@ -4,6 +4,20 @@ import WS from 'ws';
+ import { RequestParameters } from '../../mw/Mw';
+ import { ACTION } from '../../../common/Action';
+ 
++function getSafeCloseReason(reason: unknown, maxBytes = 120): string {
++    const normalized = typeof reason === 'string' ? reason : String(reason ?? '');
++    if (!normalized) {
++        return '';
++    }
++
++    const reasonBuffer = Buffer.from(normalized);
++    if (reasonBuffer.byteLength <= maxBytes) {
++        return normalized;
++    }
++
++    return reasonBuffer.subarray(0, maxBytes).toString('utf8').replace(/\uFFFD+$/g, '');
++}
++
+ export class WebsocketProxyOverAdb extends WebsocketProxy {
+     public static processRequest(ws: WS, params: RequestParameters): WebsocketProxy | undefined {
+         const { action, url } = params;
+@@ -49,13 +63,28 @@ export class WebsocketProxyOverAdb extends WebsocketProxy {
+     public static createProxyOverAdb(ws: WS, udid: string, remote: string, path?: string | null): WebsocketProxy {
+         const service = new WebsocketProxy(ws);
+         AdbUtils.forward(udid, remote)
+-            .then((port) => {
+-                return service.init(`ws://127.0.0.1:${port}${path ? path : ''}`);
++            .then(({ port, release }) => {
++                let released = false;
++                const cleanup = () => {
++                    if (released) {
++                        return;
++                    }
++                    released = true;
++                    void release().catch(() => undefined);
++                };
++
++                ws.once('close', cleanup);
++                ws.once('error', cleanup);
++                console.info(`[${this.TAG}] Forwarded ${udid} ${remote} to tcp:${port}`);
++                return service.init(`ws://127.0.0.1:${port}${path ? path : ''}`).catch((error) => {
++                    cleanup();
++                    throw error;
++                });
+             })
+             .catch((e) => {
+                 const msg = `[${this.TAG}] Failed to start service: ${e.message}`;
+                 console.error(msg);
+-                ws.close(4005, msg);
++                ws.close(4005, getSafeCloseReason(msg));
+             });
+         return service;
+     }
+diff --git a/src/server/mw/WebsocketProxy.ts b/src/server/mw/WebsocketProxy.ts
+index 578947d..ece23ef 100644
+--- a/src/server/mw/WebsocketProxy.ts
++++ b/src/server/mw/WebsocketProxy.ts
+@@ -3,10 +3,36 @@ import WS from 'ws';
+ import { ACTION } from '../../common/Action';
+ import { Multiplexer } from '../../packages/multiplexer/Multiplexer';
+ 
++function getMessageSize(data: WS.Data): number {
++    if (typeof data === 'string') {
++        return Buffer.byteLength(data);
++    }
++    if (Array.isArray(data)) {
++        return data.reduce((total, chunk) => total + chunk.byteLength, 0);
++    }
++    return data.byteLength;
++}
++
++function getSafeCloseReason(reason: unknown, maxBytes = 120): string {
++    const normalized = typeof reason === 'string' ? reason : String(reason ?? '');
++    if (!normalized) {
++        return '';
++    }
++
++    const reasonBuffer = Buffer.from(normalized);
++    if (reasonBuffer.byteLength <= maxBytes) {
++        return normalized;
++    }
++
++    return reasonBuffer.subarray(0, maxBytes).toString('utf8').replace(/\uFFFD+$/g, '');
++}
++
+ export class WebsocketProxy extends Mw {
+     public static readonly TAG = 'WebsocketProxy';
+     private remoteSocket?: WS;
+     private released = false;
++    private remoteBytes = 0;
++    private remoteMessages = 0;
+     private storage: WS.MessageEvent[] = [];
+ 
+     // eslint-disable-next-line @typescript-eslint/no-unused-vars
+@@ -28,7 +54,7 @@ export class WebsocketProxy extends Mw {
+         service.init(remoteUrl).catch((e) => {
+             const msg = `[${this.TAG}] Failed to start service: ${e.message}`;
+             console.error(msg);
+-            ws.close(4005, msg);
++            ws.close(4005, getSafeCloseReason(msg));
+         });
+         return service;
+     }
+@@ -42,25 +68,36 @@ export class WebsocketProxy extends Mw {
+         const remoteSocket = new WS(remoteUrl);
+         remoteSocket.onopen = () => {
+             this.remoteSocket = remoteSocket;
++            console.info(`${this.name} remote socket opened`);
+             this.flush();
+         };
+         remoteSocket.onmessage = (event) => {
++            this.remoteMessages += 1;
+             if (this.ws && this.ws.readyState === this.ws.OPEN) {
+                 if (Array.isArray(event.data)) {
++                    event.data.forEach((data) => {
++                        this.remoteBytes += data.byteLength;
++                    });
+                     event.data.forEach((data) => this.ws.send(data));
+                 } else {
++                    this.remoteBytes += getMessageSize(event.data);
+                     this.ws.send(event.data);
+                 }
+             }
+         };
+         remoteSocket.onclose = (e) => {
++            const closeReason = e.reason || `remote_close:${e.code}`;
++            console.warn(
++                `${this.name} remote socket closed code=${e.code} clean=${e.wasClean} reason="${closeReason}" messages=${this.remoteMessages} bytes=${this.remoteBytes}`,
++            );
+             if (this.ws.readyState === this.ws.OPEN) {
+-                this.ws.close(e.wasClean ? 1000 : 4010);
++                this.ws.close(e.wasClean ? 1000 : 4010, getSafeCloseReason(closeReason));
+             }
+         };
+         remoteSocket.onerror = (e) => {
++            console.error(`${this.name} remote socket error: ${e.message}`);
+             if (this.ws.readyState === this.ws.OPEN) {
+-                this.ws.close(4011, e.message);
++                this.ws.close(4011, getSafeCloseReason(e.message));
+             }
+         };
+     }

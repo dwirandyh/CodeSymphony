@@ -1,10 +1,13 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   SendDeviceControlInputSchema,
   StartDeviceStreamInputSchema,
   StopDeviceStreamInputSchema,
+  UpdateAndroidClipboardInputSchema,
 } from "@codesymphony/shared-types";
 import WebSocket, { type RawData } from "ws";
+import { appendRuntimeDebugLog } from "./debug.js";
 import { ANDROID_VIEWER_WS_PLACEHOLDER } from "../services/deviceService.utils.js";
 
 const PROXY_TIMEOUT_MS = 20_000;
@@ -29,6 +32,14 @@ type ViewerPathParams = {
 
 type DeviceStreamSessionParams = {
   sessionId: string;
+};
+
+type ProxyConnectionStats = {
+  clientBytes: number;
+  clientMessages: number;
+  openedAt: number;
+  upstreamBytes: number;
+  upstreamMessages: number;
 };
 
 function getRawSearch(request: FastifyRequest): string {
@@ -165,6 +176,53 @@ function normalizeCloseCode(code: number, fallback: number): number {
   return code;
 }
 
+function sizeOfRawData(data: RawData): number {
+  if (typeof data === "string") {
+    return Buffer.byteLength(data);
+  }
+  if (Array.isArray(data)) {
+    return data.reduce((total, chunk) => total + chunk.byteLength, 0);
+  }
+  return data.byteLength;
+}
+
+function recordProxyEvent(
+  app: FastifyInstance,
+  level: "debug" | "info" | "warn" | "error",
+  message: string,
+  data: Record<string, unknown>,
+) {
+  app.logService.log(level, "devices.viewer-proxy", message, data);
+  appendRuntimeDebugLog({
+    source: "devices.viewer-proxy",
+    message,
+    data,
+  });
+}
+
+async function probeViewerProxyTarget(targetUrl: URL): Promise<{ error?: string; status?: number; url: string }> {
+  const healthUrl = new URL("/", targetUrl);
+  healthUrl.protocol = healthUrl.protocol === "wss:" ? "https:" : "http:";
+  healthUrl.search = "";
+
+  try {
+    const response = await fetch(healthUrl, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(1_500),
+    });
+    return {
+      status: response.status,
+      url: healthUrl.toString(),
+    };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      url: healthUrl.toString(),
+    };
+  }
+}
+
 function parseNativeIosControlMessage(data: RawData): { action: string; payload?: Record<string, unknown> } {
   const text = Buffer.isBuffer(data)
     ? data.toString("utf8")
@@ -197,12 +255,47 @@ function proxyWebSocketConnection(args: {
   upstreamFailureMessage: string;
 }) {
   const { app, authorizationHeader, client, request, sessionId, targetUrl, upstreamFailureMessage } = args;
+  const connectionId = randomUUID();
   const pendingClientMessages: Array<{ data: RawData; isBinary: boolean }> = [];
+  const stats: ProxyConnectionStats = {
+    clientBytes: 0,
+    clientMessages: 0,
+    openedAt: Date.now(),
+    upstreamBytes: 0,
+    upstreamMessages: 0,
+  };
+  const targetSearchParams = Object.fromEntries(targetUrl.searchParams.entries());
   const upstream = new WebSocket(targetUrl, {
     headers: buildWebSocketProxyHeaders(request, authorizationHeader),
   });
+  const logBase = {
+    connectionId,
+    sessionId,
+    targetSearchParams,
+    targetUrl: targetUrl.toString(),
+  } satisfies Record<string, unknown>;
+
+  recordProxyEvent(app, "info", "viewer websocket proxy connected", {
+    ...logBase,
+    clientUserAgent: request.headers["user-agent"] ?? null,
+    requestUrl: request.raw.url ?? request.url,
+  });
+
+  upstream.on("unexpected-response", (_req, response) => {
+    recordProxyEvent(app, "warn", "viewer websocket upstream unexpected response", {
+      ...logBase,
+      headers: Object.fromEntries(Object.entries(response.headers).slice(0, 20)),
+      statusCode: response.statusCode ?? null,
+      statusMessage: response.statusMessage ?? null,
+    });
+  });
 
   upstream.on("open", () => {
+    recordProxyEvent(app, "info", "viewer websocket upstream opened", {
+      ...logBase,
+      queuedClientMessages: pendingClientMessages.length,
+      sinceConnectedMs: Date.now() - stats.openedAt,
+    });
     while (pendingClientMessages.length > 0 && upstream.readyState === WebSocket.OPEN) {
       const nextMessage = pendingClientMessages.shift();
       if (!nextMessage) {
@@ -214,18 +307,69 @@ function proxyWebSocketConnection(args: {
   });
 
   upstream.on("message", (data: RawData, isBinary: boolean) => {
+    stats.upstreamMessages += 1;
+    stats.upstreamBytes += sizeOfRawData(data);
+    if (stats.upstreamMessages === 1) {
+      recordProxyEvent(app, "info", "viewer websocket upstream first message", {
+        ...logBase,
+        isBinary,
+        messageBytes: sizeOfRawData(data),
+        sinceConnectedMs: Date.now() - stats.openedAt,
+      });
+    }
     if (client.readyState === client.OPEN) {
-      client.send(data, { binary: isBinary });
+      try {
+        client.send(data, { binary: isBinary });
+      } catch (error) {
+        recordProxyEvent(app, "warn", "viewer websocket client send failed", {
+          ...logBase,
+          error: error instanceof Error ? error.message : String(error),
+          isBinary,
+          messageBytes: sizeOfRawData(data),
+        });
+        client.close(1011, "Viewer client send failed");
+      }
     }
   });
 
   upstream.on("close", (code: number, reason: Buffer) => {
+    recordProxyEvent(app, code === 1000 ? "info" : "warn", "viewer websocket upstream closed", {
+      ...logBase,
+      clientBytes: stats.clientBytes,
+      clientMessages: stats.clientMessages,
+      code,
+      durationMs: Date.now() - stats.openedAt,
+      reason: reason.toString(),
+      upstreamBytes: stats.upstreamBytes,
+      upstreamMessages: stats.upstreamMessages,
+    });
+    void probeViewerProxyTarget(targetUrl).then((health) => {
+      recordProxyEvent(app, "info", "viewer websocket upstream health probe", {
+        ...logBase,
+        ...health,
+      });
+    });
     if (client.readyState === client.OPEN || client.readyState === client.CONNECTING) {
       client.close(normalizeCloseCode(code, 1000), reason.toString());
     }
   });
 
   upstream.on("error", (error: Error) => {
+    recordProxyEvent(app, "warn", "viewer websocket upstream error", {
+      ...logBase,
+      clientBytes: stats.clientBytes,
+      clientMessages: stats.clientMessages,
+      durationMs: Date.now() - stats.openedAt,
+      error: error.message,
+      upstreamBytes: stats.upstreamBytes,
+      upstreamMessages: stats.upstreamMessages,
+    });
+    void probeViewerProxyTarget(targetUrl).then((health) => {
+      recordProxyEvent(app, "info", "viewer websocket upstream health probe", {
+        ...logBase,
+        ...health,
+      });
+    });
     app.log.warn({ error, sessionId, targetUrl: targetUrl.toString() }, upstreamFailureMessage);
     if (client.readyState === client.OPEN || client.readyState === client.CONNECTING) {
       client.close(1011, "Viewer upstream failed");
@@ -233,23 +377,51 @@ function proxyWebSocketConnection(args: {
   });
 
   client.on("message", (data: RawData, isBinary: boolean) => {
+    stats.clientMessages += 1;
+    stats.clientBytes += sizeOfRawData(data);
     if (upstream.readyState === WebSocket.OPEN) {
       upstream.send(data, { binary: isBinary });
       return;
     }
 
     if (upstream.readyState === WebSocket.CONNECTING) {
+      if (pendingClientMessages.length === 0) {
+        recordProxyEvent(app, "info", "viewer websocket buffered client messages while upstream connects", {
+          ...logBase,
+          isBinary,
+          messageBytes: sizeOfRawData(data),
+        });
+      }
       pendingClientMessages.push({ data, isBinary });
     }
   });
 
   client.on("close", (code: number, reason: Buffer) => {
+    recordProxyEvent(app, code === 1000 ? "info" : "warn", "viewer websocket client closed", {
+      ...logBase,
+      clientBytes: stats.clientBytes,
+      clientMessages: stats.clientMessages,
+      code,
+      durationMs: Date.now() - stats.openedAt,
+      reason: reason.toString(),
+      upstreamBytes: stats.upstreamBytes,
+      upstreamMessages: stats.upstreamMessages,
+    });
     if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
       upstream.close(normalizeCloseCode(code, 1000), reason.toString());
     }
   });
 
   client.on("error", (error: Error) => {
+    recordProxyEvent(app, "warn", "viewer websocket client error", {
+      ...logBase,
+      clientBytes: stats.clientBytes,
+      clientMessages: stats.clientMessages,
+      durationMs: Date.now() - stats.openedAt,
+      error: error.message,
+      upstreamBytes: stats.upstreamBytes,
+      upstreamMessages: stats.upstreamMessages,
+    });
     app.log.warn({ error, sessionId }, "Embedded device viewer websocket client closed with error");
     if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
       upstream.close(1011, "Viewer client failed");
@@ -329,6 +501,29 @@ export async function registerDeviceRoutes(app: FastifyInstance) {
     const input = SendDeviceControlInputSchema.parse(request.body ?? {});
     await app.deviceService.sendControl(sessionId, input);
     return reply.code(204).send();
+  });
+
+  app.get("/device-streams/:sessionId/android/clipboard", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    try {
+      const text = await app.deviceService.readAndroidClipboard(sessionId);
+      return { data: { text } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to read the Android clipboard";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.put("/device-streams/:sessionId/android/clipboard", async (request, reply) => {
+    const { sessionId } = request.params as { sessionId: string };
+    try {
+      const input = UpdateAndroidClipboardInputSchema.parse(request.body ?? {});
+      await app.deviceService.writeAndroidClipboard(sessionId, input);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to write the Android clipboard";
+      return reply.code(400).send({ error: message });
+    }
   });
 
   app.get("/device-streams/:sessionId/viewer", async (request, reply) => {

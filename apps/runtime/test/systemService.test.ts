@@ -116,4 +116,26 @@ describe("systemService", () => {
       await expect(service.openInApp("Unknown", "/path")).rejects.toThrow("Failed to open in Unknown");
     });
   });
+
+  describe("clipboard", () => {
+    it("reads the host clipboard on darwin", async () => {
+      Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+      mockExecFile.mockResolvedValueOnce({ stdout: "clip-text", stderr: "" } as never);
+
+      await expect(service.readClipboard()).resolves.toBe("clip-text");
+      expect(mockExecFile).toHaveBeenCalledWith("pbpaste", [], expect.any(Object));
+    });
+
+    it("writes the host clipboard on darwin", async () => {
+      Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+      mockExecFile.mockResolvedValueOnce({ stdout: "", stderr: "" } as never);
+
+      await service.writeClipboard("clip-text");
+      expect(mockExecFile).toHaveBeenCalledWith(
+        "bash",
+        ["-lc", "printf %s \"$1\" | pbcopy", "--", "clip-text"],
+        expect.any(Object),
+      );
+    });
+  });
 });

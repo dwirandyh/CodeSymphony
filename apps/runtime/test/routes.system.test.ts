@@ -5,13 +5,15 @@ import { registerSystemRoutes } from "../src/routes/system";
 describe("system routes", () => {
   let app: FastifyInstance;
   const pickDirectory = vi.fn();
+  const readClipboard = vi.fn();
+  const writeClipboard = vi.fn();
   const getInstalledApps = vi.fn();
   const openInApp = vi.fn();
 
   beforeEach(async () => {
     vi.resetAllMocks();
     app = Fastify({ logger: false });
-    app.decorate("systemService", { pickDirectory, getInstalledApps, openInApp } as never);
+    app.decorate("systemService", { pickDirectory, readClipboard, writeClipboard, getInstalledApps, openInApp } as never);
     await app.register(registerSystemRoutes, { prefix: "/api" });
     await app.ready();
   });
@@ -44,6 +46,24 @@ describe("system routes", () => {
     getInstalledApps.mockRejectedValue(new Error("fail"));
     const res = await app.inject({ method: "GET", url: "/api/system/installed-apps" });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("GET /api/system/clipboard returns host clipboard text", async () => {
+    readClipboard.mockResolvedValue("hello from host");
+    const res = await app.inject({ method: "GET", url: "/api/system/clipboard" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.text).toBe("hello from host");
+  });
+
+  it("PUT /api/system/clipboard writes host clipboard text", async () => {
+    writeClipboard.mockResolvedValue(undefined);
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/system/clipboard",
+      payload: { text: "send to host" },
+    });
+    expect(res.statusCode).toBe(204);
+    expect(writeClipboard).toHaveBeenCalledWith("send to host");
   });
 
   it("POST /api/system/open-in-app opens file", async () => {

@@ -9,6 +9,97 @@ import type { ExternalApp } from "@codesymphony/shared-types";
 const execFile = promisify(execFileCallback);
 const APP_ICON_CACHE_DIR = path.join(os.tmpdir(), "codesymphony-app-icons");
 
+async function readHostClipboard(): Promise<string> {
+  try {
+    if (process.platform === "darwin") {
+      const { stdout } = await execFile("pbpaste", [], {
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      return stdout;
+    }
+
+    if (process.platform === "linux") {
+      const { stdout } = await execFile("bash", [
+        "-lc",
+        "if command -v wl-paste >/dev/null 2>&1; then wl-paste --no-newline; elif command -v xclip >/dev/null 2>&1; then xclip -selection clipboard -o; elif command -v xsel >/dev/null 2>&1; then xsel --clipboard --output; else exit 127; fi",
+      ], {
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      return stdout;
+    }
+
+    if (process.platform === "win32") {
+      const { stdout } = await execFile("powershell", [
+        "-NoProfile",
+        "-Command",
+        "Get-Clipboard -Raw",
+      ], {
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      return stdout;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to read the host clipboard";
+    throw new Error(`Unable to read the host clipboard: ${message}`);
+  }
+
+  throw new Error(`Reading the host clipboard is not supported on platform: ${process.platform}`);
+}
+
+async function writeHostClipboard(text: string): Promise<void> {
+  try {
+    if (process.platform === "darwin") {
+      await execFile("bash", [
+        "-lc",
+        "printf %s \"$1\" | pbcopy",
+        "--",
+        text,
+      ], {
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      return;
+    }
+
+    if (process.platform === "linux") {
+      await execFile("bash", [
+        "-lc",
+        "if command -v wl-copy >/dev/null 2>&1; then printf %s \"$1\" | wl-copy; elif command -v xclip >/dev/null 2>&1; then printf %s \"$1\" | xclip -selection clipboard; elif command -v xsel >/dev/null 2>&1; then printf %s \"$1\" | xsel --clipboard --input; else exit 127; fi",
+        "--",
+        text,
+      ], {
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      return;
+    }
+
+    if (process.platform === "win32") {
+      await execFile("powershell", [
+        "-NoProfile",
+        "-Command",
+        "Set-Clipboard -Value $env:CS_CLIPBOARD_TEXT",
+      ], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CS_CLIPBOARD_TEXT: text,
+        },
+        timeout: 5_000,
+      });
+      return;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to write the host clipboard";
+    throw new Error(`Unable to write the host clipboard: ${message}`);
+  }
+
+  throw new Error(`Writing the host clipboard is not supported on platform: ${process.platform}`);
+}
+
 function normalizeSelectedPath(output: string): string {
   return output.trim().replace(/\/$/, "");
 }
@@ -235,5 +326,7 @@ export function createSystemService() {
     getInstalledApps,
     getAppIcon,
     openInApp,
+    readClipboard: readHostClipboard,
+    writeClipboard: writeHostClipboard,
   };
 }

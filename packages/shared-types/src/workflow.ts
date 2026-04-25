@@ -267,6 +267,17 @@ export const SendDeviceControlInputSchema = z.object({
 });
 export type SendDeviceControlInput = z.infer<typeof SendDeviceControlInputSchema>;
 
+export const ClipboardTextSchema = z.object({
+  text: z.string(),
+});
+export type ClipboardText = z.infer<typeof ClipboardTextSchema>;
+
+export const UpdateAndroidClipboardInputSchema = z.object({
+  text: z.string(),
+  paste: z.boolean().optional(),
+});
+export type UpdateAndroidClipboardInput = z.infer<typeof UpdateAndroidClipboardInputSchema>;
+
 
 export const AssistantRenderHintSchema = z.enum(["markdown", "raw-file", "raw-fallback", "diff"]);
 export type AssistantRenderHint = z.infer<typeof AssistantRenderHintSchema>;

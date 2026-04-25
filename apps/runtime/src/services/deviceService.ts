@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
-import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import os from "node:os";
+import { join as joinPath, resolve as resolvePath } from "node:path";
+import { exec as execCallback, execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type {
@@ -17,9 +18,20 @@ import type {
 import WebSocket from "ws";
 import { buildClaudeRuntimeEnv as buildSubprocessEnv } from "../claude/shellEnv.js";
 import type { LogEntry } from "./logService.js";
-import { buildAndroidProxyViewerUrl, parseAdbDevicesOutput, parseSimctlDevicesOutput } from "./deviceService.utils.js";
+import {
+  buildAndroidInputTextCommands,
+  buildAndroidProxyViewerUrl,
+  parseAdbDevicesOutput,
+  parseAndroidClipboardBooleanServiceCall,
+  parseAndroidClipboardServiceCallOutput,
+  parseSimctlDevicesOutput,
+  resolveRememberedAndroidDevice,
+  shouldRetainMissingAndroidSession,
+  type RememberedAndroidDevice,
+} from "./deviceService.utils.js";
 
 const execFile = promisify(execFileCallback);
+const exec = promisify(execCallback);
 const managedSubprocessEnv = buildSubprocessEnv({
   ...process.env,
 } as NodeJS.ProcessEnv);
@@ -29,7 +41,25 @@ const DEFAULT_REFRESH_INTERVAL_MS = 5_000;
 const HEALTH_TIMEOUT_MS = 1_500;
 const START_TIMEOUT_MS = 20_000;
 const DISCOVERY_TIMEOUT_MS = 5_000;
+const ANDROID_DEVICE_STALE_GRACE_MS = 20_000;
+const ANDROID_DEVICE_RECOVERY_COOLDOWN_MS = 8_000;
 const IOS_SIMULATOR_BRIDGE_READY_TIMEOUT_MS = 15_000;
+const ANDROID_CLIPBOARD_TIMEOUT_MS = 4_000;
+const ANDROID_CLIPBOARD_HELPER_BUILD_TIMEOUT_MS = 15_000;
+const ANDROID_CLIPBOARD_HELPER_DEVICE_PATH = "/data/local/tmp/codesymphony-clipboard.dex";
+const ANDROID_CLIPBOARD_HELPER_ENTRYPOINT = "dev.codesymphony.android.ClipboardCli";
+const ANDROID_CLIPBOARD_PASTE_KEYCODE = 279;
+const ANDROID_CONTROL_TIMEOUT_MS = 5_000;
+const ANDROID_CLIPBOARD_SERVICE_ARGS_BASE = [
+  "s16",
+  "com.android.shell",
+  "s16",
+  "shell",
+  "i32",
+  "0",
+  "i32",
+  "0",
+] as const;
 
 type DeviceListener = (snapshot: DeviceInventorySnapshot) => void;
 
@@ -81,6 +111,7 @@ type ManagedSidecar = {
   child: ChildProcess;
   command: string;
   baseUrl: string;
+  logPath: string | null;
   startedByRuntime: boolean;
 };
 
@@ -100,6 +131,87 @@ function getRefreshIntervalMs(): number {
 
 function getAndroidBaseUrl(): string {
   return normalizeBaseUrl(process.env.ANDROID_WS_SCRCPY_BASE_URL?.trim() || DEFAULT_ANDROID_WS_SCRCPY_BASE_URL);
+}
+
+function getSidecarLogPath(name: string): string {
+  const directory = joinPath(os.tmpdir(), "codesymphony", "sidecars");
+  if (!existsSync(directory)) {
+    mkdirSync(directory, { recursive: true });
+  }
+  return joinPath(directory, `${name}.log`);
+}
+
+function getAndroidClipboardHelperSourcePath(): string {
+  return fileURLToPath(new URL("../../android-helpers/ClipboardCli.java", import.meta.url));
+}
+
+function getAndroidClipboardHelperBuildPath(...parts: string[]): string {
+  const directory = joinPath(os.tmpdir(), "codesymphony", "android-clipboard-helper", ...parts);
+  const parentDirectory = parts.length > 0 ? directory : joinPath(os.tmpdir(), "codesymphony", "android-clipboard-helper");
+  if (!existsSync(parentDirectory)) {
+    mkdirSync(parentDirectory, { recursive: true });
+  }
+  return directory;
+}
+
+function parseAndroidBuildToolsVersion(value: string): number[] {
+  return value
+    .split(/[^0-9]+/)
+    .filter((segment) => segment.length > 0)
+    .map((segment) => Number.parseInt(segment, 10));
+}
+
+function compareAndroidBuildToolsVersionDesc(left: string, right: string): number {
+  const leftParts = parseAndroidBuildToolsVersion(left);
+  const rightParts = parseAndroidBuildToolsVersion(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart !== rightPart) {
+      return rightPart - leftPart;
+    }
+  }
+
+  return right.localeCompare(left);
+}
+
+function resolveAndroidD8Path(): string {
+  const sdkRootCandidates = [
+    process.env.ANDROID_BUILD_TOOLS_D8?.trim(),
+    process.env.ANDROID_SDK_ROOT?.trim() ? joinPath(process.env.ANDROID_SDK_ROOT.trim(), "build-tools") : "",
+    process.env.ANDROID_HOME?.trim() ? joinPath(process.env.ANDROID_HOME.trim(), "build-tools") : "",
+    joinPath(os.homedir(), "Library", "Android", "sdk", "build-tools"),
+    joinPath(os.homedir(), "Android", "Sdk", "build-tools"),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of sdkRootCandidates) {
+    if (candidate.endsWith("/d8") || candidate.endsWith("\\d8") || candidate.endsWith("/d8.bat") || candidate.endsWith("\\d8.bat")) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+      continue;
+    }
+
+    if (!existsSync(candidate)) {
+      continue;
+    }
+
+    const versions = readdirSync(candidate, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort(compareAndroidBuildToolsVersionDesc);
+
+    for (const version of versions) {
+      const d8Path = joinPath(candidate, version, process.platform === "win32" ? "d8.bat" : "d8");
+      if (existsSync(d8Path)) {
+        return d8Path;
+      }
+    }
+  }
+
+  throw new Error("Android build-tools d8 was not found. Install Android SDK Build-Tools or set ANDROID_BUILD_TOOLS_D8.");
 }
 
 function quotePosixShellArg(value: string): string {
@@ -207,7 +319,18 @@ function buildAndroidName(device: ReturnType<typeof parseAdbDevicesOutput>[numbe
 
 function resolveAndroidStatus(state: string, hasSession: boolean): { status: DeviceStatus; lastError: string | null } {
   if (hasSession) {
-    return { status: "streaming", lastError: null };
+    if (state === "device") {
+      return { status: "streaming", lastError: null };
+    }
+
+    return {
+      status: "connecting",
+      lastError: state === "offline"
+        ? "Device is offline. Waiting for adb to reconnect."
+        : state === "unauthorized"
+          ? "Authorize adb debugging on the device first"
+          : `adb reported state: ${state}`,
+    };
   }
 
   if (state === "device") {
@@ -235,6 +358,10 @@ function toPublicSession(session: InternalStreamSession): DeviceStreamSession {
     controlTransport: session.controlTransport,
     startedAt: session.startedAt,
   };
+}
+
+function isAndroidDeviceSessionMissing(session: InternalStreamSession, availableAndroidDeviceIds: Set<string>): boolean {
+  return session.platform === "android" && !availableAndroidDeviceIds.has(session.deviceId);
 }
 
 function createPlatformIssue(platform: DevicePlatform, message: string): DeviceIssue {
@@ -366,6 +493,7 @@ async function captureIosSimulatorScreenshot(udid: string): Promise<Buffer> {
 export function createDeviceService(logService?: RuntimeLogService) {
   const listeners = new Set<DeviceListener>();
   const streamSessions = new Map<string, InternalStreamSession>();
+  const rememberedAndroidDevices = new Map<string, RememberedAndroidDevice>();
   let deviceMetadata = new Map<string, DeviceMetadata>();
   let snapshot: DeviceInventorySnapshot = {
     devices: [],
@@ -375,8 +503,124 @@ export function createDeviceService(logService?: RuntimeLogService) {
   };
   let refreshPromise: Promise<DeviceInventorySnapshot> | null = null;
   let refreshTimer: NodeJS.Timeout | null = null;
+  let lastAndroidRecoveryAt = 0;
   let androidSidecar: ManagedSidecar | null = null;
+  let androidClipboardHelperBuildPromise: Promise<string> | null = null;
+  let androidClipboardHelperDexPath: string | null = null;
+  let androidClipboardHelperSourceMtimeMs = 0;
   let iosSimulatorBridgeIssue: string | null = null;
+
+  function pruneMissingAndroidStreamSessions(availableAndroidDeviceIds: Set<string>): void {
+    const now = Date.now();
+
+    for (const [sessionId, session] of [...streamSessions.entries()]) {
+      if (!isAndroidDeviceSessionMissing(session, availableAndroidDeviceIds)) {
+        continue;
+      }
+
+      const lastSeenAt = rememberedAndroidDevices.get(session.deviceId)?.lastSeenAt ?? Date.parse(session.startedAt);
+      if (Number.isFinite(lastSeenAt) && shouldRetainMissingAndroidSession(lastSeenAt, now, ANDROID_DEVICE_STALE_GRACE_MS)) {
+        continue;
+      }
+
+      streamSessions.delete(sessionId);
+      logService?.log("warn", "devices.android-session", "Removed stale Android stream session", {
+        deviceId: session.deviceId,
+        sessionId,
+      });
+    }
+  }
+
+  function rememberAndroidDevices(devices: DeviceSummary[]): void {
+    const now = Date.now();
+    for (const device of devices) {
+      if (device.platform !== "android") {
+        continue;
+      }
+
+      rememberedAndroidDevices.set(device.id, {
+        device,
+        lastSeenAt: now,
+      });
+    }
+  }
+
+  function restoreRememberedAndroidDevices(
+    androidDevices: DeviceSummary[],
+    issues: DeviceIssue[],
+    nextDeviceMetadata: Map<string, DeviceMetadata>,
+  ): DeviceSummary[] {
+    const activeSessionDeviceIds = new Set(
+      [...streamSessions.values()]
+        .filter((session) => session.platform === "android")
+        .map((session) => session.deviceId),
+    );
+    const knownDeviceIds = new Set(androidDevices.map((device) => device.id));
+    const restoredDevices: DeviceSummary[] = [];
+    const now = Date.now();
+
+    for (const [deviceId, rememberedDevice] of [...rememberedAndroidDevices.entries()]) {
+      if (knownDeviceIds.has(deviceId)) {
+        continue;
+      }
+
+      const resolved = resolveRememberedAndroidDevice(
+        rememberedDevice,
+        activeSessionDeviceIds.has(deviceId),
+        now,
+        ANDROID_DEVICE_STALE_GRACE_MS,
+      );
+
+      if (resolved.expired || !resolved.device) {
+        rememberedAndroidDevices.delete(deviceId);
+        continue;
+      }
+
+      restoredDevices.push(resolved.device);
+      if (resolved.device.serial) {
+        nextDeviceMetadata.set(deviceId, {
+          serial: resolved.device.serial,
+        });
+      }
+    }
+
+    const reconnectingNames = restoredDevices
+      .filter((device) => device.status === "connecting")
+      .map((device) => device.name);
+
+    if (reconnectingNames.length > 0) {
+      issues.push(createPlatformIssue(
+        "android",
+        `Android connection dropped. Keeping the session warm while adb reconnects${reconnectingNames.length === 1 ? ` to ${reconnectingNames[0]}` : ""}.`,
+      ));
+    }
+
+    return [...androidDevices, ...restoredDevices].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async function attemptAndroidDeviceRecovery(reason: string): Promise<void> {
+    const now = Date.now();
+    if (now - lastAndroidRecoveryAt < ANDROID_DEVICE_RECOVERY_COOLDOWN_MS) {
+      return;
+    }
+
+    lastAndroidRecoveryAt = now;
+    logService?.log("warn", "devices.android-recovery", "Attempting adb recovery", { reason });
+
+    await execFile("adb", ["start-server"], {
+      encoding: "utf8",
+      env: managedSubprocessEnv,
+      timeout: 2_000,
+    }).catch(() => undefined);
+
+    await execFile("adb", ["reconnect", "offline"], {
+      encoding: "utf8",
+      env: managedSubprocessEnv,
+      timeout: 3_000,
+    }).catch(() => undefined);
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
 
   function closeIosVideoBridgeClients(bridge: IosSimulatorVideoBridge, reason: string): void {
     if (bridge.closeReason) {
@@ -649,10 +893,12 @@ export function createDeviceService(logService?: RuntimeLogService) {
     const { name, command, baseUrl, healthPath, acceptedHealthStatuses = [] } = options;
 
     if (await isHttpReady(baseUrl, healthPath, HEALTH_TIMEOUT_MS, acceptedHealthStatuses)) {
+      const logPath = getSidecarLogPath(name);
       return current ?? {
         child: null as unknown as ChildProcess,
         command,
         baseUrl,
+        logPath,
         startedByRuntime: false,
       };
     }
@@ -661,7 +907,12 @@ export function createDeviceService(logService?: RuntimeLogService) {
       throw new Error(`${name} is not reachable. Configure a start command or launch it manually.`);
     }
 
-    const child = spawn(command, {
+    const logPath = getSidecarLogPath(name);
+    const wrappedCommand = process.platform === "win32"
+      ? command
+      : `(${command}) >> ${quotePosixShellArg(logPath)} 2>&1`;
+
+    const child = spawn(wrappedCommand, {
       cwd: process.cwd(),
       stdio: "ignore",
       shell: true,
@@ -674,18 +925,19 @@ export function createDeviceService(logService?: RuntimeLogService) {
       child,
       command,
       baseUrl,
+      logPath,
       startedByRuntime: true,
     };
 
     child.on("exit", (code, signal) => {
-      logService?.log("warn", "devices.sidecar", `${name} exited`, { code, signal, command });
+      logService?.log("warn", "devices.sidecar", `${name} exited`, { baseUrl, code, logPath, signal, command });
       if (androidSidecar === managedSidecar) {
         androidSidecar = null;
       }
       void refreshAndEmit();
     });
 
-    logService?.log("info", "devices.sidecar", `Starting ${name}`, { command, baseUrl });
+    logService?.log("info", "devices.sidecar", `Starting ${name}`, { baseUrl, command, logPath, wrappedCommand });
     await waitForHttpReady(baseUrl, healthPath, START_TIMEOUT_MS, acceptedHealthStatuses);
     return managedSidecar;
   }
@@ -705,14 +957,34 @@ export function createDeviceService(logService?: RuntimeLogService) {
     return baseUrl;
   }
 
-  async function discoverAndroidDevices(issues: DeviceIssue[], nextDeviceMetadata: Map<string, DeviceMetadata>): Promise<DeviceSummary[]> {
-    try {
+  async function listAdbDevicesWithRecovery(): Promise<ReturnType<typeof parseAdbDevicesOutput>> {
+    const shouldAttemptRecovery = rememberedAndroidDevices.size > 0
+      || [...streamSessions.values()].some((session) => session.platform === "android");
+
+    const runDiscovery = async () => {
       const { stdout } = await execFile("adb", ["devices", "-l"], {
         encoding: "utf8",
         env: managedSubprocessEnv,
         timeout: DISCOVERY_TIMEOUT_MS,
       });
-      const parsed = parseAdbDevicesOutput(stdout);
+      return parseAdbDevicesOutput(stdout);
+    };
+
+    let parsed = await runDiscovery();
+    const hasReachableDevice = parsed.some((device) => device.state === "device");
+
+    if (!shouldAttemptRecovery || hasReachableDevice) {
+      return parsed;
+    }
+
+    await attemptAndroidDeviceRecovery(parsed.length === 0 ? "empty-device-list" : "no-ready-device");
+    parsed = await runDiscovery();
+    return parsed;
+  }
+
+  async function discoverAndroidDevices(issues: DeviceIssue[], nextDeviceMetadata: Map<string, DeviceMetadata>): Promise<DeviceSummary[]> {
+    try {
+      const parsed = await listAdbDevicesWithRecovery();
       const streamingDeviceIds = new Set([...streamSessions.values()].map((session) => session.deviceId));
 
       return await Promise.all(parsed.map(async (device) => {
@@ -798,6 +1070,9 @@ export function createDeviceService(logService?: RuntimeLogService) {
         discoverAndroidDevices(issues, nextDeviceMetadata),
         discoverIosDevices(issues, nextDeviceMetadata),
       ]);
+      rememberAndroidDevices(androidDevices);
+      const mergedAndroidDevices = restoreRememberedAndroidDevices(androidDevices, issues, nextDeviceMetadata);
+      pruneMissingAndroidStreamSessions(new Set(mergedAndroidDevices.map((device) => device.id)));
 
       if (iosSimulatorBridgeIssue) {
         issues.push(createPlatformIssue(
@@ -809,7 +1084,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
       deviceMetadata = nextDeviceMetadata;
 
       return {
-        devices: [...androidDevices, ...iosDevices].sort((a, b) => a.name.localeCompare(b.name)),
+        devices: [...mergedAndroidDevices, ...iosDevices].sort((a, b) => a.name.localeCompare(b.name)),
         activeSessions: [...streamSessions.values()].map((session) => toPublicSession(session)),
         issues,
         refreshedAt: new Date().toISOString(),
@@ -1055,6 +1330,190 @@ export function createDeviceService(logService?: RuntimeLogService) {
     return captureIosSimulatorScreenshot(session.iosUdid);
   }
 
+  function resolveAndroidSessionSerial(session: InternalStreamSession): string {
+    if (session.platform !== "android") {
+      throw new Error("Android clipboard is only available for Android sessions.");
+    }
+
+    const metadataSerial = deviceMetadata.get(session.deviceId)?.serial?.trim();
+    if (metadataSerial) {
+      return metadataSerial;
+    }
+
+    if (session.deviceId.startsWith("android:")) {
+      const serial = session.deviceId.slice("android:".length).trim();
+      if (serial.length > 0) {
+        return serial;
+      }
+    }
+
+    throw new Error("Android device serial is unavailable.");
+  }
+
+  async function ensureAndroidClipboardHelperDex(): Promise<string> {
+    const sourcePath = getAndroidClipboardHelperSourcePath();
+    const sourceMtimeMs = statSync(sourcePath).mtimeMs;
+    const dexDirectory = getAndroidClipboardHelperBuildPath("dex");
+    const dexPath = joinPath(dexDirectory, "classes.dex");
+
+    if (existsSync(dexPath) && statSync(dexPath).mtimeMs >= sourceMtimeMs) {
+      androidClipboardHelperDexPath = dexPath;
+      androidClipboardHelperSourceMtimeMs = sourceMtimeMs;
+      return dexPath;
+    }
+
+    if (
+      androidClipboardHelperDexPath === dexPath
+      && androidClipboardHelperSourceMtimeMs === sourceMtimeMs
+      && existsSync(dexPath)
+    ) {
+      return dexPath;
+    }
+
+    if (androidClipboardHelperBuildPromise) {
+      return await androidClipboardHelperBuildPromise;
+    }
+
+    androidClipboardHelperBuildPromise = (async () => {
+      const classesDirectory = getAndroidClipboardHelperBuildPath("classes");
+      const helperClassPath = joinPath(classesDirectory, "dev", "codesymphony", "android", "ClipboardCli.class");
+      const d8Path = resolveAndroidD8Path();
+
+      await execFile("javac", [
+        "-d",
+        classesDirectory,
+        sourcePath,
+      ], {
+        encoding: "utf8",
+        env: managedSubprocessEnv,
+        timeout: ANDROID_CLIPBOARD_HELPER_BUILD_TIMEOUT_MS,
+      });
+      await execFile(d8Path, [
+        "--output",
+        dexDirectory,
+        helperClassPath,
+      ], {
+        encoding: "utf8",
+        env: managedSubprocessEnv,
+        timeout: ANDROID_CLIPBOARD_HELPER_BUILD_TIMEOUT_MS,
+      });
+
+      androidClipboardHelperDexPath = dexPath;
+      androidClipboardHelperSourceMtimeMs = sourceMtimeMs;
+      return dexPath;
+    })().finally(() => {
+      androidClipboardHelperBuildPromise = null;
+    });
+
+    return await androidClipboardHelperBuildPromise;
+  }
+
+  async function runAndroidClipboardHelper(serial: string, args: string[]): Promise<string> {
+    const dexPath = await ensureAndroidClipboardHelperDex();
+    await execFile("adb", [
+      "-s",
+      serial,
+      "push",
+      dexPath,
+      ANDROID_CLIPBOARD_HELPER_DEVICE_PATH,
+    ], {
+      encoding: "utf8",
+      env: managedSubprocessEnv,
+      timeout: ANDROID_CLIPBOARD_TIMEOUT_MS,
+    });
+    const { stdout } = await execFile("adb", [
+      "-s",
+      serial,
+      "shell",
+      `CLASSPATH=${ANDROID_CLIPBOARD_HELPER_DEVICE_PATH}`,
+      "app_process",
+      "/",
+      ANDROID_CLIPBOARD_HELPER_ENTRYPOINT,
+      ...args,
+    ], {
+      encoding: "utf8",
+      env: managedSubprocessEnv,
+      timeout: ANDROID_CLIPBOARD_TIMEOUT_MS,
+    });
+
+    return stdout;
+  }
+
+  async function readAndroidClipboard(sessionId: string): Promise<string> {
+    const session = streamSessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Stream session not found: ${sessionId}`);
+    }
+
+    const serial = resolveAndroidSessionSerial(session);
+    try {
+      return await runAndroidClipboardHelper(serial, ["get"]);
+    } catch (helperError) {
+      const { stdout: hasTextOutput } = await execFile("adb", [
+        "-s",
+        serial,
+        "shell",
+        "service",
+        "call",
+        "clipboard",
+        "9",
+        ...ANDROID_CLIPBOARD_SERVICE_ARGS_BASE,
+      ], {
+        encoding: "utf8",
+        env: managedSubprocessEnv,
+        timeout: ANDROID_CLIPBOARD_TIMEOUT_MS,
+      });
+      const hasClipboardText = parseAndroidClipboardBooleanServiceCall(hasTextOutput);
+      if (hasClipboardText === false) {
+        return "";
+      }
+
+      const { stdout } = await execFile("adb", [
+        "-s",
+        serial,
+        "shell",
+        "service",
+        "call",
+        "clipboard",
+        "4",
+        ...ANDROID_CLIPBOARD_SERVICE_ARGS_BASE,
+      ], {
+        encoding: "utf8",
+        env: managedSubprocessEnv,
+        timeout: ANDROID_CLIPBOARD_TIMEOUT_MS,
+      });
+      const text = parseAndroidClipboardServiceCallOutput(stdout);
+      if (text == null) {
+        throw helperError instanceof Error
+          ? helperError
+          : new Error("Android clipboard contents could not be decoded.");
+      }
+
+      return text;
+    }
+  }
+
+  async function writeAndroidClipboard(
+    sessionId: string,
+    input: {
+      paste?: boolean;
+      text: string;
+    },
+  ): Promise<void> {
+    const session = streamSessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Stream session not found: ${sessionId}`);
+    }
+
+    const serial = resolveAndroidSessionSerial(session);
+    const encodedText = Buffer.from(input.text, "utf8").toString("base64");
+    await runAndroidClipboardHelper(serial, ["set-base64", encodedText]);
+
+    if (input.paste) {
+      await runAndroidShellCommand(serial, `input keyevent ${ANDROID_CLIPBOARD_PASTE_KEYCODE}`);
+    }
+  }
+
   function readPayloadNumber(payload: SendDeviceControlInput["payload"], key: string): number {
     const value = Number(payload?.[key]);
     if (!Number.isFinite(value)) {
@@ -1069,6 +1528,95 @@ export function createDeviceService(logService?: RuntimeLogService) {
       throw new Error(`Missing string control payload field: ${key}`);
     }
     return value;
+  }
+
+  function readPayloadText(payload: SendDeviceControlInput["payload"], key: string): string {
+    const value = payload?.[key];
+    if (typeof value !== "string") {
+      throw new Error(`Missing string control payload field: ${key}`);
+    }
+    return value;
+  }
+
+  function quoteForPosixShell(value: string): string {
+    return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+  }
+
+  async function runAndroidShellCommand(serial: string, command: string): Promise<void> {
+    await exec(`adb -s ${quoteForPosixShell(serial)} shell ${command}`, {
+      encoding: "utf8",
+      env: managedSubprocessEnv,
+      timeout: ANDROID_CONTROL_TIMEOUT_MS,
+    });
+  }
+
+  async function sendNativeAndroidControl(session: InternalStreamSession, input: SendDeviceControlInput): Promise<void> {
+    const serial = resolveAndroidSessionSerial(session);
+    const payload = input.payload ?? {};
+
+    switch (input.action) {
+      case "tap": {
+        const x = Math.round(readPayloadNumber(payload, "x"));
+        const y = Math.round(readPayloadNumber(payload, "y"));
+        await runAndroidShellCommand(serial, `input tap ${x} ${y}`);
+        return;
+      }
+
+      case "swipe": {
+        const x1 = Math.round(readPayloadNumber(payload, "x1"));
+        const y1 = Math.round(readPayloadNumber(payload, "y1"));
+        const x2 = Math.round(readPayloadNumber(payload, "x2"));
+        const y2 = Math.round(readPayloadNumber(payload, "y2"));
+        const duration = payload.duration == null
+          ? null
+          : Math.max(0, Math.round(Number(payload.duration)));
+        const args = ["input", "swipe", String(x1), String(y1), String(x2), String(y2)];
+        if (duration != null) {
+          args.push(String(duration));
+        }
+        await runAndroidShellCommand(serial, args.join(" "));
+        return;
+      }
+
+      case "key": {
+        const keycode = Math.trunc(readPayloadNumber(payload, "keycode"));
+        if (keycode < 0) {
+          throw new Error(`Invalid Android keycode: ${keycode}`);
+        }
+
+        const args = ["input", "keyevent"];
+        if (payload.duration != null) {
+          const duration = Number(payload.duration);
+          if (Number.isFinite(duration) && duration > 0) {
+            args.push("--duration", String(Math.round(duration)));
+          }
+        }
+        args.push(String(keycode));
+        await runAndroidShellCommand(serial, args.join(" "));
+        return;
+      }
+
+      case "text": {
+        const text = readPayloadText(payload, "text");
+        const commands = buildAndroidInputTextCommands(text);
+        if (commands.length === 0) {
+          return;
+        }
+
+        for (const command of commands) {
+          if (command.type === "text") {
+            await runAndroidShellCommand(serial, `input text ${quoteForPosixShell(command.value)}`);
+            continue;
+          }
+
+          await runAndroidShellCommand(serial, `input keyevent ${command.value}`);
+        }
+        return;
+      }
+
+      default:
+        throw new Error(`Unsupported control action: ${input.action}`);
+    }
   }
 
   async function writeNativeIosBridgeControl(
@@ -1246,6 +1794,11 @@ export function createDeviceService(logService?: RuntimeLogService) {
       return;
     }
 
+    if (session.platform === "android") {
+      await sendNativeAndroidControl(session, input);
+      return;
+    }
+
     if (session.platform === "ios-simulator" && session.iosNativeControl) {
       await sendNativeIosControl(session, input);
       return;
@@ -1306,6 +1859,8 @@ export function createDeviceService(logService?: RuntimeLogService) {
     attachIosNativeVideoClient,
     getNativeIosStatus,
     getNativeIosScreenshot,
+    readAndroidClipboard,
+    writeAndroidClipboard,
     sendControl,
     stopAll,
   };

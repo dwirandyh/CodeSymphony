@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { OpenInAppInputSchema } from "@codesymphony/shared-types";
+import { ClipboardTextSchema, OpenInAppInputSchema } from "@codesymphony/shared-types";
 
 export async function registerSystemRoutes(app: FastifyInstance) {
   app.post("/system/pick-directory", async (_request, reply) => {
@@ -8,6 +8,27 @@ export async function registerSystemRoutes(app: FastifyInstance) {
       return { data: result };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to pick directory";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.get("/system/clipboard", async (_request, reply) => {
+    try {
+      const text = await app.systemService.readClipboard();
+      return { data: { text } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to read the host clipboard";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.put("/system/clipboard", async (request, reply) => {
+    try {
+      const input = ClipboardTextSchema.parse(request.body ?? {});
+      await app.systemService.writeClipboard(input.text);
+      return reply.code(204).send();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to write the host clipboard";
       return reply.code(400).send({ error: message });
     }
   });
