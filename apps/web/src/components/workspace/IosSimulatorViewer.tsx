@@ -2107,12 +2107,12 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         onKeyDown={handleKeyboardKeyDown}
       />
 
-      <div className="pointer-events-none absolute left-3 top-3 z-20 rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/70">
+      <div className="pointer-events-none absolute left-4 top-4 z-20 rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-white/70">
         {statusLabel}
       </div>
 
       {showMobileViewerControls ? (
-        <div className="absolute right-3 top-3 z-20 flex items-center gap-1">
+        <div className="absolute right-4 top-4 z-20 flex items-center gap-1">
           <Button
             type="button"
             variant="ghost"

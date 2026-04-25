@@ -126,11 +126,21 @@ interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
   repositories: Repository[];
+  runtimeLabel?: string | null;
+  runtimeTitle?: string | null;
   onRemoveRepository: (id: string) => void;
   onProvidersChanged?: (providers: ModelProvider[]) => void;
 }
 
-export function SettingsDialog({ open, onClose, repositories, onRemoveRepository, onProvidersChanged }: SettingsDialogProps) {
+export function SettingsDialog({
+  open,
+  onClose,
+  repositories,
+  runtimeLabel,
+  runtimeTitle,
+  onRemoveRepository,
+  onProvidersChanged,
+}: SettingsDialogProps) {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SettingsTab>("workspace");
 
@@ -544,6 +554,23 @@ export function SettingsDialog({ open, onClose, repositories, onRemoveRepository
               Licenses
             </button>
           </div>
+
+          {runtimeLabel ? (
+            <div className="mt-auto pt-4">
+              <div className="border-t border-border/30 pt-3">
+                <div className="text-[10px] text-muted-foreground">
+                  <div className="mb-1 uppercase tracking-[0.12em] text-muted-foreground/70">Runtime</div>
+                  <div
+                    className="truncate text-[11px] font-medium text-foreground/80"
+                    title={runtimeTitle ?? undefined}
+                    data-testid="settings-runtime-context"
+                  >
+                    {runtimeLabel}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </aside>
 
         {/* Right panel */}
