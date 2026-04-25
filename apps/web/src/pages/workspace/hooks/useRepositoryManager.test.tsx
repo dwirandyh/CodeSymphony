@@ -11,6 +11,7 @@ const mockCreateWorktreeMutateAsync = vi.fn().mockResolvedValue({ worktree: { id
 const mockDeleteWorktreeMutateAsync = vi.fn();
 const mockDeleteRepoMutateAsync = vi.fn();
 const mockRenameBranchMutateAsync = vi.fn();
+const mockUpdateWorktreeBaseBranchMutateAsync = vi.fn();
 
 function makeRepositories(): Repository[] {
   return [
@@ -77,6 +78,9 @@ vi.mock("../../../hooks/mutations/useDeleteRepository", () => ({
 vi.mock("../../../hooks/mutations/useRenameWorktreeBranch", () => ({
   useRenameWorktreeBranch: () => ({ mutateAsync: mockRenameBranchMutateAsync, isPending: false }),
 }));
+vi.mock("../../../hooks/mutations/useUpdateWorktreeBaseBranch", () => ({
+  useUpdateWorktreeBaseBranch: () => ({ mutateAsync: mockUpdateWorktreeBaseBranchMutateAsync, isPending: false }),
+}));
 
 const mockRunSetupStream = vi.fn().mockReturnValue({
   addEventListener: vi.fn(),
@@ -87,6 +91,18 @@ const mockRunSetupStream = vi.fn().mockReturnValue({
 vi.mock("../../../lib/api", () => ({
   api: {
     pickDirectory: vi.fn().mockResolvedValue({ path: "/selected/path" }),
+    updateRepositoryScripts: vi.fn().mockImplementation(async (_repositoryId: string, input: { defaultBranch?: string }) => {
+      const nextDefaultBranch = input.defaultBranch ?? "main";
+      return {
+        ...makeRepositories()[0],
+        defaultBranch: nextDefaultBranch,
+        worktrees: makeRepositories()[0].worktrees.map((worktree) =>
+          worktree.path === "/home/user/test-repo"
+            ? { ...worktree, baseBranch: nextDefaultBranch }
+            : worktree,
+        ),
+      };
+    }),
     runSetupStream: (...args: unknown[]) => mockRunSetupStream(...args),
     stopSetupScript: vi.fn().mockResolvedValue(undefined),
   },
@@ -391,6 +407,43 @@ describe("useRepositoryManager", () => {
         await hookResult.renameWorktreeBranch("wt-feat", "bad");
       });
       expect(mockOnError).toHaveBeenCalledWith("Rename failed");
+    });
+  });
+
+  describe("updateWorktreeTargetBranch", () => {
+    it("updates repository default branch for the root worktree", async () => {
+      const { api } = await import("../../../lib/api");
+      render({ desiredWorktreeId: "wt-root" });
+
+      await act(async () => {
+        await hookResult.updateWorktreeTargetBranch("wt-root", "develop");
+      });
+
+      expect(api.updateRepositoryScripts).toHaveBeenCalledWith("r1", { defaultBranch: "develop" });
+    });
+
+    it("updates base branch for a non-root worktree", async () => {
+      render({ desiredWorktreeId: "wt-feat" });
+
+      await act(async () => {
+        await hookResult.updateWorktreeTargetBranch("wt-feat", "develop");
+      });
+
+      expect(mockUpdateWorktreeBaseBranchMutateAsync).toHaveBeenCalledWith({
+        worktreeId: "wt-feat",
+        input: { baseBranch: "develop" },
+      });
+    });
+
+    it("calls onError when updating target branch fails", async () => {
+      mockUpdateWorktreeBaseBranchMutateAsync.mockRejectedValueOnce(new Error("Target branch update failed"));
+      render({ desiredWorktreeId: "wt-feat" });
+
+      await act(async () => {
+        await hookResult.updateWorktreeTargetBranch("wt-feat", "develop");
+      });
+
+      expect(mockOnError).toHaveBeenCalledWith("Target branch update failed");
     });
   });
 

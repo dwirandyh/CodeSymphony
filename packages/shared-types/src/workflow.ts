@@ -565,6 +565,11 @@ export const RenameWorktreeBranchInputSchema = z.object({
 });
 export type RenameWorktreeBranchInput = z.infer<typeof RenameWorktreeBranchInputSchema>;
 
+export const UpdateWorktreeBaseBranchInputSchema = z.object({
+  baseBranch: z.string().trim().min(1),
+});
+export type UpdateWorktreeBaseBranchInput = z.infer<typeof UpdateWorktreeBaseBranchInputSchema>;
+
 export const UpdateRepositoryScriptsInputSchema = z.object({
   setupScript: z.array(z.string()).nullable().optional(),
   teardownScript: z.array(z.string()).nullable().optional(),

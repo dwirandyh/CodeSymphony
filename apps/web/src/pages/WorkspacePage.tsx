@@ -73,6 +73,7 @@ import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
+import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
 import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
@@ -559,11 +560,12 @@ export function WorkspacePage() {
     repos.selectedWorktree &&
     isRootWorktree(repos.selectedWorktree, repos.selectedRepository)
   );
-  const selectedContextLabel = repos.selectedWorktree
+  const repositoryBranches = useRepositoryBranches(repos.selectedRepositoryId);
+  const selectedTargetBranch = repos.selectedWorktree
     ? (selectedIsRootWorkspace
-      ? "Root Workspace"
-      : `Worktree ${repos.selectedWorktree.branch} from ${repos.selectedWorktree.baseBranch}`)
-    : "Choose a workspace";
+      ? repos.selectedRepository?.defaultBranch ?? null
+      : repos.selectedWorktree.baseBranch)
+    : null;
 
   const activeView = search.view ?? "chat";
   const activeFilePath = activeView === "file" ? search.file ?? null : null;
@@ -1379,11 +1381,21 @@ export function WorkspacePage() {
               )}
             >
               <WorkspaceHeader
-                selectedRepositoryName={repos.selectedRepository?.name ?? "No repository selected"}
-                selectedWorktreeLabel={selectedContextLabel}
+                selectedWorktreeBranch={repos.selectedWorktree?.branch ?? null}
+                selectedIsRootWorkspace={selectedIsRootWorkspace}
+                targetBranch={selectedTargetBranch}
+                targetBranchOptions={repositoryBranches.data ?? []}
+                targetBranchLoading={
+                  repositoryBranches.isLoading
+                  || repositoryBranches.isFetching
+                  || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
+                }
+                targetBranchDisabled={
+                  !repos.selectedWorktreeId
+                  || !repos.selectedRepositoryId
+                  || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
+                }
                 worktreePath={repos.selectedWorktree?.path ?? null}
-                runtimeLabel={runtimeLabel}
-                runtimeTitle={runtimeTitle}
                 threads={chat.threads}
                 selectedThreadId={chat.selectedThreadId}
                 fileTabs={workspaceFileTabs}
@@ -1406,6 +1418,12 @@ export function WorkspacePage() {
                 }}
                 onCloseThread={handleRequestCloseThread}
                 onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
+                onSelectTargetBranch={(branch) => {
+                  if (!repos.selectedWorktreeId) {
+                    return;
+                  }
+                  void repos.updateWorktreeTargetBranch(repos.selectedWorktreeId, branch);
+                }}
                 onSelectReviewTab={() => {
                   if (!confirmSwitchAwayFromActiveFile()) {
                     return;
@@ -1880,6 +1898,8 @@ export function WorkspacePage() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         repositories={repos.repositories}
+        runtimeLabel={runtimeLabel}
+        runtimeTitle={runtimeTitle}
         onRemoveRepository={(id) => {
           setSettingsOpen(false);
           void repos.removeRepository(id);

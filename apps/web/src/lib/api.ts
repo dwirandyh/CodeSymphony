@@ -47,6 +47,7 @@ import type {
   UpdateWorktreeFileContentInput,
   UpdateModelProviderInput,
   UpdateRepositoryScriptsInput,
+  UpdateWorktreeBaseBranchInput,
   WorktreeFileContent,
   Worktree,
 } from "@codesymphony/shared-types";
@@ -335,6 +336,11 @@ export const api = {
   getWorktree: (id: string) => request<Worktree>(`/worktrees/${id}`),
   renameWorktreeBranch: (worktreeId: string, input: RenameWorktreeBranchInput) =>
     request<Worktree>(`/worktrees/${worktreeId}/branch`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  updateWorktreeBaseBranch: (worktreeId: string, input: UpdateWorktreeBaseBranchInput) =>
+    request<Worktree>(`/worktrees/${worktreeId}/base-branch`, {
       method: "PATCH",
       body: JSON.stringify(input),
     }),

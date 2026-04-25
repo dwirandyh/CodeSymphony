@@ -5,6 +5,7 @@ import prismaClientPkg, { type PrismaClient } from "@prisma/client";
 import { CreateWorktreeInputSchema, type CreateWorktreeInput, type ScriptResult, type Worktree } from "@codesymphony/shared-types";
 import { createGitWorktree, getCurrentBranch, removeGitWorktree, renameBranch as renameBranchGit } from "./git.js";
 import { mapWorktree } from "./mappers.js";
+import { areLikelySameFsPath } from "./repositoryService.js";
 import { runScripts } from "./scriptRunner.js";
 
 const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
@@ -325,6 +326,35 @@ export function createWorktreeService(prisma: PrismaClient) {
           branch: newBranch,
           branchRenamed: options?.isManualRename ?? true,
         },
+      });
+
+      return mapWorktree(updated);
+    },
+
+    async updateBaseBranch(
+      worktreeId: string,
+      newBaseBranch: string,
+    ): Promise<Worktree> {
+      const worktree = await prisma.worktree.findUnique({
+        where: { id: worktreeId },
+        include: { repository: true },
+      });
+
+      if (!worktree) {
+        throw new Error("Worktree not found");
+      }
+
+      if (areLikelySameFsPath(worktree.path, worktree.repository.rootPath)) {
+        throw new Error("Primary worktree target branch is managed by the repository default branch");
+      }
+
+      if (worktree.baseBranch === newBaseBranch) {
+        return mapWorktree(worktree);
+      }
+
+      const updated = await prisma.worktree.update({
+        where: { id: worktreeId },
+        data: { baseBranch: newBaseBranch },
       });
 
       return mapWorktree(updated);
