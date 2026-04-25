@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
-import { ChevronDown, ChevronRight, Dot, FileCode2, GitBranch, GitPullRequestArrow, Loader2, Plus, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Dot,
+  GitBranch,
+  GitPullRequestArrow,
+  Loader2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  X,
+} from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
@@ -49,6 +60,8 @@ type WorkspaceHeaderProps = {
   onCloseReviewTab?: () => void;
   runScriptRunning?: boolean;
   onToggleRunScript?: () => void;
+  leftPanelVisible?: boolean;
+  onToggleLeftPanel?: () => void;
   mergeWithContent?: boolean;
 };
 
@@ -99,6 +112,8 @@ export function WorkspaceHeader({
   onCloseReviewTab,
   runScriptRunning,
   onToggleRunScript,
+  leftPanelVisible = true,
+  onToggleLeftPanel,
 }: WorkspaceHeaderProps) {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
@@ -193,6 +208,20 @@ export function WorkspaceHeader({
     )}>
       <div className="hidden items-center justify-between gap-3 lg:flex">
         <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-5">
+          {onToggleLeftPanel ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={leftPanelVisible ? "Hide left panel" : "Show left panel"}
+              title={leftPanelVisible ? "Hide left panel" : "Show left panel"}
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={onToggleLeftPanel}
+            >
+              {leftPanelVisible ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+            </Button>
+          ) : null}
+
           <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
           <span
             className="min-w-0 truncate font-medium text-foreground/90"

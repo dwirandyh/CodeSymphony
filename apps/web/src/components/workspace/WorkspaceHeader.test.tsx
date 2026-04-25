@@ -175,6 +175,25 @@ describe("WorkspaceHeader", () => {
     expect(stopButton.className).toBe(runClassName);
   });
 
+  it("renders the desktop left panel toggle button and routes clicks", () => {
+    const onToggleLeftPanel = vi.fn();
+    renderHeader({
+      leftPanelVisible: true,
+      onToggleLeftPanel,
+    });
+
+    const leftToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Hide left panel"]');
+    if (!leftToggle) {
+      throw new Error("Left panel toggle button not found");
+    }
+
+    flushSync(() => {
+      leftToggle.click();
+    });
+
+    expect(onToggleLeftPanel).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps add session button pinned outside scroll area", () => {
     const onCreateThread = vi.fn();
     renderHeader({ onCreateThread });

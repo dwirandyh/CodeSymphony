@@ -15,6 +15,9 @@
         "title": "CodeSymphony",
         "width": 1280,
         "height": 820,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "visible": false,
         "useHttpsScheme": false
       }

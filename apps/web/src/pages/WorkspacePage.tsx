@@ -16,6 +16,7 @@ const CodeEditorPanel = lazy(() =>
 import { PermissionPromptCard } from "../components/workspace/PermissionPromptCard";
 import { PlanDecisionComposer } from "../components/workspace/PlanDecisionComposer";
 import { QuestionCard } from "../components/workspace/QuestionCard";
+import { MacDesktopTitleBar } from "../components/workspace/MacDesktopTitleBar";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
@@ -54,7 +55,7 @@ const preloadCodeEditorPanel = () => import("../components/workspace/CodeEditorP
 const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewPanel");
 
 import { api, type RuntimeInfo } from "../lib/api";
-import { openExternalUrl } from "../lib/openExternalUrl";
+import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
 import { findRootWorktree, isRootWorktree } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
@@ -68,6 +69,7 @@ import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgrou
 import { useModelProviders } from "./workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "./workspace/hooks/useWorkspaceSyncStream";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
+import { useWorkspaceNavigationHistory } from "./workspace/hooks/useWorkspaceNavigationHistory";
 import { useWorkspaceFileEditor } from "./workspace/hooks/useWorkspaceFileEditor";
 import { shouldConfirmCloseThread } from "./workspace/closeThreadGuard";
 import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
@@ -169,7 +171,23 @@ function formatRuntimeTitle(runtimeInfo: RuntimeInfo | null | undefined): string
   return lines.length > 0 ? lines.join("\n") : null;
 }
 
+function isMacDesktopShell(): boolean {
+  if (!isTauriDesktop() || typeof navigator === "undefined") {
+    return false;
+  }
+
+  const navigatorWithUserAgentData = navigator as Navigator & {
+    userAgentData?: {
+      platform?: string;
+    };
+  };
+  const platform = navigatorWithUserAgentData.userAgentData?.platform ?? navigator.platform ?? "";
+
+  return /mac/i.test(platform) || /mac os x/i.test(navigator.userAgent);
+}
+
 const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
+const LEFT_SIDEBAR_VISIBLE_STORAGE_KEY = "codesymphony:workspace:left-sidebar-visible";
 const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
 const MOBILE_KEYBOARD_OFFSET_CSS_VAR = "--cs-mobile-keyboard-offset";
 
@@ -264,6 +282,24 @@ function loadRepositoryPanelExpandedState(): Record<string, boolean> {
   }
 }
 
+function loadStoredBoolean(storageKey: string, fallback: boolean): boolean {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) {
+      return fallback;
+    }
+
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "boolean" ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function sameIds(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
@@ -294,9 +330,11 @@ export function WorkspacePage() {
 
   const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>(() => loadRepositoryPanelExpandedState());
   const [repositoryPanelPreferences, setRepositoryPanelPreferences] = useState(() => loadRepositoryPanelPreferences());
+  const [leftSidebarVisible, setLeftSidebarVisible] = useState(() => loadStoredBoolean(LEFT_SIDEBAR_VISIBLE_STORAGE_KEY, true));
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [bottomPanelStateByWorktreeId, setBottomPanelStateByWorktreeId] = useState<Record<string, BottomPanelWorktreeState>>({});
   const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
+  const showMacDesktopTitleBar = isMacDesktopShell();
 
   const {
     providers: modelProviders,
@@ -333,6 +371,18 @@ export function WorkspacePage() {
 
     window.localStorage.setItem(REPOSITORY_PANEL_PREFERENCES_STORAGE_KEY, JSON.stringify(repositoryPanelPreferences));
   }, [repositoryPanelPreferences]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(LEFT_SIDEBAR_VISIBLE_STORAGE_KEY, JSON.stringify(leftSidebarVisible));
+  }, [leftSidebarVisible]);
+
+  const handleToggleLeftSidebar = useCallback(() => {
+    setLeftSidebarVisible((current) => !current);
+  }, []);
 
   const updateBottomPanelState = useCallback((worktreeId: string | null | undefined, updater: (current: BottomPanelWorktreeState) => BottomPanelWorktreeState) => {
     if (!worktreeId) {
@@ -573,6 +623,7 @@ export function WorkspacePage() {
   const activeFileColumn = activeView === "file" ? search.fileColumn ?? null : null;
   const selectedDiffFilePath = search.file ?? null;
   const reviewTabOpen = activeView === "review";
+  const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
   const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
   const repositoryReviews = useRepositoryReviews(repos.selectedRepositoryId);
@@ -1308,31 +1359,49 @@ export function WorkspacePage() {
     );
 
   return (
-    <div className="flex h-full p-1 pb-0 safe-top sm:p-2 sm:pb-0 lg:p-0">
-      <div className="flex min-h-0 w-full">
-        <WorkspaceSidebar
-          repos={repos}
-          orderedRepositories={orderedRepositories}
-          hiddenRepositoryIds={hiddenRepositoryIds}
-          expandedByRepo={expandedByRepo}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onSelectRepository={handleSelectRepository}
-          onToggleRepositoryExpand={handleToggleRepositoryExpand}
-          onSetRepositoryVisibility={handleSetRepositoryVisibility}
-          onShowAllRepositories={handleShowAllRepositories}
-          onReorderRepositories={handleReorderRepositories}
-          onSelectWorktree={handleSelectWorktree}
-        />
+    <div
+      className={cn(
+        "flex h-full p-1 pb-0 sm:p-2 sm:pb-0 lg:p-0",
+        !showMacDesktopTitleBar && "safe-top",
+      )}
+    >
+      <div className="flex min-h-0 w-full flex-col">
+        {showMacDesktopTitleBar ? (
+          <MacDesktopTitleBar
+            canGoBack={workspaceNavigation.canGoBack}
+            canGoForward={workspaceNavigation.canGoForward}
+            leftPanelVisible={leftSidebarVisible}
+            onGoBack={workspaceNavigation.goBack}
+            onGoForward={workspaceNavigation.goForward}
+            onToggleLeftPanel={handleToggleLeftSidebar}
+          />
+        ) : null}
 
-        {/* ── Main content area (chat + bottom panel) ── */}
-        <main
-          className={cn(
-            "workspace-main flex min-h-0 min-w-0 flex-1 flex-col px-0 pb-0 pt-0",
-            activeView !== "file" && "lg:px-3 lg:pb-0 lg:pt-3",
-            mobileReposDrawerOpen && "pointer-events-none select-none lg:pointer-events-auto lg:select-auto",
-          )}
-          aria-hidden={mobileReposDrawerOpen ? "true" : undefined}
-        >
+        <div className="flex min-h-0 w-full flex-1">
+          <WorkspaceSidebar
+            repos={repos}
+            orderedRepositories={orderedRepositories}
+            hiddenRepositoryIds={hiddenRepositoryIds}
+            expandedByRepo={expandedByRepo}
+            isVisible={leftSidebarVisible}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onSelectRepository={handleSelectRepository}
+            onToggleRepositoryExpand={handleToggleRepositoryExpand}
+            onSetRepositoryVisibility={handleSetRepositoryVisibility}
+            onShowAllRepositories={handleShowAllRepositories}
+            onReorderRepositories={handleReorderRepositories}
+            onSelectWorktree={handleSelectWorktree}
+          />
+
+          {/* ── Main content area (chat + bottom panel) ── */}
+          <main
+            className={cn(
+              "workspace-main flex min-h-0 min-w-0 flex-1 flex-col px-0 pb-0 pt-0",
+              activeView !== "file" && "lg:px-3 lg:pb-0 lg:pt-3",
+              mobileReposDrawerOpen && "pointer-events-none select-none lg:pointer-events-auto lg:select-auto",
+            )}
+            aria-hidden={mobileReposDrawerOpen ? "true" : undefined}
+          >
           {/* ── Mobile top bar ── */}
           <div
             className={cn(
@@ -1433,6 +1502,8 @@ export function WorkspacePage() {
                 onCloseReviewTab={handleCloseReview}
                 runScriptRunning={selectedBottomPanelState.runScriptActive}
                 onToggleRunScript={handleToggleRunScript}
+                leftPanelVisible={leftSidebarVisible}
+                onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
                 mergeWithContent={activeView === "file"}
               />
 
@@ -1793,6 +1864,7 @@ export function WorkspacePage() {
           prMrActionBusy={prMrActionBusy}
           onPrMrAction={() => void handlePrMrAction()}
         />
+      </div>
       </div>
 
       <QuickFilePicker

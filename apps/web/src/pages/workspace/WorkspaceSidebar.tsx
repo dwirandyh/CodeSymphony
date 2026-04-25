@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Settings } from "lucide-react";
 import type { Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "../../components/workspace/RepositoryPanel";
+import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
 import type { useRepositoryManager } from "./hooks/useRepositoryManager";
 import type { RepositoryPanelDropPosition } from "./repositoryPanelPreferences";
@@ -13,6 +14,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   orderedRepositories,
   hiddenRepositoryIds,
   expandedByRepo,
+  isVisible = true,
   onOpenSettings,
   onSelectRepository,
   onToggleRepositoryExpand,
@@ -25,6 +27,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   orderedRepositories: Repository[];
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
+  isVisible?: boolean;
   onOpenSettings: () => void;
   onSelectRepository: (repositoryId: string) => void;
   onToggleRepositoryExpand: (repositoryId: string, nextExpanded: boolean) => void;
@@ -39,8 +42,12 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
     <>
       <aside
         ref={panelRef}
-        className="mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden bg-card/75 p-2 sm:mb-2 lg:mb-0 lg:flex lg:p-3"
+        className={cn(
+          "mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden bg-card/75 p-2 sm:mb-2 lg:mb-0 lg:p-3",
+          isVisible ? "lg:flex" : "lg:hidden",
+        )}
         style={{ width: `${sidebarWidth}px` }}
+        aria-hidden={isVisible ? undefined : "true"}
       >
         <div className="mb-3">
           <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
@@ -83,20 +90,22 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
       </aside>
 
       {/* ── Sidebar resize handle ── */}
-      <div className="hidden relative w-0 lg:block" aria-hidden="true">
-        <button
-          type="button"
-          className={`group absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors ${sidebarDragging ? "bg-primary/10" : ""
-            }`}
-          onMouseDown={handleSidebarMouseDown}
-          aria-label="Resize sidebar"
-        >
-          <span
-            className={`h-8 w-[2px] rounded-full transition-colors ${sidebarDragging ? "bg-primary/60" : "bg-border/30 group-hover:bg-primary/40"
+      {isVisible ? (
+        <div className="hidden relative w-0 lg:block" aria-hidden="true">
+          <button
+            type="button"
+            className={`group absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors ${sidebarDragging ? "bg-primary/10" : ""
               }`}
-          />
-        </button>
-      </div>
+            onMouseDown={handleSidebarMouseDown}
+            aria-label="Resize sidebar"
+          >
+            <span
+              className={`h-8 w-[2px] rounded-full transition-colors ${sidebarDragging ? "bg-primary/60" : "bg-border/30 group-hover:bg-primary/40"
+                }`}
+            />
+          </button>
+        </div>
+      ) : null}
     </>
   );
 });

@@ -76,6 +76,14 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+    value: undefined,
+    configurable: true,
+  });
+  Object.defineProperty(window.navigator, "userAgentData", {
+    value: undefined,
+    configurable: true,
+  });
 });
 
 function makeRepo(overrides: Partial<Repository> = {}): Repository {
@@ -203,6 +211,24 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Workspace");
     expect(document.body.textContent).toContain("Models");
     expect(document.body.textContent).toContain("Licenses");
+  });
+
+  it("reserves the macOS title bar area when running inside the desktop shell", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {},
+      configurable: true,
+    });
+    Object.defineProperty(window.navigator, "userAgentData", {
+      value: { platform: "macOS" },
+      configurable: true,
+    });
+
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const sidebar = document.body.querySelector<HTMLElement>('[data-testid="settings-sidebar"]');
+    expect(sidebar).not.toBeNull();
+    expect(sidebar?.className).toContain("pt-[46px]");
   });
 
   it("shows bundled open-source license details in the Licenses tab", async () => {

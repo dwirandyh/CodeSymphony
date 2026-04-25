@@ -234,6 +234,18 @@ describe("CodeEditorPanel", () => {
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.title === "Next change")).toBe(false);
   });
 
+  it("shows git changes only in the gutter without full-line git highlight classes", () => {
+    renderEditor({
+      content: "const value = 2;\n",
+      gitHeadContent: "const value = 1;\n",
+      gitBaselineReady: true,
+      gitStatus: "modified",
+    });
+
+    expect(container.querySelector(".cm-git-marker-modified")).not.toBeNull();
+    expect(container.querySelector("[class*='cm-git-line-']")).toBeNull();
+  });
+
   it("renders an image preview for image files including svg", () => {
     renderEditor(
       {
