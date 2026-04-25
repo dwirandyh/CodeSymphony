@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
 import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
 import type {
@@ -14,6 +14,7 @@ import type {
   ChatEvent,
   ChatMessage,
   ChatMode,
+  ChatQueuedMessage,
   ChatThread,
   ChatThreadPermissionMode,
   ChatTimelineItem,
@@ -344,7 +345,7 @@ export function deriveSelectedThreadUiState(params: {
 
   return {
     selectedThreadUiStatus,
-    composerDisabled: !selectedThreadId || sendingMessage || selectedThreadUiStatus !== "idle",
+    composerDisabled: !selectedThreadId || sendingMessage || (selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running"),
   };
 }
 
@@ -659,10 +660,17 @@ export function useChatSession(
     ? "plan"
     : selectedThread?.mode ?? "default";
   const composerPermissionMode = selectedThread?.permissionMode ?? pendingComposerPermissionMode;
-  const composerModeLocked = selectedThreadUiStatus !== "idle";
+  const composerModeLocked = selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running";
   const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
     (thread) => thread.id === selectedThreadId && thread.kind === "review",
   );
+  const {
+    data: queuedMessages = [],
+  } = useQuery({
+    queryKey: selectedThreadId ? queryKeys.threads.queue(selectedThreadId) : ["threads", "__no_thread__", "queue"],
+    queryFn: () => api.listQueuedMessages(selectedThreadId!),
+    enabled: selectedThreadId != null,
+  });
 
   useEffect(() => {
     if (!selectedThreadId || waitingAssistant?.threadId !== selectedThreadId) {
@@ -1549,6 +1557,119 @@ export function useChatSession(
     if (!showStopAction) setStopRequestedThreadId(null);
   }, [showStopAction]);
 
+  async function queueDraft(
+    content: string,
+    mode: ChatMode,
+    messageAttachments: Array<AttachmentInput & { sizeBytes?: number; isInline?: boolean }>,
+  ) {
+    const threadId = activeThreadIdRef.current;
+    if (!threadId) {
+      return false;
+    }
+
+    const activeThread = findThreadForWorktree(threadsRef.current, threadId, selectedWorktreeId);
+    if (!activeThread) {
+      onError("Selected thread is stale for the active worktree. Please retry.");
+      return false;
+    }
+
+    const attachmentsToSend: AttachmentInput[] = messageAttachments.map((att) => ({
+      id: att.id,
+      filename: att.filename,
+      mimeType: att.mimeType,
+      content: att.content,
+      source: att.source,
+    }));
+
+    onError(null);
+    try {
+      await api.queueMessage(activeThread.id, {
+        content,
+        mode,
+        attachments: attachmentsToSend,
+        expectedWorktreeId: activeThread.worktreeId,
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(activeThread.id) });
+      return true;
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Failed to queue draft");
+      return false;
+    }
+  }
+
+  async function deleteQueuedDraft(queueMessageId: string) {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    const previousQueue = queryClient.getQueryData<ChatQueuedMessage[]>(queryKeys.threads.queue(selectedThreadId)) ?? [];
+    queryClient.setQueryData<ChatQueuedMessage[]>(
+      queryKeys.threads.queue(selectedThreadId),
+      previousQueue.filter((message) => message.id !== queueMessageId),
+    );
+
+    try {
+      await api.deleteQueuedMessage(selectedThreadId, queueMessageId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(selectedThreadId) });
+    } catch (error) {
+      queryClient.setQueryData(queryKeys.threads.queue(selectedThreadId), previousQueue);
+      onError(error instanceof Error ? error.message : "Failed to delete queued draft");
+    }
+  }
+
+  async function updateQueuedDraft(queueMessageId: string, content: string) {
+    if (!selectedThreadId) {
+      return false;
+    }
+
+    const previousQueue = queryClient.getQueryData<ChatQueuedMessage[]>(queryKeys.threads.queue(selectedThreadId)) ?? [];
+    queryClient.setQueryData<ChatQueuedMessage[]>(
+      queryKeys.threads.queue(selectedThreadId),
+      previousQueue.map((message) => message.id === queueMessageId
+        ? {
+          ...message,
+          content,
+        }
+        : message),
+    );
+
+    try {
+      await api.updateQueuedMessage(selectedThreadId, queueMessageId, { content });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(selectedThreadId) });
+      return true;
+    } catch (error) {
+      queryClient.setQueryData(queryKeys.threads.queue(selectedThreadId), previousQueue);
+      onError(error instanceof Error ? error.message : "Failed to update queued draft");
+      return false;
+    }
+  }
+
+  async function dispatchQueuedDraft(queueMessageId: string) {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    const previousQueue = queryClient.getQueryData<ChatQueuedMessage[]>(queryKeys.threads.queue(selectedThreadId)) ?? [];
+    queryClient.setQueryData<ChatQueuedMessage[]>(
+      queryKeys.threads.queue(selectedThreadId),
+      previousQueue.map((message) => message.id === queueMessageId
+        ? {
+          ...message,
+          status: message.status === "dispatching" ? "dispatching" : "dispatch_requested",
+          dispatchRequestedAt: message.dispatchRequestedAt ?? new Date().toISOString(),
+        }
+        : message),
+    );
+
+    try {
+      await api.requestQueuedMessageDispatch(selectedThreadId, queueMessageId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(selectedThreadId) });
+    } catch (error) {
+      queryClient.setQueryData(queryKeys.threads.queue(selectedThreadId), previousQueue);
+      onError(error instanceof Error ? error.message : "Failed to dispatch queued draft");
+    }
+  }
+
   const serverTimelineItems = (queriedThreadSnapshot?.timelineItems ?? []) as unknown as ChatTimelineItem[];
   const serverTimelineSummary = queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined;
   const timelineSeedMatchesLiveState =
@@ -1704,6 +1825,7 @@ export function useChatSession(
     sendingMessage,
     waitingAssistant,
     selectedThreadUiStatus,
+    queuedMessages,
     composerAgent,
     composerModel,
     composerModelProviderId,
@@ -1732,6 +1854,10 @@ export function useChatSession(
     setComposerMode,
     setComposerPermissionMode,
     submitMessage,
+    queueDraft,
+    updateQueuedDraft,
+    deleteQueuedDraft,
+    dispatchQueuedDraft,
     loadOlderHistory: async () => {},
     stopAssistantRun,
 

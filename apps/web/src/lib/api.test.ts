@@ -465,6 +465,12 @@ describe("api", () => {
       await api.getFileIndex("w1");
     });
 
+    it("gets worktree directory entries", async () => {
+      mockFetch.mockReturnValueOnce(mockOk([{ path: "ignored/cache.json", type: "file" }]));
+      await api.getWorktreeDirectoryEntries("w1", "ignored");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/files/tree?path=ignored");
+    });
+
     it("gets slash commands", async () => {
       mockFetch.mockReturnValueOnce(mockOk({
         commands: [{ name: "commit", description: "Create a commit", argumentHint: "" }],

@@ -2,6 +2,7 @@ import type {
   AnswerQuestionInput,
   ChatEvent,
   ChatMessage,
+  ChatQueuedMessage,
   ChatThread,
   ChatThreadSnapshot,
   ChatTimelineSnapshot,
@@ -32,10 +33,12 @@ import type {
   OpencodeModelCatalog,
   OpenWorktreeFileInput,
   PlanRevisionInput,
+  QueueChatMessageInput,
   SlashCommandCatalog,
   RenameChatThreadTitleInput,
   RenameWorktreeBranchInput,
   ResolvePermissionInput,
+  UpdateQueuedMessageInput,
   Repository,
   ScriptResult,
   SendDeviceControlInput,
@@ -429,6 +432,33 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  listQueuedMessages: (threadId: string) =>
+    request<ChatQueuedMessage[]>(`/threads/${threadId}/queue`),
+  queueMessage: (threadId: string, input: QueueChatMessageInput) =>
+    request<ChatQueuedMessage>(`/threads/${threadId}/queue`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateQueuedMessage: (threadId: string, queueMessageId: string, input: UpdateQueuedMessageInput) =>
+    request<ChatQueuedMessage>(`/threads/${threadId}/queue/${queueMessageId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteQueuedMessage: async (threadId: string, queueMessageId: string) => {
+    const response = await runtimeFetch(`/threads/${threadId}/queue/${queueMessageId}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to delete queued message");
+    }
+  },
+  requestQueuedMessageDispatch: (threadId: string, queueMessageId: string) =>
+    request<ChatQueuedMessage>(`/threads/${threadId}/queue/${queueMessageId}/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
   stopRun: async (threadId: string) => {
     const response = await runtimeFetch(`/threads/${threadId}/stop`, {
       method: "POST",
@@ -555,6 +585,10 @@ export const api = {
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`, { signal }),
   getFileIndex: (worktreeId: string, signal?: AbortSignal) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files/index`, { signal }),
+  getWorktreeDirectoryEntries: (worktreeId: string, directoryPath?: string, signal?: AbortSignal) => {
+    const params = directoryPath ? `?path=${encodeURIComponent(directoryPath)}` : "";
+    return request<FileEntry[]>(`/worktrees/${worktreeId}/files/tree${params}`, { signal });
+  },
   getSlashCommands: (worktreeId: string, agent: CliAgent, signal?: AbortSignal) =>
     request<SlashCommandCatalog>(`/worktrees/${worktreeId}/slash-commands?agent=${encodeURIComponent(agent)}`, { signal }),
   getWorktreeFileContent: (worktreeId: string, filePath: string, signal?: AbortSignal) => {

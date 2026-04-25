@@ -53,8 +53,10 @@ type ComposerSubmitPayload = {
 type ComposerProps = {
   disabled: boolean;
   sending: boolean;
+  queueing?: boolean;
   showStop: boolean;
   stopping: boolean;
+  attachedTop?: boolean;
   threadId: string | null;
   worktreeId: string | null;
   mode: ChatMode;
@@ -72,6 +74,7 @@ type ComposerProps = {
   permissionMode: ChatThreadPermissionMode;
   hasMessages: boolean;
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
+  onQueueDraft?: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onModeChange: (mode: ChatMode) => void;
   onStop: () => void;
   onAgentSelectionChange?: (selection: UpdateChatThreadAgentSelectionInput) => void;
@@ -333,8 +336,10 @@ function AttachmentPreviewDialog({
 function ComposerContent({
   disabled,
   sending,
+  queueing = false,
   showStop,
   stopping,
+  attachedTop = false,
   threadId,
   worktreeId,
   mode,
@@ -352,6 +357,7 @@ function ComposerContent({
   permissionMode,
   hasMessages,
   onSubmitMessage,
+  onQueueDraft,
   onModeChange,
   onStop,
   onAgentSelectionChange: onAgentSelectionChangeProp,
@@ -620,6 +626,7 @@ function ComposerContent({
   const cannotSend = disabled
     || pendingAttachmentReads > 0
     || (draftText.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
+  const cannotQueue = cannotSend || !onQueueDraft;
   const composerPlaceholder = isPlan
     ? "Describe what you want to plan..."
     : "Message CodeSymphony... (type / for commands, @ to mention files)";
@@ -742,41 +749,97 @@ function ComposerContent({
     afterChipHTMLRef.current = null;
   }, [applyAttachmentsChange, closeMention, closeSlashCommand]);
 
-  const handleSubmit = useCallback(async () => {
-    if (cannotSend) return;
-    if (pendingAttachmentReadsRef.current > 0) return;
+  const buildSubmissionPayload = useCallback((): {
+    content: string;
+    attachments: PendingAttachment[];
+  } | null => {
     const content = buildFinalContent();
     const currentAttachments = attachmentsRef.current;
-    if (!content.trim() && currentAttachments.length === 0) return;
+    if (!content.trim() && currentAttachments.length === 0) {
+      return null;
+    }
 
     const editor = editorRef.current;
     const inlineAttachmentIds = new Set<string>();
     if (editor) {
       const chips = editor.querySelectorAll<HTMLElement>("[data-attachment-id]");
       for (const chip of chips) {
-        if (chip.dataset.attachmentId) inlineAttachmentIds.add(chip.dataset.attachmentId);
+        if (chip.dataset.attachmentId) {
+          inlineAttachmentIds.add(chip.dataset.attachmentId);
+        }
       }
     }
 
     const allAttachments = [
       ...currentAttachments,
       ...inlineAttachmentIds.size > 0
-        ? currentAttachments.filter((a) => inlineAttachmentIds.has(a.id))
+        ? currentAttachments.filter((attachment) => inlineAttachmentIds.has(attachment.id))
         : [],
     ];
 
     const seen = new Set<string>();
-    const dedupedAttachments = allAttachments.filter((a) => {
-      if (seen.has(a.id)) return false;
-      seen.add(a.id);
+    const dedupedAttachments = allAttachments.filter((attachment) => {
+      if (seen.has(attachment.id)) {
+        return false;
+      }
+      seen.add(attachment.id);
       return true;
     });
 
-    const didSubmit = await onSubmitMessage({ content, mode, attachments: dedupedAttachments });
+    return {
+      content,
+      attachments: dedupedAttachments,
+    };
+  }, [buildFinalContent]);
+
+  const handleSubmit = useCallback(async () => {
+    if (cannotSend) return;
+    if (pendingAttachmentReadsRef.current > 0) return;
+    const payload = buildSubmissionPayload();
+    if (!payload) return;
+
+    const didSubmit = await onSubmitMessage({ content: payload.content, mode, attachments: payload.attachments });
     if (didSubmit) {
       resetDraft();
     }
-  }, [cannotSend, buildFinalContent, onSubmitMessage, mode, resetDraft]);
+  }, [buildSubmissionPayload, cannotSend, onSubmitMessage, mode, resetDraft]);
+
+  const handleQueueDraft = useCallback(async () => {
+    if (cannotQueue || pendingAttachmentReadsRef.current > 0 || !onQueueDraft) {
+      return;
+    }
+
+    const payload = buildSubmissionPayload();
+    if (!payload) {
+      return;
+    }
+
+    const didQueue = await onQueueDraft({ content: payload.content, mode, attachments: payload.attachments });
+    if (didQueue) {
+      resetDraft();
+    }
+  }, [buildSubmissionPayload, cannotQueue, mode, onQueueDraft, resetDraft]);
+
+  const primaryAction: "send" | "queue" | "stop" = showStop
+    ? (!cannotQueue ? "queue" : "stop")
+    : "send";
+  const primaryActionDisabled =
+    primaryAction === "send"
+      ? cannotSend
+      : primaryAction === "queue"
+        ? (cannotQueue || queueing)
+        : stopping;
+  const primaryActionLabel =
+    primaryAction === "send"
+      ? (sending ? "Running..." : "Send message")
+      : primaryAction === "queue"
+        ? (queueing ? "Queueing..." : "Queue draft")
+        : (stopping ? "Stopping..." : "Stop run");
+  const handlePrimaryAction = primaryAction === "send"
+    ? handleSubmit
+    : primaryAction === "queue"
+      ? handleQueueDraft
+      : onStop;
 
   const handleEditorAttachmentPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const target = event.target instanceof HTMLElement
@@ -1187,7 +1250,9 @@ function ComposerContent({
     <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
         <div
-          className={`relative rounded-2xl border bg-background/20 px-3 pb-11 pt-2.5 lg:rounded-3xl lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
+          className={`relative border bg-background/20 px-3 pb-11 pt-2.5 lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
+            attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl lg:rounded-t-none" : "rounded-2xl lg:rounded-3xl"
+          } ${
             isDragOver ? "border-primary/60 bg-primary/5" : "border-input/50"
           }`}
           onDragOver={handleDragOver}
@@ -1196,7 +1261,7 @@ function ComposerContent({
           onDrop={handleDrop}
         >
           {isDragOver && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-primary/10 lg:rounded-3xl">
+            <div className={`absolute inset-0 z-10 flex items-center justify-center bg-primary/10 ${attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl" : "rounded-2xl lg:rounded-3xl"}`}>
               <span className="text-sm font-medium text-primary">Drop files here</span>
             </div>
           )}
@@ -1561,16 +1626,16 @@ function ComposerContent({
           <div className="absolute bottom-2 right-2.5 flex items-center gap-2 lg:bottom-3 lg:right-3">
             <Button
               type="button"
-              onClick={showStop ? onStop : handleSubmit}
-              disabled={showStop ? stopping : cannotSend}
+              onClick={handlePrimaryAction}
+              disabled={primaryActionDisabled}
               size="icon"
-              aria-label={showStop ? "Stop run" : "Send message"}
+              aria-label={primaryActionLabel}
               className="h-8 w-8 rounded-full bg-white text-black hover:bg-white/90 disabled:bg-white/80 disabled:text-black/70"
             >
-              {showStop ? <Square className="h-3.5 w-3.5" fill="currentColor" /> : <ArrowUp className="h-3.5 w-3.5" />}
-              <span className="sr-only">
-                {showStop ? (stopping ? "Stopping..." : "Stop run") : sending ? "Running..." : "Send message"}
-              </span>
+              {primaryAction === "send" || primaryAction === "queue"
+                ? <ArrowUp className="h-3.5 w-3.5" />
+                : <Square className="h-3.5 w-3.5" fill="currentColor" />}
+              <span className="sr-only">{primaryActionLabel}</span>
             </Button>
           </div>
         </div>

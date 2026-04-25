@@ -74,6 +74,7 @@ function createApp() {
   const chatService = createChatService({
     prisma,
     eventHub,
+    workspaceEventHub,
     claudeRunner: runClaudeWithStreaming,
     codexRunner: runCodexWithStreaming,
     cursorRunner: runCursorWithStreaming,

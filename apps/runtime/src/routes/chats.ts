@@ -74,6 +74,19 @@ function respondForChatRouteError(reply: { code: (statusCode: number) => { send:
     return reply.code(409).send({ error: message });
   }
   if (
+    message === "Queued message not found"
+    || message === "Chat thread not found"
+    || message === "Thread not found"
+  ) {
+    return reply.code(404).send({ error: message });
+  }
+  if (
+    message === "Cannot dispatch queued messages while the assistant is waiting for approval or review"
+    || message === "Cannot edit a queued message while it is dispatching"
+  ) {
+    return reply.code(409).send({ error: message });
+  }
+  if (
     message === "Cannot change agent or model while assistant is processing"
     || message === "Cannot change agent or model after the thread has messages"
   ) {
@@ -330,6 +343,69 @@ export async function registerChatRoutes(app: FastifyInstance) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to send message";
       return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.get("/threads/:id/queue", async (request, reply) => {
+    try {
+      const params = threadParams.parse(request.params);
+      const queuedMessages = await app.chatService.listQueuedMessages(params.id);
+      return { data: queuedMessages };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to list queued messages");
+    }
+  });
+
+  app.post("/threads/:id/queue", { bodyLimit: 15 * 1024 * 1024 }, async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      const queuedMessage = await app.chatService.queueMessage(params.id, request.body);
+      return reply.code(201).send({ data: queuedMessage });
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to queue message");
+    }
+  });
+
+  app.delete("/threads/:id/queue/:queueMessageId", async (request, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      queueMessageId: z.string().min(1),
+    }).parse(request.params);
+
+    try {
+      await app.chatService.deleteQueuedMessage(params.id, params.queueMessageId);
+      return reply.code(204).send();
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to delete queued message");
+    }
+  });
+
+  app.patch("/threads/:id/queue/:queueMessageId", async (request, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      queueMessageId: z.string().min(1),
+    }).parse(request.params);
+
+    try {
+      const queuedMessage = await app.chatService.updateQueuedMessage(params.id, params.queueMessageId, request.body);
+      return { data: queuedMessage };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to update queued message");
+    }
+  });
+
+  app.post("/threads/:id/queue/:queueMessageId/dispatch", async (request, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      queueMessageId: z.string().min(1),
+    }).parse(request.params);
+
+    try {
+      const queuedMessage = await app.chatService.requestQueuedMessageDispatch(params.id, params.queueMessageId);
+      return { data: queuedMessage };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to request queued message dispatch");
     }
   });
 
