@@ -855,7 +855,7 @@ export function RepositoryPanel({
 
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-2 py-1.5">
+      <div className="flex items-center justify-between py-1.5">
         <h2 className="text-xs font-medium tracking-[0.03em] text-muted-foreground">
           Workspace (
           {hiddenRepositoryCount > 0
@@ -944,20 +944,20 @@ export function RepositoryPanel({
       </div>
 
       {loadingRepos ? (
-        <div className="px-2 py-2 text-xs text-muted-foreground">
+        <div className="py-2 text-xs text-muted-foreground">
           Loading repositories...
         </div>
       ) : null}
 
-      <ScrollArea className="min-h-0 flex-1 px-1 pb-1">
+      <ScrollArea className="min-h-0 flex-1 pb-1">
         {repositories.length === 0 ? (
-          <div className="px-2 py-3 text-xs text-muted-foreground">
+          <div className="py-3 text-xs text-muted-foreground">
             No repositories added yet.
           </div>
         ) : null}
 
         {repositories.length > 0 && visibleRepositories.length === 0 ? (
-          <div className="px-2 py-3 text-xs text-muted-foreground">
+          <div className="py-3 text-xs text-muted-foreground">
             No workspaces selected in the filter.
           </div>
         ) : null}
@@ -1009,7 +1009,7 @@ export function RepositoryPanel({
               <article
                 key={repository.id}
                 className={cn(
-                  "min-w-0 overflow-hidden rounded-xl p-1 transition-colors",
+                  "min-w-0 overflow-hidden rounded-xl py-1 transition-colors",
                   isSelected && "text-foreground",
                   draggedRepositoryId === repository.id && "bg-secondary/30 opacity-70 shadow-lg",
                 )}
@@ -1027,7 +1027,7 @@ export function RepositoryPanel({
                     size="sm"
                     draggable={enableDesktopPointerReorder ? false : repositories.length > 1}
                     className={cn(
-                      "h-8 min-w-0 flex-1 cursor-grab justify-start gap-1.5 overflow-hidden px-2 text-muted-foreground hover:bg-transparent hover:text-foreground active:cursor-grabbing",
+                      "h-8 min-w-0 flex-1 cursor-grab justify-start gap-1.5 overflow-hidden px-1 text-muted-foreground hover:bg-transparent hover:text-foreground active:cursor-grabbing",
                       isSelected && "text-foreground",
                     )}
                     onClick={() => {

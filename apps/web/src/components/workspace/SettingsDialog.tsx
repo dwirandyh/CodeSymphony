@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
+import { isTauriDesktop } from "../../lib/openExternalUrl";
 import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
 import type { CliAgent, ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
@@ -130,6 +131,21 @@ interface SettingsDialogProps {
   runtimeTitle?: string | null;
   onRemoveRepository: (id: string) => void;
   onProvidersChanged?: (providers: ModelProvider[]) => void;
+}
+
+function isMacDesktopShell(): boolean {
+  if (!isTauriDesktop() || typeof navigator === "undefined") {
+    return false;
+  }
+
+  const navigatorWithUserAgentData = navigator as Navigator & {
+    userAgentData?: {
+      platform?: string;
+    };
+  };
+  const platform = navigatorWithUserAgentData.userAgentData?.platform ?? navigator.platform ?? "";
+
+  return /mac/i.test(platform) || /mac os x/i.test(navigator.userAgent);
 }
 
 export function SettingsDialog({
@@ -501,15 +517,21 @@ export function SettingsDialog({
   }, [canTestProvider, providerAgent, trimmedProviderApiKey, trimmedProviderBaseUrl, trimmedProviderModelId]);
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId) ?? null;
+  const macDesktopShell = isMacDesktopShell();
 
   if (!open) return null;
 
   return (
     <>
       {/* Full-page overlay */}
-      <div className="fixed inset-0 z-50 flex bg-background p-1 sm:p-2 lg:p-3">
+      <div className="fixed inset-0 z-50 flex overflow-hidden bg-background">
         {/* Left panel — sidebar style */}
-        <aside className="flex w-[220px] shrink-0 flex-col rounded-2xl bg-card/75 p-3">
+        <aside
+          className={`flex w-[220px] shrink-0 flex-col bg-card/75 px-3 pb-3 ${
+            macDesktopShell ? "pt-[46px]" : "pt-3"
+          }`}
+          data-testid="settings-sidebar"
+        >
           <button
             type="button"
             className="mb-4 flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"

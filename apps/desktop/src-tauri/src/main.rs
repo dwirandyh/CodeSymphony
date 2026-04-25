@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -6,7 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{Manager, Url};
+use tauri::{Emitter, Manager, Url};
+
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSWindow, NSWindowButton};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -23,6 +27,23 @@ const LOCALHOST_RUNTIME_HOST: &str = "127.0.0.1";
 const LAN_RUNTIME_HOST: &str = "0.0.0.0";
 const COMMON_RUNTIME_EXECUTABLE_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 const USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES: [&str; 2] = [".opencode/bin", ".local/bin"];
+#[cfg(target_os = "macos")]
+// Coarse vertical lift for the whole native traffic-light container.
+const MACOS_TRAFFIC_LIGHT_VERTICAL_INSET: f64 = 4.0;
+#[cfg(target_os = "macos")]
+// Fine adjustment for the buttons themselves. In this titlebar coordinate space,
+// increasing the value moves the traffic lights upward.
+const MACOS_TRAFFIC_LIGHT_BUTTON_DROP: f64 = 0.9;
+#[cfg(target_os = "macos")]
+const MACOS_TRAFFIC_LIGHT_EPSILON: f64 = 0.5;
+#[cfg(target_os = "macos")]
+const MACOS_FULLSCREEN_EVENT: &str = "codesymphony://fullscreen-changed";
+#[cfg(target_os = "macos")]
+const MACOS_WINDOW_CHROME_SYNC_CHECKPOINTS_MS: [u64; 5] = [0, 160, 420, 900, 1400];
+
+#[cfg(target_os = "macos")]
+static MACOS_TRAFFIC_LIGHT_LAST_Y: std::sync::LazyLock<Mutex<HashMap<String, f64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn desktop_runtime_host(is_dev: bool) -> &'static str {
     if is_dev {
@@ -585,6 +606,88 @@ fn monitor_managed_runtime(app_handle: tauri::AppHandle, port: u16, is_dev: bool
     }
 }
 
+#[cfg(target_os = "macos")]
+fn adjust_macos_traffic_lights(window: &tauri::WebviewWindow) {
+    let Ok(ns_window_ptr) = window.ns_window() else {
+        return;
+    };
+
+    let ns_window = unsafe { &*ns_window_ptr.cast::<NSWindow>() };
+    let Some(close_button) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else {
+        return;
+    };
+    let Some(minimize_button) = ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
+    else {
+        return;
+    };
+    let Some(zoom_button) = ns_window.standardWindowButton(NSWindowButton::ZoomButton) else {
+        return;
+    };
+
+    let window_label = window.label().to_string();
+    let close_y = close_button.frame().origin.y;
+    let already_adjusted = MACOS_TRAFFIC_LIGHT_LAST_Y
+        .lock()
+        .ok()
+        .and_then(|state| state.get(&window_label).copied())
+        .map(|last_y| (close_y - last_y).abs() <= MACOS_TRAFFIC_LIGHT_EPSILON)
+        .unwrap_or(false);
+    if already_adjusted {
+        return;
+    }
+
+    let Some(title_bar_container) =
+        (unsafe { close_button.superview() }).and_then(|view| unsafe { view.superview() })
+    else {
+        return;
+    };
+
+    let mut title_bar_rect = title_bar_container.frame();
+    title_bar_rect.origin.y -= MACOS_TRAFFIC_LIGHT_VERTICAL_INSET;
+    title_bar_rect.size.height += MACOS_TRAFFIC_LIGHT_VERTICAL_INSET;
+    title_bar_container.setFrame(title_bar_rect);
+
+    for button in [close_button, minimize_button, zoom_button] {
+        let mut rect = button.frame();
+        rect.origin.y -= MACOS_TRAFFIC_LIGHT_BUTTON_DROP;
+        button.setFrameOrigin(rect.origin);
+    }
+
+    if let Ok(mut state) = MACOS_TRAFFIC_LIGHT_LAST_Y.lock() {
+        state.insert(window_label, close_y - MACOS_TRAFFIC_LIGHT_BUTTON_DROP);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn sync_macos_window_chrome(window: &tauri::WebviewWindow) {
+    let is_fullscreen = window.is_fullscreen().unwrap_or(false);
+    let _ = window.emit(MACOS_FULLSCREEN_EVENT, is_fullscreen);
+
+    if !is_fullscreen {
+        adjust_macos_traffic_lights(window);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_macos_window_chrome_sync(app_handle: tauri::AppHandle, window_label: String) {
+    thread::spawn(move || {
+        let mut previous_checkpoint_ms = 0_u64;
+
+        for checkpoint_ms in MACOS_WINDOW_CHROME_SYNC_CHECKPOINTS_MS {
+            if checkpoint_ms > previous_checkpoint_ms {
+                thread::sleep(Duration::from_millis(
+                    checkpoint_ms - previous_checkpoint_ms,
+                ));
+            }
+            previous_checkpoint_ms = checkpoint_ms;
+
+            if let Some(window) = app_handle.get_webview_window(&window_label) {
+                sync_macos_window_chrome(&window);
+            }
+        }
+    });
+}
+
 fn main() {
     let is_dev = cfg!(debug_assertions);
     let runtime_port = if cfg!(debug_assertions) {
@@ -600,6 +703,11 @@ fn main() {
             app.manage(RuntimeProcess(Mutex::new(None)));
             app.manage(AppShutdown(AtomicBool::new(false)));
             let _ = ensure_managed_runtime(app.handle(), runtime_port, is_dev);
+
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                sync_macos_window_chrome(&window);
+            }
 
             // Wait for the runtime to be ready, then show the window
             let app_handle = app.handle().clone();
@@ -653,6 +761,21 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if window.label() == "main"
+                && matches!(
+                    event,
+                    tauri::WindowEvent::Resized(_)
+                        | tauri::WindowEvent::ScaleFactorChanged { .. }
+                        | tauri::WindowEvent::Focused(true)
+                )
+            {
+                schedule_macos_window_chrome_sync(
+                    window.app_handle().clone(),
+                    window.label().to_string(),
+                );
+            }
+
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 request_runtime_shutdown(&window.app_handle());
                 stop_managed_runtime(&window.app_handle());

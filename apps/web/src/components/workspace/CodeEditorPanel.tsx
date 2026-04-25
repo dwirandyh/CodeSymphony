@@ -22,7 +22,6 @@ import {
   revertEditorGitHunk,
   type EditorGitChangeKind,
   type EditorGitHunk,
-  type EditorGitLineDecoration,
 } from "./codeEditorGit";
 
 type GitPeekWidgetHost = HTMLElement & { __gitPeekRoot?: Root };
@@ -321,24 +320,23 @@ const editorTheme = EditorView.theme({
     minWidth: "48px",
   },
   ".cm-git-gutter": {
-    width: "10px",
-    minWidth: "10px",
+    width: "12px",
+    minWidth: "12px",
   },
   ".cm-git-gutter .cm-gutterElement": {
     padding: 0,
   },
   ".cm-git-marker": {
     display: "block",
-    width: "3px",
+    width: "5px",
     height: "100%",
-    marginLeft: "3px",
+    margin: "0 auto",
     borderRadius: "999px",
   },
   ".cm-git-marker-deleted": {
     width: 0,
     height: 0,
-    marginLeft: "2px",
-    marginTop: "5px",
+    margin: "5px auto 0",
     borderTop: "5px solid transparent",
     borderBottom: "5px solid transparent",
     borderLeft: `7px solid ${GIT_DELETED}`,
@@ -348,14 +346,12 @@ const editorTheme = EditorView.theme({
     backgroundColor: GIT_ADDED,
   },
   ".cm-git-marker-modified": {
-    backgroundColor: GIT_MODIFIED,
+    backgroundColor: GIT_ADDED,
   },
   ".cm-git-marker-active": {
-    width: "4px",
-    marginLeft: "2px",
+    width: "6px",
   },
   ".cm-git-marker-active.cm-git-marker-deleted": {
-    marginLeft: "1px",
     borderLeftWidth: "8px",
   },
   ".cm-activeLineGutter": {
@@ -364,24 +360,6 @@ const editorTheme = EditorView.theme({
   },
   ".cm-activeLine": {
     backgroundColor: EDITOR_ACTIVE_LINE,
-  },
-  ".cm-line.cm-git-line-added": {
-    backgroundColor: "rgba(46, 160, 67, 0.12)",
-  },
-  ".cm-line.cm-git-line-modified": {
-    backgroundColor: "rgba(76, 194, 255, 0.11)",
-  },
-  ".cm-line.cm-git-line-deleted": {
-    backgroundColor: "rgba(248, 81, 73, 0.08)",
-  },
-  ".cm-line.cm-git-line-active-added": {
-    backgroundColor: "rgba(46, 160, 67, 0.18)",
-  },
-  ".cm-line.cm-git-line-active-modified": {
-    backgroundColor: "rgba(76, 194, 255, 0.18)",
-  },
-  ".cm-line.cm-git-line-active-deleted": {
-    backgroundColor: "rgba(248, 81, 73, 0.14)",
   },
   ".cm-git-peek-widget": {
     display: "block",
@@ -543,8 +521,6 @@ function runEditorStateCommand(view: EditorView | null, command: StateCommand) {
 
 function buildGitDecorations(
   state: EditorState,
-  lines: EditorGitLineDecoration[],
-  activeHunkIndex: number,
   peek: {
     hunk: EditorGitHunk | null;
     patch: string | null;
@@ -566,23 +542,6 @@ function buildGitDecorations(
     side: number;
     decoration: Decoration;
   }> = [];
-
-  for (const line of lines) {
-    const lineInfo = state.doc.line(Math.min(Math.max(line.lineNumber, 1), state.doc.lines));
-    const className = [
-      `cm-git-line-${line.kind}`,
-      line.hunkIndex === activeHunkIndex ? `cm-git-line-active-${line.kind}` : "",
-    ].filter(Boolean).join(" ");
-
-    entries.push({
-      from: lineInfo.from,
-      to: lineInfo.from,
-      side: 0,
-      decoration: Decoration.line({
-        attributes: { class: className },
-      }),
-    });
-  }
 
   if (peek?.hunk && peek.patch) {
     const peekWidgetState = {
@@ -770,7 +729,6 @@ class GitChangeMarker extends GutterMarker {
 function createGitEditorExtensions(args: {
   state: EditorState;
   hunks: EditorGitHunk[];
-  lines: EditorGitLineDecoration[];
   activeHunkIndex: number;
   peekHunk: EditorGitHunk | null;
   peekPatch: string | null;
@@ -799,8 +757,6 @@ function createGitEditorExtensions(args: {
   return [
     EditorView.decorations.of(buildGitDecorations(
       args.state,
-      args.lines,
-      args.activeHunkIndex,
       args.peekHunk && args.peekPatch
         ? {
           hunk: args.peekHunk,
@@ -1300,7 +1256,6 @@ export function CodeEditorPanel({
       effects: gitCompartmentRef.current.reconfigure(createGitEditorExtensions({
         state: view.state,
         hunks: inlineGitModel.hunks,
-        lines: inlineGitModel.lines,
         activeHunkIndex: activeGitHunkIndex,
         peekHunk: gitPeek ? activeGitHunk : null,
         peekPatch: gitPeek ? peekPatch : null,
