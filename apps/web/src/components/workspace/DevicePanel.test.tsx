@@ -409,4 +409,50 @@ describe("DevicePanel", () => {
 
     expect(openExternalUrlMock).toHaveBeenCalledWith("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
   });
+
+  it("surfaces reinstall guidance when the packaged runtime is ad-hoc signed", async () => {
+    useDevicesMock.mockImplementation(() => ({
+      snapshot: {
+        devices: [
+          {
+            id: "ios-simulator:abc123",
+            name: "iPhone 15 Pro",
+            platform: "ios-simulator",
+            status: "available",
+            connectionKind: "simulator",
+            supportsEmbeddedStream: true,
+            supportsControl: true,
+            serial: "ABC123",
+            lastError: null,
+          },
+        ],
+        activeSessions: [],
+        issues: [
+          {
+            id: "ios-simulator:tcc-adhoc",
+            platform: "ios-simulator",
+            severity: "warning",
+            message: "Native iOS simulator streaming is unavailable: The user declined TCCs for application, window, display capture CodeSymphony's bundled runtime binary is ad-hoc signed (/Applications/CodeSymphony.app/Contents/MacOS/node), so macOS can keep denying Screen Recording to the simulator bridge. Reinstall the latest signed app build, then fully quit and reopen CodeSymphony before reconnecting the stream.",
+          },
+        ],
+        refreshedAt: new Date().toISOString(),
+      },
+      loading: false,
+      error: null,
+      refresh,
+      startStream,
+      stopStream,
+      startingDeviceId: null,
+      stoppingSessionId: null,
+    }));
+
+    await act(async () => {
+      root.render(<DevicePanel onClose={() => {}} />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Screen Recording required");
+    expect(container.textContent).toContain("ad-hoc-signed runtime binary");
+    expect(container.textContent).toContain("Reinstall the latest signed app");
+  });
 });

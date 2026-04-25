@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ANDROID_VIEWER_WS_PLACEHOLDER,
+  annotateIosSimulatorBridgeTccError,
   buildAndroidInputTextCommands,
   buildAndroidProxyViewerUrl,
   buildAndroidWsScrcpyViewerUrl,
@@ -8,6 +9,7 @@ import {
   parseAdbDevicesOutput,
   parseAndroidClipboardBooleanServiceCall,
   parseAndroidClipboardServiceCallOutput,
+  parseCodesignSignatureState,
   parseSimctlDevicesOutput,
   resolveRememberedAndroidDevice,
   shouldRetainMissingAndroidSession,
@@ -103,6 +105,25 @@ describe("deviceService.utils", () => {
     expect(params.get("udid")).toBe("emulator-5554");
     expect(params.get("player")).toBe("webcodecs");
     expect(params.get("ws")).toBe(ANDROID_VIEWER_WS_PLACEHOLDER);
+  });
+
+  it("detects ad-hoc nested binary signatures from codesign output", () => {
+    expect(parseCodesignSignatureState([
+      "Executable=/Applications/CodeSymphony.app/Contents/MacOS/node",
+      "Identifier=node",
+      "Signature=adhoc",
+      "TeamIdentifier=not set",
+    ].join("\n"))).toBe("adhoc");
+  });
+
+  it("annotates iOS simulator TCC failures when the packaged runtime is ad-hoc signed", () => {
+    expect(annotateIosSimulatorBridgeTccError(
+      "The user declined TCCs for application, window, display capture",
+      {
+        bundledRuntimePath: "/Applications/CodeSymphony.app/Contents/MacOS/node",
+        bundledRuntimeSignature: "adhoc",
+      },
+    )).toContain("ad-hoc signed");
   });
 
   it("parses clipboard boolean results from adb service calls", () => {
