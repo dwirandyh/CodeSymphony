@@ -69,6 +69,23 @@ export function useWorkspaceTimeline(
   return useMemo<WorkspaceTimelineResult>(() => {
     const semanticHydrationInProgress = options?.semanticHydrationInProgress === true;
     const disabled = options?.disabled === true;
+    if (disabled) {
+      const disabledResult: WorkspaceTimelineResult = {
+        items: [],
+        hasIncompleteCoverage: false,
+        summary: {
+          oldestRenderableKey: null,
+          oldestRenderableKind: null,
+          oldestRenderableMessageId: null,
+          oldestRenderableHydrationPending: false,
+          headIdentityStable: true,
+        },
+      };
+      prevFingerprintRef.current = null;
+      prevResultRef.current = disabledResult;
+      return disabledResult;
+    }
+
     const fingerprint = {
       messagesFingerprint: buildMessagesStateFingerprint(messages),
       eventsFingerprint: buildEventsStateFingerprint(events),
@@ -85,23 +102,6 @@ export function useWorkspaceTimeline(
       && prevResultRef.current.items.length > 0
     ) {
       return prevResultRef.current;
-    }
-
-    if (disabled) {
-      const disabledResult: WorkspaceTimelineResult = {
-        items: [],
-        hasIncompleteCoverage: false,
-        summary: {
-          oldestRenderableKey: null,
-          oldestRenderableKind: null,
-          oldestRenderableMessageId: null,
-          oldestRenderableHydrationPending: false,
-          headIdentityStable: true,
-        },
-      };
-      prevFingerprintRef.current = fingerprint;
-      prevResultRef.current = disabledResult;
-      return disabledResult;
     }
 
     const coreResult = buildTimelineFromSeed({

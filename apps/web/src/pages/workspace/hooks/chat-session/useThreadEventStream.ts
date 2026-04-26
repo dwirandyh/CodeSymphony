@@ -569,7 +569,9 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           const bootstrapThreadId = selectedThreadId;
           const snapshot = await queryClient.fetchQuery({
             queryKey: queryKeys.threads.timelineSnapshot(bootstrapThreadId),
-            queryFn: () => api.getTimelineSnapshot(bootstrapThreadId),
+            queryFn: () => api.getTimelineSnapshot(bootstrapThreadId, {
+              includeCollections: false,
+            }),
           });
           if (
             disposed

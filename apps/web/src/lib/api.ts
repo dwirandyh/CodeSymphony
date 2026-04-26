@@ -428,8 +428,15 @@ export const api = {
     request<ChatThreadSnapshot>(`/threads/${threadId}/snapshot`),
   getThreadStatusSnapshot: (threadId: string) =>
     request<ChatThreadStatusSnapshot>(`/threads/${threadId}/status-snapshot`),
-  getTimelineSnapshot: (threadId: string) =>
-    request<ChatTimelineSnapshot>(`/threads/${threadId}/timeline`),
+  getTimelineSnapshot: (
+    threadId: string,
+    options?: { includeCollections?: boolean },
+  ) => {
+    const includeCollections = options?.includeCollections !== false;
+    return request<ChatTimelineSnapshot>(
+      `/threads/${threadId}/timeline?includeCollections=${includeCollections ? "1" : "0"}`,
+    );
+  },
   sendMessage: (threadId: string, input: SendChatMessageInput) =>
     request<ChatMessage>(`/threads/${threadId}/messages`, {
       method: "POST",

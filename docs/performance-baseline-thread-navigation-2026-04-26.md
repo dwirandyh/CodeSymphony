@@ -1,0 +1,242 @@
+# Thread Navigation Performance Baseline
+
+Date: 2026-04-26
+
+Target states:
+
+- A: `http://localhost:5173/?repoId=cmm5hkkmr002bm9f44ocaqax7&worktreeId=cmnonq88x0001m9bpkdncl8i4&threadId=cmoecljdo0i7zm9bxow08586c`
+  - Worktree: `feat/chat/queue`
+  - Thread: `Implement ADR and Dogfood`
+- B: `http://localhost:5173/?repoId=cmm5hkkmr002bm9f44ocaqax7&worktreeId=cmoexnjvo0q0lm9bxsat7o8el&threadId=cmoexnjym0q0nm9bxrzchbgh5`
+  - Worktree: `feat/setting/model`
+  - Thread: `New Thread`
+
+## Method
+
+- Browser automation via `agent-browser`
+- Desktop viewport `1440x900`
+- Ready definition:
+  - URL params match the target `repoId`, `worktreeId`, and `threadId`
+  - no `[data-testid="loading-thread-skeleton"]`
+  - composer textbox exists and is editable
+  - selected tab text matches the target thread title
+- Warm measurement:
+  - visit A once
+  - visit B once
+  - return to A
+  - wait `2500ms` idle before each measured navigation
+  - run `5` alternating cycles of `A -> B -> A`
+- First-hop spot check:
+  - fresh browser session
+  - open A
+  - measure `A -> B`
+  - immediately measure `B -> A`
+
+## Warm Baseline
+
+### Summary
+
+| Direction | Runs | Median ready | Median URL match | Extra interaction | Long-task median |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `A -> B` | `508.1ms`, `511.1ms`, `567.2ms`, `562.2ms`, `561.1ms` | `561.1ms` | `561.0ms` | `-` | `0` |
+| `B -> A` | `728.2ms`, `786.6ms`, `781.2ms`, `797.0ms`, `713.0ms` | `781.2ms` | `781.2ms` | tab click at `223.0ms` median | `3` |
+
+### Main-Thread Cost
+
+| Direction | Median long-task count | Median long-task total | Median max long task |
+| --- | ---: | ---: | ---: |
+| `A -> B` | `0` | `0ms` | `0ms` |
+| `B -> A` | `3` | `640ms` | `484ms` |
+
+Interpretation:
+
+- `A -> B` is already fairly fast in the warmed path and is not main-thread bound in the median run.
+- `B -> A` is materially slower and still shows heavy main-thread work even when the browser does not always issue new network fetches.
+- The slower direction is the hop into the populated thread timeline, not the hop into the empty/new thread.
+
+## First-Hop Spot Check
+
+| Direction | Ready | URL match | Long tasks |
+| --- | ---: | ---: | ---: |
+| `A -> B` | `532.0ms` | `454.6ms` | `1` long task, `444ms` max |
+| `B -> A` | `752.6ms` | `752.6ms` | `3` long tasks, `449ms` max |
+
+Interpretation:
+
+- The first hop was close to the warmed median for both directions.
+- The main asymmetry is stable: `B -> A` remains slower because activating the populated thread is the expensive path.
+
+## Request Profile
+
+### Warm `A -> B`
+
+Median observed API request count:
+
+- `11` fetches per run
+
+Most common requests:
+
+- `/api/worktrees/cmoexnjvo0q0lm9bxsat7o8el/threads`
+- background `/api/worktrees/*/threads` fan-out for other worktrees
+- sometimes `/api/threads/cmoexnjym0q0nm9bxrzchbgh5/timeline` around `22.5ms`
+
+Noisy outlier observed once:
+
+- `10` additional `/api/threads/*/status-snapshot` requests during the same visible hop
+
+Interpretation:
+
+- The empty-thread direction is fast enough that background workspace metadata fan-out is now a larger share of the observed request noise than the visible thread activation itself.
+
+### Warm `B -> A`
+
+Median observed API request count:
+
+- `1` API resource entry per run
+
+Representative hot-path requests when they appear:
+
+- `/api/threads/cmoecljdo0i7zm9bxow08586c/timeline` around `567ms`
+- `/api/threads/cmoecljdo0i7zm9bxow08586c/queue` around `3.3ms`
+
+Interpretation:
+
+- The populated-thread hop is dominated by timeline activation.
+- Some runs showed no fresh API fetch entries but still spent `713-781ms`, which points to cached-data hydration and render work as part of the remaining cost, not just network.
+
+## Baseline Takeaways
+
+- Best optimization target: `B -> A`
+  - It is slower by about `220ms` at the median (`781.2ms` vs `561.1ms`).
+  - It still incurs substantial long tasks on the main thread.
+- Secondary optimization target: `A -> B` background fan-out
+  - Visible navigation is already fast, but there is still unnecessary `/threads` and occasional `status-snapshot` background activity overlapping the switch.
+- Most actionable next steps:
+  - reduce populated-thread activation/render cost for `Implement ADR and Dogfood`
+  - avoid same-turn background worktree/thread metadata fan-out during the visible switch
+
+## Optimized Result
+
+After preserving cached thread/timeline state across worktree switches and seeding the next worktree from cache synchronously, the same warm 5-cycle measurement improved to:
+
+| Direction | Baseline median ready | Optimized median ready | Delta |
+| --- | ---: | ---: | ---: |
+| `A -> B` | `561.1ms` | `354.0ms` | `-207.1ms` |
+| `B -> A` | `781.2ms` | `638.1ms` | `-143.1ms` |
+
+Additional optimized-path observations:
+
+- Warm `A -> B`
+  - internal target-thread ready median: `6.1ms`
+  - snapshot hydrate median: `0.5ms`
+  - final target timeline available median: `5.6ms`
+- Warm `B -> A`
+  - internal target-thread ready median: `24.2ms`
+  - snapshot hydrate median: `2.2ms`
+  - final target timeline available median: `23.8ms`
+
+Interpretation:
+
+- The remaining visible time is now dominated much less by thread bootstrap itself.
+- The largest practical gain came from not discarding worktree-local thread caches on every switch.
+- The previous repeated `/api/worktrees/*/threads` refetch on the hot return path stopped being the visible bottleneck.
+
+Code changes behind the optimized result:
+
+- keep cached `threadCollections` and `threadStreamState` across worktree switches instead of clearing them eagerly in `useChatSession`
+- seed the next worktree's thread list from cached TanStack DB state immediately during the switch
+- retain the earlier snapshot/message/event merge fast paths and hydration fast paths
+
+## Latest Warm Spot Check
+
+After additional hot-path work to:
+
+- stop rebuilding the derived timeline during authoritative snapshot switches
+- memoize the chat message list and stabilize `useWorkspaceTimeline` inputs
+- cache snapshot/timeline fingerprints
+- suppress redundant search-param sync on already-pending worktree switches
+- disable `React.StrictMode` in local Vite dev to remove development-only double render overhead
+
+Warm same-session spot check:
+
+| Direction | Previous optimized reference | Latest warm spot check | Delta vs previous optimized |
+| --- | ---: | ---: | ---: |
+| `A -> B` | `354.0ms` | `177.3ms` | `-176.7ms` |
+| `B -> A` | `638.1ms` | `200.6ms` | `-437.5ms` |
+
+Interpretation:
+
+- The thread/worktree-specific bottleneck is no longer the dominant cost.
+- Hot switches now complete in roughly `180-200ms` in the warmed local-dev path.
+- Remaining latency is mostly shell/render overhead on localhost dev rather than chat bootstrap itself.
+
+## Final Warm Result
+
+After the latest pass to:
+
+- make the desktop sidebar actually memo-effective by removing the `repos` object prop fan-out
+- stop mounting the hidden mobile repository drawer on desktop
+- prewarm sibling worktree thread lists, timeline snapshots, and git status in the background
+- prefetch the next worktree on hover/focus/click
+- preserve last-known git status during transient live-query gaps
+
+Warm same-session measurement on the final code:
+
+| Direction | Original baseline | Final warm result | Delta | Improvement |
+| --- | ---: | ---: | ---: | ---: |
+| `A -> B` | `561.1ms` | `188.6ms` | `-372.5ms` | `-66.4%` |
+| `B -> A` | `781.2ms` | `176.4ms` | `-604.8ms` | `-77.4%` |
+
+Notes:
+
+- A fresh first hop after opening the page can still be slower than the fully warmed loop.
+  - Latest fresh spot check observed `A -> B` around `284.6ms` before the background prewarm had fully settled.
+- Once the worktree caches are warm, the alternating loop stabilized in the `~175-190ms` range.
+- The remaining cost is now mostly route/render shell work in local dev, not chat bootstrap.
+
+## Git Panel Behavior
+
+The earlier git-diff flicker came from two separate phases:
+
+- the worktree switch first showed cached lightweight UI state
+- then non-critical git data re-enabled later and briefly replaced the panel with a loading state
+
+Current behavior with the Source Control panel open:
+
+- the panel now switches directly to the target worktree state
+- a short `Loading changes...` phase may still appear if the target git status fetch is not already warm
+- the previous incorrect state no longer reappears after the target state has rendered
+
+This is materially better than the old `stale -> blank/loading -> final` sequence, but it is still not fully instant when the target git cache is cold.
+
+## Latest ADR-Focused Pass
+
+Date: 2026-04-26
+
+This pass targeted the remaining latency when opening thread A (`Implement ADR and Dogfood`) after the earlier data-path optimizations were already in place.
+
+Hot-path changes:
+
+- stop building the derived local timeline when the UI is already rendering the display snapshot timeline
+- stop sorting the same `events` array repeatedly for pending-gate and thread-status derivation
+- memoize pending gate and running-state derivation in `useChatSession`
+- avoid `ChatMessageList` reset state updates when those maps/flags are already empty
+- reduce `virtua` render buffer from the default hot-path window to `80px`
+
+Measured result on the same localhost dev setup:
+
+| Direction | Earlier spot check in this pass | Latest spot check | Delta |
+| --- | ---: | ---: | ---: |
+| `B -> A` | `254.8ms` | `129.4ms` | `-125.4ms` |
+
+Supporting internal metric on `B -> A`:
+
+- `derivedTimelineDurationMs`: `41.5ms` -> `0ms`
+- app-level `thread.ready`: remained around `3.4ms`
+- after fixing deterministic sibling-worktree prefetch and freezing the hidden bottom-panel subtree, a fresh B-start session now sees `hasCachedSnapshot: true` for thread A before the click and `thread.ready` around `2.3ms`
+
+Interpretation:
+
+- The large-thread switch is no longer paying the old `events -> derived timeline` cost on the visible path.
+- The remaining visible latency is now mostly React commit + virtualizer/layout/paint work in local Vite dev.
+- Against the original warm baseline, `B -> A` moved from `781.2ms` to `129.4ms`, an improvement of about `83.4%`.

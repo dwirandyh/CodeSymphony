@@ -760,7 +760,7 @@ describe("useThreadEventStream", () => {
       await Promise.resolve();
     });
 
-    expect(getTimelineSnapshotMock).toHaveBeenCalledWith(threadId);
+    expect(getTimelineSnapshotMock).toHaveBeenCalledWith(threadId, { includeCollections: false });
     expect(cancelQueriesMock).not.toHaveBeenCalled();
   });
 

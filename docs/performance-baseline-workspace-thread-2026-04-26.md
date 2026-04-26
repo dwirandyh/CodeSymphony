@@ -340,6 +340,96 @@ Interpretation:
 - No startup regression was observed after the simplification pass.
 - The post-simplifier median is effectively flat relative to the already-optimized path and remains far below the original `5814ms` baseline.
 
+## Navigation Performance
+
+Method for this pass:
+- Desktop viewport `1440x900`
+- Warm navigation measurement after the selected workspace stayed idle for `2500ms`
+- Ready definition:
+  - target worktree or thread is selected
+  - no `[data-testid="loading-thread-skeleton"]`
+  - composer textbox exists and is editable
+
+### Current Navigation State
+
+| Navigation | Runs | Median |
+| --- | --- | ---: |
+| Thread switch: `New Thread` → `Implement ADR and Dogfood` | `1677ms`, `1837ms`, `3148ms` | `1837ms` |
+| Thread switch: `Implement ADR and Dogfood` → `New Thread` | `463ms`, `820ms`, `788ms` | `788ms` |
+| Worktree switch: `feat/chat/queue` → `feat/setting/model` | `997ms`, `1221ms`, `1020ms` | `1020ms` |
+| Worktree switch: `feat/setting/model` → `feat/chat/queue` | `880ms`, `1109ms`, `1226ms` | `1109ms` |
+
+Interpretation:
+- Empty-thread targets are already reasonably quick.
+- The slowest remaining path is still the first hop into a populated thread timeline.
+- Worktree navigation is now roughly around `1s` in the warmed path and no longer shows the earlier multi-second variance spikes.
+
+### Navigation Comparison
+
+Note:
+- `Before` here refers to the earlier navigation pass before the dedicated thread/worktree optimizations in this section.
+- Those earlier measurements were noisier because non-critical workspace work still overlapped more often with navigation.
+
+| Navigation | Before median | Current median | Change |
+| --- | ---: | ---: | ---: |
+| Thread switch: `New Thread` → `Implement ADR and Dogfood` | `2831ms` | `1837ms` | `-994ms` |
+| Thread switch: `Implement ADR and Dogfood` → `New Thread` | `807ms` | `788ms` | `-19ms` |
+| Worktree switch: `feat/chat/queue` → `feat/setting/model` | `2063ms` | `1020ms` | `-1043ms` |
+
+### Navigation Request Profile
+
+Before the navigation pass, a representative thread switch still triggered:
+- `/api/threads/:id/queue`
+- `/api/threads/:id/timeline`
+- `/api/worktrees/:id/threads`
+- `/api/worktrees/:id/slash-commands`
+- additional background `/api/worktrees/*/threads`
+- additional background `/api/threads/*/status-snapshot`
+
+After the navigation pass, a representative warmed thread switch dropped to:
+- `/api/threads/:id/queue`
+- `/api/threads/:id/timeline`
+- `/api/worktrees/:id/slash-commands?agent=codex`
+
+The redundant same-worktree `/threads` refetch is gone from the hot path.
+
+For warmed worktree switching, the representative request profile dropped to:
+- `/api/worktrees/:id/git/status`
+- `/api/worktrees/:id/slash-commands?agent=codex`
+
+That means the selected target worktree can now reuse already-warmed thread state instead of re-running the earlier duplicate thread bootstrap path.
+
+### Navigation Grinding Applied
+
+What changed in this pass:
+- Removed the eager `threads.list(selectedWorktreeId)` invalidation on every thread selection change.
+- Disabled non-critical workspace queries synchronously when the user switches repository or worktree in chat bootstrap mode, instead of waiting for a later effect tick.
+- Prefetched sibling thread timeline snapshots after the workspace becomes non-critical/idle so the next visible thread hop has a chance to hit cache.
+- Added a short `staleTime` for thread timeline snapshots so recent prefetches are reusable during immediate navigation.
+
+Files changed in this pass:
+- `apps/web/src/pages/workspace/hooks/chat-session/useChatSession.ts`
+- `apps/web/src/pages/WorkspacePage.tsx`
+- `apps/web/src/hooks/queries/useThreadSnapshot.ts`
+- `apps/web/src/pages/workspace/hooks/chat-session/useChatSession.render.test.tsx`
+
+Validation:
+- `pnpm --filter @codesymphony/web exec vitest run src/pages/workspace/hooks/chat-session/useChatSession.render.test.tsx src/pages/workspace/hooks/useSlashCommands.test.tsx`
+- `pnpm --filter @codesymphony/web exec tsc --noEmit --pretty false -p tsconfig.json`
+
+### Remaining Bottleneck
+
+The remaining cost for loading a populated thread is still mostly:
+- `/api/threads/:id/timeline`
+- `/api/threads/:id/queue`
+
+So the next possible performance push would likely need one of:
+- deferring queue fetch until after conversation-ready
+- prefetching queued-message state for visible sibling tabs
+- making timeline bootstrap cheaper on the runtime side for large threads
+
+These are more behavior-sensitive than the changes above, so the current pass stops before touching them.
+
 ## Temporary Artifacts
 
 - `/tmp/codesymphony-lh-1.json`

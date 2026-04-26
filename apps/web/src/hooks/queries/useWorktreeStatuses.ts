@@ -11,7 +11,7 @@ import {
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
 import { useThreadsByWorktreeIds } from "./useThreads";
 
-export function useWorktreeStatuses(repositories: Repository[]) {
+export function useWorktreeStatuses(repositories: Repository[], enabled = true) {
   const activeWorktreeIds = useMemo(
     () => buildRepositoryWorktreeIndex(repositories).activeWorktreeIds,
     [repositories],
@@ -32,7 +32,7 @@ export function useWorktreeStatuses(repositories: Repository[]) {
     queries: stableThreadIds.map((threadId) => ({
       queryKey: queryKeys.threads.statusSnapshot(threadId),
       queryFn: () => api.getThreadStatusSnapshot(threadId),
-      enabled: threadId.length > 0,
+      enabled: enabled && threadId.length > 0,
       staleTime: 15_000,
     })),
     combine: (results) => {

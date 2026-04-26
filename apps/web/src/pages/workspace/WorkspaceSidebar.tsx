@@ -4,39 +4,54 @@ import type { Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "../../components/workspace/RepositoryPanel";
 import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
-import type { useRepositoryManager } from "./hooks/useRepositoryManager";
 import type { RepositoryPanelDropPosition } from "./repositoryPanelPreferences";
 
-type RepoManager = ReturnType<typeof useRepositoryManager>;
-
 export const WorkspaceSidebar = memo(function WorkspaceSidebar({
-  repos,
-  orderedRepositories,
+  repositories,
+  selectedRepositoryId,
+  selectedWorktreeId,
   hiddenRepositoryIds,
   expandedByRepo,
+  loadingRepos,
+  submittingRepo,
+  submittingWorktree,
   enableRepositoryMetadata = true,
   isVisible = true,
   onOpenSettings,
+  onAttachRepository,
   onSelectRepository,
   onToggleRepositoryExpand,
   onSetRepositoryVisibility,
   onShowAllRepositories,
   onReorderRepositories,
+  onCreateWorktree,
   onSelectWorktree,
+  onDeleteWorktree,
+  onRenameWorktreeBranch,
+  onPrefetchWorktree,
 }: {
-  repos: RepoManager;
-  orderedRepositories: Repository[];
+  repositories: Repository[];
+  selectedRepositoryId: string | null;
+  selectedWorktreeId: string | null;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
+  loadingRepos: boolean;
+  submittingRepo: boolean;
+  submittingWorktree: boolean;
   enableRepositoryMetadata?: boolean;
   isVisible?: boolean;
   onOpenSettings: () => void;
+  onAttachRepository: () => void;
   onSelectRepository: (repositoryId: string) => void;
   onToggleRepositoryExpand: (repositoryId: string, nextExpanded: boolean) => void;
   onSetRepositoryVisibility: (repositoryId: string, visible: boolean) => void;
   onShowAllRepositories: () => void;
   onReorderRepositories: (draggedRepositoryId: string, targetRepositoryId: string, position: RepositoryPanelDropPosition) => void;
+  onCreateWorktree: (repositoryId: string) => void;
   onSelectWorktree: (repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => void;
+  onDeleteWorktree: (worktreeId: string) => void;
+  onRenameWorktreeBranch: (worktreeId: string, newBranch: string) => void;
+  onPrefetchWorktree?: (worktreeId: string, preferredThreadId?: string | null) => void;
 }) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
 
@@ -58,25 +73,26 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
 
         <div className="min-h-0 flex-1 overflow-hidden">
           <RepositoryPanel
-            repositories={orderedRepositories}
-            selectedRepositoryId={repos.selectedRepositoryId}
-            selectedWorktreeId={repos.selectedWorktreeId}
+            repositories={repositories}
+            selectedRepositoryId={selectedRepositoryId}
+            selectedWorktreeId={selectedWorktreeId}
             enableMetadataQueries={enableRepositoryMetadata}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
-            loadingRepos={repos.loadingRepos}
-            submittingRepo={repos.submittingRepo}
-            submittingWorktree={repos.submittingWorktree}
-            onAttachRepository={repos.openFileBrowser}
+            loadingRepos={loadingRepos}
+            submittingRepo={submittingRepo}
+            submittingWorktree={submittingWorktree}
+            onAttachRepository={onAttachRepository}
             onSelectRepository={onSelectRepository}
             onToggleRepositoryExpand={onToggleRepositoryExpand}
             onSetRepositoryVisibility={onSetRepositoryVisibility}
             onShowAllRepositories={onShowAllRepositories}
             onReorderRepositories={onReorderRepositories}
-            onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
+            onCreateWorktree={onCreateWorktree}
             onSelectWorktree={onSelectWorktree}
-            onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
-            onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
+            onDeleteWorktree={onDeleteWorktree}
+            onRenameWorktreeBranch={onRenameWorktreeBranch}
+            onPrefetchWorktree={onPrefetchWorktree}
           />
         </div>
 

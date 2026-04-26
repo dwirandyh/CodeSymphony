@@ -1,10 +1,12 @@
-import { useCallback, useMemo } from "react";
-import type { GitChangeEntry, GitChangeStatus } from "@codesymphony/shared-types";
+import { useCallback, useMemo, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import type { GitChangeEntry, GitChangeStatus, GitStatus } from "@codesymphony/shared-types";
 import { useGitStatus } from "../../../hooks/queries/useGitStatus";
 import { useGitCommit } from "../../../hooks/mutations/useGitCommit";
 import { useDiscardGitChange } from "../../../hooks/mutations/useDiscardGitChange";
 import { useGitSync } from "../../../hooks/mutations/useGitSync";
 import { api } from "../../../lib/api";
+import { getCachedGitStatus } from "../../../collections/gitStatus";
 
 const STATUS_PRIORITY: Record<GitChangeStatus, number> = {
   modified: 0,
@@ -15,10 +17,37 @@ const STATUS_PRIORITY: Record<GitChangeStatus, number> = {
 };
 
 export function useGitChanges(worktreeId: string | null, enabled: boolean) {
+  const queryClient = useQueryClient();
   const { data, isLoading, refetch } = useGitStatus(enabled ? worktreeId : null);
   const commitMutation = useGitCommit(worktreeId);
   const discardMutation = useDiscardGitChange(worktreeId);
   const syncMutation = useGitSync(worktreeId);
+  const lastKnownStatusByWorktreeRef = useRef<Map<string, GitStatus>>(new Map());
+  const cachedData = useMemo(
+    () => worktreeId ? getCachedGitStatus(queryClient, worktreeId) : undefined,
+    [queryClient, worktreeId],
+  );
+  const effectiveData = useMemo(
+    () => {
+      if (!worktreeId) {
+        return data;
+      }
+
+      if (!enabled) {
+        return cachedData;
+      }
+
+      return data ?? cachedData;
+    },
+    [cachedData, data, enabled, worktreeId],
+  );
+  if (worktreeId && effectiveData) {
+    lastKnownStatusByWorktreeRef.current.set(worktreeId, effectiveData);
+  }
+  const stableData = useMemo(
+    () => worktreeId ? (effectiveData ?? lastKnownStatusByWorktreeRef.current.get(worktreeId)) : effectiveData,
+    [effectiveData, worktreeId],
+  );
 
   const commit = useCallback(
     async (message: string) => {
@@ -47,7 +76,7 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
   }, [worktreeId]);
 
   const entries = useMemo(() => {
-    const filteredEntries = (data?.entries ?? []).filter((entry) => !entry.path.endsWith("/"));
+    const filteredEntries = (stableData?.entries ?? []).filter((entry) => !entry.path.endsWith("/"));
     return [...filteredEntries].sort((left: GitChangeEntry, right: GitChangeEntry) => {
       const statusDiff = STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status];
       if (statusDiff !== 0) {
@@ -55,20 +84,20 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
       }
       return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: "base" });
     });
-  }, [data?.entries]);
+  }, [stableData?.entries]);
 
-  const ahead = data?.ahead ?? 0;
-  const behind = data?.behind ?? 0;
-  const canSync = entries.length === 0 && !!data?.upstream && (ahead > 0 || behind > 0);
+  const ahead = stableData?.ahead ?? 0;
+  const behind = stableData?.behind ?? 0;
+  const canSync = entries.length === 0 && !!stableData?.upstream && (ahead > 0 || behind > 0);
 
   return {
     entries,
-    branch: data?.branch ?? "",
-    upstream: data?.upstream ?? null,
+    branch: stableData?.branch ?? "",
+    upstream: stableData?.upstream ?? null,
     ahead,
     behind,
     canSync,
-    loading: isLoading,
+    loading: enabled ? isLoading && stableData == null : false,
     committing: commitMutation.isPending,
     syncing: syncMutation.isPending,
     error: commitMutation.error?.message ?? syncMutation.error?.message ?? discardMutation.error?.message ?? null,
@@ -76,6 +105,11 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     sync,
     discardChange,
     getDiff,
-    refresh: () => void refetch(),
+    refresh: () => {
+      if (!enabled) {
+        return;
+      }
+      void refetch();
+    },
   };
 }

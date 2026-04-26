@@ -15,6 +15,7 @@ const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
 const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
+const timelineQuery = z.object({ includeCollections: z.enum(["0", "1"]).optional() }).strict();
 const slashCommandQuery = z.object({
   agent: CliAgentSchema.optional(),
 }).strict();
@@ -331,10 +332,14 @@ export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/threads/:id/timeline", async (request, reply) => {
     try {
       const params = threadParams.parse(request.params);
-      const timelineKey = params.id;
+      const query = timelineQuery.parse(request.query);
+      const includeCollections = query.includeCollections !== "0";
+      const timelineKey = `${params.id}:${includeCollections ? "full" : "display"}`;
       const existingRequest = inFlightTimelineSnapshotRequests.get(timelineKey);
 
-      const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id).then((s) => s.timeline);
+      const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id, {
+        includeCollections,
+      }).then((s) => s.timeline);
 
       if (!existingRequest) {
         inFlightTimelineSnapshotRequests.set(timelineKey, snapshotPromise);
@@ -347,6 +352,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
           message: "chat.backend.timelineSnapshot.response",
           data: {
             threadId: params.id,
+            includeCollections,
             ...summarizeTimelineEnvelope(snapshot),
           },
         });

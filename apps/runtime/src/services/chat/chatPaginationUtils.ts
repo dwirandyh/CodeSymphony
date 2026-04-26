@@ -1,5 +1,5 @@
 import type { ChatEventType as DbChatEventType } from "@prisma/client";
-import type { ChatEvent } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import { mapChatMessage } from "../mappers.js";
 import { buildTimelineFromSeed } from "./chatTimelineAssembler.js";
 
@@ -51,8 +51,9 @@ export function buildTimelineSnapshot(params: {
   messages: ReturnType<typeof mapChatMessage>[];
   events: ChatEvent[];
   threadId: string | null;
+  includeCollections?: boolean;
 }) {
-  const { messages, events, threadId } = params;
+  const { messages, events, threadId, includeCollections = true } = params;
 
   const assembly = buildTimelineFromSeed({
     messages,
@@ -64,12 +65,22 @@ export function buildTimelineSnapshot(params: {
   const newestSeq = messages.length > 0 ? messages[messages.length - 1].seq : null;
   const newestIdx = events.length > 0 ? events[events.length - 1].idx : null;
 
+  const timelineItems = assembly.items.map((item): ChatTimelineItem => {
+    if (item.kind !== "message" || item.context == null) {
+      return item;
+    }
+
+    const { context: _context, ...rest } = item;
+    return rest;
+  });
+
   return {
-    timelineItems: assembly.items,
+    timelineItems,
     summary: assembly.summary,
     newestSeq,
     newestIdx,
-    messages,
-    events,
+    collectionsIncluded: includeCollections,
+    messages: includeCollections ? messages : [],
+    events: includeCollections ? events : [],
   };
 }

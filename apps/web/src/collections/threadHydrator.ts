@@ -37,6 +37,34 @@ function isSnapshotNotOlder(snapshotNewest: number | null, localNewest: number |
   return localNewest == null || snapshotNewest == null || snapshotNewest >= localNewest;
 }
 
+function cloneSortedIfNeeded<T>(rows: T[], compare: (left: T, right: T) => number): T[] {
+  for (let index = 1; index < rows.length; index += 1) {
+    if (compare(rows[index - 1], rows[index]) > 0) {
+      return [...rows].sort(compare);
+    }
+  }
+
+  return rows;
+}
+
+function rowsAlignAsPrefix<T>(
+  currentRows: T[],
+  nextRows: T[],
+  getKey: (row: T) => string,
+): boolean {
+  if (currentRows.length > nextRows.length) {
+    return false;
+  }
+
+  for (let index = 0; index < currentRows.length; index += 1) {
+    if (getKey(currentRows[index]) !== getKey(nextRows[index])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function reconcileCollectionRows<T extends object>(params: {
   collection: {
     delete: (keys: string[] | string) => unknown;
@@ -48,8 +76,28 @@ function reconcileCollectionRows<T extends object>(params: {
   getKey: (row: T) => string;
   areEqual: (left: T, right: T) => boolean;
   deleteMissing: boolean;
+  treatSameKeyAsEqual?: boolean;
 }) {
-  const { collection, currentRows, nextRows, getKey, areEqual, deleteMissing } = params;
+  const {
+    collection,
+    currentRows,
+    nextRows,
+    getKey,
+    areEqual,
+    deleteMissing,
+    treatSameKeyAsEqual = false,
+  } = params;
+
+  if (
+    !deleteMissing
+    && currentRows.length < nextRows.length
+    && rowsAlignAsPrefix(currentRows, nextRows, getKey)
+    && treatSameKeyAsEqual
+  ) {
+    collection.insert(nextRows.slice(currentRows.length));
+    return;
+  }
+
   const currentByKey = new Map(currentRows.map((row) => [getKey(row), row]));
   const nextByKey = new Map(nextRows.map((row) => [getKey(row), row]));
   const insertRows: T[] = [];
@@ -64,7 +112,7 @@ function reconcileCollectionRows<T extends object>(params: {
       continue;
     }
 
-    if (!areEqual(current, row)) {
+    if (!treatSameKeyAsEqual && !areEqual(current, row)) {
       updateRows.push(row);
     }
   }
@@ -131,8 +179,8 @@ export function hydrateThreadFromSnapshot(params: {
   const { eventsCollection, messagesCollection } = getThreadCollections(threadId);
   const currentEvents = eventsCollection.toArray as ChatEvent[];
   const currentMessages = messagesCollection.toArray as ChatMessage[];
-  const snapshotEvents = [...snapshot.events].sort((left, right) => left.idx - right.idx);
-  const snapshotMessages = [...snapshot.messages].sort((left, right) => left.seq - right.seq);
+  const snapshotEvents = cloneSortedIfNeeded(snapshot.events, (left, right) => left.idx - right.idx);
+  const snapshotMessages = cloneSortedIfNeeded(snapshot.messages, (left, right) => left.seq - right.seq);
   const localNewestEventIdx = getThreadLastEventIdx(threadId) ?? currentEvents[currentEvents.length - 1]?.idx ?? null;
   const localNewestMessageSeq = getThreadLastMessageSeq(threadId) ?? currentMessages[currentMessages.length - 1]?.seq ?? null;
   const allowEventReplace = mode === "replace" && isSnapshotNotOlder(getSnapshotNewestEventIdx(snapshot), localNewestEventIdx);
@@ -155,6 +203,7 @@ export function hydrateThreadFromSnapshot(params: {
     getKey: (event) => event.id,
     areEqual: areEventsEqual,
     deleteMissing: allowEventReplace,
+    treatSameKeyAsEqual: true,
   });
 
   reconcileCollectionRows({

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { History, Loader2, MessageSquarePlus, MessagesSquare } from "lucide-react";
 import { isRenderDebugEnabled, copyRenderDebugLog } from "../../../lib/renderDebug";
-import { VList, type VListHandle } from "virtua";
+import { VList, type CacheSnapshot, type VListHandle } from "virtua";
 import type {
   ChatMessageListEmptyState,
   ChatMessageListProps,
@@ -12,6 +12,11 @@ import { getTimelineItemKey } from "./toolEventUtils";
 import { TimelineItem, ThinkingPlaceholder } from "./TimelineItem";
 
 const AT_BOTTOM_THRESHOLD = 48;
+
+type ThreadListCacheEntry = {
+  itemCount: number;
+  cache: CacheSnapshot;
+};
 
 function LoadingThreadSkeleton() {
   return (
@@ -110,7 +115,8 @@ function getTimelineRowClassName(item: ChatTimelineItem, isFirst: boolean): stri
   return `mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}${isCompactRunningRow ? "pb-2" : "pb-4"}`;
 }
 
-export function ChatMessageList({
+export const ChatMessageList = memo(function ChatMessageList({
+  threadId = null,
   items,
   emptyState = "existing-thread-empty",
   showThinkingPlaceholder = false,
@@ -119,6 +125,8 @@ export function ChatMessageList({
   footer = null,
 }: ChatMessageListProps) {
   const vlistRef = useRef<VListHandle>(null);
+  const cacheByThreadIdRef = useRef<Map<string, ThreadListCacheEntry>>(new Map());
+  const skipNextAutoFollowRef = useRef(false);
   const [rawOutputMessageIds, setRawOutputMessageIds] = useState<Set<string>>(() => new Set());
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedDebug, setCopiedDebug] = useState(false);
@@ -141,6 +149,61 @@ export function ChatMessageList({
   }, []);
 
   const stickyBottomRef = useRef(true);
+  const displayItemCount = items.length + (showThinkingPlaceholder ? 1 : 0) + (footer ? 1 : 0);
+  const restorableCache = useMemo(() => {
+    if (!threadId) {
+      return undefined;
+    }
+
+    const entry = cacheByThreadIdRef.current.get(threadId) ?? null;
+    if (!entry || entry.itemCount !== displayItemCount) {
+      return undefined;
+    }
+
+    return entry.cache;
+  }, [displayItemCount, threadId]);
+
+  useEffect(() => {
+    stickyBottomRef.current = true;
+    skipNextAutoFollowRef.current = restorableCache != null;
+    setRawOutputMessageIds((current) => (current.size === 0 ? current : new Set()));
+    setCopiedMessageId((current) => (current === null ? current : null));
+    setCopiedDebug((current) => (current ? false : current));
+    setToolExpandedById((current) => (current.size === 0 ? current : new Map()));
+    setEditedExpandedById((current) => (current.size === 0 ? current : new Map()));
+    setExploreActivityExpandedById((current) => (current.size === 0 ? current : new Map()));
+    setSubagentExpandedById((current) => (current.size === 0 ? current : new Map()));
+    setSubagentPromptExpandedById((current) => (current.size === 0 ? current : new Map()));
+    setSubagentExploreExpandedById((current) => (current.size === 0 ? current : new Map()));
+    lastRenderSignatureByMessageIdRef.current = new Map();
+
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+    if (debugCopyTimeoutRef.current) {
+      clearTimeout(debugCopyTimeoutRef.current);
+      debugCopyTimeoutRef.current = null;
+    }
+  }, [restorableCache, threadId]);
+
+  useEffect(() => {
+    return () => {
+      if (!threadId) {
+        return;
+      }
+
+      const currentCache = vlistRef.current?.cache;
+      if (!currentCache) {
+        return;
+      }
+
+      cacheByThreadIdRef.current.set(threadId, {
+        itemCount: displayItemCount,
+        cache: currentCache,
+      });
+    };
+  }, [displayItemCount, threadId]);
 
   const toggleRawOutput = useCallback((id: string) => {
     setRawOutputMessageIds((prev) => {
@@ -220,6 +283,12 @@ export function ChatMessageList({
     if (!stickyBottomRef.current || displayItems.length === 0) {
       return;
     }
+
+    if (skipNextAutoFollowRef.current) {
+      skipNextAutoFollowRef.current = false;
+      return;
+    }
+
     requestAnimationFrame(() => {
       scrollToBottom("preserve-user-anchor");
     });
@@ -306,12 +375,15 @@ export function ChatMessageList({
       ) : (
         <VList
           ref={vlistRef}
+          bufferSize={80}
+          cache={restorableCache}
+          data={displayItems}
           itemSize={50}
           style={{ height: "100%", overflowAnchor: "none" }}
           onScroll={handleScroll}
           onScrollEnd={handleScrollEnd}
         >
-          {displayItems.map((item, index) => {
+          {(item, index) => {
             const isFirst = index === 0;
             if (item === "thinking-placeholder") {
               return (
@@ -332,9 +404,9 @@ export function ChatMessageList({
                 <TimelineItem item={item} ctx={timelineCtx} />
               </div>
             );
-          })}
+          }}
         </VList>
       )}
     </div>
   );
-}
+});

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Root as TabsRoot, List as TabsList, Trigger as TabsTrigger, Content as TabsContent } from "@radix-ui/react-tabs";
 import { DebugConsoleTab } from "./DebugConsoleTab";
 import { ScriptOutputTab, type ScriptOutputEntry } from "./ScriptOutputTab";
@@ -45,7 +45,83 @@ interface BottomPanelProps {
     openSignal?: number;
 }
 
-export function BottomPanel({
+type BottomPanelBodyProps = {
+    collapsed: boolean;
+    height: number;
+    panelRef: RefObject<HTMLDivElement | null>;
+    activeTab: string;
+    setupOutputs: ScriptOutputEntry[];
+    onRerunSetup?: () => void;
+    runScriptActive: boolean;
+    runScriptSessionId: string | null;
+    onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
+    worktreeId: string | null;
+    worktreePath: string | null;
+    selectedThreadId: string | null;
+};
+
+const BottomPanelBody = memo(function BottomPanelBody({
+    collapsed,
+    height,
+    panelRef,
+    activeTab,
+    setupOutputs,
+    onRerunSetup,
+    runScriptActive,
+    runScriptSessionId,
+    onRunScriptExit,
+    worktreeId,
+    worktreePath,
+    selectedThreadId,
+}: BottomPanelBodyProps) {
+    return (
+        <div
+            ref={panelRef}
+            className={`flex flex-col overflow-hidden ${
+                activeTab === "terminal" || activeTab === "run"
+                    ? TERMINAL_SURFACE_CLASS
+                    : ""
+            } ${collapsed ? "invisible h-0" : ""}`}
+            style={collapsed ? undefined : { height: `${height}px` }}
+        >
+            <TabsContent value="setup-script" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
+                <ScriptOutputTab
+                    entries={setupOutputs}
+                    onRerunSetup={onRerunSetup}
+                    rerunning={setupOutputs.some((e) => e.status === "running")}
+                />
+            </TabsContent>
+
+            <TabsContent value="terminal" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
+                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                    <TerminalTab sessionId={worktreeId ? `${worktreeId}:terminal` : "default"} cwd={worktreePath} />
+                </Suspense>
+            </TabsContent>
+
+            <TabsContent value="run" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
+                {runScriptSessionId ? (
+                    <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                        <TerminalTab
+                            sessionId={runScriptSessionId}
+                            cwd={worktreePath}
+                            onSessionExit={onRunScriptExit}
+                        />
+                    </Suspense>
+                ) : (
+                    <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                        No run session active.
+                    </div>
+                )}
+            </TabsContent>
+
+            <TabsContent value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
+                <DebugConsoleTab worktreeId={worktreeId} selectedThreadId={selectedThreadId} />
+            </TabsContent>
+        </div>
+    );
+});
+
+export const BottomPanel = memo(function BottomPanel({
     worktreeId,
     worktreePath,
     selectedThreadId,
@@ -149,6 +225,41 @@ export function BottomPanel({
         }
     }, [onCollapsedChange, openSignal, worktreeId]);
 
+    const currentBodyProps = useMemo<BottomPanelBodyProps>(() => ({
+        collapsed,
+        height,
+        panelRef,
+        activeTab,
+        setupOutputs,
+        onRerunSetup,
+        runScriptActive,
+        runScriptSessionId,
+        onRunScriptExit,
+        worktreeId,
+        worktreePath,
+        selectedThreadId,
+    }), [
+        activeTab,
+        collapsed,
+        height,
+        onRerunSetup,
+        onRunScriptExit,
+        panelRef,
+        runScriptActive,
+        runScriptSessionId,
+        selectedThreadId,
+        setupOutputs,
+        worktreeId,
+        worktreePath,
+    ]);
+    const hiddenBodyPropsRef = useRef<BottomPanelBodyProps>(currentBodyProps);
+    if (!collapsed) {
+        hiddenBodyPropsRef.current = currentBodyProps;
+    }
+    const renderedBodyProps = collapsed
+        ? hiddenBodyPropsRef.current
+        : currentBodyProps;
+
     return (
         <div
             className={`-mx-1.5 flex flex-col border-t border-border/30 safe-bottom sm:-mx-2.5 lg:-mx-3 ${
@@ -241,51 +352,9 @@ export function BottomPanel({
                     </button>
                 </div>
 
-                {/* Panel body — hidden via CSS when collapsed so children stay mounted */}
-                <div
-                    ref={panelRef}
-                    className={`flex flex-col overflow-hidden ${
-                        activeTab === "terminal" || activeTab === "run"
-                            ? TERMINAL_SURFACE_CLASS
-                            : ""
-                    } ${collapsed ? "invisible h-0" : ""}`}
-                    style={collapsed ? undefined : { height: `${height}px` }}
-                >
-                    <TabsContent value="setup-script" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
-                        <ScriptOutputTab
-                            entries={setupOutputs}
-                            onRerunSetup={onRerunSetup}
-                            rerunning={setupOutputs.some((e) => e.status === "running")}
-                        />
-                    </TabsContent>
-
-                    <TabsContent value="terminal" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
-                        <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-                            <TerminalTab sessionId={worktreeId ? `${worktreeId}:terminal` : "default"} cwd={worktreePath} />
-                        </Suspense>
-                    </TabsContent>
-
-                    <TabsContent value="run" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
-                        {runScriptSessionId ? (
-                            <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-                                <TerminalTab
-                                    sessionId={runScriptSessionId}
-                                    cwd={worktreePath}
-                                    onSessionExit={onRunScriptExit}
-                                />
-                            </Suspense>
-                        ) : (
-                            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                                No run session active.
-                            </div>
-                        )}
-                    </TabsContent>
-
-                    <TabsContent value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
-                        <DebugConsoleTab worktreeId={worktreeId} selectedThreadId={selectedThreadId} />
-                    </TabsContent>
-                </div>
+                {/* Panel body — keep the last visible subtree stable while collapsed so hidden heavy panels do not rerender on worktree switches */}
+                <BottomPanelBody {...renderedBodyProps} />
             </TabsRoot>
         </div>
     );
-}
+});

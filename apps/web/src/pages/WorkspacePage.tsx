@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Menu, Settings, X } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
+  type ChatThread,
   type CursorModelCatalogEntry,
   type OpencodeModelCatalogEntry,
   type ReviewKind,
@@ -56,6 +57,7 @@ const preloadCodeEditorPanel = () => import("../components/workspace/CodeEditorP
 const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewPanel");
 
 import { api, type RuntimeInfo } from "../lib/api";
+import { scheduleWindowIdleTask } from "../lib/idleTask";
 import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
 import { findRootWorktree, isRootWorktree } from "../lib/worktree";
@@ -80,7 +82,10 @@ import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
 import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
+import { THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS } from "../hooks/queries/useThreadSnapshot";
 import { queryKeys } from "../lib/queryKeys";
+import { refetchGitStatusCollection } from "../collections/gitStatus";
+import { getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import { isBaseBranchSelected, resolveReviewBaseBranch, resolveReviewBranch } from "./workspace/reviewBranch";
@@ -118,7 +123,6 @@ import { resolveVisibleRepositorySelection } from "./workspace/visibleRepository
 import {
   FilledPauseIcon,
   FilledPlayIcon,
-  resolveChatMessageListKey,
 } from "./workspace/workspacePageUtils";
 import {
   computeMobileKeyboardState,
@@ -191,14 +195,7 @@ const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository
 const LEFT_SIDEBAR_VISIBLE_STORAGE_KEY = "codesymphony:workspace:left-sidebar-visible";
 const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
 const MOBILE_KEYBOARD_OFFSET_CSS_VAR = "--cs-mobile-keyboard-offset";
-
-type IdleWindow = Window & {
-  cancelIdleCallback?: (handle: number) => void;
-  requestIdleCallback?: (
-    callback: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
-    options?: { timeout: number },
-  ) => number;
-};
+const rememberedThreadIdsByWorktree = new Map<string, string>();
 
 type BottomPanelWorktreeState = {
   activeTab: string;
@@ -265,6 +262,31 @@ function getBottomPanelState(
     runScriptSessionId: null,
     collapsed: true,
   };
+}
+
+function resolvePreferredThreadIdFromThreads(
+  threads: ChatThread[],
+  preferredThreadId?: string | null,
+): string | null {
+  if (preferredThreadId && threads.some((thread) => thread.id === preferredThreadId)) {
+    return preferredThreadId;
+  }
+
+  for (let index = threads.length - 1; index >= 0; index -= 1) {
+    if (threads[index]?.active) {
+      return threads[index].id;
+    }
+  }
+
+  return threads[threads.length - 1]?.id ?? null;
+}
+
+function isDesktopViewportNow(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+
+  return window.matchMedia("(min-width: 1024px)").matches;
 }
 
 function loadRepositoryPanelExpandedState(): Record<string, boolean> {
@@ -336,6 +358,28 @@ export function WorkspacePage() {
   const { search, updateSearch } = useWorkspaceSearchParams();
 
   const prevWorktreeIdRef = useRef<string | undefined>(search.worktreeId);
+  const pendingWorktreeSearchSelectionRef = useRef<{
+    repoId: string | null;
+    worktreeId: string | null;
+    threadId?: string;
+  } | null>(null);
+  const pendingDesiredSelection = pendingWorktreeSearchSelectionRef.current;
+  const desiredChatWorktreeId = pendingDesiredSelection?.worktreeId ?? search.worktreeId ?? null;
+  const desiredChatThreadId = pendingDesiredSelection?.threadId ?? search.threadId ?? undefined;
+
+  useEffect(() => {
+    const pendingSelection = pendingWorktreeSearchSelectionRef.current;
+    if (!pendingSelection || !pendingSelection.worktreeId) {
+      return;
+    }
+
+    const worktreeMatched = search.worktreeId === pendingSelection.worktreeId;
+    const threadMatched = pendingSelection.threadId == null || search.threadId === pendingSelection.threadId;
+
+    if (worktreeMatched && threadMatched) {
+      pendingWorktreeSearchSelectionRef.current = null;
+    }
+  }, [search.threadId, search.worktreeId]);
 
   const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>(() => loadRepositoryPanelExpandedState());
   const [repositoryPanelPreferences, setRepositoryPanelPreferences] = useState(() => loadRepositoryPanelPreferences());
@@ -460,12 +504,28 @@ export function WorkspacePage() {
     onTeardownError: handleTeardownError,
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
+        const pendingSelection = pendingWorktreeSearchSelectionRef.current;
+        if (
+          pendingSelection?.repoId === selection.repoId
+          && pendingSelection?.worktreeId === selection.worktreeId
+        ) {
+          prevWorktreeIdRef.current = selection.worktreeId ?? undefined;
+          return;
+        }
+
         const worktreeChanged = (selection.worktreeId ?? undefined) !== prevWorktreeIdRef.current;
         prevWorktreeIdRef.current = selection.worktreeId ?? undefined;
+        const shouldReusePendingThreadId =
+          pendingSelection?.worktreeId === selection.worktreeId;
+
         updateSearch({
           repoId: selection.repoId ?? undefined,
           worktreeId: selection.worktreeId ?? undefined,
-          ...(worktreeChanged ? { threadId: undefined } : {}),
+          ...(shouldReusePendingThreadId
+            ? { threadId: pendingSelection?.threadId }
+            : worktreeChanged
+              ? { threadId: undefined }
+              : {}),
         });
       },
       [updateSearch],
@@ -626,6 +686,7 @@ export function WorkspacePage() {
     : null;
 
   const activeView = search.view ?? "chat";
+  const rightPanelId = search.panel ?? null;
   const activeFilePath = activeView === "file" ? search.file ?? null : null;
   const activeFileLine = activeView === "file" ? search.fileLine ?? null : null;
   const activeFileColumn = activeView === "file" ? search.fileColumn ?? null : null;
@@ -637,11 +698,16 @@ export function WorkspacePage() {
   const [enableNonCriticalWorkspaceData, setEnableNonCriticalWorkspaceData] = useState(() => !prioritizeConversationBootstrap);
   const nonCriticalRepositoryId = enableNonCriticalWorkspaceData ? repos.selectedRepositoryId : null;
   const nonCriticalWorktreeId = enableNonCriticalWorkspaceData ? repos.selectedWorktreeId : null;
-  const nonCriticalWorktreePath = enableNonCriticalWorkspaceData
-    ? repos.selectedWorktree?.path ?? null
-    : null;
-  const gitChanges = useGitChanges(repos.selectedWorktreeId, enableNonCriticalWorkspaceData && !!repos.selectedWorktreeId);
-  const repositoryReviews = useRepositoryReviews(nonCriticalRepositoryId);
+  const prioritizeGitPanelData = rightPanelId === "git" || reviewTabOpen;
+  const gitChanges = useGitChanges(
+    repos.selectedWorktreeId,
+    (enableNonCriticalWorkspaceData || prioritizeGitPanelData) && !!repos.selectedWorktreeId,
+  );
+  const repositoryReviews = useRepositoryReviews(
+    enableNonCriticalWorkspaceData || prioritizeGitPanelData
+      ? repos.selectedRepositoryId
+      : null,
+  );
   const runtimeInfo = useRuntimeInfo();
   const selectedReviewBranch = resolveReviewBranch(gitChanges.branch, repos.selectedWorktree?.branch ?? null);
   const selectedReviewBaseBranch = resolveReviewBaseBranch(
@@ -665,7 +731,8 @@ export function WorkspacePage() {
   ].join(":");
 
   const chat = useChatSession(repos.selectedWorktreeId, setError, repos.updateWorktreeBranch, {
-    desiredThreadId: search.threadId,
+    desiredThreadId: desiredChatThreadId,
+    desiredWorktreeId: desiredChatWorktreeId,
     repositoryId: repos.selectedRepositoryId,
     timelineEnabled: !reviewTabOpen,
     onThreadChange: useCallback(
@@ -684,13 +751,6 @@ export function WorkspacePage() {
     || prMrThread.id === chat.waitingAssistant?.threadId
     || (chat.sendingMessage && prMrThread.id === chat.selectedThreadId)
   );
-  const prevSelectedThreadIdRef = useRef<string | null>(chat.selectedThreadId);
-  const chatMessageListKeyRef = useRef<string>(chat.selectedThreadId ?? "empty");
-  const chatMessageListKey = resolveChatMessageListKey({
-    previousKey: chatMessageListKeyRef.current,
-    previousThreadId: prevSelectedThreadIdRef.current,
-    nextThreadId: chat.selectedThreadId,
-  });
   const runtimeLabel = formatRuntimeLabel(runtimeInfo.data);
   const runtimeTitle = formatRuntimeTitle(runtimeInfo.data);
   const conversationReady = !prioritizeConversationBootstrap || (
@@ -700,6 +760,96 @@ export function WorkspacePage() {
     && chat.messageListEmptyState !== "creating-thread"
     && chat.messageListEmptyState !== "no-thread-selected"
   );
+  const prefetchDisplayThreadSnapshot = useCallback((threadId: string) => {
+    return queryClient.prefetchQuery({
+      queryKey: queryKeys.threads.timelineSnapshot(threadId),
+      queryFn: () => api.getTimelineSnapshot(threadId, {
+        includeCollections: false,
+      }),
+      staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,
+    });
+  }, [queryClient]);
+  const prefetchWorktreeNavigationTarget = useCallback(async (worktreeId: string, preferredThreadId?: string | null) => {
+    const inFlight = navigationPrefetchRef.current.get(worktreeId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const prefetchTask = (async () => {
+      const rememberedThreadId = preferredThreadId
+        ?? rememberedThreadIdsByWorktree.get(worktreeId)
+        ?? null;
+      const cachedThreads = (getThreadsCollection(queryClient, worktreeId).toArray as ChatThread[])
+        .map((thread) => ({ ...thread }));
+      const cachedThreadId = resolvePreferredThreadIdFromThreads(cachedThreads, rememberedThreadId);
+
+      const pendingTasks: Promise<unknown>[] = [
+        refetchGitStatusCollection(queryClient, worktreeId),
+      ];
+
+      if (cachedThreadId) {
+        pendingTasks.push(prefetchDisplayThreadSnapshot(cachedThreadId));
+      }
+
+      const refreshedThreadsTask = api.listThreads(worktreeId)
+        .then((threads) => {
+          replaceThreadsCollection(queryClient, worktreeId, threads);
+          return threads;
+        })
+        .catch(() => cachedThreads);
+
+      pendingTasks.push(refreshedThreadsTask);
+
+      const settledResults = await Promise.allSettled(pendingTasks);
+      const refreshedThreadsResult = settledResults[settledResults.length - 1];
+      const refreshedThreads = refreshedThreadsResult?.status === "fulfilled"
+        ? refreshedThreadsResult.value as ChatThread[]
+        : cachedThreads;
+
+      const nextThreadId = resolvePreferredThreadIdFromThreads(refreshedThreads, rememberedThreadId);
+
+      if (!nextThreadId || nextThreadId === cachedThreadId) {
+        return;
+      }
+
+      await prefetchDisplayThreadSnapshot(nextThreadId);
+    })().finally(() => {
+      navigationPrefetchRef.current.delete(worktreeId);
+    });
+
+    navigationPrefetchRef.current.set(worktreeId, prefetchTask);
+    return prefetchTask;
+  }, [prefetchDisplayThreadSnapshot, queryClient]);
+  const navigationPrefetchWorktreeIds = useMemo(() => {
+    const worktreeIds: string[] = [];
+    const pushWorktreeId = (worktreeId: string) => {
+      if (worktreeId === repos.selectedWorktreeId || worktreeIds.includes(worktreeId)) {
+        return;
+      }
+
+      worktreeIds.push(worktreeId);
+    };
+
+    const selectedRepository = visibleRepositories.find((repository) => repository.id === repos.selectedRepositoryId) ?? null;
+    const prioritizedRepositories = selectedRepository
+      ? [selectedRepository, ...visibleRepositories.filter((repository) => repository.id !== selectedRepository.id)]
+      : visibleRepositories;
+
+    for (const repository of prioritizedRepositories) {
+      for (const worktree of repository.worktrees) {
+        if (worktree.status !== "active") {
+          continue;
+        }
+
+        pushWorktreeId(worktree.id);
+        if (worktreeIds.length >= 6) {
+          return worktreeIds;
+        }
+      }
+    }
+
+    return worktreeIds;
+  }, [repos.selectedRepositoryId, repos.selectedWorktreeId, visibleRepositories]);
 
   useEffect(() => {
     if (!prioritizeConversationBootstrap) {
@@ -712,36 +862,50 @@ export function WorkspacePage() {
       return;
     }
 
-    const idleWindow = window as IdleWindow;
-    if (typeof idleWindow.requestIdleCallback === "function") {
-      const idleHandle = idleWindow.requestIdleCallback(() => {
-        setEnableNonCriticalWorkspaceData(true);
-      }, { timeout: 2000 });
-
-      return () => {
-        if (typeof idleWindow.cancelIdleCallback === "function") {
-          idleWindow.cancelIdleCallback(idleHandle);
-        }
-      };
-    }
-
-    const timeoutId = window.setTimeout(() => {
+    return scheduleWindowIdleTask(() => {
       setEnableNonCriticalWorkspaceData(true);
-    }, 1200);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
+    }, {
+      timeout: 2000,
+      fallbackDelayMs: 1200,
+    });
   }, [conversationReady, prioritizeConversationBootstrap, repos.selectedWorktreeId, search.worktreeId]);
-  const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId);
-
-  if (chatMessageListKey !== chatMessageListKeyRef.current) {
-    chatMessageListKeyRef.current = chatMessageListKey;
-  }
 
   useEffect(() => {
-    prevSelectedThreadIdRef.current = chat.selectedThreadId;
-  }, [chat.selectedThreadId]);
+    if (!conversationReady || navigationPrefetchWorktreeIds.length === 0) {
+      return;
+    }
+
+    return scheduleWindowIdleTask(() => {
+      for (const worktreeId of navigationPrefetchWorktreeIds) {
+        void prefetchWorktreeNavigationTarget(worktreeId);
+      }
+    }, {
+      timeout: 800,
+      fallbackDelayMs: 250,
+    });
+  }, [conversationReady, navigationPrefetchWorktreeIds, prefetchWorktreeNavigationTarget]);
+  const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId);
+
+  useEffect(() => {
+    if (!search.worktreeId || !search.threadId) {
+      return;
+    }
+
+    rememberedThreadIdsByWorktree.set(search.worktreeId, search.threadId);
+  }, [search.threadId, search.worktreeId]);
+
+  useEffect(() => {
+    if (!repos.selectedWorktreeId || !chat.selectedThreadId) {
+      return;
+    }
+
+    const selectedThread = chat.threads.find((thread) => thread.id === chat.selectedThreadId);
+    if (!selectedThread || selectedThread.worktreeId !== repos.selectedWorktreeId) {
+      return;
+    }
+
+    rememberedThreadIdsByWorktree.set(repos.selectedWorktreeId, chat.selectedThreadId);
+  }, [chat.selectedThreadId, chat.threads, repos.selectedWorktreeId]);
 
   const gates = usePendingGates(chat.selectedThreadIdForData ?? chat.selectedThreadId, {
     onError: setError,
@@ -766,11 +930,12 @@ export function WorkspacePage() {
     ? gates.pendingPermissionRequests[activePermissionIndex] ?? null
     : null;
   const hasMultiplePendingPermissions = gates.pendingPermissionRequests.length > 1;
-  const rightPanelId = search.panel ?? null;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<MobilePanelState>(null);
   const [mobileReposOrigin, setMobileReposOrigin] = useState<MobileReposOrigin | null>(null);
+  const [isDesktopViewport, setIsDesktopViewport] = useState(() => isDesktopViewportNow());
   const [mobileKeyboardOffset, setMobileKeyboardOffset] = useState(0);
   const [workspaceFileIndexRequests, setWorkspaceFileIndexRequests] = useState<Record<string, true>>({});
+  const navigationPrefetchRef = useRef<Map<string, Promise<void>>>(new Map());
   const activeMobileSection: "chat" | "files" | "git" | "more" = mobilePanelOpen === "more" || mobilePanelOpen === "utilities" || mobilePanelOpen === "device"
     ? "more"
     : mobilePanelOpen === "files"
@@ -833,6 +998,23 @@ export function WorkspacePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia("(min-width: 1024px)");
+    const updateViewportMatch = () => {
+      setIsDesktopViewport(mediaQuery.matches);
+    };
+
+    updateViewportMatch();
+    mediaQuery.addEventListener("change", updateViewportMatch);
+    return () => {
+      mediaQuery.removeEventListener("change", updateViewportMatch);
+    };
+  }, []);
+
   const workspaceFileIndexRequested = !!(
     repos.selectedWorktreeId
     && workspaceFileIndexRequests[repos.selectedWorktreeId]
@@ -846,6 +1028,21 @@ export function WorkspacePage() {
     );
   const fileIndex = useFileIndex(workspaceFileIndexEnabled ? nonCriticalWorktreeId : null);
   const slashCommands = useSlashCommands(nonCriticalWorktreeId, chat.composerAgent);
+
+  useEffect(() => {
+    if (!enableNonCriticalWorkspaceData || !repos.selectedWorktreeId || !chat.selectedThreadId) {
+      return;
+    }
+
+    const siblingThreads = chat.threads.filter((thread) => (
+      thread.worktreeId === repos.selectedWorktreeId && thread.id !== chat.selectedThreadId
+    ));
+    const threadsToPrefetch = siblingThreads.slice(-2);
+
+    for (const thread of threadsToPrefetch) {
+      void prefetchDisplayThreadSnapshot(thread.id);
+    }
+  }, [chat.selectedThreadId, chat.threads, enableNonCriticalWorkspaceData, prefetchDisplayThreadSnapshot, repos.selectedWorktreeId]);
 
   useEffect(() => {
     if (!repos.selectedWorktreeId) return;
@@ -900,6 +1097,10 @@ export function WorkspacePage() {
       return;
     }
 
+    if (prioritizeConversationBootstrap && repositoryId !== repos.selectedRepositoryId) {
+      setEnableNonCriticalWorkspaceData(false);
+    }
+
     repos.setSelectedRepositoryId(repositoryId);
     const repository = repos.repositories.find((entry) => entry.id === repositoryId);
     if (!repository) {
@@ -908,12 +1109,22 @@ export function WorkspacePage() {
     }
 
     const primaryWorktree = findRootWorktree(repository);
+    if (primaryWorktree) {
+      void prefetchWorktreeNavigationTarget(primaryWorktree.id);
+    }
     repos.setSelectedWorktreeId(primaryWorktree?.id ?? null);
-  }, [canDiscardDirtyWorktreeFiles, repos.repositories, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
+  }, [canDiscardDirtyWorktreeFiles, prefetchWorktreeNavigationTarget, prioritizeConversationBootstrap, repos.repositories, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
 
   const handleSelectWorktree = useCallback((repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => {
     if (!canDiscardDirtyWorktreeFiles(repos.selectedWorktreeId)) {
       return;
+    }
+
+    if (
+      prioritizeConversationBootstrap
+      && (repositoryId !== repos.selectedRepositoryId || worktreeId !== repos.selectedWorktreeId)
+    ) {
+      setEnableNonCriticalWorkspaceData(false);
     }
 
     if (mobilePanelOpen === "repos" && repositoryId === repos.selectedRepositoryId && worktreeId === repos.selectedWorktreeId) {
@@ -924,13 +1135,22 @@ export function WorkspacePage() {
     const nextMobilePanel = mobilePanelOpen === "repos"
       ? resolveMobileWorktreeTarget(mobileReposOrigin)
       : null;
+    const restoredThreadId = preferredThreadId
+      ?? rememberedThreadIdsByWorktree.get(worktreeId)
+      ?? undefined;
+    pendingWorktreeSearchSelectionRef.current = {
+      repoId: repositoryId,
+      worktreeId,
+      threadId: restoredThreadId,
+    };
+    void prefetchWorktreeNavigationTarget(worktreeId, restoredThreadId);
 
     repos.setSelectedRepositoryId(repositoryId);
     repos.setSelectedWorktreeId(worktreeId);
     updateSearch({
       repoId: repositoryId,
       worktreeId,
-      threadId: preferredThreadId ?? undefined,
+      threadId: restoredThreadId,
       view: undefined,
       file: undefined,
     });
@@ -939,7 +1159,7 @@ export function WorkspacePage() {
       setMobilePanelOpen(nextMobilePanel);
       setMobileReposOrigin(null);
     }
-  }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
+  }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, prefetchWorktreeNavigationTarget, prioritizeConversationBootstrap, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
 
   // Close mobile drawer on Escape key
   useEffect(() => {
@@ -1437,6 +1657,7 @@ export function WorkspacePage() {
       waitingAssistantThreadId === confirmCloseThreadId
       || chat.threads.some((thread) => thread.id === confirmCloseThreadId && thread.active)
     );
+  const shouldRenderMobileRepositories = !isDesktopViewport || mobileReposDrawerOpen;
 
   return (
     <div
@@ -1459,19 +1680,28 @@ export function WorkspacePage() {
 
         <div className="flex min-h-0 w-full flex-1">
           <WorkspaceSidebar
-            repos={repos}
-            orderedRepositories={orderedRepositories}
+            repositories={orderedRepositories}
+            selectedRepositoryId={repos.selectedRepositoryId}
+            selectedWorktreeId={repos.selectedWorktreeId}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
+            loadingRepos={repos.loadingRepos}
+            submittingRepo={repos.submittingRepo}
+            submittingWorktree={repos.submittingWorktree}
             enableRepositoryMetadata={enableNonCriticalWorkspaceData}
             isVisible={leftSidebarVisible}
             onOpenSettings={() => setSettingsOpen(true)}
+            onAttachRepository={repos.openFileBrowser}
             onSelectRepository={handleSelectRepository}
             onToggleRepositoryExpand={handleToggleRepositoryExpand}
             onSetRepositoryVisibility={handleSetRepositoryVisibility}
             onShowAllRepositories={handleShowAllRepositories}
             onReorderRepositories={handleReorderRepositories}
+            onCreateWorktree={repos.submitWorktree}
             onSelectWorktree={handleSelectWorktree}
+            onDeleteWorktree={repos.removeWorktree}
+            onRenameWorktreeBranch={repos.renameWorktreeBranch}
+            onPrefetchWorktree={prefetchWorktreeNavigationTarget}
           />
 
           {/* ── Main content area (chat + bottom panel) ── */}
@@ -1548,7 +1778,7 @@ export function WorkspacePage() {
                   || !repos.selectedRepositoryId
                   || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
                 }
-                worktreePath={nonCriticalWorktreePath}
+                worktreePath={repos.selectedWorktree?.path ?? null}
                 threads={chat.threads}
                 selectedThreadId={chat.selectedThreadId}
                 fileTabs={workspaceFileTabs}
@@ -1760,7 +1990,7 @@ export function WorkspacePage() {
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
                   <div className="min-h-0 min-w-0 flex-1">
                     <ChatMessageList
-                      key={chatMessageListKey}
+                      threadId={chat.selectedThreadId}
                       items={chat.timelineItems}
                       emptyState={chat.messageListEmptyState}
                       showThinkingPlaceholder={showThinkingPlaceholder}
@@ -1982,83 +2212,86 @@ export function WorkspacePage() {
         onClose={closeQuickFilePicker}
       />
 
-      {/* ── Mobile drawer backdrop ── */}
-      <div
-        className={cn(
-          "fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300 lg:hidden",
-          mobileReposDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0",
-        )}
-        onClick={() => {
-          if (mobileReposDrawerOpen) {
-            handleCloseMobileRepositories();
-          }
-        }}
-        aria-hidden="true"
-      />
-
-      {/* ── Mobile repos drawer (slide from left) ── */}
-      <aside
-        className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-[85vw] max-w-[320px] flex-col bg-card shadow-2xl drawer-slide safe-top lg:hidden",
-          mobileReposDrawerOpen ? "translate-x-0" : "-translate-x-full",
-        )}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Repositories"
-      >
-        <div className="flex items-center justify-between px-4 pb-2 pt-4">
-          <div>
-            <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
-            <p className="text-xs text-muted-foreground">Multi-agent orchestrator</p>
-          </div>
-          <button
-            type="button"
-            onClick={handleCloseMobileRepositories}
-            className="flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-colors active:bg-secondary/60"
-            aria-label="Close"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-hidden px-2">
-          <RepositoryPanel
-            repositories={orderedRepositories}
-            selectedRepositoryId={repos.selectedRepositoryId}
-            selectedWorktreeId={repos.selectedWorktreeId}
-            enableMetadataQueries={enableNonCriticalWorkspaceData}
-            hiddenRepositoryIds={hiddenRepositoryIds}
-            expandedByRepo={expandedByRepo}
-            loadingRepos={repos.loadingRepos}
-            submittingRepo={repos.submittingRepo}
-            submittingWorktree={repos.submittingWorktree}
-            onAttachRepository={repos.openFileBrowser}
-            onSelectRepository={handleSelectRepository}
-            onToggleRepositoryExpand={handleToggleRepositoryExpand}
-            onSetRepositoryVisibility={handleSetRepositoryVisibility}
-            onShowAllRepositories={handleShowAllRepositories}
-            onReorderRepositories={handleReorderRepositories}
-            onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
-            onSelectWorktree={(repositoryId, worktreeId, preferredThreadId) => {
-              handleSelectWorktree(repositoryId, worktreeId, preferredThreadId);
-            }}
-            onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
-            onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
-          />
-        </div>
-        <div className="shrink-0 border-t border-border/30 px-4 pt-2 pb-3 safe-bottom">
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground transition-colors active:bg-secondary/60"
+      {shouldRenderMobileRepositories ? (
+        <>
+          {/* ── Mobile drawer backdrop ── */}
+          <div
+            className={cn(
+              "fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300 lg:hidden",
+              mobileReposDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0",
+            )}
             onClick={() => {
-              handleCloseMobileRepositories();
-              setSettingsOpen(true);
+              if (mobileReposDrawerOpen) {
+                handleCloseMobileRepositories();
+              }
             }}
+            aria-hidden="true"
+          />
+
+          {/* ── Mobile repos drawer (slide from left) ── */}
+          <aside
+            className={cn(
+              "fixed inset-y-0 left-0 z-50 flex w-[85vw] max-w-[320px] flex-col bg-card shadow-2xl drawer-slide safe-top lg:hidden",
+              mobileReposDrawerOpen ? "translate-x-0" : "-translate-x-full",
+            )}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Repositories"
           >
-            <Settings className="h-3.5 w-3.5" />
-            Settings
-          </button>
-        </div>
-      </aside>
+            <div className="flex items-center justify-between px-4 pb-2 pt-4">
+              <div>
+                <h1 className="text-sm font-semibold tracking-wide">CodeSymphony</h1>
+                <p className="text-xs text-muted-foreground">Multi-agent orchestrator</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseMobileRepositories}
+                className="flex h-10 w-10 items-center justify-center rounded-xl text-muted-foreground transition-colors active:bg-secondary/60"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden px-2">
+              <RepositoryPanel
+                repositories={orderedRepositories}
+                selectedRepositoryId={repos.selectedRepositoryId}
+                selectedWorktreeId={repos.selectedWorktreeId}
+                enableMetadataQueries={enableNonCriticalWorkspaceData}
+                hiddenRepositoryIds={hiddenRepositoryIds}
+                expandedByRepo={expandedByRepo}
+                loadingRepos={repos.loadingRepos}
+                submittingRepo={repos.submittingRepo}
+                submittingWorktree={repos.submittingWorktree}
+                onAttachRepository={repos.openFileBrowser}
+                onSelectRepository={handleSelectRepository}
+                onToggleRepositoryExpand={handleToggleRepositoryExpand}
+                onSetRepositoryVisibility={handleSetRepositoryVisibility}
+                onShowAllRepositories={handleShowAllRepositories}
+                onReorderRepositories={handleReorderRepositories}
+                onCreateWorktree={repos.submitWorktree}
+                onSelectWorktree={handleSelectWorktree}
+                onDeleteWorktree={repos.removeWorktree}
+                onRenameWorktreeBranch={repos.renameWorktreeBranch}
+                onPrefetchWorktree={prefetchWorktreeNavigationTarget}
+              />
+            </div>
+            <div className="shrink-0 border-t border-border/30 px-4 pt-2 pb-3 safe-bottom">
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs text-muted-foreground transition-colors active:bg-secondary/60"
+                onClick={() => {
+                  handleCloseMobileRepositories();
+                  setSettingsOpen(true);
+                }}
+              >
+                <Settings className="h-3.5 w-3.5" />
+                Settings
+              </button>
+            </div>
+          </aside>
+        </>
+      ) : null}
 
       <FileBrowserModal
         open={repos.fileBrowserOpen}

@@ -1,5 +1,24 @@
 import type { ChatAttachment, ChatMessage } from "@codesymphony/shared-types";
 
+function messagesAlignAsPrefix(localMessages: ChatMessage[], queriedMessages: ChatMessage[]): boolean {
+  if (localMessages.length > queriedMessages.length) {
+    return false;
+  }
+
+  for (let index = 0; index < localMessages.length; index += 1) {
+    const local = localMessages[index];
+    const queried = queriedMessages[index];
+    if (local.id !== queried.id || local.seq !== queried.seq) {
+      return false;
+    }
+    if (shouldPreferLocalMessage(queried, local)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function areAttachmentsEqual(a: ChatAttachment[] | undefined, b: ChatAttachment[] | undefined): boolean {
   const left = a ?? [];
   const right = b ?? [];
@@ -63,6 +82,18 @@ function shouldPreferLocalMessage(queried: ChatMessage, local: ChatMessage): boo
 }
 
 export function mergeThreadMessages(queriedMessages: ChatMessage[], localMessages: ChatMessage[]): ChatMessage[] {
+  if (queriedMessages.length === 0) {
+    return localMessages;
+  }
+
+  if (localMessages.length === 0) {
+    return queriedMessages;
+  }
+
+  if (messagesAlignAsPrefix(localMessages, queriedMessages)) {
+    return queriedMessages;
+  }
+
   const merged = new Map<string, ChatMessage>();
   for (const message of queriedMessages) {
     merged.set(message.id, message);

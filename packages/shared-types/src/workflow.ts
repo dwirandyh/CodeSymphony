@@ -464,6 +464,7 @@ export const ChatTimelineSnapshotSchema = z.object({
   summary: ChatTimelineSummarySchema,
   newestSeq: z.number().int().nonnegative().nullable(),
   newestIdx: z.number().int().nonnegative().nullable(),
+  collectionsIncluded: z.boolean().optional(),
   messages: z.array(ChatMessageSchema),
   events: z.array(ChatEventSchema),
 });

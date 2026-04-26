@@ -2283,7 +2283,10 @@ export function createChatService(deps: RuntimeDeps) {
       return deps.eventHub.list(threadId, afterIdx);
     },
 
-    async listThreadSnapshot(threadId: string): Promise<ChatThreadSnapshot> {
+    async listThreadSnapshot(
+      threadId: string,
+      options?: { includeCollections?: boolean },
+    ): Promise<ChatThreadSnapshot> {
       await maybeDispatchQueuedMessages(threadId);
       await requireThreadExists(deps, threadId);
       const [messageRows, eventRows] = await Promise.all([
@@ -2302,6 +2305,7 @@ export function createChatService(deps: RuntimeDeps) {
         messages,
         events,
         threadId,
+        includeCollections: options?.includeCollections ?? true,
       });
 
       return {

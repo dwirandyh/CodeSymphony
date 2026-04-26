@@ -33,7 +33,7 @@ const { scrollToIndexMock, latestVListPropsRef, latestScrollStateRef } = vi.hois
 }));
 
 vi.mock("virtua", () => ({
-  VList: forwardRef(({ children, ...props }: any, ref) => {
+  VList: forwardRef(({ children, data, ...props }: any, ref) => {
     latestVListPropsRef.current = props;
     useImperativeHandle(ref, () => ({
       scrollToIndex: scrollToIndexMock,
@@ -47,7 +47,10 @@ vi.mock("virtua", () => ({
         return latestScrollStateRef.current.viewportSize;
       },
     }));
-    return <div data-testid="vlist">{typeof children === "function" ? null : children}</div>;
+    const renderedChildren = typeof children === "function"
+      ? Array.from(data ?? []).map((entry, index) => children(entry, index))
+      : children;
+    return <div data-testid="vlist">{renderedChildren}</div>;
   }),
 }));
 

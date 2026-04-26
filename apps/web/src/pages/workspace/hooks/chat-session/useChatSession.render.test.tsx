@@ -12,6 +12,8 @@ import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useCha
 const { threadsState, snapshotState } = vi.hoisted(() => ({
   threadsState: {
     data: undefined as ChatThread[] | undefined,
+    isLoading: false,
+    isFetching: false,
   },
   snapshotState: {
     data: null as ChatTimelineSnapshot | null,
@@ -21,7 +23,11 @@ const { threadsState, snapshotState } = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../../hooks/queries/useThreads", () => ({
-  useThreads: vi.fn(() => ({ data: threadsState.data })),
+  useThreads: vi.fn(() => ({
+    data: threadsState.data,
+    isLoading: threadsState.isLoading,
+    isFetching: threadsState.isFetching,
+  })),
 }));
 
 vi.mock("../../../../hooks/queries/useThreadSnapshot", () => ({
@@ -53,8 +59,23 @@ vi.mock("../workspace-timeline", () => ({
   useWorkspaceTimeline: useWorkspaceTimelineMock,
 }));
 
+const { pushThreadNavigationPerfMock } = vi.hoisted(() => ({
+  pushThreadNavigationPerfMock: vi.fn(),
+}));
+
+const { threadNavigationPerfEnabledState } = vi.hoisted(() => ({
+  threadNavigationPerfEnabledState: {
+    value: true,
+  },
+}));
+
 vi.mock("../../../../lib/renderDebug", () => ({
   pushRenderDebug: vi.fn(),
+}));
+
+vi.mock("../../../../lib/threadNavigationPerf", () => ({
+  isThreadNavigationPerfEnabled: vi.fn(() => threadNavigationPerfEnabledState.value),
+  pushThreadNavigationPerf: pushThreadNavigationPerfMock,
 }));
 
 vi.mock("../../../../lib/api", () => ({
@@ -112,19 +133,40 @@ function makeThread(id: string, active = false): ChatThread {
   };
 }
 
-function HookHarness({ desiredThreadId, repositoryId = null }: { desiredThreadId?: string; repositoryId?: string | null }) {
-  hookResult = useChatSession("wt-1", vi.fn(), undefined, {
+function HookHarness({
+  desiredThreadId,
+  desiredWorktreeId,
+  repositoryId = null,
+  selectedWorktreeId = "wt-1",
+}: {
+  desiredThreadId?: string;
+  desiredWorktreeId?: string | null;
+  repositoryId?: string | null;
+  selectedWorktreeId?: string | null;
+}) {
+  hookResult = useChatSession(selectedWorktreeId, vi.fn(), undefined, {
     desiredThreadId,
+    desiredWorktreeId,
     repositoryId,
   });
   return null;
 }
 
-function renderHook(desiredThreadId?: string, repositoryId?: string | null) {
+function renderHook(
+  desiredThreadId?: string,
+  repositoryId?: string | null,
+  selectedWorktreeId: string | null = "wt-1",
+  desiredWorktreeId?: string | null,
+) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <HookHarness desiredThreadId={desiredThreadId} repositoryId={repositoryId} />
+        <HookHarness
+          desiredThreadId={desiredThreadId}
+          desiredWorktreeId={desiredWorktreeId}
+          repositoryId={repositoryId}
+          selectedWorktreeId={selectedWorktreeId}
+        />
       </QueryClientProvider>,
     );
   });
@@ -163,6 +205,8 @@ function makeSnapshot(overrides?: Partial<ChatTimelineSnapshot>): ChatTimelineSn
 beforeEach(() => {
   resetPendingAutoCreateWorktreesForTest();
   threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
+  threadsState.isLoading = false;
+  threadsState.isFetching = false;
   snapshotState.data = null;
   snapshotState.isLoading = false;
   snapshotState.isFetching = false;
@@ -181,6 +225,7 @@ beforeEach(() => {
   cancelQueriesMock.mockResolvedValue(undefined);
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
   queryClient.cancelQueries = cancelQueriesMock as typeof queryClient.cancelQueries;
+  threadNavigationPerfEnabledState.value = true;
   vi.mocked(api.createThread).mockReset();
   vi.mocked(api.getOrCreatePrMrThread).mockReset();
   vi.mocked(api.renameThreadTitle).mockReset();
@@ -197,6 +242,7 @@ afterEach(() => {
   queryClient.clear();
   container.remove();
   resetPendingAutoCreateWorktreesForTest();
+  pushThreadNavigationPerfMock.mockReset();
   useWorkspaceTimelineMock.mockReset();
   useWorkspaceTimelineMock.mockReturnValue({
     items: [],
@@ -268,13 +314,13 @@ describe("useChatSession", () => {
     }
   });
 
-  it("refreshes thread activity on session switch and clears stale stop state after sync", async () => {
+  it("clears stale stop state after session activity sync without refetching the thread list", async () => {
     threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
 
     renderHook("thread-b");
 
     expect(hookResult.showStopAction).toBe(true);
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.list("wt-1") });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.list("wt-1") });
 
     threadsState.data = [makeThread("thread-a"), makeThread("thread-b", false)];
 
@@ -773,6 +819,32 @@ describe("useChatSession", () => {
     expect(hookResult.selectedThreadId).toBe("thread-a");
   });
 
+  it("does not auto-create a thread while the worktree thread list is still loading", async () => {
+    threadsState.data = [];
+    threadsState.isLoading = true;
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
+    threadsState.isLoading = false;
+    renderHook("thread-a");
+
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+  });
+
   it("syncs selection when desiredThreadId changes after mount", () => {
     renderHook("thread-a");
     expect(hookResult.selectedThreadId).toBe("thread-a");
@@ -798,6 +870,15 @@ describe("useChatSession", () => {
 
     threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
     renderHook("thread-a");
+
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+  });
+
+  it("ignores desiredThreadId while it belongs to a different worktree", () => {
+    renderHook("thread-a");
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+
+    renderHook("thread-b", null, "wt-1", "wt-2");
 
     expect(hookResult.selectedThreadId).toBe("thread-a");
   });
@@ -1013,6 +1094,99 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
   });
 
+  it("emits thread navigation perf stages while bootstrapping a populated thread", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      timelineItems: [{
+        kind: "message",
+        message: {
+          id: "assistant-1",
+          threadId: "thread-a",
+          seq: 1,
+          role: "assistant",
+          content: "Canonical answer",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+        context: [],
+      }],
+      summary: {
+        oldestRenderableKey: "message:assistant-1",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-1",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical answer",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const events = pushThreadNavigationPerfMock.mock.calls.map(([entry]) => entry.event);
+    expect(events).toEqual(expect.arrayContaining([
+      "selection.start",
+      "snapshot.received",
+      "snapshot.hydrated",
+      "thread.ready",
+    ]));
+  });
+
+  it("skips thread navigation perf instrumentation when perf debug is disabled", async () => {
+    threadNavigationPerfEnabledState.value = false;
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical answer",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(pushThreadNavigationPerfMock).not.toHaveBeenCalled();
+  });
+
   it("uses the authoritative server timeline during bootstrap when the snapshot contains canonical messages", () => {
     const serverTimelineItems: ChatTimelineItem[] = [
       {
@@ -1078,7 +1252,7 @@ describe("useChatSession", () => {
     expect(hookResult.timelineItems).toEqual(serverTimelineItems);
   });
 
-  it("prefers derived timeline when server snapshot contains stale cards but derived timeline is empty", () => {
+  it("uses display timeline snapshots even before full hydration data arrives", () => {
     const staleServerItems: ChatTimelineItem[] = [
       {
         kind: "edited-diff",
@@ -1097,6 +1271,7 @@ describe("useChatSession", () => {
     ];
 
     snapshotState.data = makeSnapshot({
+      collectionsIncluded: false,
       timelineItems: staleServerItems as ChatTimelineSnapshot["timelineItems"],
       summary: {
         oldestRenderableKey: "edited-diff:stale-edited",
@@ -1120,7 +1295,7 @@ describe("useChatSession", () => {
 
     renderHook("thread-a");
 
-    expect(hookResult.timelineItems).toEqual([]);
+    expect(hookResult.timelineItems).toEqual(staleServerItems);
   });
 
   it("replaces stale local messages and events when the latest snapshot for the same thread is empty", () => {

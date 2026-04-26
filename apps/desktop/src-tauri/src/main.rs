@@ -44,6 +44,9 @@ const MACOS_WINDOW_CHROME_SYNC_CHECKPOINTS_MS: [u64; 5] = [0, 160, 420, 900, 140
 #[cfg(target_os = "macos")]
 static MACOS_TRAFFIC_LIGHT_LAST_Y: std::sync::LazyLock<Mutex<HashMap<String, f64>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(target_os = "macos")]
+static MACOS_WINDOW_CHROME_SYNC_GENERATIONS: std::sync::LazyLock<Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn desktop_runtime_host(is_dev: bool) -> &'static str {
     if is_dev {
@@ -669,11 +672,73 @@ fn sync_macos_window_chrome(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
+fn next_macos_window_chrome_sync_generation(window_label: &str) -> u64 {
+    let Ok(mut state) = MACOS_WINDOW_CHROME_SYNC_GENERATIONS.lock() else {
+        return 0;
+    };
+
+    let next_generation = state
+        .get(window_label)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(1);
+    state.insert(window_label.to_string(), next_generation);
+    next_generation
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_window_chrome_sync_generation_current(window_label: &str, generation: u64) -> bool {
+    MACOS_WINDOW_CHROME_SYNC_GENERATIONS
+        .lock()
+        .ok()
+        .and_then(|state| state.get(window_label).copied())
+        .map(|current_generation| current_generation == generation)
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn queue_macos_window_chrome_sync(
+    app_handle: &tauri::AppHandle,
+    window_label: &str,
+    generation: u64,
+) {
+    let app_handle = app_handle.clone();
+    let app_handle_for_task = app_handle.clone();
+    let window_label = window_label.to_string();
+
+    // AppKit window mutations must stay on the main thread or macOS can abort
+    // during live resize/fullscreen transitions.
+    let _ = app_handle.run_on_main_thread(move || {
+        if !is_macos_window_chrome_sync_generation_current(&window_label, generation) {
+            return;
+        }
+
+        if let Some(window) = app_handle_for_task.get_webview_window(&window_label) {
+            sync_macos_window_chrome(&window);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
 fn schedule_macos_window_chrome_sync(app_handle: tauri::AppHandle, window_label: String) {
+    schedule_macos_window_chrome_sync_with_immediate_queue(app_handle, window_label, true);
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_macos_window_chrome_sync_with_immediate_queue(
+    app_handle: tauri::AppHandle,
+    window_label: String,
+    include_immediate_queue: bool,
+) {
+    let generation = next_macos_window_chrome_sync_generation(&window_label);
+    if include_immediate_queue {
+        queue_macos_window_chrome_sync(&app_handle, &window_label, generation);
+    }
+
     thread::spawn(move || {
         let mut previous_checkpoint_ms = 0_u64;
 
-        for checkpoint_ms in MACOS_WINDOW_CHROME_SYNC_CHECKPOINTS_MS {
+        for checkpoint_ms in MACOS_WINDOW_CHROME_SYNC_CHECKPOINTS_MS.into_iter().skip(1) {
             if checkpoint_ms > previous_checkpoint_ms {
                 thread::sleep(Duration::from_millis(
                     checkpoint_ms - previous_checkpoint_ms,
@@ -681,9 +746,11 @@ fn schedule_macos_window_chrome_sync(app_handle: tauri::AppHandle, window_label:
             }
             previous_checkpoint_ms = checkpoint_ms;
 
-            if let Some(window) = app_handle.get_webview_window(&window_label) {
-                sync_macos_window_chrome(&window);
+            if !is_macos_window_chrome_sync_generation_current(&window_label, generation) {
+                return;
             }
+
+            queue_macos_window_chrome_sync(&app_handle, &window_label, generation);
         }
     });
 }
@@ -762,18 +829,24 @@ fn main() {
         })
         .on_window_event(|window, event| {
             #[cfg(target_os = "macos")]
-            if window.label() == "main"
-                && matches!(
-                    event,
-                    tauri::WindowEvent::Resized(_)
-                        | tauri::WindowEvent::ScaleFactorChanged { .. }
-                        | tauri::WindowEvent::Focused(true)
-                )
-            {
-                schedule_macos_window_chrome_sync(
-                    window.app_handle().clone(),
-                    window.label().to_string(),
-                );
+            if window.label() == "main" {
+                match event {
+                    tauri::WindowEvent::Resized(_) => {
+                        schedule_macos_window_chrome_sync_with_immediate_queue(
+                            window.app_handle().clone(),
+                            window.label().to_string(),
+                            true,
+                        );
+                    }
+                    tauri::WindowEvent::ScaleFactorChanged { .. }
+                    | tauri::WindowEvent::Focused(true) => {
+                        schedule_macos_window_chrome_sync(
+                            window.app_handle().clone(),
+                            window.label().to_string(),
+                        );
+                    }
+                    _ => {}
+                }
             }
 
             if let tauri::WindowEvent::CloseRequested { .. } = event {

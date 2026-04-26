@@ -32,6 +32,7 @@ import {
   getThreadMessagesCollection,
   pruneThreadCollections,
 } from "../../../../collections/threadCollections";
+import { getThreadsCollection, toPlainChatThread } from "../../../../collections/threads";
 import { hydrateThreadFromSnapshot } from "../../../../collections/threadHydrator";
 import {
   allocateNextThreadMessageSeq,
@@ -44,6 +45,8 @@ import {
   setThreadLastMessageSeq,
 } from "../../../../collections/threadStreamState";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
+import { scheduleWindowIdleTask } from "../../../../lib/idleTask";
+import { isThreadNavigationPerfEnabled, pushThreadNavigationPerf } from "../../../../lib/threadNavigationPerf";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreads } from "../../../../hooks/queries/useThreads";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
@@ -84,6 +87,39 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_EVENTS: ChatEvent[] = [];
 const pendingAutoCreateWorktreeIds = new Set<string>();
 
+type ThreadNavigationPerfSession = {
+  navId: string;
+  threadId: string;
+  worktreeId: string | null;
+  startedAtMs: number;
+  fromThreadId: string | null;
+  requestedThreadId: string | null;
+  snapshotStatusSignature: string | null;
+  renderSignature: string | null;
+  localStateLogged: boolean;
+  readyLogged: boolean;
+};
+
+function getPerfNow(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function roundPerfMs(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function buildThreadNavigationPerfNavId(threadId: string): string {
+  return `thread-nav:${threadId}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getThreadNavigationPerfElapsedMs(session: ThreadNavigationPerfSession): number {
+  return roundPerfMs(getPerfNow() - session.startedAtMs);
+}
+
 export function resetPendingAutoCreateWorktreesForTest() {
   pendingAutoCreateWorktreeIds.clear();
 }
@@ -112,6 +148,25 @@ function mergeTrackedThreads(params: {
   }
 
   return mergedThreads;
+}
+
+export function resolveWorktreeSwitchSeed(params: {
+  cachedThreads: ChatThread[];
+  requestedThreadId: string | null;
+  optimisticCreatedThreadIds: Set<string>;
+  locallyDeletedThreadIds: Set<string>;
+}): { threads: ChatThread[]; selectedThreadId: string | null } {
+  const threads = mergeTrackedThreads({
+    queriedThreads: params.cachedThreads,
+    currentThreads: [],
+    optimisticCreatedThreadIds: params.optimisticCreatedThreadIds,
+    locallyDeletedThreadIds: params.locallyDeletedThreadIds,
+  });
+
+  return {
+    threads,
+    selectedThreadId: params.requestedThreadId ?? resolvePreferredThreadId(threads),
+  };
 }
 
 function applyThreadActiveUpdate(
@@ -216,6 +271,13 @@ function buildThreadSelectionInput(thread: ChatThread | null): Pick<CreateChatTh
   };
 }
 
+function getCachedThreadsForWorktree(
+  queryClient: ReturnType<typeof useQueryClient>,
+  worktreeId: string,
+): ChatThread[] {
+  return (getThreadsCollection(queryClient, worktreeId).toArray as ChatThread[]).map((thread) => toPlainChatThread(thread));
+}
+
 function shouldDelayRemoteBootstrapForLocalThread(params: {
   selectedThreadId: string | null;
   optimisticCreatedThreadIds: Set<string>;
@@ -252,7 +314,7 @@ function upsertQueuedMessage(
 }
 
 function hasCanonicalThreadSnapshot(snapshot: ChatTimelineSnapshot | null | undefined): boolean {
-  return (snapshot?.messages.length ?? 0) > 0 || (snapshot?.events.length ?? 0) > 0;
+  return snapshot != null && snapshot.collectionsIncluded !== false;
 }
 
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
@@ -362,6 +424,49 @@ function isSnapshotFreshEnoughForAuthoritativeTimeline(params: {
   return eventCoverage && messageCoverage;
 }
 
+function doesSnapshotMatchLocalLiveState(params: {
+  snapshot: ChatTimelineSnapshot | null | undefined;
+  messages: ChatMessage[];
+  events: ChatEvent[];
+}): boolean {
+  const { snapshot, messages, events } = params;
+  if (!snapshot || snapshot.collectionsIncluded === false) {
+    return false;
+  }
+
+  if (snapshot.messages.length !== messages.length || snapshot.events.length !== events.length) {
+    return false;
+  }
+
+  const snapshotFirstMessage = snapshot.messages[0] ?? null;
+  const snapshotLastMessage = snapshot.messages[snapshot.messages.length - 1] ?? null;
+  const localFirstMessage = messages[0] ?? null;
+  const localLastMessage = messages[messages.length - 1] ?? null;
+  if (
+    (snapshotFirstMessage?.id ?? null) !== (localFirstMessage?.id ?? null)
+    || (snapshotFirstMessage?.seq ?? null) !== (localFirstMessage?.seq ?? null)
+    || (snapshotLastMessage?.id ?? null) !== (localLastMessage?.id ?? null)
+    || (snapshotLastMessage?.seq ?? null) !== (localLastMessage?.seq ?? null)
+  ) {
+    return false;
+  }
+
+  const snapshotFirstEvent = snapshot.events[0] ?? null;
+  const snapshotLastEvent = snapshot.events[snapshot.events.length - 1] ?? null;
+  const localFirstEvent = events[0] ?? null;
+  const localLastEvent = events[events.length - 1] ?? null;
+  if (
+    (snapshotFirstEvent?.id ?? null) !== (localFirstEvent?.id ?? null)
+    || (snapshotFirstEvent?.idx ?? null) !== (localFirstEvent?.idx ?? null)
+    || (snapshotLastEvent?.id ?? null) !== (localLastEvent?.id ?? null)
+    || (snapshotLastEvent?.idx ?? null) !== (localLastEvent?.idx ?? null)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 export function deriveSelectedThreadUiState(params: {
   selectedThreadId: string | null;
   threads: ChatThread[];
@@ -384,7 +489,7 @@ export function deriveSelectedThreadUiState(params: {
 
   return {
     selectedThreadUiStatus,
-    composerDisabled: !selectedThreadId || sendingMessage || (selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running"),
+    composerDisabled: !selectedThreadId || sendingMessage || selectedThreadUiStatus !== "idle",
   };
 }
 
@@ -397,7 +502,12 @@ export function useChatSession(
   const queryClient = useQueryClient();
   const repositoryId = options?.repositoryId ?? null;
   const timelineEnabled = options?.timelineEnabled !== false;
-  const requestedThreadId = options?.desiredThreadId ?? null;
+  const requestedThreadSelectionDeferred =
+    options?.desiredWorktreeId != null
+    && options.desiredWorktreeId !== selectedWorktreeId;
+  const requestedThreadId = requestedThreadSelectionDeferred
+    ? null
+    : options?.desiredThreadId ?? null;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(() => requestedThreadId);
@@ -429,6 +539,8 @@ export function useChatSession(
   const restoredWaitingThreadIdsRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
   const pendingAgentSelectionUpdatesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const activeThreadNavigationPerfRef = useRef<ThreadNavigationPerfSession | null>(null);
+  const previousThreadNavigationPerfThreadIdRef = useRef<string | null>(null);
   const lastThreadSelectionRef = useRef<{
     worktreeId: string;
     agent: CliAgent;
@@ -448,7 +560,7 @@ export function useChatSession(
     }
   }
 
-  const { data: queriedThreads } = useThreads(selectedWorktreeId);
+  const { data: queriedThreads, isLoading: queriedThreadsLoading } = useThreads(selectedWorktreeId);
 
   const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
 
@@ -488,12 +600,17 @@ export function useChatSession(
     }
 
     if (worktreeChanged) {
+      const worktreeSwitchSeed = resolveWorktreeSwitchSeed({
+        cachedThreads: getCachedThreadsForWorktree(queryClient, selectedWorktreeId),
+        requestedThreadId,
+        optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+        locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
+      });
+
       setWaitingAssistant(null);
-      setThreads([]);
-      setSelectedThreadId(requestedThreadId);
+      setThreads(worktreeSwitchSeed.threads);
+      setSelectedThreadId(worktreeSwitchSeed.selectedThreadId);
       pendingAgentSelectionUpdatesRef.current.clear();
-      disposeAllThreadCollections();
-      clearAllThreadStreamState();
       setPendingComposerPermissionMode("default");
     }
 
@@ -536,6 +653,10 @@ export function useChatSession(
       locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
     });
 
+    if (requestedThreadSelectionDeferred) {
+      return;
+    }
+
     if (queriedThreads.length > 0 || trackedThreads.length > 0) {
       pendingAutoCreateWorktreeIds.delete(selectedWorktreeId);
     }
@@ -546,8 +667,19 @@ export function useChatSession(
       prevRequestedThreadIdRef.current = requestedThreadId;
     }
 
+    const waitingForInitialThreads =
+      queriedThreadsLoading
+      && queriedThreads.length === 0
+      && trackedThreads.length === 0;
+
+    if (waitingForInitialThreads) {
+      return;
+    }
+
     const shouldAutoCreateInitialThread =
-      queriedThreads.length === 0
+      !queriedThreadsLoading
+      && queriedThreads != null
+      && queriedThreads.length === 0
       && trackedThreads.length === 0
       && closingThreadId == null
       && !pendingAutoCreateWorktreeIds.has(selectedWorktreeId);
@@ -631,7 +763,15 @@ export function useChatSession(
     if (selectedThreadId !== nextThreadId) {
       setSelectedThreadId(nextThreadId);
     }
-  }, [closingThreadId, pendingComposerPermissionMode, queriedThreads, requestedThreadId, selectedThreadId, selectedWorktreeId]);
+  }, [
+    closingThreadId,
+    pendingComposerPermissionMode,
+    queriedThreads,
+    requestedThreadId,
+    requestedThreadSelectionDeferred,
+    selectedThreadId,
+    selectedWorktreeId,
+  ]);
 
   useEffect(() => {
     if (!selectedThreadId) return;
@@ -664,22 +804,63 @@ export function useChatSession(
     () => (liveEvents ? liveEvents.map((event) => toPlainChatEvent(event as ChatEvent)) : EMPTY_EVENTS),
     [liveEvents],
   );
-  const hasPendingPermissionRequests = derivePendingPermissionRequests(events).length > 0;
-  const hasPendingQuestionRequests = derivePendingQuestionRequests(events).length > 0;
-  const pendingPlan = derivePendingPlan(events);
-  const hasPendingPlan = pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan);
-  const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
-  const { selectedThreadUiStatus, composerDisabled } = deriveSelectedThreadUiState({
-    selectedThreadId,
-    threads,
-    events,
-    sendingMessage,
-    waitingAssistant,
-  });
-  const selectedThreadIsRunning = selectedThreadUiStatus === "running";
   const selectedThread = selectedThreadId
     ? threadByIdRef.current.get(selectedThreadId) ?? null
     : null;
+  const pendingPermissionRequests = useMemo(
+    () => derivePendingPermissionRequests(events),
+    [events],
+  );
+  const pendingQuestionRequests = useMemo(
+    () => derivePendingQuestionRequests(events),
+    [events],
+  );
+  const pendingPlan = useMemo(
+    () => derivePendingPlan(events),
+    [events],
+  );
+  const eventDerivedThreadRunning = useMemo(
+    () => hasRunningAssistantActivity(events),
+    [events],
+  );
+  const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
+  const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
+  const hasPendingPlan = pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan);
+  const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
+  const selectedThreadUiStatus = useMemo<WorktreeThreadUiStatus>(() => {
+    const optimisticThreadRunning =
+      selectedThreadId != null
+      && (sendingMessage || waitingAssistant?.threadId === selectedThreadId);
+
+    if (hasPendingPermissionRequests || hasPendingQuestionRequests) {
+      return "waiting_approval";
+    }
+
+    if (pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan)) {
+      return "review_plan";
+    }
+
+    if (Boolean(selectedThread?.active) || optimisticThreadRunning || eventDerivedThreadRunning) {
+      return "running";
+    }
+
+    return "idle";
+  }, [
+    eventDerivedThreadRunning,
+    events,
+    hasPendingPermissionRequests,
+    hasPendingQuestionRequests,
+    pendingPlan,
+    selectedThread?.active,
+    selectedThreadId,
+    sendingMessage,
+    waitingAssistant,
+  ]);
+  const composerDisabled =
+    !selectedThreadId
+    || sendingMessage
+    || (selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running");
+  const selectedThreadIsRunning = selectedThreadUiStatus === "running";
   const selectedThreadCreatedLocally =
     selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
   const shouldDelaySelectedThreadRemoteBootstrap = shouldDelayRemoteBootstrapForLocalThread({
@@ -740,10 +921,198 @@ export function useChatSession(
   }, [events, hasPendingUserGate, selectedThread?.active, selectedThreadId, waitingAssistant]);
 
   const {
-    data: queriedThreadSnapshot,
+    data: queriedDisplayThreadSnapshot,
     isLoading: threadSnapshotLoading,
     isFetching: threadSnapshotFetching,
-  } = useThreadSnapshot(remoteBootstrapThreadId);
+  } = useThreadSnapshot(remoteBootstrapThreadId, { mode: "display" });
+  const [fullThreadSnapshotThreadId, setFullThreadSnapshotThreadId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFullThreadSnapshotThreadId(null);
+  }, [remoteBootstrapThreadId]);
+
+  const shouldFetchFullThreadSnapshotImmediately =
+    !!remoteBootstrapThreadId
+    && (
+      selectedThread?.active === true
+      || waitingAssistant?.threadId === selectedThreadId
+      || hasPendingUserGate
+    );
+
+  useEffect(() => {
+    if (!remoteBootstrapThreadId || fullThreadSnapshotThreadId === remoteBootstrapThreadId) {
+      return;
+    }
+
+    if (shouldFetchFullThreadSnapshotImmediately) {
+      setFullThreadSnapshotThreadId(remoteBootstrapThreadId);
+      return;
+    }
+
+    if (!queriedDisplayThreadSnapshot) {
+      return;
+    }
+
+    return scheduleWindowIdleTask(() => {
+      setFullThreadSnapshotThreadId(remoteBootstrapThreadId);
+    }, {
+      timeout: 1200,
+      fallbackDelayMs: 250,
+    });
+  }, [
+    fullThreadSnapshotThreadId,
+    queriedDisplayThreadSnapshot,
+    remoteBootstrapThreadId,
+    shouldFetchFullThreadSnapshotImmediately,
+  ]);
+
+  const {
+    data: queriedHydrationThreadSnapshot,
+  } = useThreadSnapshot(
+    remoteBootstrapThreadId != null && fullThreadSnapshotThreadId === remoteBootstrapThreadId
+      ? fullThreadSnapshotThreadId
+      : null,
+    { mode: "full" },
+  );
+  const queriedThreadSnapshot = queriedHydrationThreadSnapshot ?? queriedDisplayThreadSnapshot;
+  const threadNavigationPerfEnabled = isThreadNavigationPerfEnabled();
+
+  useEffect(() => {
+    if (threadNavigationPerfEnabled) {
+      return;
+    }
+
+    activeThreadNavigationPerfRef.current = null;
+  }, [threadNavigationPerfEnabled]);
+
+  useEffect(() => {
+    const previousThreadId = previousThreadNavigationPerfThreadIdRef.current;
+    if (previousThreadId === selectedThreadId) {
+      return;
+    }
+
+    previousThreadNavigationPerfThreadIdRef.current = selectedThreadId;
+
+    if (!threadNavigationPerfEnabled || !selectedThreadId) {
+      activeThreadNavigationPerfRef.current = null;
+      return;
+    }
+
+    const session: ThreadNavigationPerfSession = {
+      navId: buildThreadNavigationPerfNavId(selectedThreadId),
+      threadId: selectedThreadId,
+      worktreeId: selectedWorktreeId,
+      startedAtMs: getPerfNow(),
+      fromThreadId: previousThreadId,
+      requestedThreadId,
+      snapshotStatusSignature: null,
+      renderSignature: null,
+      localStateLogged: false,
+      readyLogged: false,
+    };
+    activeThreadNavigationPerfRef.current = session;
+
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "selection.start",
+      threadId: selectedThreadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        fromThreadId: previousThreadId,
+        requestedThreadId,
+        localMessageCount: messages.length,
+        localEventCount: events.length,
+        selectedThreadCreatedLocally,
+        shouldDelaySelectedThreadRemoteBootstrap,
+        remoteBootstrapThreadId,
+        snapshotLoading: threadSnapshotLoading,
+        snapshotFetching: threadSnapshotFetching,
+        hasCachedSnapshot: queriedThreadSnapshot != null,
+      },
+    });
+  }, [
+    events.length,
+    messages.length,
+    queriedThreadSnapshot,
+    remoteBootstrapThreadId,
+    requestedThreadId,
+    selectedThreadCreatedLocally,
+    selectedThreadId,
+    selectedWorktreeId,
+    shouldDelaySelectedThreadRemoteBootstrap,
+    threadNavigationPerfEnabled,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+  ]);
+
+  useEffect(() => {
+    if (!threadNavigationPerfEnabled) {
+      return;
+    }
+
+    const session = activeThreadNavigationPerfRef.current;
+    if (!session || session.threadId !== selectedThreadId) {
+      return;
+    }
+
+    const snapshotKey = queriedThreadSnapshot ? buildSnapshotKey(queriedThreadSnapshot) : null;
+    const signature = queriedThreadSnapshot
+      ? `snapshot:${snapshotKey ?? "unknown"}`
+      : `state:${remoteBootstrapThreadId ?? "none"}:${threadSnapshotLoading ? "1" : "0"}:${threadSnapshotFetching ? "1" : "0"}`;
+
+    if (session.snapshotStatusSignature === signature) {
+      return;
+    }
+
+    session.snapshotStatusSignature = signature;
+
+    if (queriedThreadSnapshot) {
+      pushThreadNavigationPerf({
+        navId: session.navId,
+        event: "snapshot.received",
+        threadId: session.threadId,
+        worktreeId: selectedWorktreeId,
+        data: {
+          atMs: getThreadNavigationPerfElapsedMs(session),
+          snapshotKey,
+          remoteBootstrapThreadId,
+          snapshotMessageCount: queriedThreadSnapshot.messages.length,
+          snapshotEventCount: queriedThreadSnapshot.events.length,
+          snapshotTimelineItemCount: queriedThreadSnapshot.timelineItems.length,
+          newestIdx: queriedThreadSnapshot.newestIdx,
+          newestSeq: queriedThreadSnapshot.newestSeq,
+          snapshotLoading: threadSnapshotLoading,
+          snapshotFetching: threadSnapshotFetching,
+        },
+      });
+      return;
+    }
+
+    if (!threadSnapshotLoading && !threadSnapshotFetching) {
+      return;
+    }
+
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "snapshot.pending",
+      threadId: session.threadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        atMs: getThreadNavigationPerfElapsedMs(session),
+        remoteBootstrapThreadId,
+        snapshotLoading: threadSnapshotLoading,
+        snapshotFetching: threadSnapshotFetching,
+      },
+    });
+  }, [
+    threadNavigationPerfEnabled,
+    queriedThreadSnapshot,
+    remoteBootstrapThreadId,
+    selectedThreadId,
+    selectedWorktreeId,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+  ]);
 
   useEffect(() => {
     const threadChanged = prevSeedThreadRef.current !== selectedThreadId;
@@ -758,7 +1127,7 @@ export function useChatSession(
       : null;
     const seedDecision = resolveSnapshotSeedDecision({
       selectedThreadId,
-      queriedThreadSnapshot,
+      queriedThreadSnapshot: queriedHydrationThreadSnapshot,
       threadChanged,
       lastAppliedSnapshotKey,
       localLatestEventIdx,
@@ -775,7 +1144,7 @@ export function useChatSession(
       return;
     }
 
-    if (!queriedThreadSnapshot || seedDecision.snapshotKey == null) {
+    if (!queriedHydrationThreadSnapshot || seedDecision.snapshotKey == null) {
       if (threadChanged) {
         setThreadLastAppliedSnapshotKey(selectedThreadId, null);
       }
@@ -791,16 +1160,40 @@ export function useChatSession(
       && waitingAssistant?.threadId !== selectedThreadId
       && !hasPendingUserGate;
     const shouldReplaceSnapshotSeed = threadChanged
-      || (queriedThreadSnapshot.messages.length === 0 && queriedThreadSnapshot.events.length === 0)
+      || (queriedHydrationThreadSnapshot.messages.length === 0 && queriedHydrationThreadSnapshot.events.length === 0)
       || snapshotCanAuthoritativelyReplaceLocalState;
 
+    const perfSession = activeThreadNavigationPerfRef.current;
+    const hydrateStartedAtMs = getPerfNow();
     hydrateThreadFromSnapshot({
       threadId: selectedThreadId,
-      snapshot: queriedThreadSnapshot,
+      snapshot: queriedHydrationThreadSnapshot,
       mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
     });
+    const hydrateDurationMs = roundPerfMs(getPerfNow() - hydrateStartedAtMs);
 
-    const latestMetadata = extractLatestThreadMetadata(queriedThreadSnapshot.events);
+    if (threadNavigationPerfEnabled && perfSession?.threadId === selectedThreadId) {
+      pushThreadNavigationPerf({
+        navId: perfSession.navId,
+        event: "snapshot.hydrated",
+        threadId: selectedThreadId,
+        worktreeId: selectedWorktreeId,
+        data: {
+          atMs: getThreadNavigationPerfElapsedMs(perfSession),
+          durationMs: hydrateDurationMs,
+          mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
+          seedReason: seedDecision.reason,
+          snapshotKey: seedDecision.snapshotKey,
+          snapshotCanAuthoritativelyReplaceLocalState,
+          localLatestEventIdx,
+          localLatestMessageSeq,
+          snapshotMessageCount: queriedHydrationThreadSnapshot.messages.length,
+          snapshotEventCount: queriedHydrationThreadSnapshot.events.length,
+        },
+      });
+    }
+
+    const latestMetadata = extractLatestThreadMetadata(queriedHydrationThreadSnapshot.events);
     if (latestMetadata.threadTitle) {
       setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, latestMetadata.threadTitle));
     }
@@ -809,7 +1202,17 @@ export function useChatSession(
     }
 
     setThreadLastAppliedSnapshotKey(selectedThreadId, seedDecision.snapshotKey);
-  }, [hasPendingUserGate, messages, onBranchRenamed, queriedThreadSnapshot, selectedThread?.active, selectedThreadId, selectedWorktreeId, waitingAssistant]);
+  }, [
+    hasPendingUserGate,
+    messages,
+    onBranchRenamed,
+    queriedHydrationThreadSnapshot,
+    selectedThread?.active,
+    selectedThreadId,
+    selectedWorktreeId,
+    threadNavigationPerfEnabled,
+    waitingAssistant,
+  ]);
 
   useEffect(() => {
     pruneThreadCollections({
@@ -1010,16 +1413,6 @@ export function useChatSession(
       options?.onThreadChange?.(selectedThreadId);
     }
   }, [requestedThreadId, selectedThreadId]);
-
-  useEffect(() => {
-    if (!selectedWorktreeId || !selectedThreadId) {
-      return;
-    }
-
-    // Thread selection is a sync point: refresh the worktree thread list so
-    // `thread.active` does not linger from stale client cache.
-    void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
-  }, [queryClient, selectedThreadId, selectedWorktreeId]);
 
   useThreadEventStream({
     selectedThreadId: remoteBootstrapThreadId,
@@ -1730,42 +2123,72 @@ export function useChatSession(
 
   const serverTimelineItems = (queriedThreadSnapshot?.timelineItems ?? []) as unknown as ChatTimelineItem[];
   const serverTimelineSummary = queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined;
-  const timelineSeedMatchesLiveState =
-    selectedThreadId != null
-    && queriedThreadSnapshot != null
-    && buildSnapshotKey(queriedThreadSnapshot) === buildSnapshotKey({
-      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
-      summary: queriedThreadSnapshot.summary,
-      newestIdx: events[events.length - 1]?.idx ?? null,
-      newestSeq: messages[messages.length - 1]?.seq ?? null,
+  const timelineSeedMatchesLiveState = useMemo(
+    () => selectedThreadId != null && doesSnapshotMatchLocalLiveState({
+      snapshot: queriedThreadSnapshot,
       messages,
       events,
-    });
+    }),
+    [events, messages, queriedThreadSnapshot, selectedThreadId],
+  );
   const serverTimelineFreshEnough = isSnapshotFreshEnoughForAuthoritativeTimeline({
     snapshot: queriedThreadSnapshot,
     messages,
     events,
   });
+  const serverSnapshotContainsCanonicalState = hasCanonicalThreadSnapshot(queriedThreadSnapshot);
   const selectedThreadIdleForAuthoritativeTimeline =
     selectedThreadUiStatus === "idle"
     && waitingAssistant?.threadId !== selectedThreadId
     && !hasPendingUserGate;
-
-  const derivedTimeline = useWorkspaceTimeline(messages, events, selectedThreadId, {
+  const preferServerTimeline =
+    timelineEnabled
+    && serverTimelineSummary != null
+    && (timelineSeedMatchesLiveState || (selectedThreadIdleForAuthoritativeTimeline && serverTimelineFreshEnough));
+  const skipDerivedTimeline =
+    preferServerTimeline
+    && (
+      serverSnapshotContainsCanonicalState
+      || queriedThreadSnapshot?.collectionsIncluded === false
+    );
+  const timelineRefs = useMemo(() => ({
     streamingMessageIds: streamingMessageIdsRef.current,
     stickyRawFallbackMessageIds: stickyRawFallbackMessageIdsRef.current,
     renderDecisionByMessageId: renderDecisionByMessageIdRef.current,
     loggedOrphanEventIdsByThread: loggedOrphanEventIdsByThreadRef.current,
     claimedContextEventIdsByThreadMessage: claimedContextEventIdsByThreadMessageRef.current,
-  }, {
+  }), []);
+
+  const derivedTimelineStartedAtMs = threadNavigationPerfEnabled ? getPerfNow() : 0;
+  const derivedTimeline = useWorkspaceTimeline(messages, events, selectedThreadId, timelineRefs, {
     semanticHydrationInProgress: false,
-    disabled: !timelineEnabled,
+    disabled: !timelineEnabled || skipDerivedTimeline,
   });
+  const derivedTimelineDurationMs = threadNavigationPerfEnabled
+    ? roundPerfMs(getPerfNow() - derivedTimelineStartedAtMs)
+    : 0;
 
   const timelineComparison = useMemo(() => {
     const server = summarizeTimelineItems(serverTimelineItems);
+    if (skipDerivedTimeline) {
+      return {
+        server,
+        derived: {
+          total: 0,
+          signatures: [],
+          kinds: {},
+          exploreCards: 0,
+          emptyExploreCards: 0,
+          subagentCards: 0,
+          subagentsMissingDescription: 0,
+        },
+        hasSuspiciousSubagentOrExploreState: server.exploreCards > 0 || server.subagentCards > 0,
+        signaturesMatch: true,
+        preferDerivedBecauseServerLooksStale: false,
+      };
+    }
+
     const derived = summarizeTimelineItems(derivedTimeline.items);
-    const serverSnapshotContainsCanonicalState = hasCanonicalThreadSnapshot(queriedThreadSnapshot);
     const hasSuspiciousSubagentOrExploreState =
       server.exploreCards > 0
       || derived.exploreCards > 0
@@ -1773,7 +2196,8 @@ export function useChatSession(
       || derived.subagentCards > 0;
     const signaturesMatch = JSON.stringify(server.signatures) === JSON.stringify(derived.signatures);
     const preferDerivedBecauseServerLooksStale =
-      !serverSnapshotContainsCanonicalState
+      queriedThreadSnapshot?.collectionsIncluded !== false
+      && !serverSnapshotContainsCanonicalState
       && derivedTimeline.items.length === 0
       && serverTimelineItems.length > 0;
 
@@ -1784,11 +2208,9 @@ export function useChatSession(
       signaturesMatch,
       preferDerivedBecauseServerLooksStale,
     };
-  }, [derivedTimeline.items, queriedThreadSnapshot?.events.length, queriedThreadSnapshot?.messages.length, serverTimelineItems]);
+  }, [derivedTimeline.items, queriedThreadSnapshot, serverTimelineItems, skipDerivedTimeline]);
 
-  const useServerTimeline = timelineEnabled
-    && serverTimelineSummary != null
-    && (timelineSeedMatchesLiveState || (selectedThreadIdleForAuthoritativeTimeline && serverTimelineFreshEnough))
+  const useServerTimeline = preferServerTimeline
     && !timelineComparison.preferDerivedBecauseServerLooksStale;
 
   const timelineData: {
@@ -1872,6 +2294,148 @@ export function useChatSession(
           ) && !selectedThreadHasLocalState
             ? "loading-thread"
             : "existing-thread-empty";
+
+  useEffect(() => {
+    if (!threadNavigationPerfEnabled) {
+      return;
+    }
+
+    const session = activeThreadNavigationPerfRef.current;
+    if (!session || session.threadId !== selectedThreadId) {
+      return;
+    }
+
+    if (session.localStateLogged || (messages.length === 0 && events.length === 0)) {
+      return;
+    }
+
+    session.localStateLogged = true;
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "local-state.available",
+      threadId: session.threadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        atMs: getThreadNavigationPerfElapsedMs(session),
+        localMessageCount: messages.length,
+        localEventCount: events.length,
+        newestMessageSeq: messages[messages.length - 1]?.seq ?? null,
+        newestEventIdx: events[events.length - 1]?.idx ?? null,
+      },
+    });
+  }, [events, messages, selectedThreadId, selectedWorktreeId, threadNavigationPerfEnabled]);
+
+  useEffect(() => {
+    if (!threadNavigationPerfEnabled) {
+      return;
+    }
+
+    const session = activeThreadNavigationPerfRef.current;
+    if (!session || session.threadId !== selectedThreadId) {
+      return;
+    }
+
+    const nextRenderSignature = [
+      messageListEmptyState ?? "ready",
+      timelineItems.length,
+      useServerTimeline ? "server" : "derived",
+      derivedTimeline.items.length,
+      serverTimelineItems.length,
+      messages.length,
+      events.length,
+    ].join("|");
+
+    if (session.renderSignature === nextRenderSignature) {
+      return;
+    }
+
+    session.renderSignature = nextRenderSignature;
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "timeline.state",
+      threadId: session.threadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        atMs: getThreadNavigationPerfElapsedMs(session),
+        messageListEmptyState,
+        timelineItemsCount: timelineItems.length,
+        derivedTimelineItemsCount: derivedTimeline.items.length,
+        serverTimelineItemsCount: serverTimelineItems.length,
+        useServerTimeline,
+        derivedTimelineDurationMs,
+        composerDisabled,
+        selectedThreadUiStatus,
+        threadSnapshotLoading,
+        threadSnapshotFetching,
+      },
+    });
+  }, [
+    composerDisabled,
+    derivedTimeline.items.length,
+    derivedTimelineDurationMs,
+    events.length,
+    messageListEmptyState,
+    messages.length,
+    selectedThreadId,
+    selectedThreadUiStatus,
+    selectedWorktreeId,
+    serverTimelineItems.length,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+    timelineItems.length,
+    threadNavigationPerfEnabled,
+    useServerTimeline,
+  ]);
+
+  const threadNavigationReady =
+    selectedThreadId != null
+    && !composerDisabled
+    && messageListEmptyState !== "loading-thread"
+    && messageListEmptyState !== "creating-thread"
+    && messageListEmptyState !== "no-thread-selected";
+
+  useEffect(() => {
+    if (!threadNavigationPerfEnabled) {
+      return;
+    }
+
+    const session = activeThreadNavigationPerfRef.current;
+    if (!session || session.threadId !== selectedThreadId || session.readyLogged || !threadNavigationReady) {
+      return;
+    }
+
+    session.readyLogged = true;
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "thread.ready",
+      threadId: session.threadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        totalMs: getThreadNavigationPerfElapsedMs(session),
+        messageListEmptyState,
+        timelineItemsCount: timelineItems.length,
+        useServerTimeline,
+        derivedTimelineDurationMs,
+        localMessageCount: messages.length,
+        localEventCount: events.length,
+        queuedMessageCount: queuedMessages.length,
+        selectedThreadUiStatus,
+      },
+    });
+  }, [
+    derivedTimelineDurationMs,
+    events.length,
+    messageListEmptyState,
+    messages.length,
+    queuedMessages.length,
+    selectedThreadId,
+    selectedThreadUiStatus,
+    selectedWorktreeId,
+    threadNavigationReady,
+    threadNavigationPerfEnabled,
+    timelineItems.length,
+    useServerTimeline,
+  ]);
 
   return {
     threads,

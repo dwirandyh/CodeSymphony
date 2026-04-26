@@ -130,7 +130,9 @@ function makeStatusSnapshot(
   };
 }
 
-function renderPanel(props: Partial<typeof baseProps> = {}) {
+type RepositoryPanelComponentProps = Parameters<typeof RepositoryPanel>[0];
+
+function renderPanel(props: Partial<RepositoryPanelComponentProps> = {}) {
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -981,6 +983,51 @@ describe("RepositoryPanel", () => {
 
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
     expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.parentElement?.className).not.toContain("group-hover/wt:opacity-0");
+  });
+
+  it("keeps cached review and diff metadata visible while metadata queries are paused", async () => {
+    getRepositoryReviewsMock.mockResolvedValue({
+      provider: "github",
+      kind: "pr",
+      available: true,
+      reviewsByBranch: {
+        "feature-x": { number: 29, display: "#29", url: "https://example.com/pr/29", state: "open" },
+      },
+    });
+    getGitBranchDiffSummaryMock.mockResolvedValue({
+      branch: "feature-x",
+      baseBranch: "main",
+      insertions: 533,
+      deletions: 29,
+      filesChanged: 7,
+      available: true,
+    });
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      enableMetadataQueries: true,
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).toContain("#29");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.textContent).toContain("+533");
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+      selectedWorktreeId: "r1-wt-feat",
+      enableMetadataQueries: false,
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-review"]')?.textContent).toContain("#29");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.textContent).toContain("+533");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-feat-diff"]')?.textContent).toContain("-29");
   });
 
   it("hides branch diff when summary is unavailable", async () => {

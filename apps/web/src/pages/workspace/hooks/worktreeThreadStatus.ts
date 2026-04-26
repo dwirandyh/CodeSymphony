@@ -10,6 +10,8 @@ export type WorktreeStatusSummary = {
   threadId: string | null;
 };
 
+const orderedEventsCache = new WeakMap<ChatEvent[], ChatEvent[]>();
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -39,7 +41,21 @@ function extractEditTarget(toolName: string, toolInput: unknown): string | null 
 }
 
 function toOrderedEvents(events: ChatEvent[]): ChatEvent[] {
-  return [...events].sort((a, b) => a.idx - b.idx);
+  const cached = orderedEventsCache.get(events);
+  if (cached) {
+    return cached;
+  }
+
+  let orderedEvents = events;
+  for (let index = 1; index < events.length; index += 1) {
+    if (events[index - 1]!.idx > events[index]!.idx) {
+      orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+      break;
+    }
+  }
+
+  orderedEventsCache.set(events, orderedEvents);
+  return orderedEvents;
 }
 
 export function hasRunningAssistantActivity(events: ChatEvent[]): boolean {
