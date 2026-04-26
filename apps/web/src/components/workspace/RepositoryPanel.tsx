@@ -46,6 +46,7 @@ type RepositoryPanelProps = {
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
+  enableMetadataQueries?: boolean;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
   loadingRepos: boolean;
@@ -317,6 +318,7 @@ export function RepositoryPanel({
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
+  enableMetadataQueries = true,
   hiddenRepositoryIds,
   expandedByRepo,
   loadingRepos,
@@ -399,7 +401,7 @@ export function RepositoryPanel({
     [repositories],
   );
   const activeWorktreeSummaries = useMemo(
-    () => repositoryWorktreeIndex.activeWorktreeIds.flatMap((worktreeId) => {
+    () => !enableMetadataQueries ? [] : repositoryWorktreeIndex.activeWorktreeIds.flatMap((worktreeId) => {
       const worktree = repositoryWorktreeIndex.worktreeById.get(worktreeId);
       if (!worktree) {
         return [];
@@ -410,18 +412,20 @@ export function RepositoryPanel({
         baseBranch: worktree.baseBranch || worktree.repository.defaultBranch,
       }];
     }),
-    [repositoryWorktreeIndex],
+    [enableMetadataQueries, repositoryWorktreeIndex],
   );
-  const worktreeStatuses = useWorktreeStatuses(repositories);
+  const worktreeStatuses = useWorktreeStatuses(enableMetadataQueries ? repositories : []);
   const gitBranchDiffQueries = useQueries({
     queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) =>
       gitBranchDiffSummaryQueryOptions(worktreeId, baseBranch),
     ),
   });
   const repositoryReviewQueries = useQueries({
-    queries: repositories.map((repository) =>
-      repositoryReviewsQueryOptions(repository.id),
-    ),
+    queries: !enableMetadataQueries
+      ? []
+      : repositories.map((repository) =>
+        repositoryReviewsQueryOptions(repository.id),
+      ),
   });
   const reviewsByRepositoryId = useMemo(
     () =>

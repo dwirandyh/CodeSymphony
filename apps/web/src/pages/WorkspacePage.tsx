@@ -192,6 +192,14 @@ const LEFT_SIDEBAR_VISIBLE_STORAGE_KEY = "codesymphony:workspace:left-sidebar-vi
 const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
 const MOBILE_KEYBOARD_OFFSET_CSS_VAR = "--cs-mobile-keyboard-offset";
 
+type IdleWindow = Window & {
+  cancelIdleCallback?: (handle: number) => void;
+  requestIdleCallback?: (
+    callback: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
+    options?: { timeout: number },
+  ) => number;
+};
+
 type BottomPanelWorktreeState = {
   activeTab: string;
   openSignal: number;
@@ -611,7 +619,6 @@ export function WorkspacePage() {
     repos.selectedWorktree &&
     isRootWorktree(repos.selectedWorktree, repos.selectedRepository)
   );
-  const repositoryBranches = useRepositoryBranches(repos.selectedRepositoryId);
   const selectedTargetBranch = repos.selectedWorktree
     ? (selectedIsRootWorkspace
       ? repos.selectedRepository?.defaultBranch ?? null
@@ -626,8 +633,15 @@ export function WorkspacePage() {
   const reviewTabOpen = activeView === "review";
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
-  const gitChanges = useGitChanges(repos.selectedWorktreeId, !!repos.selectedWorktreeId);
-  const repositoryReviews = useRepositoryReviews(repos.selectedRepositoryId);
+  const prioritizeConversationBootstrap = activeView === "chat" && !!(search.worktreeId ?? repos.selectedWorktreeId);
+  const [enableNonCriticalWorkspaceData, setEnableNonCriticalWorkspaceData] = useState(() => !prioritizeConversationBootstrap);
+  const nonCriticalRepositoryId = enableNonCriticalWorkspaceData ? repos.selectedRepositoryId : null;
+  const nonCriticalWorktreeId = enableNonCriticalWorkspaceData ? repos.selectedWorktreeId : null;
+  const nonCriticalWorktreePath = enableNonCriticalWorkspaceData
+    ? repos.selectedWorktree?.path ?? null
+    : null;
+  const gitChanges = useGitChanges(repos.selectedWorktreeId, enableNonCriticalWorkspaceData && !!repos.selectedWorktreeId);
+  const repositoryReviews = useRepositoryReviews(nonCriticalRepositoryId);
   const runtimeInfo = useRuntimeInfo();
   const selectedReviewBranch = resolveReviewBranch(gitChanges.branch, repos.selectedWorktree?.branch ?? null);
   const selectedReviewBaseBranch = resolveReviewBaseBranch(
@@ -679,6 +693,47 @@ export function WorkspacePage() {
   });
   const runtimeLabel = formatRuntimeLabel(runtimeInfo.data);
   const runtimeTitle = formatRuntimeTitle(runtimeInfo.data);
+  const conversationReady = !prioritizeConversationBootstrap || (
+    chat.selectedThreadId != null
+    && !chat.composerDisabled
+    && chat.messageListEmptyState !== "loading-thread"
+    && chat.messageListEmptyState !== "creating-thread"
+    && chat.messageListEmptyState !== "no-thread-selected"
+  );
+
+  useEffect(() => {
+    if (!prioritizeConversationBootstrap) {
+      setEnableNonCriticalWorkspaceData(true);
+      return;
+    }
+
+    if (!conversationReady) {
+      setEnableNonCriticalWorkspaceData(false);
+      return;
+    }
+
+    const idleWindow = window as IdleWindow;
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      const idleHandle = idleWindow.requestIdleCallback(() => {
+        setEnableNonCriticalWorkspaceData(true);
+      }, { timeout: 2000 });
+
+      return () => {
+        if (typeof idleWindow.cancelIdleCallback === "function") {
+          idleWindow.cancelIdleCallback(idleHandle);
+        }
+      };
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setEnableNonCriticalWorkspaceData(true);
+    }, 1200);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [conversationReady, prioritizeConversationBootstrap, repos.selectedWorktreeId, search.worktreeId]);
+  const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId);
 
   if (chatMessageListKey !== chatMessageListKeyRef.current) {
     chatMessageListKeyRef.current = chatMessageListKey;
@@ -715,6 +770,7 @@ export function WorkspacePage() {
   const [mobilePanelOpen, setMobilePanelOpen] = useState<MobilePanelState>(null);
   const [mobileReposOrigin, setMobileReposOrigin] = useState<MobileReposOrigin | null>(null);
   const [mobileKeyboardOffset, setMobileKeyboardOffset] = useState(0);
+  const [workspaceFileIndexRequests, setWorkspaceFileIndexRequests] = useState<Record<string, true>>({});
   const activeMobileSection: "chat" | "files" | "git" | "more" = mobilePanelOpen === "more" || mobilePanelOpen === "utilities" || mobilePanelOpen === "device"
     ? "more"
     : mobilePanelOpen === "files"
@@ -764,12 +820,32 @@ export function WorkspacePage() {
     setMobilePanelOpen(mobileReposOrigin?.panel ?? null);
     setMobileReposOrigin(null);
   }, [mobileReposOrigin]);
+  const markWorkspaceFileIndexRequested = useCallback((worktreeId: string | null | undefined) => {
+    if (!worktreeId) {
+      return;
+    }
+
+    setWorkspaceFileIndexRequests((current) => (
+      current[worktreeId] ? current : { ...current, [worktreeId]: true }
+    ));
+  }, []);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
 
-  const fileIndex = useFileIndex(repos.selectedWorktreeId);
-  const slashCommands = useSlashCommands(repos.selectedWorktreeId, chat.composerAgent);
+  const workspaceFileIndexRequested = !!(
+    repos.selectedWorktreeId
+    && workspaceFileIndexRequests[repos.selectedWorktreeId]
+  );
+  const workspaceFileIndexEnabled = enableNonCriticalWorkspaceData
+    && nonCriticalWorktreeId != null
+    && (
+      activeView === "file"
+      || mobilePanelOpen === "files"
+      || workspaceFileIndexRequested
+    );
+  const fileIndex = useFileIndex(workspaceFileIndexEnabled ? nonCriticalWorktreeId : null);
+  const slashCommands = useSlashCommands(nonCriticalWorktreeId, chat.composerAgent);
 
   useEffect(() => {
     if (!repos.selectedWorktreeId) return;
@@ -807,7 +883,10 @@ export function WorkspacePage() {
     activeView,
     fileEntries: fileIndex.entries,
     onError: setError,
-    onOpenQuickFilePicker: () => setMobilePanelOpen(null),
+    onOpenQuickFilePicker: () => {
+      markWorkspaceFileIndexRequested(repos.selectedWorktreeId);
+      setMobilePanelOpen(null);
+    },
     resolveSaveAutomationTargetSessionId,
     saveAutomation: repos.selectedRepository?.saveAutomation ?? null,
     selectedThreadId: chat.selectedThreadId,
@@ -1384,6 +1463,7 @@ export function WorkspacePage() {
             orderedRepositories={orderedRepositories}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
+            enableRepositoryMetadata={enableNonCriticalWorkspaceData}
             isVisible={leftSidebarVisible}
             onOpenSettings={() => setSettingsOpen(true)}
             onSelectRepository={handleSelectRepository}
@@ -1456,16 +1536,19 @@ export function WorkspacePage() {
                 targetBranch={selectedTargetBranch}
                 targetBranchOptions={repositoryBranches.data ?? []}
                 targetBranchLoading={
-                  repositoryBranches.isLoading
-                  || repositoryBranches.isFetching
-                  || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
+                  enableNonCriticalWorkspaceData && (
+                    repositoryBranches.isLoading
+                    || repositoryBranches.isFetching
+                    || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
+                  )
                 }
                 targetBranchDisabled={
-                  !repos.selectedWorktreeId
+                  !enableNonCriticalWorkspaceData
+                  || !repos.selectedWorktreeId
                   || !repos.selectedRepositoryId
                   || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
                 }
-                worktreePath={repos.selectedWorktree?.path ?? null}
+                worktreePath={nonCriticalWorktreePath}
                 threads={chat.threads}
                 selectedThreadId={chat.selectedThreadId}
                 fileTabs={workspaceFileTabs}
@@ -1865,7 +1948,7 @@ export function WorkspacePage() {
 
         <WorkspaceRightPanel
           rightPanelId={rightPanelId}
-          worktreeId={repos.selectedWorktreeId}
+          worktreeId={nonCriticalWorktreeId}
           gitChanges={gitChanges}
           activeFilePath={activeFilePath}
           selectedDiffFilePath={selectedDiffFilePath}
@@ -1942,6 +2025,7 @@ export function WorkspacePage() {
             repositories={orderedRepositories}
             selectedRepositoryId={repos.selectedRepositoryId}
             selectedWorktreeId={repos.selectedWorktreeId}
+            enableMetadataQueries={enableNonCriticalWorkspaceData}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
             loadingRepos={repos.loadingRepos}
@@ -2003,11 +2087,13 @@ export function WorkspacePage() {
         onClose={() => setTeardownError(null)}
       />
 
-      <BackgroundWorktreeStatusStreamBridge
-        repositories={repos.repositories}
-        selectedWorktreeId={repos.selectedWorktreeId}
-        selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
-      />
+      {enableNonCriticalWorkspaceData ? (
+        <BackgroundWorktreeStatusStreamBridge
+          repositories={repos.repositories}
+          selectedWorktreeId={repos.selectedWorktreeId}
+          selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
+        />
+      ) : null}
 
       <WorkspaceSyncStreamBridge />
 

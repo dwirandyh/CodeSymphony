@@ -474,6 +474,18 @@ export const ChatThreadSnapshotSchema = z.object({
   timeline: ChatTimelineSnapshotSchema,
 });
 
+export const ChatThreadStatusSchema = z.enum([
+  "waiting_approval",
+  "review_plan",
+  "running",
+  "idle",
+]);
+
+export const ChatThreadStatusSnapshotSchema = z.object({
+  status: ChatThreadStatusSchema,
+  newestIdx: z.number().int().nonnegative().nullable(),
+});
+
 export const CreateRepositoryInputSchema = z.object({
   path: z.string().trim().min(1),
   name: z.string().trim().min(1).optional(),
@@ -649,6 +661,8 @@ export type ChatTimelineItem = z.infer<typeof ChatTimelineItemSchema>;
 export type ChatTimelineSummary = z.infer<typeof ChatTimelineSummarySchema>;
 export type ChatTimelineSnapshot = z.infer<typeof ChatTimelineSnapshotSchema>;
 export type ChatThreadSnapshot = z.infer<typeof ChatThreadSnapshotSchema>;
+export type ChatThreadStatus = z.infer<typeof ChatThreadStatusSchema>;
+export type ChatThreadStatusSnapshot = z.infer<typeof ChatThreadStatusSnapshotSchema>;
 export type CreateRepositoryInput = z.infer<typeof CreateRepositoryInputSchema>;
 export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInputSchema>;
 export type CreateChatThreadInput = z.infer<typeof CreateChatThreadInputSchema>;

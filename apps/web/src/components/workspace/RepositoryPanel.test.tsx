@@ -2,12 +2,12 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
+import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "./RepositoryPanel";
 
-const { listThreadsMock, getThreadSnapshotMock, getGitBranchDiffSummaryMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
+const { listThreadsMock, getThreadStatusSnapshotMock, getGitBranchDiffSummaryMock, getRepositoryReviewsMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn(),
-  getThreadSnapshotMock: vi.fn(),
+  getThreadStatusSnapshotMock: vi.fn(),
   getGitBranchDiffSummaryMock: vi.fn().mockResolvedValue({ branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true }),
   getRepositoryReviewsMock: vi.fn().mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} }),
 }));
@@ -16,7 +16,7 @@ const isTauriDesktopMock = vi.hoisted(() => vi.fn());
 vi.mock("../../lib/api", () => ({
   api: {
     listThreads: listThreadsMock,
-    getThreadSnapshot: getThreadSnapshotMock,
+    getThreadStatusSnapshot: getThreadStatusSnapshotMock,
     getGitBranchDiffSummary: getGitBranchDiffSummaryMock,
     getRepositoryReviews: getRepositoryReviewsMock,
   },
@@ -42,12 +42,12 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false } },
   });
   listThreadsMock.mockReset();
-  getThreadSnapshotMock.mockReset();
+  getThreadStatusSnapshotMock.mockReset();
   getGitBranchDiffSummaryMock.mockReset();
   getRepositoryReviewsMock.mockReset();
   isTauriDesktopMock.mockReset();
   listThreadsMock.mockResolvedValue([]);
-  getThreadSnapshotMock.mockResolvedValue(makeSnapshot());
+  getThreadStatusSnapshotMock.mockResolvedValue(makeStatusSnapshot());
   getGitBranchDiffSummaryMock.mockResolvedValue({ branch: "main", baseBranch: "main", insertions: 0, deletions: 0, filesChanged: 0, available: true });
   getRepositoryReviewsMock.mockResolvedValue({ provider: "github", kind: "pr", available: true, reviewsByBranch: {} });
   isTauriDesktopMock.mockReturnValue(false);
@@ -120,24 +120,13 @@ function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
   };
 }
 
-function makeSnapshot(events: ChatEvent[] = []): ChatThreadSnapshot {
+function makeStatusSnapshot(
+  overrides: Partial<ChatThreadStatusSnapshot> = {},
+): ChatThreadStatusSnapshot {
   return {
-    messages: [],
-    events,
-    timeline: {
-      timelineItems: [],
-      summary: {
-        oldestRenderableKey: null,
-        oldestRenderableKind: null,
-        oldestRenderableMessageId: null,
-        oldestRenderableHydrationPending: false,
-        headIdentityStable: true,
-      },
-      newestSeq: null,
-      newestIdx: events.length ? events[events.length - 1]!.idx : null,
-      messages: [],
-      events,
-    },
+    status: "idle",
+    newestIdx: null,
+    ...overrides,
   };
 }
 
@@ -1054,20 +1043,14 @@ describe("RepositoryPanel", () => {
       }
       return [];
     });
-    getThreadSnapshotMock.mockImplementation(async (threadId: string) => {
+    getThreadStatusSnapshotMock.mockImplementation(async (threadId: string) => {
       if (threadId === "t-feat") {
-        return makeSnapshot([
-          {
-            id: "e1",
-            threadId,
-            idx: 1,
-            type: "permission.requested",
-            payload: { requestId: "perm-1", toolName: "Bash" },
-            createdAt: "2026-01-01T00:00:00Z",
-          },
-        ]);
+        return makeStatusSnapshot({ status: "waiting_approval", newestIdx: 1 });
       }
-      return makeSnapshot();
+      if (threadId === "t-root") {
+        return makeStatusSnapshot({ status: "running", newestIdx: null });
+      }
+      return makeStatusSnapshot();
     });
 
     renderPanel({
@@ -1129,28 +1112,11 @@ describe("RepositoryPanel", () => {
       }
       return [];
     });
-    getThreadSnapshotMock.mockImplementation(async (threadId: string) => {
+    getThreadStatusSnapshotMock.mockImplementation(async (threadId: string) => {
       if (threadId === "t-plan") {
-        return makeSnapshot([
-          {
-            id: "e1",
-            threadId,
-            idx: 1,
-            type: "plan.created",
-            payload: { content: "Plan", filePath: ".claude/plans/plan.md" },
-            createdAt: "2026-01-01T00:00:00Z",
-          },
-          {
-            id: "e2",
-            threadId,
-            idx: 2,
-            type: "chat.completed",
-            payload: {},
-            createdAt: "2026-01-01T00:00:01Z",
-          },
-        ]);
+        return makeStatusSnapshot({ status: "review_plan", newestIdx: 2 });
       }
-      return makeSnapshot();
+      return makeStatusSnapshot();
     });
 
     renderPanel({

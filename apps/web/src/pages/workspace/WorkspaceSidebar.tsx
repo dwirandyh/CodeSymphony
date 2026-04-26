@@ -14,6 +14,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   orderedRepositories,
   hiddenRepositoryIds,
   expandedByRepo,
+  enableRepositoryMetadata = true,
   isVisible = true,
   onOpenSettings,
   onSelectRepository,
@@ -27,6 +28,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   orderedRepositories: Repository[];
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
+  enableRepositoryMetadata?: boolean;
   isVisible?: boolean;
   onOpenSettings: () => void;
   onSelectRepository: (repositoryId: string) => void;
@@ -59,6 +61,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
             repositories={orderedRepositories}
             selectedRepositoryId={repos.selectedRepositoryId}
             selectedWorktreeId={repos.selectedWorktreeId}
+            enableMetadataQueries={enableRepositoryMetadata}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
             loadingRepos={repos.loadingRepos}

@@ -5,6 +5,7 @@ import type {
   ChatQueuedMessage,
   ChatThread,
   ChatThreadSnapshot,
+  ChatThreadStatusSnapshot,
   ChatTimelineSnapshot,
   CliAgent,
   ClipboardText,
@@ -425,6 +426,8 @@ export const api = {
     request<ChatEvent[]>(`/threads/${threadId}/events`),
   getThreadSnapshot: (threadId: string) =>
     request<ChatThreadSnapshot>(`/threads/${threadId}/snapshot`),
+  getThreadStatusSnapshot: (threadId: string) =>
+    request<ChatThreadStatusSnapshot>(`/threads/${threadId}/status-snapshot`),
   getTimelineSnapshot: (threadId: string) =>
     request<ChatTimelineSnapshot>(`/threads/${threadId}/timeline`),
   sendMessage: (threadId: string, input: SendChatMessageInput) =>

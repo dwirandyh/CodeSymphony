@@ -27,6 +27,7 @@ import {
   type ChatMode,
   type ChatThread,
   type ChatThreadKind,
+  type ChatThreadStatusSnapshot,
   type CliAgent,
   type ChatThreadPermissionMode,
   type ChatThreadPermissionProfile,
@@ -93,6 +94,7 @@ import {
   maybeAutoRenameBranchAfterFirstAssistantReply,
 } from "./chatNamingService.js";
 import { recoverPendingPlan } from "./chatPlanService.js";
+import { deriveThreadStatusFromEvents } from "./chatThreadStatus.js";
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
 import { buildCodexCliProviderHint, resolveCodexCliProviderOverride } from "../../codex/config.js";
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
@@ -2306,6 +2308,17 @@ export function createChatService(deps: RuntimeDeps) {
         messages,
         events,
         timeline,
+      };
+    },
+
+    async listThreadStatusSnapshot(threadId: string): Promise<ChatThreadStatusSnapshot> {
+      await maybeDispatchQueuedMessages(threadId);
+      await requireThreadExists(deps, threadId);
+      const events = await deps.eventHub.list(threadId);
+
+      return {
+        status: deriveThreadStatusFromEvents(events, isThreadActive(threadId)),
+        newestIdx: events.length > 0 ? events[events.length - 1]?.idx ?? null : null,
       };
     },
 

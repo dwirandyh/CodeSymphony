@@ -1,9 +1,9 @@
-import type { ChatEvent, ChatThread, ChatThreadSnapshot } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatThread, ChatThreadSnapshot, ChatThreadStatus } from "@codesymphony/shared-types";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
 import { isMetadataToolEvent, normalizePlanCreatedEvent } from "../eventUtils";
 
-export type WorktreeThreadUiStatus = "waiting_approval" | "review_plan" | "running" | "idle";
+export type WorktreeThreadUiStatus = ChatThreadStatus;
 
 export type WorktreeStatusSummary = {
   kind: WorktreeThreadUiStatus;
@@ -364,13 +364,17 @@ const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [
 ];
 
 export function aggregateWorktreeStatus(
-  threadSummaries: Array<{ thread: ChatThread; snapshot: ChatThreadSnapshot | null | undefined }>,
+  threadSummaries: Array<{
+    thread: ChatThread;
+    snapshot?: ChatThreadSnapshot | null | undefined;
+    status?: WorktreeThreadUiStatus | null | undefined;
+  }>,
 ): WorktreeStatusSummary {
   let bestStatus: WorktreeThreadUiStatus = "idle";
   let bestThreadId: string | null = null;
 
   for (const summary of threadSummaries) {
-    const status = deriveThreadUiStatus(summary.thread, summary.snapshot);
+    const status = summary.status ?? deriveThreadUiStatus(summary.thread, summary.snapshot);
     if (WORKTREE_STATUS_PRIORITY.indexOf(status) < WORKTREE_STATUS_PRIORITY.indexOf(bestStatus)) {
       bestStatus = status;
       bestThreadId = summary.thread.id;

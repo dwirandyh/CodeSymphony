@@ -7,6 +7,8 @@ import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { ChatTimelineItem } from "./chat-message-list";
 import { MarkdownBody, ChatMessageList } from "./chat-message-list";
 import { AssistantContent } from "./chat-message-list/AssistantContent";
+import { TimelineItem } from "./chat-message-list/TimelineItem";
+import type { TimelineCtx } from "./chat-message-list/ChatMessageList.types";
 import { getTimelineItemKey } from "./chat-message-list/toolEventUtils";
 
 vi.mock("@pierre/diffs", () => ({
@@ -230,6 +232,45 @@ function triggerScrollEnd() {
   act(() => {
     latestVListPropsRef.current?.onScrollEnd();
   });
+}
+
+function clickFirstSummary() {
+  const summary = container.querySelector("summary");
+  if (!(summary instanceof HTMLElement)) {
+    throw new Error("summary element not found");
+  }
+
+  act(() => {
+    summary.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+}
+
+function makeTimelineCtx(overrides: Partial<TimelineCtx> = {}): TimelineCtx {
+  return {
+    rawOutputMessageIds: new Set(),
+    copiedMessageId: null,
+    copiedDebug: false,
+    renderDebugEnabled: false,
+    toggleRawOutput: vi.fn(),
+    copyOutput: vi.fn(),
+    copyDebugLog: vi.fn(),
+    onOpenReadFile: vi.fn(),
+    worktreePath: "/repo",
+    toolExpandedById: new Map(),
+    setToolExpandedById: vi.fn(),
+    editedExpandedById: new Map(),
+    setEditedExpandedById: vi.fn(),
+    exploreActivityExpandedById: new Map(),
+    setExploreActivityExpandedById: vi.fn(),
+    subagentExpandedById: new Map(),
+    setSubagentExpandedById: vi.fn(),
+    subagentPromptExpandedById: new Map(),
+    setSubagentPromptExpandedById: vi.fn(),
+    subagentExploreExpandedById: new Map(),
+    setSubagentExploreExpandedById: vi.fn(),
+    lastRenderSignatureByMessageIdRef: { current: new Map() },
+    ...overrides,
+  };
 }
 
 describe("MarkdownBody", () => {
@@ -574,7 +615,6 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
     expect(container.textContent).toContain("Ran ls -la");
-    expect(container.textContent).toContain("Bash");
     expect(container.textContent).not.toContain("tool.finished");
     expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
     expect(container.querySelector("details")).toBeTruthy();
@@ -613,12 +653,15 @@ describe("ChatMessageList", () => {
     });
     expect(container.textContent).toContain("Ran mcp__filesystem__read_file");
     expect(container.textContent).not.toContain("Ran mcp__filesystem__read_file · Completed mcp__filesystem__read_file");
-    expect(container.textContent).toContain("# README");
+    expect(container.textContent).not.toContain("# README");
     expect(container.textContent).not.toContain("tool.finished");
     expect(container.textContent).not.toContain("Raw payload");
     expect(container.querySelector("[data-testid='timeline-tool-payload-details']")).toBeNull();
     expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
     expect(container.querySelector("details")).toBeTruthy();
+
+    clickFirstSummary();
+    expect(container.textContent).toContain("# README");
   });
 
   it("renders running MCP tool item with running label", () => {
@@ -688,8 +731,8 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Failed mcp__filesystem__read_file");
     expect(container.textContent).toContain("Failed");
     expect(container.textContent).toContain("Failed mcp__filesystem__read_file");
-    expect(container.textContent).toContain("Exit code 1");
-    expect(container.textContent).toContain("MCP request failed");
+    expect(container.textContent).not.toContain("Exit code 1");
+    expect(container.textContent).not.toContain("MCP request failed");
     expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
     expect(container.querySelector("svg.lucide-circle-x")).toBeTruthy();
   });
@@ -748,6 +791,10 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
+    expect(vi.mocked(parsePatchFiles)).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("... [diff truncated]");
+
+    clickFirstSummary();
     expect(vi.mocked(parsePatchFiles)).toHaveBeenCalledWith([
       "diff --git a/src/index.ts b/src/index.ts",
       "--- a/src/index.ts",
@@ -897,18 +944,8 @@ describe("ChatMessageList", () => {
     const exploreRoot = container.querySelector("[data-testid='timeline-explore-activity']") as HTMLElement | null;
     expect(exploreRoot).toBeTruthy();
     expect(exploreRoot?.querySelector(".lucide-bot")).toBeNull();
-
-    const entries = container.querySelector("[data-testid='timeline-explore-activity-entries']") as HTMLElement | null;
-    expect(entries).toBeTruthy();
-    expect(entries?.className).not.toContain("rounded-xl");
-    expect(entries?.className).not.toContain("border");
-
-    const readButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "index.ts");
-    expect(readButton).toBeTruthy();
-    act(() => {
-      readButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(onOpenReadFile).toHaveBeenCalledWith("src/index.ts");
+    expect(container.querySelector("[data-testid='timeline-explore-activity-entries']")).toBeNull();
+    expect(onOpenReadFile).not.toHaveBeenCalled();
   });
 
   it("handles explore-activity items without entries", () => {
@@ -971,7 +1008,7 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Searching codebase");
-    expect(container.textContent).toContain("Found something");
+    expect(container.textContent).not.toContain("Found something");
   });
 
   it("renders skill subagent items with skill-style header and body", () => {
@@ -995,8 +1032,8 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Skill(browser-verification)");
-    expect(container.textContent).toContain("Successfully loaded skill");
-    expect(container.textContent).toContain("1 tool allowed");
+    expect(container.textContent).not.toContain("Successfully loaded skill");
+    expect(container.textContent).not.toContain("1 tool allowed");
     expect(container.textContent).not.toContain("Prompt");
   });
 
@@ -1021,7 +1058,6 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Skill(browser-verification)");
-    expect(container.textContent).toContain("Successfully loaded skill");
     expect(container.textContent).not.toContain("tool allowed");
     expect(container.textContent).not.toContain("tools allowed");
   });
@@ -1054,9 +1090,9 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Explored 1 file");
-    expect(container.textContent).toContain("Recovered from transcript");
+    expect(container.textContent).toContain("Done");
     expect(container.textContent).not.toContain("Prompt");
+    expect(container.textContent).not.toContain("Recovered from transcript");
   });
 
   it("keeps mixed Bash subagent steps out of explore summary", () => {
@@ -1087,7 +1123,7 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Ran ls && rm && ls");
+    expect(container.textContent).not.toContain("Ran ls && rm && ls");
     expect(container.textContent).not.toContain("Explored 1 search");
   });
 
@@ -1119,7 +1155,7 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Explored 1 search");
+    expect(container.textContent).toContain("Done");
   });
 
   it("renders successful non-explore subagent steps without a status icon", () => {
@@ -1150,7 +1186,7 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Ran git status");
+    expect(container.textContent).not.toContain("Ran git status");
     expect(container.querySelector(".lucide-circle-check")).toBeNull();
     expect(container.querySelector(".lucide-loader-2")).toBeNull();
     expect(container.querySelector(".lucide-circle-x")).toBeNull();
@@ -1184,8 +1220,8 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Ran git status");
-    expect(container.querySelector(".lucide-circle-x")).toBeTruthy();
+    expect(container.textContent).not.toContain("Ran git status");
+    expect(container.querySelector(".lucide-circle-x")).toBeNull();
     expect(container.querySelector(".lucide-loader-2")).toBeNull();
   });
 
@@ -1208,7 +1244,7 @@ describe("ChatMessageList", () => {
     expect(rows).toHaveLength(1);
     expect(container.querySelector("[data-testid='timeline-activity']")).toBeTruthy();
     expect(container.textContent).toContain("Working on it");
-    expect(container.textContent).toContain("Step 1");
+    expect(container.textContent).not.toContain("Step 1");
   });
 
   it("renders plan-file-output item", () => {
@@ -1312,8 +1348,8 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Skill(finly-architecture)");
-    expect(container.textContent).toContain("Successfully loaded skill");
-    expect(container.textContent).toContain("1 tool allowed");
+    expect(container.textContent).not.toContain("Successfully loaded skill");
+    expect(container.textContent).not.toContain("1 tool allowed");
     expect(container.textContent).not.toContain("tool.finished · Completed Skill");
     expect(container.textContent).not.toContain("Raw payload");
     expect(container.querySelector("[data-testid='timeline-tool-payload-details']")).toBeNull();
@@ -1393,11 +1429,192 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Asked 2 Questions");
+    expect(container.textContent).not.toContain("Avatar URL?");
+    expect(container.textContent).not.toContain("Use upload_url");
+    expect(container.textContent).not.toContain("Retry upload?");
+    expect(container.textContent).not.toContain("No retry");
+    expect(container.textContent).not.toContain("AskUserQuestion · Completed AskUserQuestion");
+
+    clickFirstSummary();
     expect(container.textContent).toContain("Avatar URL?");
     expect(container.textContent).toContain("Use upload_url");
     expect(container.textContent).toContain("Retry upload?");
     expect(container.textContent).toContain("No retry");
-    expect(container.textContent).not.toContain("AskUserQuestion · Completed AskUserQuestion");
+  });
+
+  it("renders expanded tool details only when the tool is marked open in context", () => {
+    const event: ChatEvent = {
+      id: "ev-tool-expanded",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.finished",
+      payload: {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "tool-expanded",
+        summary: "Completed mcp__filesystem__read_file",
+        output: "# README",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const item: ChatTimelineItem = {
+      kind: "tool",
+      id: "tool-expanded",
+      event,
+      sourceEvents: [event],
+      toolUseId: "tool-expanded",
+      toolName: "mcp__filesystem__read_file",
+      output: "# README",
+      truncated: false,
+      durationSeconds: 0.4,
+      status: "success",
+    };
+
+    act(() => {
+      root.render(<TimelineItem item={item} ctx={makeTimelineCtx()} />);
+    });
+    expect(container.textContent).not.toContain("# README");
+
+    act(() => {
+      root.render(
+        <TimelineItem
+          item={item}
+          ctx={makeTimelineCtx({ toolExpandedById: new Map([["tool-expanded", true]]) })}
+        />,
+      );
+    });
+    expect(container.textContent).toContain("# README");
+  });
+
+  it("parses edited diffs only when the diff card is expanded", () => {
+    const diff = [
+      "diff --git a/src/index.ts b/src/index.ts",
+      "--- a/src/index.ts",
+      "+++ b/src/index.ts",
+      "@@ -1 +1 @@",
+      "-before",
+      "+after",
+      "",
+      "... [diff truncated]",
+    ].join("\n");
+    const item: ChatTimelineItem = {
+      kind: "edited-diff",
+      id: "diff-expanded",
+      eventId: "ev-diff-expanded",
+      status: "success",
+      diffKind: "actual",
+      changedFiles: ["src/index.ts"],
+      diff,
+      diffTruncated: true,
+      additions: 1,
+      deletions: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+
+    act(() => {
+      root.render(<TimelineItem item={item} ctx={makeTimelineCtx()} />);
+    });
+    expect(vi.mocked(parsePatchFiles)).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("... [diff truncated]");
+
+    act(() => {
+      root.render(
+        <TimelineItem
+          item={item}
+          ctx={makeTimelineCtx({ editedExpandedById: new Map([["diff-expanded", true]]) })}
+        />,
+      );
+    });
+
+    expect(vi.mocked(parsePatchFiles)).toHaveBeenCalledWith([
+      "diff --git a/src/index.ts b/src/index.ts",
+      "--- a/src/index.ts",
+      "+++ b/src/index.ts",
+      "@@ -1 +1 @@",
+      "-before",
+      "+after",
+    ].join("\n"));
+    expect(container.textContent).toContain("... [diff truncated]");
+  });
+
+  it("renders expanded AskUserQuestion content only when the tool is open", () => {
+    const askStartedEvent: ChatEvent = {
+      id: "ev-ask-open-started",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.started",
+      payload: {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-open-1",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const questionRequestedEvent: ChatEvent = {
+      id: "ev-ask-open-requested",
+      threadId: "t1",
+      idx: 2,
+      type: "question.requested",
+      payload: {
+        requestId: "ask-open-1",
+        questions: [{ question: "Avatar URL?" }],
+      },
+      createdAt: "2026-01-01T00:00:01Z",
+    };
+    const questionAnsweredEvent: ChatEvent = {
+      id: "ev-ask-open-answered",
+      threadId: "t1",
+      idx: 3,
+      type: "question.answered",
+      payload: {
+        requestId: "ask-open-1",
+        answers: {
+          "Avatar URL?": "Use upload_url",
+        },
+      },
+      createdAt: "2026-01-01T00:00:02Z",
+    };
+    const askFinishedEvent: ChatEvent = {
+      id: "ev-ask-open-finished",
+      threadId: "t1",
+      idx: 4,
+      type: "tool.finished",
+      payload: {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-open-1",
+        summary: "Asked 1 Question",
+      },
+      createdAt: "2026-01-01T00:00:03Z",
+    };
+    const item: ChatTimelineItem = {
+      kind: "tool",
+      id: "tool-ask-open",
+      event: askFinishedEvent,
+      sourceEvents: [askStartedEvent, questionRequestedEvent, questionAnsweredEvent, askFinishedEvent],
+      toolUseId: "ask-open-1",
+      toolName: "AskUserQuestion",
+      summary: "Asked 1 Question",
+      output: null,
+      error: null,
+      truncated: false,
+      durationSeconds: 1,
+      status: "success",
+    };
+
+    act(() => {
+      root.render(<TimelineItem item={item} ctx={makeTimelineCtx()} />);
+    });
+    expect(container.textContent).toContain("Asked 1 Question");
+    expect(container.textContent).not.toContain("Avatar URL?");
+
+    act(() => {
+      root.render(
+        <TimelineItem
+          item={item}
+          ctx={makeTimelineCtx({ toolExpandedById: new Map([["tool-ask-open", true]]) })}
+        />,
+      );
+    });
+    expect(container.textContent).toContain("Avatar URL?");
+    expect(container.textContent).toContain("Use upload_url");
   });
 
   it("uses denser spacing for compact running timeline rows", () => {

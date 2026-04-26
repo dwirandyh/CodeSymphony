@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type {
   ChatEvent,
   ChatThreadSnapshot,
+  ChatThreadStatusSnapshot,
   ChatTimelineSnapshot,
   CliAgent,
 } from "@codesymphony/shared-types";
@@ -18,6 +19,7 @@ const slashCommandQuery = z.object({
   agent: CliAgentSchema.optional(),
 }).strict();
 const inFlightSnapshotRequests = new Map<string, Promise<ChatThreadSnapshot>>();
+const inFlightStatusSnapshotRequests = new Map<string, Promise<ChatThreadStatusSnapshot>>();
 const inFlightTimelineSnapshotRequests = new Map<string, Promise<ChatTimelineSnapshot>>();
 
 function parseNonNegativeInt(input: unknown): number | null {
@@ -298,6 +300,31 @@ export async function registerChatRoutes(app: FastifyInstance) {
       }
     } catch (error) {
       return respondForChatRouteError(reply, error, "Unable to load thread snapshot");
+    }
+  });
+
+  app.get("/threads/:id/status-snapshot", async (request, reply) => {
+    try {
+      const params = threadParams.parse(request.params);
+      const snapshotKey = params.id;
+      const existingRequest = inFlightStatusSnapshotRequests.get(snapshotKey);
+
+      const snapshotPromise = existingRequest ?? app.chatService.listThreadStatusSnapshot(params.id);
+
+      if (!existingRequest) {
+        inFlightStatusSnapshotRequests.set(snapshotKey, snapshotPromise);
+      }
+
+      try {
+        const snapshot = await snapshotPromise;
+        return { data: snapshot };
+      } finally {
+        if (!existingRequest) {
+          inFlightStatusSnapshotRequests.delete(snapshotKey);
+        }
+      }
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to load thread status snapshot");
     }
   });
 

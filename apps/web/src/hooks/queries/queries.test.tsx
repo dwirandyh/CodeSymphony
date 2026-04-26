@@ -26,6 +26,7 @@ vi.mock("../../lib/api", () => ({
     listEventsPage: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
     listMessagesPage: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
     getThreadSnapshot: vi.fn().mockResolvedValue({ messages: [], events: [] }),
+    getThreadStatusSnapshot: vi.fn().mockResolvedValue({ status: "idle", newestIdx: null }),
     getGitStatus: vi.fn().mockResolvedValue({ entries: [], branch: "main" }),
     getGitBranchDiffSummary: vi.fn().mockResolvedValue({ branch: "feature-x", baseBranch: "main", insertions: 10, deletions: 2, filesChanged: 1, available: true }),
     getGitDiff: vi.fn().mockResolvedValue({ diff: "", summary: "" }),

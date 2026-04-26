@@ -248,8 +248,7 @@ export function ChatMessageList({
     scrollToBottom("bottom");
   }, [displayItems.length, isAtBottom, scrollToBottom]);
 
-  const timelineCtxRef = useRef<TimelineCtx>(null!);
-  timelineCtxRef.current = {
+  const timelineCtx = useMemo<TimelineCtx>(() => ({
     rawOutputMessageIds,
     copiedMessageId,
     copiedDebug,
@@ -272,16 +271,30 @@ export function ChatMessageList({
     subagentExploreExpandedById,
     setSubagentExploreExpandedById,
     lastRenderSignatureByMessageIdRef,
-  };
-
-  const stableCtx = useMemo<TimelineCtx>(
-    () => new Proxy({} as TimelineCtx, {
-      get(_target, prop) {
-        return (timelineCtxRef.current as unknown as Record<string | symbol, unknown>)[prop];
-      },
-    }),
-    [],
-  );
+  }), [
+    copiedDebug,
+    copiedMessageId,
+    copyDebugLog,
+    copyOutput,
+    editedExpandedById,
+    exploreActivityExpandedById,
+    lastRenderSignatureByMessageIdRef,
+    onOpenReadFile,
+    rawOutputMessageIds,
+    renderDebugEnabled,
+    setEditedExpandedById,
+    setExploreActivityExpandedById,
+    setSubagentExpandedById,
+    setSubagentExploreExpandedById,
+    setSubagentPromptExpandedById,
+    setToolExpandedById,
+    subagentExpandedById,
+    subagentExploreExpandedById,
+    subagentPromptExpandedById,
+    toggleRawOutput,
+    toolExpandedById,
+    worktreePath,
+  ]);
 
   return (
     <div
@@ -316,7 +329,7 @@ export function ChatMessageList({
             }
             return (
               <div key={getTimelineItemKey(item)} className={getTimelineRowClassName(item, isFirst)}>
-                <TimelineItem item={item} ctx={stableCtx} />
+                <TimelineItem item={item} ctx={timelineCtx} />
               </div>
             );
           })}

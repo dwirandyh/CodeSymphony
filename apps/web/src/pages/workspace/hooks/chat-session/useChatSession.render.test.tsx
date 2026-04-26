@@ -1013,6 +1013,71 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).toBe("existing-thread-empty");
   });
 
+  it("uses the authoritative server timeline during bootstrap when the snapshot contains canonical messages", () => {
+    const serverTimelineItems: ChatTimelineItem[] = [
+      {
+        kind: "message",
+        message: {
+          id: "assistant-1",
+          threadId: "thread-a",
+          seq: 1,
+          role: "assistant",
+          content: "Canonical answer",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+        context: [],
+      },
+    ];
+
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
+      summary: {
+        oldestRenderableKey: "message:assistant-1",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-1",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical answer",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: [],
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
+
+    renderHook("thread-a");
+
+    expect(hookResult.timelineItems).toEqual(serverTimelineItems);
+  });
+
   it("prefers derived timeline when server snapshot contains stale cards but derived timeline is empty", () => {
     const staleServerItems: ChatTimelineItem[] = [
       {

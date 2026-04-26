@@ -377,6 +377,8 @@ function ComposerContent({
   const permissionPopoverRef = useRef<HTMLDivElement>(null);
   const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
   const [mobileSessionSheetOpen, setMobileSessionSheetOpen] = useState(false);
+  const hasProvidedFileIndex = fileIndex !== undefined && typeof fileIndexLoading === "boolean";
+  const [hasRequestedFileIndex, setHasRequestedFileIndex] = useState(() => hasProvidedFileIndex);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return false;
@@ -432,6 +434,10 @@ function ComposerContent({
     setPermissionPopoverOpen(false);
     setPermissionPreviewMode(null);
   }, [mobileSessionSheetOpen]);
+
+  useEffect(() => {
+    setHasRequestedFileIndex(hasProvidedFileIndex);
+  }, [hasProvidedFileIndex, worktreeId]);
 
   const selectionLocked = hasMessages || !threadId;
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => ({
@@ -545,6 +551,10 @@ function ComposerContent({
   const prevContentLenRef = useRef(0);
   const afterChipHTMLRef = useRef<string | null>(null);
   const lastStableHTMLRef = useRef<string>("");
+  const shouldLoadInternalFileIndex = !hasProvidedFileIndex && hasRequestedFileIndex;
+  const fileIndexState = useFileIndex(shouldLoadInternalFileIndex ? worktreeId : null);
+  const mentionFileIndex = fileIndex ?? fileIndexState.entries;
+  const mentionFileIndexLoading = fileIndexLoading ?? fileIndexState.loading;
 
   const {
     mention,
@@ -559,10 +569,16 @@ function ComposerContent({
   } = useComposerMention({
     editorRef,
     popoverRef,
-    fileIndex: fileIndex ?? [],
-    fileIndexLoading: fileIndexLoading ?? false,
+    fileIndex: mentionFileIndex,
+    fileIndexLoading: mentionFileIndexLoading,
     onChange: setDraftText,
   });
+
+  useEffect(() => {
+    if (!hasProvidedFileIndex && mention.active && !hasRequestedFileIndex) {
+      setHasRequestedFileIndex(true);
+    }
+  }, [hasProvidedFileIndex, hasRequestedFileIndex, mention.active]);
 
   const {
     attachments,
@@ -1275,12 +1291,12 @@ function ComposerContent({
             onChange={handleFileInputChange}
           />
 
-          {mention.active && (suggestions.length > 0 || (fileIndexLoading ?? false)) && (
+          {mention.active && (suggestions.length > 0 || mentionFileIndexLoading) && (
             <div
               ref={popoverRef}
               className="absolute bottom-full left-0 z-50 mb-2 w-full max-h-60 overflow-y-auto rounded-xl border border-border/60 bg-popover shadow-lg"
             >
-              {(fileIndexLoading ?? false) && suggestions.length === 0 ? (
+              {mentionFileIndexLoading && suggestions.length === 0 ? (
                 <div className="px-3 py-2 text-xs text-muted-foreground">Loading files...</div>
               ) : (
                 suggestions.map((entry, index) => (
@@ -1653,22 +1669,6 @@ function ComposerContent({
   );
 }
 
-function ComposerFileIndexBridge(props: ComposerProps) {
-  const fileIndex = useFileIndex(props.worktreeId);
-
-  return (
-    <ComposerContent
-      {...props}
-      fileIndex={fileIndex.entries}
-      fileIndexLoading={fileIndex.loading}
-    />
-  );
-}
-
 export function Composer(props: ComposerProps) {
-  if (props.fileIndex !== undefined && typeof props.fileIndexLoading === "boolean") {
-    return <ComposerContent {...props} />;
-  }
-
-  return <ComposerFileIndexBridge {...props} />;
+  return <ComposerContent {...props} />;
 }

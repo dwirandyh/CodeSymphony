@@ -216,6 +216,45 @@ function buildThreadSelectionInput(thread: ChatThread | null): Pick<CreateChatTh
   };
 }
 
+function shouldDelayRemoteBootstrapForLocalThread(params: {
+  selectedThreadId: string | null;
+  optimisticCreatedThreadIds: Set<string>;
+  waitingAssistant: { threadId: string; afterIdx: number } | null;
+}): boolean {
+  const { selectedThreadId, optimisticCreatedThreadIds, waitingAssistant } = params;
+  if (!selectedThreadId || !optimisticCreatedThreadIds.has(selectedThreadId)) {
+    return false;
+  }
+
+  return (
+    getThreadLastEventIdx(selectedThreadId) == null
+    && getThreadLastMessageSeq(selectedThreadId) == null
+    && waitingAssistant?.threadId !== selectedThreadId
+  );
+}
+
+function upsertQueuedMessage(
+  current: ChatQueuedMessage[] | undefined,
+  queuedMessage: ChatQueuedMessage,
+): ChatQueuedMessage[] {
+  if (!current) {
+    return [queuedMessage];
+  }
+
+  const existingIndex = current.findIndex((message) => message.id === queuedMessage.id);
+  if (existingIndex === -1) {
+    return [...current, queuedMessage];
+  }
+
+  const updated = [...current];
+  updated[existingIndex] = queuedMessage;
+  return updated;
+}
+
+function hasCanonicalThreadSnapshot(snapshot: ChatTimelineSnapshot | null | undefined): boolean {
+  return (snapshot?.messages.length ?? 0) > 0 || (snapshot?.events.length ?? 0) > 0;
+}
+
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
   total: number;
   signatures: string[];
@@ -358,9 +397,10 @@ export function useChatSession(
   const queryClient = useQueryClient();
   const repositoryId = options?.repositoryId ?? null;
   const timelineEnabled = options?.timelineEnabled !== false;
+  const requestedThreadId = options?.desiredThreadId ?? null;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(null);
+  const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(() => requestedThreadId);
 
   const [sendingMessage, setSendingMessage] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
@@ -450,7 +490,7 @@ export function useChatSession(
     if (worktreeChanged) {
       setWaitingAssistant(null);
       setThreads([]);
-      setSelectedThreadId(null);
+      setSelectedThreadId(requestedThreadId);
       pendingAgentSelectionUpdatesRef.current.clear();
       disposeAllThreadCollections();
       clearAllThreadStreamState();
@@ -500,7 +540,6 @@ export function useChatSession(
       pendingAutoCreateWorktreeIds.delete(selectedWorktreeId);
     }
 
-    const requestedThreadId = options?.desiredThreadId ?? null;
     const requestedThreadIdChanged = prevRequestedThreadIdRef.current !== requestedThreadId;
 
     if (requestedThreadIdChanged) {
@@ -592,7 +631,7 @@ export function useChatSession(
     if (selectedThreadId !== nextThreadId) {
       setSelectedThreadId(nextThreadId);
     }
-  }, [closingThreadId, options?.desiredThreadId, pendingComposerPermissionMode, queriedThreads, selectedThreadId, selectedWorktreeId]);
+  }, [closingThreadId, pendingComposerPermissionMode, queriedThreads, requestedThreadId, selectedThreadId, selectedWorktreeId]);
 
   useEffect(() => {
     if (!selectedThreadId) return;
@@ -641,6 +680,14 @@ export function useChatSession(
   const selectedThread = selectedThreadId
     ? threadByIdRef.current.get(selectedThreadId) ?? null
     : null;
+  const selectedThreadCreatedLocally =
+    selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
+  const shouldDelaySelectedThreadRemoteBootstrap = shouldDelayRemoteBootstrapForLocalThread({
+    selectedThreadId,
+    optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+    waitingAssistant,
+  });
+  const remoteBootstrapThreadId = shouldDelaySelectedThreadRemoteBootstrap ? null : selectedThreadIdForData;
   if (selectedThread && selectedWorktreeId && selectedThread.worktreeId === selectedWorktreeId) {
     const selectedThreadAgent = selectedThread.agent ?? "claude";
     lastThreadSelectionRef.current = {
@@ -669,7 +716,7 @@ export function useChatSession(
   } = useQuery({
     queryKey: selectedThreadId ? queryKeys.threads.queue(selectedThreadId) : ["threads", "__no_thread__", "queue"],
     queryFn: () => api.listQueuedMessages(selectedThreadId!),
-    enabled: selectedThreadId != null,
+    enabled: selectedThreadId != null && !shouldDelaySelectedThreadRemoteBootstrap,
   });
 
   useEffect(() => {
@@ -696,7 +743,7 @@ export function useChatSession(
     data: queriedThreadSnapshot,
     isLoading: threadSnapshotLoading,
     isFetching: threadSnapshotFetching,
-  } = useThreadSnapshot(selectedThreadIdForData);
+  } = useThreadSnapshot(remoteBootstrapThreadId);
 
   useEffect(() => {
     const threadChanged = prevSeedThreadRef.current !== selectedThreadId;
@@ -952,12 +999,17 @@ export function useChatSession(
   }
 
   useEffect(() => {
+    const selectionBootstrapPending = selectedThreadId == null && requestedThreadId != null;
+    if (selectionBootstrapPending) {
+      return;
+    }
+
     const willNotify = prevThreadIdRef.current !== selectedThreadId;
     if (willNotify) {
       prevThreadIdRef.current = selectedThreadId;
       options?.onThreadChange?.(selectedThreadId);
     }
-  }, [selectedThreadId]);
+  }, [requestedThreadId, selectedThreadId]);
 
   useEffect(() => {
     if (!selectedWorktreeId || !selectedThreadId) {
@@ -970,7 +1022,7 @@ export function useChatSession(
   }, [queryClient, selectedThreadId, selectedWorktreeId]);
 
   useThreadEventStream({
-    selectedThreadId: selectedThreadIdForData,
+    selectedThreadId: remoteBootstrapThreadId,
     selectedWorktreeId,
     repositoryId,
     selectedThreadIsPrMr,
@@ -1583,13 +1635,19 @@ export function useChatSession(
 
     onError(null);
     try {
-      await api.queueMessage(activeThread.id, {
+      const queuedMessage = await api.queueMessage(activeThread.id, {
         content,
         mode,
         attachments: attachmentsToSend,
         expectedWorktreeId: activeThread.worktreeId,
       });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(activeThread.id) });
+      queryClient.setQueryData<ChatQueuedMessage[]>(
+        queryKeys.threads.queue(activeThread.id),
+        (current) => upsertQueuedMessage(current, queuedMessage),
+      );
+      if (!shouldDelaySelectedThreadRemoteBootstrap) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(activeThread.id) });
+      }
       return true;
     } catch (error) {
       onError(error instanceof Error ? error.message : "Failed to queue draft");
@@ -1707,13 +1765,17 @@ export function useChatSession(
   const timelineComparison = useMemo(() => {
     const server = summarizeTimelineItems(serverTimelineItems);
     const derived = summarizeTimelineItems(derivedTimeline.items);
+    const serverSnapshotContainsCanonicalState = hasCanonicalThreadSnapshot(queriedThreadSnapshot);
     const hasSuspiciousSubagentOrExploreState =
       server.exploreCards > 0
       || derived.exploreCards > 0
       || server.subagentCards > 0
       || derived.subagentCards > 0;
     const signaturesMatch = JSON.stringify(server.signatures) === JSON.stringify(derived.signatures);
-    const preferDerivedBecauseServerLooksStale = derivedTimeline.items.length === 0 && serverTimelineItems.length > 0;
+    const preferDerivedBecauseServerLooksStale =
+      !serverSnapshotContainsCanonicalState
+      && derivedTimeline.items.length === 0
+      && serverTimelineItems.length > 0;
 
     return {
       server,
@@ -1722,7 +1784,7 @@ export function useChatSession(
       signaturesMatch,
       preferDerivedBecauseServerLooksStale,
     };
-  }, [derivedTimeline.items, serverTimelineItems]);
+  }, [derivedTimeline.items, queriedThreadSnapshot?.events.length, queriedThreadSnapshot?.messages.length, serverTimelineItems]);
 
   const useServerTimeline = timelineEnabled
     && serverTimelineSummary != null
@@ -1776,8 +1838,6 @@ export function useChatSession(
 
   const timelineItems = timelineData.items;
   const timelineSummary = timelineData.summary;
-  const selectedThreadCreatedLocally =
-    selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
   const selectedThreadHasLocalState =
     selectedThreadId != null && (messages.length > 0 || events.length > 0);
   const requestedThreadBootstrapPending =
