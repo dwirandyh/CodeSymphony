@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -7,8 +7,21 @@ import { api } from "../../lib/api";
 import { isTauriDesktop } from "../../lib/openExternalUrl";
 import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
-import type { CliAgent, ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
+import {
+  BUILTIN_CHAT_MODELS_BY_AGENT,
+  DEFAULT_CHAT_MODEL_BY_AGENT,
+  type CliAgent,
+  type ModelProvider,
+  type Repository,
+  type SaveAutomationConfig,
+} from "@codesymphony/shared-types";
 import { useModelProviders } from "../../pages/workspace/hooks/useModelProviders";
+import {
+  loadAgentDefaults,
+  saveAgentDefaults,
+  type AgentDefaults,
+  type AgentDefaultSelection,
+} from "../../pages/workspace/agentDefaults";
 
 type SettingsTab = "workspace" | "models" | "licenses";
 type SaveAutomationTemplate = "custom_generic" | "flutter_hot_reload";
@@ -45,12 +58,81 @@ const PROVIDER_AGENT_LABELS: Record<CliAgent, string> = {
   opencode: "OpenCode",
 };
 
+type AgentDefaultsKey = keyof AgentDefaults;
+
+type AgentModelOption = {
+  key: string;
+  model: string;
+  modelProviderId: string | null;
+  label: string;
+};
+
 function getProviderProtocol(agent: CliAgent | undefined | null): ProviderProtocol {
   return PROVIDER_PROTOCOL_BY_AGENT[agent ?? "claude"];
 }
 
 function getProviderAgentLabel(agent: CliAgent | undefined | null): string {
   return PROVIDER_AGENT_LABELS[agent ?? "claude"];
+}
+
+function formatAgentModelLabel(agent: CliAgent, model: string): string {
+  if (agent === "cursor" && model === "default[]") {
+    return "Auto";
+  }
+
+  if (agent === "opencode") {
+    return model;
+  }
+
+  return model.replace(/\[[^\]]*]$/, "");
+}
+
+function buildAgentModelOptions(agent: CliAgent, providers: ModelProvider[]): AgentModelOption[] {
+  const builtins = BUILTIN_CHAT_MODELS_BY_AGENT[agent].map((model) => ({
+    key: `${agent}:${model}:builtin`,
+    model,
+    modelProviderId: null,
+    label: formatAgentModelLabel(agent, model),
+  }));
+  const custom = providers
+    .filter((provider) => provider.agent === agent)
+    .map((provider) => ({
+      key: provider.id,
+      model: provider.modelId,
+      modelProviderId: provider.id,
+      label: `${provider.modelId} · ${provider.name}`,
+    }));
+
+  return [...builtins, ...custom];
+}
+
+function normalizeAgentDefaultSelection(
+  selection: AgentDefaultSelection,
+  options: AgentModelOption[],
+): AgentDefaultSelection {
+  const matchingOption = options.find((option) => (
+    option.model === selection.model
+    && option.modelProviderId === selection.modelProviderId
+  ));
+
+  if (matchingOption) {
+    return selection;
+  }
+
+  const fallbackOption = options[0];
+  if (fallbackOption) {
+    return {
+      agent: selection.agent,
+      model: fallbackOption.model,
+      modelProviderId: fallbackOption.modelProviderId,
+    };
+  }
+
+  return {
+    agent: selection.agent,
+    model: DEFAULT_CHAT_MODEL_BY_AGENT[selection.agent],
+    modelProviderId: null,
+  };
 }
 
 function isOpencodeBuiltinAlias(modelId: string): boolean {
@@ -196,6 +278,7 @@ export function SettingsDialog({
   const [savingProvider, setSavingProvider] = useState(false);
   const [testingProvider, setTestingProvider] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
+  const [agentDefaults, setAgentDefaults] = useState<AgentDefaults>(() => loadAgentDefaults());
   const providerProtocol = getProviderProtocol(providerAgent);
   const trimmedProviderName = providerName.trim();
   const trimmedProviderModelId = providerModelId.trim();
@@ -262,6 +345,18 @@ export function SettingsDialog({
     : providerAgent === "opencode"
       ? "Connection successful — provider is Responses API compatible for OpenCode."
       : "Connection successful — provider is Responses API compatible.";
+  const agentModelOptions = useMemo<Record<CliAgent, AgentModelOption[]>>(() => ({
+    claude: buildAgentModelOptions("claude", providers),
+    codex: buildAgentModelOptions("codex", providers),
+    cursor: buildAgentModelOptions("cursor", providers),
+    opencode: buildAgentModelOptions("opencode", providers),
+  }), [providers]);
+
+  const resolvedAgentDefaults = useMemo<AgentDefaults>(() => ({
+    newChat: normalizeAgentDefaultSelection(agentDefaults.newChat, agentModelOptions[agentDefaults.newChat.agent]),
+    commit: normalizeAgentDefaultSelection(agentDefaults.commit, agentModelOptions[agentDefaults.commit.agent]),
+    pullRequest: normalizeAgentDefaultSelection(agentDefaults.pullRequest, agentModelOptions[agentDefaults.pullRequest.agent]),
+  }), [agentDefaults, agentModelOptions]);
 
   // ── Workspace: Select first repo ──
   useEffect(() => {
@@ -340,6 +435,41 @@ export function SettingsDialog({
   useEffect(() => {
     onProvidersChanged?.(providers);
   }, [onProvidersChanged, providers]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    setAgentDefaults(loadAgentDefaults());
+  }, [open]);
+
+  useEffect(() => {
+    setAgentDefaults((current) => {
+      const next = {
+        newChat: normalizeAgentDefaultSelection(current.newChat, agentModelOptions[current.newChat.agent]),
+        commit: normalizeAgentDefaultSelection(current.commit, agentModelOptions[current.commit.agent]),
+        pullRequest: normalizeAgentDefaultSelection(current.pullRequest, agentModelOptions[current.pullRequest.agent]),
+      };
+
+      const changed =
+        next.newChat.agent !== current.newChat.agent
+        || next.newChat.model !== current.newChat.model
+        || next.newChat.modelProviderId !== current.newChat.modelProviderId
+        || next.commit.agent !== current.commit.agent
+        || next.commit.model !== current.commit.model
+        || next.commit.modelProviderId !== current.commit.modelProviderId
+        || next.pullRequest.agent !== current.pullRequest.agent
+        || next.pullRequest.model !== current.pullRequest.model
+        || next.pullRequest.modelProviderId !== current.pullRequest.modelProviderId;
+
+      if (!changed) {
+        return current;
+      }
+
+      return saveAgentDefaults(next);
+    });
+  }, [agentModelOptions]);
 
   const resetProviderForm = useCallback((nextAgent: CliAgent = "claude") => {
     setEditingProviderId(null);
@@ -515,6 +645,20 @@ export function SettingsDialog({
       setTestingProvider(false);
     }
   }, [canTestProvider, providerAgent, trimmedProviderApiKey, trimmedProviderBaseUrl, trimmedProviderModelId]);
+
+  const updateAgentDefault = useCallback((
+    key: AgentDefaultsKey,
+    updater: (current: AgentDefaultSelection) => AgentDefaultSelection,
+  ) => {
+    setAgentDefaults((current) => {
+      const nextSelection = updater(current[key]);
+      const next = {
+        ...current,
+        [key]: nextSelection,
+      };
+      return saveAgentDefaults(next);
+    });
+  }, []);
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId) ?? null;
   const macDesktopShell = isMacDesktopShell();
@@ -815,7 +959,89 @@ export function SettingsDialog({
                     Loading...
                   </div>
                 ) : (
-                  <div className="mb-4">
+                  <div>
+                    <div className="mb-6">
+                      <div className="mb-1 text-xs font-medium">Default Agent</div>
+                      <p className="mb-4 text-[10px] leading-relaxed text-muted-foreground">
+                        Saved default CLI agent and model selections for each flow.
+                      </p>
+
+                      <div className="space-y-4">
+                        {([
+                          ["newChat", "Agent for new chats", "Default agent for newly created chat threads."],
+                          ["commit", "Agent for commit", "Used when generating commit-related flows."],
+                          ["pullRequest", "Agent for PR", "Used when starting PR or MR review flows."],
+                        ] as const).map(([key, label, description]) => {
+                          const selection = resolvedAgentDefaults[key];
+                          const options = agentModelOptions[selection.agent];
+
+                          return (
+                            <div
+                              key={key}
+                              className="grid items-center gap-3 md:grid-cols-[minmax(0,1fr)_160px_1fr]"
+                            >
+                              <div>
+                                <label className="text-xs text-foreground">
+                                  {label}
+                                </label>
+                                <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                                  {description}
+                                </p>
+                              </div>
+                              <select
+                                aria-label={`${label} CLI Agent`}
+                                className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                                value={selection.agent}
+                                onChange={(e) => {
+                                  const nextAgent = e.target.value as CliAgent;
+                                  const nextOptions = agentModelOptions[nextAgent];
+                                  const fallbackOption = nextOptions[0];
+
+                                  updateAgentDefault(key, () => ({
+                                    agent: nextAgent,
+                                    model: fallbackOption?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[nextAgent],
+                                    modelProviderId: fallbackOption?.modelProviderId ?? null,
+                                  }));
+                                }}
+                              >
+                                <option value="claude">Claude</option>
+                                <option value="codex">Codex</option>
+                                <option value="cursor">Cursor</option>
+                                <option value="opencode">OpenCode</option>
+                              </select>
+                              <select
+                                aria-label={`${label} model`}
+                                className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
+                                value={`${selection.modelProviderId ?? "builtin"}::${selection.model}`}
+                                onChange={(e) => {
+                                  const nextOption = options.find(
+                                    (option) => `${option.modelProviderId ?? "builtin"}::${option.model}` === e.target.value,
+                                  );
+                                  if (!nextOption) {
+                                    return;
+                                  }
+
+                                  updateAgentDefault(key, (current) => ({
+                                    ...current,
+                                    model: nextOption.model,
+                                    modelProviderId: nextOption.modelProviderId,
+                                  }));
+                                }}
+                              >
+                                {options.map((option) => (
+                                  <option key={option.key} value={`${option.modelProviderId ?? "builtin"}::${option.model}`}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="mb-5 border-t border-border/40 pt-5" />
+
                     <div className="mb-2 flex items-center justify-between">
                       <label className="text-xs font-medium">Model Providers</label>
                       <Button

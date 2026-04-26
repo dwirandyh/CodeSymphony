@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
+import { AGENT_DEFAULTS_STORAGE_KEY } from "../../pages/workspace/agentDefaults";
 
 const apiMocks = vi.hoisted(() => ({
   updateRepositoryScripts: vi.fn(),
@@ -76,6 +77,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  window.localStorage.removeItem(AGENT_DEFAULTS_STORAGE_KEY);
   Object.defineProperty(window, "__TAURI_INTERNALS__", {
     value: undefined,
     configurable: true,
@@ -162,6 +164,19 @@ async function setInputValue(input: HTMLInputElement, value: string) {
   });
 }
 
+async function setSelectValue(select: HTMLSelectElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+  if (!valueSetter) {
+    throw new Error("Select value setter not available");
+  }
+
+  await act(async () => {
+    valueSetter.call(select, value);
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 describe("SettingsDialog", () => {
   it("renders nothing when closed", () => {
     act(() => {
@@ -211,6 +226,40 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Workspace");
     expect(document.body.textContent).toContain("Models");
     expect(document.body.textContent).toContain("Licenses");
+  });
+
+  it("renders Default Agent controls in the Models tab", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+
+    expect(document.body.textContent).toContain("Default Agent");
+    expect(document.body.textContent).toContain("Agent for new chats");
+    expect(document.body.textContent).toContain("Agent for commit");
+    expect(document.body.textContent).toContain("Agent for PR");
+  });
+
+  it("persists default agent selections to localStorage", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+
+    const newChatAgentSelect = document.body.querySelector('select[aria-label="Agent for new chats CLI Agent"]') as HTMLSelectElement | null;
+    if (!newChatAgentSelect) {
+      throw new Error("Agent for new chats select not found");
+    }
+
+    await setSelectValue(newChatAgentSelect, "codex");
+
+    const newChatModelSelect = document.body.querySelector('select[aria-label="Agent for new chats model"]') as HTMLSelectElement | null;
+    if (!newChatModelSelect) {
+      throw new Error("Agent for new chats model select not found");
+    }
+
+    await setSelectValue(newChatModelSelect, "builtin::gpt-5.3-codex");
+
+    expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"agent\":\"codex\"");
+    expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"model\":\"gpt-5.3-codex\"");
   });
 
   it("reserves the macOS title bar area when running inside the desktop shell", async () => {
