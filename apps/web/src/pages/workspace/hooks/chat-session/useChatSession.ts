@@ -50,6 +50,7 @@ import {
   shouldClearWaitingAssistantOnEvent,
 } from "../../eventUtils";
 import { useWorkspaceTimeline } from "../workspace-timeline";
+import { loadAgentDefaults } from "../../agentDefaults";
 import {
   derivePendingPermissionRequests,
   derivePendingPlan,
@@ -212,6 +213,19 @@ function buildThreadSelectionInput(thread: ChatThread | null): Pick<CreateChatTh
     agent: thread.agent,
     model: thread.model,
     modelProviderId: thread.modelProviderId,
+  };
+}
+
+function buildPreferredSelectionInput(
+  key: "newChat" | "pullRequest",
+): Pick<CreateChatThreadInput, "agent" | "model" | "modelProviderId"> {
+  const defaults = loadAgentDefaults();
+  const selection = defaults[key];
+
+  return {
+    agent: selection.agent,
+    model: selection.model,
+    modelProviderId: selection.modelProviderId,
   };
 }
 
@@ -518,7 +532,7 @@ export function useChatSession(
       const creationPermissionMode = pendingComposerPermissionMode;
       const creationSelection = lastThreadSelectionRef.current?.worktreeId === creationWorktreeId
         ? lastThreadSelectionRef.current
-        : null;
+        : buildPreferredSelectionInput("newChat");
       pendingAutoCreateWorktreeIds.add(creationWorktreeId);
       creatingThreadRef.current = true;
       void (async () => {
@@ -651,7 +665,9 @@ export function useChatSession(
   }
   const fallbackThreadSelection = lastThreadSelectionRef.current?.worktreeId === selectedWorktreeId
     ? lastThreadSelectionRef.current
-    : null;
+    : selectedWorktreeId
+      ? buildPreferredSelectionInput("newChat")
+      : null;
   const composerAgent: CliAgent = selectedThread?.agent ?? fallbackThreadSelection?.agent ?? "claude";
   const composerModel = selectedThread?.model ?? fallbackThreadSelection?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[composerAgent];
   const composerModelProviderId = selectedThread?.modelProviderId ?? fallbackThreadSelection?.modelProviderId ?? null;
@@ -1013,16 +1029,19 @@ export function useChatSession(
     const selectionInput = buildThreadSelectionInput(
       findThreadForWorktree(threadsRef.current, activeThreadIdRef.current, selectedWorktreeId),
     );
+    const preferredSelectionInput = Object.keys(selectionInput).length > 0
+      ? selectionInput
+      : buildPreferredSelectionInput("newChat");
 
     const created = options?.sendDefaultTitle === false
       ? await api.createThread(selectedWorktreeId, {
           permissionMode: composerPermissionMode,
-          ...selectionInput,
+          ...preferredSelectionInput,
         })
       : await api.createThread(selectedWorktreeId, {
           title: trimmedTitle,
           permissionMode: composerPermissionMode,
-          ...selectionInput,
+          ...preferredSelectionInput,
         });
     return { created, worktreeId: selectedWorktreeId };
   }
@@ -1116,9 +1135,7 @@ export function useChatSession(
     try {
       const created = await api.getOrCreatePrMrThread(selectedWorktreeId, {
         permissionMode: composerPermissionMode,
-        ...buildThreadSelectionInput(
-          findThreadForWorktree(threadsRef.current, activeThreadIdRef.current, selectedWorktreeId),
-        ),
+        ...buildPreferredSelectionInput("pullRequest"),
       });
       createdThreadId = created.id;
       optimisticCreatedThreadIdsRef.current.add(created.id);
