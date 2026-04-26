@@ -229,6 +229,38 @@ function buildPreferredSelectionInput(
   };
 }
 
+function shouldHydratePristineThreadSelectionFromDefaults(params: {
+  selectedThread: ChatThread | null;
+  messages: ChatMessage[];
+  events: ChatEvent[];
+}): boolean {
+  const { selectedThread, messages, events } = params;
+  if (!selectedThread) {
+    return false;
+  }
+
+  if (selectedThread.kind !== "default") {
+    return false;
+  }
+
+  if (messages.length > 0 || events.length > 0) {
+    return false;
+  }
+
+  if (
+    selectedThread.claudeSessionId
+    || selectedThread.codexSessionId
+    || selectedThread.cursorSessionId
+    || selectedThread.opencodeSessionId
+  ) {
+    return false;
+  }
+
+  return selectedThread.agent === "claude"
+    && selectedThread.model === DEFAULT_CHAT_MODEL_BY_AGENT.claude
+    && selectedThread.modelProviderId == null;
+}
+
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
   total: number;
   signatures: string[];
@@ -679,6 +711,35 @@ export function useChatSession(
   const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
     (thread) => thread.id === selectedThreadId && thread.kind === "review",
   );
+
+  useEffect(() => {
+    if (!selectedThreadId || !selectedThread) {
+      return;
+    }
+
+    if (!shouldHydratePristineThreadSelectionFromDefaults({
+      selectedThread,
+      messages,
+      events,
+    })) {
+      return;
+    }
+
+    const preferredSelection = buildPreferredSelectionInput("newChat");
+    if (
+      selectedThread.agent === preferredSelection.agent
+      && selectedThread.model === preferredSelection.model
+      && selectedThread.modelProviderId === (preferredSelection.modelProviderId ?? null)
+    ) {
+      return;
+    }
+
+    void setThreadAgentSelection(selectedThreadId, {
+      agent: preferredSelection.agent!,
+      model: preferredSelection.model!,
+      modelProviderId: preferredSelection.modelProviderId ?? null,
+    });
+  }, [events, messages, selectedThread, selectedThreadId]);
 
   useEffect(() => {
     if (!selectedThreadId || waitingAssistant?.threadId !== selectedThreadId) {

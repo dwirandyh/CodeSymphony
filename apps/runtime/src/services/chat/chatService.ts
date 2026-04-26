@@ -391,18 +391,6 @@ async function resolveThreadSelection(
 
   const explicitModel = normalizeOptionalModelId(input.model);
   if (explicitModel) {
-    if (agent === "codex" && isBuiltinModelForAgent(agent, explicitModel)) {
-      const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
-      if (codexCliModel) {
-        return {
-          agent,
-          model: codexCliModel,
-          modelProviderId: null,
-          provider: null,
-        };
-      }
-    }
-
     return {
       agent,
       model: explicitModel,
