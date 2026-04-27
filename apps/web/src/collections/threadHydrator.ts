@@ -73,6 +73,28 @@ function cloneSortedIfNeeded<T>(rows: T[], compare: (left: T, right: T) => numbe
   return rows;
 }
 
+function dedupeRowsByKeyPreserveOrder<T>(rows: T[], getKey: (row: T) => string): T[] {
+  if (rows.length < 2) {
+    return rows;
+  }
+
+  const seen = new Set<string>();
+  const uniqueRows: T[] = [];
+  let removedDuplicate = false;
+
+  for (const row of rows) {
+    const key = getKey(row);
+    if (seen.has(key)) {
+      removedDuplicate = true;
+      continue;
+    }
+    seen.add(key);
+    uniqueRows.push(row);
+  }
+
+  return removedDuplicate ? uniqueRows : rows;
+}
+
 function rowsAlignAsPrefix<T>(
   currentRows: T[],
   nextRows: T[],

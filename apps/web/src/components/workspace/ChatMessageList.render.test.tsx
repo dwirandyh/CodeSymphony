@@ -1941,6 +1941,22 @@ describe("ChatMessageList", () => {
     expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
   });
 
+  it("requests older history before the viewport fully reaches the hard top threshold while the user keeps scrolling upward", () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    triggerScroll(1560);
+    triggerScroll(720);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
   it("requests older history when the user wheels upward from a short bottom-anchored thread", () => {
     const onLoadOlderHistory = vi.fn();
     mountChatMessageList({
@@ -1966,7 +1982,7 @@ describe("ChatMessageList", () => {
     });
     setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
 
-    latestScrollStateRef.current.scrollOffset = 640;
+    latestScrollStateRef.current.scrollOffset = 960;
     triggerWheel(-48);
     expect(onLoadOlderHistory).toHaveBeenCalledTimes(0);
 
@@ -2172,6 +2188,7 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Loading older messages");
+    expect(container.querySelector("[data-testid='older-history-loading-row']")).toBeTruthy();
   });
 
   it("does not auto-follow while older history is being prepended", () => {
@@ -2302,6 +2319,45 @@ describe("ChatMessageList", () => {
 
     expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
     expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("does not auto-request older history after restoring a near-top cached thread until a real user gesture occurs", () => {
+    const savedNearTopCache = { key: "thread-a-near-top-cache" };
+    const onLoadOlderHistory = vi.fn();
+    latestScrollStateRef.current.cache = savedNearTopCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(80);
+    triggerScrollEnd();
+    scrollToMock.mockClear();
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedNearTopCache);
+    expect(scrollToMock).toHaveBeenCalledWith(80);
+
+    triggerScroll(80);
+    triggerScrollEnd();
+
+    expect(onLoadOlderHistory).not.toHaveBeenCalled();
+
+    latestScrollStateRef.current.scrollOffset = 80;
+    triggerWheel(-48);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
   });
 
   it("restores cached virtualization state after thread switch even when cleanup loses the live handle cache", () => {
