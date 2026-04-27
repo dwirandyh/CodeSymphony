@@ -288,17 +288,6 @@ function triggerResizeObservers() {
   });
 }
 
-function triggerWheel(deltaY: number) {
-  const wrapper = container.querySelector("[data-testid='chat-scroll']");
-  if (!(wrapper instanceof HTMLDivElement)) {
-    throw new Error("chat-scroll wrapper not found");
-  }
-
-  act(() => {
-    wrapper.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY }));
-  });
-}
-
 function clickFirstSummary() {
   const summary = container.querySelector("summary");
   if (!(summary instanceof HTMLElement)) {
@@ -1882,17 +1871,7 @@ describe("ChatMessageList", () => {
     expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
   });
 
-  it("enables virtualizer shift mode so prepended history keeps the viewport stable", () => {
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
-      hasOlderHistory: true,
-    });
-
-    expect(latestVListPropsRef.current?.shift).toBe(true);
-  });
-
-  it("keeps virtualizer shift mode off until older-history pagination is active", () => {
+  it("keeps virtualizer shift mode off for thread timeline rendering", () => {
     mountChatMessageList({
       threadId: "thread-a",
       items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
@@ -1901,15 +1880,14 @@ describe("ChatMessageList", () => {
     expect(latestVListPropsRef.current?.shift).toBe(false);
   });
 
-  it("keeps head and tail rows mounted and expands overscan while older history is active", () => {
+  it("keeps the newest rows mounted for virtualization stability", () => {
     mountChatMessageList({
       threadId: "thread-a",
       items: Array.from({ length: 14 }, (_, index) => makeMessageItem(`m${index + 1}`, index + 1)),
-      hasOlderHistory: true,
     });
 
     expect(latestVListPropsRef.current?.bufferSize).toBe(720);
-    expect(latestVListPropsRef.current?.keepMounted).toEqual([0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13]);
+    expect(latestVListPropsRef.current?.keepMounted).toEqual([8, 9, 10, 11, 12, 13]);
   });
 
   it("bottom-aligns short threads so the newest message remains the first visible content", () => {
@@ -1923,299 +1901,6 @@ describe("ChatMessageList", () => {
       flexDirection: "column",
       justifyContent: "flex-end",
     });
-  });
-
-  it("requests older history when the user scrolls back near the top", () => {
-    const onLoadOlderHistory = vi.fn();
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-
-    triggerScroll(1560);
-    triggerScroll(80);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-  });
-
-  it("requests older history before the viewport fully reaches the hard top threshold while the user keeps scrolling upward", () => {
-    const onLoadOlderHistory = vi.fn();
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-
-    triggerScroll(1560);
-    triggerScroll(720);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-  });
-
-  it("requests older history when the user wheels upward from a short bottom-anchored thread", () => {
-    const onLoadOlderHistory = vi.fn();
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 400, clientHeight: 900 });
-
-    triggerWheel(-48);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not ignore the first real upward scroll to the top after a fresh refresh-style mount", () => {
-    const onLoadOlderHistory = vi.fn();
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-
-    latestScrollStateRef.current.scrollOffset = 960;
-    triggerWheel(-48);
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(0);
-
-    triggerScroll(0);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-  });
-
-  it("re-arms near-top pagination immediately when the older-history handler skips starting a request", async () => {
-    const onLoadOlderHistory = vi.fn()
-      .mockResolvedValueOnce(false)
-      .mockResolvedValueOnce(undefined);
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-
-    triggerScroll(1560);
-    triggerScroll(80);
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    triggerWheel(-48);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not immediately request another older page until the user scrolls away from the top threshold", async () => {
-    const onLoadOlderHistory = vi.fn();
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-
-    triggerScroll(1560);
-    triggerScroll(80);
-    triggerScroll(100);
-    triggerScrollEnd();
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    triggerScroll(960);
-    triggerScroll(80);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
-  });
-
-  it("re-arms near-top pagination after a page load completes without requiring a downward reset scroll", () => {
-    const onLoadOlderHistory = vi.fn();
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-
-    triggerScroll(1560);
-    triggerScroll(80);
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [
-        makeMessageItem("m0", 0),
-        makeMessageItem("m1", 1),
-        makeMessageItem("m2", 2),
-        makeMessageItem("m3", 3),
-      ],
-      hasOlderHistory: true,
-      loadingOlderHistory: true,
-      onLoadOlderHistory,
-    });
-
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [
-        makeMessageItem("m0", 0),
-        makeMessageItem("m1", 1),
-        makeMessageItem("m2", 2),
-        makeMessageItem("m3", 3),
-      ],
-      hasOlderHistory: true,
-      loadingOlderHistory: false,
-      onLoadOlderHistory,
-    });
-
-    triggerScroll(72);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
-  });
-
-  it("re-arms the next older-page request when prepend settles between the top threshold and rearm threshold", () => {
-    const onLoadOlderHistory = vi.fn();
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-
-    triggerScroll(1560);
-    triggerScroll(80);
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-
-    latestScrollStateRef.current.scrollOffset = 640;
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [
-        makeMessageItem("m0", 0),
-        makeMessageItem("m1", 1),
-        makeMessageItem("m2", 2),
-        makeMessageItem("m3", 3),
-      ],
-      hasOlderHistory: true,
-      loadingOlderHistory: true,
-      onLoadOlderHistory,
-    });
-
-    latestScrollStateRef.current.scrollOffset = 640;
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [
-        makeMessageItem("m0", 0),
-        makeMessageItem("m1", 1),
-        makeMessageItem("m2", 2),
-        makeMessageItem("m3", 3),
-      ],
-      hasOlderHistory: true,
-      loadingOlderHistory: false,
-      onLoadOlderHistory,
-    });
-
-    triggerScroll(480);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
-  });
-
-  it("retries older-history pagination immediately after prepend when the viewport remains pinned near the top", () => {
-    const onLoadOlderHistory = vi.fn();
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-
-    triggerScroll(1560);
-    triggerScroll(80);
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
-
-    latestScrollStateRef.current.scrollOffset = 72;
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [
-        makeMessageItem("m0", 0),
-        makeMessageItem("m1", 1),
-        makeMessageItem("m2", 2),
-        makeMessageItem("m3", 3),
-      ],
-      hasOlderHistory: true,
-      loadingOlderHistory: true,
-      onLoadOlderHistory,
-    });
-
-    latestScrollStateRef.current.scrollOffset = 72;
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [
-        makeMessageItem("m-1", -1),
-        makeMessageItem("m0", 0),
-        makeMessageItem("m1", 1),
-        makeMessageItem("m2", 2),
-        makeMessageItem("m3", 3),
-      ],
-      hasOlderHistory: true,
-      loadingOlderHistory: false,
-      onLoadOlderHistory,
-    });
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
-  });
-
-  it("shows a loading badge while older history pagination is in flight", () => {
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
-      loadingOlderHistory: true,
-    });
-
-    expect(container.textContent).toContain("Loading older messages");
-    expect(container.querySelector("[data-testid='older-history-loading-row']")).toBeTruthy();
-  });
-
-  it("does not auto-follow while older history is being prepended", () => {
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-    triggerScroll(1560);
-    triggerScroll(80);
-    scrollToIndexMock.mockClear();
-
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [
-        makeMessageItem("m0", 0),
-        makeMessageItem("m1", 1),
-        makeMessageItem("m2", 2),
-        makeMessageItem("m3", 3),
-      ],
-      hasOlderHistory: true,
-      loadingOlderHistory: true,
-    });
-    triggerScrollEnd();
-
-    expect(scrollToIndexMock).not.toHaveBeenCalled();
   });
 
   it("auto-follows to the footer when footer content is present", () => {
@@ -2319,45 +2004,6 @@ describe("ChatMessageList", () => {
 
     expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
     expect(scrollToMock).toHaveBeenCalledWith(1000);
-  });
-
-  it("does not auto-request older history after restoring a near-top cached thread until a real user gesture occurs", () => {
-    const savedNearTopCache = { key: "thread-a-near-top-cache" };
-    const onLoadOlderHistory = vi.fn();
-    latestScrollStateRef.current.cache = savedNearTopCache;
-
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-    });
-    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
-    triggerScroll(80);
-    triggerScrollEnd();
-    scrollToMock.mockClear();
-
-    mountChatMessageList({
-      threadId: "thread-b",
-      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
-    });
-    mountChatMessageList({
-      threadId: "thread-a",
-      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
-      hasOlderHistory: true,
-      onLoadOlderHistory,
-    });
-
-    expect(latestVListPropsRef.current?.cache).toBe(savedNearTopCache);
-    expect(scrollToMock).toHaveBeenCalledWith(80);
-
-    triggerScroll(80);
-    triggerScrollEnd();
-
-    expect(onLoadOlderHistory).not.toHaveBeenCalled();
-
-    latestScrollStateRef.current.scrollOffset = 80;
-    triggerWheel(-48);
-
-    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
   });
 
   it("restores cached virtualization state after thread switch even when cleanup loses the live handle cache", () => {

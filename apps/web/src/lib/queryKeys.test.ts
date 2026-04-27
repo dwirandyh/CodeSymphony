@@ -62,10 +62,6 @@ describe("queryKeys", () => {
     expect(queryKeys.threads.timelineSnapshot("t1")).toEqual(["threads", "t1", "timelineSnapshot"]);
   });
 
-  it("threads.timelineSnapshot includes mode for full hydration queries", () => {
-    expect(queryKeys.threads.timelineSnapshot("t1", "full")).toEqual(["threads", "t1", "timelineSnapshot", "full"]);
-  });
-
   it("threads.statusSnapshot includes threadId", () => {
     expect(queryKeys.threads.statusSnapshot("t1")).toEqual(["threads", "t1", "statusSnapshot"]);
   });

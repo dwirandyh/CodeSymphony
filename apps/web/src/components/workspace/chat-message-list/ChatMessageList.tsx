@@ -14,11 +14,6 @@ import { TimelineItem, ThinkingPlaceholder } from "./TimelineItem";
 
 const AT_BOTTOM_THRESHOLD = 64;
 const AUTO_FOLLOW_SETTLE_BOTTOM_THRESHOLD = 120;
-const MIN_LOAD_OLDER_HISTORY_THRESHOLD = 240;
-const MAX_LOAD_OLDER_HISTORY_THRESHOLD = 720;
-const LOAD_OLDER_HISTORY_THRESHOLD_VIEWPORT_RATIO = 1.25;
-const LOAD_OLDER_HISTORY_EARLY_TRIGGER_OFFSET = 240;
-const LOAD_OLDER_HISTORY_REARM_OFFSET = 200;
 const VLIST_BUFFER_SIZE = 720;
 const VLIST_EDGE_KEEP_MOUNT_COUNT = 6;
 const THREAD_PAGINATION_SCROLL_SAMPLE_PX = 40;
@@ -58,7 +53,6 @@ function buildThreadCacheSignature(params: {
   displayItemCount: number;
   firstKey: string | null;
   lastKey: string | null;
-  showOlderHistoryLoadingRow: boolean;
   showThinkingPlaceholder: boolean;
   shouldRenderFooter: boolean;
 }) {
@@ -67,7 +61,7 @@ function buildThreadCacheSignature(params: {
     params.displayItemCount,
     params.firstKey ?? "none",
     params.lastKey ?? "none",
-    params.showOlderHistoryLoadingRow ? "older-loading" : "steady-head",
+    "steady-head",
     params.showThinkingPlaceholder ? "thinking" : "steady",
     params.shouldRenderFooter ? "footer" : "no-footer",
   ].join(":");
@@ -141,45 +135,6 @@ function clampScrollOffset(offset: number, scrollSize: number, viewportSize: num
   return Math.max(0, Math.min(offset, Math.max(0, scrollSize - viewportSize)));
 }
 
-function clampLoadOlderHistoryThreshold(viewportSize: number | null | undefined) {
-  if (typeof viewportSize !== "number" || !Number.isFinite(viewportSize) || viewportSize <= 0) {
-    return MIN_LOAD_OLDER_HISTORY_THRESHOLD;
-  }
-
-  return Math.max(
-    MIN_LOAD_OLDER_HISTORY_THRESHOLD,
-    Math.min(
-      MAX_LOAD_OLDER_HISTORY_THRESHOLD,
-      Math.round(viewportSize * LOAD_OLDER_HISTORY_THRESHOLD_VIEWPORT_RATIO),
-    ),
-  );
-}
-
-function getLoadOlderHistoryThreshold(
-  handle: VListHandle | null,
-  container: HTMLDivElement | null,
-  offsetOverride?: number,
-) {
-  const { viewportSize } = getEffectiveScrollSnapshot(handle, container, offsetOverride);
-  return clampLoadOlderHistoryThreshold(viewportSize);
-}
-
-function getLoadOlderHistoryTriggerThreshold(
-  loadOlderHistoryThreshold: number,
-  movingTowardTop: boolean,
-) {
-  return movingTowardTop
-    ? loadOlderHistoryThreshold + LOAD_OLDER_HISTORY_EARLY_TRIGGER_OFFSET
-    : loadOlderHistoryThreshold;
-}
-
-function getLoadOlderHistoryRearmThreshold(loadOlderHistoryThreshold: number) {
-  return loadOlderHistoryThreshold + Math.max(
-    LOAD_OLDER_HISTORY_REARM_OFFSET,
-    LOAD_OLDER_HISTORY_EARLY_TRIGGER_OFFSET,
-  );
-}
-
 function LoadingThreadSkeleton() {
   return (
     <div
@@ -201,24 +156,6 @@ function LoadingThreadSkeleton() {
         </div>
       ))}
     </div>
-  );
-}
-
-function OlderHistoryLoadingRow() {
-  return (
-    <article className="flex w-full justify-start" data-testid="older-history-loading-row">
-      <div className="w-full rounded-2xl border border-border/50 bg-background/65 px-3 py-3 shadow-sm backdrop-blur-sm">
-        <div className="inline-flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Loading older messages
-        </div>
-        <div className="mt-3 space-y-2">
-          <div className="h-3 w-3/5 animate-pulse rounded-full bg-muted/55" />
-          <div className="h-3 w-full animate-pulse rounded-full bg-muted/45" />
-          <div className="h-3 w-4/5 animate-pulse rounded-full bg-muted/35" />
-        </div>
-      </div>
-    </article>
   );
 }
 
@@ -300,9 +237,6 @@ export const ChatMessageList = memo(function ChatMessageList({
   items,
   emptyState = "existing-thread-empty",
   showThinkingPlaceholder = false,
-  hasOlderHistory = false,
-  loadingOlderHistory = false,
-  onLoadOlderHistory,
   onOpenReadFile,
   worktreePath = null,
   footer = null,
@@ -318,12 +252,6 @@ export const ChatMessageList = memo(function ChatMessageList({
   const settlingProgrammaticBottomObservedSampleRef = useRef(false);
   const ignoreInitialTopScrollRef = useRef(false);
   const initialPositiveScrollObservedRef = useRef(false);
-  const loadingOlderHistoryRef = useRef(false);
-  const previousLoadingOlderHistoryRef = useRef(false);
-  const olderHistoryRequestInFlightRef = useRef(false);
-  const retryLoadOlderAfterCompletionRef = useRef(false);
-  const topThresholdArmedRef = useRef(true);
-  const suppressAutoLoadOlderAfterRestoreRef = useRef(false);
   const lastObservedScrollOffsetRef = useRef<number | null>(null);
   const lastAppliedRestorableScrollSignatureRef = useRef<string | null>(null);
   const lastScrollSampleSignatureRef = useRef<string | null>(null);
@@ -364,15 +292,11 @@ export const ChatMessageList = memo(function ChatMessageList({
 
   const stickyBottomRef = useRef(true);
   const shouldRenderFooter = footer != null && items.length > 0;
-  const showOlderHistoryLoadingRow = loadingOlderHistory && items.length > 0;
-  const leadingDisplayItemCount = showOlderHistoryLoadingRow ? 1 : 0;
   const displayItemCount =
-    leadingDisplayItemCount
-    + items.length
+    items.length
     + (showThinkingPlaceholder ? 1 : 0)
     + (shouldRenderFooter ? 1 : 0);
   const useBottomAnchoredShortThreadLayout = displayItemCount <= 12;
-  const shouldEnableVirtualShift = hasOlderHistory || loadingOlderHistory;
   const keepMountedIndexes = useMemo(() => {
     if (displayItemCount === 0) {
       return undefined;
@@ -384,15 +308,8 @@ export const ChatMessageList = memo(function ChatMessageList({
       indexes.add(index);
     }
 
-    if (hasOlderHistory || loadingOlderHistory) {
-      const headCount = Math.min(VLIST_EDGE_KEEP_MOUNT_COUNT, displayItemCount);
-      for (let index = 0; index < headCount; index += 1) {
-        indexes.add(index);
-      }
-    }
-
     return Array.from(indexes).sort((left, right) => left - right);
-  }, [displayItemCount, hasOlderHistory, loadingOlderHistory]);
+  }, [displayItemCount]);
   const timelineEdges = useMemo(() => summarizeTimelineEdges(items), [items]);
   const threadCacheSignature = useMemo(() => buildThreadCacheSignature({
     threadId,
@@ -401,10 +318,8 @@ export const ChatMessageList = memo(function ChatMessageList({
     lastKey: timelineEdges.lastKey,
     showThinkingPlaceholder,
     shouldRenderFooter,
-    showOlderHistoryLoadingRow,
   }), [
     displayItemCount,
-    showOlderHistoryLoadingRow,
     shouldRenderFooter,
     showThinkingPlaceholder,
     threadId,
@@ -440,7 +355,6 @@ export const ChatMessageList = memo(function ChatMessageList({
   useLayoutEffect(() => {
     settlingProgrammaticBottomFollowRef.current = false;
     settlingProgrammaticBottomObservedSampleRef.current = false;
-    suppressAutoLoadOlderAfterRestoreRef.current = false;
   }, [threadId]);
 
   useEffect(() => {
@@ -448,9 +362,6 @@ export const ChatMessageList = memo(function ChatMessageList({
     skipNextAutoFollowRef.current = restorableCacheEntry != null;
     ignoreInitialTopScrollRef.current = restorableCacheEntry == null;
     initialPositiveScrollObservedRef.current = false;
-    olderHistoryRequestInFlightRef.current = false;
-    retryLoadOlderAfterCompletionRef.current = false;
-    topThresholdArmedRef.current = true;
     lastObservedScrollOffsetRef.current = null;
     lastAppliedRestorableScrollSignatureRef.current = null;
     if (pendingAutoFollowRafRef.current != null) {
@@ -484,59 +395,16 @@ export const ChatMessageList = memo(function ChatMessageList({
       pendingResizeAutoFollowRafRef.current = null;
     }
 
-    debugLog("thread.pagination.ui", "thread.reset", {
+    debugLog("thread.timeline.ui", "thread.reset", {
       threadId,
       displayItemCount,
       timelineItemCount: items.length,
       showThinkingPlaceholder,
-      hasOlderHistory,
-      loadingOlderHistory,
-      showOlderHistoryLoadingRow,
       restorableCacheAvailable: restorableCacheEntry != null,
       restorableScrollOffset: roundScrollMetric(restorableCacheEntry?.scrollOffset),
       ...timelineEdges,
     });
   }, [threadId]);
-
-  useLayoutEffect(() => {
-    const wasLoadingOlderHistory = previousLoadingOlderHistoryRef.current;
-    previousLoadingOlderHistoryRef.current = loadingOlderHistory;
-    loadingOlderHistoryRef.current = loadingOlderHistory;
-    if (!loadingOlderHistory) {
-      olderHistoryRequestInFlightRef.current = false;
-    }
-
-    const handle = vlistRef.current;
-    const { offset: currentOffset } = getEffectiveScrollSnapshot(handle ?? null, containerRef.current);
-    const loadOlderHistoryThreshold = getLoadOlderHistoryThreshold(handle ?? null, containerRef.current, currentOffset);
-    const loadOlderHistoryTriggerThreshold = getLoadOlderHistoryTriggerThreshold(loadOlderHistoryThreshold, true);
-    if (wasLoadingOlderHistory && !loadingOlderHistory) {
-      const shouldRetryImmediately =
-        hasOlderHistory
-        && currentOffset <= loadOlderHistoryTriggerThreshold;
-      topThresholdArmedRef.current = hasOlderHistory;
-      retryLoadOlderAfterCompletionRef.current = shouldRetryImmediately;
-      debugLog("thread.pagination.ui", "loadOlder.rearmed.afterCompletion", {
-        threadId,
-        hasOlderHistory,
-        loadingOlderHistory,
-        retryScheduled: shouldRetryImmediately,
-        rearmedForNextPass: hasOlderHistory && !shouldRetryImmediately,
-        loadOlderHistoryThreshold,
-        loadOlderHistoryTriggerThreshold,
-        ...buildScrollMetrics(handle ?? null, currentOffset),
-      });
-    } else if (!loadingOlderHistory) {
-      retryLoadOlderAfterCompletionRef.current = false;
-    }
-
-    debugLog("thread.pagination.ui", "loadingOlderHistory.changed", {
-      threadId,
-      loadingOlderHistory,
-      hasOlderHistory,
-      inFlightRequest: olderHistoryRequestInFlightRef.current,
-    });
-  }, [hasOlderHistory, loadingOlderHistory, threadId]);
 
   useEffect(() => {
     const signature = [
@@ -544,11 +412,9 @@ export const ChatMessageList = memo(function ChatMessageList({
       displayItemCount,
       timelineEdges.firstKey ?? "none",
       timelineEdges.lastKey ?? "none",
-      showOlderHistoryLoadingRow ? "older-loading" : "steady-head",
+      "steady-head",
       showThinkingPlaceholder ? "thinking" : "steady",
       shouldRenderFooter ? "footer" : "no-footer",
-      hasOlderHistory ? "older" : "latest",
-      loadingOlderHistory ? "loading" : "idle",
     ].join(":");
 
     if (lastLayoutSignatureRef.current === signature) {
@@ -556,23 +422,17 @@ export const ChatMessageList = memo(function ChatMessageList({
     }
 
     lastLayoutSignatureRef.current = signature;
-    debugLog("thread.pagination.ui", "list.layout.changed", {
+    debugLog("thread.timeline.ui", "list.layout.changed", {
       threadId,
       displayItemCount,
       timelineItemCount: items.length,
       showThinkingPlaceholder,
-      hasOlderHistory,
-      loadingOlderHistory,
-      showOlderHistoryLoadingRow,
       ...timelineEdges,
     });
   }, [
     displayItemCount,
-    hasOlderHistory,
     items.length,
-    loadingOlderHistory,
     shouldRenderFooter,
-    showOlderHistoryLoadingRow,
     showThinkingPlaceholder,
     threadId,
     timelineEdges,
@@ -637,7 +497,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       viewportSize: effectiveViewportSize,
     });
 
-    debugLog("thread.pagination.ui", "cache.saved", {
+    debugLog("thread.timeline.ui", "cache.saved", {
       threadId,
       reason,
       itemCount: displayItemCount,
@@ -687,7 +547,7 @@ export const ChatMessageList = memo(function ChatMessageList({
 
       if (stickyBottomRef.current) {
         cacheByThreadIdRef.current.delete(threadId);
-        debugLog("thread.pagination.ui", "cache.discarded", {
+        debugLog("thread.timeline.ui", "cache.discarded", {
           threadId,
           reason: "sticky-bottom",
           itemCount: displayItemCount,
@@ -698,7 +558,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       }
 
       if (shouldPreserveExistingCache) {
-        debugLog("thread.pagination.ui", "cache.preservedExisting", {
+        debugLog("thread.timeline.ui", "cache.preservedExisting", {
           threadId,
           reason:
             !currentCache
@@ -716,7 +576,7 @@ export const ChatMessageList = memo(function ChatMessageList({
 
       if (hasInvalidCleanupViewport) {
         cacheByThreadIdRef.current.delete(threadId);
-        debugLog("thread.pagination.ui", "cache.discarded", {
+        debugLog("thread.timeline.ui", "cache.discarded", {
           threadId,
           reason: "invalid-viewport",
           itemCount: displayItemCount,
@@ -727,7 +587,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       }
 
       cacheByThreadIdRef.current.delete(threadId);
-      debugLog("thread.pagination.ui", "cache.discarded", {
+      debugLog("thread.timeline.ui", "cache.discarded", {
         threadId,
         reason: "missing-cache",
         itemCount: displayItemCount,
@@ -738,11 +598,7 @@ export const ChatMessageList = memo(function ChatMessageList({
   }, [displayItemCount, persistRestorableCache, threadCacheSignature, threadId]);
 
   const displayItems = useMemo(() => {
-    const result: Array<ChatTimelineItem | "older-history-loading" | "thinking-placeholder" | "footer"> = [];
-    if (showOlderHistoryLoadingRow) {
-      result.push("older-history-loading");
-    }
-    result.push(...items);
+    const result: Array<ChatTimelineItem | "thinking-placeholder" | "footer"> = [...items];
     if (showThinkingPlaceholder) {
       result.push("thinking-placeholder");
     }
@@ -750,7 +606,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       result.push("footer");
     }
     return result;
-  }, [items, shouldRenderFooter, showOlderHistoryLoadingRow, showThinkingPlaceholder]);
+  }, [items, shouldRenderFooter, showThinkingPlaceholder]);
 
   const getAutoFollowTargetIndex = useCallback((mode: "preserve-user-anchor" | "bottom" = "preserve-user-anchor") => {
     if (displayItems.length === 0) {
@@ -771,11 +627,11 @@ export const ChatMessageList = memo(function ChatMessageList({
       && lastTimelineItem?.kind === "message"
       && lastTimelineItem.message.role === "user"
     ) {
-      return leadingDisplayItemCount + items.length - 1;
+      return items.length - 1;
     }
 
     return displayItems.length - 1;
-  }, [displayItems.length, items, leadingDisplayItemCount, shouldRenderFooter, showThinkingPlaceholder]);
+  }, [displayItems.length, items, shouldRenderFooter, showThinkingPlaceholder]);
 
   const scrollToBottom = useCallback((mode: "preserve-user-anchor" | "bottom" = "preserve-user-anchor") => {
     const attemptScrollToBottom = (attempt: number) => {
@@ -787,7 +643,7 @@ export const ChatMessageList = memo(function ChatMessageList({
         viewportSize: effectiveViewportSize,
       } = getEffectiveScrollSnapshot(handle ?? null, containerRef.current);
       if (!handle || targetIndex == null) {
-        debugLog("thread.pagination.ui", "scrollToBottom.skipped", {
+        debugLog("thread.timeline.ui", "scrollToBottom.skipped", {
           threadId,
           mode,
           attempt,
@@ -820,7 +676,7 @@ export const ChatMessageList = memo(function ChatMessageList({
           pendingAutoFollowRafRef.current = null;
           attemptScrollToBottom(attempt + 1);
         });
-        debugLog("thread.pagination.ui", "scrollToBottom.deferredUntilMeasured", {
+        debugLog("thread.timeline.ui", "scrollToBottom.deferredUntilMeasured", {
           threadId,
           mode,
           attempt,
@@ -838,7 +694,7 @@ export const ChatMessageList = memo(function ChatMessageList({
           viewport.scrollTop = effectiveScrollSize;
         }
         handle.scrollToIndex(targetIndex, { align: "end" });
-        debugLog("thread.pagination.ui", "scrollToBottom.executed", {
+        debugLog("thread.timeline.ui", "scrollToBottom.executed", {
           threadId,
           mode,
           targetIndex,
@@ -865,20 +721,6 @@ export const ChatMessageList = memo(function ChatMessageList({
     return distanceFromBottom <= AT_BOTTOM_THRESHOLD;
   }, []);
 
-  const releaseRestoreNearTopPaginationSuppression = useCallback((reason: "pointer" | "wheel") => {
-    if (!suppressAutoLoadOlderAfterRestoreRef.current) {
-      return false;
-    }
-
-    suppressAutoLoadOlderAfterRestoreRef.current = false;
-    debugLog("thread.pagination.ui", "loadOlder.restoreSuppression.released", {
-      threadId,
-      reason,
-      offset: roundScrollMetric(lastObservedScrollOffsetRef.current),
-    });
-    return true;
-  }, [threadId]);
-
   const applyRestorableScrollOffset = useCallback((
     source: "layout-effect" | "resize-observer",
     attempt: number | null = null,
@@ -899,7 +741,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       viewportSize: effectiveViewportSize,
     } = getEffectiveScrollSnapshot(handle ?? null, containerRef.current);
     if (!handle) {
-      debugLog("thread.pagination.ui", "scrollRestore.deferredMissingHandle", {
+      debugLog("thread.timeline.ui", "scrollRestore.deferredMissingHandle", {
         threadId,
         source,
         attempt,
@@ -911,7 +753,7 @@ export const ChatMessageList = memo(function ChatMessageList({
     }
 
     if (effectiveViewportSize <= 0 || effectiveScrollSize <= 0) {
-      debugLog("thread.pagination.ui", "scrollRestore.deferredUntilMeasured", {
+      debugLog("thread.timeline.ui", "scrollRestore.deferredUntilMeasured", {
         threadId,
         source,
         attempt,
@@ -934,7 +776,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       && savedMaxScrollOffset + 1 >= restorableScrollOffset;
 
     if (needsMoreMeasuredRange) {
-      debugLog("thread.pagination.ui", "scrollRestore.deferredForRange", {
+      debugLog("thread.timeline.ui", "scrollRestore.deferredForRange", {
         threadId,
         source,
         attempt,
@@ -951,30 +793,23 @@ export const ChatMessageList = memo(function ChatMessageList({
 
     const clampedOffset = clampScrollOffset(restorableScrollOffset, effectiveScrollSize, effectiveViewportSize);
     const nextStickyBottom = isAtBottom(clampedOffset);
-    const loadOlderHistoryThreshold = clampLoadOlderHistoryThreshold(effectiveViewportSize);
-    const loadOlderHistoryRearmThreshold = getLoadOlderHistoryRearmThreshold(loadOlderHistoryThreshold);
-    const shouldSuppressAutoLoadOlderAfterRestore =
-      hasOlderHistory
-      && clampedOffset <= loadOlderHistoryRearmThreshold;
     const commitRestore = () => {
       lastAppliedRestorableScrollSignatureRef.current = restorableScrollSignature;
       lastObservedScrollOffsetRef.current = clampedOffset;
       settlingProgrammaticBottomFollowRef.current = false;
       settlingProgrammaticBottomObservedSampleRef.current = false;
       stickyBottomRef.current = nextStickyBottom;
-      suppressAutoLoadOlderAfterRestoreRef.current = shouldSuppressAutoLoadOlderAfterRestore;
     };
 
     if (Math.abs(handle.scrollOffset - clampedOffset) <= 1) {
       commitRestore();
-      debugLog("thread.pagination.ui", "scrollRestore.skippedAlreadyAligned", {
+      debugLog("thread.timeline.ui", "scrollRestore.skippedAlreadyAligned", {
         threadId,
         source,
         attempt,
         displayItemCount,
         savedScrollOffset: roundScrollMetric(clampedOffset),
         stickyBottom: stickyBottomRef.current,
-        suppressAutoLoadOlderAfterRestore: shouldSuppressAutoLoadOlderAfterRestore,
         ...buildScrollMetrics(handle, handle.scrollOffset),
       });
       return "restored";
@@ -986,19 +821,18 @@ export const ChatMessageList = memo(function ChatMessageList({
       }
       handle.scrollTo(clampedOffset);
       commitRestore();
-      debugLog("thread.pagination.ui", "scrollRestore.executed", {
+      debugLog("thread.timeline.ui", "scrollRestore.executed", {
         threadId,
         source,
         attempt,
         displayItemCount,
         savedScrollOffset: roundScrollMetric(clampedOffset),
         stickyBottom: stickyBottomRef.current,
-        suppressAutoLoadOlderAfterRestore: shouldSuppressAutoLoadOlderAfterRestore,
         ...buildScrollMetrics(handle, handle.scrollOffset),
       });
       return "restored";
     } catch {
-      debugLog("thread.pagination.ui", "scrollRestore.failed", {
+      debugLog("thread.timeline.ui", "scrollRestore.failed", {
         threadId,
         source,
         attempt,
@@ -1012,7 +846,6 @@ export const ChatMessageList = memo(function ChatMessageList({
     displayItemCount,
     displayItems.length,
     isAtBottom,
-    hasOlderHistory,
     restorableCacheEntry,
     restorableScrollOffset,
     restorableScrollSignature,
@@ -1056,7 +889,6 @@ export const ChatMessageList = memo(function ChatMessageList({
       if (
         !stickyBottomRef.current
         || skipNextAutoFollowRef.current
-        || loadingOlderHistoryRef.current
       ) {
         return;
       }
@@ -1071,7 +903,6 @@ export const ChatMessageList = memo(function ChatMessageList({
         if (
           !currentHandle
           || !stickyBottomRef.current
-          || loadingOlderHistoryRef.current
         ) {
           return;
         }
@@ -1082,7 +913,7 @@ export const ChatMessageList = memo(function ChatMessageList({
           return;
         }
 
-        debugLog("thread.pagination.ui", "scrollToBottom.realignAfterResize", {
+        debugLog("thread.timeline.ui", "scrollToBottom.realignAfterResize", {
           threadId,
           displayItemCount,
           ...buildScrollMetrics(currentHandle, currentHandle.scrollOffset),
@@ -1119,7 +950,7 @@ export const ChatMessageList = memo(function ChatMessageList({
 
     const logDomState = (phase: "layout" | "raf") => {
       const handle = vlistRef.current;
-      debugLog("thread.pagination.ui", "vlist.domState", {
+      debugLog("thread.timeline.ui", "vlist.domState", {
         threadId,
         phase,
         displayItemCount,
@@ -1141,12 +972,12 @@ export const ChatMessageList = memo(function ChatMessageList({
   }, [displayItemCount, displayItems.length, threadId]);
 
   useLayoutEffect(() => {
-    if (!stickyBottomRef.current || displayItems.length === 0 || loadingOlderHistoryRef.current) {
+    if (!stickyBottomRef.current || displayItems.length === 0) {
       return;
     }
 
     if (skipNextAutoFollowRef.current) {
-      debugLog("thread.pagination.ui", "autoFollow.skippedForCacheRestore", {
+      debugLog("thread.timeline.ui", "autoFollow.skippedForCacheRestore", {
         threadId,
         displayItemCount: displayItems.length,
       });
@@ -1156,106 +987,6 @@ export const ChatMessageList = memo(function ChatMessageList({
 
     scrollToBottom("preserve-user-anchor");
   }, [displayItems, scrollToBottom]);
-
-  const requestOlderHistory = useCallback(() => {
-    const skipReason =
-      !hasOlderHistory
-        ? "no-older-history"
-        : loadingOlderHistoryRef.current
-          ? "already-loading"
-          : !onLoadOlderHistory
-            ? "missing-handler"
-            : olderHistoryRequestInFlightRef.current
-              ? "request-in-flight"
-              : null;
-
-    if (skipReason) {
-      debugLog("thread.pagination.ui", "loadOlder.request.skipped", {
-        threadId,
-        reason: skipReason,
-        hasOlderHistory,
-        loadingOlderHistory: loadingOlderHistoryRef.current,
-        inFlightRequest: olderHistoryRequestInFlightRef.current,
-      });
-      return;
-    }
-
-    const handle = vlistRef.current;
-    const loadOlderHistory = onLoadOlderHistory;
-    const currentOffset = handle?.scrollOffset ?? 0;
-    const loadOlderHistoryThreshold = getLoadOlderHistoryThreshold(handle ?? null, containerRef.current, currentOffset);
-    const loadOlderHistoryTriggerThreshold = getLoadOlderHistoryTriggerThreshold(loadOlderHistoryThreshold, true);
-    olderHistoryRequestInFlightRef.current = true;
-    debugLog("thread.pagination.ui", "loadOlder.request.started", {
-      threadId,
-      displayItemCount,
-      loadOlderHistoryThreshold,
-      loadOlderHistoryTriggerThreshold,
-      ...buildScrollMetrics(handle ?? null, currentOffset),
-      ...timelineEdges,
-    });
-    void Promise.resolve(loadOlderHistory?.())
-      .then((started) => {
-        if (started === false) {
-          olderHistoryRequestInFlightRef.current = false;
-          topThresholdArmedRef.current = true;
-          retryLoadOlderAfterCompletionRef.current = currentOffset <= loadOlderHistoryTriggerThreshold;
-          debugLog("thread.pagination.ui", "loadOlder.request.rearmedAfterSkip", {
-            threadId,
-            displayItemCount,
-            loadOlderHistoryThreshold,
-            loadOlderHistoryTriggerThreshold,
-            retryScheduled: retryLoadOlderAfterCompletionRef.current,
-            ...buildScrollMetrics(handle ?? null, currentOffset),
-          });
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!loadingOlderHistoryRef.current) {
-          olderHistoryRequestInFlightRef.current = false;
-        }
-
-        const currentHandle = vlistRef.current;
-        debugLog("thread.pagination.ui", "loadOlder.request.completed", {
-          threadId,
-          displayItemCount,
-          loadingOlderHistory: loadingOlderHistoryRef.current,
-          inFlightRequest: olderHistoryRequestInFlightRef.current,
-          ...buildScrollMetrics(currentHandle ?? null, currentHandle?.scrollOffset ?? 0),
-        });
-      });
-  }, [displayItemCount, hasOlderHistory, onLoadOlderHistory, threadId, timelineEdges]);
-
-  useLayoutEffect(() => {
-    if (
-      !retryLoadOlderAfterCompletionRef.current
-      || loadingOlderHistory
-      || !hasOlderHistory
-      || !initialPositiveScrollObservedRef.current
-    ) {
-      return;
-    }
-
-    const handle = vlistRef.current;
-    const { offset: currentOffset } = getEffectiveScrollSnapshot(handle ?? null, containerRef.current);
-    const loadOlderHistoryThreshold = getLoadOlderHistoryThreshold(handle ?? null, containerRef.current, currentOffset);
-    const loadOlderHistoryTriggerThreshold = getLoadOlderHistoryTriggerThreshold(loadOlderHistoryThreshold, true);
-    retryLoadOlderAfterCompletionRef.current = false;
-    if (currentOffset > loadOlderHistoryTriggerThreshold) {
-      return;
-    }
-
-    topThresholdArmedRef.current = false;
-    debugLog("thread.pagination.ui", "loadOlder.request.retriedAfterCompletion", {
-      threadId,
-      displayItemCount,
-      loadOlderHistoryThreshold,
-      loadOlderHistoryTriggerThreshold,
-      ...buildScrollMetrics(handle ?? null, currentOffset),
-    });
-    requestOlderHistory();
-  }, [displayItemCount, hasOlderHistory, loadingOlderHistory, requestOlderHistory, threadId]);
 
   useLayoutEffect(() => {
     if (restorableScrollSignature == null || displayItems.length === 0) {
@@ -1276,7 +1007,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       }
 
       if (restoreResult === "deferred") {
-        debugLog("thread.pagination.ui", "scrollRestore.waitingForResize", {
+        debugLog("thread.timeline.ui", "scrollRestore.waitingForResize", {
           threadId,
           attempt,
           savedScrollOffset: roundScrollMetric(restorableScrollOffset),
@@ -1315,7 +1046,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       && !initialPositiveScrollObservedRef.current
       && offset <= 0
     ) {
-      debugLog("thread.pagination.ui", "scroll.ignored.initialTop", {
+      debugLog("thread.timeline.ui", "scroll.ignored.initialTop", {
         threadId,
         offset: roundScrollMetric(offset),
         initialPositiveScrollObserved: initialPositiveScrollObservedRef.current,
@@ -1328,14 +1059,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       scrollSize: effectiveScrollSize,
       viewportSize: effectiveViewportSize,
     } = getEffectiveScrollSnapshot(handle ?? null, containerRef.current, offset);
-    const loadOlderHistoryThreshold = clampLoadOlderHistoryThreshold(effectiveViewportSize);
     const previousOffset = lastObservedScrollOffsetRef.current;
-    const movingTowardTop = previousOffset == null || offset < previousOffset;
-    const loadOlderHistoryTriggerThreshold = getLoadOlderHistoryTriggerThreshold(
-      loadOlderHistoryThreshold,
-      movingTowardTop,
-    );
-    const loadOlderHistoryRearmThreshold = getLoadOlderHistoryRearmThreshold(loadOlderHistoryThreshold);
     const distanceFromBottom = effectiveScrollSize - effectiveViewportSize - offset;
     const isFirstSettlingSample =
       settlingProgrammaticBottomFollowRef.current
@@ -1359,64 +1083,34 @@ export const ChatMessageList = memo(function ChatMessageList({
       cancelAnimationFrame(pendingAutoFollowRafRef.current);
       pendingAutoFollowRafRef.current = null;
     }
-    if (offset > loadOlderHistoryRearmThreshold) {
-      topThresholdArmedRef.current = true;
-    }
     const metrics = buildScrollMetrics(handle ?? null, offset);
     const scrollBucket = Math.floor(offset / THREAD_PAGINATION_SCROLL_SAMPLE_PX);
     const sampleSignature = [
       threadId ?? "no-thread",
       scrollBucket,
       stickyBottomRef.current ? "bottom" : "middle",
-      offset <= loadOlderHistoryTriggerThreshold ? "near-top" : "away-top",
-      hasOlderHistory ? "older" : "latest",
-      loadingOlderHistoryRef.current ? "loading" : "idle",
+      initialPositiveScrollObservedRef.current ? "ready" : "initial",
     ].join(":");
 
     if (lastScrollSampleSignatureRef.current !== sampleSignature) {
       lastScrollSampleSignatureRef.current = sampleSignature;
-      debugLog("thread.pagination.ui", "scroll.sample", {
+      debugLog("thread.timeline.ui", "scroll.sample", {
         threadId,
-        hasOlderHistory,
-        loadingOlderHistory: loadingOlderHistoryRef.current,
         stickyBottom: stickyBottomRef.current,
         settlingProgrammaticBottomFollow: settlingProgrammaticBottomFollowRef.current,
         preservedDuringSettle: shouldPreserveStickyBottomDuringSettle,
         initialPositiveScrollObserved: initialPositiveScrollObservedRef.current,
         previousOffset: roundScrollMetric(previousOffset),
-        loadOlderHistoryThreshold,
-        loadOlderHistoryTriggerThreshold,
-        loadOlderHistoryRearmThreshold,
         ...metrics,
       });
 
-      if (!stickyBottomRef.current && !loadingOlderHistoryRef.current) {
+      if (!stickyBottomRef.current) {
         persistRestorableCache("scroll-sample");
       }
     }
-
-    if (
-      hasOlderHistory
-      && initialPositiveScrollObservedRef.current
-      && !suppressAutoLoadOlderAfterRestoreRef.current
-      && topThresholdArmedRef.current
-      && offset <= loadOlderHistoryTriggerThreshold
-    ) {
-      topThresholdArmedRef.current = false;
-      debugLog("thread.pagination.ui", "scroll.threshold.topReached", {
-        threadId,
-        hasOlderHistory,
-        loadOlderHistoryThreshold,
-        loadOlderHistoryTriggerThreshold,
-        ...metrics,
-      });
-      requestOlderHistory();
-    }
   }, [
-    hasOlderHistory,
     isAtBottom,
     persistRestorableCache,
-    requestOlderHistory,
     threadId,
   ]);
 
@@ -1439,29 +1133,15 @@ export const ChatMessageList = memo(function ChatMessageList({
     if (!stickyBottomRef.current && shouldSnapToBottomAfterSettling) {
       stickyBottomRef.current = true;
     }
-    debugLog("thread.pagination.ui", "scroll.end", {
+    debugLog("thread.timeline.ui", "scroll.end", {
       threadId,
       displayItemCount: displayItems.length,
       stickyBottom: stickyBottomRef.current,
       shouldSnapToBottomAfterSettling,
       settlingProgrammaticBottomFollow: settlingProgrammaticBottomFollowRef.current,
-      hasOlderHistory,
       ...buildScrollMetrics(handle, currentOffset),
     });
-    if (
-      hasOlderHistory
-      && initialPositiveScrollObservedRef.current
-      && !suppressAutoLoadOlderAfterRestoreRef.current
-      && topThresholdArmedRef.current
-      && currentOffset <= getLoadOlderHistoryTriggerThreshold(
-        getLoadOlderHistoryThreshold(handle, containerRef.current, currentOffset),
-        true,
-      )
-    ) {
-      topThresholdArmedRef.current = false;
-      requestOlderHistory();
-    }
-    if ((!stickyBottomRef.current && !shouldSnapToBottomAfterSettling) || loadingOlderHistoryRef.current) {
+    if (!stickyBottomRef.current && !shouldSnapToBottomAfterSettling) {
       persistRestorableCache("scroll-end");
       settlingProgrammaticBottomFollowRef.current = false;
       settlingProgrammaticBottomObservedSampleRef.current = false;
@@ -1472,10 +1152,8 @@ export const ChatMessageList = memo(function ChatMessageList({
     scrollToBottom("bottom");
   }, [
     displayItems.length,
-    hasOlderHistory,
     isAtBottom,
     persistRestorableCache,
-    requestOlderHistory,
     scrollToBottom,
     threadId,
   ]);
@@ -1489,36 +1167,8 @@ export const ChatMessageList = memo(function ChatMessageList({
     if (event.deltaY !== 0) {
       ignoreInitialTopScrollRef.current = false;
       initialPositiveScrollObservedRef.current = true;
-      releaseRestoreNearTopPaginationSuppression("wheel");
     }
-
-    if (event.deltaY >= 0 || !hasOlderHistory || !topThresholdArmedRef.current) {
-      return;
-    }
-
-    const handle = vlistRef.current;
-    const { offset: currentOffset } = getEffectiveScrollSnapshot(handle ?? null, containerRef.current);
-    const loadOlderHistoryThreshold = getLoadOlderHistoryThreshold(handle ?? null, containerRef.current, currentOffset);
-    const loadOlderHistoryTriggerThreshold = getLoadOlderHistoryTriggerThreshold(loadOlderHistoryThreshold, true);
-    if (currentOffset > loadOlderHistoryTriggerThreshold) {
-      return;
-    }
-
-    topThresholdArmedRef.current = false;
-    debugLog("thread.pagination.ui", "scroll.threshold.topReached.wheel", {
-      threadId,
-      hasOlderHistory,
-      deltaY: roundScrollMetric(event.deltaY),
-      loadOlderHistoryThreshold,
-      loadOlderHistoryTriggerThreshold,
-      ...buildScrollMetrics(handle ?? null, currentOffset),
-    });
-    requestOlderHistory();
-  }, [hasOlderHistory, releaseRestoreNearTopPaginationSuppression, requestOlderHistory, threadId]);
-
-  const handlePointerDownCapture = useCallback(() => {
-    releaseRestoreNearTopPaginationSuppression("pointer");
-  }, [releaseRestoreNearTopPaginationSuppression]);
+  }, []);
 
   const timelineCtx = useMemo<TimelineCtx>(() => ({
     rawOutputMessageIds,
@@ -1573,7 +1223,6 @@ export const ChatMessageList = memo(function ChatMessageList({
       ref={containerRef}
       className="relative h-full min-h-0"
       data-testid="chat-scroll"
-      onPointerDownCapture={handlePointerDownCapture}
       onWheelCapture={handleWheelCapture}
     >
       {displayItems.length === 0 ? (
@@ -1588,7 +1237,7 @@ export const ChatMessageList = memo(function ChatMessageList({
           cache={restorableCache}
           data={displayItems}
           keepMounted={keepMountedIndexes}
-          shift={shouldEnableVirtualShift}
+          shift={false}
           style={
             useBottomAnchoredShortThreadLayout
               ? {
@@ -1608,13 +1257,6 @@ export const ChatMessageList = memo(function ChatMessageList({
         >
           {(item, index) => {
             const isFirst = index === 0;
-            if (item === "older-history-loading") {
-              return (
-                <div key="older-history-loading" className={`mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}pb-4`}>
-                  <OlderHistoryLoadingRow />
-                </div>
-              );
-            }
             if (item === "thinking-placeholder") {
               return (
                 <div key="thinking-placeholder" className={`mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}pb-4`}>

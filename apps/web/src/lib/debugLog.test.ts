@@ -24,7 +24,7 @@ describe("debugLog", () => {
     });
 
     const { debugLog } = await import("./debugLog");
-    debugLog("thread.pagination.ui", "scroll.sample", { offset: 80 });
+    debugLog("thread.timeline.ui", "scroll.sample", { offset: 80 });
 
     expect(window.__CS_DEBUG_LOG__).toEqual([]);
     expect(sendBeacon).not.toHaveBeenCalled();
@@ -54,10 +54,10 @@ describe("debugLog", () => {
     window.__CS_DEBUG_LOG_ENABLED__ = true;
 
     const { debugLog } = await import("./debugLog");
-    debugLog("thread.pagination.state", "loadOlder.started", { threadId: "t1" });
+    debugLog("thread.timeline.state", "snapshot.hydrated", { threadId: "t1" });
 
     expect(window.__CS_DEBUG_LOG__).toHaveLength(1);
-    expect(window.__CS_DEBUG_LOG__?.[0]?.source).toBe("thread.pagination.state");
+    expect(window.__CS_DEBUG_LOG__?.[0]?.source).toBe("thread.timeline.state");
     expect(sendBeacon).toHaveBeenCalledTimes(1);
   });
 });

@@ -15,12 +15,6 @@ const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const threadParams = z.object({ id: z.string().min(1) });
 const streamEventQuery = z.object({ afterIdx: z.string().optional() }).strict();
-const timelineQuery = z.object({
-  includeCollections: z.enum(["0", "1"]).optional(),
-  paginated: z.enum(["0", "1"]).optional(),
-  beforeEventIdx: z.string().optional(),
-  beforeMessageSeq: z.string().optional(),
-}).strict();
 const slashCommandQuery = z.object({
   agent: CliAgentSchema.optional(),
 }).strict();
@@ -343,18 +337,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/threads/:id/timeline", async (request, reply) => {
     try {
       const params = threadParams.parse(request.params);
-      const query = timelineQuery.parse(request.query);
-      const includeCollections = query.includeCollections !== "0";
-      const paginated = query.paginated === "1";
-      const beforeEventIdx = parseNonNegativeInt(query.beforeEventIdx);
-      const beforeMessageSeq = parseNonNegativeInt(query.beforeMessageSeq);
-      const timelineKey = [
-        params.id,
-        includeCollections ? "full" : "display",
-        paginated ? "paged" : "snapshot",
-        beforeEventIdx ?? "latest",
-        beforeMessageSeq ?? "latest",
-      ].join(":");
+      const timelineKey = params.id;
       const existingRequest = inFlightTimelineSnapshotRequests.get(timelineKey);
       const reusedInFlightRequest = existingRequest != null;
       const startedAt = Date.now();
@@ -366,19 +349,11 @@ export async function registerChatRoutes(app: FastifyInstance) {
         data: {
           threadId: params.id,
           timelineKey,
-          includeCollections,
-          paginated,
-          beforeEventIdx,
-          beforeMessageSeq,
           reusedInFlightRequest,
         },
       });
 
       const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id, {
-        includeCollections,
-        paginated,
-        beforeEventIdx,
-        beforeMessageSeq,
         onTiming: (entry: TimelineSnapshotTimingEntry) => {
           timings.push(entry);
         },
@@ -396,10 +371,6 @@ export async function registerChatRoutes(app: FastifyInstance) {
           data: {
             threadId: params.id,
             timelineKey,
-            includeCollections,
-            paginated,
-            beforeEventIdx,
-            beforeMessageSeq,
             reusedInFlightRequest,
             durationMs: Date.now() - startedAt,
             timings,

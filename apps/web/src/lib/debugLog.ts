@@ -17,7 +17,7 @@ let debugSeq = 0;
 let persistentVerboseDebugOptIn: boolean | null = null;
 
 const VERBOSE_DEBUG_SOURCE_PREFIXES = [
-  "thread.pagination",
+  "thread.timeline",
 ];
 
 function isVerboseDebugSource(source: string) {

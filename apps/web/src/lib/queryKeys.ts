@@ -25,10 +25,7 @@ export const queryKeys = {
   },
   threads: {
     list: (worktreeId: string) => ["threads", "list", worktreeId] as const,
-    timelineSnapshot: (threadId: string, mode: "display" | "full" = "display") =>
-      mode === "display"
-        ? ["threads", threadId, "timelineSnapshot"] as const
-        : ["threads", threadId, "timelineSnapshot", mode] as const,
+    timelineSnapshot: (threadId: string) => ["threads", threadId, "timelineSnapshot"] as const,
     statusSnapshot: (threadId: string) => ["threads", threadId, "statusSnapshot"] as const,
     messages: (threadId: string) => ["threads", threadId, "messages"] as const,
     events: (threadId: string) => ["threads", threadId, "events"] as const,

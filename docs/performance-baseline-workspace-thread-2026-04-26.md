@@ -494,3 +494,70 @@ These are more behavior-sensitive than the changes above, so the current pass st
 - `/tmp/codesymphony-lh-after-1.json`
 - `/tmp/codesymphony-lh-after-2.json`
 - `/tmp/codesymphony-lh-after-3.json`
+
+## Post-Pagination Removal Rerun
+
+Date: 2026-04-27
+
+This rerun was taken after removing older-history pagination from the thread timeline.
+
+Method:
+
+- local dev app at `http://localhost:5173`
+- desktop viewport `1440x900`
+- startup measurement from fresh browser sessions
+- scroll measurement on the live chat scroller (`[data-testid="chat-scroll"] > div`) using `requestAnimationFrame` frame-gap sampling plus `PerformanceObserver` long-task capture
+
+### Startup To Conversation Ready
+
+Fresh rerun samples:
+
+| Run | Conversation-ready time |
+| --- | ---: |
+| 1 | `1532.5ms` |
+| 2 | `1366.9ms` |
+| 3 | `1575.1ms` |
+
+Median:
+
+- `1532.5ms`
+
+Comparison to the current rerun already documented above:
+
+| Metric | Prior documented current rerun | Post-pagination-removal rerun | Delta |
+| --- | ---: | ---: | ---: |
+| Conversation-ready median | `2931.7ms` | `1532.5ms` | `-1399.2ms` |
+
+Interpretation:
+
+- Startup did not regress after removing pagination.
+- On this machine and current local data, the populated-thread landing path was materially faster than the earlier `2931.7ms` rerun.
+
+### Timeline Scroll
+
+#### Steady-State Bottom-Half Scroll
+
+| Run | Average FPS | Average frame gap | Frames over `33.3ms` | Long-task total |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | `60.00` | `16.67ms` | `0` | `0ms` |
+| 2 | `57.91` | `17.27ms` | `1` | `0ms` |
+
+#### Full Upward Scroll From Bottom To Top
+
+| Run | Average FPS | Average frame gap | Frames over `33.3ms` | Long-task total |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | `60.00` | `16.67ms` | `0` | `0ms` |
+| 2 | `59.66` | `16.76ms` | `0` | `0ms` |
+
+Comparison to the earlier upward-scroll hotspot:
+
+| Metric | Prior upward older-history path | Post-pagination-removal upward rerun |
+| --- | --- | --- |
+| Average FPS | `41.08-44.91` | `59.66-60.00` |
+| Long-task total | `1198-1763ms` | `0ms` |
+
+Interpretation:
+
+- The old upward-scroll hotspot is gone on this rerun.
+- Removing older-history pagination eliminated the specific path that previously dragged the timeline down to `~41-45 FPS`.
+- Both steady-state and full upward scroll now stay in the near-60-FPS band on the measured thread.

@@ -1,5 +1,4 @@
 import {
-  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -73,8 +72,6 @@ import {
   buildSnapshotKey,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
 } from "./hydrationUtils";
-import {
-} from "./messageEventMerge";
 import { areMessagesEqual } from "../messageMerge";
 import {
   applyThreadModeUpdate,
@@ -89,61 +86,6 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_EVENTS: ChatEvent[] = [];
 const pendingAutoCreateWorktreeIds = new Set<string>();
 
-export type ThreadHistoryPaginationState = {
-  hasOlderHistory: boolean;
-  loadingOlderHistory: boolean;
-  collectionsHydrated: boolean;
-};
-
-type OlderHistoryCursor = {
-  threadId: string;
-  beforeEventIdx: number | null;
-  beforeMessageSeq: number | null;
-  key: string;
-};
-
-type OlderHistoryPrefetchEntry = {
-  cursorKey: string;
-  beforeEventIdx: number | null;
-  beforeMessageSeq: number | null;
-  promise: Promise<ChatTimelineSnapshot>;
-  snapshot: ChatTimelineSnapshot | null;
-};
-
-const DEFAULT_THREAD_HISTORY_PAGINATION_STATE: ThreadHistoryPaginationState = {
-  hasOlderHistory: false,
-  loadingOlderHistory: false,
-  collectionsHydrated: false,
-};
-
-function buildOlderHistoryCursor(params: {
-  threadId: string | null;
-  messages: ChatMessage[];
-  events: ChatEvent[];
-}): OlderHistoryCursor | null {
-  const { threadId, messages, events } = params;
-  if (!threadId) {
-    return null;
-  }
-
-  const beforeEventIdx = events[0]?.idx ?? null;
-  const beforeMessageSeq = messages[0]?.seq ?? null;
-  if (beforeEventIdx == null && beforeMessageSeq == null) {
-    return null;
-  }
-
-  return {
-    threadId,
-    beforeEventIdx,
-    beforeMessageSeq,
-    key: [
-      threadId,
-      beforeEventIdx ?? "no-event",
-      beforeMessageSeq ?? "no-message",
-    ].join(":"),
-  };
-}
-
 type ThreadNavigationPerfSession = {
   navId: string;
   threadId: string;
@@ -157,13 +99,10 @@ type ThreadNavigationPerfSession = {
   readyLogged: boolean;
 };
 
-function summarizePaginationEdgeState(params: {
+function summarizeThreadCollectionState(params: {
   threadId: string | null;
   messages: ChatMessage[];
   events: ChatEvent[];
-  hasOlderHistory: boolean;
-  loadingOlderHistory: boolean;
-  collectionsHydrated: boolean;
 }) {
   const firstMessage = params.messages[0] ?? null;
   const lastMessage = params.messages[params.messages.length - 1] ?? null;
@@ -180,46 +119,7 @@ function summarizePaginationEdgeState(params: {
     lastMessageSeq: lastMessage?.seq ?? null,
     firstEventIdx: firstEvent?.idx ?? null,
     lastEventIdx: lastEvent?.idx ?? null,
-    hasOlderHistory: params.hasOlderHistory,
-    loadingOlderHistory: params.loadingOlderHistory,
-    collectionsHydrated: params.collectionsHydrated,
   };
-}
-
-export function resolveHydratedHistoryAvailability(params: {
-  current: ThreadHistoryPaginationState;
-  snapshot: ChatTimelineSnapshot;
-  localMessagesBeforeHydration: ChatMessage[];
-  localEventsBeforeHydration: ChatEvent[];
-}): boolean {
-  const {
-    current,
-    snapshot,
-    localMessagesBeforeHydration,
-    localEventsBeforeHydration,
-  } = params;
-  const snapshotHasOlderHistory = snapshot.summary.oldestRenderableHydrationPending === true;
-  if (!current.collectionsHydrated) {
-    return snapshotHasOlderHistory;
-  }
-
-  if (!snapshotHasOlderHistory) {
-    return false;
-  }
-
-  const localOldestMessageSeq = localMessagesBeforeHydration[0]?.seq ?? null;
-  const localOldestEventIdx = localEventsBeforeHydration[0]?.idx ?? null;
-  const snapshotOldestMessageSeq = snapshot.messages[0]?.seq ?? null;
-  const snapshotOldestEventIdx = snapshot.events[0]?.idx ?? null;
-  const localHeadAlreadyExtendsPastSnapshot =
-    (localOldestMessageSeq != null && snapshotOldestMessageSeq != null && localOldestMessageSeq < snapshotOldestMessageSeq)
-    || (localOldestEventIdx != null && snapshotOldestEventIdx != null && localOldestEventIdx < snapshotOldestEventIdx);
-
-  if (!current.hasOlderHistory && localHeadAlreadyExtendsPastSnapshot) {
-    return false;
-  }
-
-  return true;
 }
 
 function getPerfNow(): number {
@@ -677,9 +577,6 @@ export function useChatSession(
   const [closingThreadId, setClosingThreadId] = useState<string | null>(null);
   const [waitingAssistant, setWaitingAssistant] = useState<{ threadId: string; afterIdx: number } | null>(null);
   const [pendingComposerPermissionMode, setPendingComposerPermissionMode] = useState<ChatThreadPermissionMode>("default");
-  const [historyPaginationByThreadId, setHistoryPaginationByThreadId] = useState<
-    Record<string, ThreadHistoryPaginationState>
-  >({});
 
   const streamingMessageIdsRef = useRef<Set<string>>(new Set());
   const stickyRawFallbackMessageIdsRef = useRef<Set<string>>(new Set());
@@ -703,7 +600,6 @@ export function useChatSession(
   const pendingAgentSelectionUpdatesRef = useRef<Map<string, Promise<void>>>(new Map());
   const activeThreadNavigationPerfRef = useRef<ThreadNavigationPerfSession | null>(null);
   const previousThreadNavigationPerfThreadIdRef = useRef<string | null>(null);
-  const olderHistoryPrefetchByThreadIdRef = useRef<Map<string, OlderHistoryPrefetchEntry>>(new Map());
   const lastThreadSelectionRef = useRef<{
     worktreeId: string;
     agent: CliAgent;
@@ -714,9 +610,6 @@ export function useChatSession(
   const selectedThreadId = selectedThreadIdOverrideRef.current ?? selectedThreadIdState;
   activeThreadIdRef.current = selectedThreadId;
   threadsRef.current = threads;
-  const selectedThreadHistoryPagination = selectedThreadId
-    ? (historyPaginationByThreadId[selectedThreadId] ?? DEFAULT_THREAD_HISTORY_PAGINATION_STATE)
-    : DEFAULT_THREAD_HISTORY_PAGINATION_STATE;
 
   const threadByIdMap = threadByIdRef.current;
   if (threadByIdMap.size !== threads.length || threads.some((t) => threadByIdMap.get(t.id) !== t)) {
@@ -733,33 +626,6 @@ export function useChatSession(
   const setSelectedThreadId = useCallback((threadId: string | null) => {
     selectedThreadIdOverrideRef.current = threadId;
     setSelectedThreadIdState(threadId);
-  }, []);
-
-  const updateThreadHistoryPagination = useCallback((
-    threadId: string,
-    updater: (current: ThreadHistoryPaginationState) => ThreadHistoryPaginationState,
-  ) => {
-    setHistoryPaginationByThreadId((current) => {
-      const previous = current[threadId] ?? DEFAULT_THREAD_HISTORY_PAGINATION_STATE;
-      const next = updater(previous);
-
-      if (
-        previous.hasOlderHistory === next.hasOlderHistory
-        && previous.loadingOlderHistory === next.loadingOlderHistory
-        && previous.collectionsHydrated === next.collectionsHydrated
-      ) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [threadId]: next,
-      };
-    });
-  }, []);
-
-  const clearOlderHistoryPrefetchState = useCallback((threadId: string) => {
-    olderHistoryPrefetchByThreadIdRef.current.delete(threadId);
   }, []);
 
   useEffect(() => {
@@ -1011,33 +877,19 @@ export function useChatSession(
     },
     [liveEvents],
   );
-  const olderHistoryCursor = useMemo(
-    () => buildOlderHistoryCursor({
-      threadId: selectedThreadId,
-      messages,
-      events,
-    }),
-    [events, messages, selectedThreadId],
-  );
   useEffect(() => {
     if (!selectedThreadId) {
       return;
     }
 
-    debugLog("thread.pagination.state", "selectedThread.pagination.changed", summarizePaginationEdgeState({
+    debugLog("thread.timeline.state", "selectedThread.collections.changed", summarizeThreadCollectionState({
       threadId: selectedThreadId,
       messages,
       events,
-      hasOlderHistory: selectedThreadHistoryPagination.hasOlderHistory,
-      loadingOlderHistory: selectedThreadHistoryPagination.loadingOlderHistory,
-      collectionsHydrated: selectedThreadHistoryPagination.collectionsHydrated,
     }));
   }, [
     events,
     messages,
-    selectedThreadHistoryPagination.collectionsHydrated,
-    selectedThreadHistoryPagination.hasOlderHistory,
-    selectedThreadHistoryPagination.loadingOlderHistory,
     selectedThreadId,
   ]);
   const selectedThread = selectedThreadId
@@ -1106,10 +958,10 @@ export function useChatSession(
   });
   const selectedThreadHasLocalState =
     selectedThreadId != null && (messages.length > 0 || events.length > 0);
+  const selectedThreadHasAppliedSnapshot =
+    selectedThreadId != null && getThreadLastAppliedSnapshotKey(selectedThreadId) != null;
   const selectedThreadHasCompleteLocalHistory =
-    selectedThreadHasLocalState
-    && selectedThreadHistoryPagination.collectionsHydrated
-    && !selectedThreadHistoryPagination.hasOlderHistory;
+    selectedThreadHasLocalState || selectedThreadHasAppliedSnapshot;
   const shouldUseLocalCompleteThreadCache =
     selectedThreadHasCompleteLocalHistory
     && selectedThread?.active !== true
@@ -1124,14 +976,10 @@ export function useChatSession(
       : selectedThreadIdForData;
   const shouldFetchThreadSnapshot = !shouldUseLocalCompleteThreadCache;
   const isThreadHistoryLocallyComplete = useCallback((threadId: string) => {
-    const state = historyPaginationByThreadId[threadId] ?? DEFAULT_THREAD_HISTORY_PAGINATION_STATE;
-    if (!state.collectionsHydrated || state.hasOlderHistory) {
-      return false;
-    }
-
     const counts = getThreadCollectionCounts(threadId);
-    return counts != null && (counts.messagesCount > 0 || counts.eventsCount > 0);
-  }, [historyPaginationByThreadId]);
+    return getThreadLastAppliedSnapshotKey(threadId) != null
+      || (counts != null && (counts.messagesCount > 0 || counts.eventsCount > 0));
+  }, []);
   if (selectedThread && selectedWorktreeId && selectedThread.worktreeId === selectedWorktreeId) {
     const selectedThreadAgent = selectedThread.agent ?? "claude";
     lastThreadSelectionRef.current = {
@@ -1184,21 +1032,12 @@ export function useChatSession(
   }, [events, hasPendingUserGate, selectedThread?.active, selectedThreadId, waitingAssistant]);
 
   const {
-    data: queriedDisplayThreadSnapshot,
+    data: queriedThreadSnapshot,
     isLoading: threadSnapshotLoading,
     isFetching: threadSnapshotFetching,
   } = useThreadSnapshot(snapshotBootstrapThreadId, {
-    mode: "display",
     enabled: shouldFetchThreadSnapshot,
   });
-
-  const {
-    data: queriedHydrationThreadSnapshot,
-  } = useThreadSnapshot(snapshotBootstrapThreadId, {
-    mode: "full",
-    enabled: shouldFetchThreadSnapshot,
-  });
-  const queriedThreadSnapshot = queriedHydrationThreadSnapshot ?? queriedDisplayThreadSnapshot;
   const threadNavigationPerfEnabled = isThreadNavigationPerfEnabled();
 
   useEffect(() => {
@@ -1363,7 +1202,7 @@ export function useChatSession(
       : null;
     const seedDecision = resolveSnapshotSeedDecision({
       selectedThreadId,
-      queriedThreadSnapshot: queriedHydrationThreadSnapshot,
+      queriedThreadSnapshot,
       threadChanged,
       lastAppliedSnapshotKey,
       localLatestEventIdx,
@@ -1380,7 +1219,7 @@ export function useChatSession(
       return;
     }
 
-    if (!queriedHydrationThreadSnapshot || seedDecision.snapshotKey == null) {
+    if (!queriedThreadSnapshot || seedDecision.snapshotKey == null) {
       if (threadChanged) {
         setThreadLastAppliedSnapshotKey(selectedThreadId, null);
       }
@@ -1396,19 +1235,19 @@ export function useChatSession(
       && waitingAssistant?.threadId !== selectedThreadId
       && !hasPendingUserGate;
     const snapshotCoversLocalHead = doesSnapshotCoverLocalHead({
-      snapshot: queriedHydrationThreadSnapshot,
+      snapshot: queriedThreadSnapshot,
       messages,
       events,
     });
     const shouldReplaceSnapshotSeed = (threadChanged && snapshotCoversLocalHead)
-      || (queriedHydrationThreadSnapshot.messages.length === 0 && queriedHydrationThreadSnapshot.events.length === 0)
+      || (queriedThreadSnapshot.messages.length === 0 && queriedThreadSnapshot.events.length === 0)
       || (snapshotCanAuthoritativelyReplaceLocalState && snapshotCoversLocalHead);
 
     const perfSession = activeThreadNavigationPerfRef.current;
     const hydrateStartedAtMs = getPerfNow();
     const hydrationResult = hydrateThreadFromSnapshot({
       threadId: selectedThreadId,
-      snapshot: queriedHydrationThreadSnapshot,
+      snapshot: queriedThreadSnapshot,
       mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
     });
     const hydrateDurationMs = roundPerfMs(getPerfNow() - hydrateStartedAtMs);
@@ -1428,30 +1267,28 @@ export function useChatSession(
           snapshotCanAuthoritativelyReplaceLocalState,
           localLatestEventIdx,
           localLatestMessageSeq,
-          snapshotMessageCount: queriedHydrationThreadSnapshot.messages.length,
-          snapshotEventCount: queriedHydrationThreadSnapshot.events.length,
+          snapshotMessageCount: queriedThreadSnapshot.messages.length,
+          snapshotEventCount: queriedThreadSnapshot.events.length,
           hydrationTiming: hydrationResult.timing,
         },
       });
     }
 
-    debugLog("thread.pagination.state", "snapshot.hydrated", {
+    debugLog("thread.timeline.state", "snapshot.hydrated", {
       threadId: selectedThreadId,
       mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
       seedReason: seedDecision.reason,
       snapshotKey: seedDecision.snapshotKey,
-      snapshotMessageCount: queriedHydrationThreadSnapshot.messages.length,
-      snapshotEventCount: queriedHydrationThreadSnapshot.events.length,
-      snapshotTimelineItemCount: queriedHydrationThreadSnapshot.timelineItems.length,
-      oldestRenderableHydrationPending:
-        queriedHydrationThreadSnapshot.summary.oldestRenderableHydrationPending ?? false,
+      snapshotMessageCount: queriedThreadSnapshot.messages.length,
+      snapshotEventCount: queriedThreadSnapshot.events.length,
+      snapshotTimelineItemCount: queriedThreadSnapshot.timelineItems.length,
       snapshotCoversLocalHead,
       localLatestEventIdx,
       localLatestMessageSeq,
       hydrationTiming: hydrationResult.timing,
     });
 
-    const latestMetadata = extractLatestThreadMetadata(queriedHydrationThreadSnapshot.events);
+    const latestMetadata = extractLatestThreadMetadata(queriedThreadSnapshot.events);
     if (latestMetadata.threadTitle) {
       setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, latestMetadata.threadTitle));
     }
@@ -1460,26 +1297,15 @@ export function useChatSession(
     }
 
     setThreadLastAppliedSnapshotKey(selectedThreadId, seedDecision.snapshotKey);
-    updateThreadHistoryPagination(selectedThreadId, (current) => ({
-      hasOlderHistory: resolveHydratedHistoryAvailability({
-        current,
-        snapshot: queriedHydrationThreadSnapshot,
-        localMessagesBeforeHydration: messages,
-        localEventsBeforeHydration: events,
-      }),
-      loadingOlderHistory: false,
-      collectionsHydrated: true,
-    }));
   }, [
     hasPendingUserGate,
     messages,
     onBranchRenamed,
-    queriedHydrationThreadSnapshot,
+    queriedThreadSnapshot,
     selectedThread?.active,
     selectedThreadId,
     selectedWorktreeId,
     threadNavigationPerfEnabled,
-    updateThreadHistoryPagination,
     waitingAssistant,
   ]);
 
@@ -1491,7 +1317,6 @@ export function useChatSession(
   }, [closingThreadId, selectedThreadIdForData]);
 
   function clearThreadTrackingState(threadId: string) {
-    clearOlderHistoryPrefetchState(threadId);
     loggedOrphanEventIdsByThreadRef.current.delete(threadId);
     const claimedKeyPrefix = `${threadId}:`;
     for (const key of claimedContextEventIdsByThreadMessageRef.current.keys()) {
@@ -2391,294 +2216,6 @@ export function useChatSession(
     }
   }
 
-  const prefetchOlderHistoryPage = useCallback((cursor: OlderHistoryCursor) => {
-    const existing = olderHistoryPrefetchByThreadIdRef.current.get(cursor.threadId) ?? null;
-    if (existing?.cursorKey === cursor.key) {
-      return existing.promise;
-    }
-
-    const request = api.getTimelineSnapshot(cursor.threadId, {
-      includeCollections: true,
-      paginated: true,
-      beforeEventIdx: cursor.beforeEventIdx,
-      beforeMessageSeq: cursor.beforeMessageSeq,
-    }).then((snapshot) => {
-      const current = olderHistoryPrefetchByThreadIdRef.current.get(cursor.threadId);
-      if (current?.cursorKey === cursor.key) {
-        olderHistoryPrefetchByThreadIdRef.current.set(cursor.threadId, {
-          ...current,
-          snapshot,
-        });
-      }
-      debugLog("thread.pagination.prefetch", "older.prefetch.succeeded", {
-        threadId: cursor.threadId,
-        beforeEventIdx: cursor.beforeEventIdx,
-        beforeMessageSeq: cursor.beforeMessageSeq,
-        messagesCount: snapshot.messages.length,
-        eventsCount: snapshot.events.length,
-        oldestRenderableHydrationPending: snapshot.summary.oldestRenderableHydrationPending ?? false,
-      });
-      return snapshot;
-    }).catch((error) => {
-      const current = olderHistoryPrefetchByThreadIdRef.current.get(cursor.threadId);
-      if (current?.cursorKey === cursor.key) {
-        olderHistoryPrefetchByThreadIdRef.current.delete(cursor.threadId);
-      }
-      debugLog("thread.pagination.prefetch", "older.prefetch.failed", {
-        threadId: cursor.threadId,
-        beforeEventIdx: cursor.beforeEventIdx,
-        beforeMessageSeq: cursor.beforeMessageSeq,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    });
-
-    olderHistoryPrefetchByThreadIdRef.current.set(cursor.threadId, {
-      cursorKey: cursor.key,
-      beforeEventIdx: cursor.beforeEventIdx,
-      beforeMessageSeq: cursor.beforeMessageSeq,
-      promise: request,
-      snapshot: null,
-    });
-
-    debugLog("thread.pagination.prefetch", "older.prefetch.started", {
-      threadId: cursor.threadId,
-      beforeEventIdx: cursor.beforeEventIdx,
-      beforeMessageSeq: cursor.beforeMessageSeq,
-    });
-
-    return request;
-  }, []);
-
-  useEffect(() => {
-    if (!selectedThreadId) {
-      return;
-    }
-
-    const threadId = selectedThreadId;
-    if (
-      !olderHistoryCursor
-      || !selectedThreadHistoryPagination.collectionsHydrated
-      || !selectedThreadHistoryPagination.hasOlderHistory
-    ) {
-      clearOlderHistoryPrefetchState(threadId);
-      return;
-    }
-
-    if (selectedThreadHistoryPagination.loadingOlderHistory) {
-      return;
-    }
-
-    const currentPrefetch = olderHistoryPrefetchByThreadIdRef.current.get(threadId) ?? null;
-    if (currentPrefetch?.cursorKey === olderHistoryCursor.key) {
-      return;
-    }
-
-    debugLog("thread.pagination.prefetch", "older.prefetch.requested", {
-      threadId,
-      beforeEventIdx: olderHistoryCursor.beforeEventIdx,
-      beforeMessageSeq: olderHistoryCursor.beforeMessageSeq,
-    });
-    void prefetchOlderHistoryPage(olderHistoryCursor).catch(() => {});
-  }, [
-    clearOlderHistoryPrefetchState,
-    olderHistoryCursor,
-    prefetchOlderHistoryPage,
-    selectedThreadId,
-    selectedThreadHistoryPagination.collectionsHydrated,
-    selectedThreadHistoryPagination.hasOlderHistory,
-    selectedThreadHistoryPagination.loadingOlderHistory,
-  ]);
-
-  const loadOlderHistory = useCallback(async () => {
-    if (!selectedThreadId) {
-      debugLog("thread.pagination.state", "loadOlder.skipped", {
-        reason: "missingThreadId",
-      });
-      return false;
-    }
-
-    const paginationEdgeState = summarizePaginationEdgeState({
-      threadId: selectedThreadId,
-      messages,
-      events,
-      hasOlderHistory: selectedThreadHistoryPagination.hasOlderHistory,
-      loadingOlderHistory: selectedThreadHistoryPagination.loadingOlderHistory,
-      collectionsHydrated: selectedThreadHistoryPagination.collectionsHydrated,
-    });
-
-    if (!selectedThreadHistoryPagination.hasOlderHistory) {
-      debugLog("thread.pagination.state", "loadOlder.skipped", {
-        reason: "noOlderHistory",
-        ...paginationEdgeState,
-      });
-      return false;
-    }
-
-    if (selectedThreadHistoryPagination.loadingOlderHistory) {
-      debugLog("thread.pagination.state", "loadOlder.skipped", {
-        reason: "alreadyLoading",
-        ...paginationEdgeState,
-      });
-      return false;
-    }
-
-    if (!selectedThreadHistoryPagination.collectionsHydrated) {
-      debugLog("thread.pagination.state", "loadOlder.skipped", {
-        reason: "collectionsNotHydrated",
-        ...paginationEdgeState,
-      });
-      return false;
-    }
-
-    const beforeEventIdx = olderHistoryCursor?.beforeEventIdx ?? null;
-    const beforeMessageSeq = olderHistoryCursor?.beforeMessageSeq ?? null;
-
-    if (beforeEventIdx == null && beforeMessageSeq == null) {
-      debugLog("thread.pagination.state", "loadOlder.skipped", {
-        reason: "missingCursor",
-        ...paginationEdgeState,
-        beforeEventIdx,
-        beforeMessageSeq,
-      });
-      return false;
-    }
-
-    debugLog("thread.pagination.state", "loadOlder.started", {
-      ...paginationEdgeState,
-      beforeEventIdx,
-      beforeMessageSeq,
-    });
-
-    updateThreadHistoryPagination(selectedThreadId, (current) => ({
-      ...current,
-      loadingOlderHistory: true,
-    }));
-
-    try {
-      const currentCursor = olderHistoryCursor;
-      const prefetchedEntry = currentCursor
-        ? olderHistoryPrefetchByThreadIdRef.current.get(selectedThreadId) ?? null
-        : null;
-      const matchingPrefetchedEntry =
-        currentCursor && prefetchedEntry?.cursorKey === currentCursor.key
-          ? prefetchedEntry
-          : null;
-
-      const olderSnapshot = matchingPrefetchedEntry?.snapshot
-        ? matchingPrefetchedEntry.snapshot
-        : matchingPrefetchedEntry?.promise
-          ? await matchingPrefetchedEntry.promise
-          : await api.getTimelineSnapshot(selectedThreadId, {
-            includeCollections: true,
-            paginated: true,
-            beforeEventIdx,
-            beforeMessageSeq,
-          });
-
-      if (matchingPrefetchedEntry?.cursorKey === currentCursor?.key) {
-        olderHistoryPrefetchByThreadIdRef.current.delete(selectedThreadId);
-      }
-
-      if (locallyDeletedThreadIdsRef.current.has(selectedThreadId)) {
-        debugLog("thread.pagination.state", "loadOlder.aborted", {
-          reason: "threadDeletedLocally",
-          threadId: selectedThreadId,
-          beforeEventIdx,
-          beforeMessageSeq,
-        });
-        updateThreadHistoryPagination(selectedThreadId, (current) => ({
-          ...current,
-          loadingOlderHistory: false,
-        }));
-        return true;
-      }
-
-      debugLog("thread.pagination.state", "loadOlder.succeeded", {
-        threadId: selectedThreadId,
-        beforeEventIdx,
-        beforeMessageSeq,
-        source:
-          matchingPrefetchedEntry?.snapshot
-            ? "prefetched-snapshot"
-            : matchingPrefetchedEntry?.promise
-              ? "prefetched-promise"
-              : "direct-fetch",
-        snapshotMessagesCount: olderSnapshot.messages.length,
-        snapshotEventsCount: olderSnapshot.events.length,
-        snapshotTimelineItemsCount: olderSnapshot.timelineItems.length,
-        snapshotNewestIdx: olderSnapshot.newestIdx,
-        snapshotNewestSeq: olderSnapshot.newestSeq,
-        snapshotOldestRenderableHydrationPending:
-          olderSnapshot.summary.oldestRenderableHydrationPending === true,
-      });
-
-      if (olderSnapshot.summary.oldestRenderableHydrationPending === true) {
-        const nextOlderHistoryCursor = buildOlderHistoryCursor({
-          threadId: selectedThreadId,
-          messages: olderSnapshot.messages,
-          events: olderSnapshot.events,
-        });
-
-        if (nextOlderHistoryCursor) {
-          void prefetchOlderHistoryPage(nextOlderHistoryCursor).catch(() => {});
-        }
-      } else {
-        clearOlderHistoryPrefetchState(selectedThreadId);
-      }
-
-      startTransition(() => {
-        const hydrationResult = hydrateThreadFromSnapshot({
-          threadId: selectedThreadId,
-          snapshot: olderSnapshot,
-          mode: "prepend",
-        });
-        updateThreadHistoryPagination(selectedThreadId, (current) => ({
-          ...current,
-          hasOlderHistory: olderSnapshot.summary.oldestRenderableHydrationPending === true,
-          loadingOlderHistory: false,
-          collectionsHydrated: true,
-        }));
-        debugLog("thread.pagination.state", "loadOlder.hydrated", {
-          threadId: selectedThreadId,
-          beforeEventIdx,
-          beforeMessageSeq,
-          insertedMessageCount: hydrationResult.insertedMessageCount,
-          insertedEventCount: hydrationResult.insertedEventCount,
-          totalMessagesCount: hydrationResult.messages.length,
-          totalEventsCount: hydrationResult.events.length,
-          hydrationTiming: hydrationResult.timing,
-        });
-      });
-    } catch (error) {
-      debugLog("thread.pagination.state", "loadOlder.failed", {
-        threadId: selectedThreadId,
-        beforeEventIdx,
-        beforeMessageSeq,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      updateThreadHistoryPagination(selectedThreadId, (current) => ({
-        ...current,
-        loadingOlderHistory: false,
-      }));
-      onError(error instanceof Error ? error.message : "Failed to load older thread history");
-    }
-
-    return true;
-  }, [
-    events,
-    messages,
-    clearOlderHistoryPrefetchState,
-    onError,
-    olderHistoryCursor,
-    prefetchOlderHistoryPage,
-    selectedThreadHistoryPagination.collectionsHydrated,
-    selectedThreadHistoryPagination.hasOlderHistory,
-    selectedThreadHistoryPagination.loadingOlderHistory,
-    selectedThreadId,
-    updateThreadHistoryPagination,
-  ]);
-
   const serverTimelineItems = (queriedThreadSnapshot?.timelineItems ?? []) as unknown as ChatTimelineItem[];
   const serverTimelineSummary = queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined;
   const timelineSeedMatchesLiveState = useMemo(
@@ -2796,12 +2333,7 @@ export function useChatSession(
       }
     : {
         items: derivedTimeline.items,
-        summary: {
-          ...derivedTimeline.summary,
-          oldestRenderableHydrationPending:
-            derivedTimeline.summary.oldestRenderableHydrationPending
-            || selectedThreadHistoryPagination.hasOlderHistory,
-        },
+        summary: derivedTimeline.summary,
       };
 
   useEffect(() => {
@@ -3035,8 +2567,6 @@ export function useChatSession(
     composerDisabled,
     showStopAction,
     stoppingRun,
-    hasOlderHistory: selectedThreadHistoryPagination.hasOlderHistory,
-    loadingOlderHistory: selectedThreadHistoryPagination.loadingOlderHistory,
     isThreadHistoryLocallyComplete,
     semanticHydrationInProgress: false,
 
@@ -3059,7 +2589,6 @@ export function useChatSession(
     updateQueuedDraft,
     deleteQueuedDraft,
     dispatchQueuedDraft,
-    loadOlderHistory,
     stopAssistantRun,
 
     startWaitingAssistant,

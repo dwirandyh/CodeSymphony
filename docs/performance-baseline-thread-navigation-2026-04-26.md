@@ -308,3 +308,76 @@ Result summary:
 - the latest content becomes available first, while older history hydrates immediately after the initial render path
 - The remaining visible latency is now mostly React commit + virtualizer/layout/paint work in local Vite dev.
 - Against the original warm baseline, `B -> A` moved from `781.2ms` to `129.4ms`, an improvement of about `83.4%`.
+
+## Post-Pagination Removal Rerun
+
+Date: 2026-04-27
+
+This rerun was taken after deleting the older-history pagination path entirely so that `/api/threads/:id/timeline` always returns the full thread history.
+
+Method:
+
+- local dev app at `http://localhost:5173`
+- desktop viewport `1440x900`
+- SPA search-param navigation with `csDebugThreadNav=1`
+- same ready criteria as the earlier warm baseline: target URL params matched, no loading skeleton, composer present, selected tab matched the expected thread title
+
+### Warm Same-Session 5-Cycle Rerun
+
+| Direction | Runs | Median ready | Median `thread.ready` |
+| --- | --- | ---: | ---: |
+| `A -> B` | `194.6ms`, `199.3ms`, `195.2ms`, `180.6ms`, `198.3ms` | `195.2ms` | `6.0ms` |
+| `B -> A` | `198.2ms`, `177.1ms`, `172.7ms`, `168.5ms`, `186.2ms` | `177.1ms` | `6.0ms` |
+
+Comparison against the latest visible rerun already documented above:
+
+| Direction | Prior documented warm rerun | Post-pagination-removal warm rerun | Delta |
+| --- | ---: | ---: | ---: |
+| `A -> B` | `187.8ms` | `195.2ms` | `+7.4ms` |
+| `B -> A` | `251.0ms` | `177.1ms` | `-73.9ms` |
+
+Interpretation:
+
+- `A -> B` stayed within single-digit milliseconds of the earlier warm rerun and is not a material regression.
+- `B -> A` improved further on the visible path despite removing pagination.
+- Warmed thread bootstrap remained effectively unchanged internally at about `6ms`, so the extra runtime payload is not showing up as a visible regression in the hot path.
+
+### Fresh First-Hop Spot Check
+
+| Flow | Result |
+| --- | --- |
+| fresh open `A` | `1168.5ms` to ready |
+| fresh `A -> B` | `476.0ms` visible ready, `341.1ms` internal `thread.ready` |
+| fresh open `B` | `1064.0ms` to ready |
+| fresh `B -> A` | `577.7ms` visible ready, `450.4ms` internal `thread.ready` |
+
+Interpretation:
+
+- Cold hops are still slower internally than the warmed loop because the full snapshot path does more real work before caches settle.
+- Even so, the visible cold hops remain better than the original first-hop baseline from this document (`532.0ms` for `A -> B`, `752.6ms` for `B -> A`).
+
+## Full Snapshot Benchmark After Pagination Removal
+
+Date: 2026-04-27
+
+Replacement benchmark command:
+
+```bash
+pnpm --filter @codesymphony/runtime bench:thread-snapshot -- \
+  --thread cmoc87d1s0001m9e3rvbjkb4q \
+  --thread cmoecljdo0i7zm9bxow08586c \
+  --runs 20 --warmup 5
+```
+
+Measured medians on the current local database:
+
+| Thread | History size | Full snapshot median | P95 | Payload |
+| --- | --- | ---: | ---: | ---: |
+| `Auto Logout Token Expired` | `36 messages / 6192 events` | `61.7ms` | `64.9ms` | `3.2 MB` |
+| `Implement ADR and Dogfood` | `8 messages / 5041 events` | `79.2ms` | `85.0ms` | `7.4 MB` |
+
+Notes:
+
+- The earlier tail-snapshot benchmark thread `cmock9eqt0e7xm9e3ovh7wzfb` is no longer present in the current local database, so it was omitted from this rerun.
+- Runtime snapshot cost is intentionally higher than the old paginated/tail snapshot path because the endpoint now returns the full history by design.
+- The important user-visible result is that the warmed browser navigation path above did not regress despite the heavier runtime payload.

@@ -429,46 +429,16 @@ export const api = {
     request<ChatThreadSnapshot>(`/threads/${threadId}/snapshot`),
   getThreadStatusSnapshot: (threadId: string) =>
     request<ChatThreadStatusSnapshot>(`/threads/${threadId}/status-snapshot`),
-  getTimelineSnapshot: (
-    threadId: string,
-    options?: {
-      includeCollections?: boolean;
-      paginated?: boolean;
-      beforeEventIdx?: number | null;
-      beforeMessageSeq?: number | null;
-    },
-  ) => {
-    const includeCollections = options?.includeCollections !== false;
-    const paginated = options?.paginated === true;
-    const searchParams = new URLSearchParams({
-      includeCollections: includeCollections ? "1" : "0",
-    });
-
-    if (paginated) {
-      searchParams.set("paginated", "1");
-    }
-
-    if (typeof options?.beforeEventIdx === "number") {
-      searchParams.set("beforeEventIdx", String(options.beforeEventIdx));
-    }
-
-    if (typeof options?.beforeMessageSeq === "number") {
-      searchParams.set("beforeMessageSeq", String(options.beforeMessageSeq));
-    }
-
-    const path = `/threads/${threadId}/timeline?${searchParams.toString()}`;
+  getTimelineSnapshot: (threadId: string) => {
+    const path = `/threads/${threadId}/timeline`;
     const startedAt =
       typeof performance !== "undefined" && typeof performance.now === "function"
         ? performance.now()
         : Date.now();
 
-    debugLog("thread.pagination.api", "timeline.request.started", {
+    debugLog("thread.timeline.api", "timeline.request.started", {
       threadId,
       path,
-      includeCollections,
-      paginated,
-      beforeEventIdx: options?.beforeEventIdx ?? null,
-      beforeMessageSeq: options?.beforeMessageSeq ?? null,
     });
 
     return request<ChatTimelineSnapshot>(path)
@@ -477,14 +447,10 @@ export const api = {
           typeof performance !== "undefined" && typeof performance.now === "function"
             ? performance.now()
             : Date.now();
-        debugLog("thread.pagination.api", "timeline.request.succeeded", {
+        debugLog("thread.timeline.api", "timeline.request.succeeded", {
           threadId,
           path,
           durationMs: Math.round((endedAt - startedAt) * 10) / 10,
-          includeCollections,
-          paginated,
-          beforeEventIdx: options?.beforeEventIdx ?? null,
-          beforeMessageSeq: options?.beforeMessageSeq ?? null,
           messagesCount: snapshot.messages.length,
           eventsCount: snapshot.events.length,
           timelineItemsCount: snapshot.timelineItems.length,
@@ -499,14 +465,10 @@ export const api = {
           typeof performance !== "undefined" && typeof performance.now === "function"
             ? performance.now()
             : Date.now();
-        debugLog("thread.pagination.api", "timeline.request.failed", {
+        debugLog("thread.timeline.api", "timeline.request.failed", {
           threadId,
           path,
           durationMs: Math.round((endedAt - startedAt) * 10) / 10,
-          includeCollections,
-          paginated,
-          beforeEventIdx: options?.beforeEventIdx ?? null,
-          beforeMessageSeq: options?.beforeMessageSeq ?? null,
           error: error instanceof Error ? error.message : String(error),
         });
         throw error;

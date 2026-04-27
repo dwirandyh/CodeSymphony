@@ -768,9 +768,7 @@ export function WorkspacePage() {
 
     return queryClient.prefetchQuery({
       queryKey: queryKeys.threads.timelineSnapshot(threadId),
-      queryFn: () => api.getTimelineSnapshot(threadId, {
-        includeCollections: false,
-      }),
+      queryFn: () => api.getTimelineSnapshot(threadId),
       staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,
     });
   }, [isThreadHistoryLocallyComplete, queryClient]);
@@ -2002,9 +2000,6 @@ export function WorkspacePage() {
                       items={chat.timelineItems}
                       emptyState={chat.messageListEmptyState}
                       showThinkingPlaceholder={showThinkingPlaceholder}
-                      hasOlderHistory={chat.hasOlderHistory}
-                      loadingOlderHistory={chat.loadingOlderHistory}
-                      onLoadOlderHistory={chat.loadOlderHistory}
                       onOpenReadFile={openReadFile}
                       worktreePath={repos.selectedWorktree?.path ?? null}
                       footer={gates.showPlanDecisionComposer ? (

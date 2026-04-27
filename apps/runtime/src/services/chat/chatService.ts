@@ -71,10 +71,6 @@ import {
   mapMessages,
   mapEvents,
   buildTimelineSnapshot,
-  DISPLAY_TIMELINE_TAIL_EVENT_LIMIT,
-  DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT,
-  selectNewestRowsAscending,
-  trimMessagesToEventWindow,
 } from "./chatPaginationUtils.js";
 import {
   isImageMimeType,
@@ -147,10 +143,6 @@ type ThreadRunState = {
 };
 
 type ThreadSnapshotOptions = {
-  includeCollections?: boolean;
-  paginated?: boolean;
-  beforeEventIdx?: number | null;
-  beforeMessageSeq?: number | null;
   onTiming?: (entry: ThreadSnapshotTimingEntry) => void;
 };
 
@@ -2352,101 +2344,33 @@ export function createChatService(deps: RuntimeDeps) {
       const snapshotStartedAtMs = getPerfNow();
       await timeSnapshotPhase(options, "queued-dispatch-check", undefined, () => maybeDispatchQueuedMessages(threadId));
       await timeSnapshotPhase(options, "thread-exists", undefined, () => requireThreadExists(deps, threadId));
-      const includeCollections = options?.includeCollections ?? true;
-      const paginated = options?.paginated === true;
+      const queryStartedAtMs = getPerfNow();
+      const [messageRows, eventRows] = await Promise.all([
+        deps.prisma.chatMessage.findMany({
+          where: { threadId },
+          orderBy: { seq: "asc" },
+          include: { attachments: true },
+        }),
+        deps.eventHub.list(threadId),
+      ]);
+      recordSnapshotPhase(options, "db.full-collections", queryStartedAtMs, {
+        messageRows: messageRows.length,
+        eventRows: eventRows.length,
+      });
 
-      let messages: ChatMessage[];
-      let events: ChatEvent[];
-      let olderHistoryAvailable = false;
-
-      if (includeCollections && !paginated) {
-        const queryStartedAtMs = getPerfNow();
-        const [messageRows, eventRows] = await Promise.all([
-          deps.prisma.chatMessage.findMany({
-            where: { threadId },
-            orderBy: { seq: "asc" },
-            include: { attachments: true },
-          }),
-          deps.eventHub.list(threadId),
-        ]);
-        recordSnapshotPhase(options, "db.full-collections", queryStartedAtMs, {
-          messageRows: messageRows.length,
-          eventRows: eventRows.length,
-        });
-
-        const mapStartedAtMs = getPerfNow();
-        messages = mapMessages(messageRows);
-        events = eventRows;
-        recordSnapshotPhase(options, "map.full-collections", mapStartedAtMs, {
-          messagesCount: messages.length,
-          eventsCount: events.length,
-        });
-      } else {
-        const queryStartedAtMs = getPerfNow();
-        const [messageRowsDescending, eventRowsDescending] = await Promise.all([
-          deps.prisma.chatMessage.findMany({
-            where: {
-              threadId,
-              ...(typeof options?.beforeMessageSeq === "number"
-                ? { seq: { lte: options.beforeMessageSeq } }
-                : {}),
-            },
-            orderBy: { seq: "desc" },
-            take: DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT + 1,
-            include: { attachments: true },
-          }),
-          deps.prisma.chatEvent.findMany({
-            where: {
-              threadId,
-              ...(typeof options?.beforeEventIdx === "number"
-                ? { idx: { lt: options.beforeEventIdx } }
-                : {}),
-            },
-            orderBy: { idx: "desc" },
-            take: DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 1,
-          }),
-        ]);
-        recordSnapshotPhase(options, "db.paginated-collections", queryStartedAtMs, {
-          messageRows: messageRowsDescending.length,
-          eventRows: eventRowsDescending.length,
-          beforeMessageSeq: options?.beforeMessageSeq ?? null,
-          beforeEventIdx: options?.beforeEventIdx ?? null,
-        });
-
-        const selectStartedAtMs = getPerfNow();
-        const {
-          rows: newestMessageRows,
-          olderRowsAvailable: olderMessagesAvailable,
-        } = selectNewestRowsAscending(messageRowsDescending, DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT);
-        const {
-          rows: newestEventRows,
-          olderRowsAvailable: olderEventsAvailable,
-        } = selectNewestRowsAscending(eventRowsDescending, DISPLAY_TIMELINE_TAIL_EVENT_LIMIT);
-        recordSnapshotPhase(options, "select.paginated-window", selectStartedAtMs, {
-          selectedMessageRows: newestMessageRows.length,
-          selectedEventRows: newestEventRows.length,
-          olderMessagesAvailable,
-          olderEventsAvailable,
-        });
-
-        const mapStartedAtMs = getPerfNow();
-        events = mapEvents(newestEventRows);
-        messages = trimMessagesToEventWindow(mapMessages(newestMessageRows), events);
-        olderHistoryAvailable = olderMessagesAvailable || olderEventsAvailable;
-        recordSnapshotPhase(options, "map-trim.paginated-collections", mapStartedAtMs, {
-          messagesCount: messages.length,
-          eventsCount: events.length,
-          olderHistoryAvailable,
-        });
-      }
+      const mapStartedAtMs = getPerfNow();
+      const messages = mapMessages(messageRows);
+      const events = eventRows;
+      recordSnapshotPhase(options, "map.full-collections", mapStartedAtMs, {
+        messagesCount: messages.length,
+        eventsCount: events.length,
+      });
 
       const timelineStartedAtMs = getPerfNow();
       const timeline = buildTimelineSnapshot({
         messages,
         events,
         threadId,
-        includeCollections,
-        olderHistoryAvailable,
       });
       recordSnapshotPhase(options, "timeline.assemble", timelineStartedAtMs, {
         timelineItemsCount: timeline.timelineItems.length,
@@ -2454,8 +2378,6 @@ export function createChatService(deps: RuntimeDeps) {
         oldestRenderableHydrationPending: timeline.summary.oldestRenderableHydrationPending,
       });
       recordSnapshotPhase(options, "snapshot.total", snapshotStartedAtMs, {
-        includeCollections,
-        paginated,
         messagesCount: messages.length,
         eventsCount: events.length,
         timelineItemsCount: timeline.timelineItems.length,

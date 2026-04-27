@@ -517,41 +517,7 @@ describe("chat routes", () => {
   });
 
   describe("GET /api/threads/:id/timeline", () => {
-    it("passes includeCollections false for display timeline snapshots", async () => {
-      mockChatService.listThreadSnapshot.mockResolvedValue({
-        messages: [],
-        events: [],
-        timeline: {
-          timelineItems: [],
-          summary: {
-            oldestRenderableKey: null,
-            oldestRenderableKind: null,
-            oldestRenderableMessageId: null,
-            oldestRenderableHydrationPending: true,
-            headIdentityStable: true,
-          },
-          newestSeq: 10,
-          newestIdx: 200,
-          collectionsIncluded: false,
-          messages: [],
-          events: [],
-        },
-      });
-
-      const res = await app.inject({ method: "GET", url: "/api/threads/t1/timeline?includeCollections=0" });
-
-      expect(res.statusCode).toBe(200);
-      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", expect.objectContaining({
-        includeCollections: false,
-        paginated: false,
-        beforeEventIdx: null,
-        beforeMessageSeq: null,
-        onTiming: expect.any(Function),
-      }));
-      expect(res.json().data.collectionsIncluded).toBe(false);
-    });
-
-    it("passes paginated older-history cursors through for timeline page requests", async () => {
+    it("returns the full timeline snapshot envelope", async () => {
       mockChatService.listThreadSnapshot.mockResolvedValue({
         messages: [],
         events: [],
@@ -564,27 +530,21 @@ describe("chat routes", () => {
             oldestRenderableHydrationPending: false,
             headIdentityStable: true,
           },
-          newestSeq: 24,
-          newestIdx: 600,
+          newestSeq: 10,
+          newestIdx: 200,
           collectionsIncluded: true,
           messages: [],
           events: [],
         },
       });
 
-      const res = await app.inject({
-        method: "GET",
-        url: "/api/threads/t1/timeline?includeCollections=1&paginated=1&beforeEventIdx=120&beforeMessageSeq=8",
-      });
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/timeline" });
 
       expect(res.statusCode).toBe(200);
       expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", expect.objectContaining({
-        includeCollections: true,
-        paginated: true,
-        beforeEventIdx: 120,
-        beforeMessageSeq: 8,
         onTiming: expect.any(Function),
       }));
+      expect(res.json().data.collectionsIncluded).toBe(true);
     });
 
     it("does not leak overlap-unresolved subagent explore events into top-level explore cards", async () => {

@@ -392,30 +392,42 @@ describe("api", () => {
 
   describe("events", () => {
     it("gets timeline snapshot", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ timelineItems: [], events: [], messages: [] }));
+      mockFetch.mockReturnValueOnce(mockOk({
+        timelineItems: [],
+        summary: {
+          oldestRenderableKey: null,
+          oldestRenderableKind: null,
+          oldestRenderableMessageId: null,
+          oldestRenderableHydrationPending: false,
+          headIdentityStable: true,
+        },
+        newestSeq: null,
+        newestIdx: null,
+        events: [],
+        messages: [],
+      }));
       const result = await api.getTimelineSnapshot("t1");
       expect(result).toBeTruthy();
     });
 
-    it("requests display timeline snapshots without collections when asked", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ timelineItems: [], events: [], messages: [] }));
-      await api.getTimelineSnapshot("t1", { includeCollections: false });
+    it("requests the canonical timeline snapshot endpoint", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        timelineItems: [],
+        summary: {
+          oldestRenderableKey: null,
+          oldestRenderableKind: null,
+          oldestRenderableMessageId: null,
+          oldestRenderableHydrationPending: false,
+          headIdentityStable: true,
+        },
+        newestSeq: null,
+        newestIdx: null,
+        events: [],
+        messages: [],
+      }));
+      await api.getTimelineSnapshot("t1");
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining("/threads/t1/timeline?includeCollections=0"),
-        expect.anything(),
-      );
-    });
-
-    it("requests paginated timeline snapshots with older-history cursors when asked", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ timelineItems: [], events: [], messages: [] }));
-      await api.getTimelineSnapshot("t1", {
-        includeCollections: true,
-        paginated: true,
-        beforeEventIdx: 120,
-        beforeMessageSeq: 8,
-      });
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining("/threads/t1/timeline?includeCollections=1&paginated=1&beforeEventIdx=120&beforeMessageSeq=8"),
+        expect.stringContaining("/threads/t1/timeline"),
         expect.anything(),
       );
     });

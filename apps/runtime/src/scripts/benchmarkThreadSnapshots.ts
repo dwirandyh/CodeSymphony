@@ -1,11 +1,8 @@
 import { PrismaClient } from "@prisma/client";
 import {
   buildTimelineSnapshot,
-  DISPLAY_TIMELINE_TAIL_EVENT_LIMIT,
-  DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT,
   mapEvents,
   mapMessages,
-  selectNewestRowsAscending,
 } from "../services/chat/chatPaginationUtils.js";
 
 type BenchmarkThread = {
@@ -19,21 +16,19 @@ type SnapshotCaseResult = {
   durationMs: number;
   payloadBytes: number;
   timelineItemsCount: number;
-  selectedMessageCount: number;
-  selectedEventCount: number;
+  messageCount: number;
+  eventCount: number;
   newestSeq: number | null;
   newestIdx: number | null;
-  olderHistoryAvailable: boolean;
 };
 
 type SnapshotCaseSummary = {
   medianDurationMs: number;
   p95DurationMs: number;
   medianPayloadBytes: number;
-  selectedMessageCount: number;
-  selectedEventCount: number;
+  messageCount: number;
+  eventCount: number;
   timelineItemsCount: number;
-  oldestRenderableHydrationPending: boolean;
 };
 
 type ParsedArgs = {
@@ -168,7 +163,7 @@ async function resolveBenchmarkThreads(prisma: PrismaClient, args: ParsedArgs): 
   }));
 }
 
-async function runLegacyDisplaySnapshot(prisma: PrismaClient, threadId: string): Promise<SnapshotCaseResult> {
+async function runThreadSnapshot(prisma: PrismaClient, threadId: string): Promise<SnapshotCaseResult> {
   const startedAt = performance.now();
   const [messageRows, eventRows] = await Promise.all([
     prisma.chatMessage.findMany({
@@ -186,64 +181,16 @@ async function runLegacyDisplaySnapshot(prisma: PrismaClient, threadId: string):
     messages: mapMessages(messageRows),
     events: mapEvents(eventRows),
     threadId,
-    includeCollections: false,
   });
 
   return {
     durationMs: round(performance.now() - startedAt),
     payloadBytes: toBytes(snapshot),
     timelineItemsCount: snapshot.timelineItems.length,
-    selectedMessageCount: messageRows.length,
-    selectedEventCount: eventRows.length,
+    messageCount: messageRows.length,
+    eventCount: eventRows.length,
     newestSeq: snapshot.newestSeq,
     newestIdx: snapshot.newestIdx,
-    olderHistoryAvailable: false,
-  };
-}
-
-async function runOptimizedDisplaySnapshot(prisma: PrismaClient, threadId: string): Promise<SnapshotCaseResult> {
-  const startedAt = performance.now();
-  const [messageRowsDescending, eventRowsDescending] = await Promise.all([
-    prisma.chatMessage.findMany({
-      where: { threadId },
-      orderBy: { seq: "desc" },
-      take: DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT + 1,
-      include: { attachments: true },
-    }),
-    prisma.chatEvent.findMany({
-      where: { threadId },
-      orderBy: { idx: "desc" },
-      take: DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 1,
-    }),
-  ]);
-
-  const { rows: newestMessageRows, olderRowsAvailable: olderMessagesAvailable } = selectNewestRowsAscending(
-    messageRowsDescending,
-    DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT,
-  );
-  const { rows: newestEventRows, olderRowsAvailable: olderEventsAvailable } = selectNewestRowsAscending(
-    eventRowsDescending,
-    DISPLAY_TIMELINE_TAIL_EVENT_LIMIT,
-  );
-  const olderHistoryAvailable = olderMessagesAvailable || olderEventsAvailable;
-
-  const snapshot = buildTimelineSnapshot({
-    messages: mapMessages(newestMessageRows),
-    events: mapEvents(newestEventRows),
-    threadId,
-    includeCollections: false,
-    olderHistoryAvailable,
-  });
-
-  return {
-    durationMs: round(performance.now() - startedAt),
-    payloadBytes: toBytes(snapshot),
-    timelineItemsCount: snapshot.timelineItems.length,
-    selectedMessageCount: newestMessageRows.length,
-    selectedEventCount: newestEventRows.length,
-    newestSeq: snapshot.newestSeq,
-    newestIdx: snapshot.newestIdx,
-    olderHistoryAvailable,
   };
 }
 
@@ -254,48 +201,9 @@ function summarizeResults(results: SnapshotCaseResult[]): SnapshotCaseSummary {
     medianDurationMs: round(median(results.map((result) => result.durationMs))),
     p95DurationMs: round(percentile(results.map((result) => result.durationMs), 0.95)),
     medianPayloadBytes: Math.round(median(results.map((result) => result.payloadBytes))),
-    selectedMessageCount: lastResult?.selectedMessageCount ?? 0,
-    selectedEventCount: lastResult?.selectedEventCount ?? 0,
+    messageCount: lastResult?.messageCount ?? 0,
+    eventCount: lastResult?.eventCount ?? 0,
     timelineItemsCount: lastResult?.timelineItemsCount ?? 0,
-    oldestRenderableHydrationPending: lastResult?.olderHistoryAvailable ?? false,
-  };
-}
-
-async function benchmarkThread(prisma: PrismaClient, thread: BenchmarkThread, runs: number, warmup: number) {
-  const legacyResults: SnapshotCaseResult[] = [];
-  const optimizedResults: SnapshotCaseResult[] = [];
-  const orderedCases = [
-    { name: "legacy", run: runLegacyDisplaySnapshot },
-    { name: "optimized", run: runOptimizedDisplaySnapshot },
-  ] as const;
-
-  for (let runIndex = 0; runIndex < warmup + runs; runIndex += 1) {
-    const runOrder = runIndex % 2 === 0
-      ? orderedCases
-      : [orderedCases[1], orderedCases[0]] as const;
-
-    for (const benchmarkCase of runOrder) {
-      const result = await benchmarkCase.run(prisma, thread.threadId);
-      if (runIndex < warmup) {
-        continue;
-      }
-
-      if (benchmarkCase.name === "legacy") {
-        legacyResults.push(result);
-      } else {
-        optimizedResults.push(result);
-      }
-    }
-  }
-
-  const legacy = summarizeResults(legacyResults);
-  const optimized = summarizeResults(optimizedResults);
-
-  return {
-    legacy,
-    optimized,
-    durationImprovementPct: round(((legacy.medianDurationMs - optimized.medianDurationMs) / legacy.medianDurationMs) * 100),
-    payloadImprovementPct: round(((legacy.medianPayloadBytes - optimized.medianPayloadBytes) / legacy.medianPayloadBytes) * 100),
   };
 }
 
@@ -324,21 +232,27 @@ async function main() {
       return;
     }
 
-    console.log(`# Display Snapshot Benchmark`);
+    console.log("# Thread Snapshot Benchmark");
     console.log(`runs=${args.runs} warmup=${args.warmup}`);
-    console.log(`tailMessageLimit=${DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT} tailEventLimit=${DISPLAY_TIMELINE_TAIL_EVENT_LIMIT}`);
     console.log("");
 
     for (const thread of threads) {
-      const result = await benchmarkThread(prisma, thread, args.runs, args.warmup);
+      const results: SnapshotCaseResult[] = [];
+      for (let runIndex = 0; runIndex < args.warmup + args.runs; runIndex += 1) {
+        const result = await runThreadSnapshot(prisma, thread.threadId);
+        if (runIndex >= args.warmup) {
+          results.push(result);
+        }
+      }
 
+      const summary = summarizeResults(results);
       console.log(`## ${thread.title}`);
       console.log(`threadId=${thread.threadId}`);
       console.log(`messages=${thread.messageCount} events=${thread.eventCount}`);
       console.log("");
-      console.log(`legacy  median=${result.legacy.medianDurationMs}ms p95=${result.legacy.p95DurationMs}ms payload=${formatBytes(result.legacy.medianPayloadBytes)} selectedMessages=${result.legacy.selectedMessageCount} selectedEvents=${result.legacy.selectedEventCount} timelineItems=${result.legacy.timelineItemsCount}`);
-      console.log(`optimized median=${result.optimized.medianDurationMs}ms p95=${result.optimized.p95DurationMs}ms payload=${formatBytes(result.optimized.medianPayloadBytes)} selectedMessages=${result.optimized.selectedMessageCount} selectedEvents=${result.optimized.selectedEventCount} timelineItems=${result.optimized.timelineItemsCount} hydrationPending=${result.optimized.oldestRenderableHydrationPending}`);
-      console.log(`delta duration=-${result.durationImprovementPct}% payload=-${result.payloadImprovementPct}%`);
+      console.log(
+        `median=${summary.medianDurationMs}ms p95=${summary.p95DurationMs}ms payload=${formatBytes(summary.medianPayloadBytes)} messages=${summary.messageCount} events=${summary.eventCount} timelineItems=${summary.timelineItemsCount}`,
+      );
       console.log("");
     }
   } finally {
