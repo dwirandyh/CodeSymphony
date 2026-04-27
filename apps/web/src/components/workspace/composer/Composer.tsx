@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
+  type ChatQueuedMessage,
   type CursorModelCatalogEntry,
   DEFAULT_CHAT_MODEL_BY_AGENT,
   type ChatMode,
@@ -37,6 +38,7 @@ import {
 } from "../../../lib/attachments";
 import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
+import { QueuedMessageList } from "../QueuedMessageList";
 import { createAttachmentChipElement } from "./composerChipUtils";
 import { getSerializedTextFromEditor } from "./composerEditorUtils";
 import { useComposerMention } from "./useComposerMention";
@@ -73,12 +75,16 @@ type ComposerProps = {
   modelProviderId?: string | null;
   permissionMode: ChatThreadPermissionMode;
   hasMessages: boolean;
+  queuedMessages?: ChatQueuedMessage[];
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onQueueDraft?: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onModeChange: (mode: ChatMode) => void;
   onStop: () => void;
   onAgentSelectionChange?: (selection: UpdateChatThreadAgentSelectionInput) => void;
   onPermissionModeChange: (permissionMode: ChatThreadPermissionMode) => void;
+  onDeleteQueuedMessage?: (queueMessageId: string) => void;
+  onDispatchQueuedMessage?: (queueMessageId: string) => void;
+  onUpdateQueuedMessage?: (queueMessageId: string, content: string) => Promise<boolean>;
 };
 
 type AgentSelectionOption = {
@@ -356,12 +362,16 @@ function ComposerContent({
   modelProviderId: providedModelProviderId,
   permissionMode,
   hasMessages,
+  queuedMessages = [],
   onSubmitMessage,
   onQueueDraft,
   onModeChange,
   onStop,
   onAgentSelectionChange: onAgentSelectionChangeProp,
   onPermissionModeChange,
+  onDeleteQueuedMessage,
+  onDispatchQueuedMessage,
+  onUpdateQueuedMessage,
 }: ComposerProps) {
   const [draftText, setDraftText] = useState("");
   const [attachmentPreviewId, setAttachmentPreviewId] = useState<string | null>(null);
@@ -439,6 +449,14 @@ function ComposerContent({
     setHasRequestedFileIndex(hasProvidedFileIndex);
   }, [hasProvidedFileIndex, worktreeId]);
 
+  const queuedMessageHandlers = onDeleteQueuedMessage && onDispatchQueuedMessage && onUpdateQueuedMessage
+    ? {
+      onDelete: onDeleteQueuedMessage,
+      onDispatch: onDispatchQueuedMessage,
+      onUpdate: onUpdateQueuedMessage,
+    }
+    : null;
+  const canRenderQueuedMessages = queuedMessages.length > 0 && queuedMessageHandlers !== null;
   const selectionLocked = hasMessages || !threadId;
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => ({
     claude: [
@@ -1266,7 +1284,7 @@ function ComposerContent({
     <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
         <div
-          className={`relative border bg-background/20 px-3 pb-11 pt-2.5 lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
+          className={`relative border bg-background/35 px-3 pb-11 pt-2.5 shadow-sm backdrop-blur-sm lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
             attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl lg:rounded-t-none" : "rounded-2xl lg:rounded-3xl"
           } ${
             isDragOver ? "border-primary/60 bg-primary/5" : "border-input/50"
@@ -1290,6 +1308,17 @@ function ComposerContent({
             className="hidden"
             onChange={handleFileInputChange}
           />
+
+          {canRenderQueuedMessages ? (
+            <QueuedMessageList
+              embedded
+              messages={queuedMessages}
+              disabled={disabled}
+              onDelete={queuedMessageHandlers.onDelete}
+              onDispatch={queuedMessageHandlers.onDispatch}
+              onUpdate={queuedMessageHandlers.onUpdate}
+            />
+          ) : null}
 
           {mention.active && (suggestions.length > 0 || mentionFileIndexLoading) && (
             <div

@@ -371,6 +371,124 @@ describe("chatService queue flow", () => {
     ))).toBe(false);
   });
 
+  it("does not hand off plain queued drafts at a tool boundary", async () => {
+    let runCount = 0;
+    let releaseToolBoundary: (() => void) | null = null;
+    let releaseInitialRun: (() => void) | null = null;
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, onToolStarted, onToolFinished, onText, abortController }) => {
+      runCount += 1;
+
+      if (runCount === 1) {
+        await onToolStarted({
+          toolName: "Bash",
+          toolUseId: "tool-plain-queue",
+          parentToolUseId: null,
+          command: "sleep 1",
+          shell: "bash",
+          isBash: true,
+        });
+
+        await new Promise<void>((resolve) => {
+          releaseToolBoundary = resolve;
+        });
+
+        await onToolFinished({
+          toolName: "Bash",
+          summary: "Finished sleep",
+          precedingToolUseIds: ["tool-plain-queue"],
+          command: "sleep 1",
+          shell: "bash",
+          isBash: true,
+        });
+
+        await onText("Post-tool response in progress.");
+
+        await new Promise<void>((resolve, reject) => {
+          releaseInitialRun = resolve;
+          abortController?.signal.addEventListener("abort", () => reject(new Error("Aborted by plain queue")), { once: true });
+        });
+
+        await onText(" Post-tool response completed.");
+        return {
+          output: "Post-tool response in progress. Post-tool response completed.",
+          sessionId: "queue-plain-tool-boundary-initial",
+        };
+      }
+
+      await onText(`Completed queued prompt: ${prompt}`);
+      return {
+        output: `Completed queued prompt: ${prompt}`,
+        sessionId: `queue-plain-tool-boundary-${runCount}`,
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "initial message",
+      mode: "default",
+    });
+
+    await waitForEvent(chatService, threadId, (event) => event.type === "tool.started");
+
+    await chatService.queueMessage(threadId, {
+      content: "plain queued draft",
+      mode: "default",
+    });
+
+    releaseToolBoundary?.();
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "message.delta" && event.payload.delta === "Post-tool response in progress.",
+    );
+
+    let queued = await chatService.listQueuedMessages(threadId);
+    let userMessages = (await chatService.listMessages(threadId))
+      .filter((message) => message.role === "user")
+      .map((message) => message.content);
+
+    expect(queued.map((message) => message.content)).toEqual(["plain queued draft"]);
+    expect(userMessages).toEqual(["initial message"]);
+
+    releaseInitialRun?.();
+
+    const start = Date.now();
+    while (Date.now() - start < 8000) {
+      queued = await chatService.listQueuedMessages(threadId);
+      userMessages = (await chatService.listMessages(threadId))
+        .filter((message) => message.role === "user")
+        .map((message) => message.content);
+
+      if (queued.length === 0 && userMessages.length === 2) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    expect(queued).toHaveLength(0);
+    expect(userMessages).toEqual([
+      "initial message",
+      "plain queued draft",
+    ]);
+
+    const completionEvents = await chatService.listEvents(threadId);
+    expect(completionEvents.some((event) => (
+      event.type === "chat.completed"
+      && event.payload.cancelled === true
+      && event.payload.cancellationReason === "queued_message_dispatch"
+    ))).toBe(false);
+  });
+
   it("prioritizes send-now drafts ahead of FIFO queued drafts after the current tool boundary", async () => {
     let runCount = 0;
     let releaseToolBoundary: (() => void) | null = null;
@@ -463,6 +581,99 @@ describe("chatService queue flow", () => {
       "initial message",
       "urgent queued draft",
       "first queued draft",
+    ]);
+  });
+
+  it("keeps send-now queued drafts pending until completion when no tool boundary exists", async () => {
+    let releaseInitialRun: (() => void) | null = null;
+
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ prompt, onText, abortController }) => {
+      if (prompt.includes("initial message")) {
+        await onText("Initial response in progress.");
+
+        await new Promise<void>((resolve, reject) => {
+          releaseInitialRun = resolve;
+          abortController?.signal.addEventListener("abort", () => reject(new Error("Aborted without tool boundary")), { once: true });
+        });
+
+        await onText(" Initial response completed.");
+        return {
+          output: "Initial response in progress. Initial response completed.",
+          sessionId: "queue-send-now-no-boundary-initial",
+        };
+      }
+
+      await onText(`Completed queued prompt: ${prompt}`);
+      return {
+        output: `Completed queued prompt: ${prompt}`,
+        sessionId: "queue-send-now-no-boundary-followup",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "initial message",
+      mode: "default",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "message.delta" && event.payload.delta === "Initial response in progress.",
+    );
+
+    const queuedMessage = await chatService.queueMessage(threadId, {
+      content: "urgent queued draft",
+      mode: "default",
+    });
+
+    await chatService.requestQueuedMessageDispatch(threadId, queuedMessage.id);
+
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    let queued = await chatService.listQueuedMessages(threadId);
+    let userMessages = (await chatService.listMessages(threadId))
+      .filter((message) => message.role === "user")
+      .map((message) => message.content);
+
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.status).toBe("dispatch_requested");
+    expect(userMessages).toEqual(["initial message"]);
+
+    const interimEvents = await chatService.listEvents(threadId);
+    expect(interimEvents.some((event) => (
+      event.type === "chat.completed"
+      && event.payload.cancelled === true
+      && event.payload.cancellationReason === "queued_message_dispatch"
+    ))).toBe(false);
+
+    releaseInitialRun?.();
+
+    const start = Date.now();
+    while (Date.now() - start < 8000) {
+      queued = await chatService.listQueuedMessages(threadId);
+      userMessages = (await chatService.listMessages(threadId))
+        .filter((message) => message.role === "user")
+        .map((message) => message.content);
+
+      if (queued.length === 0 && userMessages.length === 2) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    expect(queued).toHaveLength(0);
+    expect(userMessages).toEqual([
+      "initial message",
+      "urgent queued draft",
     ]);
   });
 

@@ -901,6 +901,20 @@ export function createChatService(deps: RuntimeDeps) {
     });
   }
 
+  async function getNextQueuedHandoffCandidate(threadId: string): Promise<QueuedMessageWithAttachments | null> {
+    return deps.prisma.chatQueuedMessage.findFirst({
+      where: {
+        threadId,
+        status: { in: ["dispatch_requested", "dispatching"] },
+      },
+      orderBy: [
+        { dispatchRequestedAt: "asc" },
+        { seq: "asc" },
+      ],
+      include: { attachments: true },
+    });
+  }
+
   async function commitUserMessageAndScheduleAssistant(params: {
     threadId: string;
     content: string;
@@ -1153,7 +1167,7 @@ export function createChatService(deps: RuntimeDeps) {
       return;
     }
 
-    const nextQueued = await getNextQueuedMessage(threadId);
+    const nextQueued = await getNextQueuedHandoffCandidate(threadId);
     if (!nextQueued) {
       if (run.queueHandoffPending) {
         setThreadRunState(threadId, { ...run, queueHandoffPending: false });
@@ -2328,7 +2342,6 @@ export function createChatService(deps: RuntimeDeps) {
 
       await emitThreadWorkspaceUpdate(threadId);
       await maybeDispatchQueuedMessages(threadId);
-      await maybeRequestQueuedHandoff(threadId);
       return mapChatQueuedMessage(updated);
     },
 

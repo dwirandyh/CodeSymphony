@@ -11,7 +11,6 @@ import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
-import { QueuedMessageList } from "../components/workspace/QueuedMessageList";
 const CodeEditorPanel = lazy(() =>
   import("../components/workspace/CodeEditorPanel").then(m => ({ default: m.CodeEditorPanel }))
 );
@@ -2084,17 +2083,6 @@ export function WorkspacePage() {
 
                 {!gates.isWaitingForUserGate ? (
                   <>
-                    <QueuedMessageList
-                      messages={chat.queuedMessages}
-                      disabled={gates.planActionBusy}
-                      onUpdate={(queueMessageId, content) => chat.updateQueuedDraft(queueMessageId, content)}
-                      onDelete={(queueMessageId) => {
-                        void chat.deleteQueuedDraft(queueMessageId);
-                      }}
-                      onDispatch={(queueMessageId) => {
-                        void chat.dispatchQueuedDraft(queueMessageId);
-                      }}
-                    />
                     <Composer
                       attachedTop={false}
                       disabled={chat.composerDisabled || gates.planActionBusy}
@@ -2115,6 +2103,7 @@ export function WorkspacePage() {
                       modelProviderId={chat.composerModelProviderId}
                       permissionMode={chat.composerPermissionMode}
                       hasMessages={chat.messages.length > 0}
+                      queuedMessages={chat.queuedMessages}
                       onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
                       onQueueDraft={({ content, mode, attachments }) => chat.queueDraft(content, mode, attachments)}
                       onModeChange={(mode) => {
@@ -2126,6 +2115,13 @@ export function WorkspacePage() {
                       }}
                       onPermissionModeChange={(permissionMode) => {
                         void chat.setComposerPermissionMode(permissionMode);
+                      }}
+                      onUpdateQueuedMessage={(queueMessageId, content) => chat.updateQueuedDraft(queueMessageId, content)}
+                      onDeleteQueuedMessage={(queueMessageId) => {
+                        void chat.deleteQueuedDraft(queueMessageId);
+                      }}
+                      onDispatchQueuedMessage={(queueMessageId) => {
+                        void chat.dispatchQueuedDraft(queueMessageId);
                       }}
                     />
                   </>
