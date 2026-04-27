@@ -1941,6 +1941,22 @@ describe("ChatMessageList", () => {
     expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
   });
 
+  it("requests older history before the viewport fully reaches the hard top threshold while the user keeps scrolling upward", () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    triggerScroll(1560);
+    triggerScroll(720);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
   it("requests older history when the user wheels upward from a short bottom-anchored thread", () => {
     const onLoadOlderHistory = vi.fn();
     mountChatMessageList({
@@ -1966,7 +1982,7 @@ describe("ChatMessageList", () => {
     });
     setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
 
-    latestScrollStateRef.current.scrollOffset = 640;
+    latestScrollStateRef.current.scrollOffset = 960;
     triggerWheel(-48);
     expect(onLoadOlderHistory).toHaveBeenCalledTimes(0);
 
@@ -2172,6 +2188,7 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Loading older messages");
+    expect(container.querySelector("[data-testid='older-history-loading-row']")).toBeTruthy();
   });
 
   it("does not auto-follow while older history is being prepended", () => {
