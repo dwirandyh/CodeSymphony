@@ -296,7 +296,6 @@ export const ChatMessageList = memo(function ChatMessageList({
     items.length
     + (showThinkingPlaceholder ? 1 : 0)
     + (shouldRenderFooter ? 1 : 0);
-  const useBottomAnchoredShortThreadLayout = displayItemCount <= 12;
   const keepMountedIndexes = useMemo(() => {
     if (displayItemCount === 0) {
       return undefined;
@@ -1238,20 +1237,10 @@ export const ChatMessageList = memo(function ChatMessageList({
           data={displayItems}
           keepMounted={keepMountedIndexes}
           shift={false}
-          style={
-            useBottomAnchoredShortThreadLayout
-              ? {
-                  height: "100%",
-                  overflowAnchor: "none",
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "flex-end",
-                }
-              : {
-                  height: "100%",
-                  overflowAnchor: "none",
-                }
-          }
+          style={{
+            height: "100%",
+            overflowAnchor: "none",
+          }}
           onScroll={handleScroll}
           onScrollEnd={handleScrollEnd}
         >

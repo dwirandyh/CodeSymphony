@@ -1890,16 +1890,15 @@ describe("ChatMessageList", () => {
     expect(latestVListPropsRef.current?.keepMounted).toEqual([8, 9, 10, 11, 12, 13]);
   });
 
-  it("bottom-aligns short threads so the newest message remains the first visible content", () => {
+  it("keeps short threads top-aligned below the thread tabs", () => {
     mountChatMessageList({
       threadId: "thread-a",
       items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
     });
 
     expect(latestVListPropsRef.current?.style).toMatchObject({
-      display: "flex",
-      flexDirection: "column",
-      justifyContent: "flex-end",
+      height: "100%",
+      overflowAnchor: "none",
     });
   });
 
