@@ -28,6 +28,12 @@ const inFlightSnapshotRequests = new Map<string, Promise<ChatThreadSnapshot>>();
 const inFlightStatusSnapshotRequests = new Map<string, Promise<ChatThreadStatusSnapshot>>();
 const inFlightTimelineSnapshotRequests = new Map<string, Promise<ChatTimelineSnapshot>>();
 
+type TimelineSnapshotTimingEntry = {
+  phase: string;
+  durationMs: number;
+  data?: Record<string, unknown>;
+};
+
 function parseNonNegativeInt(input: unknown): number | null {
   const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
   if (typeof rawValue !== "string" && typeof rawValue !== "number") {
@@ -352,6 +358,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const existingRequest = inFlightTimelineSnapshotRequests.get(timelineKey);
       const reusedInFlightRequest = existingRequest != null;
       const startedAt = Date.now();
+      const timings: TimelineSnapshotTimingEntry[] = [];
 
       appendRuntimeDebugLog({
         source: "runtime.chats",
@@ -372,6 +379,9 @@ export async function registerChatRoutes(app: FastifyInstance) {
         paginated,
         beforeEventIdx,
         beforeMessageSeq,
+        onTiming: (entry: TimelineSnapshotTimingEntry) => {
+          timings.push(entry);
+        },
       }).then((s) => s.timeline);
 
       if (!existingRequest) {
@@ -392,6 +402,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
             beforeMessageSeq,
             reusedInFlightRequest,
             durationMs: Date.now() - startedAt,
+            timings,
+            timingsUnavailable: reusedInFlightRequest,
             ...summarizeTimelineEnvelope(snapshot),
           },
         });

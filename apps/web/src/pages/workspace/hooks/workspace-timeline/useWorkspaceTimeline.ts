@@ -18,6 +18,18 @@ setTimelineDebugLogger((entry) => {
   }
 });
 
+function getPerfNow(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function roundPerfMs(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
 function getTimelineItemStableKey(item: { kind: string; [key: string]: unknown }): string {
   switch (item.kind) {
     case "message":
@@ -86,12 +98,14 @@ export function useWorkspaceTimeline(
       return disabledResult;
     }
 
+    const fingerprintStartedAtMs = getPerfNow();
     const fingerprint = {
       messagesFingerprint: buildMessagesStateFingerprint(messages),
       eventsFingerprint: buildEventsStateFingerprint(events),
       threadId: selectedThreadId,
       semanticHydrationInProgress,
     };
+    const fingerprintDurationMs = roundPerfMs(getPerfNow() - fingerprintStartedAtMs);
     const prev = prevFingerprintRef.current;
     if (
       prev !== null
@@ -101,15 +115,27 @@ export function useWorkspaceTimeline(
       && prev.semanticHydrationInProgress === fingerprint.semanticHydrationInProgress
       && prevResultRef.current.items.length > 0
     ) {
+      pushRenderDebug({
+        source: "useWorkspaceTimeline",
+        event: "timelineMemoHit",
+        messageId: selectedThreadId ?? undefined,
+        details: {
+          messagesCount: messages.length,
+          eventsCount: events.length,
+          fingerprintDurationMs,
+        },
+      });
       return prevResultRef.current;
     }
 
+    const assemblyStartedAtMs = getPerfNow();
     const coreResult = buildTimelineFromSeed({
       messages,
       events,
       selectedThreadId,
       semanticHydrationInProgress,
     });
+    const assemblyDurationMs = roundPerfMs(getPerfNow() - assemblyStartedAtMs);
 
     refs.stickyRawFallbackMessageIds.clear();
     refs.renderDecisionByMessageId.clear();
@@ -151,6 +177,10 @@ export function useWorkspaceTimeline(
       messageId: selectedThreadId ?? undefined,
       details: {
         count: timelineResult.items.length,
+        messagesCount: messages.length,
+        eventsCount: events.length,
+        fingerprintDurationMs,
+        assemblyDurationMs,
       },
     });
 

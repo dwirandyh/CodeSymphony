@@ -151,7 +151,57 @@ type ThreadSnapshotOptions = {
   paginated?: boolean;
   beforeEventIdx?: number | null;
   beforeMessageSeq?: number | null;
+  onTiming?: (entry: ThreadSnapshotTimingEntry) => void;
 };
+
+type ThreadSnapshotTimingEntry = {
+  phase: string;
+  durationMs: number;
+  data?: Record<string, unknown>;
+};
+
+function getPerfNow(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function roundPerfMs(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+async function timeSnapshotPhase<T>(
+  options: ThreadSnapshotOptions | undefined,
+  phase: string,
+  data: Record<string, unknown> | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  const startedAtMs = getPerfNow();
+  try {
+    return await run();
+  } finally {
+    options?.onTiming?.({
+      phase,
+      durationMs: roundPerfMs(getPerfNow() - startedAtMs),
+      ...(data ? { data } : {}),
+    });
+  }
+}
+
+function recordSnapshotPhase(
+  options: ThreadSnapshotOptions | undefined,
+  phase: string,
+  startedAtMs: number,
+  data?: Record<string, unknown>,
+): void {
+  options?.onTiming?.({
+    phase,
+    durationMs: roundPerfMs(getPerfNow() - startedAtMs),
+    ...(data ? { data } : {}),
+  });
+}
 
 function createWorktreeMutationTracker(): WorktreeMutationTracker {
   return {
@@ -2299,8 +2349,9 @@ export function createChatService(deps: RuntimeDeps) {
       threadId: string,
       options?: ThreadSnapshotOptions,
     ): Promise<ChatThreadSnapshot> {
-      await maybeDispatchQueuedMessages(threadId);
-      await requireThreadExists(deps, threadId);
+      const snapshotStartedAtMs = getPerfNow();
+      await timeSnapshotPhase(options, "queued-dispatch-check", undefined, () => maybeDispatchQueuedMessages(threadId));
+      await timeSnapshotPhase(options, "thread-exists", undefined, () => requireThreadExists(deps, threadId));
       const includeCollections = options?.includeCollections ?? true;
       const paginated = options?.paginated === true;
 
@@ -2309,6 +2360,7 @@ export function createChatService(deps: RuntimeDeps) {
       let olderHistoryAvailable = false;
 
       if (includeCollections && !paginated) {
+        const queryStartedAtMs = getPerfNow();
         const [messageRows, eventRows] = await Promise.all([
           deps.prisma.chatMessage.findMany({
             where: { threadId },
@@ -2317,10 +2369,20 @@ export function createChatService(deps: RuntimeDeps) {
           }),
           deps.eventHub.list(threadId),
         ]);
+        recordSnapshotPhase(options, "db.full-collections", queryStartedAtMs, {
+          messageRows: messageRows.length,
+          eventRows: eventRows.length,
+        });
 
+        const mapStartedAtMs = getPerfNow();
         messages = mapMessages(messageRows);
         events = eventRows;
+        recordSnapshotPhase(options, "map.full-collections", mapStartedAtMs, {
+          messagesCount: messages.length,
+          eventsCount: events.length,
+        });
       } else {
+        const queryStartedAtMs = getPerfNow();
         const [messageRowsDescending, eventRowsDescending] = await Promise.all([
           deps.prisma.chatMessage.findMany({
             where: {
@@ -2344,7 +2406,14 @@ export function createChatService(deps: RuntimeDeps) {
             take: DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 1,
           }),
         ]);
+        recordSnapshotPhase(options, "db.paginated-collections", queryStartedAtMs, {
+          messageRows: messageRowsDescending.length,
+          eventRows: eventRowsDescending.length,
+          beforeMessageSeq: options?.beforeMessageSeq ?? null,
+          beforeEventIdx: options?.beforeEventIdx ?? null,
+        });
 
+        const selectStartedAtMs = getPerfNow();
         const {
           rows: newestMessageRows,
           olderRowsAvailable: olderMessagesAvailable,
@@ -2353,18 +2422,43 @@ export function createChatService(deps: RuntimeDeps) {
           rows: newestEventRows,
           olderRowsAvailable: olderEventsAvailable,
         } = selectNewestRowsAscending(eventRowsDescending, DISPLAY_TIMELINE_TAIL_EVENT_LIMIT);
+        recordSnapshotPhase(options, "select.paginated-window", selectStartedAtMs, {
+          selectedMessageRows: newestMessageRows.length,
+          selectedEventRows: newestEventRows.length,
+          olderMessagesAvailable,
+          olderEventsAvailable,
+        });
 
+        const mapStartedAtMs = getPerfNow();
         events = mapEvents(newestEventRows);
         messages = trimMessagesToEventWindow(mapMessages(newestMessageRows), events);
         olderHistoryAvailable = olderMessagesAvailable || olderEventsAvailable;
+        recordSnapshotPhase(options, "map-trim.paginated-collections", mapStartedAtMs, {
+          messagesCount: messages.length,
+          eventsCount: events.length,
+          olderHistoryAvailable,
+        });
       }
 
+      const timelineStartedAtMs = getPerfNow();
       const timeline = buildTimelineSnapshot({
         messages,
         events,
         threadId,
         includeCollections,
         olderHistoryAvailable,
+      });
+      recordSnapshotPhase(options, "timeline.assemble", timelineStartedAtMs, {
+        timelineItemsCount: timeline.timelineItems.length,
+        collectionsIncluded: timeline.collectionsIncluded ?? null,
+        oldestRenderableHydrationPending: timeline.summary.oldestRenderableHydrationPending,
+      });
+      recordSnapshotPhase(options, "snapshot.total", snapshotStartedAtMs, {
+        includeCollections,
+        paginated,
+        messagesCount: messages.length,
+        eventsCount: events.length,
+        timelineItemsCount: timeline.timelineItems.length,
       });
 
       return {

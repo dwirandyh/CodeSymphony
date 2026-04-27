@@ -30,6 +30,7 @@ import { debugLog } from "../../../../lib/debugLog";
 import {
   disposeAllThreadCollections,
   disposeThreadCollections,
+  getThreadCollectionCounts,
   getThreadCollections,
   getThreadMessagesCollection,
   pruneThreadCollections,
@@ -88,7 +89,7 @@ const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_EVENTS: ChatEvent[] = [];
 const pendingAutoCreateWorktreeIds = new Set<string>();
 
-type ThreadHistoryPaginationState = {
+export type ThreadHistoryPaginationState = {
   hasOlderHistory: boolean;
   loadingOlderHistory: boolean;
   collectionsHydrated: boolean;
@@ -183,6 +184,42 @@ function summarizePaginationEdgeState(params: {
     loadingOlderHistory: params.loadingOlderHistory,
     collectionsHydrated: params.collectionsHydrated,
   };
+}
+
+export function resolveHydratedHistoryAvailability(params: {
+  current: ThreadHistoryPaginationState;
+  snapshot: ChatTimelineSnapshot;
+  localMessagesBeforeHydration: ChatMessage[];
+  localEventsBeforeHydration: ChatEvent[];
+}): boolean {
+  const {
+    current,
+    snapshot,
+    localMessagesBeforeHydration,
+    localEventsBeforeHydration,
+  } = params;
+  const snapshotHasOlderHistory = snapshot.summary.oldestRenderableHydrationPending === true;
+  if (!current.collectionsHydrated) {
+    return snapshotHasOlderHistory;
+  }
+
+  if (!snapshotHasOlderHistory) {
+    return false;
+  }
+
+  const localOldestMessageSeq = localMessagesBeforeHydration[0]?.seq ?? null;
+  const localOldestEventIdx = localEventsBeforeHydration[0]?.idx ?? null;
+  const snapshotOldestMessageSeq = snapshot.messages[0]?.seq ?? null;
+  const snapshotOldestEventIdx = snapshot.events[0]?.idx ?? null;
+  const localHeadAlreadyExtendsPastSnapshot =
+    (localOldestMessageSeq != null && snapshotOldestMessageSeq != null && localOldestMessageSeq < snapshotOldestMessageSeq)
+    || (localOldestEventIdx != null && snapshotOldestEventIdx != null && localOldestEventIdx < snapshotOldestEventIdx);
+
+  if (!current.hasOlderHistory && localHeadAlreadyExtendsPastSnapshot) {
+    return false;
+  }
+
+  return true;
 }
 
 function getPerfNow(): number {
@@ -486,6 +523,16 @@ function toPlainChatEvent(event: ChatEvent): ChatEvent {
     payload: event.payload,
     createdAt: event.createdAt,
   };
+}
+
+function cloneSortedIfNeeded<T>(rows: T[], compare: (left: T, right: T) => number): T[] {
+  for (let index = 1; index < rows.length; index += 1) {
+    if (compare(rows[index - 1], rows[index]) > 0) {
+      return [...rows].sort(compare);
+    }
+  }
+
+  return rows;
 }
 
 function isSnapshotFreshEnoughForAuthoritativeTimeline(params: {
@@ -943,11 +990,25 @@ export function useChatSession(
     [selectedThreadIdForData],
   );
   const messages = useMemo(
-    () => (liveMessages ? liveMessages.map((message) => toPlainChatMessage(message as ChatMessage)) : EMPTY_MESSAGES),
+    () => {
+      if (!liveMessages) {
+        return EMPTY_MESSAGES;
+      }
+
+      const plainMessages = liveMessages.map((message) => toPlainChatMessage(message as ChatMessage));
+      return cloneSortedIfNeeded(plainMessages, (left, right) => left.seq - right.seq);
+    },
     [liveMessages],
   );
   const events = useMemo(
-    () => (liveEvents ? liveEvents.map((event) => toPlainChatEvent(event as ChatEvent)) : EMPTY_EVENTS),
+    () => {
+      if (!liveEvents) {
+        return EMPTY_EVENTS;
+      }
+
+      const plainEvents = liveEvents.map((event) => toPlainChatEvent(event as ChatEvent));
+      return cloneSortedIfNeeded(plainEvents, (left, right) => left.idx - right.idx);
+    },
     [liveEvents],
   );
   const olderHistoryCursor = useMemo(
@@ -1043,7 +1104,34 @@ export function useChatSession(
     optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
     waitingAssistant,
   });
-  const remoteBootstrapThreadId = shouldDelaySelectedThreadRemoteBootstrap ? null : selectedThreadIdForData;
+  const selectedThreadHasLocalState =
+    selectedThreadId != null && (messages.length > 0 || events.length > 0);
+  const selectedThreadHasCompleteLocalHistory =
+    selectedThreadHasLocalState
+    && selectedThreadHistoryPagination.collectionsHydrated
+    && !selectedThreadHistoryPagination.hasOlderHistory;
+  const shouldUseLocalCompleteThreadCache =
+    selectedThreadHasCompleteLocalHistory
+    && selectedThread?.active !== true
+    && waitingAssistant?.threadId !== selectedThreadId;
+  const snapshotBootstrapThreadId =
+    shouldDelaySelectedThreadRemoteBootstrap
+      ? null
+      : selectedThreadIdForData;
+  const remoteBootstrapThreadId =
+    shouldDelaySelectedThreadRemoteBootstrap || shouldUseLocalCompleteThreadCache
+      ? null
+      : selectedThreadIdForData;
+  const shouldFetchThreadSnapshot = !shouldUseLocalCompleteThreadCache;
+  const isThreadHistoryLocallyComplete = useCallback((threadId: string) => {
+    const state = historyPaginationByThreadId[threadId] ?? DEFAULT_THREAD_HISTORY_PAGINATION_STATE;
+    if (!state.collectionsHydrated || state.hasOlderHistory) {
+      return false;
+    }
+
+    const counts = getThreadCollectionCounts(threadId);
+    return counts != null && (counts.messagesCount > 0 || counts.eventsCount > 0);
+  }, [historyPaginationByThreadId]);
   if (selectedThread && selectedWorktreeId && selectedThread.worktreeId === selectedWorktreeId) {
     const selectedThreadAgent = selectedThread.agent ?? "claude";
     lastThreadSelectionRef.current = {
@@ -1099,11 +1187,17 @@ export function useChatSession(
     data: queriedDisplayThreadSnapshot,
     isLoading: threadSnapshotLoading,
     isFetching: threadSnapshotFetching,
-  } = useThreadSnapshot(remoteBootstrapThreadId, { mode: "display" });
+  } = useThreadSnapshot(snapshotBootstrapThreadId, {
+    mode: "display",
+    enabled: shouldFetchThreadSnapshot,
+  });
 
   const {
     data: queriedHydrationThreadSnapshot,
-  } = useThreadSnapshot(remoteBootstrapThreadId, { mode: "full" });
+  } = useThreadSnapshot(snapshotBootstrapThreadId, {
+    mode: "full",
+    enabled: shouldFetchThreadSnapshot,
+  });
   const queriedThreadSnapshot = queriedHydrationThreadSnapshot ?? queriedDisplayThreadSnapshot;
   const threadNavigationPerfEnabled = isThreadNavigationPerfEnabled();
 
@@ -1154,7 +1248,10 @@ export function useChatSession(
         localEventCount: events.length,
         selectedThreadCreatedLocally,
         shouldDelaySelectedThreadRemoteBootstrap,
+        shouldUseLocalCompleteThreadCache,
+        snapshotBootstrapThreadId,
         remoteBootstrapThreadId,
+        shouldFetchThreadSnapshot,
         snapshotLoading: threadSnapshotLoading,
         snapshotFetching: threadSnapshotFetching,
         hasCachedSnapshot: queriedThreadSnapshot != null,
@@ -1170,6 +1267,9 @@ export function useChatSession(
     selectedThreadId,
     selectedWorktreeId,
     shouldDelaySelectedThreadRemoteBootstrap,
+    shouldFetchThreadSnapshot,
+    shouldUseLocalCompleteThreadCache,
+    snapshotBootstrapThreadId,
     threadNavigationPerfEnabled,
     threadSnapshotFetching,
     threadSnapshotLoading,
@@ -1205,7 +1305,9 @@ export function useChatSession(
         data: {
           atMs: getThreadNavigationPerfElapsedMs(session),
           snapshotKey,
+          snapshotBootstrapThreadId,
           remoteBootstrapThreadId,
+          shouldFetchThreadSnapshot,
           snapshotMessageCount: queriedThreadSnapshot.messages.length,
           snapshotEventCount: queriedThreadSnapshot.events.length,
           snapshotTimelineItemCount: queriedThreadSnapshot.timelineItems.length,
@@ -1229,7 +1331,9 @@ export function useChatSession(
       worktreeId: selectedWorktreeId,
       data: {
         atMs: getThreadNavigationPerfElapsedMs(session),
+        snapshotBootstrapThreadId,
         remoteBootstrapThreadId,
+        shouldFetchThreadSnapshot,
         snapshotLoading: threadSnapshotLoading,
         snapshotFetching: threadSnapshotFetching,
       },
@@ -1240,6 +1344,8 @@ export function useChatSession(
     remoteBootstrapThreadId,
     selectedThreadId,
     selectedWorktreeId,
+    shouldFetchThreadSnapshot,
+    snapshotBootstrapThreadId,
     threadSnapshotFetching,
     threadSnapshotLoading,
   ]);
@@ -1289,13 +1395,18 @@ export function useChatSession(
       selectedThread?.active !== true
       && waitingAssistant?.threadId !== selectedThreadId
       && !hasPendingUserGate;
-    const shouldReplaceSnapshotSeed = threadChanged
+    const snapshotCoversLocalHead = doesSnapshotCoverLocalHead({
+      snapshot: queriedHydrationThreadSnapshot,
+      messages,
+      events,
+    });
+    const shouldReplaceSnapshotSeed = (threadChanged && snapshotCoversLocalHead)
       || (queriedHydrationThreadSnapshot.messages.length === 0 && queriedHydrationThreadSnapshot.events.length === 0)
-      || snapshotCanAuthoritativelyReplaceLocalState;
+      || (snapshotCanAuthoritativelyReplaceLocalState && snapshotCoversLocalHead);
 
     const perfSession = activeThreadNavigationPerfRef.current;
     const hydrateStartedAtMs = getPerfNow();
-    hydrateThreadFromSnapshot({
+    const hydrationResult = hydrateThreadFromSnapshot({
       threadId: selectedThreadId,
       snapshot: queriedHydrationThreadSnapshot,
       mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
@@ -1319,6 +1430,7 @@ export function useChatSession(
           localLatestMessageSeq,
           snapshotMessageCount: queriedHydrationThreadSnapshot.messages.length,
           snapshotEventCount: queriedHydrationThreadSnapshot.events.length,
+          hydrationTiming: hydrationResult.timing,
         },
       });
     }
@@ -1333,8 +1445,10 @@ export function useChatSession(
       snapshotTimelineItemCount: queriedHydrationThreadSnapshot.timelineItems.length,
       oldestRenderableHydrationPending:
         queriedHydrationThreadSnapshot.summary.oldestRenderableHydrationPending ?? false,
+      snapshotCoversLocalHead,
       localLatestEventIdx,
       localLatestMessageSeq,
+      hydrationTiming: hydrationResult.timing,
     });
 
     const latestMetadata = extractLatestThreadMetadata(queriedHydrationThreadSnapshot.events);
@@ -1347,9 +1461,12 @@ export function useChatSession(
 
     setThreadLastAppliedSnapshotKey(selectedThreadId, seedDecision.snapshotKey);
     updateThreadHistoryPagination(selectedThreadId, (current) => ({
-      hasOlderHistory: current.collectionsHydrated
-        ? current.hasOlderHistory
-        : queriedHydrationThreadSnapshot.summary.oldestRenderableHydrationPending === true,
+      hasOlderHistory: resolveHydratedHistoryAvailability({
+        current,
+        snapshot: queriedHydrationThreadSnapshot,
+        localMessagesBeforeHydration: messages,
+        localEventsBeforeHydration: events,
+      }),
       loadingOlderHistory: false,
       collectionsHydrated: true,
     }));
@@ -2511,7 +2628,7 @@ export function useChatSession(
       }
 
       startTransition(() => {
-        hydrateThreadFromSnapshot({
+        const hydrationResult = hydrateThreadFromSnapshot({
           threadId: selectedThreadId,
           snapshot: olderSnapshot,
           mode: "prepend",
@@ -2522,6 +2639,16 @@ export function useChatSession(
           loadingOlderHistory: false,
           collectionsHydrated: true,
         }));
+        debugLog("thread.pagination.state", "loadOlder.hydrated", {
+          threadId: selectedThreadId,
+          beforeEventIdx,
+          beforeMessageSeq,
+          insertedMessageCount: hydrationResult.insertedMessageCount,
+          insertedEventCount: hydrationResult.insertedEventCount,
+          totalMessagesCount: hydrationResult.messages.length,
+          totalEventsCount: hydrationResult.events.length,
+          hydrationTiming: hydrationResult.timing,
+        });
       });
     } catch (error) {
       debugLog("thread.pagination.state", "loadOlder.failed", {
@@ -2711,8 +2838,6 @@ export function useChatSession(
 
   const timelineItems = timelineData.items;
   const timelineSummary = timelineData.summary;
-  const selectedThreadHasLocalState =
-    selectedThreadId != null && (messages.length > 0 || events.length > 0);
   const requestedThreadBootstrapPending =
     selectedThreadId == null
     && options?.desiredThreadId != null;
@@ -2912,6 +3037,7 @@ export function useChatSession(
     stoppingRun,
     hasOlderHistory: selectedThreadHistoryPagination.hasOlderHistory,
     loadingOlderHistory: selectedThreadHistoryPagination.loadingOlderHistory,
+    isThreadHistoryLocallyComplete,
     semanticHydrationInProgress: false,
 
     timelineItems,

@@ -1,4 +1,10 @@
-export { deriveSelectedThreadUiState, resolveWorktreeSwitchSeed, useChatSession } from "./useChatSession";
+export {
+  deriveSelectedThreadUiState,
+  resolveHydratedHistoryAvailability,
+  resolveWorktreeSwitchSeed,
+  useChatSession,
+} from "./useChatSession";
+export type { ThreadHistoryPaginationState } from "./useChatSession";
 
 export {
   buildSnapshotKey,

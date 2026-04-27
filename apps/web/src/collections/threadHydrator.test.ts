@@ -136,6 +136,64 @@ describe("threadHydrator", () => {
     ]);
   });
 
+  it("dedupes overlapping prepend boundary rows and reports inserted counts", () => {
+    const { eventsCollection, messagesCollection } = getThreadCollections("thread-1");
+    messagesCollection.insert([
+      makeMessage(3, "message-3", "local-3"),
+      makeMessage(4, "message-4", "local-4"),
+    ]);
+    eventsCollection.insert([
+      makeEvent(30, "event-30"),
+      makeEvent(40, "event-40"),
+    ]);
+
+    const hydrated = hydrateThreadFromSnapshot({
+      threadId: "thread-1",
+      mode: "prepend",
+      snapshot: makeSnapshot({
+        newestIdx: 30,
+        newestSeq: 3,
+        messages: [
+          makeMessage(1, "message-1"),
+          makeMessage(2, "message-2"),
+          makeMessage(3, "message-3", "snapshot-3"),
+        ],
+        events: [
+          makeEvent(10, "event-10"),
+          makeEvent(20, "event-20"),
+          makeEvent(30, "event-30"),
+        ],
+      }),
+    });
+
+    expect(hydrated.insertedMessageCount).toBe(2);
+    expect(hydrated.insertedEventCount).toBe(2);
+    expect(hydrated.messages.map((message) => ({
+      id: message.id,
+      content: message.content,
+    }))).toEqual([
+      { id: "message-1", content: "message-1" },
+      { id: "message-2", content: "message-2" },
+      { id: "message-3", content: "local-3" },
+      { id: "message-4", content: "local-4" },
+    ]);
+    expect(hydrated.events.map((event) => event.id)).toEqual([
+      "event-10",
+      "event-20",
+      "event-30",
+      "event-40",
+    ]);
+    expect(hydrated.timing.totalDurationMs).toBeGreaterThanOrEqual(0);
+    expect((messagesCollection.toArray as ChatMessage[])
+      .map((message) => message.id)
+      .sort()).toEqual([
+        "message-1",
+        "message-2",
+        "message-3",
+        "message-4",
+      ]);
+  });
+
   it("disposes thread collections and recreates them empty", () => {
     const initial = getThreadCollections("thread-1");
     initial.messagesCollection.insert(makeMessage(1));

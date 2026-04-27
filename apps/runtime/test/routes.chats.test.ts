@@ -541,12 +541,13 @@ describe("chat routes", () => {
       const res = await app.inject({ method: "GET", url: "/api/threads/t1/timeline?includeCollections=0" });
 
       expect(res.statusCode).toBe(200);
-      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", {
+      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", expect.objectContaining({
         includeCollections: false,
         paginated: false,
         beforeEventIdx: null,
         beforeMessageSeq: null,
-      });
+        onTiming: expect.any(Function),
+      }));
       expect(res.json().data.collectionsIncluded).toBe(false);
     });
 
@@ -577,12 +578,13 @@ describe("chat routes", () => {
       });
 
       expect(res.statusCode).toBe(200);
-      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", {
+      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", expect.objectContaining({
         includeCollections: true,
         paginated: true,
         beforeEventIdx: 120,
         beforeMessageSeq: 8,
-      });
+        onTiming: expect.any(Function),
+      }));
     });
 
     it("does not leak overlap-unresolved subagent explore events into top-level explore cards", async () => {

@@ -13,6 +13,7 @@ import {
   prependUniqueEvents,
   prependUniqueMessages,
   prunePendingStreamUpdatesForSnapshot,
+  resolveHydratedHistoryAvailability,
   resolveWorktreeSwitchSeed,
   resolveSnapshotSeedDecision,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
@@ -307,6 +308,72 @@ describe("prependUniqueEvents", () => {
     ];
     const result = prependUniqueEvents([], incoming);
     expect(result.map((e) => e.idx)).toEqual([1, 2]);
+  });
+});
+
+describe("resolveHydratedHistoryAvailability", () => {
+  const hydratedWithoutOlderHistory = {
+    hasOlderHistory: false,
+    loadingOlderHistory: false,
+    collectionsHydrated: true,
+  };
+
+  it("re-enables older history after navigation prunes local rows but server snapshot is still truncated", () => {
+    const snapshot = {
+      ...makeSnapshot({ newestSeq: 10, newestIdx: 10 }),
+      summary: {
+        oldestRenderableKey: "message:m-9",
+        oldestRenderableKind: "message" as const,
+        oldestRenderableMessageId: "m-9",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      messages: [makeMessage("m-9", 9), makeMessage("m-10", 10)],
+      events: [
+        makeEvent(9, "chat.completed", { messageId: "m-9" }),
+        makeEvent(10, "chat.completed", { messageId: "m-10" }),
+      ],
+    } satisfies ChatTimelineSnapshot;
+
+    expect(resolveHydratedHistoryAvailability({
+      current: hydratedWithoutOlderHistory,
+      snapshot,
+      localMessagesBeforeHydration: [],
+      localEventsBeforeHydration: [],
+    })).toBe(true);
+  });
+
+  it("preserves exhausted older history when local rows already extend past the latest snapshot head", () => {
+    const snapshot = {
+      ...makeSnapshot({ newestSeq: 10, newestIdx: 10 }),
+      summary: {
+        oldestRenderableKey: "message:m-9",
+        oldestRenderableKind: "message" as const,
+        oldestRenderableMessageId: "m-9",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      messages: [makeMessage("m-9", 9), makeMessage("m-10", 10)],
+      events: [
+        makeEvent(9, "chat.completed", { messageId: "m-9" }),
+        makeEvent(10, "chat.completed", { messageId: "m-10" }),
+      ],
+    } satisfies ChatTimelineSnapshot;
+
+    expect(resolveHydratedHistoryAvailability({
+      current: hydratedWithoutOlderHistory,
+      snapshot,
+      localMessagesBeforeHydration: [
+        makeMessage("m-1", 1),
+        makeMessage("m-9", 9),
+        makeMessage("m-10", 10),
+      ],
+      localEventsBeforeHydration: [
+        makeEvent(1, "chat.completed", { messageId: "m-1" }),
+        makeEvent(9, "chat.completed", { messageId: "m-9" }),
+        makeEvent(10, "chat.completed", { messageId: "m-10" }),
+      ],
+    })).toBe(false);
   });
 });
 

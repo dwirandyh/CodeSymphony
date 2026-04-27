@@ -760,7 +760,12 @@ export function WorkspacePage() {
     && chat.messageListEmptyState !== "creating-thread"
     && chat.messageListEmptyState !== "no-thread-selected"
   );
+  const isThreadHistoryLocallyComplete = chat.isThreadHistoryLocallyComplete;
   const prefetchDisplayThreadSnapshot = useCallback((threadId: string) => {
+    if (isThreadHistoryLocallyComplete(threadId)) {
+      return Promise.resolve();
+    }
+
     return queryClient.prefetchQuery({
       queryKey: queryKeys.threads.timelineSnapshot(threadId),
       queryFn: () => api.getTimelineSnapshot(threadId, {
@@ -768,7 +773,7 @@ export function WorkspacePage() {
       }),
       staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,
     });
-  }, [queryClient]);
+  }, [isThreadHistoryLocallyComplete, queryClient]);
   const prefetchWorktreeNavigationTarget = useCallback(async (worktreeId: string, preferredThreadId?: string | null) => {
     const inFlight = navigationPrefetchRef.current.get(worktreeId);
     if (inFlight) {
