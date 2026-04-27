@@ -19,6 +19,7 @@ export function useThreadSnapshot(
     queryKey: queryKeys.threads.timelineSnapshot(threadId!, mode),
     queryFn: () => api.getTimelineSnapshot(threadId!, {
       includeCollections: mode === "full",
+      paginated: mode === "full",
     }),
     enabled: !!threadId && enabled,
     staleTime: THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS,

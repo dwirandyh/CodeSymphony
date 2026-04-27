@@ -1,4 +1,4 @@
-import { act, forwardRef, useImperativeHandle, type ComponentProps } from "react";
+import { act, forwardRef, useImperativeHandle, useState, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync } from "react-dom";
@@ -20,23 +20,53 @@ vi.mock("@pierre/diffs/react", () => ({
   FileDiff: () => <div data-testid="file-diff">FileDiff</div>,
 }));
 
-const { scrollToIndexMock, latestVListPropsRef, latestScrollStateRef } = vi.hoisted(() => ({
+const { scrollToIndexMock, scrollToMock, latestVListPropsRef, latestScrollStateRef, latestVListMountIdRef, vlistMountCounterRef } = vi.hoisted(() => ({
   scrollToIndexMock: vi.fn(),
+  scrollToMock: vi.fn(),
   latestVListPropsRef: { current: null as Record<string, any> | null },
   latestScrollStateRef: {
     current: {
+      cache: { key: "default-cache" },
       scrollOffset: 0,
       scrollSize: 0,
       viewportSize: 0,
     },
   },
+  latestVListMountIdRef: { current: 0 },
+  vlistMountCounterRef: { current: 0 },
 }));
+
+class MockResizeObserver {
+  disconnected = false;
+  observe = vi.fn();
+  disconnect = vi.fn(() => {
+    this.disconnected = true;
+  });
+  unobserve = vi.fn();
+
+  constructor(public callback: ResizeObserverCallback) {}
+}
+
+const resizeObserverInstances: MockResizeObserver[] = [];
 
 vi.mock("virtua", () => ({
   VList: forwardRef(({ children, data, ...props }: any, ref) => {
+    const [mountId] = useState(() => {
+      vlistMountCounterRef.current += 1;
+      latestScrollStateRef.current.scrollOffset = 0;
+      return vlistMountCounterRef.current;
+    });
     latestVListPropsRef.current = props;
+    latestVListMountIdRef.current = mountId;
     useImperativeHandle(ref, () => ({
       scrollToIndex: scrollToIndexMock,
+      scrollTo(offset: number) {
+        latestScrollStateRef.current.scrollOffset = offset;
+        scrollToMock(offset);
+      },
+      get cache() {
+        return latestScrollStateRef.current.cache;
+      },
       get scrollOffset() {
         return latestScrollStateRef.current.scrollOffset;
       },
@@ -124,8 +154,13 @@ beforeEach(() => {
   vi.mocked(parsePatchFiles).mockReset();
   vi.mocked(parsePatchFiles).mockReturnValue([]);
   scrollToIndexMock.mockReset();
+  scrollToMock.mockReset();
   latestVListPropsRef.current = null;
+  latestVListMountIdRef.current = 0;
+  vlistMountCounterRef.current = 0;
+  resizeObserverInstances.length = 0;
   latestScrollStateRef.current = {
+    cache: { key: "default-cache" },
     scrollOffset: 0,
     scrollSize: 0,
     viewportSize: 0,
@@ -134,6 +169,11 @@ beforeEach(() => {
     callback(0);
     return 1;
   });
+  vi.stubGlobal("ResizeObserver", vi.fn().mockImplementation((callback: ResizeObserverCallback) => {
+    const observer = new MockResizeObserver(callback);
+    resizeObserverInstances.push(observer);
+    return observer;
+  }));
 });
 
 afterEach(() => {
@@ -234,6 +274,28 @@ function triggerScrollEnd() {
   }
   act(() => {
     latestVListPropsRef.current?.onScrollEnd();
+  });
+}
+
+function triggerResizeObservers() {
+  act(() => {
+    resizeObserverInstances.forEach((observer) => {
+      if (observer.disconnected) {
+        return;
+      }
+      observer.callback([], observer as unknown as ResizeObserver);
+    });
+  });
+}
+
+function triggerWheel(deltaY: number) {
+  const wrapper = container.querySelector("[data-testid='chat-scroll']");
+  if (!(wrapper instanceof HTMLDivElement)) {
+    throw new Error("chat-scroll wrapper not found");
+  }
+
+  act(() => {
+    wrapper.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY }));
   });
 }
 
@@ -1801,6 +1863,344 @@ describe("ChatMessageList", () => {
     expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
   });
 
+  it("keeps bottom-follow active when a fresh mount emits an initial top scroll before hydration completes", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+    });
+    setScrollMetrics();
+    scrollToIndexMock.mockClear();
+
+    triggerScroll(0);
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("enables virtualizer shift mode so prepended history keeps the viewport stable", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      hasOlderHistory: true,
+    });
+
+    expect(latestVListPropsRef.current?.shift).toBe(true);
+  });
+
+  it("keeps virtualizer shift mode off until older-history pagination is active", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+    });
+
+    expect(latestVListPropsRef.current?.shift).toBe(false);
+  });
+
+  it("keeps head and tail rows mounted and expands overscan while older history is active", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: Array.from({ length: 14 }, (_, index) => makeMessageItem(`m${index + 1}`, index + 1)),
+      hasOlderHistory: true,
+    });
+
+    expect(latestVListPropsRef.current?.bufferSize).toBe(720);
+    expect(latestVListPropsRef.current?.keepMounted).toEqual([0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13]);
+  });
+
+  it("bottom-aligns short threads so the newest message remains the first visible content", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+    });
+
+    expect(latestVListPropsRef.current?.style).toMatchObject({
+      display: "flex",
+      flexDirection: "column",
+      justifyContent: "flex-end",
+    });
+  });
+
+  it("requests older history when the user scrolls back near the top", () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    triggerScroll(1560);
+    triggerScroll(80);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("requests older history when the user wheels upward from a short bottom-anchored thread", () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 400, clientHeight: 900 });
+
+    triggerWheel(-48);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ignore the first real upward scroll to the top after a fresh refresh-style mount", () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    latestScrollStateRef.current.scrollOffset = 640;
+    triggerWheel(-48);
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(0);
+
+    triggerScroll(0);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-arms near-top pagination immediately when the older-history handler skips starting a request", async () => {
+    const onLoadOlderHistory = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(undefined);
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    triggerScroll(1560);
+    triggerScroll(80);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    triggerWheel(-48);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not immediately request another older page until the user scrolls away from the top threshold", async () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    triggerScroll(1560);
+    triggerScroll(80);
+    triggerScroll(100);
+    triggerScrollEnd();
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    triggerScroll(960);
+    triggerScroll(80);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-arms near-top pagination after a page load completes without requiring a downward reset scroll", () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    triggerScroll(1560);
+    triggerScroll(80);
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [
+        makeMessageItem("m0", 0),
+        makeMessageItem("m1", 1),
+        makeMessageItem("m2", 2),
+        makeMessageItem("m3", 3),
+      ],
+      hasOlderHistory: true,
+      loadingOlderHistory: true,
+      onLoadOlderHistory,
+    });
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [
+        makeMessageItem("m0", 0),
+        makeMessageItem("m1", 1),
+        makeMessageItem("m2", 2),
+        makeMessageItem("m3", 3),
+      ],
+      hasOlderHistory: true,
+      loadingOlderHistory: false,
+      onLoadOlderHistory,
+    });
+
+    triggerScroll(72);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-arms the next older-page request when prepend settles between the top threshold and rearm threshold", () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    triggerScroll(1560);
+    triggerScroll(80);
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+
+    latestScrollStateRef.current.scrollOffset = 640;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [
+        makeMessageItem("m0", 0),
+        makeMessageItem("m1", 1),
+        makeMessageItem("m2", 2),
+        makeMessageItem("m3", 3),
+      ],
+      hasOlderHistory: true,
+      loadingOlderHistory: true,
+      onLoadOlderHistory,
+    });
+
+    latestScrollStateRef.current.scrollOffset = 640;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [
+        makeMessageItem("m0", 0),
+        makeMessageItem("m1", 1),
+        makeMessageItem("m2", 2),
+        makeMessageItem("m3", 3),
+      ],
+      hasOlderHistory: true,
+      loadingOlderHistory: false,
+      onLoadOlderHistory,
+    });
+
+    triggerScroll(480);
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries older-history pagination immediately after prepend when the viewport remains pinned near the top", () => {
+    const onLoadOlderHistory = vi.fn();
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+
+    triggerScroll(1560);
+    triggerScroll(80);
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+
+    latestScrollStateRef.current.scrollOffset = 72;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [
+        makeMessageItem("m0", 0),
+        makeMessageItem("m1", 1),
+        makeMessageItem("m2", 2),
+        makeMessageItem("m3", 3),
+      ],
+      hasOlderHistory: true,
+      loadingOlderHistory: true,
+      onLoadOlderHistory,
+    });
+
+    latestScrollStateRef.current.scrollOffset = 72;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [
+        makeMessageItem("m-1", -1),
+        makeMessageItem("m0", 0),
+        makeMessageItem("m1", 1),
+        makeMessageItem("m2", 2),
+        makeMessageItem("m3", 3),
+      ],
+      hasOlderHistory: true,
+      loadingOlderHistory: false,
+      onLoadOlderHistory,
+    });
+
+    expect(onLoadOlderHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows a loading badge while older history pagination is in flight", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      loadingOlderHistory: true,
+    });
+
+    expect(container.textContent).toContain("Loading older messages");
+  });
+
+  it("does not auto-follow while older history is being prepended", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+      hasOlderHistory: true,
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1560);
+    triggerScroll(80);
+    scrollToIndexMock.mockClear();
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [
+        makeMessageItem("m0", 0),
+        makeMessageItem("m1", 1),
+        makeMessageItem("m2", 2),
+        makeMessageItem("m3", 3),
+      ],
+      hasOlderHistory: true,
+      loadingOlderHistory: true,
+    });
+    triggerScrollEnd();
+
+    expect(scrollToIndexMock).not.toHaveBeenCalled();
+  });
+
   it("auto-follows to the footer when footer content is present", () => {
     mountChatMessageList({
       items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
@@ -1811,6 +2211,297 @@ describe("ChatMessageList", () => {
 
     expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
     expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("re-aligns to the bottom when virtualized content height grows after the initial mount", () => {
+    latestScrollStateRef.current.scrollSize = 700;
+    latestScrollStateRef.current.viewportSize = 700;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      footer: <div data-testid="plan-footer">Plan decision footer</div>,
+    });
+
+    scrollToIndexMock.mockClear();
+    latestScrollStateRef.current.scrollSize = 1800;
+    latestScrollStateRef.current.viewportSize = 900;
+
+    triggerResizeObservers();
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("keeps sticky-bottom active during near-bottom measurement jitter after auto-follow", () => {
+    latestScrollStateRef.current.scrollSize = 860;
+    latestScrollStateRef.current.viewportSize = 860;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      footer: <div data-testid="plan-footer">Plan decision footer</div>,
+    });
+
+    scrollToIndexMock.mockClear();
+    latestScrollStateRef.current.scrollSize = 1160;
+    latestScrollStateRef.current.viewportSize = 860;
+    setScrollMetrics({ scrollHeight: 1160, clientHeight: 860 });
+
+    triggerScroll(212);
+    triggerScrollEnd();
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("does not restore cached virtualization state when the previous visit ended at the bottom", () => {
+    const savedBottomCache = { key: "thread-a-bottom-cache" };
+    latestScrollStateRef.current.cache = savedBottomCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1560);
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBeUndefined();
+    expect(scrollToMock).not.toHaveBeenCalled();
+  });
+
+  it("restores cached virtualization state when the previous visit ended away from the bottom", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    scrollToMock.mockClear();
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("restores cached virtualization state after thread switch even when cleanup loses the live handle cache", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-missing-handle" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    triggerScrollEnd();
+    scrollToMock.mockClear();
+
+    latestScrollStateRef.current.cache = undefined as unknown as { key: string };
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("preserves cached virtualization state when cleanup sees an invalid viewport on thread switch", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-invalid-viewport" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    triggerScrollEnd();
+    scrollToMock.mockClear();
+
+    latestScrollStateRef.current.viewportSize = 0;
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    latestScrollStateRef.current.viewportSize = 400;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("restores cached scroll offset after remount once the viewport is measured by resize observation", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-resize-restore" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    triggerScrollEnd();
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+
+    latestScrollStateRef.current.viewportSize = 0;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    scrollToMock.mockClear();
+    latestScrollStateRef.current.viewportSize = 400;
+    triggerResizeObservers();
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("waits until the measured scroll range can reach the cached offset before restoring", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-range-restore" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    triggerScrollEnd();
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+
+    latestScrollStateRef.current.scrollSize = 400;
+    latestScrollStateRef.current.viewportSize = 400;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    scrollToMock.mockClear();
+    triggerResizeObservers();
+    expect(scrollToMock).not.toHaveBeenCalled();
+
+    latestScrollStateRef.current.scrollSize = 2000;
+    latestScrollStateRef.current.viewportSize = 400;
+    triggerResizeObservers();
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("persists cached virtualization state during active scroll so quick thread switches restore mid-thread position", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-active-scroll" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    scrollToMock.mockClear();
+
+    latestScrollStateRef.current.cache = undefined as unknown as { key: string };
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("remounts the virtualizer when the selected thread changes", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+    });
+    const firstMountId = latestVListMountIdRef.current;
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+
+    expect(latestVListMountIdRef.current).toBeGreaterThan(firstMountId);
+  });
+
+  it("does not restore cached virtualization state when the thread content signature changes", () => {
+    const savedMidThreadCache = { key: "thread-a-stale-cache" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m4", 4)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBeUndefined();
+  });
+
+  it("does not render a footer-only virtual list when thread content is still empty", () => {
+    mountChatMessageList({
+      items: [],
+      emptyState: "existing-thread-empty",
+      footer: <div data-testid="plan-footer">Plan decision footer</div>,
+    });
+
+    expect(container.textContent).toContain("This thread is empty");
+    expect(container.querySelector("[data-testid='plan-footer']")).toBeNull();
   });
 
   it("does not snap to bottom on scroll end after user scrolls up", () => {

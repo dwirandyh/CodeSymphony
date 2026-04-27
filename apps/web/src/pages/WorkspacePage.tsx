@@ -1790,6 +1790,9 @@ export function WorkspacePage() {
                 showReviewTab={reviewTabOpen}
                 reviewTabActive={activeView === "review"}
                 onSelectThread={handleSelectThread}
+                onPrefetchThread={(threadId) => {
+                  void prefetchDisplayThreadSnapshot(threadId);
+                }}
                 onSelectFileTab={handleSelectFileTab}
                 onPinFileTab={handlePinFileTab}
                 onCloseFileTab={handleCloseFileTab}
@@ -1994,6 +1997,9 @@ export function WorkspacePage() {
                       items={chat.timelineItems}
                       emptyState={chat.messageListEmptyState}
                       showThinkingPlaceholder={showThinkingPlaceholder}
+                      hasOlderHistory={chat.hasOlderHistory}
+                      loadingOlderHistory={chat.loadingOlderHistory}
+                      onLoadOlderHistory={chat.loadOlderHistory}
                       onOpenReadFile={openReadFile}
                       worktreePath={repos.selectedWorktree?.path ?? null}
                       footer={gates.showPlanDecisionComposer ? (

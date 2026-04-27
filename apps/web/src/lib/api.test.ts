@@ -406,6 +406,20 @@ describe("api", () => {
       );
     });
 
+    it("requests paginated timeline snapshots with older-history cursors when asked", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ timelineItems: [], events: [], messages: [] }));
+      await api.getTimelineSnapshot("t1", {
+        includeCollections: true,
+        paginated: true,
+        beforeEventIdx: 120,
+        beforeMessageSeq: 8,
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/threads/t1/timeline?includeCollections=1&paginated=1&beforeEventIdx=120&beforeMessageSeq=8"),
+        expect.anything(),
+      );
+    });
+
     it("sends expectedWorktreeId with chat messages", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "m1" }));
       await api.sendMessage("t1", {

@@ -217,6 +217,25 @@ describe("WorkspaceHeader", () => {
     expect(onCreateThread).toHaveBeenCalledTimes(1);
   });
 
+  it("prefetches a thread when its tab is hovered or focused", () => {
+    const onPrefetchThread = vi.fn();
+    renderHeader({ onPrefetchThread });
+
+    const secondaryTab = container.querySelector<HTMLButtonElement>('button[role="tab"][title="Secondary Thread"]');
+    if (!secondaryTab) {
+      throw new Error("Secondary thread tab not found");
+    }
+
+    flushSync(() => {
+      secondaryTab.dispatchEvent(new Event("pointerover", { bubbles: true }));
+      secondaryTab.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+
+    expect(onPrefetchThread).toHaveBeenCalledTimes(2);
+    expect(onPrefetchThread).toHaveBeenNthCalledWith(1, "thread-2");
+    expect(onPrefetchThread).toHaveBeenNthCalledWith(2, "thread-2");
+  });
+
   it("does not render runtime or worktree metadata rows", () => {
     renderHeader({ worktreePath: "/tmp/repo" });
 

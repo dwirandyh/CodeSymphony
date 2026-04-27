@@ -2,10 +2,10 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatMessage, ChatThread, ChatTimelineItem, ChatTimelineSnapshot } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatMessage, ChatThread, ChatTimelineItem, ChatTimelineSnapshot } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
-import { getThreadCollections } from "../../../../collections/threadCollections";
+import { getThreadCollections, resetThreadCollectionsForTest } from "../../../../collections/threadCollections";
 import { setThreadLastEventIdx, setThreadLastMessageSeq } from "../../../../collections/threadStreamState";
 import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useChatSession";
 
@@ -17,6 +17,8 @@ const { threadsState, snapshotState } = vi.hoisted(() => ({
   },
   snapshotState: {
     data: null as ChatTimelineSnapshot | null,
+    displayData: null as ChatTimelineSnapshot | null,
+    fullData: null as ChatTimelineSnapshot | null,
     isLoading: false,
     isFetching: false,
   },
@@ -31,11 +33,21 @@ vi.mock("../../../../hooks/queries/useThreads", () => ({
 }));
 
 vi.mock("../../../../hooks/queries/useThreadSnapshot", () => ({
-  useThreadSnapshot: vi.fn(() => ({
-    data: snapshotState.data,
+  useThreadSnapshot: vi.fn((_threadId: string | null, options?: { mode?: "display" | "full" }) => ({
+    data: options?.mode === "full"
+      ? (snapshotState.fullData ?? snapshotState.data)
+      : (snapshotState.displayData ?? snapshotState.data),
     isLoading: snapshotState.isLoading,
     isFetching: snapshotState.isFetching,
   })),
+}));
+
+const { scheduleWindowIdleTaskMock } = vi.hoisted(() => ({
+  scheduleWindowIdleTaskMock: vi.fn(() => () => undefined),
+}));
+
+vi.mock("../../../../lib/idleTask", () => ({
+  scheduleWindowIdleTask: scheduleWindowIdleTaskMock,
 }));
 
 vi.mock("./useThreadEventStream", () => ({
@@ -43,7 +55,10 @@ vi.mock("./useThreadEventStream", () => ({
 }));
 
 const { useWorkspaceTimelineMock } = vi.hoisted(() => ({
-  useWorkspaceTimelineMock: vi.fn(() => ({
+  useWorkspaceTimelineMock: vi.fn((): {
+    items: ChatTimelineItem[];
+    summary: ChatTimelineSnapshot["summary"];
+  } => ({
     items: [],
     summary: {
       oldestRenderableKey: null,
@@ -82,6 +97,7 @@ vi.mock("../../../../lib/api", () => ({
   api: {
     createThread: vi.fn(),
     getOrCreatePrMrThread: vi.fn(),
+    getTimelineSnapshot: vi.fn(),
     renameThreadTitle: vi.fn(),
     updateThreadMode: vi.fn(),
     updateThreadAgentSelection: vi.fn(),
@@ -202,12 +218,26 @@ function makeSnapshot(overrides?: Partial<ChatTimelineSnapshot>): ChatTimelineSn
   };
 }
 
+function makeEvent(idx: number, type: ChatEvent["type"], payload: Record<string, unknown> = {}): ChatEvent {
+  return {
+    id: `event-${idx}`,
+    threadId: "thread-a",
+    idx,
+    type,
+    payload,
+    createdAt: "2026-01-01T00:00:00Z",
+  };
+}
+
 beforeEach(() => {
   resetPendingAutoCreateWorktreesForTest();
+  resetThreadCollectionsForTest();
   threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
   threadsState.isLoading = false;
   threadsState.isFetching = false;
   snapshotState.data = null;
+  snapshotState.displayData = null;
+  snapshotState.fullData = null;
   snapshotState.isLoading = false;
   snapshotState.isFetching = false;
   container = document.createElement("div");
@@ -228,6 +258,7 @@ beforeEach(() => {
   threadNavigationPerfEnabledState.value = true;
   vi.mocked(api.createThread).mockReset();
   vi.mocked(api.getOrCreatePrMrThread).mockReset();
+  vi.mocked(api.getTimelineSnapshot).mockReset();
   vi.mocked(api.renameThreadTitle).mockReset();
   vi.mocked(api.updateThreadMode).mockReset();
   vi.mocked(api.updateThreadAgentSelection).mockReset();
@@ -235,6 +266,8 @@ beforeEach(() => {
   vi.mocked(api.deleteThread).mockReset();
   vi.mocked(api.sendMessage).mockReset();
   vi.mocked(api.stopRun).mockReset();
+  scheduleWindowIdleTaskMock.mockReset();
+  scheduleWindowIdleTaskMock.mockReturnValue(() => undefined);
 });
 
 afterEach(() => {
@@ -242,7 +275,9 @@ afterEach(() => {
   queryClient.clear();
   container.remove();
   resetPendingAutoCreateWorktreesForTest();
+  resetThreadCollectionsForTest();
   pushThreadNavigationPerfMock.mockReset();
+  scheduleWindowIdleTaskMock.mockReset();
   useWorkspaceTimelineMock.mockReset();
   useWorkspaceTimelineMock.mockReturnValue({
     items: [],
@@ -1298,6 +1333,602 @@ describe("useChatSession", () => {
     expect(hookResult.timelineItems).toEqual(staleServerItems);
   });
 
+  it("uses the server timeline for stable plan-review threads when local timeline hydration is incomplete", async () => {
+    const serverTimelineItems: ChatTimelineItem[] = [
+      {
+        kind: "message",
+        message: {
+          id: "assistant-plan",
+          threadId: "thread-a",
+          seq: 1,
+          role: "assistant",
+          content: "Canonical plan summary",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+        context: [],
+      },
+      {
+        kind: "plan-file-output",
+        id: "plan-output-1",
+        messageId: "assistant-plan",
+        content: "# Plan\n\n1. Ship it",
+        filePath: ".claude/plans/plan.md",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    renderHook("thread-a");
+
+    act(() => {
+      const { eventsCollection } = getThreadCollections("thread-a");
+      eventsCollection.insert([
+        makeEvent(1, "plan.created", {
+          content: "# Plan\n\n1. Ship it",
+          filePath: ".claude/plans/plan.md",
+        }),
+        makeEvent(2, "chat.completed", {}),
+      ]);
+    });
+
+    snapshotState.displayData = makeSnapshot({
+      collectionsIncluded: false,
+      newestSeq: 1,
+      newestIdx: 2,
+      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
+      summary: {
+        oldestRenderableKey: "message:assistant-plan",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-plan",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadUiStatus).toBe("review_plan");
+    expect(hookResult.timelineItems).toEqual(serverTimelineItems);
+    expect(hookResult.messageListEmptyState).toBeNull();
+  });
+
+  it("exposes older-history pagination when the latest snapshot is truncated at the top", async () => {
+    snapshotState.fullData = makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "message:assistant-latest",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-latest",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      newestSeq: 10,
+      newestIdx: 10,
+      messages: [
+        {
+          id: "assistant-9",
+          threadId: "thread-a",
+          seq: 9,
+          role: "assistant",
+          content: "Earlier latest answer",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "assistant-latest",
+          threadId: "thread-a",
+          seq: 10,
+          role: "assistant",
+          content: "Latest answer",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+      events: [
+        {
+          id: "event-9",
+          threadId: "thread-a",
+          idx: 9,
+          type: "chat.completed",
+          payload: { messageId: "assistant-9" },
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "event-10",
+          threadId: "thread-a",
+          idx: 10,
+          type: "chat.completed",
+          payload: { messageId: "assistant-latest" },
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+    });
+    vi.mocked(api.getTimelineSnapshot).mockResolvedValue(makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "message:assistant-earlier",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-earlier",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      newestSeq: 8,
+      newestIdx: 8,
+      messages: [
+        {
+          id: "assistant-earlier",
+          threadId: "thread-a",
+          seq: 8,
+          role: "assistant",
+          content: "Earlier answer",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+      events: [
+        {
+          id: "event-8",
+          threadId: "thread-a",
+          idx: 8,
+          type: "chat.completed",
+          payload: { messageId: "assistant-earlier" },
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+      ],
+    }));
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.hasOlderHistory).toBe(true);
+    expect(hookResult.loadingOlderHistory).toBe(false);
+  });
+
+  it("loads older paginated history and switches away from the tail-only server timeline after prepending an older head", async () => {
+    const serverTimelineItems: ChatTimelineItem[] = [
+      {
+        kind: "message",
+        message: {
+          id: "assistant-9",
+          threadId: "thread-a",
+          seq: 9,
+          role: "assistant",
+          content: "Latest page older item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+      },
+      {
+        kind: "message",
+        message: {
+          id: "assistant-10",
+          threadId: "thread-a",
+          seq: 10,
+          role: "assistant",
+          content: "Latest page newest item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+      },
+    ];
+    const derivedTimelineItems: ChatTimelineItem[] = [
+      {
+        kind: "message",
+        message: {
+          id: "assistant-7",
+          threadId: "thread-a",
+          seq: 7,
+          role: "assistant",
+          content: "Older page first item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+      },
+      {
+        kind: "message",
+        message: {
+          id: "assistant-8",
+          threadId: "thread-a",
+          seq: 8,
+          role: "assistant",
+          content: "Older page second item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+      },
+      ...serverTimelineItems,
+    ];
+
+    snapshotState.fullData = makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "message:assistant-9",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-9",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      newestSeq: 10,
+      newestIdx: 10,
+      messages: serverTimelineItems.map((item) => item.kind === "message" ? item.message : null).filter(Boolean) as ChatMessage[],
+      events: [
+        {
+          id: "event-9",
+          threadId: "thread-a",
+          idx: 9,
+          type: "chat.completed",
+          payload: { messageId: "assistant-9" },
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "event-10",
+          threadId: "thread-a",
+          idx: 10,
+          type: "chat.completed",
+          payload: { messageId: "assistant-10" },
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
+    });
+    useWorkspaceTimelineMock.mockReturnValue({
+      items: derivedTimelineItems,
+      summary: {
+        oldestRenderableKey: "message:assistant-7",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-7",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    } as {
+      items: ChatTimelineItem[];
+      summary: ChatTimelineSnapshot["summary"];
+    });
+    vi.mocked(api.getTimelineSnapshot).mockResolvedValue(makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "message:assistant-7",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-7",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      newestSeq: 8,
+      newestIdx: 8,
+      messages: [
+        {
+          id: "assistant-7",
+          threadId: "thread-a",
+          seq: 7,
+          role: "assistant",
+          content: "Older page first item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "assistant-8",
+          threadId: "thread-a",
+          seq: 8,
+          role: "assistant",
+          content: "Older page second item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+      events: [
+        {
+          id: "event-7",
+          threadId: "thread-a",
+          idx: 7,
+          type: "chat.completed",
+          payload: { messageId: "assistant-7" },
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "event-8",
+          threadId: "thread-a",
+          idx: 8,
+          type: "chat.completed",
+          payload: { messageId: "assistant-8" },
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+    }));
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.timelineItems).toEqual(serverTimelineItems);
+    expect(hookResult.hasOlderHistory).toBe(true);
+
+    await act(async () => {
+      await hookResult.loadOlderHistory();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.getTimelineSnapshot).toHaveBeenCalledWith("thread-a", {
+      includeCollections: true,
+      paginated: true,
+      beforeEventIdx: 9,
+      beforeMessageSeq: 9,
+    });
+    expect(hookResult.messages.map((message) => message.seq)).toEqual([7, 8, 9, 10]);
+    expect(hookResult.events.map((event) => event.idx)).toEqual([7, 8, 9, 10]);
+    expect(hookResult.hasOlderHistory).toBe(false);
+    expect(hookResult.loadingOlderHistory).toBe(false);
+    expect(hookResult.timelineItems).toEqual(derivedTimelineItems);
+  });
+
+  it("prefetches the next older page eagerly and reuses it for smooth older-history pagination", async () => {
+    snapshotState.fullData = makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "message:assistant-9",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-9",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      newestSeq: 10,
+      newestIdx: 10,
+      messages: [
+        {
+          id: "assistant-9",
+          threadId: "thread-a",
+          seq: 9,
+          role: "assistant",
+          content: "Latest page older item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "assistant-10",
+          threadId: "thread-a",
+          seq: 10,
+          role: "assistant",
+          content: "Latest page newest item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+      events: [
+        makeEvent(9, "chat.completed", { messageId: "assistant-9" }),
+        makeEvent(10, "chat.completed", { messageId: "assistant-10" }),
+      ],
+    });
+
+    vi.mocked(api.getTimelineSnapshot).mockResolvedValueOnce(makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "message:assistant-7",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-7",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      newestSeq: 8,
+      newestIdx: 8,
+      messages: [
+        {
+          id: "assistant-7",
+          threadId: "thread-a",
+          seq: 7,
+          role: "assistant",
+          content: "Older page first item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "assistant-8",
+          threadId: "thread-a",
+          seq: 8,
+          role: "assistant",
+          content: "Older page second item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+      events: [
+        makeEvent(7, "chat.completed", { messageId: "assistant-7" }),
+        makeEvent(8, "chat.completed", { messageId: "assistant-8" }),
+      ],
+    }));
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getTimelineSnapshot).toHaveBeenCalledTimes(1);
+    expect(api.getTimelineSnapshot).toHaveBeenCalledWith("thread-a", {
+      includeCollections: true,
+      paginated: true,
+      beforeEventIdx: 9,
+      beforeMessageSeq: 9,
+    });
+
+    await act(async () => {
+      await hookResult.loadOlderHistory();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.getTimelineSnapshot).toHaveBeenCalledTimes(1);
+    expect(hookResult.messages.map((message) => message.seq)).toEqual([7, 8, 9, 10]);
+    expect(hookResult.events.map((event) => event.idx)).toEqual([7, 8, 9, 10]);
+    expect(hookResult.hasOlderHistory).toBe(false);
+  });
+
+  it("immediately pipelines the next older-page prefetch after consuming a direct older-history fetch", async () => {
+    snapshotState.fullData = makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "message:assistant-9",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-9",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      newestSeq: 10,
+      newestIdx: 10,
+      messages: [
+        {
+          id: "assistant-9",
+          threadId: "thread-a",
+          seq: 9,
+          role: "assistant",
+          content: "Latest page older item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "assistant-10",
+          threadId: "thread-a",
+          seq: 10,
+          role: "assistant",
+          content: "Latest page newest item",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+      ],
+      events: [
+        makeEvent(9, "chat.completed", { messageId: "assistant-9" }),
+        makeEvent(10, "chat.completed", { messageId: "assistant-10" }),
+      ],
+    });
+
+    vi.mocked(api.getTimelineSnapshot)
+      .mockResolvedValueOnce(makeSnapshot({
+        collectionsIncluded: true,
+        summary: {
+          oldestRenderableKey: "message:assistant-7",
+          oldestRenderableKind: "message",
+          oldestRenderableMessageId: "assistant-7",
+          oldestRenderableHydrationPending: true,
+          headIdentityStable: true,
+        },
+        newestSeq: 8,
+        newestIdx: 8,
+        messages: [
+          {
+            id: "assistant-7",
+            threadId: "thread-a",
+            seq: 7,
+            role: "assistant",
+            content: "Older page first item",
+            attachments: [],
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "assistant-8",
+            threadId: "thread-a",
+            seq: 8,
+            role: "assistant",
+            content: "Older page second item",
+            attachments: [],
+            createdAt: "2026-01-01T00:00:01Z",
+          },
+        ],
+        events: [
+          makeEvent(7, "chat.completed", { messageId: "assistant-7" }),
+          makeEvent(8, "chat.completed", { messageId: "assistant-8" }),
+        ],
+      }))
+      .mockResolvedValueOnce(makeSnapshot({
+        collectionsIncluded: true,
+        summary: {
+          oldestRenderableKey: "message:assistant-5",
+          oldestRenderableKind: "message",
+          oldestRenderableMessageId: "assistant-5",
+          oldestRenderableHydrationPending: false,
+          headIdentityStable: true,
+        },
+        newestSeq: 6,
+        newestIdx: 6,
+        messages: [
+          {
+            id: "assistant-5",
+            threadId: "thread-a",
+            seq: 5,
+            role: "assistant",
+            content: "Next older page first item",
+            attachments: [],
+            createdAt: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "assistant-6",
+            threadId: "thread-a",
+            seq: 6,
+            role: "assistant",
+            content: "Next older page second item",
+            attachments: [],
+            createdAt: "2026-01-01T00:00:01Z",
+          },
+        ],
+        events: [
+          makeEvent(5, "chat.completed", { messageId: "assistant-5" }),
+          makeEvent(6, "chat.completed", { messageId: "assistant-6" }),
+        ],
+      }));
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getTimelineSnapshot).toHaveBeenCalledTimes(1);
+    expect(api.getTimelineSnapshot).toHaveBeenNthCalledWith(1, "thread-a", {
+      includeCollections: true,
+      paginated: true,
+      beforeEventIdx: 9,
+      beforeMessageSeq: 9,
+    });
+
+    await act(async () => {
+      await hookResult.loadOlderHistory();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.getTimelineSnapshot).toHaveBeenCalledTimes(2);
+    expect(api.getTimelineSnapshot).toHaveBeenNthCalledWith(2, "thread-a", {
+      includeCollections: true,
+      paginated: true,
+      beforeEventIdx: 7,
+      beforeMessageSeq: 7,
+    });
+    expect(hookResult.messages.map((message) => message.seq)).toEqual([7, 8, 9, 10]);
+    expect(hookResult.hasOlderHistory).toBe(true);
+  });
+
   it("replaces stale local messages and events when the latest snapshot for the same thread is empty", () => {
     snapshotState.data = makeSnapshot({
       newestSeq: 1,
@@ -1330,6 +1961,89 @@ describe("useChatSession", () => {
 
     expect(hookResult.messages).toEqual([]);
     expect(hookResult.events).toEqual([]);
+  });
+
+  it("keeps newer messages stable when loading an older pagination page that only contains events", async () => {
+    snapshotState.fullData = makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "event:event-4641",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-0",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      newestSeq: 7,
+      newestIdx: 5040,
+      messages: Array.from({ length: 8 }, (_, index) => ({
+        id: `assistant-${index}`,
+        threadId: "thread-a",
+        seq: index,
+        role: "assistant" as const,
+        content: `assistant-${index}`,
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      })),
+      events: Array.from({ length: 400 }, (_, index) => ({
+        id: `event-${4641 + index}`,
+        threadId: "thread-a",
+        idx: 4641 + index,
+        type: "tool.output" as const,
+        payload: { output: `event-${4641 + index}` },
+        createdAt: "2026-01-01T00:00:00Z",
+      })),
+    });
+
+    vi.mocked(api.getTimelineSnapshot).mockResolvedValue(makeSnapshot({
+      collectionsIncluded: true,
+      summary: {
+        oldestRenderableKey: "event:event-4241",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-0",
+        oldestRenderableHydrationPending: true,
+        headIdentityStable: true,
+      },
+      newestSeq: null,
+      newestIdx: 4640,
+      messages: [],
+      events: Array.from({ length: 400 }, (_, index) => ({
+        id: `event-${4241 + index}`,
+        threadId: "thread-a",
+        idx: 4241 + index,
+        type: "tool.output" as const,
+        payload: { output: `event-${4241 + index}` },
+        createdAt: "2026-01-01T00:00:00Z",
+      })),
+    }));
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.messages.map((message) => message.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(hookResult.events).toHaveLength(400);
+
+    await act(async () => {
+      await hookResult.loadOlderHistory();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.getTimelineSnapshot).toHaveBeenCalledWith("thread-a", {
+      includeCollections: true,
+      paginated: true,
+      beforeEventIdx: 4641,
+      beforeMessageSeq: 0,
+    });
+    expect(hookResult.messages.map((message) => message.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(hookResult.events).toHaveLength(800);
+    expect(hookResult.events[0]?.idx).toBe(4241);
+    expect(hookResult.events.at(-1)?.idx).toBe(5040);
+    expect(hookResult.hasOlderHistory).toBe(true);
+    expect(hookResult.loadingOlderHistory).toBe(false);
   });
 
   it("replaces corrupted local assistant output with the final authoritative snapshot once the thread is idle", async () => {

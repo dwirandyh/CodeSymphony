@@ -11,19 +11,23 @@ Measured state:
 - Right panel: `Explorer` opened
 - Viewport observed during scroll capture: `1280x577`
 
+Latest rerun note:
+- `2026-04-27` reruns were taken after deleting unrelated threads in worktree `cmnonq88x0001m9bpkdncl8i4`, so the workspace now opens directly into `Implement ADR and Dogfood` instead of the earlier transient `New Thread` startup path.
+
 ## Summary Comparison
 
 ### Startup To Conversation Ready
 
-| Metric | Original baseline | Earlier optimized | Latest optimized | Change vs original |
-| --- | ---: | ---: | ---: | ---: |
-| Conversation-ready median | `5814ms` | `3829ms` | `3431ms` | `-2383ms` |
-| Improvement | `-` | `-1985ms` | `-2383ms` | `40.99% faster` |
+| Metric | Original baseline | Earlier optimized | Latest optimized | Current rerun | Change vs original |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Conversation-ready median | `5814ms` | `3829ms` | `3431ms` | `2931.7ms` | `-2882.3ms` |
+| Improvement | `-` | `-1985ms` | `-2383ms` | `-2882.3ms` | `49.57% faster` |
 
 Notes:
 - `Earlier optimized` is the first chat-bootstrap optimization pass.
 - `Latest optimized` is the current `New Thread` startup path after removing eager file-index and empty-thread remote bootstrap work.
 - Latest fresh runs: `3282ms`, `3431ms`, `4470ms`.
+- Current rerun fresh runs on the populated-thread path: `3215.3ms`, `2920.6ms`, `2931.7ms`.
 
 ### Timeline Scroll
 
@@ -36,6 +40,57 @@ Notes:
 | Frames over `50ms` | `14` | `0` | `-14` |
 | Long task count | `54` | `32` | `-22` |
 | Total long-task time | `8234ms` | `3729ms` | `-4505ms` |
+
+Current rerun notes:
+- Steady-state bottom-half scroll stayed near the same optimized band at `60.00 FPS` and `59.25 FPS`, with `298-300ms` total long-task time.
+- When the synthetic scroll path crossed the top preload / older-history threshold, the same thread dropped to `41.08-44.91 FPS` and `1198-1763ms` total long-task time. This is the remaining user-visible hotspot.
+
+## Current Rerun (2026-04-27)
+
+### Startup
+
+Fresh runs on the current app state:
+
+| Run | Conversation-ready time |
+| --- | ---: |
+| 1 | `3215.3ms` |
+| 2 | `2920.6ms` |
+| 3 | `2931.7ms` |
+
+Median:
+- `2931.7ms`
+
+Interpretation:
+- Current startup is faster than every earlier documented baseline in this file.
+- This rerun is now measuring the populated-thread landing path because the worktree has only the relevant thread left.
+
+### Timeline Scroll
+
+#### Steady-State Bottom-Half Scroll
+
+Valid rerun captures:
+
+| Run | Average FPS | Average frame gap | P95 gap | Frames over `33.3ms` | Long-task total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | `60.00` | `16.67ms` | `16.7ms` | `0` | `298ms` |
+| 2 | `59.25` | `16.88ms` | `16.8ms` | `1` | `300ms` |
+
+Interpretation:
+- The steady-state hot path still behaves like the earlier optimized near-60-FPS result.
+- The remaining variance here is minor and not the primary problem anymore.
+
+#### Upward Scroll That Triggers Older-History Preload
+
+Valid rerun captures:
+
+| Run | Average FPS | Average frame gap | P95 gap | Frames over `33.3ms` | Long-task total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | `44.91` | `22.27ms` | `16.8ms` | `7` | `1198ms` |
+| 2 | `41.08` | `24.34ms` | `22.8ms` | `8` | `1763ms` |
+
+Interpretation:
+- The smooth steady-state result does not fully carry over into the upward preload path.
+- The remaining scroll-performance work is concentrated around older-history fetch / merge / render activity rather than ordinary bottom-half scrolling.
 
 ### Startup Request Profile
 

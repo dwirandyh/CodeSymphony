@@ -517,6 +517,74 @@ describe("chat routes", () => {
   });
 
   describe("GET /api/threads/:id/timeline", () => {
+    it("passes includeCollections false for display timeline snapshots", async () => {
+      mockChatService.listThreadSnapshot.mockResolvedValue({
+        messages: [],
+        events: [],
+        timeline: {
+          timelineItems: [],
+          summary: {
+            oldestRenderableKey: null,
+            oldestRenderableKind: null,
+            oldestRenderableMessageId: null,
+            oldestRenderableHydrationPending: true,
+            headIdentityStable: true,
+          },
+          newestSeq: 10,
+          newestIdx: 200,
+          collectionsIncluded: false,
+          messages: [],
+          events: [],
+        },
+      });
+
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/timeline?includeCollections=0" });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", {
+        includeCollections: false,
+        paginated: false,
+        beforeEventIdx: null,
+        beforeMessageSeq: null,
+      });
+      expect(res.json().data.collectionsIncluded).toBe(false);
+    });
+
+    it("passes paginated older-history cursors through for timeline page requests", async () => {
+      mockChatService.listThreadSnapshot.mockResolvedValue({
+        messages: [],
+        events: [],
+        timeline: {
+          timelineItems: [],
+          summary: {
+            oldestRenderableKey: null,
+            oldestRenderableKind: null,
+            oldestRenderableMessageId: null,
+            oldestRenderableHydrationPending: false,
+            headIdentityStable: true,
+          },
+          newestSeq: 24,
+          newestIdx: 600,
+          collectionsIncluded: true,
+          messages: [],
+          events: [],
+        },
+      });
+
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/threads/t1/timeline?includeCollections=1&paginated=1&beforeEventIdx=120&beforeMessageSeq=8",
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", {
+        includeCollections: true,
+        paginated: true,
+        beforeEventIdx: 120,
+        beforeMessageSeq: 8,
+      });
+    });
+
     it("does not leak overlap-unresolved subagent explore events into top-level explore cards", async () => {
       const suffix = uniqueSuffix();
       const repository = await prisma.repository.create({

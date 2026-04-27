@@ -49,6 +49,7 @@ type WorkspaceHeaderProps = {
   showReviewTab?: boolean;
   reviewTabActive?: boolean;
   onSelectThread: (threadId: string | null) => void;
+  onPrefetchThread?: (threadId: string) => void;
   onSelectFileTab: (path: string) => void;
   onPinFileTab: (path: string) => void;
   onCloseFileTab: (path: string) => void;
@@ -101,6 +102,7 @@ export function WorkspaceHeader({
   showReviewTab,
   reviewTabActive,
   onSelectThread,
+  onPrefetchThread,
   onSelectFileTab,
   onPinFileTab,
   onCloseFileTab,
@@ -399,6 +401,8 @@ export function WorkspaceHeader({
                       )}
                       onClick={() => onSelectThread(thread.id)}
                       onDoubleClick={() => startThreadRename(thread.id, isSelected)}
+                      onPointerEnter={() => onPrefetchThread?.(thread.id)}
+                      onFocus={() => onPrefetchThread?.(thread.id)}
                       disabled={disabled}
                     >
                       {thread.title}

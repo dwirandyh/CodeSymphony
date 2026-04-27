@@ -57,6 +57,7 @@ import type {
 } from "@codesymphony/shared-types";
 import { resolveRuntimeApiBases } from "./runtimeUrl";
 import { logService } from "./logService";
+import { debugLog } from "./debugLog";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:4331/api";
 const RETRY_DELAYS_MS = [150, 400];
@@ -430,12 +431,86 @@ export const api = {
     request<ChatThreadStatusSnapshot>(`/threads/${threadId}/status-snapshot`),
   getTimelineSnapshot: (
     threadId: string,
-    options?: { includeCollections?: boolean },
+    options?: {
+      includeCollections?: boolean;
+      paginated?: boolean;
+      beforeEventIdx?: number | null;
+      beforeMessageSeq?: number | null;
+    },
   ) => {
     const includeCollections = options?.includeCollections !== false;
-    return request<ChatTimelineSnapshot>(
-      `/threads/${threadId}/timeline?includeCollections=${includeCollections ? "1" : "0"}`,
-    );
+    const paginated = options?.paginated === true;
+    const searchParams = new URLSearchParams({
+      includeCollections: includeCollections ? "1" : "0",
+    });
+
+    if (paginated) {
+      searchParams.set("paginated", "1");
+    }
+
+    if (typeof options?.beforeEventIdx === "number") {
+      searchParams.set("beforeEventIdx", String(options.beforeEventIdx));
+    }
+
+    if (typeof options?.beforeMessageSeq === "number") {
+      searchParams.set("beforeMessageSeq", String(options.beforeMessageSeq));
+    }
+
+    const path = `/threads/${threadId}/timeline?${searchParams.toString()}`;
+    const startedAt =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+
+    debugLog("thread.pagination.api", "timeline.request.started", {
+      threadId,
+      path,
+      includeCollections,
+      paginated,
+      beforeEventIdx: options?.beforeEventIdx ?? null,
+      beforeMessageSeq: options?.beforeMessageSeq ?? null,
+    });
+
+    return request<ChatTimelineSnapshot>(path)
+      .then((snapshot) => {
+        const endedAt =
+          typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+        debugLog("thread.pagination.api", "timeline.request.succeeded", {
+          threadId,
+          path,
+          durationMs: Math.round((endedAt - startedAt) * 10) / 10,
+          includeCollections,
+          paginated,
+          beforeEventIdx: options?.beforeEventIdx ?? null,
+          beforeMessageSeq: options?.beforeMessageSeq ?? null,
+          messagesCount: snapshot.messages.length,
+          eventsCount: snapshot.events.length,
+          timelineItemsCount: snapshot.timelineItems.length,
+          newestSeq: snapshot.newestSeq,
+          newestIdx: snapshot.newestIdx,
+          oldestRenderableHydrationPending: snapshot.summary.oldestRenderableHydrationPending ?? false,
+        });
+        return snapshot;
+      })
+      .catch((error) => {
+        const endedAt =
+          typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+        debugLog("thread.pagination.api", "timeline.request.failed", {
+          threadId,
+          path,
+          durationMs: Math.round((endedAt - startedAt) * 10) / 10,
+          includeCollections,
+          paginated,
+          beforeEventIdx: options?.beforeEventIdx ?? null,
+          beforeMessageSeq: options?.beforeMessageSeq ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      });
   },
   sendMessage: (threadId: string, input: SendChatMessageInput) =>
     request<ChatMessage>(`/threads/${threadId}/messages`, {

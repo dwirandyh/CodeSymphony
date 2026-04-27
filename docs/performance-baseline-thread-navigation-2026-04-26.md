@@ -194,6 +194,36 @@ Notes:
 - Once the worktree caches are warm, the alternating loop stabilized in the `~175-190ms` range.
 - The remaining cost is now mostly route/render shell work in local dev, not chat bootstrap.
 
+## Current Rerun (2026-04-27)
+
+This rerun was taken on the current app state after deleting unrelated threads from worktree `cmnonq88x0001m9bpkdncl8i4` so that the worktree consistently restores `Implement ADR and Dogfood`.
+
+Warm same-session rerun on the same A/B targets:
+
+| Direction | Original baseline | 2026-04-26 final warm result | 2026-04-27 current visible rerun | Delta vs original | Delta vs 2026-04-26 final |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `A -> B` | `561.1ms` | `188.6ms` | `187.8ms` | `-373.3ms` | `-0.8ms` |
+| `B -> A` | `781.2ms` | `176.4ms` | `251.0ms` | `-530.2ms` | `+74.6ms` |
+
+Visible warm rerun evidence:
+
+| Direction | Runs |
+| --- | --- |
+| `A -> B` | `160.6ms`, `179.5ms`, `203.8ms`, `220.7ms`, `187.8ms` |
+| `B -> A` | `251.0ms`, `310.1ms`, `266.7ms`, `224.6ms`, `217.5ms` |
+
+Internal app metric from the same rerun:
+
+| Direction | `thread.ready` median |
+| --- | ---: |
+| `A -> B` | `7.1ms` |
+| `B -> A` | `8.1ms` |
+
+Interpretation:
+- `A -> B` is effectively unchanged from the 2026-04-26 final warm result.
+- `B -> A` is still much faster than the original baseline, but it regressed versus the prior final warm measurement on the visible path.
+- The internal `thread.ready` metric remains single-digit milliseconds in both directions, which points to the remaining cost living in visible shell / render work rather than thread bootstrap itself.
+
 ## Git Panel Behavior
 
 The earlier git-diff flicker came from two separate phases:
@@ -238,5 +268,43 @@ Supporting internal metric on `B -> A`:
 Interpretation:
 
 - The large-thread switch is no longer paying the old `events -> derived timeline` cost on the visible path.
+
+## Display Snapshot Tail Benchmark
+
+Date: 2026-04-26
+
+This pass focused on the runtime hot path for opening an existing thread before full hydration finishes.
+
+Implementation:
+
+- `GET /api/threads/:id/timeline?includeCollections=0` now loads only the newest tail window instead of scanning the full thread history
+- display snapshots keep chronological order, but only include the latest `64` messages and latest `400` events on the first paint
+- when that tail is truncated at the top, the snapshot now sets `summary.oldestRenderableHydrationPending = true`
+- the web client uses that signal to pull the full snapshot sooner and prefetches display snapshots on thread-tab hover/focus
+
+Benchmark command:
+
+```bash
+pnpm --filter @codesymphony/runtime bench:display-snapshot -- \
+  --thread cmock9eqt0e7xm9e3ovh7wzfb \
+  --thread cmoc87d1s0001m9e3rvbjkb4q \
+  --thread cmoecljdo0i7zm9bxow08586c \
+  --runs 20 --warmup 5
+```
+
+Measured before/after on the same local database:
+
+| Thread | History size | Legacy display snapshot median | Optimized display snapshot median | Duration delta | Legacy payload | Optimized payload | Payload delta |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `Akses Figma Design Aplikasi` | `22 messages / 6333 events` | `61.8ms` | `4.4ms` | `-92.9%` | `774.5 KB` | `49.1 KB` | `-93.7%` |
+| `Auto Logout Token Expired` | `36 messages / 6192 events` | `59.8ms` | `4.3ms` | `-92.8%` | `593.3 KB` | `40.8 KB` | `-93.1%` |
+| `Implement ADR and Dogfood` | `8 messages / 5041 events` | `78.8ms` | `4.9ms` | `-93.8%` | `2.7 MB` | `52.7 KB` | `-98.1%` |
+
+Result summary:
+
+- first-paint thread snapshots now read at most `400` events instead of `5000-6300+` events on these heavy threads
+- runtime snapshot latency dropped from roughly `60-79ms` to `4-5ms`
+- initial timeline payload dropped from `593 KB-2.7 MB` down to `41-53 KB`
+- the latest content becomes available first, while older history hydrates immediately after the initial render path
 - The remaining visible latency is now mostly React commit + virtualizer/layout/paint work in local Vite dev.
 - Against the original warm baseline, `B -> A` moved from `781.2ms` to `129.4ms`, an improvement of about `83.4%`.

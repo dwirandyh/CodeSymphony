@@ -16,7 +16,7 @@ import {
 import { mergeEventsWithCurrent } from "../pages/workspace/hooks/chat-session/messageEventMerge";
 import { areMessagesEqual, mergeThreadMessages } from "../pages/workspace/hooks/messageMerge";
 
-export type ThreadSnapshotHydrationMode = "replace" | "merge";
+export type ThreadSnapshotHydrationMode = "replace" | "merge" | "prepend";
 
 function areEventPayloadsEqual(left: ChatEvent["payload"], right: ChatEvent["payload"]) {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -95,6 +95,17 @@ function reconcileCollectionRows<T extends object>(params: {
     && treatSameKeyAsEqual
   ) {
     collection.insert(nextRows.slice(currentRows.length));
+    return;
+  }
+
+  if (
+    !deleteMissing
+    && currentRows.length > 0
+    && nextRows.length > currentRows.length
+    && !rowsAlignAsPrefix(currentRows, nextRows, getKey)
+  ) {
+    collection.delete(currentRows.map((row) => getKey(row)));
+    collection.insert(nextRows);
     return;
   }
 
@@ -185,16 +196,20 @@ export function hydrateThreadFromSnapshot(params: {
   const localNewestMessageSeq = getThreadLastMessageSeq(threadId) ?? currentMessages[currentMessages.length - 1]?.seq ?? null;
   const allowEventReplace = mode === "replace" && isSnapshotNotOlder(getSnapshotNewestEventIdx(snapshot), localNewestEventIdx);
   const allowMessageReplace = mode === "replace" && isSnapshotNotOlder(getSnapshotNewestMessageSeq(snapshot), localNewestMessageSeq);
-  const nextEvents = allowEventReplace
-    ? snapshotEvents
-    : mode === "replace"
-      ? mergeOlderSnapshotEvents(snapshotEvents, currentEvents)
-      : mergeEventsWithCurrent(snapshotEvents, currentEvents);
-  const nextMessages = allowMessageReplace
-    ? snapshotMessages
-    : mode === "replace"
-      ? mergeOlderSnapshotMessages(snapshotMessages, currentMessages)
-      : mergeThreadMessages(snapshotMessages, currentMessages);
+  const nextEvents = mode === "prepend"
+    ? mergeOlderSnapshotEvents(snapshotEvents, currentEvents)
+    : allowEventReplace
+      ? snapshotEvents
+      : mode === "replace"
+        ? mergeOlderSnapshotEvents(snapshotEvents, currentEvents)
+        : mergeEventsWithCurrent(snapshotEvents, currentEvents);
+  const nextMessages = mode === "prepend"
+    ? mergeOlderSnapshotMessages(snapshotMessages, currentMessages)
+    : allowMessageReplace
+      ? snapshotMessages
+      : mode === "replace"
+        ? mergeOlderSnapshotMessages(snapshotMessages, currentMessages)
+        : mergeThreadMessages(snapshotMessages, currentMessages);
 
   reconcileCollectionRows({
     collection: eventsCollection,
@@ -202,7 +217,7 @@ export function hydrateThreadFromSnapshot(params: {
     nextRows: nextEvents,
     getKey: (event) => event.id,
     areEqual: areEventsEqual,
-    deleteMissing: allowEventReplace,
+    deleteMissing: mode === "replace" && allowEventReplace,
     treatSameKeyAsEqual: true,
   });
 
@@ -212,7 +227,7 @@ export function hydrateThreadFromSnapshot(params: {
     nextRows: nextMessages,
     getKey: (message) => message.id,
     areEqual: areMessagesEqual,
-    deleteMissing: allowMessageReplace,
+    deleteMissing: mode === "replace" && allowMessageReplace,
   });
 
   replaceSeenThreadEventIds(threadId, nextEvents.map((event) => event.id));

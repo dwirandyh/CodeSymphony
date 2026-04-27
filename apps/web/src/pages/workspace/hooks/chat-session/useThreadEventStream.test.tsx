@@ -70,14 +70,14 @@ class MockEventSource {
   }
 }
 
-const { runtimeBaseUrlMock, getTimelineSnapshotMock } = vi.hoisted(() => ({
+const { runtimeBaseUrlMock, getThreadStatusSnapshotMock } = vi.hoisted(() => ({
   runtimeBaseUrlMock: "http://127.0.0.1:4331",
-  getTimelineSnapshotMock: vi.fn(),
+  getThreadStatusSnapshotMock: vi.fn(),
 }));
 
 vi.mock("../../../../lib/api", () => ({
   api: {
-    getTimelineSnapshot: getTimelineSnapshotMock,
+    getThreadStatusSnapshot: getThreadStatusSnapshotMock,
     get runtimeBaseUrl() {
       return runtimeBaseUrlMock;
     },
@@ -237,8 +237,8 @@ beforeEach(() => {
   invalidateQueriesMock.mockReset();
   cancelQueriesMock.mockReset();
   cancelQueriesMock.mockResolvedValue(undefined);
-  getTimelineSnapshotMock.mockReset();
-  getTimelineSnapshotMock.mockResolvedValue(makeSnapshot());
+  getThreadStatusSnapshotMock.mockReset();
+  getThreadStatusSnapshotMock.mockResolvedValue({ status: "idle", newestIdx: null });
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
   queryClient.cancelQueries = cancelQueriesMock as typeof queryClient.cancelQueries;
 
@@ -310,7 +310,7 @@ describe("useThreadEventStream", () => {
     expect(latestWaitingAssistant).toEqual({ threadId, afterIdx: 12 });
   });
 
-  it("invalidates both selected thread snapshots on active-thread permission requests", async () => {
+  it("invalidates only the selected thread status snapshot on active-thread permission requests", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -335,10 +335,10 @@ describe("useThreadEventStream", () => {
     });
 
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
-  it("invalidates both selected thread snapshots on active-thread plan.created events", async () => {
+  it("invalidates only the selected thread status snapshot on active-thread plan.created events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -363,7 +363,7 @@ describe("useThreadEventStream", () => {
     });
 
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
   it("invalidates both selected thread snapshots on active-thread chat.completed events", async () => {
@@ -395,7 +395,7 @@ describe("useThreadEventStream", () => {
   });
 
   it.each(["tool.started", "tool.finished", "subagent.started", "subagent.finished"] as const)(
-    "invalidates both selected thread snapshots on active-thread %s events",
+    "invalidates only the selected thread status snapshot on active-thread %s events",
     async (type) => {
       const threadId = "selected-thread";
       queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
@@ -423,7 +423,7 @@ describe("useThreadEventStream", () => {
       });
 
       expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
-      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+      expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
     },
   );
 
@@ -752,7 +752,7 @@ describe("useThreadEventStream", () => {
 
   it("keeps bootstrap fetch cancellation wired before thread deletion cleanup", async () => {
     const threadId = "selected-thread";
-    getTimelineSnapshotMock.mockResolvedValueOnce(makeSnapshot());
+    getThreadStatusSnapshotMock.mockResolvedValueOnce({ status: "idle", newestIdx: 7 });
 
     renderHook(threadId);
 
@@ -760,32 +760,42 @@ describe("useThreadEventStream", () => {
       await Promise.resolve();
     });
 
-    expect(getTimelineSnapshotMock).toHaveBeenCalledWith(threadId, { includeCollections: false });
+    expect(getThreadStatusSnapshotMock).toHaveBeenCalledWith(threadId);
     expect(cancelQueriesMock).not.toHaveBeenCalled();
   });
 
-  it("opens the SSE stream immediately while bootstrap snapshot is still pending", async () => {
+  it("waits for the bootstrap status snapshot before opening the first SSE stream", async () => {
     const threadId = "selected-thread";
-    let resolveSnapshot: ((snapshot: ChatTimelineSnapshot) => void) | null = null;
-    const pendingSnapshot = new Promise<ChatTimelineSnapshot>((resolve) => {
-      resolveSnapshot = resolve;
+    let resolveStatus: ((snapshot: { status: string; newestIdx: number | null }) => void) | null = null;
+    const pendingStatus = new Promise<{ status: string; newestIdx: number | null }>((resolve) => {
+      resolveStatus = resolve;
     });
-    getTimelineSnapshotMock.mockReturnValueOnce(pendingSnapshot);
+    getThreadStatusSnapshotMock.mockReturnValueOnce(pendingStatus);
 
     renderHook(threadId, {
       initialWaitingAssistant: { threadId, afterIdx: 1 },
     });
 
-    expect(MockEventSource.instances).toHaveLength(1);
-    const stream = MockEventSource.instances[0]!;
+    expect(MockEventSource.instances).toHaveLength(0);
+    expect(latestWaitingAssistant).toEqual({ threadId, afterIdx: 1 });
 
+    await act(async () => {
+      resolveStatus?.({ status: "idle", newestIdx: 41 });
+      await pendingStatus;
+      await Promise.resolve();
+    });
+
+    expect(MockEventSource.instances).toHaveLength(1);
+    expect(MockEventSource.instances[0]?.url).toContain("afterIdx=41");
+
+    const stream = MockEventSource.instances[0]!;
     act(() => {
       stream.emit(
         "tool.started",
         makeEvent({
           id: "e-bootstrap-live",
           threadId,
-          idx: 2,
+          idx: 42,
           type: "tool.started",
           payload: { toolUseId: "tu-1", toolName: "Bash" },
         }),
@@ -793,14 +803,9 @@ describe("useThreadEventStream", () => {
     });
 
     expect(latestWaitingAssistant).toBeNull();
-
-    await act(async () => {
-      resolveSnapshot?.(makeSnapshot());
-      await pendingSnapshot;
-    });
   });
 
-  it("still invalidates the selected thread snapshot on gate resolution events", async () => {
+  it("still invalidates the selected thread status snapshot on gate resolution events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -824,7 +829,8 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
   it("writes stream batches into local thread collections without duplicating repeated events", async () => {

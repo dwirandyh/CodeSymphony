@@ -127,6 +127,9 @@ export type ChatMessageListProps = {
   items: ChatTimelineItem[];
   emptyState?: ChatMessageListEmptyState | null;
   showThinkingPlaceholder?: boolean;
+  hasOlderHistory?: boolean;
+  loadingOlderHistory?: boolean;
+  onLoadOlderHistory?: () => boolean | void | Promise<boolean | void>;
   onOpenReadFile?: (path: string) => void | Promise<void>;
   worktreePath?: string | null;
   footer?: ReactNode;

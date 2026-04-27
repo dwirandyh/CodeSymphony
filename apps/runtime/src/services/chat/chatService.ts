@@ -69,7 +69,12 @@ import {
 } from "./gitDiffUtils.js";
 import {
   mapMessages,
+  mapEvents,
   buildTimelineSnapshot,
+  DISPLAY_TIMELINE_TAIL_EVENT_LIMIT,
+  DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT,
+  selectNewestRowsAscending,
+  trimMessagesToEventWindow,
 } from "./chatPaginationUtils.js";
 import {
   isImageMimeType,
@@ -139,6 +144,13 @@ type ThreadRunState = {
   activeSubagentToolUseIds: Set<string>;
   queueHandoffPending: boolean;
   cancellationReason: "queued_message_dispatch" | null;
+};
+
+type ThreadSnapshotOptions = {
+  includeCollections?: boolean;
+  paginated?: boolean;
+  beforeEventIdx?: number | null;
+  beforeMessageSeq?: number | null;
 };
 
 function createWorktreeMutationTracker(): WorktreeMutationTracker {
@@ -2285,27 +2297,74 @@ export function createChatService(deps: RuntimeDeps) {
 
     async listThreadSnapshot(
       threadId: string,
-      options?: { includeCollections?: boolean },
+      options?: ThreadSnapshotOptions,
     ): Promise<ChatThreadSnapshot> {
       await maybeDispatchQueuedMessages(threadId);
       await requireThreadExists(deps, threadId);
-      const [messageRows, eventRows] = await Promise.all([
-        deps.prisma.chatMessage.findMany({
-          where: { threadId },
-          orderBy: { seq: "asc" },
-          include: { attachments: true },
-        }),
-        deps.eventHub.list(threadId),
-      ]);
+      const includeCollections = options?.includeCollections ?? true;
+      const paginated = options?.paginated === true;
 
-      const messages = mapMessages(messageRows);
-      const events = eventRows;
+      let messages: ChatMessage[];
+      let events: ChatEvent[];
+      let olderHistoryAvailable = false;
+
+      if (includeCollections && !paginated) {
+        const [messageRows, eventRows] = await Promise.all([
+          deps.prisma.chatMessage.findMany({
+            where: { threadId },
+            orderBy: { seq: "asc" },
+            include: { attachments: true },
+          }),
+          deps.eventHub.list(threadId),
+        ]);
+
+        messages = mapMessages(messageRows);
+        events = eventRows;
+      } else {
+        const [messageRowsDescending, eventRowsDescending] = await Promise.all([
+          deps.prisma.chatMessage.findMany({
+            where: {
+              threadId,
+              ...(typeof options?.beforeMessageSeq === "number"
+                ? { seq: { lte: options.beforeMessageSeq } }
+                : {}),
+            },
+            orderBy: { seq: "desc" },
+            take: DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT + 1,
+            include: { attachments: true },
+          }),
+          deps.prisma.chatEvent.findMany({
+            where: {
+              threadId,
+              ...(typeof options?.beforeEventIdx === "number"
+                ? { idx: { lt: options.beforeEventIdx } }
+                : {}),
+            },
+            orderBy: { idx: "desc" },
+            take: DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 1,
+          }),
+        ]);
+
+        const {
+          rows: newestMessageRows,
+          olderRowsAvailable: olderMessagesAvailable,
+        } = selectNewestRowsAscending(messageRowsDescending, DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT);
+        const {
+          rows: newestEventRows,
+          olderRowsAvailable: olderEventsAvailable,
+        } = selectNewestRowsAscending(eventRowsDescending, DISPLAY_TIMELINE_TAIL_EVENT_LIMIT);
+
+        events = mapEvents(newestEventRows);
+        messages = trimMessagesToEventWindow(mapMessages(newestMessageRows), events);
+        olderHistoryAvailable = olderMessagesAvailable || olderEventsAvailable;
+      }
 
       const timeline = buildTimelineSnapshot({
         messages,
         events,
         threadId,
-        includeCollections: options?.includeCollections ?? true,
+        includeCollections,
+        olderHistoryAvailable,
       });
 
       return {

@@ -11,6 +11,7 @@ import type {
   ChatEvent,
   ChatMessage,
   ChatThread,
+  ChatThreadStatusSnapshot,
   ChatTimelineSnapshot,
 } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
@@ -96,6 +97,23 @@ function syncThreadStreamCursorFromSnapshot(threadId: string, snapshot: ChatTime
 
   if (snapshot.events.length > 0) {
     replaceSeenThreadEventIds(threadId, snapshot.events.map((event) => event.id));
+  }
+
+  if (snapshotNewestIdx != null) {
+    setThreadLastEventIdx(threadId, snapshotNewestIdx);
+  }
+}
+
+function syncThreadStreamCursorFromStatus(threadId: string, snapshot: ChatThreadStatusSnapshot) {
+  const snapshotNewestIdx = snapshot.newestIdx ?? null;
+  const localNewestIdx = getThreadLastEventIdx(threadId);
+
+  if (
+    localNewestIdx != null
+    && snapshotNewestIdx != null
+    && snapshotNewestIdx < localNewestIdx
+  ) {
+    return;
   }
 
   if (snapshotNewestIdx != null) {
@@ -413,7 +431,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
 
       if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
       }
 
       if (selectedWorktreeId && GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {
@@ -421,6 +438,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       if (payload.type === "chat.completed" || payload.type === "chat.failed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
         setThreads((current) => {
           const index = current.findIndex((thread) => thread.id === selectedThreadId);
           if (index === -1 || !current[index]?.active) {
@@ -557,34 +575,51 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       };
     };
 
-    const cachedSnapshot = queryClient.getQueryData<ChatTimelineSnapshot>(
-      queryKeys.threads.timelineSnapshot(selectedThreadId),
-    );
+    void (async () => {
+      try {
+        const bootstrapThreadId = selectedThreadId;
+        const cachedSnapshot = queryClient.getQueryData<ChatTimelineSnapshot>(
+          queryKeys.threads.timelineSnapshot(bootstrapThreadId),
+        );
+        if (cachedSnapshot) {
+          syncThreadStreamCursorFromSnapshot(bootstrapThreadId, cachedSnapshot);
+        }
 
-    startStream();
+        const existingEvents = getThreadEventsCollection(bootstrapThreadId).toArray as ChatEvent[];
+        const existingLastEventIdx = existingEvents[existingEvents.length - 1]?.idx ?? null;
+        if (existingLastEventIdx != null) {
+          setThreadLastEventIdx(bootstrapThreadId, existingLastEventIdx);
+        }
 
-    if (!cachedSnapshot) {
-      void (async () => {
-        try {
-          const bootstrapThreadId = selectedThreadId;
-          const snapshot = await queryClient.fetchQuery({
-            queryKey: queryKeys.threads.timelineSnapshot(bootstrapThreadId),
-            queryFn: () => api.getTimelineSnapshot(bootstrapThreadId, {
-              includeCollections: false,
-            }),
-          });
-          if (
-            disposed
-            || locallyDeletedThreadIdsRef.current.has(bootstrapThreadId)
-            || activeThreadIdRef.current !== bootstrapThreadId
-          ) {
-            return;
+        if (getThreadLastEventIdx(bootstrapThreadId) == null) {
+          const cachedStatusSnapshot = queryClient.getQueryData<ChatThreadStatusSnapshot>(
+            queryKeys.threads.statusSnapshot(bootstrapThreadId),
+          );
+
+          if (cachedStatusSnapshot) {
+            syncThreadStreamCursorFromStatus(bootstrapThreadId, cachedStatusSnapshot);
+          } else {
+            const statusSnapshot = await queryClient.fetchQuery({
+              queryKey: queryKeys.threads.statusSnapshot(bootstrapThreadId),
+              queryFn: () => api.getThreadStatusSnapshot(bootstrapThreadId),
+            });
+            if (
+              disposed
+              || locallyDeletedThreadIdsRef.current.has(bootstrapThreadId)
+              || activeThreadIdRef.current !== bootstrapThreadId
+            ) {
+              return;
+            }
+
+            syncThreadStreamCursorFromStatus(bootstrapThreadId, statusSnapshot);
           }
+        }
+      } catch {}
 
-          syncThreadStreamCursorFromSnapshot(bootstrapThreadId, snapshot);
-        } catch {}
-      })();
-    }
+      if (!disposed) {
+        startStream();
+      }
+    })();
 
     return () => {
       disposed = true;

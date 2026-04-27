@@ -3,6 +3,10 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
 import { buildTimelineFromSeed } from "../src/services/chat/chatTimelineAssembler";
+import {
+  DISPLAY_TIMELINE_TAIL_EVENT_LIMIT,
+  DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT,
+} from "../src/services/chat/chatPaginationUtils";
 
 const stubModelProviderService = {
   getActiveProvider: async () => null,
@@ -81,6 +85,52 @@ async function seedThreadWithMessages(messageCount: number): Promise<SeededThrea
   return { threadId: thread.id, messageIdBySeq };
 }
 
+async function seedThreadWithConversationRoles(
+  roles: Array<"user" | "assistant">,
+): Promise<SeededThread> {
+  const suffix = uniqueSuffix();
+  const repository = await prisma.repository.create({
+    data: {
+      name: `snapshot-coverage-conversation-${suffix}`,
+      rootPath: `/tmp/snapshot-coverage-conversation-${suffix}`,
+      defaultBranch: "main",
+    },
+  });
+
+  const worktree = await prisma.worktree.create({
+    data: {
+      repositoryId: repository.id,
+      branch: "main",
+      baseBranch: "main",
+      path: repository.rootPath,
+      status: "active",
+    },
+  });
+
+  const thread = await prisma.chatThread.create({
+    data: {
+      worktreeId: worktree.id,
+      title: "Snapshot Coverage Conversation",
+    },
+  });
+
+  const messageIdBySeq = new Map<number, string>();
+  for (let seq = 0; seq < roles.length; seq += 1) {
+    const role = roles[seq];
+    const message = await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq,
+        role,
+        content: `${role}-${seq}`,
+      },
+    });
+    messageIdBySeq.set(seq, message.id);
+  }
+
+  return { threadId: thread.id, messageIdBySeq };
+}
+
 async function insertEvents(
   threadId: string,
   events: Array<{ idx: number; type: ChatEventType; payload: Record<string, unknown> }>,
@@ -146,6 +196,296 @@ describe("chatService snapshot", () => {
 
     expect(snapshot.events).toHaveLength(100);
     expect(snapshot.timeline.newestIdx).toBe(100);
+  });
+
+  it("returns only the latest display tail and marks older history for hydration", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const messageCount = DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT + 3;
+    const eventCount = DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 5;
+    const { threadId, messageIdBySeq } = await seedThreadWithMessages(messageCount);
+    await insertEvents(threadId, Array.from({ length: eventCount }, (_, index) => {
+      const seq = Math.min(index + 1, messageCount);
+      return {
+        idx: index + 1,
+        type: "chat_completed" as const,
+        payload: { messageId: messageIdBySeq.get(seq) },
+      };
+    }));
+
+    const snapshot = await chatService.listThreadSnapshot(threadId, { includeCollections: false });
+    const expectedFirstSeq = eventCount - DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 1;
+    const expectedMessageCount = messageCount - expectedFirstSeq + 1;
+
+    expect(snapshot.messages).toHaveLength(expectedMessageCount);
+    expect(snapshot.messages[0]?.seq).toBe(expectedFirstSeq);
+    expect(snapshot.messages.at(-1)?.seq).toBe(messageCount);
+    expect(snapshot.events).toHaveLength(DISPLAY_TIMELINE_TAIL_EVENT_LIMIT);
+    expect(snapshot.events[0]?.idx).toBe(eventCount - DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 1);
+    expect(snapshot.events.at(-1)?.idx).toBe(eventCount);
+    expect(snapshot.timeline.collectionsIncluded).toBe(false);
+    expect(snapshot.timeline.messages).toEqual([]);
+    expect(snapshot.timeline.events).toEqual([]);
+    expect(snapshot.timeline.summary.oldestRenderableHydrationPending).toBe(true);
+    expect(snapshot.timeline.newestSeq).toBe(messageCount);
+    expect(snapshot.timeline.newestIdx).toBe(eventCount);
+  });
+
+  it("returns only the latest collections page when paginated hydration is requested", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const messageCount = DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT + 3;
+    const eventCount = DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 5;
+    const { threadId, messageIdBySeq } = await seedThreadWithMessages(messageCount);
+    await insertEvents(threadId, Array.from({ length: eventCount }, (_, index) => {
+      const seq = Math.min(index + 1, messageCount);
+      return {
+        idx: index + 1,
+        type: "chat_completed" as const,
+        payload: { messageId: messageIdBySeq.get(seq) },
+      };
+    }));
+
+    const snapshot = await chatService.listThreadSnapshot(threadId, {
+      includeCollections: true,
+      paginated: true,
+    });
+    const expectedFirstSeq = eventCount - DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 1;
+    const expectedMessageCount = messageCount - expectedFirstSeq + 1;
+
+    expect(snapshot.messages).toHaveLength(expectedMessageCount);
+    expect(snapshot.messages[0]?.seq).toBe(expectedFirstSeq);
+    expect(snapshot.messages.at(-1)?.seq).toBe(messageCount);
+    expect(snapshot.events).toHaveLength(DISPLAY_TIMELINE_TAIL_EVENT_LIMIT);
+    expect(snapshot.events[0]?.idx).toBe(eventCount - DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 1);
+    expect(snapshot.events.at(-1)?.idx).toBe(eventCount);
+    expect(snapshot.timeline.collectionsIncluded).toBe(true);
+    expect(snapshot.timeline.messages).toHaveLength(expectedMessageCount);
+    expect(snapshot.timeline.events).toHaveLength(DISPLAY_TIMELINE_TAIL_EVENT_LIMIT);
+    expect(snapshot.timeline.summary.oldestRenderableHydrationPending).toBe(true);
+    expect(snapshot.timeline.newestSeq).toBe(messageCount);
+    expect(snapshot.timeline.newestIdx).toBe(eventCount);
+  });
+
+  it("returns older paginated collections pages from the requested cursors", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const messageCount = DISPLAY_TIMELINE_TAIL_MESSAGE_LIMIT + 3;
+    const eventCount = DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 5;
+    const { threadId, messageIdBySeq } = await seedThreadWithMessages(messageCount);
+    await insertEvents(threadId, Array.from({ length: eventCount }, (_, index) => {
+      const seq = Math.min(index + 1, messageCount);
+      return {
+        idx: index + 1,
+        type: "chat_completed" as const,
+        payload: { messageId: messageIdBySeq.get(seq) },
+      };
+    }));
+
+    const latestPage = await chatService.listThreadSnapshot(threadId, {
+      includeCollections: true,
+      paginated: true,
+    });
+    const olderPage = await chatService.listThreadSnapshot(threadId, {
+      includeCollections: true,
+      paginated: true,
+      beforeEventIdx: latestPage.events[0]?.idx ?? null,
+      beforeMessageSeq: latestPage.messages[0]?.seq ?? null,
+    });
+
+    expect(olderPage.messages.map((message) => message.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(olderPage.events.map((event) => event.idx)).toEqual([1, 2, 3, 4, 5]);
+    expect(olderPage.timeline.collectionsIncluded).toBe(true);
+    expect(olderPage.timeline.messages.map((message) => message.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(olderPage.timeline.events.map((event) => event.idx)).toEqual([1, 2, 3, 4, 5]);
+    expect(olderPage.timeline.summary.oldestRenderableHydrationPending).toBe(false);
+    expect(olderPage.timeline.newestSeq).toBe(6);
+    expect(olderPage.timeline.newestIdx).toBe(5);
+  });
+
+  it("trims paginated message pages to the earliest message still covered by the event window", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId, messageIdBySeq } = await seedThreadWithConversationRoles([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+
+    const assistantOverlapEventCount = (DISPLAY_TIMELINE_TAIL_EVENT_LIMIT * 2) - 11;
+    const paginatedEvents = [
+      ...Array.from({ length: assistantOverlapEventCount }, (_, index) => ({
+        idx: index + 2,
+        type: "message_delta" as const,
+        payload: {
+          messageId: messageIdBySeq.get(1),
+          role: "assistant",
+          delta: `chunk-${index + 1}`,
+        },
+      })),
+      {
+        idx: assistantOverlapEventCount + 2,
+        type: "chat_completed" as const,
+        payload: { messageId: messageIdBySeq.get(1) },
+      },
+      {
+        idx: assistantOverlapEventCount + 3,
+        type: "message_delta" as const,
+        payload: { messageId: messageIdBySeq.get(2), role: "user", delta: "user-2" },
+      },
+      {
+        idx: assistantOverlapEventCount + 4,
+        type: "message_delta" as const,
+        payload: { messageId: messageIdBySeq.get(3), role: "assistant", delta: "assistant-3" },
+      },
+      {
+        idx: assistantOverlapEventCount + 5,
+        type: "chat_completed" as const,
+        payload: { messageId: messageIdBySeq.get(3) },
+      },
+      {
+        idx: assistantOverlapEventCount + 6,
+        type: "message_delta" as const,
+        payload: { messageId: messageIdBySeq.get(4), role: "user", delta: "user-4" },
+      },
+      {
+        idx: assistantOverlapEventCount + 7,
+        type: "message_delta" as const,
+        payload: { messageId: messageIdBySeq.get(5), role: "assistant", delta: "assistant-5" },
+      },
+      {
+        idx: assistantOverlapEventCount + 8,
+        type: "chat_completed" as const,
+        payload: { messageId: messageIdBySeq.get(5) },
+      },
+      {
+        idx: assistantOverlapEventCount + 9,
+        type: "message_delta" as const,
+        payload: { messageId: messageIdBySeq.get(6), role: "user", delta: "user-6" },
+      },
+      {
+        idx: assistantOverlapEventCount + 10,
+        type: "message_delta" as const,
+        payload: { messageId: messageIdBySeq.get(7), role: "assistant", delta: "assistant-7" },
+      },
+      {
+        idx: assistantOverlapEventCount + 11,
+        type: "chat_completed" as const,
+        payload: { messageId: messageIdBySeq.get(7) },
+      },
+      {
+        idx: assistantOverlapEventCount + 12,
+        type: "tool_finished" as const,
+        payload: {
+          messageId: messageIdBySeq.get(7),
+          toolName: "Read",
+          summary: "Read the final file",
+        },
+      },
+    ];
+
+    await insertEvents(threadId, [
+      {
+        idx: 1,
+        type: "message_delta",
+        payload: { messageId: messageIdBySeq.get(0), role: "user", delta: "user-0" },
+      },
+      ...paginatedEvents,
+    ]);
+
+    const displaySnapshot = await chatService.listThreadSnapshot(threadId, {
+      includeCollections: false,
+    });
+    const hydrationSnapshot = await chatService.listThreadSnapshot(threadId, {
+      includeCollections: true,
+      paginated: true,
+    });
+    const firstOlderPage = await chatService.listThreadSnapshot(threadId, {
+      includeCollections: true,
+      paginated: true,
+      beforeEventIdx: hydrationSnapshot.events[0]?.idx ?? null,
+      beforeMessageSeq: hydrationSnapshot.messages[0]?.seq ?? null,
+    });
+
+    expect(displaySnapshot.timeline.timelineItems[0]).toMatchObject({
+      kind: "message",
+      message: {
+        id: messageIdBySeq.get(1),
+        seq: 1,
+        role: "assistant",
+      },
+    });
+    expect(hydrationSnapshot.messages.map((message) => message.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(hydrationSnapshot.timeline.messages.map((message) => message.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(hydrationSnapshot.events).toHaveLength(DISPLAY_TIMELINE_TAIL_EVENT_LIMIT);
+    expect(hydrationSnapshot.events[0]?.idx).toBe(assistantOverlapEventCount - DISPLAY_TIMELINE_TAIL_EVENT_LIMIT + 13);
+    expect(hydrationSnapshot.timeline.timelineItems[0]).toMatchObject({
+      kind: "message",
+      message: {
+        id: messageIdBySeq.get(1),
+        seq: 1,
+        role: "assistant",
+      },
+    });
+    expect(hydrationSnapshot.timeline.summary.oldestRenderableHydrationPending).toBe(true);
+    expect(firstOlderPage.messages.map((message) => message.seq)).toEqual([1]);
+    expect(firstOlderPage.timeline.timelineItems[0]).toMatchObject({
+      kind: "message",
+      message: {
+        id: messageIdBySeq.get(1),
+        seq: 1,
+        role: "assistant",
+      },
+    });
+  });
+
+  it("does not mark display hydration pending when the thread fits entirely in the display tail", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId, messageIdBySeq } = await seedThreadWithMessages(3);
+    await insertEvents(threadId, [
+      { idx: 1, type: "chat_completed", payload: { messageId: messageIdBySeq.get(1) } },
+      { idx: 2, type: "chat_completed", payload: { messageId: messageIdBySeq.get(2) } },
+      { idx: 3, type: "chat_completed", payload: { messageId: messageIdBySeq.get(3) } },
+    ]);
+
+    const snapshot = await chatService.listThreadSnapshot(threadId, { includeCollections: false });
+
+    expect(snapshot.messages).toHaveLength(3);
+    expect(snapshot.events).toHaveLength(3);
+    expect(snapshot.timeline.summary.oldestRenderableHydrationPending).toBe(false);
+    expect(snapshot.timeline.newestSeq).toBe(3);
+    expect(snapshot.timeline.newestIdx).toBe(3);
   });
 
   it("returns empty snapshot for thread with no data", async () => {

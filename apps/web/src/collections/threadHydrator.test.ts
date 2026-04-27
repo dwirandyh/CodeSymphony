@@ -97,6 +97,45 @@ describe("threadHydrator", () => {
     ]);
   });
 
+  it("prepends older events without clearing newer messages when a pagination page has no messages", () => {
+    const { eventsCollection, messagesCollection } = getThreadCollections("thread-1");
+    messagesCollection.insert([
+      makeMessage(0, "message-0"),
+      makeMessage(1, "message-1"),
+    ]);
+    eventsCollection.insert([
+      makeEvent(101, "event-101"),
+      makeEvent(102, "event-102"),
+    ]);
+    setThreadLastMessageSeq("thread-1", 1);
+    setThreadLastEventIdx("thread-1", 102);
+
+    const hydrated = hydrateThreadFromSnapshot({
+      threadId: "thread-1",
+      mode: "prepend",
+      snapshot: makeSnapshot({
+        newestIdx: 100,
+        newestSeq: null,
+        messages: [],
+        events: [
+          makeEvent(99, "event-99"),
+          makeEvent(100, "event-100"),
+        ],
+      }),
+    });
+
+    expect(hydrated.messages.map((message) => message.id)).toEqual([
+      "message-0",
+      "message-1",
+    ]);
+    expect(hydrated.events.map((event) => event.id)).toEqual([
+      "event-99",
+      "event-100",
+      "event-101",
+      "event-102",
+    ]);
+  });
+
   it("disposes thread collections and recreates them empty", () => {
     const initial = getThreadCollections("thread-1");
     initial.messagesCollection.insert(makeMessage(1));
