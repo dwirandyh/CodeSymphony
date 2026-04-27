@@ -47,6 +47,28 @@ function cloneSortedIfNeeded<T>(rows: T[], compare: (left: T, right: T) => numbe
   return rows;
 }
 
+function dedupeRowsByKeyPreserveOrder<T>(rows: T[], getKey: (row: T) => string): T[] {
+  if (rows.length < 2) {
+    return rows;
+  }
+
+  const seen = new Set<string>();
+  const uniqueRows: T[] = [];
+  let removedDuplicate = false;
+
+  for (const row of rows) {
+    const key = getKey(row);
+    if (seen.has(key)) {
+      removedDuplicate = true;
+      continue;
+    }
+    seen.add(key);
+    uniqueRows.push(row);
+  }
+
+  return removedDuplicate ? uniqueRows : rows;
+}
+
 function rowsAlignAsPrefix<T>(
   currentRows: T[],
   nextRows: T[],
@@ -162,8 +184,19 @@ function getSnapshotNewestMessageSeq(snapshot: ChatTimelineSnapshot) {
 }
 
 function mergeOlderSnapshotEvents(snapshotEvents: ChatEvent[], currentEvents: ChatEvent[]) {
+  const uniqueSnapshotEvents = dedupeRowsByKeyPreserveOrder(snapshotEvents, (event) => event.id);
+  if (uniqueSnapshotEvents.length === 0) {
+    return currentEvents;
+  }
+  if (currentEvents.length === 0) {
+    return uniqueSnapshotEvents;
+  }
+  if (uniqueSnapshotEvents[uniqueSnapshotEvents.length - 1].idx < currentEvents[0].idx) {
+    return [...uniqueSnapshotEvents, ...currentEvents];
+  }
+
   const merged = new Map(currentEvents.map((event) => [event.id, event]));
-  for (const snapshotEvent of snapshotEvents) {
+  for (const snapshotEvent of uniqueSnapshotEvents) {
     if (!merged.has(snapshotEvent.id)) {
       merged.set(snapshotEvent.id, snapshotEvent);
     }
@@ -172,8 +205,19 @@ function mergeOlderSnapshotEvents(snapshotEvents: ChatEvent[], currentEvents: Ch
 }
 
 function mergeOlderSnapshotMessages(snapshotMessages: ChatMessage[], currentMessages: ChatMessage[]) {
+  const uniqueSnapshotMessages = dedupeRowsByKeyPreserveOrder(snapshotMessages, (message) => message.id);
+  if (uniqueSnapshotMessages.length === 0) {
+    return currentMessages;
+  }
+  if (currentMessages.length === 0) {
+    return uniqueSnapshotMessages;
+  }
+  if (uniqueSnapshotMessages[uniqueSnapshotMessages.length - 1].seq < currentMessages[0].seq) {
+    return [...uniqueSnapshotMessages, ...currentMessages];
+  }
+
   const merged = new Map(currentMessages.map((message) => [message.id, message]));
-  for (const snapshotMessage of snapshotMessages) {
+  for (const snapshotMessage of uniqueSnapshotMessages) {
     if (!merged.has(snapshotMessage.id)) {
       merged.set(snapshotMessage.id, snapshotMessage);
     }

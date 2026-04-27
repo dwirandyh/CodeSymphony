@@ -286,6 +286,7 @@ export const ChatMessageList = memo(function ChatMessageList({
   const olderHistoryRequestInFlightRef = useRef(false);
   const retryLoadOlderAfterCompletionRef = useRef(false);
   const topThresholdArmedRef = useRef(true);
+  const suppressAutoLoadOlderAfterRestoreRef = useRef(false);
   const lastObservedScrollOffsetRef = useRef<number | null>(null);
   const lastAppliedRestorableScrollSignatureRef = useRef<string | null>(null);
   const lastScrollSampleSignatureRef = useRef<string | null>(null);
@@ -394,6 +395,7 @@ export const ChatMessageList = memo(function ChatMessageList({
   useLayoutEffect(() => {
     settlingProgrammaticBottomFollowRef.current = false;
     settlingProgrammaticBottomObservedSampleRef.current = false;
+    suppressAutoLoadOlderAfterRestoreRef.current = false;
   }, [threadId]);
 
   useEffect(() => {
@@ -808,6 +810,20 @@ export const ChatMessageList = memo(function ChatMessageList({
     return distanceFromBottom <= AT_BOTTOM_THRESHOLD;
   }, []);
 
+  const releaseRestoreNearTopPaginationSuppression = useCallback((reason: "pointer" | "wheel") => {
+    if (!suppressAutoLoadOlderAfterRestoreRef.current) {
+      return false;
+    }
+
+    suppressAutoLoadOlderAfterRestoreRef.current = false;
+    debugLog("thread.pagination.ui", "loadOlder.restoreSuppression.released", {
+      threadId,
+      reason,
+      offset: roundScrollMetric(lastObservedScrollOffsetRef.current),
+    });
+    return true;
+  }, [threadId]);
+
   const applyRestorableScrollOffset = useCallback((
     source: "layout-effect" | "resize-observer",
     attempt: number | null = null,
@@ -880,12 +896,18 @@ export const ChatMessageList = memo(function ChatMessageList({
 
     const clampedOffset = clampScrollOffset(restorableScrollOffset, effectiveScrollSize, effectiveViewportSize);
     const nextStickyBottom = isAtBottom(clampedOffset);
+    const loadOlderHistoryThreshold = clampLoadOlderHistoryThreshold(effectiveViewportSize);
+    const loadOlderHistoryRearmThreshold = loadOlderHistoryThreshold + LOAD_OLDER_HISTORY_REARM_OFFSET;
+    const shouldSuppressAutoLoadOlderAfterRestore =
+      hasOlderHistory
+      && clampedOffset <= loadOlderHistoryRearmThreshold;
     const commitRestore = () => {
       lastAppliedRestorableScrollSignatureRef.current = restorableScrollSignature;
       lastObservedScrollOffsetRef.current = clampedOffset;
       settlingProgrammaticBottomFollowRef.current = false;
       settlingProgrammaticBottomObservedSampleRef.current = false;
       stickyBottomRef.current = nextStickyBottom;
+      suppressAutoLoadOlderAfterRestoreRef.current = shouldSuppressAutoLoadOlderAfterRestore;
     };
 
     if (Math.abs(handle.scrollOffset - clampedOffset) <= 1) {
@@ -897,6 +919,7 @@ export const ChatMessageList = memo(function ChatMessageList({
         displayItemCount,
         savedScrollOffset: roundScrollMetric(clampedOffset),
         stickyBottom: stickyBottomRef.current,
+        suppressAutoLoadOlderAfterRestore: shouldSuppressAutoLoadOlderAfterRestore,
         ...buildScrollMetrics(handle, handle.scrollOffset),
       });
       return "restored";
@@ -915,6 +938,7 @@ export const ChatMessageList = memo(function ChatMessageList({
         displayItemCount,
         savedScrollOffset: roundScrollMetric(clampedOffset),
         stickyBottom: stickyBottomRef.current,
+        suppressAutoLoadOlderAfterRestore: shouldSuppressAutoLoadOlderAfterRestore,
         ...buildScrollMetrics(handle, handle.scrollOffset),
       });
       return "restored";
@@ -933,6 +957,7 @@ export const ChatMessageList = memo(function ChatMessageList({
     displayItemCount,
     displayItems.length,
     isAtBottom,
+    hasOlderHistory,
     restorableCacheEntry,
     restorableScrollOffset,
     restorableScrollSignature,
@@ -1307,6 +1332,7 @@ export const ChatMessageList = memo(function ChatMessageList({
     if (
       hasOlderHistory
       && initialPositiveScrollObservedRef.current
+      && !suppressAutoLoadOlderAfterRestoreRef.current
       && topThresholdArmedRef.current
       && offset <= loadOlderHistoryThreshold
     ) {
@@ -1319,7 +1345,13 @@ export const ChatMessageList = memo(function ChatMessageList({
       });
       requestOlderHistory();
     }
-  }, [hasOlderHistory, isAtBottom, persistRestorableCache, requestOlderHistory, threadId]);
+  }, [
+    hasOlderHistory,
+    isAtBottom,
+    persistRestorableCache,
+    requestOlderHistory,
+    threadId,
+  ]);
 
   const handleScrollEnd = useCallback(() => {
     const handle = vlistRef.current;
@@ -1352,6 +1384,7 @@ export const ChatMessageList = memo(function ChatMessageList({
     if (
       hasOlderHistory
       && initialPositiveScrollObservedRef.current
+      && !suppressAutoLoadOlderAfterRestoreRef.current
       && topThresholdArmedRef.current
       && currentOffset <= getLoadOlderHistoryThreshold(handle, containerRef.current, currentOffset)
     ) {
@@ -1386,6 +1419,7 @@ export const ChatMessageList = memo(function ChatMessageList({
     if (event.deltaY !== 0) {
       ignoreInitialTopScrollRef.current = false;
       initialPositiveScrollObservedRef.current = true;
+      releaseRestoreNearTopPaginationSuppression("wheel");
     }
 
     if (event.deltaY >= 0 || !hasOlderHistory || !topThresholdArmedRef.current) {
@@ -1408,7 +1442,11 @@ export const ChatMessageList = memo(function ChatMessageList({
       ...buildScrollMetrics(handle ?? null, currentOffset),
     });
     requestOlderHistory();
-  }, [hasOlderHistory, requestOlderHistory, threadId]);
+  }, [hasOlderHistory, releaseRestoreNearTopPaginationSuppression, requestOlderHistory, threadId]);
+
+  const handlePointerDownCapture = useCallback(() => {
+    releaseRestoreNearTopPaginationSuppression("pointer");
+  }, [releaseRestoreNearTopPaginationSuppression]);
 
   const timelineCtx = useMemo<TimelineCtx>(() => ({
     rawOutputMessageIds,
@@ -1463,6 +1501,7 @@ export const ChatMessageList = memo(function ChatMessageList({
       ref={containerRef}
       className="relative h-full min-h-0"
       data-testid="chat-scroll"
+      onPointerDownCapture={handlePointerDownCapture}
       onWheelCapture={handleWheelCapture}
     >
       {loadingOlderHistory ? (

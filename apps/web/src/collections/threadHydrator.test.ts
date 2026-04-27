@@ -136,6 +136,50 @@ describe("threadHydrator", () => {
     ]);
   });
 
+  it("prepends a fully disjoint older page ahead of the current head without disturbing newer rows", () => {
+    const { eventsCollection, messagesCollection } = getThreadCollections("thread-1");
+    messagesCollection.insert([
+      makeMessage(3, "message-3"),
+      makeMessage(4, "message-4"),
+    ]);
+    eventsCollection.insert([
+      makeEvent(103, "event-103"),
+      makeEvent(104, "event-104"),
+    ]);
+    setThreadLastMessageSeq("thread-1", 4);
+    setThreadLastEventIdx("thread-1", 104);
+
+    const hydrated = hydrateThreadFromSnapshot({
+      threadId: "thread-1",
+      mode: "prepend",
+      snapshot: makeSnapshot({
+        newestIdx: 102,
+        newestSeq: 2,
+        messages: [
+          makeMessage(1, "message-1"),
+          makeMessage(2, "message-2"),
+        ],
+        events: [
+          makeEvent(101, "event-101"),
+          makeEvent(102, "event-102"),
+        ],
+      }),
+    });
+
+    expect(hydrated.messages.map((message) => message.id)).toEqual([
+      "message-1",
+      "message-2",
+      "message-3",
+      "message-4",
+    ]);
+    expect(hydrated.events.map((event) => event.id)).toEqual([
+      "event-101",
+      "event-102",
+      "event-103",
+      "event-104",
+    ]);
+  });
+
   it("disposes thread collections and recreates them empty", () => {
     const initial = getThreadCollections("thread-1");
     initial.messagesCollection.insert(makeMessage(1));
