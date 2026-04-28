@@ -1536,6 +1536,84 @@ describe("useChatSession", () => {
     expect(hookResult.events.map((event) => event.id)).toEqual(["event-1", "event-3"]);
   });
 
+  it("refreshes an inactive thread from the server snapshot when local events still look mid-run", async () => {
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 2,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical reply.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [
+        {
+          id: "event-1",
+          threadId: "thread-a",
+          idx: 1,
+          type: "tool.started",
+          payload: {
+            toolUseId: "tool-1",
+            toolName: "Read",
+          },
+          createdAt: "2026-01-01T00:00:01Z",
+        },
+        {
+          id: "event-2",
+          threadId: "thread-a",
+          idx: 2,
+          type: "chat.completed",
+          payload: { messageId: "assistant-1" },
+          createdAt: "2026-01-01T00:00:02Z",
+        },
+      ],
+    });
+
+    act(() => {
+      const { messagesCollection, eventsCollection } = getThreadCollections("thread-a");
+      messagesCollection.insert({
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Partially streamed reply",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      eventsCollection.insert({
+        id: "event-local-running",
+        threadId: "thread-a",
+        idx: 1,
+        type: "tool.started",
+        payload: {
+          toolUseId: "tool-local-1",
+          toolName: "Read",
+        },
+        createdAt: "2026-01-01T00:00:01Z",
+      });
+      setThreadLastMessageSeq("thread-a", 1);
+      setThreadLastEventIdx("thread-a", 1);
+    });
+
+    renderHook("thread-a");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(
+      vi.mocked(useThreadSnapshot).mock.calls.some(
+        ([threadId, options]) => threadId === "thread-a" && options?.enabled === true,
+      ),
+    ).toBe(true);
+    expect(hookResult.selectedThreadUiStatus).toBe("idle");
+    expect(hookResult.messages[0]?.content).toBe("Canonical reply.");
+    expect(hookResult.events.map((event) => event.id)).toEqual(["event-1", "event-2"]);
+  });
+
   it("prefers a fresh authoritative server timeline while idle even when derived local timeline drifts", async () => {
     const serverTimelineItems: ChatTimelineItem[] = [
       {

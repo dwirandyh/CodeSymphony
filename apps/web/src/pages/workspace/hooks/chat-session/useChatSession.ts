@@ -964,6 +964,8 @@ export function useChatSession(
     selectedThreadHasLocalState || selectedThreadHasAppliedSnapshot;
   const shouldUseLocalCompleteThreadCache =
     selectedThreadHasCompleteLocalHistory
+    // Local collections are only safe to trust once assistant activity has fully settled.
+    && !eventDerivedThreadRunning
     && selectedThread?.active !== true
     && waitingAssistant?.threadId !== selectedThreadId;
   const snapshotBootstrapThreadId =

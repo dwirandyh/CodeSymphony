@@ -7,6 +7,7 @@ import { useSidebarResize } from "./hooks/useSidebarResize";
 import type { RepositoryPanelDropPosition } from "./repositoryPanelPreferences";
 
 export const WorkspaceSidebar = memo(function WorkspaceSidebar({
+  desktopApp = false,
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
@@ -30,6 +31,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   onRenameWorktreeBranch,
   onPrefetchWorktree,
 }: {
+  desktopApp?: boolean;
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
@@ -60,8 +62,10 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
       <aside
         ref={panelRef}
         className={cn(
-          "mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden bg-card/75 p-2 sm:mb-2 lg:mb-0 lg:p-3",
-          isVisible ? "lg:flex" : "lg:hidden",
+          "mb-1 min-h-0 shrink-0 flex-col overflow-hidden bg-card/75 p-2 sm:mb-2 lg:mb-0 lg:p-3",
+          isVisible
+            ? desktopApp ? "flex" : "hidden lg:flex"
+            : "hidden",
         )}
         style={{ width: `${sidebarWidth}px` }}
         aria-hidden={isVisible ? undefined : "true"}
@@ -110,7 +114,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
 
       {/* ── Sidebar resize handle ── */}
       {isVisible ? (
-        <div className="hidden relative w-0 lg:block" aria-hidden="true">
+        <div className={cn("relative w-0", desktopApp ? "block" : "hidden lg:block")} aria-hidden="true">
           <button
             type="button"
             className={`group absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors ${sidebarDragging ? "bg-primary/10" : ""

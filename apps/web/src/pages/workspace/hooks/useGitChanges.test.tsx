@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Repository } from "@codesymphony/shared-types";
 import { useGitStatus } from "../../../hooks/queries/useGitStatus";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useGitChanges } from "./useGitChanges";
@@ -235,5 +236,55 @@ describe("useGitChanges", () => {
     expect(container.textContent).toContain("entries:1");
     expect(container.textContent).toContain("branch:live-branch");
     expect(container.textContent).toContain("loading:false");
+  });
+
+  it("syncs the repositories cache when git status reports a new branch", () => {
+    vi.mocked(useGitStatus).mockReturnValue({
+      data: {
+        branch: "feature/from-terminal",
+        upstream: null,
+        ahead: 0,
+        behind: 0,
+        entries: [],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useGitStatus>);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData<Repository[]>(queryKeys.repositories.all, [{
+      id: "repo-1",
+      name: "Repo",
+      rootPath: "/repo",
+      defaultBranch: "main",
+      setupScript: null,
+      teardownScript: null,
+      runScript: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      worktrees: [{
+        id: "w1",
+        repositoryId: "repo-1",
+        branch: "main",
+        path: "/repo",
+        baseBranch: "main",
+        status: "active",
+        branchRenamed: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }],
+    }]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <TestComponent worktreeId="w1" enabled={true} />
+        </QueryClientProvider>
+      );
+    });
+
+    const repositories = qc.getQueryData<Repository[]>(queryKeys.repositories.all);
+    expect(repositories?.[0]?.worktrees[0]?.branch).toBe("feature/from-terminal");
+    expect(container.textContent).toContain("branch:feature/from-terminal");
   });
 });

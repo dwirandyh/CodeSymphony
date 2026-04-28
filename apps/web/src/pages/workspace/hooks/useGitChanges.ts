@@ -1,12 +1,13 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { GitChangeEntry, GitChangeStatus, GitStatus } from "@codesymphony/shared-types";
+import type { GitChangeEntry, GitChangeStatus, GitStatus, Repository } from "@codesymphony/shared-types";
 import { useGitStatus } from "../../../hooks/queries/useGitStatus";
 import { useGitCommit } from "../../../hooks/mutations/useGitCommit";
 import { useDiscardGitChange } from "../../../hooks/mutations/useDiscardGitChange";
 import { useGitSync } from "../../../hooks/mutations/useGitSync";
 import { api } from "../../../lib/api";
 import { getCachedGitStatus } from "../../../collections/gitStatus";
+import { queryKeys } from "../../../lib/queryKeys";
 
 const STATUS_PRIORITY: Record<GitChangeStatus, number> = {
   modified: 0,
@@ -48,6 +49,49 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
     () => worktreeId ? (effectiveData ?? lastKnownStatusByWorktreeRef.current.get(worktreeId)) : effectiveData,
     [effectiveData, worktreeId],
   );
+
+  useEffect(() => {
+    if (!worktreeId) {
+      return;
+    }
+
+    const nextBranch = stableData?.branch?.trim();
+    if (!nextBranch) {
+      return;
+    }
+
+    queryClient.setQueryData<Repository[] | undefined>(queryKeys.repositories.all, (current) => {
+      if (!current) {
+        return current;
+      }
+
+      let changed = false;
+      const updated = current.map((repository) => {
+        let repositoryChanged = false;
+        const nextWorktrees = repository.worktrees.map((worktree) => {
+          if (worktree.id !== worktreeId || worktree.branch === nextBranch) {
+            return worktree;
+          }
+
+          changed = true;
+          repositoryChanged = true;
+          return {
+            ...worktree,
+            branch: nextBranch,
+          };
+        });
+
+        return repositoryChanged
+          ? {
+            ...repository,
+            worktrees: nextWorktrees,
+          }
+          : repository;
+      });
+
+      return changed ? updated : current;
+    });
+  }, [queryClient, stableData?.branch, worktreeId]);
 
   const commit = useCallback(
     async (message: string) => {

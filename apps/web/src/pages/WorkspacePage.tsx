@@ -355,6 +355,7 @@ function WorkspaceSyncStreamBridge() {
 export function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const { search, updateSearch } = useWorkspaceSearchParams();
+  const desktopApp = isTauriDesktop();
 
   const prevWorktreeIdRef = useRef<string | undefined>(search.worktreeId);
   const pendingWorktreeSearchSelectionRef = useRef<{
@@ -934,7 +935,7 @@ export function WorkspacePage() {
   const hasMultiplePendingPermissions = gates.pendingPermissionRequests.length > 1;
   const [mobilePanelOpen, setMobilePanelOpen] = useState<MobilePanelState>(null);
   const [mobileReposOrigin, setMobileReposOrigin] = useState<MobileReposOrigin | null>(null);
-  const [isDesktopViewport, setIsDesktopViewport] = useState(() => isDesktopViewportNow());
+  const [isDesktopViewport, setIsDesktopViewport] = useState(() => desktopApp || isDesktopViewportNow());
   const [mobileKeyboardOffset, setMobileKeyboardOffset] = useState(0);
   const [workspaceFileIndexRequests, setWorkspaceFileIndexRequests] = useState<Record<string, true>>({});
   const navigationPrefetchRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -952,6 +953,8 @@ export function WorkspacePage() {
     || mobilePanelOpen === "device";
   const mobileUtilitiesFullscreen = mobilePanelOpen === "utilities";
   const mobileReposDrawerOpen = mobilePanelOpen === "repos";
+  const desktopLayout = desktopApp || isDesktopViewport;
+  const mobileReposOverlayOpen = !desktopApp && mobileReposDrawerOpen;
   const mobileTitle = mobilePanelOpen === "files"
     ? "Files"
     : mobilePanelOpen === "git"
@@ -1001,6 +1004,11 @@ export function WorkspacePage() {
   const [confirmCloseThreadId, setConfirmCloseThreadId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (desktopApp) {
+      setIsDesktopViewport(true);
+      return;
+    }
+
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return;
     }
@@ -1015,7 +1023,16 @@ export function WorkspacePage() {
     return () => {
       mediaQuery.removeEventListener("change", updateViewportMatch);
     };
-  }, []);
+  }, [desktopApp]);
+
+  useEffect(() => {
+    if (!desktopApp || mobilePanelOpen === null) {
+      return;
+    }
+
+    setMobilePanelOpen(null);
+    setMobileReposOrigin(null);
+  }, [desktopApp, mobilePanelOpen]);
 
   const workspaceFileIndexRequested = !!(
     repos.selectedWorktreeId
@@ -1659,7 +1676,7 @@ export function WorkspacePage() {
       waitingAssistantThreadId === confirmCloseThreadId
       || chat.threads.some((thread) => thread.id === confirmCloseThreadId && thread.active)
     );
-  const shouldRenderMobileRepositories = !isDesktopViewport || mobileReposDrawerOpen;
+  const shouldRenderMobileRepositories = !desktopApp && (!desktopLayout || mobileReposDrawerOpen);
 
   return (
     <div
@@ -1671,6 +1688,7 @@ export function WorkspacePage() {
       <div className="flex min-h-0 w-full flex-col">
         {showMacDesktopTitleBar ? (
           <MacDesktopTitleBar
+            desktopApp={desktopApp}
             canGoBack={workspaceNavigation.canGoBack}
             canGoForward={workspaceNavigation.canGoForward}
             leftPanelVisible={leftSidebarVisible}
@@ -1682,6 +1700,7 @@ export function WorkspacePage() {
 
         <div className="flex min-h-0 w-full flex-1">
           <WorkspaceSidebar
+            desktopApp={desktopApp}
             repositories={orderedRepositories}
             selectedRepositoryId={repos.selectedRepositoryId}
             selectedWorktreeId={repos.selectedWorktreeId}
@@ -1711,44 +1730,46 @@ export function WorkspacePage() {
             className={cn(
               "workspace-main flex min-h-0 min-w-0 flex-1 flex-col px-0 pb-0 pt-0",
               activeView !== "file" && "lg:px-3 lg:pb-0 lg:pt-3",
-              mobileReposDrawerOpen && "pointer-events-none select-none lg:pointer-events-auto lg:select-auto",
+              mobileReposOverlayOpen && "pointer-events-none select-none",
             )}
-            aria-hidden={mobileReposDrawerOpen ? "true" : undefined}
+            aria-hidden={mobileReposOverlayOpen ? "true" : undefined}
           >
           {/* ── Mobile top bar ── */}
-          <div
-            className={cn(
-              "flex items-center gap-2.5 px-1.5 pb-1.5 pt-1.5 lg:hidden sm:px-2.5 sm:pt-2.5",
-              mobileUtilitiesFullscreen && "hidden",
-            )}
-          >
-            <button
-              type="button"
-              onClick={handleOpenMobileRepositories}
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-secondary/35 text-foreground transition-colors active:bg-secondary/60"
-              aria-label="Open repositories"
-            >
-              <Menu className="h-4 w-4" />
-            </button>
-            <div className="min-w-0 flex-1">
-              <h1 className="truncate text-[13px] font-semibold leading-5 tracking-wide text-foreground">{mobileTitle}</h1>
-              <p className="truncate text-[10px] leading-4 text-muted-foreground">{mobileSubtitle}</p>
-            </div>
-            <button
-              type="button"
-              onClick={handleToggleRunScript}
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-secondary/35 text-foreground transition-colors active:bg-secondary/60 disabled:opacity-40"
-              aria-label={selectedBottomPanelState.runScriptActive ? "Stop script" : "Run script"}
-              title={selectedBottomPanelState.runScriptActive ? "Stop script" : "Run script"}
-              disabled={!repos.selectedWorktreeId}
-            >
-              {selectedBottomPanelState.runScriptActive ? (
-                <FilledPauseIcon className="h-3.5 w-3.5" />
-              ) : (
-                <FilledPlayIcon className="h-3.5 w-3.5" />
+          {!desktopApp ? (
+            <div
+              className={cn(
+                "flex items-center gap-2.5 px-1.5 pb-1.5 pt-1.5 lg:hidden sm:px-2.5 sm:pt-2.5",
+                mobileUtilitiesFullscreen && "hidden",
               )}
-            </button>
-          </div>
+            >
+              <button
+                type="button"
+                onClick={handleOpenMobileRepositories}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-secondary/35 text-foreground transition-colors active:bg-secondary/60"
+                aria-label="Open repositories"
+              >
+                <Menu className="h-4 w-4" />
+              </button>
+              <div className="min-w-0 flex-1">
+                <h1 className="truncate text-[13px] font-semibold leading-5 tracking-wide text-foreground">{mobileTitle}</h1>
+                <p className="truncate text-[10px] leading-4 text-muted-foreground">{mobileSubtitle}</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleRunScript}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-secondary/35 text-foreground transition-colors active:bg-secondary/60 disabled:opacity-40"
+                aria-label={selectedBottomPanelState.runScriptActive ? "Stop script" : "Run script"}
+                title={selectedBottomPanelState.runScriptActive ? "Stop script" : "Run script"}
+                disabled={!repos.selectedWorktreeId}
+              >
+                {selectedBottomPanelState.runScriptActive ? (
+                  <FilledPauseIcon className="h-3.5 w-3.5" />
+                ) : (
+                  <FilledPlayIcon className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </div>
+          ) : null}
 
           <div
             className={cn(
@@ -1758,11 +1779,12 @@ export function WorkspacePage() {
             <div
               className={cn(
                 "px-1.5 pt-1.5 sm:px-2.5 sm:pt-2.5",
-                mobileInlinePanel && "hidden lg:block",
+                mobileInlinePanel && !desktopApp && "hidden lg:block",
                 activeView === "file" ? "lg:px-3 lg:pt-3" : "lg:px-0 lg:pt-0",
               )}
             >
               <WorkspaceHeader
+                desktopApp={desktopApp}
                 selectedWorktreeBranch={repos.selectedWorktree?.branch ?? null}
                 selectedIsRootWorkspace={selectedIsRootWorkspace}
                 targetBranch={selectedTargetBranch}
@@ -1833,7 +1855,7 @@ export function WorkspacePage() {
               ) : null}
             </div>
 
-            {mobilePanelOpen === "files" ? (
+            {!desktopApp && mobilePanelOpen === "files" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
                 <Suspense fallback={null}>
                   <MobileFilesSheet
@@ -1856,7 +1878,7 @@ export function WorkspacePage() {
                   />
                 </Suspense>
               </section>
-            ) : mobilePanelOpen === "git" ? (
+            ) : !desktopApp && mobilePanelOpen === "git" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
                 <Suspense fallback={null}>
                   <MobileGitSheet
@@ -1904,7 +1926,7 @@ export function WorkspacePage() {
                   />
                 </Suspense>
               </section>
-            ) : mobilePanelOpen === "more" ? (
+            ) : !desktopApp && mobilePanelOpen === "more" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
                 <Suspense fallback={null}>
                   <MobileMoreSheet
@@ -1926,13 +1948,13 @@ export function WorkspacePage() {
                   />
                 </Suspense>
               </section>
-            ) : mobilePanelOpen === "device" ? (
+            ) : !desktopApp && mobilePanelOpen === "device" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
                 <Suspense fallback={null}>
                   <DevicePanel onClose={() => setMobilePanelOpen(null)} />
                 </Suspense>
               </section>
-            ) : mobilePanelOpen === "utilities" ? (
+            ) : !desktopApp && mobilePanelOpen === "utilities" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
                 <Suspense fallback={null}>
                   <MobileUtilitiesSheet
@@ -1982,6 +2004,7 @@ export function WorkspacePage() {
                     saving={activeEditorFileState?.saving ?? false}
                     dirty={activeFileDirty}
                     error={activeEditorFileState?.error ?? null}
+                    desktopApp={desktopApp}
                     mobileBottomOffset={mobileKeyboardOffset}
                     onChange={(content) => handleEditorDraftChange(activeFilePath, content)}
                     onSave={() => void handleSaveActiveFile()}
@@ -2132,14 +2155,14 @@ export function WorkspacePage() {
 
           <Suspense fallback={null}>
             <MobileSavePill
-              visible={canSaveActiveFile && activeView !== "file" && !mobileInlinePanel}
+              visible={!desktopApp && canSaveActiveFile && activeView !== "file" && !mobileInlinePanel}
               saving={activeEditorFileState?.saving ?? false}
               bottomOffset={mobileKeyboardOffset}
               onSave={() => void handleSaveActiveFile()}
             />
           </Suspense>
 
-          {mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen && !mobileReposDrawerOpen ? (
+          {!desktopApp && mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen && !mobileReposDrawerOpen ? (
             <Suspense fallback={null}>
               <MobileActionBar
                 hasWorktree={!!repos.selectedWorktreeId}
@@ -2153,7 +2176,7 @@ export function WorkspacePage() {
             </Suspense>
           ) : null}
 
-          <div className="hidden lg:block">
+          <div className={desktopLayout ? "block" : "hidden"}>
             <BottomPanel
               worktreeId={repos.selectedWorktreeId}
               worktreePath={repos.selectedWorktree?.path ?? null}
@@ -2179,6 +2202,7 @@ export function WorkspacePage() {
         </main>
 
         <WorkspaceRightPanel
+          desktopApp={desktopApp}
           rightPanelId={rightPanelId}
           worktreeId={nonCriticalWorktreeId}
           gitChanges={gitChanges}

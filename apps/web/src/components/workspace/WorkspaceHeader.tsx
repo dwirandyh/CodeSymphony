@@ -31,6 +31,7 @@ function fileTabLabel(filePath: string): string {
 }
 
 type WorkspaceHeaderProps = {
+  desktopApp?: boolean;
   selectedWorktreeBranch: string | null;
   selectedIsRootWorkspace?: boolean;
   targetBranch?: string | null;
@@ -84,6 +85,7 @@ function FilledPauseIcon({ className }: { className?: string }) {
 }
 
 export function WorkspaceHeader({
+  desktopApp = false,
   selectedWorktreeBranch,
   selectedIsRootWorkspace = false,
   targetBranch,
@@ -208,7 +210,7 @@ export function WorkspaceHeader({
     <section className={cn(
       "workspace-header space-y-1 lg:space-y-1.5",
     )}>
-      <div className="hidden items-center justify-between gap-3 lg:flex">
+      <div className={cn("items-center justify-between gap-3", desktopApp ? "flex" : "hidden lg:flex")} data-testid="workspace-header-desktop-bar">
         <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-5">
           {onToggleLeftPanel ? (
             <Button

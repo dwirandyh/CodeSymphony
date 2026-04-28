@@ -194,6 +194,18 @@ describe("WorkspaceHeader", () => {
     expect(onToggleLeftPanel).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the desktop control row visible for desktop app layout overrides", () => {
+    renderHeader({ desktopApp: true });
+
+    const desktopBar = container.querySelector<HTMLElement>('[data-testid="workspace-header-desktop-bar"]');
+    if (!desktopBar) {
+      throw new Error("Desktop header bar not found");
+    }
+
+    expect(desktopBar.className).toContain("flex");
+    expect(desktopBar.className).not.toContain("hidden lg:flex");
+  });
+
   it("keeps add session button pinned outside scroll area", () => {
     const onCreateThread = vi.fn();
     renderHeader({ onCreateThread });

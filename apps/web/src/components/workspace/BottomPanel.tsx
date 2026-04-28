@@ -45,6 +45,8 @@ interface BottomPanelProps {
     openSignal?: number;
 }
 
+type BottomPanelContentProps = Omit<BottomPanelBodyProps, "activeTab" | "collapsed" | "height" | "panelRef">;
+
 type BottomPanelBodyProps = {
     collapsed: boolean;
     height: number;
@@ -60,11 +62,7 @@ type BottomPanelBodyProps = {
     selectedThreadId: string | null;
 };
 
-const BottomPanelBody = memo(function BottomPanelBody({
-    collapsed,
-    height,
-    panelRef,
-    activeTab,
+const BottomPanelContent = memo(function BottomPanelContent({
     setupOutputs,
     onRerunSetup,
     runScriptActive,
@@ -73,17 +71,9 @@ const BottomPanelBody = memo(function BottomPanelBody({
     worktreeId,
     worktreePath,
     selectedThreadId,
-}: BottomPanelBodyProps) {
+}: BottomPanelContentProps) {
     return (
-        <div
-            ref={panelRef}
-            className={`flex flex-col overflow-hidden ${
-                activeTab === "terminal" || activeTab === "run"
-                    ? TERMINAL_SURFACE_CLASS
-                    : ""
-            } ${collapsed ? "invisible h-0" : ""}`}
-            style={collapsed ? undefined : { height: `${height}px` }}
-        >
+        <>
             <TabsContent value="setup-script" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
                 <ScriptOutputTab
                     entries={setupOutputs}
@@ -117,6 +107,29 @@ const BottomPanelBody = memo(function BottomPanelBody({
             <TabsContent value="debug" className="min-h-0 flex-1 data-[state=inactive]:hidden">
                 <DebugConsoleTab worktreeId={worktreeId} selectedThreadId={selectedThreadId} />
             </TabsContent>
+        </>
+    );
+});
+
+const BottomPanelBody = memo(function BottomPanelBody({
+    activeTab,
+    collapsed,
+    height,
+    panelRef,
+    ...contentProps
+}: BottomPanelBodyProps) {
+    return (
+        <div
+            ref={panelRef}
+            data-testid="bottom-panel-body"
+            className={`flex flex-col overflow-hidden ${
+                activeTab === "terminal" || activeTab === "run"
+                    ? TERMINAL_SURFACE_CLASS
+                    : ""
+            } ${collapsed ? "invisible h-0" : ""}`}
+            style={collapsed ? undefined : { height: `${height}px` }}
+        >
+            <BottomPanelContent {...contentProps} />
         </div>
     );
 });
@@ -141,6 +154,7 @@ export const BottomPanel = memo(function BottomPanel({
     const panelRef = useRef<HTMLDivElement>(null);
     const startYRef = useRef(0);
     const startHeightRef = useRef(0);
+    const activePointerIdRef = useRef<number | null>(null);
     const prevWorktreeIdRef = useRef<string | null>(worktreeId);
     const prevOpenSignalRef = useRef<number | undefined>(openSignal);
 
@@ -157,57 +171,72 @@ export const BottomPanel = memo(function BottomPanel({
     const setupStatusChipClassName = latestSetupOutput?.status === "completed" && !latestSetupOutput.success
         ? "bg-destructive/20 text-destructive"
         : "bg-primary/20 text-primary";
-    const handleMouseDown = useCallback(
-        (e: React.MouseEvent) => {
-            e.preventDefault();
-            setIsDragging(true);
-            startYRef.current = e.clientY;
-            startHeightRef.current = height;
-        },
-        [height],
-    );
-
-    const handleTouchStart = useCallback(
-        (e: React.TouchEvent) => {
-            setIsDragging(true);
-            startYRef.current = e.touches[0].clientY;
-            startHeightRef.current = height;
-        },
-        [height],
-    );
+    const updateHeightFromClientY = useCallback((clientY: number) => {
+        const delta = startYRef.current - clientY;
+        const maxHeight = window.innerHeight * MAX_HEIGHT_RATIO;
+        const newHeight = Math.min(
+            maxHeight,
+            Math.max(MIN_HEIGHT, startHeightRef.current + delta),
+        );
+        setHeight(newHeight);
+    }, []);
 
     useEffect(() => {
         if (!isDragging) {
             return;
         }
 
-        function handleMove(e: MouseEvent | TouchEvent) {
-            const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
-            const delta = startYRef.current - clientY;
-            const maxHeight = window.innerHeight * MAX_HEIGHT_RATIO;
-            const newHeight = Math.min(
-                maxHeight,
-                Math.max(MIN_HEIGHT, startHeightRef.current + delta),
-            );
-            setHeight(newHeight);
-        }
-
-        function handleEnd() {
+        const previousCursor = document.body.style.cursor;
+        const previousUserSelect = document.body.style.userSelect;
+        const stopDragging = () => {
+            activePointerIdRef.current = null;
             setIsDragging(false);
-        }
+        };
 
-        document.addEventListener("mousemove", handleMove);
-        document.addEventListener("mouseup", handleEnd);
-        document.addEventListener("touchmove", handleMove, { passive: false });
-        document.addEventListener("touchend", handleEnd);
+        document.body.style.cursor = "row-resize";
+        document.body.style.userSelect = "none";
+        window.addEventListener("blur", stopDragging);
 
         return () => {
-            document.removeEventListener("mousemove", handleMove);
-            document.removeEventListener("mouseup", handleEnd);
-            document.removeEventListener("touchmove", handleMove);
-            document.removeEventListener("touchend", handleEnd);
+            window.removeEventListener("blur", stopDragging);
+            document.body.style.cursor = previousCursor;
+            document.body.style.userSelect = previousUserSelect;
         };
     }, [isDragging]);
+
+    const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        if (!event.isPrimary || event.button !== 0) {
+            return;
+        }
+
+        event.preventDefault();
+        activePointerIdRef.current = event.pointerId;
+        startYRef.current = event.clientY;
+        startHeightRef.current = height;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setIsDragging(true);
+    }, [height]);
+
+    const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        if (!isDragging || activePointerIdRef.current !== event.pointerId) {
+            return;
+        }
+
+        event.preventDefault();
+        updateHeightFromClientY(event.clientY);
+    }, [isDragging, updateHeightFromClientY]);
+
+    const handlePointerRelease = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+        if (activePointerIdRef.current !== event.pointerId) {
+            return;
+        }
+
+        activePointerIdRef.current = null;
+        setIsDragging(false);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+    }, []);
 
     useEffect(() => {
         if (prevWorktreeIdRef.current !== worktreeId) {
@@ -225,11 +254,7 @@ export const BottomPanel = memo(function BottomPanel({
         }
     }, [onCollapsedChange, openSignal, worktreeId]);
 
-    const currentBodyProps = useMemo<BottomPanelBodyProps>(() => ({
-        collapsed,
-        height,
-        panelRef,
-        activeTab,
+    const currentContentProps = useMemo<BottomPanelContentProps>(() => ({
         setupOutputs,
         onRerunSetup,
         runScriptActive,
@@ -239,12 +264,8 @@ export const BottomPanel = memo(function BottomPanel({
         worktreePath,
         selectedThreadId,
     }), [
-        activeTab,
-        collapsed,
-        height,
         onRerunSetup,
         onRunScriptExit,
-        panelRef,
         runScriptActive,
         runScriptSessionId,
         selectedThreadId,
@@ -252,13 +273,13 @@ export const BottomPanel = memo(function BottomPanel({
         worktreeId,
         worktreePath,
     ]);
-    const hiddenBodyPropsRef = useRef<BottomPanelBodyProps>(currentBodyProps);
+    const hiddenContentPropsRef = useRef<BottomPanelContentProps>(currentContentProps);
     if (!collapsed) {
-        hiddenBodyPropsRef.current = currentBodyProps;
+        hiddenContentPropsRef.current = currentContentProps;
     }
-    const renderedBodyProps = collapsed
-        ? hiddenBodyPropsRef.current
-        : currentBodyProps;
+    const renderedContentProps = collapsed
+        ? hiddenContentPropsRef.current
+        : currentContentProps;
 
     return (
         <div
@@ -278,10 +299,16 @@ export const BottomPanel = memo(function BottomPanel({
             >
                 {/* Resize handle — always visible, including collapsed state */}
                 <div
+                    data-testid="bottom-panel-resize-handle"
+                    role="separator"
+                    aria-orientation="horizontal"
                     className={`group flex h-2 cursor-row-resize touch-none items-center justify-center bg-card/75 transition-colors hover:bg-primary/20 md:h-1 ${isDragging ? "bg-primary/30" : ""
                         }`}
-                    onMouseDown={handleMouseDown}
-                    onTouchStart={handleTouchStart}
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerRelease}
+                    onPointerCancel={handlePointerRelease}
+                    onLostPointerCapture={handlePointerRelease}
                 >
                     <div
                         className={`h-[2px] w-10 rounded-full transition-colors ${isDragging
@@ -353,7 +380,13 @@ export const BottomPanel = memo(function BottomPanel({
                 </div>
 
                 {/* Panel body — keep the last visible subtree stable while collapsed so hidden heavy panels do not rerender on worktree switches */}
-                <BottomPanelBody {...renderedBodyProps} />
+                <BottomPanelBody
+                    activeTab={activeTab}
+                    collapsed={collapsed}
+                    height={height}
+                    panelRef={panelRef}
+                    {...renderedContentProps}
+                />
             </TabsRoot>
         </div>
     );

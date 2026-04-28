@@ -3,58 +3,92 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MacDesktopTitleBar } from "./MacDesktopTitleBar";
 
-const startDraggingMock = vi.fn().mockResolvedValue(undefined);
-const isFullscreenMock = vi.fn().mockResolvedValue(false);
-const listenMock = vi.fn().mockResolvedValue(() => {});
-const onResizedMock = vi.fn().mockResolvedValue(() => {});
-const onFocusChangedMock = vi.fn().mockResolvedValue(() => {});
-const onScaleChangedMock = vi.fn().mockResolvedValue(() => {});
-
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: vi.fn(() => ({
-    startDragging: startDraggingMock,
-    isFullscreen: isFullscreenMock,
-    listen: listenMock,
-    onResized: onResizedMock,
-    onFocusChanged: onFocusChangedMock,
-    onScaleChanged: onScaleChangedMock,
-  })),
+const tauriWindowMocks = vi.hoisted(() => ({
+  startDragging: vi.fn(async () => undefined),
+  toggleMaximize: vi.fn(async () => undefined),
+  isFullscreen: vi.fn(async () => false),
+  resizedHandlers: new Set<() => void>(),
+  movedHandlers: new Set<() => void>(),
+  scaleChangedHandlers: new Set<() => void>(),
+  focusChangedHandlers: new Set<(event: { payload: boolean }) => void>(),
+  onResized: vi.fn(async (handler: () => void) => {
+    tauriWindowMocks.resizedHandlers.add(handler);
+    return () => tauriWindowMocks.resizedHandlers.delete(handler);
+  }),
+  onMoved: vi.fn(async (handler: () => void) => {
+    tauriWindowMocks.movedHandlers.add(handler);
+    return () => tauriWindowMocks.movedHandlers.delete(handler);
+  }),
+  onScaleChanged: vi.fn(async (handler: () => void) => {
+    tauriWindowMocks.scaleChangedHandlers.add(handler);
+    return () => tauriWindowMocks.scaleChangedHandlers.delete(handler);
+  }),
+  onFocusChanged: vi.fn(async (handler: (event: { payload: boolean }) => void) => {
+    tauriWindowMocks.focusChangedHandlers.add(handler);
+    return () => tauriWindowMocks.focusChangedHandlers.delete(handler);
+  }),
+  emitResized: () => {
+    for (const handler of tauriWindowMocks.resizedHandlers) {
+      handler();
+    }
+  },
+  emitFocusChanged: (focused: boolean) => {
+    for (const handler of tauriWindowMocks.focusChangedHandlers) {
+      handler({ payload: focused });
+    }
+  },
+  resetWindowEventHandlers: () => {
+    tauriWindowMocks.resizedHandlers.clear();
+    tauriWindowMocks.movedHandlers.clear();
+    tauriWindowMocks.scaleChangedHandlers.clear();
+    tauriWindowMocks.focusChangedHandlers.clear();
+  },
 }));
 
-vi.mock("../../lib/openExternalUrl", async () => {
-  const actual = await vi.importActual<typeof import("../../lib/openExternalUrl")>("../../lib/openExternalUrl");
-  return {
-    ...actual,
-    isTauriDesktop: vi.fn(() => true),
-  };
-});
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    startDragging: tauriWindowMocks.startDragging,
+    toggleMaximize: tauriWindowMocks.toggleMaximize,
+    isFullscreen: tauriWindowMocks.isFullscreen,
+    onResized: tauriWindowMocks.onResized,
+    onMoved: tauriWindowMocks.onMoved,
+    onScaleChanged: tauriWindowMocks.onScaleChanged,
+    onFocusChanged: tauriWindowMocks.onFocusChanged,
+  }),
+}));
+
+vi.mock("../../lib/debugLog", () => ({
+  debugLog: vi.fn(),
+}));
 
 describe("MacDesktopTitleBar", () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    tauriWindowMocks.startDragging.mockClear();
+    tauriWindowMocks.toggleMaximize.mockClear();
+    tauriWindowMocks.isFullscreen.mockReset();
+    tauriWindowMocks.isFullscreen.mockResolvedValue(false);
+    tauriWindowMocks.onResized.mockClear();
+    tauriWindowMocks.onMoved.mockClear();
+    tauriWindowMocks.onScaleChanged.mockClear();
+    tauriWindowMocks.onFocusChanged.mockClear();
+    tauriWindowMocks.resetWindowEventHandlers();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
   });
 
   afterEach(() => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     act(() => {
       root.unmount();
     });
     container.remove();
-    startDraggingMock.mockClear();
-    isFullscreenMock.mockReset();
-    isFullscreenMock.mockResolvedValue(false);
-    listenMock.mockClear();
-    listenMock.mockResolvedValue(() => {});
-    onResizedMock.mockClear();
-    onResizedMock.mockResolvedValue(() => {});
-    onFocusChangedMock.mockClear();
-    onFocusChangedMock.mockResolvedValue(() => {});
-    onScaleChangedMock.mockClear();
-    onScaleChangedMock.mockResolvedValue(() => {});
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
   });
 
   function renderTitleBar(overrides?: Partial<Parameters<typeof MacDesktopTitleBar>[0]>) {
@@ -75,10 +109,66 @@ describe("MacDesktopTitleBar", () => {
     return props;
   }
 
+  async function flushWindowStateSync() {
+    await act(async () => {
+      vi.runAllTimers();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
   it("renders a centered app title", () => {
     renderTitleBar();
 
     expect(container.textContent).toContain("CodeSymphony");
+    expect(container.querySelector('[data-testid="mac-titlebar-drag-surface"]')).not.toBeNull();
+  });
+
+  it("stays visible for desktop app layout overrides below responsive breakpoints", () => {
+    renderTitleBar({ desktopApp: true });
+
+    const dragSurface = container.querySelector<HTMLElement>('[data-testid="mac-titlebar-drag-surface"]');
+    if (!dragSurface) {
+      throw new Error("Drag surface not found");
+    }
+
+    expect(dragSurface.className).toContain("block");
+    expect(dragSurface.className).not.toContain("hidden lg:block");
+  });
+
+  it("requests Tauri window dragging for non-interactive titlebar clicks", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    renderTitleBar();
+    await flushWindowStateSync();
+
+    const dragSurface = container.querySelector<HTMLElement>('[data-testid="mac-titlebar-drag-surface"]');
+    if (!dragSurface) {
+      throw new Error("Drag surface not found");
+    }
+
+    await act(async () => {
+      dragSurface.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, detail: 1 }));
+    });
+
+    expect(tauriWindowMocks.startDragging).toHaveBeenCalledTimes(1);
+    expect(tauriWindowMocks.toggleMaximize).not.toHaveBeenCalled();
+  });
+
+  it("requests Tauri zoom toggle for titlebar double clicks", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    renderTitleBar();
+    await flushWindowStateSync();
+
+    const dragSurface = container.querySelector<HTMLElement>('[data-testid="mac-titlebar-drag-surface"]');
+    if (!dragSurface) {
+      throw new Error("Drag surface not found");
+    }
+
+    await act(async () => {
+      dragSurface.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, button: 0, detail: 2 }));
+    });
+
+    expect(tauriWindowMocks.toggleMaximize).toHaveBeenCalledTimes(1);
   });
 
   it("routes the left panel toggle", () => {
@@ -153,64 +243,33 @@ describe("MacDesktopTitleBar", () => {
     expect(onGoForward).not.toHaveBeenCalled();
   });
 
-  it("starts dragging the desktop window from drag regions", () => {
+  it("shifts titlebar controls to the left edge in fullscreen and restores them after exit", async () => {
+    (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     renderTitleBar();
+    await flushWindowStateSync();
 
-    const titleRegion = container.querySelector<HTMLDivElement>('[data-testid="mac-titlebar-drag-surface"]');
-    if (!titleRegion) {
-      throw new Error("Title drag region not found");
-    }
-
-    act(() => {
-      titleRegion.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
-    });
-
-    expect(startDraggingMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("moves the controls cluster to the left edge in fullscreen", async () => {
-    isFullscreenMock.mockResolvedValue(true);
-    renderTitleBar();
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-
+    const dragSurface = container.querySelector<HTMLElement>('[data-testid="mac-titlebar-drag-surface"]');
     const controls = container.querySelector<HTMLElement>('[data-testid="mac-titlebar-controls"]');
-    if (!controls) {
-      throw new Error("Controls cluster not found");
+    if (!dragSurface || !controls) {
+      throw new Error("Titlebar elements not found");
     }
 
-    expect(controls.className).toContain("left-3");
-  });
+    expect(dragSurface.dataset.titlebarLayout).toBe("windowed");
+    expect(controls.className).toContain("pl-[82px]");
 
-  it("reacts to the native fullscreen event after mount", async () => {
-    let fullscreenListener: ((event: { payload: boolean }) => void) | null = null;
-    listenMock.mockImplementationOnce(async (_eventName, callback) => {
-      fullscreenListener = callback as (event: { payload: boolean }) => void;
-      return () => {};
-    });
+    tauriWindowMocks.isFullscreen.mockResolvedValue(true);
+    tauriWindowMocks.emitResized();
+    await flushWindowStateSync();
 
-    renderTitleBar();
+    expect(dragSurface.dataset.titlebarLayout).toBe("fullscreen");
+    expect(controls.className).toContain("pl-3");
+    expect(controls.className).not.toContain("pl-[82px]");
 
-    await act(async () => {
-      await Promise.resolve();
-    });
+    tauriWindowMocks.isFullscreen.mockResolvedValue(false);
+    tauriWindowMocks.emitFocusChanged(true);
+    await flushWindowStateSync();
 
-    if (!fullscreenListener) {
-      throw new Error("Fullscreen listener not registered");
-    }
-
-    await act(async () => {
-      fullscreenListener?.({ payload: true });
-      await Promise.resolve();
-    });
-
-    const controls = container.querySelector<HTMLElement>('[data-testid="mac-titlebar-controls"]');
-    if (!controls) {
-      throw new Error("Controls cluster not found");
-    }
-
-    expect(controls.className).toContain("left-3");
+    expect(dragSurface.dataset.titlebarLayout).toBe("windowed");
+    expect(controls.className).toContain("pl-[82px]");
   });
 });
