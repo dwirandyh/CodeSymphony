@@ -8,6 +8,8 @@ DMG_PATH="${2:-}"
 VOLUME_NAME="${3:-CodeSymphony}"
 SIGNING_IDENTITY="${CODESYMPHONY_MACOS_SIGN_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
 SOURCE_DIR="$(cd "${DESKTOP_DIR}/src-tauri/target/release/bundle/macos" && pwd)"
+DMG_DIR="${DESKTOP_DIR}/src-tauri/target/release/bundle/dmg"
+APP_NAME="$(basename "${APP_PATH}" .app)"
 APPLICATIONS_LINK="${SOURCE_DIR}/Applications"
 
 if [[ ! -d "${APP_PATH}" ]]; then
@@ -16,13 +18,16 @@ if [[ ! -d "${APP_PATH}" ]]; then
 fi
 
 if [[ -z "${DMG_PATH}" ]]; then
-  DMG_PATH="$(find "${DESKTOP_DIR}/src-tauri/target/release/bundle/dmg" -maxdepth 1 -type f -name '*.dmg' | head -n 1)"
+  if [[ -d "${DMG_DIR}" ]]; then
+    DMG_PATH="$(find "${DMG_DIR}" -maxdepth 1 -type f -name '*.dmg' | head -n 1)"
+  fi
 fi
 
 if [[ -z "${DMG_PATH}" ]]; then
-  echo "Unable to determine DMG output path." >&2
-  exit 1
+  DMG_PATH="${DMG_DIR}/${APP_NAME}.dmg"
 fi
+
+mkdir -p "$(dirname "${DMG_PATH}")"
 
 cleanup() {
   rm -f "${APPLICATIONS_LINK}"
