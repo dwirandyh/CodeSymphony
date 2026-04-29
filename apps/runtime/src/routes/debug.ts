@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 
 function resolveDebugLogPath(): string {
   const configuredPath = process.env.CODESYMPHONY_DEBUG_LOG_PATH?.trim();
@@ -48,15 +49,26 @@ type DebugLogPayload = {
   data?: unknown;
 };
 
-function appendDebugLogEntries(entries: Array<{
+type DebugLogEntry = {
   seq: number;
   ts: number;
   source: string;
   message: string;
   data: unknown;
-}>): number {
+};
+
+const DEBUG_LOG_BUFFER_LIMIT = 4000;
+const runtimeDebugBuffer: DebugLogEntry[] = [];
+let lastDebugLogAppendError: string | null = null;
+
+function appendDebugLogEntries(entries: DebugLogEntry[]): number {
   if (entries.length === 0) {
     return 0;
+  }
+
+  runtimeDebugBuffer.push(...entries);
+  if (runtimeDebugBuffer.length > DEBUG_LOG_BUFFER_LIMIT) {
+    runtimeDebugBuffer.splice(0, runtimeDebugBuffer.length - DEBUG_LOG_BUFFER_LIMIT);
   }
 
   const lines = entries
@@ -68,7 +80,9 @@ function appendDebugLogEntries(entries: Array<{
 
   try {
     appendFileSync(LOG_PATH, lines + "\n", "utf-8");
+    lastDebugLogAppendError = null;
   } catch (error) {
+    lastDebugLogAppendError = error instanceof Error ? error.message : String(error);
     console.error(`Failed to append debug log at ${LOG_PATH}:`, error);
   }
   return entries.length;
@@ -118,6 +132,10 @@ export function resolveDatabaseInfo(databaseUrl: string | undefined): RuntimeDat
 }
 
 export async function registerDebugRoutes(app: FastifyInstance) {
+  const debugLogBufferQuery = z.object({
+    limit: z.string().optional(),
+  }).strict();
+
   // Accept both application/json and text/plain (sendBeacon sends text/plain)
   app.addContentTypeParser(
     "text/plain",
@@ -149,6 +167,23 @@ export async function registerDebugRoutes(app: FastifyInstance) {
     return { ok: true, count: entries.length };
   });
 
+  app.get("/debug/log-buffer", async (request) => {
+    const query = debugLogBufferQuery.parse(request.query);
+    const parsedLimit = Number.parseInt(query.limit ?? "", 10);
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(parsedLimit, DEBUG_LOG_BUFFER_LIMIT)
+      : 500;
+
+    return {
+      data: {
+        logPath: LOG_PATH,
+        totalBufferedEntries: runtimeDebugBuffer.length,
+        lastAppendError: lastDebugLogAppendError,
+        entries: runtimeDebugBuffer.slice(-limit),
+      },
+    };
+  });
+
   app.get("/debug/runtime-info", async () => {
     const address = app.server.address();
     const listenAddress = typeof address === "string"
@@ -166,6 +201,9 @@ export async function registerDebugRoutes(app: FastifyInstance) {
         runtimeHost: process.env.RUNTIME_HOST ?? null,
         runtimePort: Number(process.env.RUNTIME_PORT ?? 0) || null,
         uptimeSec: Number(process.uptime().toFixed(1)),
+        debugLogPath: LOG_PATH,
+        debugBufferedEntries: runtimeDebugBuffer.length,
+        debugLastAppendError: lastDebugLogAppendError,
         database,
         listenAddress,
       },

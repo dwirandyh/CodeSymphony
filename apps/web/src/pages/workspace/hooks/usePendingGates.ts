@@ -13,6 +13,16 @@ import {
 
 const EMPTY_EVENTS: ChatEvent[] = [];
 
+function cloneEventsSortedIfNeeded(events: ChatEvent[]): ChatEvent[] {
+  for (let index = 1; index < events.length; index += 1) {
+    if (events[index - 1].idx > events[index].idx) {
+      return [...events].sort((left, right) => left.idx - right.idx);
+    }
+  }
+
+  return events;
+}
+
 export interface PendingGatesDeps {
   onError: (msg: string | null) => void;
   startWaitingAssistant: (threadId: string) => void;
@@ -28,7 +38,10 @@ export function usePendingGates(
     () => selectedThreadId ? getThreadCollections(selectedThreadId).eventsCollection : undefined,
     [selectedThreadId],
   );
-  const events = liveEvents ?? EMPTY_EVENTS;
+  const events = useMemo(
+    () => liveEvents ? cloneEventsSortedIfNeeded(liveEvents as ChatEvent[]) : EMPTY_EVENTS,
+    [liveEvents],
+  );
 
   const [resolvingPermissionIds, setResolvingPermissionIds] = useState<Set<string>>(() => new Set());
   const [answeringQuestionIds, setAnsweringQuestionIds] = useState<Set<string>>(() => new Set());

@@ -30,6 +30,18 @@ describe("queryKeys", () => {
     expect(queryKeys.worktrees.fileIndex("w1")).toEqual(["worktrees", "w1", "fileIndex"]);
   });
 
+  it("worktrees.fileTreeScope returns the tree namespace", () => {
+    expect(queryKeys.worktrees.fileTreeScope("w1")).toEqual(["worktrees", "w1", "fileTree"]);
+  });
+
+  it("worktrees.fileTree includes directory path", () => {
+    expect(queryKeys.worktrees.fileTree("w1", "ignored")).toEqual(["worktrees", "w1", "fileTree", "ignored"]);
+  });
+
+  it("worktrees.fileTree uses __root__ when no path is provided", () => {
+    expect(queryKeys.worktrees.fileTree("w1")).toEqual(["worktrees", "w1", "fileTree", "__root__"]);
+  });
+
   it("worktrees.slashCommands returns key", () => {
     expect(queryKeys.worktrees.slashCommands("w1", "codex")).toEqual(["worktrees", "w1", "slashCommands", "codex"]);
   });

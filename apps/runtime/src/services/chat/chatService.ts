@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import type { Prisma } from "@prisma/client";
 import {
   AnswerQuestionInputSchema,
   BUILTIN_CHAT_MODELS_BY_AGENT,
@@ -9,10 +10,12 @@ import {
   DismissPlanInputSchema,
   DismissQuestionInputSchema,
   PlanRevisionInputSchema,
+  QueueChatMessageInputSchema,
   RenameChatThreadTitleInputSchema,
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   SlashCommandCatalogSchema,
+  UpdateQueuedMessageInputSchema,
   UpdateChatThreadAgentSelectionInputSchema,
   UpdateChatThreadModeInputSchema,
   UpdateChatThreadPermissionModeInputSchema,
@@ -20,9 +23,11 @@ import {
   type AttachmentInput,
   type ChatEvent,
   type ChatMessage,
+  type ChatQueuedMessage,
   type ChatMode,
   type ChatThread,
   type ChatThreadKind,
+  type ChatThreadStatusSnapshot,
   type CliAgent,
   type ChatThreadPermissionMode,
   type ChatThreadPermissionProfile,
@@ -31,17 +36,19 @@ import {
   type DismissPlanInput,
   type DismissQuestionInput,
   type PlanRevisionInput,
+  type QueueChatMessageInput,
   type RenameChatThreadTitleInput,
   type ResolvePermissionInput,
   type ReviewProvider,
   type SendChatMessageInput,
   type SlashCommandCatalog,
+  type UpdateQueuedMessageInput,
   type UpdateChatThreadAgentSelectionInput,
   type UpdateChatThreadModeInput,
   type UpdateChatThreadPermissionModeInput,
 } from "@codesymphony/shared-types";
 import type { RuntimeDeps } from "../../types.js";
-import { mapChatMessage, mapChatThread } from "../mappers.js";
+import { mapChatMessage, mapChatQueuedMessage, mapChatThread } from "../mappers.js";
 import { resolveReviewRemote } from "../git.js";
 import type {
   ActiveModelProvider,
@@ -62,6 +69,7 @@ import {
 } from "./gitDiffUtils.js";
 import {
   mapMessages,
+  mapEvents,
   buildTimelineSnapshot,
 } from "./chatPaginationUtils.js";
 import {
@@ -87,6 +95,7 @@ import {
   maybeAutoRenameBranchAfterFirstAssistantReply,
 } from "./chatNamingService.js";
 import { recoverPendingPlan } from "./chatPlanService.js";
+import { deriveThreadStatusFromEvents } from "./chatThreadStatus.js";
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
 import { buildCodexCliProviderHint, resolveCodexCliProviderOverride } from "../../codex/config.js";
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
@@ -105,21 +114,86 @@ function getAttachmentStorageDir(worktreeId: string, messageId: string): string 
   return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, messageId);
 }
 
+function getQueuedAttachmentStorageDir(worktreeId: string, queuedMessageId: string): string {
+  return join(homedir(), ATTACHMENT_DIR_NAME, worktreeId, "queued", queuedMessageId);
+}
+
 function normalizeThreadKind(kind: ChatThreadKind | undefined): ChatThreadKind {
   return kind === "review" ? "review" : "default";
 }
 
 const REVIEW_THREAD_GITHUB_TITLE = "Create Pull Request";
 const REVIEW_THREAD_GITLAB_TITLE = "Create Merge Request";
+const QUEUE_DISPATCH_CANCELLATION_REASON = "queued_message_dispatch" as const;
 
 type ThreadRunStatus = "scheduled" | "running" | "waiting_permission" | "waiting_question" | "waiting_plan";
+type QueuedMessageWithAttachments = Prisma.ChatQueuedMessageGetPayload<{
+  include: { attachments: true };
+}>;
 
 type ThreadRunState = {
   status: ThreadRunStatus;
   mode: ChatMode;
   scheduledTimer?: ReturnType<typeof setTimeout>;
   abortController?: AbortController;
+  activeToolUseIds: Set<string>;
+  activeSubagentToolUseIds: Set<string>;
+  queueHandoffPending: boolean;
+  cancellationReason: "queued_message_dispatch" | null;
 };
+
+type ThreadSnapshotOptions = {
+  onTiming?: (entry: ThreadSnapshotTimingEntry) => void;
+};
+
+type ThreadSnapshotTimingEntry = {
+  phase: string;
+  durationMs: number;
+  data?: Record<string, unknown>;
+};
+
+function getPerfNow(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function roundPerfMs(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+async function timeSnapshotPhase<T>(
+  options: ThreadSnapshotOptions | undefined,
+  phase: string,
+  data: Record<string, unknown> | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  const startedAtMs = getPerfNow();
+  try {
+    return await run();
+  } finally {
+    options?.onTiming?.({
+      phase,
+      durationMs: roundPerfMs(getPerfNow() - startedAtMs),
+      ...(data ? { data } : {}),
+    });
+  }
+}
+
+function recordSnapshotPhase(
+  options: ThreadSnapshotOptions | undefined,
+  phase: string,
+  startedAtMs: number,
+  data?: Record<string, unknown>,
+): void {
+  options?.onTiming?.({
+    phase,
+    durationMs: roundPerfMs(getPerfNow() - startedAtMs),
+    ...(data ? { data } : {}),
+  });
+}
 
 function createWorktreeMutationTracker(): WorktreeMutationTracker {
   return {
@@ -530,6 +604,7 @@ export function createChatService(deps: RuntimeDeps) {
   const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
   const pendingPlanByThread = new Map<string, PendingPlanEntry>();
   const pendingThreadCreatesByKey = new Map<string, Promise<ChatThread>>();
+  const queuedDispatchesByThread = new Map<string, Promise<void>>();
 
   function getThreadRun(threadId: string): ThreadRunState | null {
     return threadRuns.get(threadId) ?? null;
@@ -539,8 +614,19 @@ export function createChatService(deps: RuntimeDeps) {
     return threadRuns.has(threadId);
   }
 
-  function setThreadRunState(threadId: string, nextState: ThreadRunState): void {
-    threadRuns.set(threadId, nextState);
+  function setThreadRunState(
+    threadId: string,
+    nextState: Omit<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason">
+    & Partial<Pick<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason">>,
+  ): void {
+    const existing = threadRuns.get(threadId);
+    threadRuns.set(threadId, {
+      ...nextState,
+      activeToolUseIds: nextState.activeToolUseIds ?? existing?.activeToolUseIds ?? new Set<string>(),
+      activeSubagentToolUseIds: nextState.activeSubagentToolUseIds ?? existing?.activeSubagentToolUseIds ?? new Set<string>(),
+      queueHandoffPending: nextState.queueHandoffPending ?? existing?.queueHandoffPending ?? false,
+      cancellationReason: nextState.cancellationReason ?? existing?.cancellationReason ?? null,
+    });
   }
 
   function clearThreadRunState(threadId: string): ThreadRunState | null {
@@ -577,6 +663,512 @@ export function createChatService(deps: RuntimeDeps) {
     });
     deps.logService?.log("debug", "chat.lifecycle", "cleared scheduled assistant run", { threadId });
     return true;
+  }
+
+  function isThreadWaitingOnGate(threadId: string): boolean {
+    const status = getThreadRun(threadId)?.status;
+    return status === "waiting_permission" || status === "waiting_question" || status === "waiting_plan";
+  }
+
+  function hasActiveQueueBoundary(run: ThreadRunState | null): boolean {
+    if (!run) {
+      return false;
+    }
+
+    return run.activeToolUseIds.size > 0 || run.activeSubagentToolUseIds.size > 0;
+  }
+
+  function cleanupStoredFile(storagePath: string | null | undefined): void {
+    if (!storagePath) {
+      return;
+    }
+
+    try {
+      rmSync(storagePath, { force: true });
+    } catch (error) {
+      deps.logService?.log("warn", "chat.queue", "Failed to clean up attachment file", {
+        storagePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  async function emitThreadWorkspaceUpdate(threadId: string): Promise<void> {
+    if (!deps.workspaceEventHub) {
+      return;
+    }
+
+    const thread = await deps.prisma.chatThread.findUnique({
+      where: { id: threadId },
+      include: {
+        worktree: {
+          select: {
+            id: true,
+            repositoryId: true,
+          },
+        },
+      },
+    });
+
+    if (!thread) {
+      return;
+    }
+
+    deps.workspaceEventHub.emit("thread.updated", {
+      repositoryId: thread.worktree.repositoryId,
+      worktreeId: thread.worktreeId,
+      threadId,
+    });
+  }
+
+  async function createQueuedMessageRecord(
+    threadId: string,
+    input: QueueChatMessageInput,
+  ): Promise<ChatQueuedMessage> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        const queuedMessage = await deps.prisma.$transaction(async (tx) => {
+          const thread = await tx.chatThread.findUnique({
+            where: { id: threadId },
+            include: { worktree: true },
+          });
+
+          if (!thread) {
+            throw new Error("Chat thread not found");
+          }
+
+          if (input.expectedWorktreeId && input.expectedWorktreeId !== thread.worktreeId) {
+            throw new Error("Selected worktree no longer matches this thread. Please retry from the active worktree.");
+          }
+
+          const maxSeq = await tx.chatQueuedMessage.aggregate({
+            where: { threadId },
+            _max: { seq: true },
+          });
+          const seq = (maxSeq._max.seq ?? -1) + 1;
+          const created = await tx.chatQueuedMessage.create({
+            data: {
+              threadId,
+              seq,
+              content: input.content,
+              mode: input.mode,
+            },
+          });
+
+          for (const attachment of input.attachments ?? []) {
+            const contentBytes = isImageMimeType(attachment.mimeType)
+              ? Buffer.from(attachment.content, "base64")
+              : Buffer.from(attachment.content, "utf8");
+            const sizeBytes = contentBytes.length;
+
+            if (sizeBytes > MAX_ATTACHMENT_SIZE_BYTES) {
+              throw new Error(`Attachment "${attachment.filename}" exceeds 10 MB limit (${Math.round(sizeBytes / 1024 / 1024)}MB)`);
+            }
+
+            let storagePath: string | null = null;
+            let dbContent = attachment.content;
+
+            if (isImageMimeType(attachment.mimeType)) {
+              const attachDir = getQueuedAttachmentStorageDir(thread.worktree.id, created.id);
+              mkdirSync(attachDir, { recursive: true });
+              const safeFilename = basename(attachment.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+              storagePath = join(attachDir, safeFilename);
+              writeFileSync(storagePath, contentBytes);
+              dbContent = "";
+            }
+
+            await tx.chatQueuedAttachment.create({
+              data: {
+                queuedMessageId: created.id,
+                filename: attachment.filename,
+                mimeType: attachment.mimeType,
+                sizeBytes,
+                content: dbContent,
+                storagePath,
+                source: attachment.source,
+              },
+            });
+          }
+
+          return tx.chatQueuedMessage.findUniqueOrThrow({
+            where: { id: created.id },
+            include: { attachments: true },
+          });
+        });
+
+        return mapChatQueuedMessage(queuedMessage);
+      } catch (error) {
+        const code = typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : null;
+        if (code === "P2002") {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new Error("Failed to allocate queued message sequence");
+  }
+
+  async function deleteQueuedMessageRecord(threadId: string, queueMessageId: string): Promise<void> {
+    const queuedMessage = await deps.prisma.chatQueuedMessage.findFirst({
+      where: { id: queueMessageId, threadId },
+      include: { attachments: true },
+    });
+
+    if (!queuedMessage) {
+      throw new Error("Queued message not found");
+    }
+
+    await deps.prisma.chatQueuedMessage.delete({
+      where: { id: queueMessageId },
+    });
+
+    for (const attachment of queuedMessage.attachments) {
+      cleanupStoredFile(attachment.storagePath);
+    }
+  }
+
+  async function updateQueuedMessageRecord(
+    threadId: string,
+    queueMessageId: string,
+    rawInput: unknown,
+  ): Promise<ChatQueuedMessage> {
+    const input: UpdateQueuedMessageInput = UpdateQueuedMessageInputSchema.parse(rawInput);
+    const queuedMessage = await deps.prisma.chatQueuedMessage.findFirst({
+      where: { id: queueMessageId, threadId },
+      include: { attachments: true },
+    });
+
+    if (!queuedMessage) {
+      throw new Error("Queued message not found");
+    }
+
+    if (queuedMessage.status === "dispatching") {
+      throw new Error("Cannot edit a queued message while it is dispatching");
+    }
+
+    if (input.content.length === 0 && queuedMessage.attachments.length === 0) {
+      throw new Error("Queued message must have content or attachments");
+    }
+
+    const updated = await deps.prisma.chatQueuedMessage.update({
+      where: { id: queueMessageId },
+      data: { content: input.content },
+      include: { attachments: true },
+    });
+
+    return mapChatQueuedMessage(updated);
+  }
+
+  async function getNextQueuedMessage(threadId: string): Promise<QueuedMessageWithAttachments | null> {
+    const requested = await deps.prisma.chatQueuedMessage.findFirst({
+      where: {
+        threadId,
+        status: { in: ["dispatch_requested", "dispatching"] },
+      },
+      orderBy: [
+        { dispatchRequestedAt: "asc" },
+        { seq: "asc" },
+      ],
+      include: { attachments: true },
+    });
+
+    if (requested) {
+      return requested;
+    }
+
+    return deps.prisma.chatQueuedMessage.findFirst({
+      where: {
+        threadId,
+        status: "queued",
+      },
+      orderBy: { seq: "asc" },
+      include: { attachments: true },
+    });
+  }
+
+  async function getNextQueuedHandoffCandidate(threadId: string): Promise<QueuedMessageWithAttachments | null> {
+    return deps.prisma.chatQueuedMessage.findFirst({
+      where: {
+        threadId,
+        status: { in: ["dispatch_requested", "dispatching"] },
+      },
+      orderBy: [
+        { dispatchRequestedAt: "asc" },
+        { seq: "asc" },
+      ],
+      include: { attachments: true },
+    });
+  }
+
+  async function commitUserMessageAndScheduleAssistant(params: {
+    threadId: string;
+    content: string;
+    mode: ChatMode;
+    attachments: Array<{
+      id?: string;
+      filename: string;
+      mimeType: string;
+      content: string;
+      storagePath: string | null;
+      source: string;
+    }>;
+    queuedMessageId?: string | null;
+  }): Promise<ChatMessage> {
+    const thread = await deps.prisma.chatThread.findUnique({
+      where: { id: params.threadId },
+      include: { worktree: true },
+    });
+
+    if (!thread) {
+      throw new Error("Chat thread not found");
+    }
+
+    if (thread.mode !== params.mode) {
+      await deps.prisma.chatThread.update({
+        where: { id: params.threadId },
+        data: { mode: params.mode },
+      });
+    }
+
+    let message: Awaited<ReturnType<typeof deps.prisma.chatMessage.create>> | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const seq = await nextMessageSeq(deps.prisma, params.threadId);
+        message = await deps.prisma.chatMessage.create({
+          data: {
+            threadId: params.threadId,
+            seq,
+            role: "user",
+            content: params.content,
+          },
+        });
+        break;
+      } catch (error) {
+        const code = typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : null;
+        if (code === "P2002" && attempt < 2) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!message) {
+      throw new Error("Failed to create chat message");
+    }
+
+    const attachmentRecords: Array<{ filename: string; mimeType: string; content: string; storagePath: string | null }> = [];
+    const queuedStoragePathsToCleanup: string[] = [];
+    for (const attachment of params.attachments) {
+      const imageBytes = attachment.storagePath ? readFileSync(attachment.storagePath) : null;
+      const contentBytes = imageBytes ?? (
+        isImageMimeType(attachment.mimeType)
+          ? Buffer.from(attachment.content, "base64")
+          : Buffer.from(attachment.content, "utf8")
+      );
+      const sizeBytes = contentBytes.length;
+      let storagePath: string | null = null;
+      let dbContent = attachment.content;
+
+      if (isImageMimeType(attachment.mimeType)) {
+        const attachDir = getAttachmentStorageDir(thread.worktree.id, message.id);
+        mkdirSync(attachDir, { recursive: true });
+        const safeFilename = basename(attachment.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+        storagePath = join(attachDir, safeFilename);
+        writeFileSync(storagePath, contentBytes);
+        dbContent = "";
+        if (attachment.storagePath) {
+          queuedStoragePathsToCleanup.push(attachment.storagePath);
+        }
+      }
+
+      await deps.prisma.chatAttachment.create({
+        data: {
+          ...(attachment.id ? { id: attachment.id } : {}),
+          messageId: message.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          sizeBytes,
+          content: dbContent,
+          storagePath,
+          source: attachment.source,
+        },
+      });
+
+      attachmentRecords.push({
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+        content: dbContent,
+        storagePath,
+      });
+    }
+
+    if (params.queuedMessageId) {
+      await deps.prisma.chatQueuedMessage.deleteMany({
+        where: {
+          id: params.queuedMessageId,
+          threadId: params.threadId,
+        },
+      });
+    }
+
+    for (const storagePath of queuedStoragePathsToCleanup) {
+      cleanupStoredFile(storagePath);
+    }
+
+    await deps.eventHub.emit(params.threadId, "message.delta", {
+      messageId: message.id,
+      role: "user",
+      delta: params.content,
+    });
+
+    const normalizedContent = thread.agent === "codex" || thread.agent === "cursor"
+      ? normalizeCodexSkillSlashCommandsForPrompt(params.content, listCodexSkills(thread.worktree.path))
+      : params.content;
+    const prompt = buildPromptWithAttachments(normalizedContent, attachmentRecords, {
+      workspaceRoot: thread.worktree.path,
+    });
+    scheduleAssistant(params.threadId, prompt, params.mode);
+
+    const messageWithAttachments = await deps.prisma.chatMessage.findUnique({
+      where: { id: message.id },
+      include: { attachments: true },
+    });
+
+    return mapChatMessage(messageWithAttachments ?? message);
+  }
+
+  async function maybeDispatchQueuedMessages(threadId: string): Promise<void> {
+    const inFlight = queuedDispatchesByThread.get(threadId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const dispatchPromise = (async () => {
+      if (isThreadActive(threadId) || isThreadWaitingOnGate(threadId)) {
+        return;
+      }
+
+      const nextQueued = await getNextQueuedMessage(threadId);
+      if (!nextQueued) {
+        return;
+      }
+
+      const selectedQueued = nextQueued.status === "dispatching"
+        ? nextQueued
+        : await deps.prisma.chatQueuedMessage.update({
+          where: { id: nextQueued.id },
+          data: {
+            status: "dispatching",
+            dispatchRequestedAt: nextQueued.status === "queued"
+              ? nextQueued.dispatchRequestedAt
+              : nextQueued.dispatchRequestedAt ?? new Date(),
+          },
+          include: { attachments: true },
+        });
+
+      await emitThreadWorkspaceUpdate(threadId);
+      setThreadRunState(threadId, {
+        status: "scheduled",
+        mode: selectedQueued.mode,
+        cancellationReason: null,
+      });
+
+      try {
+        await commitUserMessageAndScheduleAssistant({
+          threadId,
+          content: selectedQueued.content,
+          mode: selectedQueued.mode,
+          attachments: selectedQueued.attachments.map((attachment) => ({
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            content: attachment.content,
+            storagePath: attachment.storagePath,
+            source: attachment.source,
+          })),
+          queuedMessageId: selectedQueued.id,
+        });
+        await emitThreadWorkspaceUpdate(threadId);
+      } catch (error) {
+        clearThreadRunState(threadId);
+        await deps.prisma.chatQueuedMessage.update({
+          where: { id: selectedQueued.id },
+          data: {
+            status: "dispatch_requested",
+            dispatchRequestedAt: selectedQueued.dispatchRequestedAt ?? new Date(),
+          },
+        }).catch(() => {});
+        await emitThreadWorkspaceUpdate(threadId);
+        throw error;
+      }
+    })().finally(() => {
+      if (queuedDispatchesByThread.get(threadId) === dispatchPromise) {
+        queuedDispatchesByThread.delete(threadId);
+      }
+    });
+
+    queuedDispatchesByThread.set(threadId, dispatchPromise);
+    return dispatchPromise;
+  }
+
+  async function cancelCurrentRunForQueuedDispatch(threadId: string): Promise<void> {
+    const thread = await deps.prisma.chatThread.findUnique({
+      where: { id: threadId },
+      select: { mode: true },
+    });
+    if (!thread) {
+      return;
+    }
+
+    const cancelledScheduledRun = clearScheduledAssistantRun(threadId);
+    if (cancelledScheduledRun) {
+      clearThreadRunState(threadId);
+      await deps.eventHub.emit(threadId, "chat.completed", {
+        cancelled: true,
+        cancellationReason: QUEUE_DISPATCH_CANCELLATION_REASON,
+        threadMode: thread.mode,
+      });
+      await maybeDispatchQueuedMessages(threadId);
+      return;
+    }
+
+    const run = getThreadRun(threadId);
+    if (!run?.abortController || run.abortController.signal.aborted) {
+      return;
+    }
+
+    setThreadRunState(threadId, {
+      ...run,
+      cancellationReason: QUEUE_DISPATCH_CANCELLATION_REASON,
+      queueHandoffPending: true,
+    });
+    run.abortController.abort();
+  }
+
+  async function maybeRequestQueuedHandoff(threadId: string): Promise<void> {
+    const run = getThreadRun(threadId);
+    if (!run || isThreadWaitingOnGate(threadId)) {
+      return;
+    }
+
+    const nextQueued = await getNextQueuedHandoffCandidate(threadId);
+    if (!nextQueued) {
+      if (run.queueHandoffPending) {
+        setThreadRunState(threadId, { ...run, queueHandoffPending: false });
+      }
+      return;
+    }
+
+    setThreadRunState(threadId, { ...run, queueHandoffPending: true });
+    if (hasActiveQueueBoundary(run)) {
+      return;
+    }
+
+    await cancelCurrentRunForQueuedDispatch(threadId);
   }
 
   async function emitPostCompletionMetadata(params: {
@@ -875,6 +1467,8 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onToolStarted: async (payload) => {
+          const currentRun = getThreadRun(threadId);
+          currentRun?.activeToolUseIds.add(payload.toolUseId);
           trackWorktreeMutation(worktreeMutationTracker, worktreePath, {
             toolName: payload.toolName,
             editTarget: payload.editTarget ?? null,
@@ -895,6 +1489,10 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onToolFinished: async (payload) => {
+          const currentRun = getThreadRun(threadId);
+          for (const toolUseId of payload.precedingToolUseIds) {
+            currentRun?.activeToolUseIds.delete(toolUseId);
+          }
           trackWorktreeMutation(worktreeMutationTracker, worktreePath, {
             toolName: "toolName" in payload && typeof payload.toolName === "string" ? payload.toolName : null,
             editTarget: payload.editTarget ?? null,
@@ -907,18 +1505,24 @@ export function createChatService(deps: RuntimeDeps) {
             messageId: assistantMessage.id,
           });
           await maybeEmitIncrementalWorktreeDiff(payload);
+          await maybeRequestQueuedHandoff(threadId);
         },
         onSubagentStarted: async (payload) => {
+          const currentRun = getThreadRun(threadId);
+          currentRun?.activeSubagentToolUseIds.add(payload.toolUseId);
           await deps.eventHub.emit(threadId, "subagent.started", {
             ...payload,
             messageId: assistantMessage.id,
           });
         },
         onSubagentStopped: async (payload) => {
+          const currentRun = getThreadRun(threadId);
+          currentRun?.activeSubagentToolUseIds.delete(payload.toolUseId);
           await deps.eventHub.emit(threadId, "subagent.finished", {
             ...payload,
             messageId: assistantMessage.id,
           });
+          await maybeRequestQueuedHandoff(threadId);
         },
         onToolInstrumentation: async (event) => {
           if (!deps.logService) {
@@ -1187,6 +1791,7 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       if (wasCancelled) {
+        const cancellationReason = getThreadRun(threadId)?.cancellationReason;
         if (!completionEmitted) {
           deps.logService?.log("debug", "chat.lifecycle", "run cancelled, emitting chat.completed(cancelled)", {
             threadId,
@@ -1195,6 +1800,7 @@ export function createChatService(deps: RuntimeDeps) {
           await deps.eventHub.emit(threadId, "chat.completed", {
             ...(assistantMessageId ? { messageId: assistantMessageId } : {}),
             cancelled: true,
+            ...(cancellationReason ? { cancellationReason } : {}),
             threadMode: mode,
           });
         }
@@ -1223,6 +1829,8 @@ export function createChatService(deps: RuntimeDeps) {
       });
       if (shouldClearRunState) {
         clearPendingGateRequestsBecauseRunEnded(pendingPermissionsByThread, pendingQuestionsByThread, threadId);
+        await maybeDispatchQueuedMessages(threadId);
+        await emitThreadWorkspaceUpdate(threadId);
       }
     }
   }
@@ -1450,6 +2058,7 @@ export function createChatService(deps: RuntimeDeps) {
     },
 
     async getThreadById(threadId: string): Promise<ChatThread | null> {
+      await maybeDispatchQueuedMessages(threadId);
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
       return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
     },
@@ -1662,13 +2271,81 @@ export function createChatService(deps: RuntimeDeps) {
       return messages.map(mapChatMessage);
     },
 
+    async listQueuedMessages(threadId: string): Promise<ChatQueuedMessage[]> {
+      await maybeDispatchQueuedMessages(threadId);
+      await requireThreadExists(deps, threadId);
+      const queuedMessages = await deps.prisma.chatQueuedMessage.findMany({
+        where: { threadId },
+        orderBy: { seq: "asc" },
+        include: { attachments: true },
+      });
+
+      return queuedMessages.map(mapChatQueuedMessage);
+    },
+
+    async queueMessage(threadId: string, rawInput: unknown): Promise<ChatQueuedMessage> {
+      const input: QueueChatMessageInput = QueueChatMessageInputSchema.parse(rawInput);
+      const queuedMessage = await createQueuedMessageRecord(threadId, input);
+      await emitThreadWorkspaceUpdate(threadId);
+      await maybeDispatchQueuedMessages(threadId);
+      return queuedMessage;
+    },
+
+    async deleteQueuedMessage(threadId: string, queueMessageId: string): Promise<void> {
+      await deleteQueuedMessageRecord(threadId, queueMessageId);
+      await emitThreadWorkspaceUpdate(threadId);
+    },
+
+    async updateQueuedMessage(threadId: string, queueMessageId: string, rawInput: unknown): Promise<ChatQueuedMessage> {
+      const queuedMessage = await updateQueuedMessageRecord(threadId, queueMessageId, rawInput);
+      await emitThreadWorkspaceUpdate(threadId);
+      return queuedMessage;
+    },
+
+    async requestQueuedMessageDispatch(threadId: string, queueMessageId: string): Promise<ChatQueuedMessage> {
+      await requireThreadExists(deps, threadId);
+      if (isThreadWaitingOnGate(threadId)) {
+        throw new Error("Cannot dispatch queued messages while the assistant is waiting for approval or review");
+      }
+
+      const queuedMessage = await deps.prisma.chatQueuedMessage.findFirst({
+        where: { id: queueMessageId, threadId },
+        include: { attachments: true },
+      });
+
+      if (!queuedMessage) {
+        throw new Error("Queued message not found");
+      }
+
+      const updated = queuedMessage.status === "dispatch_requested" || queuedMessage.status === "dispatching"
+        ? queuedMessage
+        : await deps.prisma.chatQueuedMessage.update({
+          where: { id: queueMessageId },
+          data: {
+            status: "dispatch_requested",
+            dispatchRequestedAt: new Date(),
+          },
+          include: { attachments: true },
+        });
+
+      await emitThreadWorkspaceUpdate(threadId);
+      await maybeDispatchQueuedMessages(threadId);
+      return mapChatQueuedMessage(updated);
+    },
+
     async listEvents(threadId: string, afterIdx?: number): Promise<ChatEvent[]> {
       await requireThreadExists(deps, threadId);
       return deps.eventHub.list(threadId, afterIdx);
     },
 
-    async listThreadSnapshot(threadId: string): Promise<ChatThreadSnapshot> {
-      await requireThreadExists(deps, threadId);
+    async listThreadSnapshot(
+      threadId: string,
+      options?: ThreadSnapshotOptions,
+    ): Promise<ChatThreadSnapshot> {
+      const snapshotStartedAtMs = getPerfNow();
+      await timeSnapshotPhase(options, "queued-dispatch-check", undefined, () => maybeDispatchQueuedMessages(threadId));
+      await timeSnapshotPhase(options, "thread-exists", undefined, () => requireThreadExists(deps, threadId));
+      const queryStartedAtMs = getPerfNow();
       const [messageRows, eventRows] = await Promise.all([
         deps.prisma.chatMessage.findMany({
           where: { threadId },
@@ -1677,20 +2354,51 @@ export function createChatService(deps: RuntimeDeps) {
         }),
         deps.eventHub.list(threadId),
       ]);
+      recordSnapshotPhase(options, "db.full-collections", queryStartedAtMs, {
+        messageRows: messageRows.length,
+        eventRows: eventRows.length,
+      });
 
+      const mapStartedAtMs = getPerfNow();
       const messages = mapMessages(messageRows);
       const events = eventRows;
+      recordSnapshotPhase(options, "map.full-collections", mapStartedAtMs, {
+        messagesCount: messages.length,
+        eventsCount: events.length,
+      });
 
+      const timelineStartedAtMs = getPerfNow();
       const timeline = buildTimelineSnapshot({
         messages,
         events,
         threadId,
+      });
+      recordSnapshotPhase(options, "timeline.assemble", timelineStartedAtMs, {
+        timelineItemsCount: timeline.timelineItems.length,
+        collectionsIncluded: timeline.collectionsIncluded ?? null,
+        oldestRenderableHydrationPending: timeline.summary.oldestRenderableHydrationPending,
+      });
+      recordSnapshotPhase(options, "snapshot.total", snapshotStartedAtMs, {
+        messagesCount: messages.length,
+        eventsCount: events.length,
+        timelineItemsCount: timeline.timelineItems.length,
       });
 
       return {
         messages,
         events,
         timeline,
+      };
+    },
+
+    async listThreadStatusSnapshot(threadId: string): Promise<ChatThreadStatusSnapshot> {
+      await maybeDispatchQueuedMessages(threadId);
+      await requireThreadExists(deps, threadId);
+      const events = await deps.eventHub.list(threadId);
+
+      return {
+        status: deriveThreadStatusFromEvents(events, isThreadActive(threadId)),
+        newestIdx: events.length > 0 ? events[events.length - 1]?.idx ?? null : null,
       };
     },
 
@@ -1717,6 +2425,8 @@ export function createChatService(deps: RuntimeDeps) {
           cancelled: true,
           threadMode: thread.mode,
         });
+        await maybeDispatchQueuedMessages(threadId);
+        await emitThreadWorkspaceUpdate(threadId);
         return;
       }
 
@@ -2032,88 +2742,19 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       try {
-        if (thread.mode !== input.mode) {
-          await deps.prisma.chatThread.update({
-            where: { id: threadId },
-            data: { mode: input.mode },
-          });
-        }
-
-        const seq = await nextMessageSeq(deps.prisma, threadId);
-        const message = await deps.prisma.chatMessage.create({
-          data: {
-            threadId,
-            seq,
-            role: "user",
-            content: input.content,
-          },
+        return await commitUserMessageAndScheduleAssistant({
+          threadId,
+          content: input.content,
+          mode: input.mode,
+          attachments: (input.attachments ?? []).map((attachment) => ({
+            id: attachment.id,
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            content: attachment.content,
+            storagePath: null,
+            source: attachment.source,
+          })),
         });
-
-        const attachmentRecords: Array<{ filename: string; mimeType: string; content: string; storagePath: string | null }> = [];
-        const inputAttachments: AttachmentInput[] = input.attachments ?? [];
-        for (const att of inputAttachments) {
-          const contentBytes = isImageMimeType(att.mimeType)
-            ? Buffer.from(att.content, "base64")
-            : Buffer.from(att.content, "utf8");
-          const sizeBytes = contentBytes.length;
-
-          if (sizeBytes > MAX_ATTACHMENT_SIZE_BYTES) {
-            throw new Error(`Attachment "${att.filename}" exceeds 10 MB limit (${Math.round(sizeBytes / 1024 / 1024)}MB)`);
-          }
-
-          let storagePath: string | null = null;
-          let dbContent = att.content;
-
-          if (isImageMimeType(att.mimeType)) {
-            const attachDir = getAttachmentStorageDir(thread.worktree.id, message.id);
-            mkdirSync(attachDir, { recursive: true });
-            const safeFilename = basename(att.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-            storagePath = join(attachDir, safeFilename);
-            writeFileSync(storagePath, contentBytes);
-            dbContent = "";
-          }
-
-          await deps.prisma.chatAttachment.create({
-            data: {
-              ...(att.id ? { id: att.id } : {}),
-              messageId: message.id,
-              filename: att.filename,
-              mimeType: att.mimeType,
-              sizeBytes,
-              content: dbContent,
-              storagePath,
-              source: att.source,
-            },
-          });
-
-          attachmentRecords.push({
-            filename: att.filename,
-            mimeType: att.mimeType,
-            content: dbContent,
-            storagePath,
-          });
-        }
-
-        await deps.eventHub.emit(threadId, "message.delta", {
-          messageId: message.id,
-          role: "user",
-          delta: input.content,
-        });
-
-        const normalizedContent = thread.agent === "codex" || thread.agent === "cursor"
-          ? normalizeCodexSkillSlashCommandsForPrompt(input.content, listCodexSkills(thread.worktree.path))
-          : input.content;
-        const prompt = buildPromptWithAttachments(normalizedContent, attachmentRecords, {
-          workspaceRoot: thread.worktree.path,
-        });
-        scheduleAssistant(threadId, prompt, input.mode);
-
-        const messageWithAttachments = await deps.prisma.chatMessage.findUnique({
-          where: { id: message.id },
-          include: { attachments: true },
-        });
-
-        return mapChatMessage(messageWithAttachments ?? message);
       } catch (error) {
         clearThreadRunState(threadId);
         throw error;
@@ -2205,6 +2846,7 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
           message: "Chat run interrupted by a runtime restart. You can send a new message to continue.",
           threadMode: thread.mode,
         });
+        await maybeDispatchQueuedMessages(thread.id);
         recoveredCount++;
       }
 

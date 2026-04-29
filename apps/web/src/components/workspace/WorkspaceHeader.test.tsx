@@ -194,6 +194,18 @@ describe("WorkspaceHeader", () => {
     expect(onToggleLeftPanel).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the desktop control row visible for desktop app layout overrides", () => {
+    renderHeader({ desktopApp: true });
+
+    const desktopBar = container.querySelector<HTMLElement>('[data-testid="workspace-header-desktop-bar"]');
+    if (!desktopBar) {
+      throw new Error("Desktop header bar not found");
+    }
+
+    expect(desktopBar.className).toContain("flex");
+    expect(desktopBar.className).not.toContain("hidden lg:flex");
+  });
+
   it("keeps add session button pinned outside scroll area", () => {
     const onCreateThread = vi.fn();
     renderHeader({ onCreateThread });
@@ -215,6 +227,25 @@ describe("WorkspaceHeader", () => {
     });
 
     expect(onCreateThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("prefetches a thread when its tab is hovered or focused", () => {
+    const onPrefetchThread = vi.fn();
+    renderHeader({ onPrefetchThread });
+
+    const secondaryTab = container.querySelector<HTMLButtonElement>('button[role="tab"][title="Secondary Thread"]');
+    if (!secondaryTab) {
+      throw new Error("Secondary thread tab not found");
+    }
+
+    flushSync(() => {
+      secondaryTab.dispatchEvent(new Event("pointerover", { bubbles: true }));
+      secondaryTab.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+
+    expect(onPrefetchThread).toHaveBeenCalledTimes(2);
+    expect(onPrefetchThread).toHaveBeenNthCalledWith(1, "thread-2");
+    expect(onPrefetchThread).toHaveBeenNthCalledWith(2, "thread-2");
   });
 
   it("does not render runtime or worktree metadata rows", () => {

@@ -826,6 +826,7 @@ export interface CodeEditorPanelProps {
   saving?: boolean;
   dirty?: boolean;
   error?: string | null;
+  desktopApp?: boolean;
   mobileBottomOffset?: number;
   onChange: (content: string) => void;
   onSave: () => void;
@@ -927,6 +928,7 @@ export function CodeEditorPanel({
   saving = false,
   dirty = false,
   error = null,
+  desktopApp = false,
   mobileBottomOffset = 0,
   onChange,
   onSave,
@@ -1432,11 +1434,13 @@ export function CodeEditorPanel({
         <>
           <div
             className={cn(
-              "inset-x-0 z-10 border-t border-border bg-background px-1.5 py-1.5 lg:hidden",
+              "inset-x-0 z-10 border-t border-border bg-background px-1.5 py-1.5",
+              desktopApp ? "hidden" : "lg:hidden",
               mobileBottomOffset > 0
                 ? "fixed bottom-0 z-40 shadow-[0_-10px_30px_rgba(0,0,0,0.28)]"
                 : "absolute bottom-0 safe-bottom",
             )}
+            data-testid="code-editor-mobile-toolbar"
             style={mobileBottomOffset > 0 ? { bottom: "var(--cs-mobile-keyboard-offset, 0px)" } : undefined}
           >
             <div className="grid grid-cols-7 gap-1">
@@ -1563,7 +1567,13 @@ export function CodeEditorPanel({
             </div>
           </div>
 
-          <div className="hidden h-7 min-w-0 items-center justify-between gap-3 border-t border-border bg-background px-3 text-[11px] text-muted-foreground lg:flex">
+          <div
+            className={cn(
+              "h-7 min-w-0 items-center justify-between gap-3 border-t border-border bg-background px-3 text-[11px] text-muted-foreground",
+              desktopApp ? "flex" : "hidden lg:flex",
+            )}
+            data-testid="code-editor-desktop-statusbar"
+          >
             <div className="flex min-w-0 items-center gap-3 truncate">
               <span className="truncate">
                 {saving ? "Saving..." : loading ? "Loading file..." : dirty ? "Unsaved changes" : "Saved"}

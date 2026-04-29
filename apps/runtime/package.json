@@ -14,6 +14,7 @@
     "test": "DATABASE_URL=\"file:./test.db\" prisma migrate deploy && vitest run --config vitest.config.ts",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json",
     "lint": "tsc --noEmit -p tsconfig.json",
+    "bench:thread-snapshot": "tsx --env-file .env src/scripts/benchmarkThreadSnapshots.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:seed": "prisma db seed"

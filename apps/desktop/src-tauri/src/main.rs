@@ -1,17 +1,25 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+#[cfg(target_os = "macos")]
+use std::fs::OpenOptions;
+#[cfg(target_os = "macos")]
+use std::io::Write;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "macos")]
+use std::sync::mpsc::{self, Sender};
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager, Url};
+#[cfg(target_os = "macos")]
+use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{Manager, Url};
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSWindow, NSWindowButton};
-
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
@@ -28,22 +36,44 @@ const LAN_RUNTIME_HOST: &str = "0.0.0.0";
 const COMMON_RUNTIME_EXECUTABLE_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 const USER_RUNTIME_EXECUTABLE_DIR_SUFFIXES: [&str; 2] = [".opencode/bin", ".local/bin"];
 #[cfg(target_os = "macos")]
-// Coarse vertical lift for the whole native traffic-light container.
-const MACOS_TRAFFIC_LIGHT_VERTICAL_INSET: f64 = 4.0;
-#[cfg(target_os = "macos")]
-// Fine adjustment for the buttons themselves. In this titlebar coordinate space,
-// increasing the value moves the traffic lights upward.
-const MACOS_TRAFFIC_LIGHT_BUTTON_DROP: f64 = 0.9;
+const MACOS_TRAFFIC_LIGHT_VERTICAL_OFFSET: f64 = 4.0;
 #[cfg(target_os = "macos")]
 const MACOS_TRAFFIC_LIGHT_EPSILON: f64 = 0.5;
 #[cfg(target_os = "macos")]
-const MACOS_FULLSCREEN_EVENT: &str = "codesymphony://fullscreen-changed";
+const MACOS_TRAFFIC_LIGHT_SYNC_CHECKPOINTS_MS: [u64; 4] = [120, 280, 600, 1200];
 #[cfg(target_os = "macos")]
-const MACOS_WINDOW_CHROME_SYNC_CHECKPOINTS_MS: [u64; 5] = [0, 160, 420, 900, 1400];
+const MACOS_TRAFFIC_LIGHT_SETTLE_CHECKPOINTS_MS: [u64; 3] = [450, 900, 1500];
+#[cfg(target_os = "macos")]
+const MACOS_TRAFFIC_LIGHT_LIVE_RESIZE_THROTTLE_MS: u128 = 75;
+#[cfg(target_os = "macos")]
+const MACOS_TRAFFIC_LIGHT_LOG_PATH: &str = "/tmp/codesymphony-traffic-light.log";
 
 #[cfg(target_os = "macos")]
-static MACOS_TRAFFIC_LIGHT_LAST_Y: std::sync::LazyLock<Mutex<HashMap<String, f64>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static MACOS_TRAFFIC_LIGHT_BASELINE_HEIGHTS: LazyLock<Mutex<HashMap<String, f64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(target_os = "macos")]
+static MACOS_TRAFFIC_LIGHT_SYNC_GENERATIONS: LazyLock<Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(target_os = "macos")]
+static MACOS_TRAFFIC_LIGHT_LAST_LIVE_RESIZE_ADJUSTMENTS_MS: LazyLock<Mutex<HashMap<String, u128>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(target_os = "macos")]
+static MACOS_TRAFFIC_LIGHT_LOG_SENDER: LazyLock<Sender<String>> = LazyLock::new(|| {
+    let (sender, receiver) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        while let Ok(line) = receiver.recv() {
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(MACOS_TRAFFIC_LIGHT_LOG_PATH)
+            {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+    });
+
+    sender
+});
 
 fn desktop_runtime_host(is_dev: bool) -> &'static str {
     if is_dev {
@@ -607,85 +637,340 @@ fn monitor_managed_runtime(app_handle: tauri::AppHandle, port: u16, is_dev: bool
 }
 
 #[cfg(target_os = "macos")]
-fn adjust_macos_traffic_lights(window: &tauri::WebviewWindow) {
+fn macos_traffic_light_timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "macos")]
+fn log_macos_traffic_light_trace(window_label: &str, event: &str, details: &str) {
+    let timestamp_ms = macos_traffic_light_timestamp_ms();
+    let _ = MACOS_TRAFFIC_LIGHT_LOG_SENDER.send(format!(
+        "ts_ms={timestamp_ms} window={window_label} event={event} {details}"
+    ));
+}
+
+#[cfg(target_os = "macos")]
+fn macos_traffic_light_follow_up_checkpoints(reason: &str) -> &'static [u64] {
+    match reason {
+        "window.resized" | "window.moved" => &MACOS_TRAFFIC_LIGHT_SETTLE_CHECKPOINTS_MS,
+        _ => &MACOS_TRAFFIC_LIGHT_SYNC_CHECKPOINTS_MS,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_traffic_light_should_adjust_immediately(reason: &str) -> bool {
+    let _ = reason;
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn macos_traffic_light_should_throttle_live_resize_adjustment(
+    window_label: &str,
+    reason: &str,
+    phase: &str,
+    in_live_resize: bool,
+) -> Option<u128> {
+    if reason != "window.resized" || phase != "immediate" || !in_live_resize {
+        return None;
+    }
+
+    let Ok(mut state) = MACOS_TRAFFIC_LIGHT_LAST_LIVE_RESIZE_ADJUSTMENTS_MS.lock() else {
+        return None;
+    };
+
+    let now_ms = macos_traffic_light_timestamp_ms();
+    let previous_adjustment_ms = state.get(window_label).copied().unwrap_or(0);
+    let elapsed_ms = now_ms.saturating_sub(previous_adjustment_ms);
+
+    if previous_adjustment_ms != 0 && elapsed_ms < MACOS_TRAFFIC_LIGHT_LIVE_RESIZE_THROTTLE_MS {
+        return Some(elapsed_ms);
+    }
+
+    state.insert(window_label.to_string(), now_ms);
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn adjust_macos_traffic_lights(window: &tauri::WebviewWindow, reason: &str, phase: &str) {
+    let window_label = window.label().to_string();
+    let fullscreen = window.is_fullscreen().unwrap_or(false);
+    if fullscreen {
+        log_macos_traffic_light_trace(
+            &window_label,
+            "adjust.skip_fullscreen",
+            &format!("reason={reason} phase={phase}"),
+        );
+        return;
+    }
+
     let Ok(ns_window_ptr) = window.ns_window() else {
+        log_macos_traffic_light_trace(
+            &window_label,
+            "adjust.skip_missing_ns_window",
+            &format!("reason={reason} phase={phase}"),
+        );
         return;
     };
 
     let ns_window = unsafe { &*ns_window_ptr.cast::<NSWindow>() };
-    let Some(close_button) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else {
-        return;
-    };
-    let Some(minimize_button) = ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
-    else {
-        return;
-    };
-    let Some(zoom_button) = ns_window.standardWindowButton(NSWindowButton::ZoomButton) else {
-        return;
-    };
-
-    let window_label = window.label().to_string();
-    let close_y = close_button.frame().origin.y;
-    let already_adjusted = MACOS_TRAFFIC_LIGHT_LAST_Y
-        .lock()
-        .ok()
-        .and_then(|state| state.get(&window_label).copied())
-        .map(|last_y| (close_y - last_y).abs() <= MACOS_TRAFFIC_LIGHT_EPSILON)
-        .unwrap_or(false);
-    if already_adjusted {
+    let in_live_resize = ns_window.inLiveResize();
+    if let Some(elapsed_ms) = macos_traffic_light_should_throttle_live_resize_adjustment(
+        &window_label,
+        reason,
+        phase,
+        in_live_resize,
+    ) {
+        log_macos_traffic_light_trace(
+            &window_label,
+            "adjust.skip_live_resize_throttled",
+            &format!(
+                "reason={reason} phase={phase} in_live_resize={in_live_resize} elapsed_ms={elapsed_ms} throttle_ms={MACOS_TRAFFIC_LIGHT_LIVE_RESIZE_THROTTLE_MS}"
+            ),
+        );
         return;
     }
 
+    let Some(close_button) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else {
+        log_macos_traffic_light_trace(
+            &window_label,
+            "adjust.skip_missing_close_button",
+            &format!("reason={reason} phase={phase}"),
+        );
+        return;
+    };
     let Some(title_bar_container) =
         (unsafe { close_button.superview() }).and_then(|view| unsafe { view.superview() })
     else {
+        log_macos_traffic_light_trace(
+            &window_label,
+            "adjust.skip_missing_title_bar_container",
+            &format!("reason={reason} phase={phase}"),
+        );
         return;
     };
 
+    let outer_size = window.outer_size().ok();
     let mut title_bar_rect = title_bar_container.frame();
-    title_bar_rect.origin.y -= MACOS_TRAFFIC_LIGHT_VERTICAL_INSET;
-    title_bar_rect.size.height += MACOS_TRAFFIC_LIGHT_VERTICAL_INSET;
-    title_bar_container.setFrame(title_bar_rect);
+    let title_bar_top = title_bar_rect.origin.y + title_bar_rect.size.height;
 
-    for button in [close_button, minimize_button, zoom_button] {
-        let mut rect = button.frame();
-        rect.origin.y -= MACOS_TRAFFIC_LIGHT_BUTTON_DROP;
-        button.setFrameOrigin(rect.origin);
+    let (baseline_height, current_matches_expected, current_looks_native, baseline_updated) = {
+        let Ok(mut state) = MACOS_TRAFFIC_LIGHT_BASELINE_HEIGHTS.lock() else {
+            log_macos_traffic_light_trace(
+                &window_label,
+                "adjust.skip_baseline_lock_failed",
+                &format!("reason={reason} phase={phase}"),
+            );
+            return;
+        };
+
+        let baseline = state
+            .entry(window_label.clone())
+            .or_insert(title_bar_rect.size.height);
+        let expected_height = *baseline + MACOS_TRAFFIC_LIGHT_VERTICAL_OFFSET;
+        let current_matches_expected =
+            (title_bar_rect.size.height - expected_height).abs() <= MACOS_TRAFFIC_LIGHT_EPSILON;
+
+        let current_looks_native =
+            (title_bar_rect.size.height - *baseline).abs() <= MACOS_TRAFFIC_LIGHT_EPSILON;
+        let mut baseline_updated = false;
+
+        if !current_matches_expected && !current_looks_native {
+            *baseline = title_bar_rect.size.height;
+            baseline_updated = true;
+        }
+
+        (
+            *baseline,
+            current_matches_expected,
+            current_looks_native,
+            baseline_updated,
+        )
+    };
+
+    let target_height = baseline_height + MACOS_TRAFFIC_LIGHT_VERTICAL_OFFSET;
+    let target_origin_y = title_bar_top - target_height;
+    let needs_update = !current_matches_expected
+        || (title_bar_rect.size.height - target_height).abs() > MACOS_TRAFFIC_LIGHT_EPSILON
+        || (title_bar_rect.origin.y - target_origin_y).abs() > MACOS_TRAFFIC_LIGHT_EPSILON;
+
+    if needs_update {
+        title_bar_rect.size.height = target_height;
+        title_bar_rect.origin.y = target_origin_y;
+        title_bar_container.setFrame(title_bar_rect);
     }
 
-    if let Ok(mut state) = MACOS_TRAFFIC_LIGHT_LAST_Y.lock() {
-        state.insert(window_label, close_y - MACOS_TRAFFIC_LIGHT_BUTTON_DROP);
-    }
+    let (outer_width, outer_height) = outer_size
+        .map(|size| (size.width, size.height))
+        .unwrap_or((0, 0));
+    log_macos_traffic_light_trace(
+        &window_label,
+        if needs_update {
+            "adjust.applied"
+        } else {
+            "adjust.noop"
+        },
+        &format!(
+            "reason={reason} phase={phase} in_live_resize={in_live_resize} outer_width={outer_width} outer_height={outer_height} current_y={:.2} current_height={:.2} title_bar_top={:.2} baseline_height={:.2} current_matches_expected={} current_looks_native={} baseline_updated={} target_y={:.2} target_height={:.2}",
+            title_bar_rect.origin.y,
+            title_bar_rect.size.height,
+            title_bar_top,
+            baseline_height,
+            current_matches_expected,
+            current_looks_native,
+            baseline_updated,
+            target_origin_y,
+            target_height,
+        ),
+    );
 }
 
 #[cfg(target_os = "macos")]
-fn sync_macos_window_chrome(window: &tauri::WebviewWindow) {
-    let is_fullscreen = window.is_fullscreen().unwrap_or(false);
-    let _ = window.emit(MACOS_FULLSCREEN_EVENT, is_fullscreen);
+fn next_macos_traffic_light_sync_generation(window_label: &str) -> u64 {
+    let Ok(mut state) = MACOS_TRAFFIC_LIGHT_SYNC_GENERATIONS.lock() else {
+        return 0;
+    };
 
-    if !is_fullscreen {
-        adjust_macos_traffic_lights(window);
-    }
+    let next_generation = state
+        .get(window_label)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(1);
+    state.insert(window_label.to_string(), next_generation);
+    next_generation
 }
 
 #[cfg(target_os = "macos")]
-fn schedule_macos_window_chrome_sync(app_handle: tauri::AppHandle, window_label: String) {
+fn is_macos_traffic_light_sync_generation_current(window_label: &str, generation: u64) -> bool {
+    MACOS_TRAFFIC_LIGHT_SYNC_GENERATIONS
+        .lock()
+        .ok()
+        .and_then(|state| state.get(window_label).copied())
+        .map(|current_generation| current_generation == generation)
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn queue_macos_traffic_light_adjustment(
+    app_handle: &tauri::AppHandle,
+    window_label: &str,
+    generation: u64,
+    reason: &'static str,
+    phase: &'static str,
+) {
+    let app_handle = app_handle.clone();
+    let app_handle_for_closure = app_handle.clone();
+    let window_label = window_label.to_string();
+
+    let _ = app_handle.run_on_main_thread(move || {
+        if !is_macos_traffic_light_sync_generation_current(&window_label, generation) {
+            log_macos_traffic_light_trace(
+                &window_label,
+                "queue.skip_stale_generation",
+                &format!("reason={reason} phase={phase} generation={generation}"),
+            );
+            return;
+        }
+
+        if let Some(window) = app_handle_for_closure.get_webview_window(&window_label) {
+            adjust_macos_traffic_lights(&window, reason, phase);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_macos_traffic_light_adjustment(
+    app_handle: &tauri::AppHandle,
+    window_label: &str,
+    reason: &'static str,
+) {
+    let generation = next_macos_traffic_light_sync_generation(window_label);
+    let checkpoints = macos_traffic_light_follow_up_checkpoints(reason);
+    let adjusts_immediately = macos_traffic_light_should_adjust_immediately(reason);
+    let checkpoint_summary = checkpoints
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    log_macos_traffic_light_trace(
+        window_label,
+        "schedule",
+        &format!(
+            "reason={reason} generation={generation} adjusts_immediately={adjusts_immediately} log_path={} follow_up_checkpoints_ms={checkpoint_summary}",
+            MACOS_TRAFFIC_LIGHT_LOG_PATH,
+        ),
+    );
+    if adjusts_immediately {
+        queue_macos_traffic_light_adjustment(
+            app_handle,
+            window_label,
+            generation,
+            reason,
+            "immediate",
+        );
+    } else {
+        log_macos_traffic_light_trace(
+            window_label,
+            "schedule.immediate_deferred",
+            &format!("reason={reason} generation={generation}"),
+        );
+    }
+
+    let app_handle = app_handle.clone();
+    let window_label = window_label.to_string();
     thread::spawn(move || {
         let mut previous_checkpoint_ms = 0_u64;
 
-        for checkpoint_ms in MACOS_WINDOW_CHROME_SYNC_CHECKPOINTS_MS {
-            if checkpoint_ms > previous_checkpoint_ms {
+        for checkpoint_ms in checkpoints {
+            if *checkpoint_ms > previous_checkpoint_ms {
                 thread::sleep(Duration::from_millis(
-                    checkpoint_ms - previous_checkpoint_ms,
+                    *checkpoint_ms - previous_checkpoint_ms,
                 ));
             }
-            previous_checkpoint_ms = checkpoint_ms;
+            previous_checkpoint_ms = *checkpoint_ms;
 
-            if let Some(window) = app_handle.get_webview_window(&window_label) {
-                sync_macos_window_chrome(&window);
+            if !is_macos_traffic_light_sync_generation_current(&window_label, generation) {
+                log_macos_traffic_light_trace(
+                    &window_label,
+                    "schedule.follow_up_cancelled",
+                    &format!(
+                        "reason={reason} generation={generation} checkpoint_ms={checkpoint_ms}"
+                    ),
+                );
+                return;
             }
+
+            let phase = match *checkpoint_ms {
+                120 => "follow_up_120ms",
+                280 => "follow_up_280ms",
+                450 => "follow_up_450ms",
+                600 => "follow_up_600ms",
+                900 => "follow_up_900ms",
+                1200 => "follow_up_1200ms",
+                1500 => "follow_up_1500ms",
+                _ => "follow_up",
+            };
+            queue_macos_traffic_light_adjustment(
+                &app_handle,
+                &window_label,
+                generation,
+                reason,
+                phase,
+            );
         }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn macos_traffic_light_window_event_reason(event: &tauri::WindowEvent) -> Option<&'static str> {
+    match event {
+        tauri::WindowEvent::Resized(_) => Some("window.resized"),
+        tauri::WindowEvent::ScaleFactorChanged { .. } => Some("window.scale_changed"),
+        tauri::WindowEvent::Focused(true) => Some("window.focused"),
+        _ => None,
+    }
 }
 
 fn main() {
@@ -705,9 +990,7 @@ fn main() {
             let _ = ensure_managed_runtime(app.handle(), runtime_port, is_dev);
 
             #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
-                sync_macos_window_chrome(&window);
-            }
+            schedule_macos_traffic_light_adjustment(app.handle(), "main", "app.setup");
 
             // Wait for the runtime to be ready, then show the window
             let app_handle = app.handle().clone();
@@ -739,6 +1022,14 @@ fn main() {
                                 }
                             }
                         }
+
+                        #[cfg(target_os = "macos")]
+                        schedule_macos_traffic_light_adjustment(
+                            &app_handle,
+                            "main",
+                            "runtime.ready",
+                        );
+
                         let _ = window.show();
                     } else {
                         eprintln!(
@@ -762,18 +1053,14 @@ fn main() {
         })
         .on_window_event(|window, event| {
             #[cfg(target_os = "macos")]
-            if window.label() == "main"
-                && matches!(
-                    event,
-                    tauri::WindowEvent::Resized(_)
-                        | tauri::WindowEvent::ScaleFactorChanged { .. }
-                        | tauri::WindowEvent::Focused(true)
-                )
-            {
-                schedule_macos_window_chrome_sync(
-                    window.app_handle().clone(),
-                    window.label().to_string(),
-                );
+            if window.label() == "main" {
+                if let Some(reason) = macos_traffic_light_window_event_reason(event) {
+                    schedule_macos_traffic_light_adjustment(
+                        &window.app_handle(),
+                        window.label(),
+                        reason,
+                    );
+                }
             }
 
             if let tauri::WindowEvent::CloseRequested { .. } = event {

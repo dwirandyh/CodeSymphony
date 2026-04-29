@@ -81,6 +81,9 @@ export type ChatThreadPermissionMode = z.infer<typeof ChatThreadPermissionModeSc
 export const ChatModeSchema = z.enum(["default", "plan"]);
 export type ChatMode = z.infer<typeof ChatModeSchema>;
 
+export const ChatQueuedMessageStatusSchema = z.enum(["queued", "dispatch_requested", "dispatching"]);
+export type ChatQueuedMessageStatus = z.infer<typeof ChatQueuedMessageStatusSchema>;
+
 export const CliAgentSchema = z.enum(["claude", "codex", "cursor", "opencode"]);
 export type CliAgent = z.infer<typeof CliAgentSchema>;
 
@@ -157,6 +160,19 @@ export const ChatAttachmentSchema = z.object({
 });
 export type ChatAttachment = z.infer<typeof ChatAttachmentSchema>;
 
+export const ChatQueuedAttachmentSchema = z.object({
+  id: z.string(),
+  queuedMessageId: z.string(),
+  filename: z.string(),
+  mimeType: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  content: z.string(),
+  storagePath: z.string().nullable(),
+  source: AttachmentSourceSchema,
+  createdAt: z.string().datetime(),
+});
+export type ChatQueuedAttachment = z.infer<typeof ChatQueuedAttachmentSchema>;
+
 export const AttachmentInputSchema = z.object({
   id: z.string().trim().min(1).optional(),
   filename: z.string().trim().min(1),
@@ -174,6 +190,20 @@ export const ChatEventSchema = z.object({
   payload: z.record(z.string(), z.any()),
   createdAt: z.string().datetime(),
 });
+
+export const ChatQueuedMessageSchema = z.object({
+  id: z.string(),
+  threadId: z.string(),
+  seq: z.number().int().nonnegative(),
+  content: z.string(),
+  mode: ChatModeSchema,
+  status: ChatQueuedMessageStatusSchema,
+  dispatchRequestedAt: z.string().datetime().nullable(),
+  attachments: z.array(ChatQueuedAttachmentSchema).default([]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type ChatQueuedMessage = z.infer<typeof ChatQueuedMessageSchema>;
 
 export const WorkspaceSyncEventTypeSchema = z.enum([
   "repository.created",
@@ -434,6 +464,7 @@ export const ChatTimelineSnapshotSchema = z.object({
   summary: ChatTimelineSummarySchema,
   newestSeq: z.number().int().nonnegative().nullable(),
   newestIdx: z.number().int().nonnegative().nullable(),
+  collectionsIncluded: z.boolean().optional(),
   messages: z.array(ChatMessageSchema),
   events: z.array(ChatEventSchema),
 });
@@ -442,6 +473,18 @@ export const ChatThreadSnapshotSchema = z.object({
   messages: z.array(ChatMessageSchema),
   events: z.array(ChatEventSchema),
   timeline: ChatTimelineSnapshotSchema,
+});
+
+export const ChatThreadStatusSchema = z.enum([
+  "waiting_approval",
+  "review_plan",
+  "running",
+  "idle",
+]);
+
+export const ChatThreadStatusSnapshotSchema = z.object({
+  status: ChatThreadStatusSchema,
+  newestIdx: z.number().int().nonnegative().nullable(),
 });
 
 export const CreateRepositoryInputSchema = z.object({
@@ -497,6 +540,23 @@ export const SendChatMessageInputSchema = z.object({
   (data) => data.content.length > 0 || data.attachments.length > 0,
   { message: "Message must have content or attachments" },
 );
+export type SendChatMessageInput = z.infer<typeof SendChatMessageInputSchema>;
+
+export const QueueChatMessageInputSchema = z.object({
+  content: z.string().trim(),
+  mode: ChatModeSchema.optional().default("default"),
+  attachments: z.array(AttachmentInputSchema).max(20).optional().default([]),
+  expectedWorktreeId: z.string().trim().min(1).optional(),
+}).refine(
+  (data) => data.content.length > 0 || data.attachments.length > 0,
+  { message: "Queued message must have content or attachments" },
+);
+export type QueueChatMessageInput = z.infer<typeof QueueChatMessageInputSchema>;
+
+export const UpdateQueuedMessageInputSchema = z.object({
+  content: z.string().trim(),
+});
+export type UpdateQueuedMessageInput = z.infer<typeof UpdateQueuedMessageInputSchema>;
 
 export const PermissionDecisionSchema = z.enum(["allow", "allow_always", "deny"]);
 export type PermissionDecision = z.infer<typeof PermissionDecisionSchema>;
@@ -602,10 +662,11 @@ export type ChatTimelineItem = z.infer<typeof ChatTimelineItemSchema>;
 export type ChatTimelineSummary = z.infer<typeof ChatTimelineSummarySchema>;
 export type ChatTimelineSnapshot = z.infer<typeof ChatTimelineSnapshotSchema>;
 export type ChatThreadSnapshot = z.infer<typeof ChatThreadSnapshotSchema>;
+export type ChatThreadStatus = z.infer<typeof ChatThreadStatusSchema>;
+export type ChatThreadStatusSnapshot = z.infer<typeof ChatThreadStatusSnapshotSchema>;
 export type CreateRepositoryInput = z.infer<typeof CreateRepositoryInputSchema>;
 export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInputSchema>;
 export type CreateChatThreadInput = z.infer<typeof CreateChatThreadInputSchema>;
-export type SendChatMessageInput = z.infer<typeof SendChatMessageInputSchema>;
 
 export const FileEntrySchema = z.object({
   path: z.string(),

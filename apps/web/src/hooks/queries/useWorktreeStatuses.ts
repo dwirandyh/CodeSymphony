@@ -1,13 +1,17 @@
 import { useMemo, useRef } from "react";
 import { useQueries } from "@tanstack/react-query";
-import type { ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
+import type { ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
-import { aggregateWorktreeStatus, type WorktreeStatusSummary } from "../../pages/workspace/hooks/worktreeThreadStatus";
+import {
+  aggregateWorktreeStatus,
+  type WorktreeStatusSummary,
+  type WorktreeThreadUiStatus,
+} from "../../pages/workspace/hooks/worktreeThreadStatus";
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
 import { useThreadsByWorktreeIds } from "./useThreads";
 
-export function useWorktreeStatuses(repositories: Repository[]) {
+export function useWorktreeStatuses(repositories: Repository[], enabled = true) {
   const activeWorktreeIds = useMemo(
     () => buildRepositoryWorktreeIndex(repositories).activeWorktreeIds,
     [repositories],
@@ -27,14 +31,14 @@ export function useWorktreeStatuses(repositories: Repository[]) {
   const snapshotResult = useQueries({
     queries: stableThreadIds.map((threadId) => ({
       queryKey: queryKeys.threads.statusSnapshot(threadId),
-      queryFn: () => api.getThreadSnapshot(threadId),
-      enabled: threadId.length > 0,
+      queryFn: () => api.getThreadStatusSnapshot(threadId),
+      enabled: enabled && threadId.length > 0,
       staleTime: 15_000,
     })),
     combine: (results) => {
-      const snapshotsByThreadId: Record<string, ChatThreadSnapshot | null> = {};
+      const snapshotsByThreadId: Record<string, ChatThreadStatusSnapshot | null> = {};
       for (let i = 0; i < stableThreadIds.length; i++) {
-        snapshotsByThreadId[stableThreadIds[i]] = (results[i]?.data ?? null) as ChatThreadSnapshot | null;
+        snapshotsByThreadId[stableThreadIds[i]] = (results[i]?.data ?? null) as ChatThreadStatusSnapshot | null;
       }
       return snapshotsByThreadId;
     },
@@ -46,7 +50,7 @@ export function useWorktreeStatuses(repositories: Repository[]) {
       const summary = aggregateWorktreeStatus(
         threads.map((thread) => ({
           thread,
-          snapshot: snapshotResult[thread.id] ?? null,
+          status: (snapshotResult[thread.id]?.status ?? null) as WorktreeThreadUiStatus | null,
         })),
       );
 

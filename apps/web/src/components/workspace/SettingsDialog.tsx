@@ -1139,6 +1139,7 @@ export function SettingsDialog({
                           <div>
                             <label className="mb-0.5 block text-[10px] text-muted-foreground">Agent</label>
                             <select
+                              aria-label="Provider CLI Agent"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
                               value={providerAgent}
                               onChange={(e) => {
@@ -1154,6 +1155,7 @@ export function SettingsDialog({
                           <div>
                             <label className="mb-0.5 block text-[10px] text-muted-foreground">Provider Name</label>
                             <input
+                              aria-label="Provider Name"
                               type="text"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
                               placeholder='e.g. "z.ai", "OpenRouter"'
@@ -1164,6 +1166,7 @@ export function SettingsDialog({
                           <div>
                             <label className="mb-0.5 block text-[10px] text-muted-foreground">Model ID</label>
                             <input
+                              aria-label="Provider Model ID"
                               type="text"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
                               placeholder={providerModelPlaceholder}
@@ -1174,6 +1177,7 @@ export function SettingsDialog({
                           <div>
                             <label className="mb-0.5 block text-[10px] text-muted-foreground">Base URL (optional)</label>
                             <input
+                              aria-label="Provider Base URL"
                               type="text"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
                               placeholder={providerBaseUrlPlaceholder}
@@ -1184,6 +1188,7 @@ export function SettingsDialog({
                           <div>
                             <label className="mb-0.5 block text-[10px] text-muted-foreground">API Key (optional)</label>
                             <input
+                              aria-label="Provider API Key"
                               type="password"
                               className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
                               placeholder={providerApiKeyPlaceholder}

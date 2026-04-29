@@ -81,6 +81,52 @@ async function seedThreadWithMessages(messageCount: number): Promise<SeededThrea
   return { threadId: thread.id, messageIdBySeq };
 }
 
+async function seedThreadWithConversationRoles(
+  roles: Array<"user" | "assistant">,
+): Promise<SeededThread> {
+  const suffix = uniqueSuffix();
+  const repository = await prisma.repository.create({
+    data: {
+      name: `snapshot-coverage-conversation-${suffix}`,
+      rootPath: `/tmp/snapshot-coverage-conversation-${suffix}`,
+      defaultBranch: "main",
+    },
+  });
+
+  const worktree = await prisma.worktree.create({
+    data: {
+      repositoryId: repository.id,
+      branch: "main",
+      baseBranch: "main",
+      path: repository.rootPath,
+      status: "active",
+    },
+  });
+
+  const thread = await prisma.chatThread.create({
+    data: {
+      worktreeId: worktree.id,
+      title: "Snapshot Coverage Conversation",
+    },
+  });
+
+  const messageIdBySeq = new Map<number, string>();
+  for (let seq = 0; seq < roles.length; seq += 1) {
+    const role = roles[seq];
+    const message = await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq,
+        role,
+        content: `${role}-${seq}`,
+      },
+    });
+    messageIdBySeq.set(seq, message.id);
+  }
+
+  return { threadId: thread.id, messageIdBySeq };
+}
+
 async function insertEvents(
   threadId: string,
   events: Array<{ idx: number; type: ChatEventType; payload: Record<string, unknown> }>,
@@ -146,6 +192,30 @@ describe("chatService snapshot", () => {
 
     expect(snapshot.events).toHaveLength(100);
     expect(snapshot.timeline.newestIdx).toBe(100);
+  });
+
+  it("does not mark hydration pending when the thread fits entirely in the snapshot", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(),
+      modelProviderService: stubModelProviderService,
+    });
+
+    const { threadId, messageIdBySeq } = await seedThreadWithMessages(3);
+    await insertEvents(threadId, [
+      { idx: 1, type: "chat_completed", payload: { messageId: messageIdBySeq.get(1) } },
+      { idx: 2, type: "chat_completed", payload: { messageId: messageIdBySeq.get(2) } },
+      { idx: 3, type: "chat_completed", payload: { messageId: messageIdBySeq.get(3) } },
+    ]);
+
+    const snapshot = await chatService.listThreadSnapshot(threadId);
+
+    expect(snapshot.messages).toHaveLength(3);
+    expect(snapshot.events).toHaveLength(3);
+    expect(snapshot.timeline.summary.oldestRenderableHydrationPending).toBe(false);
+    expect(snapshot.timeline.newestSeq).toBe(3);
+    expect(snapshot.timeline.newestIdx).toBe(3);
   });
 
   it("returns empty snapshot for thread with no data", async () => {
