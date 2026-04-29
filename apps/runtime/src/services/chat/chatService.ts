@@ -465,18 +465,6 @@ async function resolveThreadSelection(
 
   const explicitModel = normalizeOptionalModelId(input.model);
   if (explicitModel) {
-    if (agent === "codex" && isBuiltinModelForAgent(agent, explicitModel)) {
-      const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
-      if (codexCliModel) {
-        return {
-          agent,
-          model: codexCliModel,
-          modelProviderId: null,
-          provider: null,
-        };
-      }
-    }
-
     return {
       agent,
       model: explicitModel,
@@ -2773,7 +2761,15 @@ export function createChatService(deps: RuntimeDeps) {
       }
     },
 
-    async generateCommitMessage(worktreePath: string, diff: string): Promise<string> {
+    async generateCommitMessage(
+      worktreePath: string,
+      diff: string,
+      input?: {
+        agent?: CliAgent | null;
+        model?: string | null;
+        modelProviderId?: string | null;
+      },
+    ): Promise<string> {
       const prompt = `You are an expert developer generating a commit message based on the following git diff.
 Follow the conventional commits format (e.g., feat: add feature X, fix: resolve issue Y).
 Return EXACTLY ONE LINE for the commit message. Do not include any quotes around the message.
@@ -2787,12 +2783,22 @@ ${diff.slice(0, MAX_DIFF_PREVIEW_CHARS)}
       let streamedOutput = "";
 
       try {
-        const result = await deps.claudeRunner({
+        const selection = await resolveThreadSelection(deps, {
+          agent: input?.agent,
+          model: input?.model,
+          modelProviderId: input?.modelProviderId,
+          preferActiveProvider: true,
+        });
+        const runner = getRunnerForAgent(deps, selection.agent);
+        const result = await runner({
           prompt,
           sessionId: null,
           cwd: worktreePath,
           abortController,
           permissionMode: "plan",
+          model: selection.model,
+          providerApiKey: selection.provider?.apiKey ?? undefined,
+          providerBaseUrl: selection.provider?.baseUrl ?? undefined,
           onText: (chunk) => {
             streamedOutput += chunk;
           },

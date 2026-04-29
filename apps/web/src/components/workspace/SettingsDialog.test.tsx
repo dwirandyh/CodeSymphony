@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
+import { AGENT_DEFAULTS_STORAGE_KEY } from "../../pages/workspace/agentDefaults";
 
 const apiMocks = vi.hoisted(() => ({
   updateRepositoryScripts: vi.fn(),
@@ -76,6 +77,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  window.localStorage.removeItem(AGENT_DEFAULTS_STORAGE_KEY);
   Object.defineProperty(window, "__TAURI_INTERNALS__", {
     value: undefined,
     configurable: true,
@@ -162,6 +164,19 @@ async function setInputValue(input: HTMLInputElement, value: string) {
   });
 }
 
+async function setSelectValue(select: HTMLSelectElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+  if (!valueSetter) {
+    throw new Error("Select value setter not available");
+  }
+
+  await act(async () => {
+    valueSetter.call(select, value);
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 describe("SettingsDialog", () => {
   it("renders nothing when closed", () => {
     act(() => {
@@ -211,6 +226,40 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Workspace");
     expect(document.body.textContent).toContain("Models");
     expect(document.body.textContent).toContain("Licenses");
+  });
+
+  it("renders Default Agent controls in the Models tab", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+
+    expect(document.body.textContent).toContain("Default Agent");
+    expect(document.body.textContent).toContain("Agent for new chats");
+    expect(document.body.textContent).toContain("Agent for commit");
+    expect(document.body.textContent).toContain("Agent for PR");
+  });
+
+  it("persists default agent selections to localStorage", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+    await openModelsTab();
+
+    const newChatAgentSelect = document.body.querySelector('select[aria-label="Agent for new chats CLI Agent"]') as HTMLSelectElement | null;
+    if (!newChatAgentSelect) {
+      throw new Error("Agent for new chats select not found");
+    }
+
+    await setSelectValue(newChatAgentSelect, "codex");
+
+    const newChatModelSelect = document.body.querySelector('select[aria-label="Agent for new chats model"]') as HTMLSelectElement | null;
+    if (!newChatModelSelect) {
+      throw new Error("Agent for new chats model select not found");
+    }
+
+    await setSelectValue(newChatModelSelect, "builtin::gpt-5.3-codex");
+
+    expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"agent\":\"codex\"");
+    expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"model\":\"gpt-5.3-codex\"");
   });
 
   it("reserves the macOS title bar area when running inside the desktop shell", async () => {
@@ -533,9 +582,7 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "opencode"),
-    ) as HTMLSelectElement | undefined;
+    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
     if (!agentSelect) {
       throw new Error("Agent select not found");
     }
@@ -544,10 +591,7 @@ describe("SettingsDialog", () => {
     expect(document.body.querySelector('input[placeholder=\'e.g. "claude-sonnet-4-6", "glm-4.7"\']')).not.toBeNull();
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
-    await act(async () => {
-      agentSelect.value = "codex";
-      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setSelectValue(agentSelect, "codex");
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']')).not.toBeNull();
@@ -557,10 +601,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts.");
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
-    await act(async () => {
-      agentSelect.value = "opencode";
-      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setSelectValue(agentSelect, "opencode");
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "openai/gpt-5" or "gpt-5-custom"\']')).not.toBeNull();
@@ -602,9 +643,7 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "opencode"),
-    ) as HTMLSelectElement | undefined;
+    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
     if (!agentSelect) {
       throw new Error("Agent select not found");
     }
@@ -656,23 +695,18 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "opencode"),
-    ) as HTMLSelectElement | undefined;
-    const providerNameInput = document.body.querySelector('input[placeholder=\'e.g. "z.ai", "OpenRouter"\']') as HTMLInputElement | null;
+    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
+    const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
     if (!agentSelect || !providerNameInput) {
       throw new Error("Provider form fields not found");
     }
 
-    await act(async () => {
-      agentSelect.value = "opencode";
-      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setSelectValue(agentSelect, "opencode");
     await flushEffects();
 
-    const modelIdInput = document.body.querySelector('input[placeholder=\'e.g. "openai/gpt-5" or "gpt-5-custom"\']') as HTMLInputElement | null;
-    const baseUrlInput = document.body.querySelector('input[placeholder="Leave empty when Model ID already uses provider/model"]') as HTMLInputElement | null;
-    const apiKeyInput = document.body.querySelector('input[placeholder="Only for custom OpenCode endpoints"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;
+    const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
+    const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
     if (!modelIdInput || !baseUrlInput || !apiKeyInput) {
       throw new Error("OpenCode test controls not found");
     }
