@@ -49,6 +49,12 @@ enum ChatMode {
   plan
 }
 
+enum ChatQueuedMessageStatus {
+  queued
+  dispatch_requested
+  dispatching
+}
+
 enum ChatThreadPermissionProfile {
   default
   review_git
@@ -121,6 +127,7 @@ model ChatThread {
   modelProvider ModelProvider? @relation(fields: [modelProviderId], references: [id], onDelete: SetNull)
   messages      ChatMessage[]
   events        ChatEvent[]
+  queuedMessages ChatQueuedMessage[]
 
   @@index([worktreeId])
   @@index([worktreeId, kind, createdAt])
@@ -155,6 +162,40 @@ model ChatAttachment {
 
   message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
   @@index([messageId])
+}
+
+model ChatQueuedMessage {
+  id                  String                  @id @default(cuid())
+  threadId            String
+  seq                 Int
+  content             String
+  mode                ChatMode                @default(default)
+  status              ChatQueuedMessageStatus @default(queued)
+  dispatchRequestedAt DateTime?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  thread      ChatThread               @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  attachments ChatQueuedAttachment[]
+
+  @@unique([threadId, seq])
+  @@index([threadId, status, dispatchRequestedAt, seq])
+}
+
+model ChatQueuedAttachment {
+  id              String   @id @default(cuid())
+  queuedMessageId  String
+  filename         String
+  mimeType         String
+  sizeBytes        Int
+  content          String
+  storagePath      String?
+  source           String
+  createdAt        DateTime @default(now())
+
+  queuedMessage ChatQueuedMessage @relation(fields: [queuedMessageId], references: [id], onDelete: Cascade)
+
+  @@index([queuedMessageId])
 }
 
 model ChatEvent {

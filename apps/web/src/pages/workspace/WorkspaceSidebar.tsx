@@ -4,37 +4,56 @@ import type { Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "../../components/workspace/RepositoryPanel";
 import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
-import type { useRepositoryManager } from "./hooks/useRepositoryManager";
 import type { RepositoryPanelDropPosition } from "./repositoryPanelPreferences";
 
-type RepoManager = ReturnType<typeof useRepositoryManager>;
-
 export const WorkspaceSidebar = memo(function WorkspaceSidebar({
-  repos,
-  orderedRepositories,
+  desktopApp = false,
+  repositories,
+  selectedRepositoryId,
+  selectedWorktreeId,
   hiddenRepositoryIds,
   expandedByRepo,
+  loadingRepos,
+  submittingRepo,
+  submittingWorktree,
+  enableRepositoryMetadata = true,
   isVisible = true,
   onOpenSettings,
+  onAttachRepository,
   onSelectRepository,
   onToggleRepositoryExpand,
   onSetRepositoryVisibility,
   onShowAllRepositories,
   onReorderRepositories,
+  onCreateWorktree,
   onSelectWorktree,
+  onDeleteWorktree,
+  onRenameWorktreeBranch,
+  onPrefetchWorktree,
 }: {
-  repos: RepoManager;
-  orderedRepositories: Repository[];
+  desktopApp?: boolean;
+  repositories: Repository[];
+  selectedRepositoryId: string | null;
+  selectedWorktreeId: string | null;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
+  loadingRepos: boolean;
+  submittingRepo: boolean;
+  submittingWorktree: boolean;
+  enableRepositoryMetadata?: boolean;
   isVisible?: boolean;
   onOpenSettings: () => void;
+  onAttachRepository: () => void;
   onSelectRepository: (repositoryId: string) => void;
   onToggleRepositoryExpand: (repositoryId: string, nextExpanded: boolean) => void;
   onSetRepositoryVisibility: (repositoryId: string, visible: boolean) => void;
   onShowAllRepositories: () => void;
   onReorderRepositories: (draggedRepositoryId: string, targetRepositoryId: string, position: RepositoryPanelDropPosition) => void;
+  onCreateWorktree: (repositoryId: string) => void;
   onSelectWorktree: (repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => void;
+  onDeleteWorktree: (worktreeId: string) => void;
+  onRenameWorktreeBranch: (worktreeId: string, newBranch: string) => void;
+  onPrefetchWorktree?: (worktreeId: string, preferredThreadId?: string | null) => void;
 }) {
   const { sidebarWidth, sidebarDragging, handleSidebarMouseDown, panelRef } = useSidebarResize(300);
 
@@ -43,8 +62,10 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
       <aside
         ref={panelRef}
         className={cn(
-          "mb-1 hidden min-h-0 shrink-0 flex-col overflow-hidden bg-card/75 p-2 sm:mb-2 lg:mb-0 lg:p-3",
-          isVisible ? "lg:flex" : "lg:hidden",
+          "mb-1 min-h-0 shrink-0 flex-col overflow-hidden bg-card/75 p-2 sm:mb-2 lg:mb-0 lg:p-3",
+          isVisible
+            ? desktopApp ? "flex" : "hidden lg:flex"
+            : "hidden",
         )}
         style={{ width: `${sidebarWidth}px` }}
         aria-hidden={isVisible ? undefined : "true"}
@@ -56,24 +77,26 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
 
         <div className="min-h-0 flex-1 overflow-hidden">
           <RepositoryPanel
-            repositories={orderedRepositories}
-            selectedRepositoryId={repos.selectedRepositoryId}
-            selectedWorktreeId={repos.selectedWorktreeId}
+            repositories={repositories}
+            selectedRepositoryId={selectedRepositoryId}
+            selectedWorktreeId={selectedWorktreeId}
+            enableMetadataQueries={enableRepositoryMetadata}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
-            loadingRepos={repos.loadingRepos}
-            submittingRepo={repos.submittingRepo}
-            submittingWorktree={repos.submittingWorktree}
-            onAttachRepository={repos.openFileBrowser}
+            loadingRepos={loadingRepos}
+            submittingRepo={submittingRepo}
+            submittingWorktree={submittingWorktree}
+            onAttachRepository={onAttachRepository}
             onSelectRepository={onSelectRepository}
             onToggleRepositoryExpand={onToggleRepositoryExpand}
             onSetRepositoryVisibility={onSetRepositoryVisibility}
             onShowAllRepositories={onShowAllRepositories}
             onReorderRepositories={onReorderRepositories}
-            onCreateWorktree={(repositoryId) => void repos.submitWorktree(repositoryId)}
+            onCreateWorktree={onCreateWorktree}
             onSelectWorktree={onSelectWorktree}
-            onDeleteWorktree={(worktreeId) => void repos.removeWorktree(worktreeId)}
-            onRenameWorktreeBranch={(worktreeId, newBranch) => void repos.renameWorktreeBranch(worktreeId, newBranch)}
+            onDeleteWorktree={onDeleteWorktree}
+            onRenameWorktreeBranch={onRenameWorktreeBranch}
+            onPrefetchWorktree={onPrefetchWorktree}
           />
         </div>
 
@@ -91,7 +114,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
 
       {/* ── Sidebar resize handle ── */}
       {isVisible ? (
-        <div className="hidden relative w-0 lg:block" aria-hidden="true">
+        <div className={cn("relative w-0", desktopApp ? "block" : "hidden lg:block")} aria-hidden="true">
           <button
             type="button"
             className={`group absolute inset-y-0 -left-1.5 flex w-3 cursor-col-resize items-center justify-center transition-colors ${sidebarDragging ? "bg-primary/10" : ""

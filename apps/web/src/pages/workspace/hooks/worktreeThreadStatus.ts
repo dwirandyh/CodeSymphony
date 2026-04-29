@@ -1,14 +1,16 @@
-import type { ChatEvent, ChatThread, ChatThreadSnapshot } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatThread, ChatThreadSnapshot, ChatThreadStatus } from "@codesymphony/shared-types";
 import type { PendingPermissionRequest, PendingPlan, PendingQuestionRequest, QuestionItem } from "../types";
 import { shortenReadTargetForDisplay } from "../exploreUtils";
 import { isMetadataToolEvent, normalizePlanCreatedEvent } from "../eventUtils";
 
-export type WorktreeThreadUiStatus = "waiting_approval" | "review_plan" | "running" | "idle";
+export type WorktreeThreadUiStatus = ChatThreadStatus;
 
 export type WorktreeStatusSummary = {
   kind: WorktreeThreadUiStatus;
   threadId: string | null;
 };
+
+const orderedEventsCache = new WeakMap<ChatEvent[], ChatEvent[]>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -39,7 +41,21 @@ function extractEditTarget(toolName: string, toolInput: unknown): string | null 
 }
 
 function toOrderedEvents(events: ChatEvent[]): ChatEvent[] {
-  return [...events].sort((a, b) => a.idx - b.idx);
+  const cached = orderedEventsCache.get(events);
+  if (cached) {
+    return cached;
+  }
+
+  let orderedEvents = events;
+  for (let index = 1; index < events.length; index += 1) {
+    if (events[index - 1]!.idx > events[index]!.idx) {
+      orderedEvents = [...events].sort((a, b) => a.idx - b.idx);
+      break;
+    }
+  }
+
+  orderedEventsCache.set(events, orderedEvents);
+  return orderedEvents;
 }
 
 export function hasRunningAssistantActivity(events: ChatEvent[]): boolean {
@@ -364,13 +380,17 @@ const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [
 ];
 
 export function aggregateWorktreeStatus(
-  threadSummaries: Array<{ thread: ChatThread; snapshot: ChatThreadSnapshot | null | undefined }>,
+  threadSummaries: Array<{
+    thread: ChatThread;
+    snapshot?: ChatThreadSnapshot | null | undefined;
+    status?: WorktreeThreadUiStatus | null | undefined;
+  }>,
 ): WorktreeStatusSummary {
   let bestStatus: WorktreeThreadUiStatus = "idle";
   let bestThreadId: string | null = null;
 
   for (const summary of threadSummaries) {
-    const status = deriveThreadUiStatus(summary.thread, summary.snapshot);
+    const status = summary.status ?? deriveThreadUiStatus(summary.thread, summary.snapshot);
     if (WORKTREE_STATUS_PRIORITY.indexOf(status) < WORKTREE_STATUS_PRIORITY.indexOf(bestStatus)) {
       bestStatus = status;
       bestThreadId = summary.thread.id;

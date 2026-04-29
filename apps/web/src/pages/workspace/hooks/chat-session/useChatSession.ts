@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
 import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
 import type {
@@ -14,6 +14,7 @@ import type {
   ChatEvent,
   ChatMessage,
   ChatMode,
+  ChatQueuedMessage,
   ChatThread,
   ChatThreadPermissionMode,
   ChatTimelineItem,
@@ -24,13 +25,16 @@ import type {
   UpdateChatThreadAgentSelectionInput,
 } from "@codesymphony/shared-types";
 import { api } from "../../../../lib/api";
+import { debugLog } from "../../../../lib/debugLog";
 import {
   disposeAllThreadCollections,
   disposeThreadCollections,
+  getThreadCollectionCounts,
   getThreadCollections,
   getThreadMessagesCollection,
   pruneThreadCollections,
 } from "../../../../collections/threadCollections";
+import { getThreadsCollection, toPlainChatThread } from "../../../../collections/threads";
 import { hydrateThreadFromSnapshot } from "../../../../collections/threadHydrator";
 import {
   allocateNextThreadMessageSeq,
@@ -43,6 +47,7 @@ import {
   setThreadLastMessageSeq,
 } from "../../../../collections/threadStreamState";
 import { pushRenderDebug } from "../../../../lib/renderDebug";
+import { isThreadNavigationPerfEnabled, pushThreadNavigationPerf } from "../../../../lib/threadNavigationPerf";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreads } from "../../../../hooks/queries/useThreads";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
@@ -67,8 +72,6 @@ import {
   buildSnapshotKey,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
 } from "./hydrationUtils";
-import {
-} from "./messageEventMerge";
 import { areMessagesEqual } from "../messageMerge";
 import {
   applyThreadModeUpdate,
@@ -82,6 +85,62 @@ const DEFAULT_THREAD_TITLE = "New Thread";
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_EVENTS: ChatEvent[] = [];
 const pendingAutoCreateWorktreeIds = new Set<string>();
+
+type ThreadNavigationPerfSession = {
+  navId: string;
+  threadId: string;
+  worktreeId: string | null;
+  startedAtMs: number;
+  fromThreadId: string | null;
+  requestedThreadId: string | null;
+  snapshotStatusSignature: string | null;
+  renderSignature: string | null;
+  localStateLogged: boolean;
+  readyLogged: boolean;
+};
+
+function summarizeThreadCollectionState(params: {
+  threadId: string | null;
+  messages: ChatMessage[];
+  events: ChatEvent[];
+}) {
+  const firstMessage = params.messages[0] ?? null;
+  const lastMessage = params.messages[params.messages.length - 1] ?? null;
+  const firstEvent = params.events[0] ?? null;
+  const lastEvent = params.events[params.events.length - 1] ?? null;
+
+  return {
+    threadId: params.threadId,
+    messagesCount: params.messages.length,
+    eventsCount: params.events.length,
+    firstMessageId: firstMessage?.id ?? null,
+    firstMessageSeq: firstMessage?.seq ?? null,
+    lastMessageId: lastMessage?.id ?? null,
+    lastMessageSeq: lastMessage?.seq ?? null,
+    firstEventIdx: firstEvent?.idx ?? null,
+    lastEventIdx: lastEvent?.idx ?? null,
+  };
+}
+
+function getPerfNow(): number {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+
+  return Date.now();
+}
+
+function roundPerfMs(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function buildThreadNavigationPerfNavId(threadId: string): string {
+  return `thread-nav:${threadId}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getThreadNavigationPerfElapsedMs(session: ThreadNavigationPerfSession): number {
+  return roundPerfMs(getPerfNow() - session.startedAtMs);
+}
 
 export function resetPendingAutoCreateWorktreesForTest() {
   pendingAutoCreateWorktreeIds.clear();
@@ -111,6 +170,25 @@ function mergeTrackedThreads(params: {
   }
 
   return mergedThreads;
+}
+
+export function resolveWorktreeSwitchSeed(params: {
+  cachedThreads: ChatThread[];
+  requestedThreadId: string | null;
+  optimisticCreatedThreadIds: Set<string>;
+  locallyDeletedThreadIds: Set<string>;
+}): { threads: ChatThread[]; selectedThreadId: string | null } {
+  const threads = mergeTrackedThreads({
+    queriedThreads: params.cachedThreads,
+    currentThreads: [],
+    optimisticCreatedThreadIds: params.optimisticCreatedThreadIds,
+    locallyDeletedThreadIds: params.locallyDeletedThreadIds,
+  });
+
+  return {
+    threads,
+    selectedThreadId: params.requestedThreadId ?? resolvePreferredThreadId(threads),
+  };
 }
 
 function applyThreadActiveUpdate(
@@ -215,6 +293,52 @@ function buildThreadSelectionInput(thread: ChatThread | null): Pick<CreateChatTh
   };
 }
 
+function getCachedThreadsForWorktree(
+  queryClient: ReturnType<typeof useQueryClient>,
+  worktreeId: string,
+): ChatThread[] {
+  return (getThreadsCollection(queryClient, worktreeId).toArray as ChatThread[]).map((thread) => toPlainChatThread(thread));
+}
+
+function shouldDelayRemoteBootstrapForLocalThread(params: {
+  selectedThreadId: string | null;
+  optimisticCreatedThreadIds: Set<string>;
+  waitingAssistant: { threadId: string; afterIdx: number } | null;
+}): boolean {
+  const { selectedThreadId, optimisticCreatedThreadIds, waitingAssistant } = params;
+  if (!selectedThreadId || !optimisticCreatedThreadIds.has(selectedThreadId)) {
+    return false;
+  }
+
+  return (
+    getThreadLastEventIdx(selectedThreadId) == null
+    && getThreadLastMessageSeq(selectedThreadId) == null
+    && waitingAssistant?.threadId !== selectedThreadId
+  );
+}
+
+function upsertQueuedMessage(
+  current: ChatQueuedMessage[] | undefined,
+  queuedMessage: ChatQueuedMessage,
+): ChatQueuedMessage[] {
+  if (!current) {
+    return [queuedMessage];
+  }
+
+  const existingIndex = current.findIndex((message) => message.id === queuedMessage.id);
+  if (existingIndex === -1) {
+    return [...current, queuedMessage];
+  }
+
+  const updated = [...current];
+  updated[existingIndex] = queuedMessage;
+  return updated;
+}
+
+function hasCanonicalThreadSnapshot(snapshot: ChatTimelineSnapshot | null | undefined): boolean {
+  return snapshot != null && snapshot.collectionsIncluded !== false;
+}
+
 function summarizeTimelineItems(items: ChatTimelineItem[]): {
   total: number;
   signatures: string[];
@@ -301,6 +425,16 @@ function toPlainChatEvent(event: ChatEvent): ChatEvent {
   };
 }
 
+function cloneSortedIfNeeded<T>(rows: T[], compare: (left: T, right: T) => number): T[] {
+  for (let index = 1; index < rows.length; index += 1) {
+    if (compare(rows[index - 1], rows[index]) > 0) {
+      return [...rows].sort(compare);
+    }
+  }
+
+  return rows;
+}
+
 function isSnapshotFreshEnoughForAuthoritativeTimeline(params: {
   snapshot: ChatTimelineSnapshot | null | undefined;
   messages: ChatMessage[];
@@ -320,6 +454,76 @@ function isSnapshotFreshEnoughForAuthoritativeTimeline(params: {
   const messageCoverage = localNewestSeq == null || (snapshotNewestSeq != null && snapshotNewestSeq >= localNewestSeq);
 
   return eventCoverage && messageCoverage;
+}
+
+function doesSnapshotMatchLocalLiveState(params: {
+  snapshot: ChatTimelineSnapshot | null | undefined;
+  messages: ChatMessage[];
+  events: ChatEvent[];
+}): boolean {
+  const { snapshot, messages, events } = params;
+  if (!snapshot || snapshot.collectionsIncluded === false) {
+    return false;
+  }
+
+  if (snapshot.messages.length !== messages.length || snapshot.events.length !== events.length) {
+    return false;
+  }
+
+  const snapshotFirstMessage = snapshot.messages[0] ?? null;
+  const snapshotLastMessage = snapshot.messages[snapshot.messages.length - 1] ?? null;
+  const localFirstMessage = messages[0] ?? null;
+  const localLastMessage = messages[messages.length - 1] ?? null;
+  if (
+    (snapshotFirstMessage?.id ?? null) !== (localFirstMessage?.id ?? null)
+    || (snapshotFirstMessage?.seq ?? null) !== (localFirstMessage?.seq ?? null)
+    || (snapshotLastMessage?.id ?? null) !== (localLastMessage?.id ?? null)
+    || (snapshotLastMessage?.seq ?? null) !== (localLastMessage?.seq ?? null)
+  ) {
+    return false;
+  }
+
+  const snapshotFirstEvent = snapshot.events[0] ?? null;
+  const snapshotLastEvent = snapshot.events[snapshot.events.length - 1] ?? null;
+  const localFirstEvent = events[0] ?? null;
+  const localLastEvent = events[events.length - 1] ?? null;
+  if (
+    (snapshotFirstEvent?.id ?? null) !== (localFirstEvent?.id ?? null)
+    || (snapshotFirstEvent?.idx ?? null) !== (localFirstEvent?.idx ?? null)
+    || (snapshotLastEvent?.id ?? null) !== (localLastEvent?.id ?? null)
+    || (snapshotLastEvent?.idx ?? null) !== (localLastEvent?.idx ?? null)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function doesSnapshotCoverLocalHead(params: {
+  snapshot: ChatTimelineSnapshot | null | undefined;
+  messages: ChatMessage[];
+  events: ChatEvent[];
+}): boolean {
+  const { snapshot, messages, events } = params;
+  if (!snapshot || snapshot.collectionsIncluded === false) {
+    return true;
+  }
+
+  const snapshotOldestMessageSeq = snapshot.messages[0]?.seq ?? null;
+  const snapshotOldestEventIdx = snapshot.events[0]?.idx ?? null;
+  const localOldestMessageSeq = messages[0]?.seq ?? null;
+  const localOldestEventIdx = events[0]?.idx ?? null;
+
+  const messageHeadCovered =
+    localOldestMessageSeq == null
+    || snapshotOldestMessageSeq == null
+    || snapshotOldestMessageSeq <= localOldestMessageSeq;
+  const eventHeadCovered =
+    localOldestEventIdx == null
+    || snapshotOldestEventIdx == null
+    || snapshotOldestEventIdx <= localOldestEventIdx;
+
+  return messageHeadCovered && eventHeadCovered;
 }
 
 export function deriveSelectedThreadUiState(params: {
@@ -357,9 +561,15 @@ export function useChatSession(
   const queryClient = useQueryClient();
   const repositoryId = options?.repositoryId ?? null;
   const timelineEnabled = options?.timelineEnabled !== false;
+  const requestedThreadSelectionDeferred =
+    options?.desiredWorktreeId != null
+    && options.desiredWorktreeId !== selectedWorktreeId;
+  const requestedThreadId = requestedThreadSelectionDeferred
+    ? null
+    : options?.desiredThreadId ?? null;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(null);
+  const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(() => requestedThreadId);
 
   const [sendingMessage, setSendingMessage] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
@@ -388,6 +598,8 @@ export function useChatSession(
   const restoredWaitingThreadIdsRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
   const pendingAgentSelectionUpdatesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const activeThreadNavigationPerfRef = useRef<ThreadNavigationPerfSession | null>(null);
+  const previousThreadNavigationPerfThreadIdRef = useRef<string | null>(null);
   const lastThreadSelectionRef = useRef<{
     worktreeId: string;
     agent: CliAgent;
@@ -407,7 +619,7 @@ export function useChatSession(
     }
   }
 
-  const { data: queriedThreads } = useThreads(selectedWorktreeId);
+  const { data: queriedThreads, isLoading: queriedThreadsLoading } = useThreads(selectedWorktreeId);
 
   const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
 
@@ -447,12 +659,17 @@ export function useChatSession(
     }
 
     if (worktreeChanged) {
+      const worktreeSwitchSeed = resolveWorktreeSwitchSeed({
+        cachedThreads: getCachedThreadsForWorktree(queryClient, selectedWorktreeId),
+        requestedThreadId,
+        optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+        locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
+      });
+
       setWaitingAssistant(null);
-      setThreads([]);
-      setSelectedThreadId(null);
+      setThreads(worktreeSwitchSeed.threads);
+      setSelectedThreadId(worktreeSwitchSeed.selectedThreadId);
       pendingAgentSelectionUpdatesRef.current.clear();
-      disposeAllThreadCollections();
-      clearAllThreadStreamState();
       setPendingComposerPermissionMode("default");
     }
 
@@ -495,19 +712,33 @@ export function useChatSession(
       locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
     });
 
+    if (requestedThreadSelectionDeferred) {
+      return;
+    }
+
     if (queriedThreads.length > 0 || trackedThreads.length > 0) {
       pendingAutoCreateWorktreeIds.delete(selectedWorktreeId);
     }
 
-    const requestedThreadId = options?.desiredThreadId ?? null;
     const requestedThreadIdChanged = prevRequestedThreadIdRef.current !== requestedThreadId;
 
     if (requestedThreadIdChanged) {
       prevRequestedThreadIdRef.current = requestedThreadId;
     }
 
+    const waitingForInitialThreads =
+      queriedThreadsLoading
+      && queriedThreads.length === 0
+      && trackedThreads.length === 0;
+
+    if (waitingForInitialThreads) {
+      return;
+    }
+
     const shouldAutoCreateInitialThread =
-      queriedThreads.length === 0
+      !queriedThreadsLoading
+      && queriedThreads != null
+      && queriedThreads.length === 0
       && trackedThreads.length === 0
       && closingThreadId == null
       && !pendingAutoCreateWorktreeIds.has(selectedWorktreeId);
@@ -591,7 +822,15 @@ export function useChatSession(
     if (selectedThreadId !== nextThreadId) {
       setSelectedThreadId(nextThreadId);
     }
-  }, [closingThreadId, options?.desiredThreadId, pendingComposerPermissionMode, queriedThreads, selectedThreadId, selectedWorktreeId]);
+  }, [
+    closingThreadId,
+    pendingComposerPermissionMode,
+    queriedThreads,
+    requestedThreadId,
+    requestedThreadSelectionDeferred,
+    selectedThreadId,
+    selectedWorktreeId,
+  ]);
 
   useEffect(() => {
     if (!selectedThreadId) return;
@@ -617,29 +856,132 @@ export function useChatSession(
     [selectedThreadIdForData],
   );
   const messages = useMemo(
-    () => (liveMessages ? liveMessages.map((message) => toPlainChatMessage(message as ChatMessage)) : EMPTY_MESSAGES),
+    () => {
+      if (!liveMessages) {
+        return EMPTY_MESSAGES;
+      }
+
+      const plainMessages = liveMessages.map((message) => toPlainChatMessage(message as ChatMessage));
+      return cloneSortedIfNeeded(plainMessages, (left, right) => left.seq - right.seq);
+    },
     [liveMessages],
   );
   const events = useMemo(
-    () => (liveEvents ? liveEvents.map((event) => toPlainChatEvent(event as ChatEvent)) : EMPTY_EVENTS),
+    () => {
+      if (!liveEvents) {
+        return EMPTY_EVENTS;
+      }
+
+      const plainEvents = liveEvents.map((event) => toPlainChatEvent(event as ChatEvent));
+      return cloneSortedIfNeeded(plainEvents, (left, right) => left.idx - right.idx);
+    },
     [liveEvents],
   );
-  const hasPendingPermissionRequests = derivePendingPermissionRequests(events).length > 0;
-  const hasPendingQuestionRequests = derivePendingQuestionRequests(events).length > 0;
-  const pendingPlan = derivePendingPlan(events);
-  const hasPendingPlan = pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan);
-  const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
-  const { selectedThreadUiStatus, composerDisabled } = deriveSelectedThreadUiState({
-    selectedThreadId,
-    threads,
+  useEffect(() => {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    debugLog("thread.timeline.state", "selectedThread.collections.changed", summarizeThreadCollectionState({
+      threadId: selectedThreadId,
+      messages,
+      events,
+    }));
+  }, [
     events,
-    sendingMessage,
-    waitingAssistant,
-  });
-  const selectedThreadIsRunning = selectedThreadUiStatus === "running";
+    messages,
+    selectedThreadId,
+  ]);
   const selectedThread = selectedThreadId
     ? threadByIdRef.current.get(selectedThreadId) ?? null
     : null;
+  const pendingPermissionRequests = useMemo(
+    () => derivePendingPermissionRequests(events),
+    [events],
+  );
+  const pendingQuestionRequests = useMemo(
+    () => derivePendingQuestionRequests(events),
+    [events],
+  );
+  const pendingPlan = useMemo(
+    () => derivePendingPlan(events),
+    [events],
+  );
+  const eventDerivedThreadRunning = useMemo(
+    () => hasRunningAssistantActivity(events),
+    [events],
+  );
+  const hasPendingPermissionRequests = pendingPermissionRequests.length > 0;
+  const hasPendingQuestionRequests = pendingQuestionRequests.length > 0;
+  const hasPendingPlan = pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan);
+  const hasPendingUserGate = hasPendingPermissionRequests || hasPendingQuestionRequests || hasPendingPlan;
+  const selectedThreadUiStatus = useMemo<WorktreeThreadUiStatus>(() => {
+    const optimisticThreadRunning =
+      selectedThreadId != null
+      && (sendingMessage || waitingAssistant?.threadId === selectedThreadId);
+
+    if (hasPendingPermissionRequests || hasPendingQuestionRequests) {
+      return "waiting_approval";
+    }
+
+    if (pendingPlan?.status === "pending" && isPlanReviewReady(events, pendingPlan)) {
+      return "review_plan";
+    }
+
+    if (Boolean(selectedThread?.active) || optimisticThreadRunning || eventDerivedThreadRunning) {
+      return "running";
+    }
+
+    return "idle";
+  }, [
+    eventDerivedThreadRunning,
+    events,
+    hasPendingPermissionRequests,
+    hasPendingQuestionRequests,
+    pendingPlan,
+    selectedThread?.active,
+    selectedThreadId,
+    sendingMessage,
+    waitingAssistant,
+  ]);
+  const composerDisabled =
+    !selectedThreadId
+    || sendingMessage
+    || (selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running");
+  const selectedThreadIsRunning = selectedThreadUiStatus === "running";
+  const selectedThreadCreatedLocally =
+    selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
+  const shouldDelaySelectedThreadRemoteBootstrap = shouldDelayRemoteBootstrapForLocalThread({
+    selectedThreadId,
+    optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+    waitingAssistant,
+  });
+  const selectedThreadHasLocalState =
+    selectedThreadId != null && (messages.length > 0 || events.length > 0);
+  const selectedThreadHasAppliedSnapshot =
+    selectedThreadId != null && getThreadLastAppliedSnapshotKey(selectedThreadId) != null;
+  const selectedThreadHasCompleteLocalHistory =
+    selectedThreadHasLocalState || selectedThreadHasAppliedSnapshot;
+  const shouldUseLocalCompleteThreadCache =
+    selectedThreadHasCompleteLocalHistory
+    // Local collections are only safe to trust once assistant activity has fully settled.
+    && !eventDerivedThreadRunning
+    && selectedThread?.active !== true
+    && waitingAssistant?.threadId !== selectedThreadId;
+  const snapshotBootstrapThreadId =
+    shouldDelaySelectedThreadRemoteBootstrap
+      ? null
+      : selectedThreadIdForData;
+  const remoteBootstrapThreadId =
+    shouldDelaySelectedThreadRemoteBootstrap || shouldUseLocalCompleteThreadCache
+      ? null
+      : selectedThreadIdForData;
+  const shouldFetchThreadSnapshot = !shouldUseLocalCompleteThreadCache;
+  const isThreadHistoryLocallyComplete = useCallback((threadId: string) => {
+    const counts = getThreadCollectionCounts(threadId);
+    return getThreadLastAppliedSnapshotKey(threadId) != null
+      || (counts != null && (counts.messagesCount > 0 || counts.eventsCount > 0));
+  }, []);
   if (selectedThread && selectedWorktreeId && selectedThread.worktreeId === selectedWorktreeId) {
     const selectedThreadAgent = selectedThread.agent ?? "claude";
     lastThreadSelectionRef.current = {
@@ -659,10 +1001,17 @@ export function useChatSession(
     ? "plan"
     : selectedThread?.mode ?? "default";
   const composerPermissionMode = selectedThread?.permissionMode ?? pendingComposerPermissionMode;
-  const composerModeLocked = selectedThreadUiStatus !== "idle";
+  const composerModeLocked = selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running";
   const selectedThreadIsPrMr = !!selectedThreadId && threads.some(
     (thread) => thread.id === selectedThreadId && thread.kind === "review",
   );
+  const {
+    data: queuedMessages = [],
+  } = useQuery({
+    queryKey: selectedThreadId ? queryKeys.threads.queue(selectedThreadId) : ["threads", "__no_thread__", "queue"],
+    queryFn: () => api.listQueuedMessages(selectedThreadId!),
+    enabled: selectedThreadId != null && !shouldDelaySelectedThreadRemoteBootstrap,
+  });
 
   useEffect(() => {
     if (!selectedThreadId || waitingAssistant?.threadId !== selectedThreadId) {
@@ -688,7 +1037,159 @@ export function useChatSession(
     data: queriedThreadSnapshot,
     isLoading: threadSnapshotLoading,
     isFetching: threadSnapshotFetching,
-  } = useThreadSnapshot(selectedThreadIdForData);
+  } = useThreadSnapshot(snapshotBootstrapThreadId, {
+    enabled: shouldFetchThreadSnapshot,
+  });
+  const threadNavigationPerfEnabled = isThreadNavigationPerfEnabled();
+
+  useEffect(() => {
+    if (threadNavigationPerfEnabled) {
+      return;
+    }
+
+    activeThreadNavigationPerfRef.current = null;
+  }, [threadNavigationPerfEnabled]);
+
+  useEffect(() => {
+    const previousThreadId = previousThreadNavigationPerfThreadIdRef.current;
+    if (previousThreadId === selectedThreadId) {
+      return;
+    }
+
+    previousThreadNavigationPerfThreadIdRef.current = selectedThreadId;
+
+    if (!threadNavigationPerfEnabled || !selectedThreadId) {
+      activeThreadNavigationPerfRef.current = null;
+      return;
+    }
+
+    const session: ThreadNavigationPerfSession = {
+      navId: buildThreadNavigationPerfNavId(selectedThreadId),
+      threadId: selectedThreadId,
+      worktreeId: selectedWorktreeId,
+      startedAtMs: getPerfNow(),
+      fromThreadId: previousThreadId,
+      requestedThreadId,
+      snapshotStatusSignature: null,
+      renderSignature: null,
+      localStateLogged: false,
+      readyLogged: false,
+    };
+    activeThreadNavigationPerfRef.current = session;
+
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "selection.start",
+      threadId: selectedThreadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        fromThreadId: previousThreadId,
+        requestedThreadId,
+        localMessageCount: messages.length,
+        localEventCount: events.length,
+        selectedThreadCreatedLocally,
+        shouldDelaySelectedThreadRemoteBootstrap,
+        shouldUseLocalCompleteThreadCache,
+        snapshotBootstrapThreadId,
+        remoteBootstrapThreadId,
+        shouldFetchThreadSnapshot,
+        snapshotLoading: threadSnapshotLoading,
+        snapshotFetching: threadSnapshotFetching,
+        hasCachedSnapshot: queriedThreadSnapshot != null,
+      },
+    });
+  }, [
+    events.length,
+    messages.length,
+    queriedThreadSnapshot,
+    remoteBootstrapThreadId,
+    requestedThreadId,
+    selectedThreadCreatedLocally,
+    selectedThreadId,
+    selectedWorktreeId,
+    shouldDelaySelectedThreadRemoteBootstrap,
+    shouldFetchThreadSnapshot,
+    shouldUseLocalCompleteThreadCache,
+    snapshotBootstrapThreadId,
+    threadNavigationPerfEnabled,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+  ]);
+
+  useEffect(() => {
+    if (!threadNavigationPerfEnabled) {
+      return;
+    }
+
+    const session = activeThreadNavigationPerfRef.current;
+    if (!session || session.threadId !== selectedThreadId) {
+      return;
+    }
+
+    const snapshotKey = queriedThreadSnapshot ? buildSnapshotKey(queriedThreadSnapshot) : null;
+    const signature = queriedThreadSnapshot
+      ? `snapshot:${snapshotKey ?? "unknown"}`
+      : `state:${remoteBootstrapThreadId ?? "none"}:${threadSnapshotLoading ? "1" : "0"}:${threadSnapshotFetching ? "1" : "0"}`;
+
+    if (session.snapshotStatusSignature === signature) {
+      return;
+    }
+
+    session.snapshotStatusSignature = signature;
+
+    if (queriedThreadSnapshot) {
+      pushThreadNavigationPerf({
+        navId: session.navId,
+        event: "snapshot.received",
+        threadId: session.threadId,
+        worktreeId: selectedWorktreeId,
+        data: {
+          atMs: getThreadNavigationPerfElapsedMs(session),
+          snapshotKey,
+          snapshotBootstrapThreadId,
+          remoteBootstrapThreadId,
+          shouldFetchThreadSnapshot,
+          snapshotMessageCount: queriedThreadSnapshot.messages.length,
+          snapshotEventCount: queriedThreadSnapshot.events.length,
+          snapshotTimelineItemCount: queriedThreadSnapshot.timelineItems.length,
+          newestIdx: queriedThreadSnapshot.newestIdx,
+          newestSeq: queriedThreadSnapshot.newestSeq,
+          snapshotLoading: threadSnapshotLoading,
+          snapshotFetching: threadSnapshotFetching,
+        },
+      });
+      return;
+    }
+
+    if (!threadSnapshotLoading && !threadSnapshotFetching) {
+      return;
+    }
+
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "snapshot.pending",
+      threadId: session.threadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        atMs: getThreadNavigationPerfElapsedMs(session),
+        snapshotBootstrapThreadId,
+        remoteBootstrapThreadId,
+        shouldFetchThreadSnapshot,
+        snapshotLoading: threadSnapshotLoading,
+        snapshotFetching: threadSnapshotFetching,
+      },
+    });
+  }, [
+    threadNavigationPerfEnabled,
+    queriedThreadSnapshot,
+    remoteBootstrapThreadId,
+    selectedThreadId,
+    selectedWorktreeId,
+    shouldFetchThreadSnapshot,
+    snapshotBootstrapThreadId,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+  ]);
 
   useEffect(() => {
     const threadChanged = prevSeedThreadRef.current !== selectedThreadId;
@@ -735,14 +1236,58 @@ export function useChatSession(
       selectedThread?.active !== true
       && waitingAssistant?.threadId !== selectedThreadId
       && !hasPendingUserGate;
-    const shouldReplaceSnapshotSeed = threadChanged
+    const snapshotCoversLocalHead = doesSnapshotCoverLocalHead({
+      snapshot: queriedThreadSnapshot,
+      messages,
+      events,
+    });
+    const shouldReplaceSnapshotSeed = (threadChanged && snapshotCoversLocalHead)
       || (queriedThreadSnapshot.messages.length === 0 && queriedThreadSnapshot.events.length === 0)
-      || snapshotCanAuthoritativelyReplaceLocalState;
+      || (snapshotCanAuthoritativelyReplaceLocalState && snapshotCoversLocalHead);
 
-    hydrateThreadFromSnapshot({
+    const perfSession = activeThreadNavigationPerfRef.current;
+    const hydrateStartedAtMs = getPerfNow();
+    const hydrationResult = hydrateThreadFromSnapshot({
       threadId: selectedThreadId,
       snapshot: queriedThreadSnapshot,
       mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
+    });
+    const hydrateDurationMs = roundPerfMs(getPerfNow() - hydrateStartedAtMs);
+
+    if (threadNavigationPerfEnabled && perfSession?.threadId === selectedThreadId) {
+      pushThreadNavigationPerf({
+        navId: perfSession.navId,
+        event: "snapshot.hydrated",
+        threadId: selectedThreadId,
+        worktreeId: selectedWorktreeId,
+        data: {
+          atMs: getThreadNavigationPerfElapsedMs(perfSession),
+          durationMs: hydrateDurationMs,
+          mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
+          seedReason: seedDecision.reason,
+          snapshotKey: seedDecision.snapshotKey,
+          snapshotCanAuthoritativelyReplaceLocalState,
+          localLatestEventIdx,
+          localLatestMessageSeq,
+          snapshotMessageCount: queriedThreadSnapshot.messages.length,
+          snapshotEventCount: queriedThreadSnapshot.events.length,
+          hydrationTiming: hydrationResult.timing,
+        },
+      });
+    }
+
+    debugLog("thread.timeline.state", "snapshot.hydrated", {
+      threadId: selectedThreadId,
+      mode: shouldReplaceSnapshotSeed ? "replace" : "merge",
+      seedReason: seedDecision.reason,
+      snapshotKey: seedDecision.snapshotKey,
+      snapshotMessageCount: queriedThreadSnapshot.messages.length,
+      snapshotEventCount: queriedThreadSnapshot.events.length,
+      snapshotTimelineItemCount: queriedThreadSnapshot.timelineItems.length,
+      snapshotCoversLocalHead,
+      localLatestEventIdx,
+      localLatestMessageSeq,
+      hydrationTiming: hydrationResult.timing,
     });
 
     const latestMetadata = extractLatestThreadMetadata(queriedThreadSnapshot.events);
@@ -754,7 +1299,17 @@ export function useChatSession(
     }
 
     setThreadLastAppliedSnapshotKey(selectedThreadId, seedDecision.snapshotKey);
-  }, [hasPendingUserGate, messages, onBranchRenamed, queriedThreadSnapshot, selectedThread?.active, selectedThreadId, selectedWorktreeId, waitingAssistant]);
+  }, [
+    hasPendingUserGate,
+    messages,
+    onBranchRenamed,
+    queriedThreadSnapshot,
+    selectedThread?.active,
+    selectedThreadId,
+    selectedWorktreeId,
+    threadNavigationPerfEnabled,
+    waitingAssistant,
+  ]);
 
   useEffect(() => {
     pruneThreadCollections({
@@ -944,25 +1499,20 @@ export function useChatSession(
   }
 
   useEffect(() => {
+    const selectionBootstrapPending = selectedThreadId == null && requestedThreadId != null;
+    if (selectionBootstrapPending) {
+      return;
+    }
+
     const willNotify = prevThreadIdRef.current !== selectedThreadId;
     if (willNotify) {
       prevThreadIdRef.current = selectedThreadId;
       options?.onThreadChange?.(selectedThreadId);
     }
-  }, [selectedThreadId]);
-
-  useEffect(() => {
-    if (!selectedWorktreeId || !selectedThreadId) {
-      return;
-    }
-
-    // Thread selection is a sync point: refresh the worktree thread list so
-    // `thread.active` does not linger from stale client cache.
-    void queryClient.invalidateQueries({ queryKey: queryKeys.threads.list(selectedWorktreeId) });
-  }, [queryClient, selectedThreadId, selectedWorktreeId]);
+  }, [requestedThreadId, selectedThreadId]);
 
   useThreadEventStream({
-    selectedThreadId: selectedThreadIdForData,
+    selectedThreadId: remoteBootstrapThreadId,
     selectedWorktreeId,
     repositoryId,
     selectedThreadIsPrMr,
@@ -1549,42 +2099,207 @@ export function useChatSession(
     if (!showStopAction) setStopRequestedThreadId(null);
   }, [showStopAction]);
 
+  async function queueDraft(
+    content: string,
+    mode: ChatMode,
+    messageAttachments: Array<AttachmentInput & { sizeBytes?: number; isInline?: boolean }>,
+  ) {
+    const threadId = activeThreadIdRef.current;
+    if (!threadId) {
+      return false;
+    }
+
+    const activeThread = findThreadForWorktree(threadsRef.current, threadId, selectedWorktreeId);
+    if (!activeThread) {
+      onError("Selected thread is stale for the active worktree. Please retry.");
+      return false;
+    }
+
+    const attachmentsToSend: AttachmentInput[] = messageAttachments.map((att) => ({
+      id: att.id,
+      filename: att.filename,
+      mimeType: att.mimeType,
+      content: att.content,
+      source: att.source,
+    }));
+
+    onError(null);
+    try {
+      const queuedMessage = await api.queueMessage(activeThread.id, {
+        content,
+        mode,
+        attachments: attachmentsToSend,
+        expectedWorktreeId: activeThread.worktreeId,
+      });
+      queryClient.setQueryData<ChatQueuedMessage[]>(
+        queryKeys.threads.queue(activeThread.id),
+        (current) => upsertQueuedMessage(current, queuedMessage),
+      );
+      if (!shouldDelaySelectedThreadRemoteBootstrap) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(activeThread.id) });
+      }
+      return true;
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "Failed to queue draft");
+      return false;
+    }
+  }
+
+  async function deleteQueuedDraft(queueMessageId: string) {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    const previousQueue = queryClient.getQueryData<ChatQueuedMessage[]>(queryKeys.threads.queue(selectedThreadId)) ?? [];
+    queryClient.setQueryData<ChatQueuedMessage[]>(
+      queryKeys.threads.queue(selectedThreadId),
+      previousQueue.filter((message) => message.id !== queueMessageId),
+    );
+
+    try {
+      await api.deleteQueuedMessage(selectedThreadId, queueMessageId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(selectedThreadId) });
+    } catch (error) {
+      queryClient.setQueryData(queryKeys.threads.queue(selectedThreadId), previousQueue);
+      onError(error instanceof Error ? error.message : "Failed to delete queued draft");
+    }
+  }
+
+  async function updateQueuedDraft(queueMessageId: string, content: string) {
+    if (!selectedThreadId) {
+      return false;
+    }
+
+    const previousQueue = queryClient.getQueryData<ChatQueuedMessage[]>(queryKeys.threads.queue(selectedThreadId)) ?? [];
+    queryClient.setQueryData<ChatQueuedMessage[]>(
+      queryKeys.threads.queue(selectedThreadId),
+      previousQueue.map((message) => message.id === queueMessageId
+        ? {
+          ...message,
+          content,
+        }
+        : message),
+    );
+
+    try {
+      await api.updateQueuedMessage(selectedThreadId, queueMessageId, { content });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(selectedThreadId) });
+      return true;
+    } catch (error) {
+      queryClient.setQueryData(queryKeys.threads.queue(selectedThreadId), previousQueue);
+      onError(error instanceof Error ? error.message : "Failed to update queued draft");
+      return false;
+    }
+  }
+
+  async function dispatchQueuedDraft(queueMessageId: string) {
+    if (!selectedThreadId) {
+      return;
+    }
+
+    const previousQueue = queryClient.getQueryData<ChatQueuedMessage[]>(queryKeys.threads.queue(selectedThreadId)) ?? [];
+    queryClient.setQueryData<ChatQueuedMessage[]>(
+      queryKeys.threads.queue(selectedThreadId),
+      previousQueue.map((message) => message.id === queueMessageId
+        ? {
+          ...message,
+          status: message.status === "dispatching" ? "dispatching" : "dispatch_requested",
+          dispatchRequestedAt: message.dispatchRequestedAt ?? new Date().toISOString(),
+        }
+        : message),
+    );
+
+    try {
+      await api.requestQueuedMessageDispatch(selectedThreadId, queueMessageId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(selectedThreadId) });
+    } catch (error) {
+      queryClient.setQueryData(queryKeys.threads.queue(selectedThreadId), previousQueue);
+      onError(error instanceof Error ? error.message : "Failed to dispatch queued draft");
+    }
+  }
+
   const serverTimelineItems = (queriedThreadSnapshot?.timelineItems ?? []) as unknown as ChatTimelineItem[];
   const serverTimelineSummary = queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined;
-  const timelineSeedMatchesLiveState =
-    selectedThreadId != null
-    && queriedThreadSnapshot != null
-    && buildSnapshotKey(queriedThreadSnapshot) === buildSnapshotKey({
-      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
-      summary: queriedThreadSnapshot.summary,
-      newestIdx: events[events.length - 1]?.idx ?? null,
-      newestSeq: messages[messages.length - 1]?.seq ?? null,
+  const timelineSeedMatchesLiveState = useMemo(
+    () => selectedThreadId != null && doesSnapshotMatchLocalLiveState({
+      snapshot: queriedThreadSnapshot,
       messages,
       events,
-    });
+    }),
+    [events, messages, queriedThreadSnapshot, selectedThreadId],
+  );
+  const serverSnapshotCoversLocalHead = useMemo(
+    () => doesSnapshotCoverLocalHead({
+      snapshot: queriedThreadSnapshot,
+      messages,
+      events,
+    }),
+    [events, messages, queriedThreadSnapshot],
+  );
   const serverTimelineFreshEnough = isSnapshotFreshEnoughForAuthoritativeTimeline({
     snapshot: queriedThreadSnapshot,
     messages,
     events,
   });
-  const selectedThreadIdleForAuthoritativeTimeline =
-    selectedThreadUiStatus === "idle"
-    && waitingAssistant?.threadId !== selectedThreadId
-    && !hasPendingUserGate;
-
-  const derivedTimeline = useWorkspaceTimeline(messages, events, selectedThreadId, {
+  const serverSnapshotContainsCanonicalState = hasCanonicalThreadSnapshot(queriedThreadSnapshot);
+  const selectedThreadStableForAuthoritativeTimeline =
+    waitingAssistant?.threadId !== selectedThreadId
+    && !sendingMessage
+    && (
+      selectedThreadUiStatus === "idle"
+      || selectedThreadUiStatus === "review_plan"
+      || selectedThreadUiStatus === "waiting_approval"
+    );
+  const preferServerTimeline =
+    timelineEnabled
+    && serverTimelineSummary != null
+    && (
+      timelineSeedMatchesLiveState
+      || (selectedThreadStableForAuthoritativeTimeline && serverTimelineFreshEnough && serverSnapshotCoversLocalHead)
+    );
+  const skipDerivedTimeline =
+    preferServerTimeline
+    && (
+      serverSnapshotContainsCanonicalState
+      || queriedThreadSnapshot?.collectionsIncluded === false
+    );
+  const timelineRefs = useMemo(() => ({
     streamingMessageIds: streamingMessageIdsRef.current,
     stickyRawFallbackMessageIds: stickyRawFallbackMessageIdsRef.current,
     renderDecisionByMessageId: renderDecisionByMessageIdRef.current,
     loggedOrphanEventIdsByThread: loggedOrphanEventIdsByThreadRef.current,
     claimedContextEventIdsByThreadMessage: claimedContextEventIdsByThreadMessageRef.current,
-  }, {
+  }), []);
+
+  const derivedTimelineStartedAtMs = threadNavigationPerfEnabled ? getPerfNow() : 0;
+  const derivedTimeline = useWorkspaceTimeline(messages, events, selectedThreadId, timelineRefs, {
     semanticHydrationInProgress: false,
-    disabled: !timelineEnabled,
+    disabled: !timelineEnabled || skipDerivedTimeline,
   });
+  const derivedTimelineDurationMs = threadNavigationPerfEnabled
+    ? roundPerfMs(getPerfNow() - derivedTimelineStartedAtMs)
+    : 0;
 
   const timelineComparison = useMemo(() => {
     const server = summarizeTimelineItems(serverTimelineItems);
+    if (skipDerivedTimeline) {
+      return {
+        server,
+        derived: {
+          total: 0,
+          signatures: [],
+          kinds: {},
+          exploreCards: 0,
+          emptyExploreCards: 0,
+          subagentCards: 0,
+          subagentsMissingDescription: 0,
+        },
+        hasSuspiciousSubagentOrExploreState: server.exploreCards > 0 || server.subagentCards > 0,
+        signaturesMatch: true,
+        preferDerivedBecauseServerLooksStale: false,
+      };
+    }
+
     const derived = summarizeTimelineItems(derivedTimeline.items);
     const hasSuspiciousSubagentOrExploreState =
       server.exploreCards > 0
@@ -1592,7 +2307,11 @@ export function useChatSession(
       || server.subagentCards > 0
       || derived.subagentCards > 0;
     const signaturesMatch = JSON.stringify(server.signatures) === JSON.stringify(derived.signatures);
-    const preferDerivedBecauseServerLooksStale = derivedTimeline.items.length === 0 && serverTimelineItems.length > 0;
+    const preferDerivedBecauseServerLooksStale =
+      queriedThreadSnapshot?.collectionsIncluded !== false
+      && !serverSnapshotContainsCanonicalState
+      && derivedTimeline.items.length === 0
+      && serverTimelineItems.length > 0;
 
     return {
       server,
@@ -1601,11 +2320,9 @@ export function useChatSession(
       signaturesMatch,
       preferDerivedBecauseServerLooksStale,
     };
-  }, [derivedTimeline.items, serverTimelineItems]);
+  }, [derivedTimeline.items, queriedThreadSnapshot, serverTimelineItems, skipDerivedTimeline]);
 
-  const useServerTimeline = timelineEnabled
-    && serverTimelineSummary != null
-    && (timelineSeedMatchesLiveState || (selectedThreadIdleForAuthoritativeTimeline && serverTimelineFreshEnough))
+  const useServerTimeline = preferServerTimeline
     && !timelineComparison.preferDerivedBecauseServerLooksStale;
 
   const timelineData: {
@@ -1635,7 +2352,7 @@ export function useChatSession(
         timelineEnabled,
         timelineSeedMatchesLiveState,
         serverTimelineFreshEnough,
-        selectedThreadIdleForAuthoritativeTimeline,
+        selectedThreadStableForAuthoritativeTimeline,
         useServerTimeline,
         signaturesMatch: timelineComparison.signaturesMatch,
         preferDerivedBecauseServerLooksStale: timelineComparison.preferDerivedBecauseServerLooksStale,
@@ -1649,16 +2366,12 @@ export function useChatSession(
     timelineEnabled,
     timelineSeedMatchesLiveState,
     serverTimelineFreshEnough,
-    selectedThreadIdleForAuthoritativeTimeline,
+    selectedThreadStableForAuthoritativeTimeline,
     useServerTimeline,
   ]);
 
   const timelineItems = timelineData.items;
   const timelineSummary = timelineData.summary;
-  const selectedThreadCreatedLocally =
-    selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
-  const selectedThreadHasLocalState =
-    selectedThreadId != null && (messages.length > 0 || events.length > 0);
   const requestedThreadBootstrapPending =
     selectedThreadId == null
     && options?.desiredThreadId != null;
@@ -1692,6 +2405,148 @@ export function useChatSession(
             ? "loading-thread"
             : "existing-thread-empty";
 
+  useEffect(() => {
+    if (!threadNavigationPerfEnabled) {
+      return;
+    }
+
+    const session = activeThreadNavigationPerfRef.current;
+    if (!session || session.threadId !== selectedThreadId) {
+      return;
+    }
+
+    if (session.localStateLogged || (messages.length === 0 && events.length === 0)) {
+      return;
+    }
+
+    session.localStateLogged = true;
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "local-state.available",
+      threadId: session.threadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        atMs: getThreadNavigationPerfElapsedMs(session),
+        localMessageCount: messages.length,
+        localEventCount: events.length,
+        newestMessageSeq: messages[messages.length - 1]?.seq ?? null,
+        newestEventIdx: events[events.length - 1]?.idx ?? null,
+      },
+    });
+  }, [events, messages, selectedThreadId, selectedWorktreeId, threadNavigationPerfEnabled]);
+
+  useEffect(() => {
+    if (!threadNavigationPerfEnabled) {
+      return;
+    }
+
+    const session = activeThreadNavigationPerfRef.current;
+    if (!session || session.threadId !== selectedThreadId) {
+      return;
+    }
+
+    const nextRenderSignature = [
+      messageListEmptyState ?? "ready",
+      timelineItems.length,
+      useServerTimeline ? "server" : "derived",
+      derivedTimeline.items.length,
+      serverTimelineItems.length,
+      messages.length,
+      events.length,
+    ].join("|");
+
+    if (session.renderSignature === nextRenderSignature) {
+      return;
+    }
+
+    session.renderSignature = nextRenderSignature;
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "timeline.state",
+      threadId: session.threadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        atMs: getThreadNavigationPerfElapsedMs(session),
+        messageListEmptyState,
+        timelineItemsCount: timelineItems.length,
+        derivedTimelineItemsCount: derivedTimeline.items.length,
+        serverTimelineItemsCount: serverTimelineItems.length,
+        useServerTimeline,
+        derivedTimelineDurationMs,
+        composerDisabled,
+        selectedThreadUiStatus,
+        threadSnapshotLoading,
+        threadSnapshotFetching,
+      },
+    });
+  }, [
+    composerDisabled,
+    derivedTimeline.items.length,
+    derivedTimelineDurationMs,
+    events.length,
+    messageListEmptyState,
+    messages.length,
+    selectedThreadId,
+    selectedThreadUiStatus,
+    selectedWorktreeId,
+    serverTimelineItems.length,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+    timelineItems.length,
+    threadNavigationPerfEnabled,
+    useServerTimeline,
+  ]);
+
+  const threadNavigationReady =
+    selectedThreadId != null
+    && !composerDisabled
+    && messageListEmptyState !== "loading-thread"
+    && messageListEmptyState !== "creating-thread"
+    && messageListEmptyState !== "no-thread-selected";
+
+  useEffect(() => {
+    if (!threadNavigationPerfEnabled) {
+      return;
+    }
+
+    const session = activeThreadNavigationPerfRef.current;
+    if (!session || session.threadId !== selectedThreadId || session.readyLogged || !threadNavigationReady) {
+      return;
+    }
+
+    session.readyLogged = true;
+    pushThreadNavigationPerf({
+      navId: session.navId,
+      event: "thread.ready",
+      threadId: session.threadId,
+      worktreeId: selectedWorktreeId,
+      data: {
+        totalMs: getThreadNavigationPerfElapsedMs(session),
+        messageListEmptyState,
+        timelineItemsCount: timelineItems.length,
+        useServerTimeline,
+        derivedTimelineDurationMs,
+        localMessageCount: messages.length,
+        localEventCount: events.length,
+        queuedMessageCount: queuedMessages.length,
+        selectedThreadUiStatus,
+      },
+    });
+  }, [
+    derivedTimelineDurationMs,
+    events.length,
+    messageListEmptyState,
+    messages.length,
+    queuedMessages.length,
+    selectedThreadId,
+    selectedThreadUiStatus,
+    selectedWorktreeId,
+    threadNavigationReady,
+    threadNavigationPerfEnabled,
+    timelineItems.length,
+    useServerTimeline,
+  ]);
+
   return {
     threads,
     selectedThreadId,
@@ -1704,6 +2559,7 @@ export function useChatSession(
     sendingMessage,
     waitingAssistant,
     selectedThreadUiStatus,
+    queuedMessages,
     composerAgent,
     composerModel,
     composerModelProviderId,
@@ -1713,8 +2569,7 @@ export function useChatSession(
     composerDisabled,
     showStopAction,
     stoppingRun,
-    hasOlderHistory: false,
-    loadingOlderHistory: false,
+    isThreadHistoryLocallyComplete,
     semanticHydrationInProgress: false,
 
     timelineItems,
@@ -1732,7 +2587,10 @@ export function useChatSession(
     setComposerMode,
     setComposerPermissionMode,
     submitMessage,
-    loadOlderHistory: async () => {},
+    queueDraft,
+    updateQueuedDraft,
+    deleteQueuedDraft,
+    dispatchQueuedDraft,
     stopAssistantRun,
 
     startWaitingAssistant,

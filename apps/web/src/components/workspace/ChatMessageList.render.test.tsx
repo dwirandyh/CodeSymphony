@@ -1,4 +1,4 @@
-import { act, forwardRef, useImperativeHandle, type ComponentProps } from "react";
+import { act, forwardRef, useImperativeHandle, useState, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync } from "react-dom";
@@ -7,6 +7,8 @@ import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { ChatTimelineItem } from "./chat-message-list";
 import { MarkdownBody, ChatMessageList } from "./chat-message-list";
 import { AssistantContent } from "./chat-message-list/AssistantContent";
+import { TimelineItem } from "./chat-message-list/TimelineItem";
+import type { TimelineCtx } from "./chat-message-list/ChatMessageList.types";
 import { getTimelineItemKey } from "./chat-message-list/toolEventUtils";
 
 vi.mock("@pierre/diffs", () => ({
@@ -18,23 +20,53 @@ vi.mock("@pierre/diffs/react", () => ({
   FileDiff: () => <div data-testid="file-diff">FileDiff</div>,
 }));
 
-const { scrollToIndexMock, latestVListPropsRef, latestScrollStateRef } = vi.hoisted(() => ({
+const { scrollToIndexMock, scrollToMock, latestVListPropsRef, latestScrollStateRef, latestVListMountIdRef, vlistMountCounterRef } = vi.hoisted(() => ({
   scrollToIndexMock: vi.fn(),
+  scrollToMock: vi.fn(),
   latestVListPropsRef: { current: null as Record<string, any> | null },
   latestScrollStateRef: {
     current: {
+      cache: { key: "default-cache" },
       scrollOffset: 0,
       scrollSize: 0,
       viewportSize: 0,
     },
   },
+  latestVListMountIdRef: { current: 0 },
+  vlistMountCounterRef: { current: 0 },
 }));
 
+class MockResizeObserver {
+  disconnected = false;
+  observe = vi.fn();
+  disconnect = vi.fn(() => {
+    this.disconnected = true;
+  });
+  unobserve = vi.fn();
+
+  constructor(public callback: ResizeObserverCallback) {}
+}
+
+const resizeObserverInstances: MockResizeObserver[] = [];
+
 vi.mock("virtua", () => ({
-  VList: forwardRef(({ children, ...props }: any, ref) => {
+  VList: forwardRef(({ children, data, ...props }: any, ref) => {
+    const [mountId] = useState(() => {
+      vlistMountCounterRef.current += 1;
+      latestScrollStateRef.current.scrollOffset = 0;
+      return vlistMountCounterRef.current;
+    });
     latestVListPropsRef.current = props;
+    latestVListMountIdRef.current = mountId;
     useImperativeHandle(ref, () => ({
       scrollToIndex: scrollToIndexMock,
+      scrollTo(offset: number) {
+        latestScrollStateRef.current.scrollOffset = offset;
+        scrollToMock(offset);
+      },
+      get cache() {
+        return latestScrollStateRef.current.cache;
+      },
       get scrollOffset() {
         return latestScrollStateRef.current.scrollOffset;
       },
@@ -45,7 +77,10 @@ vi.mock("virtua", () => ({
         return latestScrollStateRef.current.viewportSize;
       },
     }));
-    return <div data-testid="vlist">{typeof children === "function" ? null : children}</div>;
+    const renderedChildren = typeof children === "function"
+      ? Array.from(data ?? []).map((entry, index) => children(entry, index))
+      : children;
+    return <div data-testid="vlist">{renderedChildren}</div>;
   }),
 }));
 
@@ -119,8 +154,13 @@ beforeEach(() => {
   vi.mocked(parsePatchFiles).mockReset();
   vi.mocked(parsePatchFiles).mockReturnValue([]);
   scrollToIndexMock.mockReset();
+  scrollToMock.mockReset();
   latestVListPropsRef.current = null;
+  latestVListMountIdRef.current = 0;
+  vlistMountCounterRef.current = 0;
+  resizeObserverInstances.length = 0;
   latestScrollStateRef.current = {
+    cache: { key: "default-cache" },
     scrollOffset: 0,
     scrollSize: 0,
     viewportSize: 0,
@@ -129,6 +169,11 @@ beforeEach(() => {
     callback(0);
     return 1;
   });
+  vi.stubGlobal("ResizeObserver", vi.fn().mockImplementation((callback: ResizeObserverCallback) => {
+    const observer = new MockResizeObserver(callback);
+    resizeObserverInstances.push(observer);
+    return observer;
+  }));
 });
 
 afterEach(() => {
@@ -230,6 +275,56 @@ function triggerScrollEnd() {
   act(() => {
     latestVListPropsRef.current?.onScrollEnd();
   });
+}
+
+function triggerResizeObservers() {
+  act(() => {
+    resizeObserverInstances.forEach((observer) => {
+      if (observer.disconnected) {
+        return;
+      }
+      observer.callback([], observer as unknown as ResizeObserver);
+    });
+  });
+}
+
+function clickFirstSummary() {
+  const summary = container.querySelector("summary");
+  if (!(summary instanceof HTMLElement)) {
+    throw new Error("summary element not found");
+  }
+
+  act(() => {
+    summary.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+}
+
+function makeTimelineCtx(overrides: Partial<TimelineCtx> = {}): TimelineCtx {
+  return {
+    rawOutputMessageIds: new Set(),
+    copiedMessageId: null,
+    copiedDebug: false,
+    renderDebugEnabled: false,
+    toggleRawOutput: vi.fn(),
+    copyOutput: vi.fn(),
+    copyDebugLog: vi.fn(),
+    onOpenReadFile: vi.fn(),
+    worktreePath: "/repo",
+    toolExpandedById: new Map(),
+    setToolExpandedById: vi.fn(),
+    editedExpandedById: new Map(),
+    setEditedExpandedById: vi.fn(),
+    exploreActivityExpandedById: new Map(),
+    setExploreActivityExpandedById: vi.fn(),
+    subagentExpandedById: new Map(),
+    setSubagentExpandedById: vi.fn(),
+    subagentPromptExpandedById: new Map(),
+    setSubagentPromptExpandedById: vi.fn(),
+    subagentExploreExpandedById: new Map(),
+    setSubagentExploreExpandedById: vi.fn(),
+    lastRenderSignatureByMessageIdRef: { current: new Map() },
+    ...overrides,
+  };
 }
 
 describe("MarkdownBody", () => {
@@ -574,7 +669,6 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
     expect(container.textContent).toContain("Ran ls -la");
-    expect(container.textContent).toContain("Bash");
     expect(container.textContent).not.toContain("tool.finished");
     expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
     expect(container.querySelector("details")).toBeTruthy();
@@ -613,12 +707,15 @@ describe("ChatMessageList", () => {
     });
     expect(container.textContent).toContain("Ran mcp__filesystem__read_file");
     expect(container.textContent).not.toContain("Ran mcp__filesystem__read_file · Completed mcp__filesystem__read_file");
-    expect(container.textContent).toContain("# README");
+    expect(container.textContent).not.toContain("# README");
     expect(container.textContent).not.toContain("tool.finished");
     expect(container.textContent).not.toContain("Raw payload");
     expect(container.querySelector("[data-testid='timeline-tool-payload-details']")).toBeNull();
     expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
     expect(container.querySelector("details")).toBeTruthy();
+
+    clickFirstSummary();
+    expect(container.textContent).toContain("# README");
   });
 
   it("renders running MCP tool item with running label", () => {
@@ -688,8 +785,8 @@ describe("ChatMessageList", () => {
     expect(container.textContent).toContain("Failed mcp__filesystem__read_file");
     expect(container.textContent).toContain("Failed");
     expect(container.textContent).toContain("Failed mcp__filesystem__read_file");
-    expect(container.textContent).toContain("Exit code 1");
-    expect(container.textContent).toContain("MCP request failed");
+    expect(container.textContent).not.toContain("Exit code 1");
+    expect(container.textContent).not.toContain("MCP request failed");
     expect(container.querySelector("[data-testid='timeline-tool']")).toBeTruthy();
     expect(container.querySelector("svg.lucide-circle-x")).toBeTruthy();
   });
@@ -748,6 +845,10 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
+    expect(vi.mocked(parsePatchFiles)).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("... [diff truncated]");
+
+    clickFirstSummary();
     expect(vi.mocked(parsePatchFiles)).toHaveBeenCalledWith([
       "diff --git a/src/index.ts b/src/index.ts",
       "--- a/src/index.ts",
@@ -897,18 +998,8 @@ describe("ChatMessageList", () => {
     const exploreRoot = container.querySelector("[data-testid='timeline-explore-activity']") as HTMLElement | null;
     expect(exploreRoot).toBeTruthy();
     expect(exploreRoot?.querySelector(".lucide-bot")).toBeNull();
-
-    const entries = container.querySelector("[data-testid='timeline-explore-activity-entries']") as HTMLElement | null;
-    expect(entries).toBeTruthy();
-    expect(entries?.className).not.toContain("rounded-xl");
-    expect(entries?.className).not.toContain("border");
-
-    const readButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "index.ts");
-    expect(readButton).toBeTruthy();
-    act(() => {
-      readButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(onOpenReadFile).toHaveBeenCalledWith("src/index.ts");
+    expect(container.querySelector("[data-testid='timeline-explore-activity-entries']")).toBeNull();
+    expect(onOpenReadFile).not.toHaveBeenCalled();
   });
 
   it("handles explore-activity items without entries", () => {
@@ -971,7 +1062,7 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Searching codebase");
-    expect(container.textContent).toContain("Found something");
+    expect(container.textContent).not.toContain("Found something");
   });
 
   it("renders skill subagent items with skill-style header and body", () => {
@@ -995,8 +1086,8 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Skill(browser-verification)");
-    expect(container.textContent).toContain("Successfully loaded skill");
-    expect(container.textContent).toContain("1 tool allowed");
+    expect(container.textContent).not.toContain("Successfully loaded skill");
+    expect(container.textContent).not.toContain("1 tool allowed");
     expect(container.textContent).not.toContain("Prompt");
   });
 
@@ -1021,7 +1112,6 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Skill(browser-verification)");
-    expect(container.textContent).toContain("Successfully loaded skill");
     expect(container.textContent).not.toContain("tool allowed");
     expect(container.textContent).not.toContain("tools allowed");
   });
@@ -1054,9 +1144,9 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Explored 1 file");
-    expect(container.textContent).toContain("Recovered from transcript");
+    expect(container.textContent).toContain("Done");
     expect(container.textContent).not.toContain("Prompt");
+    expect(container.textContent).not.toContain("Recovered from transcript");
   });
 
   it("keeps mixed Bash subagent steps out of explore summary", () => {
@@ -1087,7 +1177,7 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Ran ls && rm && ls");
+    expect(container.textContent).not.toContain("Ran ls && rm && ls");
     expect(container.textContent).not.toContain("Explored 1 search");
   });
 
@@ -1119,7 +1209,7 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Explored 1 search");
+    expect(container.textContent).toContain("Done");
   });
 
   it("renders successful non-explore subagent steps without a status icon", () => {
@@ -1150,7 +1240,7 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Ran git status");
+    expect(container.textContent).not.toContain("Ran git status");
     expect(container.querySelector(".lucide-circle-check")).toBeNull();
     expect(container.querySelector(".lucide-loader-2")).toBeNull();
     expect(container.querySelector(".lucide-circle-x")).toBeNull();
@@ -1184,8 +1274,8 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
 
-    expect(container.textContent).toContain("Ran git status");
-    expect(container.querySelector(".lucide-circle-x")).toBeTruthy();
+    expect(container.textContent).not.toContain("Ran git status");
+    expect(container.querySelector(".lucide-circle-x")).toBeNull();
     expect(container.querySelector(".lucide-loader-2")).toBeNull();
   });
 
@@ -1208,7 +1298,7 @@ describe("ChatMessageList", () => {
     expect(rows).toHaveLength(1);
     expect(container.querySelector("[data-testid='timeline-activity']")).toBeTruthy();
     expect(container.textContent).toContain("Working on it");
-    expect(container.textContent).toContain("Step 1");
+    expect(container.textContent).not.toContain("Step 1");
   });
 
   it("renders plan-file-output item", () => {
@@ -1312,8 +1402,8 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Skill(finly-architecture)");
-    expect(container.textContent).toContain("Successfully loaded skill");
-    expect(container.textContent).toContain("1 tool allowed");
+    expect(container.textContent).not.toContain("Successfully loaded skill");
+    expect(container.textContent).not.toContain("1 tool allowed");
     expect(container.textContent).not.toContain("tool.finished · Completed Skill");
     expect(container.textContent).not.toContain("Raw payload");
     expect(container.querySelector("[data-testid='timeline-tool-payload-details']")).toBeNull();
@@ -1393,11 +1483,192 @@ describe("ChatMessageList", () => {
     });
 
     expect(container.textContent).toContain("Asked 2 Questions");
+    expect(container.textContent).not.toContain("Avatar URL?");
+    expect(container.textContent).not.toContain("Use upload_url");
+    expect(container.textContent).not.toContain("Retry upload?");
+    expect(container.textContent).not.toContain("No retry");
+    expect(container.textContent).not.toContain("AskUserQuestion · Completed AskUserQuestion");
+
+    clickFirstSummary();
     expect(container.textContent).toContain("Avatar URL?");
     expect(container.textContent).toContain("Use upload_url");
     expect(container.textContent).toContain("Retry upload?");
     expect(container.textContent).toContain("No retry");
-    expect(container.textContent).not.toContain("AskUserQuestion · Completed AskUserQuestion");
+  });
+
+  it("renders expanded tool details only when the tool is marked open in context", () => {
+    const event: ChatEvent = {
+      id: "ev-tool-expanded",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.finished",
+      payload: {
+        toolName: "mcp__filesystem__read_file",
+        toolUseId: "tool-expanded",
+        summary: "Completed mcp__filesystem__read_file",
+        output: "# README",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const item: ChatTimelineItem = {
+      kind: "tool",
+      id: "tool-expanded",
+      event,
+      sourceEvents: [event],
+      toolUseId: "tool-expanded",
+      toolName: "mcp__filesystem__read_file",
+      output: "# README",
+      truncated: false,
+      durationSeconds: 0.4,
+      status: "success",
+    };
+
+    act(() => {
+      root.render(<TimelineItem item={item} ctx={makeTimelineCtx()} />);
+    });
+    expect(container.textContent).not.toContain("# README");
+
+    act(() => {
+      root.render(
+        <TimelineItem
+          item={item}
+          ctx={makeTimelineCtx({ toolExpandedById: new Map([["tool-expanded", true]]) })}
+        />,
+      );
+    });
+    expect(container.textContent).toContain("# README");
+  });
+
+  it("parses edited diffs only when the diff card is expanded", () => {
+    const diff = [
+      "diff --git a/src/index.ts b/src/index.ts",
+      "--- a/src/index.ts",
+      "+++ b/src/index.ts",
+      "@@ -1 +1 @@",
+      "-before",
+      "+after",
+      "",
+      "... [diff truncated]",
+    ].join("\n");
+    const item: ChatTimelineItem = {
+      kind: "edited-diff",
+      id: "diff-expanded",
+      eventId: "ev-diff-expanded",
+      status: "success",
+      diffKind: "actual",
+      changedFiles: ["src/index.ts"],
+      diff,
+      diffTruncated: true,
+      additions: 1,
+      deletions: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+
+    act(() => {
+      root.render(<TimelineItem item={item} ctx={makeTimelineCtx()} />);
+    });
+    expect(vi.mocked(parsePatchFiles)).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("... [diff truncated]");
+
+    act(() => {
+      root.render(
+        <TimelineItem
+          item={item}
+          ctx={makeTimelineCtx({ editedExpandedById: new Map([["diff-expanded", true]]) })}
+        />,
+      );
+    });
+
+    expect(vi.mocked(parsePatchFiles)).toHaveBeenCalledWith([
+      "diff --git a/src/index.ts b/src/index.ts",
+      "--- a/src/index.ts",
+      "+++ b/src/index.ts",
+      "@@ -1 +1 @@",
+      "-before",
+      "+after",
+    ].join("\n"));
+    expect(container.textContent).toContain("... [diff truncated]");
+  });
+
+  it("renders expanded AskUserQuestion content only when the tool is open", () => {
+    const askStartedEvent: ChatEvent = {
+      id: "ev-ask-open-started",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.started",
+      payload: {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-open-1",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const questionRequestedEvent: ChatEvent = {
+      id: "ev-ask-open-requested",
+      threadId: "t1",
+      idx: 2,
+      type: "question.requested",
+      payload: {
+        requestId: "ask-open-1",
+        questions: [{ question: "Avatar URL?" }],
+      },
+      createdAt: "2026-01-01T00:00:01Z",
+    };
+    const questionAnsweredEvent: ChatEvent = {
+      id: "ev-ask-open-answered",
+      threadId: "t1",
+      idx: 3,
+      type: "question.answered",
+      payload: {
+        requestId: "ask-open-1",
+        answers: {
+          "Avatar URL?": "Use upload_url",
+        },
+      },
+      createdAt: "2026-01-01T00:00:02Z",
+    };
+    const askFinishedEvent: ChatEvent = {
+      id: "ev-ask-open-finished",
+      threadId: "t1",
+      idx: 4,
+      type: "tool.finished",
+      payload: {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-open-1",
+        summary: "Asked 1 Question",
+      },
+      createdAt: "2026-01-01T00:00:03Z",
+    };
+    const item: ChatTimelineItem = {
+      kind: "tool",
+      id: "tool-ask-open",
+      event: askFinishedEvent,
+      sourceEvents: [askStartedEvent, questionRequestedEvent, questionAnsweredEvent, askFinishedEvent],
+      toolUseId: "ask-open-1",
+      toolName: "AskUserQuestion",
+      summary: "Asked 1 Question",
+      output: null,
+      error: null,
+      truncated: false,
+      durationSeconds: 1,
+      status: "success",
+    };
+
+    act(() => {
+      root.render(<TimelineItem item={item} ctx={makeTimelineCtx()} />);
+    });
+    expect(container.textContent).toContain("Asked 1 Question");
+    expect(container.textContent).not.toContain("Avatar URL?");
+
+    act(() => {
+      root.render(
+        <TimelineItem
+          item={item}
+          ctx={makeTimelineCtx({ toolExpandedById: new Map([["tool-ask-open", true]]) })}
+        />,
+      );
+    });
+    expect(container.textContent).toContain("Avatar URL?");
+    expect(container.textContent).toContain("Use upload_url");
   });
 
   it("uses denser spacing for compact running timeline rows", () => {
@@ -1581,6 +1852,56 @@ describe("ChatMessageList", () => {
     expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
   });
 
+  it("keeps bottom-follow active when a fresh mount emits an initial top scroll before hydration completes", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+    });
+    setScrollMetrics();
+    scrollToIndexMock.mockClear();
+
+    triggerScroll(0);
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("keeps virtualizer shift mode off for thread timeline rendering", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+    });
+
+    expect(latestVListPropsRef.current?.shift).toBe(false);
+  });
+
+  it("keeps the newest rows mounted for virtualization stability", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: Array.from({ length: 14 }, (_, index) => makeMessageItem(`m${index + 1}`, index + 1)),
+    });
+
+    expect(latestVListPropsRef.current?.bufferSize).toBe(720);
+    expect(latestVListPropsRef.current?.keepMounted).toEqual([8, 9, 10, 11, 12, 13]);
+  });
+
+  it("keeps short threads top-aligned below the thread tabs", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+    });
+
+    expect(latestVListPropsRef.current?.style).toMatchObject({
+      height: "100%",
+      overflowAnchor: "none",
+    });
+  });
+
   it("auto-follows to the footer when footer content is present", () => {
     mountChatMessageList({
       items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
@@ -1591,6 +1912,297 @@ describe("ChatMessageList", () => {
 
     expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
     expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("re-aligns to the bottom when virtualized content height grows after the initial mount", () => {
+    latestScrollStateRef.current.scrollSize = 700;
+    latestScrollStateRef.current.viewportSize = 700;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      footer: <div data-testid="plan-footer">Plan decision footer</div>,
+    });
+
+    scrollToIndexMock.mockClear();
+    latestScrollStateRef.current.scrollSize = 1800;
+    latestScrollStateRef.current.viewportSize = 900;
+
+    triggerResizeObservers();
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("keeps sticky-bottom active during near-bottom measurement jitter after auto-follow", () => {
+    latestScrollStateRef.current.scrollSize = 860;
+    latestScrollStateRef.current.viewportSize = 860;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+      footer: <div data-testid="plan-footer">Plan decision footer</div>,
+    });
+
+    scrollToIndexMock.mockClear();
+    latestScrollStateRef.current.scrollSize = 1160;
+    latestScrollStateRef.current.viewportSize = 860;
+    setScrollMetrics({ scrollHeight: 1160, clientHeight: 860 });
+
+    triggerScroll(212);
+    triggerScrollEnd();
+
+    expect(scrollToIndexMock).toHaveBeenCalledTimes(1);
+    expect(scrollToIndexMock).toHaveBeenCalledWith(2, { align: "end" });
+  });
+
+  it("does not restore cached virtualization state when the previous visit ended at the bottom", () => {
+    const savedBottomCache = { key: "thread-a-bottom-cache" };
+    latestScrollStateRef.current.cache = savedBottomCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1560);
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBeUndefined();
+    expect(scrollToMock).not.toHaveBeenCalled();
+  });
+
+  it("restores cached virtualization state when the previous visit ended away from the bottom", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    scrollToMock.mockClear();
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("restores cached virtualization state after thread switch even when cleanup loses the live handle cache", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-missing-handle" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    triggerScrollEnd();
+    scrollToMock.mockClear();
+
+    latestScrollStateRef.current.cache = undefined as unknown as { key: string };
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("preserves cached virtualization state when cleanup sees an invalid viewport on thread switch", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-invalid-viewport" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    triggerScrollEnd();
+    scrollToMock.mockClear();
+
+    latestScrollStateRef.current.viewportSize = 0;
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    latestScrollStateRef.current.viewportSize = 400;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("restores cached scroll offset after remount once the viewport is measured by resize observation", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-resize-restore" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    triggerScrollEnd();
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+
+    latestScrollStateRef.current.viewportSize = 0;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    scrollToMock.mockClear();
+    latestScrollStateRef.current.viewportSize = 400;
+    triggerResizeObservers();
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("waits until the measured scroll range can reach the cached offset before restoring", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-range-restore" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    triggerScrollEnd();
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+
+    latestScrollStateRef.current.scrollSize = 400;
+    latestScrollStateRef.current.viewportSize = 400;
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    scrollToMock.mockClear();
+    triggerResizeObservers();
+    expect(scrollToMock).not.toHaveBeenCalled();
+
+    latestScrollStateRef.current.scrollSize = 2000;
+    latestScrollStateRef.current.viewportSize = 400;
+    triggerResizeObservers();
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("persists cached virtualization state during active scroll so quick thread switches restore mid-thread position", () => {
+    const savedMidThreadCache = { key: "thread-a-mid-cache-active-scroll" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+    scrollToMock.mockClear();
+
+    latestScrollStateRef.current.cache = undefined as unknown as { key: string };
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBe(savedMidThreadCache);
+    expect(scrollToMock).toHaveBeenCalledWith(1000);
+  });
+
+  it("remounts the virtualizer when the selected thread changes", () => {
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2)],
+    });
+    const firstMountId = latestVListMountIdRef.current;
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+
+    expect(latestVListMountIdRef.current).toBeGreaterThan(firstMountId);
+  });
+
+  it("does not restore cached virtualization state when the thread content signature changes", () => {
+    const savedMidThreadCache = { key: "thread-a-stale-cache" };
+    latestScrollStateRef.current.cache = savedMidThreadCache;
+
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m3", 3)],
+    });
+    setScrollMetrics({ scrollHeight: 2000, clientHeight: 400 });
+    triggerScroll(1000);
+
+    mountChatMessageList({
+      threadId: "thread-b",
+      items: [makeMessageItem("n1", 1), makeMessageItem("n2", 2)],
+    });
+    mountChatMessageList({
+      threadId: "thread-a",
+      items: [makeMessageItem("m1", 1), makeMessageItem("m2", 2), makeMessageItem("m4", 4)],
+    });
+
+    expect(latestVListPropsRef.current?.cache).toBeUndefined();
+  });
+
+  it("does not render a footer-only virtual list when thread content is still empty", () => {
+    mountChatMessageList({
+      items: [],
+      emptyState: "existing-thread-empty",
+      footer: <div data-testid="plan-footer">Plan decision footer</div>,
+    });
+
+    expect(container.textContent).toContain("This thread is empty");
+    expect(container.querySelector("[data-testid='plan-footer']")).toBeNull();
   });
 
   it("does not snap to bottom on scroll end after user scrolls up", () => {

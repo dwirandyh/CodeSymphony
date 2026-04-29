@@ -1,4 +1,8 @@
-export { deriveSelectedThreadUiState, useChatSession } from "./useChatSession";
+export {
+  deriveSelectedThreadUiState,
+  resolveWorktreeSwitchSeed,
+  useChatSession,
+} from "./useChatSession";
 
 export {
   buildSnapshotKey,

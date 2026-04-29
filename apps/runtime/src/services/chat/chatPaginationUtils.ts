@@ -1,5 +1,5 @@
 import type { ChatEventType as DbChatEventType } from "@prisma/client";
-import type { ChatEvent } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import { mapChatMessage } from "../mappers.js";
 import { buildTimelineFromSeed } from "./chatTimelineAssembler.js";
 
@@ -27,7 +27,7 @@ export function mapMessages(rows: Array<Parameters<typeof mapChatMessage>[0]>) {
   return rows.map(mapChatMessage);
 }
 
-function mapEvents(
+export function mapEvents(
   rows: Array<{ id: string; threadId: string; idx: number; type: DbChatEventType; payload: unknown; createdAt: Date }>,
 ): ChatEvent[] {
   return rows.flatMap((row) => {
@@ -52,7 +52,11 @@ export function buildTimelineSnapshot(params: {
   events: ChatEvent[];
   threadId: string | null;
 }) {
-  const { messages, events, threadId } = params;
+  const {
+    messages,
+    events,
+    threadId,
+  } = params;
 
   const assembly = buildTimelineFromSeed({
     messages,
@@ -64,11 +68,24 @@ export function buildTimelineSnapshot(params: {
   const newestSeq = messages.length > 0 ? messages[messages.length - 1].seq : null;
   const newestIdx = events.length > 0 ? events[events.length - 1].idx : null;
 
+  const timelineItems = assembly.items.map((item): ChatTimelineItem => {
+    if (item.kind !== "message" || item.context == null) {
+      return item;
+    }
+
+    const { context: _context, ...rest } = item;
+    return rest;
+  });
+
   return {
-    timelineItems: assembly.items,
-    summary: assembly.summary,
+    timelineItems,
+    summary: {
+      ...assembly.summary,
+      oldestRenderableHydrationPending: false,
+    },
     newestSeq,
     newestIdx,
+    collectionsIncluded: true,
     messages,
     events,
   };

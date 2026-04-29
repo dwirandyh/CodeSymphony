@@ -7,6 +7,11 @@ import type {
 } from "@codesymphony/shared-types";
 
 const MAX_HASH_WINDOW = 512;
+const messagesFingerprintCache = new WeakMap<ChatMessage[], string>();
+const eventsFingerprintCache = new WeakMap<ChatEvent[], string>();
+const timelineItemsFingerprintCache = new WeakMap<ChatTimelineItem[], string>();
+const timelineSummaryFingerprintCache = new WeakMap<ChatTimelineSummary, string>();
+const snapshotKeyCache = new WeakMap<object, string>();
 
 function hashString(value: string): string {
   let hash = 2166136261;
@@ -136,25 +141,53 @@ function buildTimelineItemFingerprint(item: ChatTimelineItem): string {
 }
 
 export function buildMessagesStateFingerprint(messages: ChatMessage[]): string {
-  return messages.map((message) => buildMessageFingerprint(message)).join(";");
+  const cached = messagesFingerprintCache.get(messages);
+  if (cached) {
+    return cached;
+  }
+
+  const fingerprint = messages.map((message) => buildMessageFingerprint(message)).join(";");
+  messagesFingerprintCache.set(messages, fingerprint);
+  return fingerprint;
 }
 
 export function buildEventsStateFingerprint(events: ChatEvent[]): string {
-  return events.map((event) => buildEventFingerprint(event)).join(";");
+  const cached = eventsFingerprintCache.get(events);
+  if (cached) {
+    return cached;
+  }
+
+  const fingerprint = events.map((event) => buildEventFingerprint(event)).join(";");
+  eventsFingerprintCache.set(events, fingerprint);
+  return fingerprint;
 }
 
 function buildTimelineItemsStateFingerprint(items: ChatTimelineItem[]): string {
-  return items.map((item) => buildTimelineItemFingerprint(item)).join(";");
+  const cached = timelineItemsFingerprintCache.get(items);
+  if (cached) {
+    return cached;
+  }
+
+  const fingerprint = items.map((item) => buildTimelineItemFingerprint(item)).join(";");
+  timelineItemsFingerprintCache.set(items, fingerprint);
+  return fingerprint;
 }
 
 function buildTimelineSummaryFingerprint(summary: ChatTimelineSummary): string {
-  return [
+  const cached = timelineSummaryFingerprintCache.get(summary);
+  if (cached) {
+    return cached;
+  }
+
+  const fingerprint = [
     summary.oldestRenderableKey ?? "",
     summary.oldestRenderableKind ?? "",
     summary.oldestRenderableMessageId ?? "",
     summary.oldestRenderableHydrationPending ? "1" : "0",
     summary.headIdentityStable ? "1" : "0",
   ].join(":");
+  timelineSummaryFingerprintCache.set(summary, fingerprint);
+  return fingerprint;
 }
 
 export function buildSnapshotKey(
@@ -163,7 +196,13 @@ export function buildSnapshotKey(
     "newestSeq" | "newestIdx" | "messages" | "events" | "timelineItems" | "summary"
   >,
 ): string {
-  return [
+  const snapshotObject = snapshot as object;
+  const cached = snapshotKeyCache.get(snapshotObject);
+  if (cached) {
+    return cached;
+  }
+
+  const snapshotKey = [
     snapshot.newestSeq ?? "null",
     snapshot.newestIdx ?? "null",
     hashString(buildMessagesStateFingerprint(snapshot.messages)),
@@ -171,4 +210,6 @@ export function buildSnapshotKey(
     hashString(buildTimelineItemsStateFingerprint(snapshot.timelineItems)),
     hashString(buildTimelineSummaryFingerprint(snapshot.summary)),
   ].join(":");
+  snapshotKeyCache.set(snapshotObject, snapshotKey);
+  return snapshotKey;
 }

@@ -13,6 +13,7 @@ import {
   prependUniqueEvents,
   prependUniqueMessages,
   prunePendingStreamUpdatesForSnapshot,
+  resolveWorktreeSwitchSeed,
   resolveSnapshotSeedDecision,
   shouldInvalidateSnapshotImmediatelyAfterSubmit,
 } from "./chat-session";
@@ -341,6 +342,21 @@ describe("mergeEventsWithCurrent", () => {
     expect(next.map((event) => event.idx)).toEqual([1, 2, 3, 4, 5]);
   });
 
+  it("returns queried events directly when current is a matching prefix", () => {
+    const queried: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { messageId: "m-1" }),
+      makeEvent(2, "chat.completed", { messageId: "m-2" }),
+      makeEvent(3, "tool.started", { toolName: "Edit" }),
+    ];
+    const current: ChatEvent[] = [
+      makeEvent(1, "chat.completed", { messageId: "m-1" }),
+      makeEvent(2, "chat.completed", { messageId: "m-2" }),
+    ];
+
+    const result = mergeEventsWithCurrent(queried, current);
+    expect(result).toBe(queried);
+  });
+
   it("returns current when both arrays are identical", () => {
     const events: ChatEvent[] = [
       makeEvent(1, "chat.completed", { messageId: "m-1" }),
@@ -380,6 +396,39 @@ describe("mergeEventsWithCurrent", () => {
 
     const result = mergeEventsWithCurrent(queried, current);
     expect(result.map((e) => e.idx)).toEqual([1, 2, 3, 4, 5]);
+  });
+});
+
+describe("resolveWorktreeSwitchSeed", () => {
+  it("keeps cached threads available immediately and honors the requested thread id", () => {
+    const cachedThreads = [
+      makeThread("Thread A", "thread-a"),
+      { ...makeThread("Thread C", "thread-c"), worktreeId: "wt-2", active: true },
+    ];
+
+    const seed = resolveWorktreeSwitchSeed({
+      cachedThreads,
+      requestedThreadId: "thread-c",
+      optimisticCreatedThreadIds: new Set(),
+      locallyDeletedThreadIds: new Set(),
+    });
+
+    expect(seed.threads.map((thread) => thread.id)).toEqual(["thread-a", "thread-c"]);
+    expect(seed.selectedThreadId).toBe("thread-c");
+  });
+
+  it("falls back to the preferred cached thread when there is no requested thread", () => {
+    const seed = resolveWorktreeSwitchSeed({
+      cachedThreads: [
+        makeThread("Thread A", "thread-a"),
+        { ...makeThread("Thread B", "thread-b"), active: true },
+      ],
+      requestedThreadId: null,
+      optimisticCreatedThreadIds: new Set(),
+      locallyDeletedThreadIds: new Set(),
+    });
+
+    expect(seed.selectedThreadId).toBe("thread-b");
   });
 });
 

@@ -68,6 +68,18 @@ export function getGitStatusCollection(queryClient: QueryClient, worktreeId: str
   return created;
 }
 
+export function getCachedGitStatus(queryClient: QueryClient, worktreeId: string): GitStatus | undefined {
+  const collection = getGitStatusRegistry(queryClient).get(worktreeId);
+  const cachedRow = (collection?.toArray as GitStatusRow[] | undefined)?.[0];
+  if (cachedRow) {
+    return toPlainGitStatus(cachedRow);
+  }
+
+  const queryRows = queryClient.getQueryData<GitStatusRow[]>(queryKeys.worktrees.gitStatus(worktreeId));
+  const firstRow = queryRows?.[0];
+  return firstRow ? toPlainGitStatus(firstRow) : undefined;
+}
+
 export function refetchGitStatusCollection(queryClient: QueryClient, worktreeId: string) {
   return getGitStatusCollection(queryClient, worktreeId).utils.refetch();
 }
