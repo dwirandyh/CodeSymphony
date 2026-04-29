@@ -154,6 +154,21 @@ describe("mergeThreadMessages", () => {
     expect(result[0].content).toBe("longer queried content");
   });
 
+  it("returns queried messages directly when local is a matching prefix", () => {
+    const queried = [
+      makeMessage({ id: "m1", seq: 1, content: "message-1" }),
+      makeMessage({ id: "m2", seq: 2, content: "message-2" }),
+      makeMessage({ id: "m3", seq: 3, content: "message-3" }),
+    ];
+    const local = [
+      makeMessage({ id: "m1", seq: 1, content: "message-1" }),
+      makeMessage({ id: "m2", seq: 2, content: "message-2" }),
+    ];
+
+    const result = mergeThreadMessages(queried, local);
+    expect(result).toBe(queried);
+  });
+
   it("sorts merged messages by seq", () => {
     const queried = [makeMessage({ id: "m3", seq: 3 })];
     const local = [makeMessage({ id: "m1", seq: 1 }), makeMessage({ id: "m2", seq: 2 })];

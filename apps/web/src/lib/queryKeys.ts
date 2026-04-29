@@ -16,6 +16,9 @@ export const queryKeys = {
     gitDiffRaw: (worktreeId: string, filePath?: string) =>
       ["worktrees", worktreeId, "gitDiffRaw", filePath ?? "__all__"] as const,
     fileIndex: (worktreeId: string) => ["worktrees", worktreeId, "fileIndex"] as const,
+    fileTreeScope: (worktreeId: string) => ["worktrees", worktreeId, "fileTree"] as const,
+    fileTree: (worktreeId: string, directoryPath?: string) =>
+      ["worktrees", worktreeId, "fileTree", directoryPath ?? "__root__"] as const,
     slashCommands: (worktreeId: string, agent: CliAgent) => ["worktrees", worktreeId, "slashCommands", agent] as const,
     fileContents: (worktreeId: string, filePath: string) =>
       ["worktrees", worktreeId, "fileContents", filePath] as const,
@@ -26,6 +29,7 @@ export const queryKeys = {
     statusSnapshot: (threadId: string) => ["threads", threadId, "statusSnapshot"] as const,
     messages: (threadId: string) => ["threads", threadId, "messages"] as const,
     events: (threadId: string) => ["threads", threadId, "events"] as const,
+    queue: (threadId: string) => ["threads", threadId, "queue"] as const,
   },
   filesystem: {
     browse: (path?: string) => ["filesystem", "browse", path ?? "__root__"] as const,

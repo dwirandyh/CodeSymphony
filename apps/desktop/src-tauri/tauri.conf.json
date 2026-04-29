@@ -18,6 +18,8 @@
         "decorations": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
+        "acceptFirstMouse": true,
+        "backgroundColor": "#191d24",
         "visible": false,
         "useHttpsScheme": false
       }

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type {
   ChatEvent,
   ChatThreadSnapshot,
+  ChatThreadStatusSnapshot,
   ChatTimelineSnapshot,
   CliAgent,
 } from "@codesymphony/shared-types";
@@ -18,7 +19,14 @@ const slashCommandQuery = z.object({
   agent: CliAgentSchema.optional(),
 }).strict();
 const inFlightSnapshotRequests = new Map<string, Promise<ChatThreadSnapshot>>();
+const inFlightStatusSnapshotRequests = new Map<string, Promise<ChatThreadStatusSnapshot>>();
 const inFlightTimelineSnapshotRequests = new Map<string, Promise<ChatTimelineSnapshot>>();
+
+type TimelineSnapshotTimingEntry = {
+  phase: string;
+  durationMs: number;
+  data?: Record<string, unknown>;
+};
 
 function parseNonNegativeInt(input: unknown): number | null {
   const rawValue = Array.isArray(input) ? input[input.length - 1] : input;
@@ -71,6 +79,19 @@ function respondForChatRouteError(reply: { code: (statusCode: number) => { send:
     return reply.code(404).send({ error: message });
   }
   if (message === "Cannot delete a thread while assistant is processing") {
+    return reply.code(409).send({ error: message });
+  }
+  if (
+    message === "Queued message not found"
+    || message === "Chat thread not found"
+    || message === "Thread not found"
+  ) {
+    return reply.code(404).send({ error: message });
+  }
+  if (
+    message === "Cannot dispatch queued messages while the assistant is waiting for approval or review"
+    || message === "Cannot edit a queued message while it is dispatching"
+  ) {
     return reply.code(409).send({ error: message });
   }
   if (
@@ -288,13 +309,55 @@ export async function registerChatRoutes(app: FastifyInstance) {
     }
   });
 
+  app.get("/threads/:id/status-snapshot", async (request, reply) => {
+    try {
+      const params = threadParams.parse(request.params);
+      const snapshotKey = params.id;
+      const existingRequest = inFlightStatusSnapshotRequests.get(snapshotKey);
+
+      const snapshotPromise = existingRequest ?? app.chatService.listThreadStatusSnapshot(params.id);
+
+      if (!existingRequest) {
+        inFlightStatusSnapshotRequests.set(snapshotKey, snapshotPromise);
+      }
+
+      try {
+        const snapshot = await snapshotPromise;
+        return { data: snapshot };
+      } finally {
+        if (!existingRequest) {
+          inFlightStatusSnapshotRequests.delete(snapshotKey);
+        }
+      }
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to load thread status snapshot");
+    }
+  });
+
   app.get("/threads/:id/timeline", async (request, reply) => {
     try {
       const params = threadParams.parse(request.params);
       const timelineKey = params.id;
       const existingRequest = inFlightTimelineSnapshotRequests.get(timelineKey);
+      const reusedInFlightRequest = existingRequest != null;
+      const startedAt = Date.now();
+      const timings: TimelineSnapshotTimingEntry[] = [];
 
-      const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id).then((s) => s.timeline);
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.timelineSnapshot.request",
+        data: {
+          threadId: params.id,
+          timelineKey,
+          reusedInFlightRequest,
+        },
+      });
+
+      const snapshotPromise = existingRequest ?? app.chatService.listThreadSnapshot(params.id, {
+        onTiming: (entry: TimelineSnapshotTimingEntry) => {
+          timings.push(entry);
+        },
+      }).then((s) => s.timeline);
 
       if (!existingRequest) {
         inFlightTimelineSnapshotRequests.set(timelineKey, snapshotPromise);
@@ -307,6 +370,11 @@ export async function registerChatRoutes(app: FastifyInstance) {
           message: "chat.backend.timelineSnapshot.response",
           data: {
             threadId: params.id,
+            timelineKey,
+            reusedInFlightRequest,
+            durationMs: Date.now() - startedAt,
+            timings,
+            timingsUnavailable: reusedInFlightRequest,
             ...summarizeTimelineEnvelope(snapshot),
           },
         });
@@ -330,6 +398,69 @@ export async function registerChatRoutes(app: FastifyInstance) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to send message";
       return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.get("/threads/:id/queue", async (request, reply) => {
+    try {
+      const params = threadParams.parse(request.params);
+      const queuedMessages = await app.chatService.listQueuedMessages(params.id);
+      return { data: queuedMessages };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to list queued messages");
+    }
+  });
+
+  app.post("/threads/:id/queue", { bodyLimit: 15 * 1024 * 1024 }, async (request, reply) => {
+    const params = threadParams.parse(request.params);
+
+    try {
+      const queuedMessage = await app.chatService.queueMessage(params.id, request.body);
+      return reply.code(201).send({ data: queuedMessage });
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to queue message");
+    }
+  });
+
+  app.delete("/threads/:id/queue/:queueMessageId", async (request, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      queueMessageId: z.string().min(1),
+    }).parse(request.params);
+
+    try {
+      await app.chatService.deleteQueuedMessage(params.id, params.queueMessageId);
+      return reply.code(204).send();
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to delete queued message");
+    }
+  });
+
+  app.patch("/threads/:id/queue/:queueMessageId", async (request, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      queueMessageId: z.string().min(1),
+    }).parse(request.params);
+
+    try {
+      const queuedMessage = await app.chatService.updateQueuedMessage(params.id, params.queueMessageId, request.body);
+      return { data: queuedMessage };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to update queued message");
+    }
+  });
+
+  app.post("/threads/:id/queue/:queueMessageId/dispatch", async (request, reply) => {
+    const params = z.object({
+      id: z.string().min(1),
+      queueMessageId: z.string().min(1),
+    }).parse(request.params);
+
+    try {
+      const queuedMessage = await app.chatService.requestQueuedMessageDispatch(params.id, params.queueMessageId);
+      return { data: queuedMessage };
+    } catch (error) {
+      return respondForChatRouteError(reply, error, "Unable to request queued message dispatch");
     }
   });
 

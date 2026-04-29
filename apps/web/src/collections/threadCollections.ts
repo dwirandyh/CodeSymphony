@@ -56,6 +56,18 @@ export function getThreadMessagesCollection(threadId: string) {
   return getThreadCollections(threadId).messagesCollection;
 }
 
+export function getThreadCollectionCounts(threadId: string) {
+  const existing = threadCollectionsRegistry.get(threadId);
+  if (!existing) {
+    return null;
+  }
+
+  return {
+    messagesCount: existing.messagesCollection.toArray.length,
+    eventsCount: existing.eventsCollection.toArray.length,
+  };
+}
+
 export function disposeThreadCollections(threadId: string) {
   const existing = threadCollectionsRegistry.get(threadId);
   if (!existing) {

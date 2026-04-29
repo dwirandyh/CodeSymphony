@@ -68,6 +68,49 @@ describe("WorkspaceRightPanel", () => {
     expect(onUpdatePanel).toHaveBeenCalledWith("device");
   });
 
+  it("keeps the right rail visible for desktop app layout overrides", () => {
+    act(() => {
+      root.render(
+        <WorkspaceRightPanel
+          desktopApp={true}
+          rightPanelId={null}
+          worktreeId={null}
+          gitChanges={{
+            entries: [],
+            branch: "main",
+            upstream: null,
+            loading: false,
+            committing: false,
+            syncing: false,
+            canSync: false,
+            ahead: 0,
+            behind: 0,
+            error: null,
+            commit: vi.fn().mockResolvedValue(undefined),
+            sync: vi.fn().mockResolvedValue(undefined),
+            refresh: vi.fn().mockResolvedValue(undefined),
+            discardChange: vi.fn().mockResolvedValue(undefined),
+            getDiff: vi.fn().mockResolvedValue({ diff: "", summary: "" }),
+          }}
+          activeFilePath={null}
+          selectedDiffFilePath={null}
+          onOpenReview={() => {}}
+          onSelectDiffFile={() => {}}
+          onUpdatePanel={() => {}}
+          onOpenReadFile={() => {}}
+        />,
+      );
+    });
+
+    const nav = container.querySelector("nav");
+    if (!nav?.parentElement) {
+      throw new Error("Right rail container not found");
+    }
+
+    expect(nav.parentElement.className).toContain("flex");
+    expect(nav.parentElement.className).not.toContain("hidden lg:flex");
+  });
+
   it("shields panel interactions while the right panel is being resized", () => {
     act(() => {
       root.render(

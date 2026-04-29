@@ -582,9 +582,7 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "opencode"),
-    ) as HTMLSelectElement | undefined;
+    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
     if (!agentSelect) {
       throw new Error("Agent select not found");
     }
@@ -593,10 +591,7 @@ describe("SettingsDialog", () => {
     expect(document.body.querySelector('input[placeholder=\'e.g. "claude-sonnet-4-6", "glm-4.7"\']')).not.toBeNull();
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
-    await act(async () => {
-      agentSelect.value = "codex";
-      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setSelectValue(agentSelect, "codex");
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']')).not.toBeNull();
@@ -606,10 +601,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts.");
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
-    await act(async () => {
-      agentSelect.value = "opencode";
-      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setSelectValue(agentSelect, "opencode");
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "openai/gpt-5" or "gpt-5-custom"\']')).not.toBeNull();
@@ -651,9 +643,7 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "opencode"),
-    ) as HTMLSelectElement | undefined;
+    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
     if (!agentSelect) {
       throw new Error("Agent select not found");
     }
@@ -705,23 +695,18 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-      Array.from(select.options).some((option) => option.value === "opencode"),
-    ) as HTMLSelectElement | undefined;
-    const providerNameInput = document.body.querySelector('input[placeholder=\'e.g. "z.ai", "OpenRouter"\']') as HTMLInputElement | null;
+    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
+    const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
     if (!agentSelect || !providerNameInput) {
       throw new Error("Provider form fields not found");
     }
 
-    await act(async () => {
-      agentSelect.value = "opencode";
-      agentSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setSelectValue(agentSelect, "opencode");
     await flushEffects();
 
-    const modelIdInput = document.body.querySelector('input[placeholder=\'e.g. "openai/gpt-5" or "gpt-5-custom"\']') as HTMLInputElement | null;
-    const baseUrlInput = document.body.querySelector('input[placeholder="Leave empty when Model ID already uses provider/model"]') as HTMLInputElement | null;
-    const apiKeyInput = document.body.querySelector('input[placeholder="Only for custom OpenCode endpoints"]') as HTMLInputElement | null;
+    const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;
+    const baseUrlInput = document.body.querySelector('input[aria-label="Provider Base URL"]') as HTMLInputElement | null;
+    const apiKeyInput = document.body.querySelector('input[aria-label="Provider API Key"]') as HTMLInputElement | null;
     if (!modelIdInput || !baseUrlInput || !apiKeyInput) {
       throw new Error("OpenCode test controls not found");
     }

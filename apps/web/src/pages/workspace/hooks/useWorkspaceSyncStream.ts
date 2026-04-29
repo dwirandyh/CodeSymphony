@@ -28,6 +28,7 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
   if (event.worktreeId && event.type === "worktree.updated") {
     void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(event.worktreeId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileIndex(event.worktreeId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileTreeScope(event.worktreeId) });
     void queryClient.invalidateQueries({ queryKey: ["worktrees", event.worktreeId, "slashCommands"] });
   }
 
@@ -43,6 +44,7 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
     queryClient.removeQueries({ queryKey: queryKeys.threads.statusSnapshot(event.threadId) });
     queryClient.removeQueries({ queryKey: queryKeys.threads.messages(event.threadId) });
     queryClient.removeQueries({ queryKey: queryKeys.threads.events(event.threadId) });
+    queryClient.removeQueries({ queryKey: queryKeys.threads.queue(event.threadId) });
     disposeThreadCollections(event.threadId);
     clearThreadStreamState(event.threadId);
     return;
@@ -50,6 +52,7 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
 
   void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(event.threadId) });
   void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(event.threadId) });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.threads.queue(event.threadId) });
 }
 
 export function useWorkspaceSyncStream() {

@@ -1,6 +1,23 @@
 import { existsSync, readFileSync } from "node:fs";
-import type { ChatMessage as DbChatMessage, ChatThread as DbChatThread, Repository as DbRepository, Worktree as DbWorktree, ChatAttachment as DbChatAttachment } from "@prisma/client";
-import { SaveAutomationConfigSchema, type ChatAttachment, type ChatMessage, type ChatThread, type Repository, type Worktree } from "@codesymphony/shared-types";
+import type {
+  ChatAttachment as DbChatAttachment,
+  ChatMessage as DbChatMessage,
+  ChatQueuedAttachment as DbChatQueuedAttachment,
+  ChatQueuedMessage as DbChatQueuedMessage,
+  ChatThread as DbChatThread,
+  Repository as DbRepository,
+  Worktree as DbWorktree,
+} from "@prisma/client";
+import {
+  SaveAutomationConfigSchema,
+  type ChatAttachment,
+  type ChatMessage,
+  type ChatQueuedAttachment,
+  type ChatQueuedMessage,
+  type ChatThread,
+  type Repository,
+  type Worktree,
+} from "@codesymphony/shared-types";
 
 function parseSerializedJson<T>(value: string | null, parser: (input: unknown) => T): T | null {
   if (!value) {
@@ -109,5 +126,49 @@ export function mapChatMessage(message: DbChatMessage & { attachments?: DbChatAt
     content: message.content,
     attachments: (message.attachments ?? []).map(mapChatAttachment),
     createdAt: message.createdAt.toISOString(),
+  };
+}
+
+export function mapChatQueuedAttachment(attachment: DbChatQueuedAttachment): ChatQueuedAttachment {
+  let content = attachment.content;
+
+  if (
+    content.length === 0
+    && attachment.mimeType.startsWith("image/")
+    && attachment.storagePath
+    && existsSync(attachment.storagePath)
+  ) {
+    try {
+      content = readFileSync(attachment.storagePath).toString("base64");
+    } catch {
+      content = attachment.content;
+    }
+  }
+
+  return {
+    id: attachment.id,
+    queuedMessageId: attachment.queuedMessageId,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    content,
+    storagePath: attachment.storagePath,
+    source: attachment.source as ChatQueuedAttachment["source"],
+    createdAt: attachment.createdAt.toISOString(),
+  };
+}
+
+export function mapChatQueuedMessage(message: DbChatQueuedMessage & { attachments?: DbChatQueuedAttachment[] }): ChatQueuedMessage {
+  return {
+    id: message.id,
+    threadId: message.threadId,
+    seq: message.seq,
+    content: message.content,
+    mode: message.mode,
+    status: message.status,
+    dispatchRequestedAt: message.dispatchRequestedAt?.toISOString() ?? null,
+    attachments: (message.attachments ?? []).map(mapChatQueuedAttachment),
+    createdAt: message.createdAt.toISOString(),
+    updatedAt: message.updatedAt.toISOString(),
   };
 }

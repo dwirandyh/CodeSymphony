@@ -9,13 +9,66 @@ declare global {
       message: string;
       data: unknown;
     }>;
+    __CS_DEBUG_LOG_ENABLED__?: boolean;
   }
 }
 
 let debugSeq = 0;
+let persistentVerboseDebugOptIn: boolean | null = null;
+
+const VERBOSE_DEBUG_SOURCE_PREFIXES = [
+  "thread.timeline",
+];
+
+function isVerboseDebugSource(source: string) {
+  return VERBOSE_DEBUG_SOURCE_PREFIXES.some((prefix) => source === prefix || source.startsWith(`${prefix}.`));
+}
+
+function readPersistentVerboseDebugOptIn() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    const query = new URLSearchParams(window.location.search);
+    const queryValue = query.get("debugLog")?.trim().toLowerCase();
+    if (queryValue === "1" || queryValue === "true") {
+      return true;
+    }
+  } catch {
+    // Ignore URL parsing failures and fall through to localStorage.
+  }
+
+  try {
+    const localValue = window.localStorage.getItem("codesymphony.debugLog")?.trim().toLowerCase();
+    return localValue === "1" || localValue === "true";
+  } catch {
+    return false;
+  }
+}
+
+function isVerboseDebugEnabled() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  if (window.__CS_DEBUG_LOG_ENABLED__ === true) {
+    return true;
+  }
+
+  if (persistentVerboseDebugOptIn == null) {
+    persistentVerboseDebugOptIn = readPersistentVerboseDebugOptIn();
+  }
+
+  return persistentVerboseDebugOptIn;
+}
 
 export function debugLog(source: string, message: string, data?: unknown) {
   if (typeof window === "undefined") {
+    return;
+  }
+
+  if (isVerboseDebugSource(source) && !isVerboseDebugEnabled()) {
     return;
   }
 

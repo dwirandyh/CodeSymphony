@@ -10,11 +10,34 @@ vi.mock("./TerminalTab", () => ({
 let container: HTMLDivElement;
 let root: Root;
 
+function dispatchPointerEvent(
+  target: Element,
+  type: string,
+  { clientY, pointerId = 1, button = 0, isPrimary = true }: {
+    clientY: number;
+    pointerId?: number;
+    button?: number;
+    isPrimary?: boolean;
+  },
+) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    clientY: { value: clientY, configurable: true },
+    pointerId: { value: pointerId, configurable: true },
+    button: { value: button, configurable: true },
+    isPrimary: { value: isPrimary, configurable: true },
+  });
+  target.dispatchEvent(event);
+}
+
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.setPointerCapture = vi.fn();
+  Element.prototype.releasePointerCapture = vi.fn();
+  Element.prototype.hasPointerCapture = vi.fn(() => true);
 });
 
 afterEach(() => {
@@ -41,6 +64,8 @@ describe("BottomPanel", () => {
       (b) => b.title === "Collapse panel" || b.title === "Expand panel"
     );
   };
+  const findPanelBody = () => container.querySelector<HTMLElement>('[data-testid="bottom-panel-body"]');
+  const findResizeHandle = () => container.querySelector<HTMLElement>('[data-testid="bottom-panel-resize-handle"]');
 
   it("renders Setup Script, Terminal, Run, and Debug Console tab buttons", () => {
     act(() => {
@@ -169,6 +194,84 @@ describe("BottomPanel", () => {
       act(() => collapseBtn.click());
       expect(collapseBtn.title).toBe("Collapse panel");
     }
+  });
+
+  it("hides the panel body when collapsing after it has been expanded", () => {
+    function ControlledBottomPanel() {
+      const [collapsed, setCollapsed] = useState(true);
+
+      return (
+        <BottomPanel
+          {...baseProps}
+          collapsed={collapsed}
+          onCollapsedChange={setCollapsed}
+        />
+      );
+    }
+
+    act(() => {
+      root.render(<ControlledBottomPanel />);
+    });
+
+    const collapseBtn = findToggleButton();
+    if (!collapseBtn) {
+      throw new Error("Collapse button not found");
+    }
+
+    act(() => {
+      collapseBtn.click();
+    });
+
+    expect(findPanelBody()?.className).not.toContain("invisible");
+    expect(findPanelBody()?.style.height).toBe("250px");
+
+    act(() => {
+      collapseBtn.click();
+    });
+
+    expect(collapseBtn.title).toBe("Expand panel");
+    expect(findPanelBody()?.className).toContain("invisible");
+    expect(findPanelBody()?.className).toContain("h-0");
+    expect(findPanelBody()?.style.height).toBe("");
+  });
+
+  it("resizes the panel body while dragging the resize handle", () => {
+    function ControlledBottomPanel() {
+      const [collapsed, setCollapsed] = useState(false);
+
+      return (
+        <BottomPanel
+          {...baseProps}
+          collapsed={collapsed}
+          onCollapsedChange={setCollapsed}
+        />
+      );
+    }
+
+    act(() => {
+      root.render(<ControlledBottomPanel />);
+    });
+
+    const resizeHandle = findResizeHandle();
+    if (!resizeHandle) {
+      throw new Error("Resize handle not found");
+    }
+
+    expect(findPanelBody()?.style.height).toBe("250px");
+
+    act(() => {
+      dispatchPointerEvent(resizeHandle, "pointerdown", { clientY: 320 });
+    });
+
+    act(() => {
+      dispatchPointerEvent(resizeHandle, "pointermove", { clientY: 260 });
+    });
+
+    act(() => {
+      dispatchPointerEvent(resizeHandle, "pointerup", { clientY: 260 });
+    });
+
+    expect(findPanelBody()?.style.height).toBe("310px");
   });
 
   it("expands when openSignal changes", () => {

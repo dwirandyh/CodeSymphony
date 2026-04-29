@@ -31,6 +31,7 @@ function fileTabLabel(filePath: string): string {
 }
 
 type WorkspaceHeaderProps = {
+  desktopApp?: boolean;
   selectedWorktreeBranch: string | null;
   selectedIsRootWorkspace?: boolean;
   targetBranch?: string | null;
@@ -49,6 +50,7 @@ type WorkspaceHeaderProps = {
   showReviewTab?: boolean;
   reviewTabActive?: boolean;
   onSelectThread: (threadId: string | null) => void;
+  onPrefetchThread?: (threadId: string) => void;
   onSelectFileTab: (path: string) => void;
   onPinFileTab: (path: string) => void;
   onCloseFileTab: (path: string) => void;
@@ -83,6 +85,7 @@ function FilledPauseIcon({ className }: { className?: string }) {
 }
 
 export function WorkspaceHeader({
+  desktopApp = false,
   selectedWorktreeBranch,
   selectedIsRootWorkspace = false,
   targetBranch,
@@ -101,6 +104,7 @@ export function WorkspaceHeader({
   showReviewTab,
   reviewTabActive,
   onSelectThread,
+  onPrefetchThread,
   onSelectFileTab,
   onPinFileTab,
   onCloseFileTab,
@@ -206,7 +210,7 @@ export function WorkspaceHeader({
     <section className={cn(
       "workspace-header space-y-1 lg:space-y-1.5",
     )}>
-      <div className="hidden items-center justify-between gap-3 lg:flex">
+      <div className={cn("items-center justify-between gap-3", desktopApp ? "flex" : "hidden lg:flex")} data-testid="workspace-header-desktop-bar">
         <div className="flex min-w-0 items-center gap-1.5 text-[12px] leading-5">
           {onToggleLeftPanel ? (
             <Button
@@ -319,7 +323,7 @@ export function WorkspaceHeader({
 
         <div className="flex shrink-0 items-center gap-2">
           {worktreePath && (
-            <OpenInAppButton targetPath={worktreePath} />
+            <OpenInAppButton key={worktreePath} targetPath={worktreePath} />
           )}
 
           {onToggleRunScript && (
@@ -399,6 +403,8 @@ export function WorkspaceHeader({
                       )}
                       onClick={() => onSelectThread(thread.id)}
                       onDoubleClick={() => startThreadRename(thread.id, isSelected)}
+                      onPointerEnter={() => onPrefetchThread?.(thread.id)}
+                      onFocus={() => onPrefetchThread?.(thread.id)}
                       disabled={disabled}
                     >
                       {thread.title}

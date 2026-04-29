@@ -268,6 +268,7 @@ export type RuntimeDeps = {
       scope?: Pick<RuntimeLogEntry, "worktreeId" | "threadId">,
     ) => void;
   };
+  workspaceEventHub?: WorkspaceSyncEventHub;
   modelProviderService: {
     getActiveProvider: (agent?: CliAgent) => Promise<{
       id: string;
