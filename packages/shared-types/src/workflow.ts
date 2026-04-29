@@ -722,6 +722,9 @@ export type GitBranchDiffSummary = z.infer<typeof GitBranchDiffSummarySchema>;
 
 export const GitCommitInputSchema = z.object({
   message: z.string().trim().optional().default(""),
+  agent: CliAgentSchema.optional(),
+  model: z.string().trim().min(1).optional(),
+  modelProviderId: z.string().trim().min(1).nullable().optional(),
 });
 export type GitCommitInput = z.infer<typeof GitCommitInputSchema>;
 

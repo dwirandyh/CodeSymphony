@@ -6,6 +6,7 @@ import { useGitCommit } from "../../../hooks/mutations/useGitCommit";
 import { useDiscardGitChange } from "../../../hooks/mutations/useDiscardGitChange";
 import { useGitSync } from "../../../hooks/mutations/useGitSync";
 import { api } from "../../../lib/api";
+import { loadAgentDefaults } from "../agentDefaults";
 import { getCachedGitStatus } from "../../../collections/gitStatus";
 import { queryKeys } from "../../../lib/queryKeys";
 
@@ -96,7 +97,13 @@ export function useGitChanges(worktreeId: string | null, enabled: boolean) {
   const commit = useCallback(
     async (message: string) => {
       if (!worktreeId) return;
-      await commitMutation.mutateAsync({ message });
+      const commitDefaults = loadAgentDefaults().commit;
+      await commitMutation.mutateAsync({
+        message,
+        agent: commitDefaults.agent,
+        model: commitDefaults.model,
+        modelProviderId: commitDefaults.modelProviderId,
+      });
     },
     [worktreeId, commitMutation],
   );

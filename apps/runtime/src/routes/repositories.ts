@@ -672,7 +672,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.post("/worktrees/:id/git/commit", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
-    const { message } = GitCommitInputSchema.parse(request.body);
+    const { message, agent, model, modelProviderId } = GitCommitInputSchema.parse(request.body);
     const worktree = await app.worktreeService.getById(params.id);
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
@@ -680,7 +680,11 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       let finalMessage = message;
       if (!finalMessage.trim()) {
         const diff = await getGitDiff(worktree.path);
-        finalMessage = await app.chatService.generateCommitMessage(worktree.path, diff);
+        finalMessage = await app.chatService.generateCommitMessage(worktree.path, diff, {
+          agent,
+          model,
+          modelProviderId,
+        });
       }
 
       const result = await gitCommitAll(worktree.path, finalMessage);
