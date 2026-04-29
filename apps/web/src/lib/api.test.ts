@@ -392,9 +392,44 @@ describe("api", () => {
 
   describe("events", () => {
     it("gets timeline snapshot", async () => {
-      mockFetch.mockReturnValueOnce(mockOk({ timelineItems: [], events: [], messages: [] }));
+      mockFetch.mockReturnValueOnce(mockOk({
+        timelineItems: [],
+        summary: {
+          oldestRenderableKey: null,
+          oldestRenderableKind: null,
+          oldestRenderableMessageId: null,
+          oldestRenderableHydrationPending: false,
+          headIdentityStable: true,
+        },
+        newestSeq: null,
+        newestIdx: null,
+        events: [],
+        messages: [],
+      }));
       const result = await api.getTimelineSnapshot("t1");
       expect(result).toBeTruthy();
+    });
+
+    it("requests the canonical timeline snapshot endpoint", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        timelineItems: [],
+        summary: {
+          oldestRenderableKey: null,
+          oldestRenderableKind: null,
+          oldestRenderableMessageId: null,
+          oldestRenderableHydrationPending: false,
+          headIdentityStable: true,
+        },
+        newestSeq: null,
+        newestIdx: null,
+        events: [],
+        messages: [],
+      }));
+      await api.getTimelineSnapshot("t1");
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/threads/t1/timeline"),
+        expect.anything(),
+      );
     });
 
     it("sends expectedWorktreeId with chat messages", async () => {
@@ -463,6 +498,12 @@ describe("api", () => {
     it("gets file index", async () => {
       mockFetch.mockReturnValueOnce(mockOk([]));
       await api.getFileIndex("w1");
+    });
+
+    it("gets worktree directory entries", async () => {
+      mockFetch.mockReturnValueOnce(mockOk([{ path: "ignored/cache.json", type: "file" }]));
+      await api.getWorktreeDirectoryEntries("w1", "ignored");
+      expect(mockFetch.mock.calls[0][0]).toContain("/worktrees/w1/files/tree?path=ignored");
     });
 
     it("gets slash commands", async () => {

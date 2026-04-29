@@ -107,6 +107,24 @@ export function upsertThreadInCollection(queryClient: QueryClient, worktreeId: s
   getThreadsCollection(queryClient, worktreeId).utils.writeUpsert(thread);
 }
 
+export function replaceThreadsCollection(queryClient: QueryClient, worktreeId: string, nextThreads: ChatThread[]) {
+  const collection = getThreadsCollection(queryClient, worktreeId);
+  const nextIds = new Set(nextThreads.map((thread) => thread.id));
+  const currentIds = (collection.toArray as ChatThread[]).map((thread) => thread.id);
+
+  collection.utils.writeBatch(() => {
+    for (const threadId of currentIds) {
+      if (!nextIds.has(threadId)) {
+        collection.utils.writeDelete(threadId);
+      }
+    }
+
+    for (const thread of nextThreads) {
+      collection.utils.writeUpsert(thread);
+    }
+  });
+}
+
 export function resetThreadsCollectionRegistryForTest() {
   for (const collections of threadsCollectionRegistry.values()) {
     for (const collection of collections.values()) {

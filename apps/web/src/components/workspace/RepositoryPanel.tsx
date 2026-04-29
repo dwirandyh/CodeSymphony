@@ -2,6 +2,7 @@ import {
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
+  memo,
   useEffect,
   useMemo,
   useRef,
@@ -46,6 +47,7 @@ type RepositoryPanelProps = {
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
+  enableMetadataQueries?: boolean;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
   loadingRepos: boolean;
@@ -67,6 +69,10 @@ type RepositoryPanelProps = {
   onCreateWorktree: (repositoryId: string) => void;
   onSelectWorktree: (
     repositoryId: string,
+    worktreeId: string,
+    preferredThreadId?: string | null,
+  ) => void;
+  onPrefetchWorktree?: (
     worktreeId: string,
     preferredThreadId?: string | null,
   ) => void;
@@ -313,10 +319,11 @@ function WorktreeRowContent({
   );
 }
 
-export function RepositoryPanel({
+export const RepositoryPanel = memo(function RepositoryPanel({
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
+  enableMetadataQueries = true,
   hiddenRepositoryIds,
   expandedByRepo,
   loadingRepos,
@@ -330,6 +337,7 @@ export function RepositoryPanel({
   onReorderRepositories,
   onCreateWorktree,
   onSelectWorktree,
+  onPrefetchWorktree,
   onDeleteWorktree,
   onRenameWorktreeBranch,
 }: RepositoryPanelProps) {
@@ -412,16 +420,18 @@ export function RepositoryPanel({
     }),
     [repositoryWorktreeIndex],
   );
-  const worktreeStatuses = useWorktreeStatuses(repositories);
+  const worktreeStatuses = useWorktreeStatuses(repositories, enableMetadataQueries);
   const gitBranchDiffQueries = useQueries({
-    queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) =>
-      gitBranchDiffSummaryQueryOptions(worktreeId, baseBranch),
-    ),
+    queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) => ({
+      ...gitBranchDiffSummaryQueryOptions(worktreeId, baseBranch),
+      enabled: enableMetadataQueries && worktreeId.length > 0 && baseBranch.length > 0,
+    })),
   });
   const repositoryReviewQueries = useQueries({
-    queries: repositories.map((repository) =>
-      repositoryReviewsQueryOptions(repository.id),
-    ),
+    queries: repositories.map((repository) => ({
+      ...repositoryReviewsQueryOptions(repository.id),
+      enabled: enableMetadataQueries && repository.id.length > 0,
+    })),
   });
   const reviewsByRepositoryId = useMemo(
     () =>
@@ -1101,6 +1111,18 @@ export function RepositoryPanel({
                               selectedWorktreeId === rootWorkspace.id &&
                                 "bg-secondary/60 text-foreground",
                             )}
+                            onPointerEnter={() =>
+                              onPrefetchWorktree?.(
+                                rootWorkspace.id,
+                                rootPriorityThreadId,
+                              )
+                            }
+                            onFocus={() =>
+                              onPrefetchWorktree?.(
+                                rootWorkspace.id,
+                                rootPriorityThreadId,
+                              )
+                            }
                             onClick={() =>
                               onSelectWorktree(
                                 repository.id,
@@ -1167,6 +1189,18 @@ export function RepositoryPanel({
                                   isWorktreeSelected &&
                                     "bg-secondary/60 text-foreground",
                                 )}
+                                onPointerEnter={() =>
+                                  onPrefetchWorktree?.(
+                                    worktree.id,
+                                    priorityThreadId,
+                                  )
+                                }
+                                onFocus={() =>
+                                  onPrefetchWorktree?.(
+                                    worktree.id,
+                                    priorityThreadId,
+                                  )
+                                }
                                 onClick={() =>
                                   onSelectWorktree(
                                     repository.id,
@@ -1310,4 +1344,4 @@ export function RepositoryPanel({
       </ScrollArea>
     </section>
   );
-}
+});

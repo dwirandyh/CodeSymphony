@@ -51,12 +51,14 @@ class RootErrorBoundary extends React.Component<React.PropsWithChildren, RootErr
   }
 }
 
+const RootMode = import.meta.env.DEV ? React.Fragment : React.StrictMode;
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
+  <RootMode>
     <RootErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
       </QueryClientProvider>
     </RootErrorBoundary>
-  </React.StrictMode>,
+  </RootMode>,
 );

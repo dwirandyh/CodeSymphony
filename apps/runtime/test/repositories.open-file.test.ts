@@ -41,6 +41,7 @@ describe("POST /api/worktrees/:id/files/open", () => {
     } as never);
     app.decorate("fileService", {
       searchFiles: vi.fn(),
+      listDirectory: vi.fn(),
     } as never);
     app.decorate("systemService", {
       pickDirectory: vi.fn(),

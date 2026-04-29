@@ -2,8 +2,10 @@ import type {
   AnswerQuestionInput,
   ChatEvent,
   ChatMessage,
+  ChatQueuedMessage,
   ChatThread,
   ChatThreadSnapshot,
+  ChatThreadStatusSnapshot,
   ChatTimelineSnapshot,
   CliAgent,
   ClipboardText,
@@ -32,10 +34,12 @@ import type {
   OpencodeModelCatalog,
   OpenWorktreeFileInput,
   PlanRevisionInput,
+  QueueChatMessageInput,
   SlashCommandCatalog,
   RenameChatThreadTitleInput,
   RenameWorktreeBranchInput,
   ResolvePermissionInput,
+  UpdateQueuedMessageInput,
   Repository,
   ScriptResult,
   SendDeviceControlInput,
@@ -53,6 +57,7 @@ import type {
 } from "@codesymphony/shared-types";
 import { resolveRuntimeApiBases } from "./runtimeUrl";
 import { logService } from "./logService";
+import { debugLog } from "./debugLog";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:4331/api";
 const RETRY_DELAYS_MS = [150, 400];
@@ -422,12 +427,84 @@ export const api = {
     request<ChatEvent[]>(`/threads/${threadId}/events`),
   getThreadSnapshot: (threadId: string) =>
     request<ChatThreadSnapshot>(`/threads/${threadId}/snapshot`),
-  getTimelineSnapshot: (threadId: string) =>
-    request<ChatTimelineSnapshot>(`/threads/${threadId}/timeline`),
+  getThreadStatusSnapshot: (threadId: string) =>
+    request<ChatThreadStatusSnapshot>(`/threads/${threadId}/status-snapshot`),
+  getTimelineSnapshot: (threadId: string) => {
+    const path = `/threads/${threadId}/timeline`;
+    const startedAt =
+      typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now()
+        : Date.now();
+
+    debugLog("thread.timeline.api", "timeline.request.started", {
+      threadId,
+      path,
+    });
+
+    return request<ChatTimelineSnapshot>(path)
+      .then((snapshot) => {
+        const endedAt =
+          typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+        debugLog("thread.timeline.api", "timeline.request.succeeded", {
+          threadId,
+          path,
+          durationMs: Math.round((endedAt - startedAt) * 10) / 10,
+          messagesCount: snapshot.messages.length,
+          eventsCount: snapshot.events.length,
+          timelineItemsCount: snapshot.timelineItems.length,
+          newestSeq: snapshot.newestSeq,
+          newestIdx: snapshot.newestIdx,
+          oldestRenderableHydrationPending: snapshot.summary.oldestRenderableHydrationPending ?? false,
+        });
+        return snapshot;
+      })
+      .catch((error) => {
+        const endedAt =
+          typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+        debugLog("thread.timeline.api", "timeline.request.failed", {
+          threadId,
+          path,
+          durationMs: Math.round((endedAt - startedAt) * 10) / 10,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      });
+  },
   sendMessage: (threadId: string, input: SendChatMessageInput) =>
     request<ChatMessage>(`/threads/${threadId}/messages`, {
       method: "POST",
       body: JSON.stringify(input),
+    }),
+  listQueuedMessages: (threadId: string) =>
+    request<ChatQueuedMessage[]>(`/threads/${threadId}/queue`),
+  queueMessage: (threadId: string, input: QueueChatMessageInput) =>
+    request<ChatQueuedMessage>(`/threads/${threadId}/queue`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateQueuedMessage: (threadId: string, queueMessageId: string, input: UpdateQueuedMessageInput) =>
+    request<ChatQueuedMessage>(`/threads/${threadId}/queue/${queueMessageId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteQueuedMessage: async (threadId: string, queueMessageId: string) => {
+    const response = await runtimeFetch(`/threads/${threadId}/queue/${queueMessageId}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to delete queued message");
+    }
+  },
+  requestQueuedMessageDispatch: (threadId: string, queueMessageId: string) =>
+    request<ChatQueuedMessage>(`/threads/${threadId}/queue/${queueMessageId}/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
   stopRun: async (threadId: string) => {
     const response = await runtimeFetch(`/threads/${threadId}/stop`, {
@@ -555,6 +632,10 @@ export const api = {
     request<FileEntry[]>(`/worktrees/${worktreeId}/files?q=${encodeURIComponent(query)}`, { signal }),
   getFileIndex: (worktreeId: string, signal?: AbortSignal) =>
     request<FileEntry[]>(`/worktrees/${worktreeId}/files/index`, { signal }),
+  getWorktreeDirectoryEntries: (worktreeId: string, directoryPath?: string, signal?: AbortSignal) => {
+    const params = directoryPath ? `?path=${encodeURIComponent(directoryPath)}` : "";
+    return request<FileEntry[]>(`/worktrees/${worktreeId}/files/tree${params}`, { signal });
+  },
   getSlashCommands: (worktreeId: string, agent: CliAgent, signal?: AbortSignal) =>
     request<SlashCommandCatalog>(`/worktrees/${worktreeId}/slash-commands?agent=${encodeURIComponent(agent)}`, { signal }),
   getWorktreeFileContent: (worktreeId: string, filePath: string, signal?: AbortSignal) => {

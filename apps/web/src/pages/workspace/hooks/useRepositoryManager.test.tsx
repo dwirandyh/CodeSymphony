@@ -196,7 +196,7 @@ describe("useRepositoryManager", () => {
     render({ desiredWorktreeId: "wt-feat" });
     queryClient.setQueryData(queryKeys.threads.list("wt-feat"), [{ id: "t1" }]);
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot("t1"), { seed: { messages: { data: [] }, events: { data: [] } } });
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot("t1"), { messages: { data: [] }, events: { data: [] } });
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot("t1"), { status: "idle", newestIdx: null });
     queryClient.setQueryData(queryKeys.worktrees.gitStatus("wt-feat"), { branch: "feature", entries: [] });
 
     act(() => {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { MutableRefObject } from "react";
-import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { EVENT_TYPES } from "../constants";
@@ -65,23 +65,17 @@ function updateLastEventIdx(
   }
 }
 
-function seedThreadEventCache(params: {
-  snapshot: ChatThreadSnapshot | null | undefined;
+function seedThreadEventCursor(params: {
+  snapshot: ChatThreadStatusSnapshot | null | undefined;
   threadId: string;
-  seenEventIdsByThreadRef: MutableRefObject<Map<string, Set<string>>>;
   lastEventIdxByThreadRef: MutableRefObject<Map<string, number>>;
 }) {
-  const { snapshot, threadId, seenEventIdsByThreadRef, lastEventIdxByThreadRef } = params;
-  const cachedEvents = snapshot?.events;
-  if (!cachedEvents || cachedEvents.length === 0) {
+  const { snapshot, threadId, lastEventIdxByThreadRef } = params;
+  if (snapshot?.newestIdx == null) {
     return;
   }
 
-  const seenEventIds = ensureSeenEventIds(seenEventIdsByThreadRef, threadId);
-  for (const event of cachedEvents) {
-    seenEventIds.add(event.id);
-    updateLastEventIdx(lastEventIdxByThreadRef, threadId, event.idx);
-  }
+  updateLastEventIdx(lastEventIdxByThreadRef, threadId, snapshot.newestIdx);
 }
 
 
@@ -158,10 +152,9 @@ export function useBackgroundWorktreeStatusStream(
         continue;
       }
 
-      seedThreadEventCache({
-        snapshot: queryClient.getQueryData<ChatThreadSnapshot>(queryKeys.threads.statusSnapshot(thread.id)) ?? null,
+      seedThreadEventCursor({
+        snapshot: queryClient.getQueryData<ChatThreadStatusSnapshot>(queryKeys.threads.statusSnapshot(thread.id)) ?? null,
         threadId: thread.id,
-        seenEventIdsByThreadRef,
         lastEventIdxByThreadRef,
       });
 

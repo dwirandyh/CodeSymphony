@@ -1,7 +1,7 @@
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
+import type { ChatQueuedMessage, FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
 import { Composer } from "./composer";
 import { getPlainTextFromEditor, getSerializedTextFromEditor } from "./composer/composerEditorUtils";
@@ -34,6 +34,33 @@ const sampleSlashCommands: SlashCommand[] = [
   { name: "commit", description: "Create a commit", argumentHint: "" },
   { name: "review-pr", description: "Review a pull request", argumentHint: "<number>" },
   { name: "simplify", description: "Review changed code for simplification", argumentHint: "" },
+];
+
+const sampleQueuedMessages: ChatQueuedMessage[] = [
+  {
+    id: "queue-1",
+    threadId: "thread-1",
+    seq: 0,
+    content: "Review pending migrations and send after the current response finishes.",
+    mode: "plan",
+    status: "dispatch_requested",
+    dispatchRequestedAt: "2026-04-27T10:00:00.000Z",
+    attachments: [
+      {
+        id: "queue-attachment-1",
+        queuedMessageId: "queue-1",
+        filename: "notes.md",
+        mimeType: "text/markdown",
+        sizeBytes: 128,
+        content: "content",
+        storagePath: null,
+        source: "file_picker",
+        createdAt: "2026-04-27T10:00:00.000Z",
+      },
+    ],
+    createdAt: "2026-04-27T10:00:00.000Z",
+    updatedAt: "2026-04-27T10:00:00.000Z",
+  },
 ];
 
 const defaultProps = {
@@ -251,6 +278,19 @@ describe("Composer", () => {
     expect(editor.className).toContain("overflow-y-auto");
     expect(editor.className).toContain("max-h-[140px]");
     expect(editor.className).toContain("md:max-h-[400px]");
+  });
+
+  it("renders queued drafts inside the composer shell", () => {
+    renderComposer({
+      queuedMessages: sampleQueuedMessages,
+      onDeleteQueuedMessage: vi.fn(),
+      onDispatchQueuedMessage: vi.fn(),
+      onUpdateQueuedMessage: vi.fn().mockResolvedValue(true),
+    });
+
+    const composerSection = getEditor().closest("section");
+    expect(composerSection?.textContent).toContain("1 queued draft");
+    expect(composerSection?.textContent).toContain("Review pending migrations and send after the current response finishes.");
   });
 
   it("shows suggestions immediately when @ is typed", async () => {

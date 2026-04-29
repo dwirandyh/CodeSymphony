@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatEvent, ChatThread, ChatThreadSnapshot, Repository } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatThread, ChatThreadStatusSnapshot, Repository } from "@codesymphony/shared-types";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useBackgroundWorktreeStatusStream } from "./useBackgroundWorktreeStatusStream";
 
@@ -58,16 +58,16 @@ class MockEventSource {
   }
 }
 
-const { listThreadsMock, getThreadSnapshotMock, runtimeBaseUrlMock } = vi.hoisted(() => ({
+const { listThreadsMock, getThreadStatusSnapshotMock, runtimeBaseUrlMock } = vi.hoisted(() => ({
   listThreadsMock: vi.fn(),
-  getThreadSnapshotMock: vi.fn(),
+  getThreadStatusSnapshotMock: vi.fn(),
   runtimeBaseUrlMock: "http://127.0.0.1:4331",
 }));
 
 vi.mock("../../../lib/api", () => ({
   api: {
     listThreads: listThreadsMock,
-    getThreadSnapshot: getThreadSnapshotMock,
+    getThreadStatusSnapshot: getThreadStatusSnapshotMock,
     get runtimeBaseUrl() {
       return runtimeBaseUrlMock;
     },
@@ -124,24 +124,11 @@ function makeRepository(): Repository {
   };
 }
 
-function makeSnapshot(events: ChatEvent[] = []): ChatThreadSnapshot {
+function makeStatusSnapshot(overrides: Partial<ChatThreadStatusSnapshot> = {}): ChatThreadStatusSnapshot {
   return {
-    messages: [],
-    events,
-    timeline: {
-      timelineItems: [],
-      summary: {
-        oldestRenderableKey: null,
-        oldestRenderableKind: null,
-        oldestRenderableMessageId: null,
-        oldestRenderableHydrationPending: false,
-        headIdentityStable: true,
-      },
-      newestSeq: null,
-      newestIdx: events.length ? events[events.length - 1]!.idx : null,
-      messages: [],
-      events,
-    },
+    status: "idle",
+    newestIdx: null,
+    ...overrides,
   };
 }
 
@@ -187,9 +174,9 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
   MockEventSource.instances = [];
   listThreadsMock.mockReset();
-  getThreadSnapshotMock.mockReset();
+  getThreadStatusSnapshotMock.mockReset();
   listThreadsMock.mockResolvedValue([]);
-  getThreadSnapshotMock.mockResolvedValue(makeSnapshot());
+  getThreadStatusSnapshotMock.mockResolvedValue(makeStatusSnapshot());
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
 });
 
@@ -207,7 +194,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
   it("excludes the selected thread from background subscriptions", async () => {
     const thread = makeThread({ id: "selected-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
     renderHook([makeRepository()], "wt-1", "selected-thread");
 
@@ -234,7 +221,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
     });
     const thread = makeThread({ id: "background-thread", active: true, worktreeId: "wt-2" });
     queryClient.setQueryData(queryKeys.threads.list("wt-2"), [thread]);
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
     renderHook([repository], "wt-1", null);
 
@@ -250,7 +237,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
   it("subscribes active non-selected threads in the selected worktree", async () => {
     const thread = makeThread({ id: "same-worktree-thread", active: true, worktreeId: "wt-1" });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
     renderHook([makeRepository()], "wt-1", null);
 
@@ -266,7 +253,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
   it("patches thread.active=true on non-terminal events", async () => {
     const thread = makeThread({ id: "background-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
     renderHook([makeRepository()], null, null);
 
@@ -289,7 +276,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
   it("does not patch thread.active=true for delayed metadata tool.finished", async () => {
     const thread = makeThread({ id: "background-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
     renderHook([makeRepository()], null, null);
 
@@ -325,7 +312,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
   it("patches thread.active=false on terminal events", async () => {
     const thread = makeThread({ id: "background-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
     renderHook([makeRepository()], null, null);
 
@@ -353,7 +340,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
         permissionProfile: "review_git",
       });
       queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
-      queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+      queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
       renderHook([makeRepository()], null, null);
 
@@ -374,7 +361,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
   it("invalidates snapshot queries on gate and plan events", async () => {
     const thread = makeThread({ id: "background-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
     renderHook([makeRepository()], null, null);
 
@@ -415,7 +402,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
     vi.useFakeTimers();
     const thread = makeThread({ id: "background-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
-    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
 
     renderHook([makeRepository()], null, null);
 

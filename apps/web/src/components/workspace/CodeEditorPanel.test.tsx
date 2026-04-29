@@ -220,6 +220,21 @@ describe("CodeEditorPanel", () => {
     expect(container.textContent).toContain("Swift");
   });
 
+  it("keeps desktop editor chrome active for desktop app layout overrides", () => {
+    renderEditor({ desktopApp: true });
+
+    const mobileToolbar = container.querySelector<HTMLElement>('[data-testid="code-editor-mobile-toolbar"]');
+    const desktopStatusbar = container.querySelector<HTMLElement>('[data-testid="code-editor-desktop-statusbar"]');
+
+    if (!mobileToolbar || !desktopStatusbar) {
+      throw new Error("Editor chrome elements not found");
+    }
+
+    expect(mobileToolbar.className).toContain("hidden");
+    expect(desktopStatusbar.className).toContain("flex");
+    expect(desktopStatusbar.className).not.toContain("hidden lg:flex");
+  });
+
   it("uses simplified git controls for new untracked files", () => {
     renderEditor({
       filePath: "src/new-file.ts",

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 type FileEntry = {
@@ -86,6 +87,54 @@ export function createFileService() {
   }
 
   return {
+    async listDirectory(
+      worktreePath: string,
+      relativePath = "",
+    ): Promise<FileEntry[]> {
+      const targetPath = relativePath
+        ? path.resolve(worktreePath, relativePath)
+        : path.resolve(worktreePath);
+
+      const dirents = await readdir(targetPath, { withFileTypes: true });
+      const entries = await Promise.all(
+        dirents.map(async (dirent) => {
+          let type: FileEntry["type"] | null = null;
+
+          if (dirent.isDirectory()) {
+            type = "directory";
+          } else if (dirent.isFile()) {
+            type = "file";
+          } else if (dirent.isSymbolicLink()) {
+            const targetStat = await stat(path.join(targetPath, dirent.name)).catch(() => null);
+            if (targetStat?.isDirectory()) {
+              type = "directory";
+            } else if (targetStat?.isFile()) {
+              type = "file";
+            }
+          }
+
+          if (!type) {
+            return null;
+          }
+
+          return {
+            path: relativePath ? `${relativePath}/${dirent.name}` : dirent.name,
+            type,
+          } satisfies FileEntry;
+        }),
+      );
+
+      return entries
+        .filter((entry): entry is FileEntry => entry !== null)
+        .sort((left, right) => {
+          if (left.type !== right.type) {
+            return left.type === "directory" ? -1 : 1;
+          }
+
+          return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: "base" });
+        });
+    },
+
     async searchFiles(
       worktreePath: string,
       query: string,

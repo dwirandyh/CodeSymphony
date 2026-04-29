@@ -84,6 +84,34 @@ async function resolveWorktreeFile(worktree: { path: string }, inputPath: string
   };
 }
 
+async function resolveWorktreeDirectory(worktree: { path: string }, inputPath?: string) {
+  const rootPath = path.resolve(worktree.path);
+  const targetPath = inputPath && inputPath.trim().length > 0
+    ? (path.isAbsolute(inputPath) ? path.resolve(inputPath) : path.resolve(rootPath, inputPath))
+    : rootPath;
+
+  if (!isPathInsideRoot(rootPath, targetPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  const targetStat = await stat(targetPath).catch(() => null);
+  if (!targetStat || !targetStat.isDirectory()) {
+    throw new Error("Target directory does not exist");
+  }
+
+  const canonicalRootPath = await realpath(rootPath).catch(() => rootPath);
+  const canonicalTargetPath = await realpath(targetPath).catch(() => targetPath);
+  if (!isPathInsideRoot(canonicalRootPath, canonicalTargetPath)) {
+    throw new Error("Path must be inside the selected worktree");
+  }
+
+  const relativePath = path.relative(rootPath, targetPath).split(path.sep).join("/");
+
+  return {
+    relativePath: relativePath === "." ? "" : relativePath,
+  };
+}
+
 async function getCachedGitStatus(worktreeId: string, worktreePath: string): Promise<GitStatusResult> {
   const now = Date.now();
   const cached = cachedGitStatusByWorktreeId.get(worktreeId);
@@ -450,6 +478,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
   });
 
   const filesQuery = z.object({ q: z.string().optional().default("") });
+  const fileTreeQuery = z.object({ path: z.string().optional() });
 
   app.get("/worktrees/:id/files", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
@@ -483,6 +512,25 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list files";
       return reply.code(500).send({ error: message });
+    }
+  });
+
+  app.get("/worktrees/:id/files/tree", async (request, reply) => {
+    const params = worktreeParams.parse(request.params);
+    const query = fileTreeQuery.parse(request.query);
+
+    const worktree = await app.worktreeService.getById(params.id);
+    if (!worktree) {
+      return reply.code(404).send({ error: "Worktree not found" });
+    }
+
+    try {
+      const { relativePath } = await resolveWorktreeDirectory(worktree, query.path);
+      const results = await app.fileService.listDirectory(worktree.path, relativePath);
+      return { data: results };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list directory";
+      return reply.code(400).send({ error: message });
     }
   });
 

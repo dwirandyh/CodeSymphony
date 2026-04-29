@@ -2,10 +2,19 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
   "description": "Capability for the main window",
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:4322/*",
+      "http://localhost:4322/*",
+      "http://127.0.0.1:5174/*",
+      "http://localhost:5174/*"
+    ]
+  },
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-toggle-maximize",
     "opener:default",
     "opener:allow-open-url"
   ]

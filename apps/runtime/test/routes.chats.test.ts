@@ -517,6 +517,36 @@ describe("chat routes", () => {
   });
 
   describe("GET /api/threads/:id/timeline", () => {
+    it("returns the full timeline snapshot envelope", async () => {
+      mockChatService.listThreadSnapshot.mockResolvedValue({
+        messages: [],
+        events: [],
+        timeline: {
+          timelineItems: [],
+          summary: {
+            oldestRenderableKey: null,
+            oldestRenderableKind: null,
+            oldestRenderableMessageId: null,
+            oldestRenderableHydrationPending: false,
+            headIdentityStable: true,
+          },
+          newestSeq: 10,
+          newestIdx: 200,
+          collectionsIncluded: true,
+          messages: [],
+          events: [],
+        },
+      });
+
+      const res = await app.inject({ method: "GET", url: "/api/threads/t1/timeline" });
+
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.listThreadSnapshot).toHaveBeenCalledWith("t1", expect.objectContaining({
+        onTiming: expect.any(Function),
+      }));
+      expect(res.json().data.collectionsIncluded).toBe(true);
+    });
+
     it("does not leak overlap-unresolved subagent explore events into top-level explore cards", async () => {
       const suffix = uniqueSuffix();
       const repository = await prisma.repository.create({

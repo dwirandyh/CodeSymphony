@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type MouseEvent as ReactMouseEvent } from "react";
 import { Bot, ChevronRight, Loader2, XCircle } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { isExploreLikeBashCommand } from "../../../pages/workspace/eventUtils";
@@ -25,6 +25,19 @@ function parseAllowedToolsCount(text: string | null): number | null {
   const allowedToolsMatch = text?.match(/(\d+)\s+tool(?:s)?\s+allowed\b/i) ?? null;
   const allowedToolsCount = allowedToolsMatch ? Number.parseInt(allowedToolsMatch[1] ?? "", 10) : null;
   return Number.isFinite(allowedToolsCount) ? allowedToolsCount : null;
+}
+
+function isLikelyDeletedFileDiff(patch: string): boolean {
+  return /\bdeleted file mode\b/m.test(patch) || /^\+\+\+\s+\/dev\/null$/m.test(patch);
+}
+
+function handleControlledSummaryClick(
+  event: ReactMouseEvent<HTMLElement>,
+  expanded: boolean,
+  setExpanded: (nextOpen: boolean) => void,
+): void {
+  event.preventDefault();
+  setExpanded(!expanded);
 }
 
 function parseSkillSubagent(description: string, lastMessage: string | null): {
@@ -189,8 +202,6 @@ export const TimelineItem = memo(function TimelineItem({
   if (item.kind === "tool") {
     const primaryEvent = item.event;
     const sourceEvents = item.sourceEvents ?? (primaryEvent ? [primaryEvent] : []);
-    const changedFiles = primaryEvent ? getChangedFiles(primaryEvent) : [];
-    const diffPreview = primaryEvent ? getDiffPreview(primaryEvent) : null;
     const expanded = ctx.toolExpandedById.get(item.id) ?? false;
     const shortCommandLabel = shortenCommandForSummary(item.command ?? null);
     const durationLabel = formatCompactDurationSeconds(item.durationSeconds ?? null);
@@ -255,10 +266,6 @@ export const TimelineItem = memo(function TimelineItem({
       <article className="px-1 text-xs" data-testid="timeline-tool">
         <details
           open={expanded}
-          onToggle={(event) => {
-            const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setToolExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
-          }}
         >
           <summary
             className={cn(
@@ -266,11 +273,16 @@ export const TimelineItem = memo(function TimelineItem({
               isAskUserQuestionTool
                 ? "text-muted-foreground hover:text-foreground"
                 : isSkillTool
-                ? "text-muted-foreground hover:text-foreground"
-                : isFailed && !expanded
-                  ? "text-destructive"
-                  : expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
+                  ? "text-muted-foreground hover:text-foreground"
+                  : isFailed && !expanded
+                    ? "text-destructive"
+                    : expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
             )}
+            onClick={(event) => {
+              handleControlledSummaryClick(event, expanded, (nextOpen) => {
+                ctx.setToolExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
+              });
+            }}
           >
             {isFailed && !expanded && !isSkillTool ? <XCircle className="h-3.5 w-3.5 shrink-0" /> : null}
             <span className="font-medium">{summaryLabel}</span>
@@ -290,150 +302,161 @@ export const TimelineItem = memo(function TimelineItem({
             </span>
           </summary>
 
-          <div className={cn(
-            isAskUserQuestionTool ? "mt-1.5" : "mt-2 overflow-hidden",
-            !isAskUserQuestionTool && (isSkillTool
-              ? "rounded-xl border border-border/25 bg-background/40"
-              : "rounded-2xl border border-border/35 bg-secondary/20"),
-          )}>
-            {isAskUserQuestionTool ? (
-              <div className="flex flex-col gap-2 pr-1 text-sm">
-                {askUserQuestionTool.pairs.map((pair, index) => (
-                  <div
-                    key={`${pair.question}:${index}`}
-                    className="flex flex-col gap-0.5"
-                  >
-                    <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-muted-foreground">
-                      {pair.question}
-                    </p>
-                    <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-foreground">
-                      {pair.answer && pair.answer.trim().length > 0 ? pair.answer : "No answer provided"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : isSkillTool ? (
-              <div className="px-3 py-2.5 text-sm">
-                <div className="text-foreground">Successfully loaded skill</div>
-                {typeof skillTool.allowedToolsCount === "number" && skillTool.allowedToolsCount > 0 ? (
-                  <div className="mt-0.5 text-muted-foreground">
-                    {skillTool.allowedToolsCount} tool{skillTool.allowedToolsCount !== 1 ? "s" : ""} allowed
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between gap-2 border-b border-border/25 px-3 py-2 text-xs text-muted-foreground">
-                  <div className="min-w-0">
-                    <div className="font-semibold text-foreground">{title}</div>
-                    <div className="truncate">{subtitle}</div>
-                  </div>
-                  <span
-                    className={cn(
-                      "shrink-0 font-medium",
-                      status === "failed"
-                        ? "text-destructive"
-                        : status === "running"
-                          ? "text-muted-foreground"
-                          : "text-foreground",
-                    )}
-                  >
-                    {statusLabel}
-                  </span>
-                </div>
-
-                {item.shell ? (
-                  <div className="px-3 pt-2 pb-1 text-xs font-semibold lowercase tracking-wide text-muted-foreground">
-                    {item.shell}
-                  </div>
-                ) : null}
-
-                {item.command ? (
-                  <pre className="px-4 py-2.5 overflow-x-auto whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
-                    <span style={{ color: "#98c379" }}>$</span>
-                    <span> </span>
-                    <span style={{ color: "#61afef" }}>{item.command}</span>
-                  </pre>
-                ) : null}
-
-                {item.output ? (
-                  <TerminalOutputPre
-                    text={item.output}
-                    className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-sm leading-relaxed text-foreground"
-                  />
-                ) : null}
-
-                {item.error ? (
-                  <TerminalOutputPre
-                    text={item.error}
-                    className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-sm leading-relaxed text-destructive"
-                  />
-                ) : null}
-
-                {!item.command && !item.output && !item.error && item.summary ? (
-                  <div className="px-4 py-3 text-sm text-muted-foreground">{item.summary}</div>
-                ) : null}
-
-                {item.truncated ? (
-                  <div className="mt-1 px-3 py-2 text-[11px] text-muted-foreground">... [output truncated]</div>
-                ) : null}
-              </>
-            )}
-
-            {!isSkillTool && changedFiles.length > 0 ? (
-              <div className="border-t border-border/25 px-4 py-3">
-                <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Files</div>
-                <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-foreground/90">
-                  {changedFiles.map((file) => (
-                    <li key={file} className="break-all">{file}</li>
+          {expanded ? (
+            <div className={cn(
+              isAskUserQuestionTool ? "mt-1.5" : "mt-2 overflow-hidden",
+              !isAskUserQuestionTool && (isSkillTool
+                ? "rounded-xl border border-border/25 bg-background/40"
+                : "rounded-2xl border border-border/35 bg-secondary/20"),
+            )}>
+              {isAskUserQuestionTool ? (
+                <div className="flex flex-col gap-2 pr-1 text-sm">
+                  {askUserQuestionTool.pairs.map((pair, index) => (
+                    <div
+                      key={`${pair.question}:${index}`}
+                      className="flex flex-col gap-0.5"
+                    >
+                      <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-muted-foreground">
+                        {pair.question}
+                      </p>
+                      <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-foreground">
+                        {pair.answer && pair.answer.trim().length > 0 ? pair.answer : "No answer provided"}
+                      </p>
+                    </div>
                   ))}
-                </ul>
-              </div>
-            ) : null}
-
-            {!isSkillTool && diffPreview ? (
-              <details className="border-t border-border/25 px-4 py-3" data-testid="timeline-tool-diff-preview">
-                <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  Diff Preview
-                </summary>
-                <div className="mt-1.5">
-                  <SafePatchDiff
-                    patch={diffPreview}
-                    options={{
-                      diffStyle: "unified",
-                      overflow: "wrap",
-                      theme: "pierre-dark",
-                      themeType: "dark",
-                      expandUnchanged: false,
-                      expansionLineCount: 20,
-                    }}
-                  />
                 </div>
-              </details>
-            ) : null}
+              ) : isSkillTool ? (
+                <div className="px-3 py-2.5 text-sm">
+                  <div className="text-foreground">Successfully loaded skill</div>
+                  {typeof skillTool.allowedToolsCount === "number" && skillTool.allowedToolsCount > 0 ? (
+                    <div className="mt-0.5 text-muted-foreground">
+                      {skillTool.allowedToolsCount} tool{skillTool.allowedToolsCount !== 1 ? "s" : ""} allowed
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between gap-2 border-b border-border/25 px-3 py-2 text-xs text-muted-foreground">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-foreground">{title}</div>
+                      <div className="truncate">{subtitle}</div>
+                    </div>
+                    <span
+                      className={cn(
+                        "shrink-0 font-medium",
+                        status === "failed"
+                          ? "text-destructive"
+                          : status === "running"
+                            ? "text-muted-foreground"
+                            : "text-foreground",
+                      )}
+                    >
+                      {statusLabel}
+                    </span>
+                  </div>
 
-          </div>
+                  {item.shell ? (
+                    <div className="px-3 pt-2 pb-1 text-xs font-semibold lowercase tracking-wide text-muted-foreground">
+                      {item.shell}
+                    </div>
+                  ) : null}
+
+                  {item.command ? (
+                    <pre className="px-4 py-2.5 overflow-x-auto whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-foreground">
+                      <span style={{ color: "#98c379" }}>$</span>
+                      <span> </span>
+                      <span style={{ color: "#61afef" }}>{item.command}</span>
+                    </pre>
+                  ) : null}
+
+                  {item.output ? (
+                    <TerminalOutputPre
+                      text={item.output}
+                      className="max-h-64 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-sm leading-relaxed text-foreground"
+                    />
+                  ) : null}
+
+                  {item.error ? (
+                    <TerminalOutputPre
+                      text={item.error}
+                      className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words px-4 py-3 font-mono text-sm leading-relaxed text-destructive"
+                    />
+                  ) : null}
+
+                  {!item.command && !item.output && !item.error && item.summary ? (
+                    <div className="px-4 py-3 text-sm text-muted-foreground">{item.summary}</div>
+                  ) : null}
+
+                  {item.truncated ? (
+                    <div className="mt-1 px-3 py-2 text-[11px] text-muted-foreground">... [output truncated]</div>
+                  ) : null}
+                </>
+              )}
+
+              {!isSkillTool && primaryEvent ? (() => {
+                const changedFiles = getChangedFiles(primaryEvent);
+                if (changedFiles.length === 0) {
+                  return null;
+                }
+
+                return (
+                  <div className="border-t border-border/25 px-4 py-3">
+                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">Files</div>
+                    <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-foreground/90">
+                      {changedFiles.map((file) => (
+                        <li key={file} className="break-all">{file}</li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })() : null}
+
+              {!isSkillTool && primaryEvent ? (() => {
+                const diffPreview = getDiffPreview(primaryEvent);
+                if (!diffPreview) {
+                  return null;
+                }
+
+                return (
+                  <details className="border-t border-border/25 px-4 py-3" data-testid="timeline-tool-diff-preview">
+                    <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                      Diff Preview
+                    </summary>
+                    <div className="mt-1.5">
+                      <SafePatchDiff
+                        patch={diffPreview}
+                        options={{
+                          diffStyle: "unified",
+                          overflow: "wrap",
+                          theme: "pierre-dark",
+                          themeType: "dark",
+                          expandUnchanged: false,
+                          expansionLineCount: 20,
+                        }}
+                      />
+                    </div>
+                  </details>
+                );
+              })() : null}
+            </div>
+          ) : null}
         </details>
       </article>
     );
   }
 
   if (item.kind === "edited-diff") {
-    const { patch: renderableDiff } = normalizePatchForRender(item.diff);
-    const hasDiffContent = renderableDiff.trim().length > 0;
+    const hasDiffContent = item.diff.trim().length > 0;
     const expanded = hasDiffContent ? (ctx.editedExpandedById.get(item.id) ?? false) : false;
-    const parsedFiles = hasDiffContent ? parsePatchFiles(renderableDiff).flatMap((p) => p.files) : [];
-    const diffFileNames = parsedFiles.map((f) => f.name);
-    const resolvedFiles = item.changedFiles.length > 0 ? item.changedFiles : diffFileNames;
-    const isFileDeletion = parsedFiles.length > 0 && parsedFiles.every((file) => file.type === "deleted");
+    const summaryChangedFiles = item.changedFiles.length > 0 ? item.changedFiles : ["file"];
     const summaryLabel = editedSummaryLabel({
       changeSource: item.changeSource,
       status: item.status,
       diffKind: item.diffKind,
-      changedFiles: resolvedFiles,
+      changedFiles: summaryChangedFiles,
       additions: item.additions,
       deletions: item.deletions,
-      isFileDeletion,
+      isFileDeletion: isLikelyDeletedFileDiff(item.diff),
       rejectedByUser: item.rejectedByUser,
     });
 
@@ -460,10 +483,6 @@ export const TimelineItem = memo(function TimelineItem({
       >
         <details
           open={expanded}
-          onToggle={(event) => {
-            const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setEditedExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
-          }}
         >
           <summary
             className={cn(
@@ -472,6 +491,11 @@ export const TimelineItem = memo(function TimelineItem({
                 ? "text-destructive"
                 : expanded ? "text-muted-foreground" : "text-muted-foreground hover:text-foreground",
             )}
+            onClick={(event) => {
+              handleControlledSummaryClick(event, expanded, (nextOpen) => {
+                ctx.setEditedExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
+              });
+            }}
           >
             {isDiffFailed && !expanded ? <XCircle className="h-3.5 w-3.5 shrink-0" /> : null}
             <span className="font-medium">{summaryLabel}</span>
@@ -487,32 +511,41 @@ export const TimelineItem = memo(function TimelineItem({
             </span>
           </summary>
 
-          <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
-            {item.diffKind === "proposed" ? (
-              <div className="border-b border-border/25 px-3 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                Proposed diff
-              </div>
-            ) : null}
-            {parsedFiles.map((file, sectionIndex) => (
-              <div key={`section:${sectionIndex}`} className="max-h-72 overflow-auto">
-                <FileDiff
-                  fileDiff={file}
-                  options={{
-                    diffStyle: "unified",
-                    overflow: "wrap",
-                    theme: "pierre-dark",
-                    themeType: "dark",
-                    expandUnchanged: false,
-                    expansionLineCount: 20,
-                  }}
-                />
-              </div>
-            ))}
+          {expanded ? (() => {
+            const { patch: renderableDiff } = normalizePatchForRender(item.diff);
+            const parsedFiles = renderableDiff.trim().length > 0
+              ? parsePatchFiles(renderableDiff).flatMap((patch) => patch.files)
+              : [];
 
-            {item.diffTruncated ? (
-              <div className="px-3 pt-1.5 pb-2 text-[11px] text-muted-foreground">... [diff truncated]</div>
-            ) : null}
-          </div>
+            return (
+              <div className="mt-2 overflow-hidden rounded-2xl border border-border/35 bg-secondary/20">
+                {item.diffKind === "proposed" ? (
+                  <div className="border-b border-border/25 px-3 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    Proposed diff
+                  </div>
+                ) : null}
+                {parsedFiles.map((file, sectionIndex) => (
+                  <div key={`section:${sectionIndex}`} className="max-h-72 overflow-auto">
+                    <FileDiff
+                      fileDiff={file}
+                      options={{
+                        diffStyle: "unified",
+                        overflow: "wrap",
+                        theme: "pierre-dark",
+                        themeType: "dark",
+                        expandUnchanged: false,
+                        expansionLineCount: 20,
+                      }}
+                    />
+                  </div>
+                ))}
+
+                {item.diffTruncated ? (
+                  <div className="px-3 pt-1.5 pb-2 text-[11px] text-muted-foreground">... [diff truncated]</div>
+                ) : null}
+              </div>
+            );
+          })() : null}
         </details>
       </article>
     );
@@ -554,50 +587,55 @@ export const TimelineItem = memo(function TimelineItem({
       >
         <details
           open={expanded}
-          onToggle={(event) => {
-            const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setExploreActivityExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
-          }}
         >
-          <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
+          <summary
+            className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden"
+            onClick={(event) => {
+              handleControlledSummaryClick(event, expanded, (nextOpen) => {
+                ctx.setExploreActivityExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
+              });
+            }}
+          >
             <span>{summaryText}</span>
             <span className={cn("inline-flex shrink-0 transition-transform duration-150", expanded ? "rotate-90" : "")}>
               <ChevronRight className="h-3 w-3" />
             </span>
           </summary>
 
-          <div
-            className="mt-1 flex flex-col gap-0.5 text-xs text-muted-foreground"
-            data-testid="timeline-explore-activity-entries"
-          >
-            {entries.map((entry, idx) => (
-              <span key={`${entry.kind}:${entry.orderIdx}:${idx}`}>
-                {entry.kind === "read" ? (
-                  <>
-                    Read{" "}
-                    {entry.openPath && ctx.onOpenReadFile ? (
-                      <button
-                        type="button"
-                        className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
-                        onClick={() => {
-                          if (entry.openPath && ctx.onOpenReadFile) {
-                            void ctx.onOpenReadFile(entry.openPath);
-                          }
-                        }}
-                      >
-                        {entry.label}
-                      </button>
-                    ) : (
-                      <span>{entry.label}</span>
-                    )}
-                  </>
-                ) : (
-                  entry.label
-                )}
-              </span>
-            ))}
+          {expanded ? (
+            <div
+              className="mt-1 flex flex-col gap-0.5 text-xs text-muted-foreground"
+              data-testid="timeline-explore-activity-entries"
+            >
+              {entries.map((entry, idx) => (
+                <span key={`${entry.kind}:${entry.orderIdx}:${idx}`}>
+                  {entry.kind === "read" ? (
+                    <>
+                      Read{" "}
+                      {entry.openPath && ctx.onOpenReadFile ? (
+                        <button
+                          type="button"
+                          className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
+                          onClick={() => {
+                            if (entry.openPath && ctx.onOpenReadFile) {
+                              void ctx.onOpenReadFile(entry.openPath);
+                            }
+                          }}
+                        >
+                          {entry.label}
+                        </button>
+                      ) : (
+                        <span>{entry.label}</span>
+                      )}
+                    </>
+                  ) : (
+                    entry.label
+                  )}
+                </span>
+              ))}
 
-          </div>
+            </div>
+          ) : null}
         </details>
       </article>
     );
@@ -686,12 +724,15 @@ export const TimelineItem = memo(function TimelineItem({
       >
         <details
           open={expanded}
-          onToggle={(event) => {
-            const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setSubagentExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
-          }}
         >
-          <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
+          <summary
+            className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden"
+            onClick={(event) => {
+              handleControlledSummaryClick(event, expanded, (nextOpen) => {
+                ctx.setSubagentExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
+              });
+            }}
+          >
             <Bot className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">
               {headerText}
@@ -707,139 +748,149 @@ export const TimelineItem = memo(function TimelineItem({
             </span>
           </summary>
 
-          <div className="mt-2 ml-1 rounded-xl border border-border/30 bg-secondary/5 overflow-hidden">
-            <div className="flex flex-col gap-3 p-3">
-              {skillSubagent ? (
-                <div className="px-1 flex flex-col gap-1 text-sm text-foreground">
-                  <span>Successfully loaded skill</span>
-                  {typeof skillSubagent.allowedToolsCount === "number" && skillSubagent.allowedToolsCount > 0 ? (
-                    <span className="text-muted-foreground">
-                      {skillSubagent.allowedToolsCount} tool{skillSubagent.allowedToolsCount !== 1 ? "s" : ""} allowed
-                    </span>
-                  ) : null}
-                </div>
-              ) : (
-                <>
-                  {item.description && (
-                    <div className="px-1 text-xs">
-                      <details
-                        open={ctx.subagentPromptExpandedById.get(item.id) === true}
-                        onToggle={(event) => {
-                          const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-                          ctx.setSubagentPromptExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
-                        }}
-                      >
-                        <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
-                          <span>Prompt</span>
-                          <span className={cn("inline-flex transition-transform duration-150", ctx.subagentPromptExpandedById.get(item.id) === true ? "rotate-90" : "")}>
-                            <ChevronRight className="h-3 w-3" />
-                          </span>
-                        </summary>
-                        <div className="mt-1 text-sm text-foreground">
-                          <p className="whitespace-pre-wrap break-words leading-relaxed">{item.description}</p>
-                        </div>
-                      </details>
-                    </div>
-                  )}
-
-                  {hasExploreSteps && (
-                    <div className="px-1 text-xs">
-                      <details
-                        open={ctx.subagentExploreExpandedById.get(item.id) === true}
-                        onToggle={(event) => {
-                          const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-                          ctx.setSubagentExploreExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
-                        }}
-                      >
-                        <summary className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5">
-                          <span>{exploreSummaryText}</span>
-                          <span className={cn("inline-flex transition-transform duration-150", ctx.subagentExploreExpandedById.get(item.id) === true ? "rotate-90" : "")}>
-                            <ChevronRight className="h-3 w-3" />
-                          </span>
-                        </summary>
-                        <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
-                          {readSteps.map((step, idx) => (
-                            <span key={`explore:${idx}`}>
-                              {step.toolName === "Read" ? (
-                                <>
-                                  Read{" "}
-                                  {step.openPath && ctx.onOpenReadFile ? (
-                                    <button
-                                      type="button"
-                                      className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
-                                      onClick={() => {
-                                        if (step.openPath && ctx.onOpenReadFile) {
-                                          void ctx.onOpenReadFile(step.openPath);
-                                        }
-                                      }}
-                                    >
-                                      {step.label}
-                                    </button>
-                                  ) : (
-                                    <span>{step.label}</span>
-                                  )}
-                                </>
-                              ) : (
-                                step.label
-                              )}
+          {expanded ? (
+            <div className="mt-2 ml-1 rounded-xl border border-border/30 bg-secondary/5 overflow-hidden">
+              <div className="flex flex-col gap-3 p-3">
+                {skillSubagent ? (
+                  <div className="px-1 flex flex-col gap-1 text-sm text-foreground">
+                    <span>Successfully loaded skill</span>
+                    {typeof skillSubagent.allowedToolsCount === "number" && skillSubagent.allowedToolsCount > 0 ? (
+                      <span className="text-muted-foreground">
+                        {skillSubagent.allowedToolsCount} tool{skillSubagent.allowedToolsCount !== 1 ? "s" : ""} allowed
+                      </span>
+                    ) : null}
+                  </div>
+                ) : (
+                  <>
+                    {item.description && (
+                      <div className="px-1 text-xs">
+                        <details
+                          open={ctx.subagentPromptExpandedById.get(item.id) === true}
+                        >
+                          <summary
+                            className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5"
+                            onClick={(event) => {
+                              const promptExpanded = ctx.subagentPromptExpandedById.get(item.id) === true;
+                              handleControlledSummaryClick(event, promptExpanded, (nextOpen) => {
+                                ctx.setSubagentPromptExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
+                              });
+                            }}
+                          >
+                            <span>Prompt</span>
+                            <span className={cn("inline-flex transition-transform duration-150", ctx.subagentPromptExpandedById.get(item.id) === true ? "rotate-90" : "")}>
+                              <ChevronRight className="h-3 w-3" />
                             </span>
-                          ))}
-                        </div>
-                      </details>
-                    </div>
-                  )}
-
-                  {otherSteps.map((step, idx) => {
-                    const isFailedStep = step.status === "failed";
-                    const isRunningStep = step.status === "running";
-
-                    return (
-                      <div
-                        key={`tool:${idx}`}
-                        className={cn(
-                          "px-1 text-xs flex items-center gap-1.5",
-                          isFailedStep ? "text-destructive" : "text-muted-foreground",
-                        )}
-                      >
-                        {isFailedStep
-                          ? <XCircle className="h-3.5 w-3.5 shrink-0" />
-                          : isRunningStep
-                            ? <Loader2 className="h-3 w-3 shrink-0 text-muted-foreground/50 animate-spin" />
-                            : null}
-                        <span>
-                          {step.label}
-                        </span>
+                          </summary>
+                          <div className="mt-1 text-sm text-foreground">
+                            <p className="whitespace-pre-wrap break-words leading-relaxed">{item.description}</p>
+                          </div>
+                        </details>
                       </div>
-                    );
-                  })}
+                    )}
 
-                  {item.lastMessage && (
-                    <div className="px-1 text-sm text-foreground">
-                      <MarkdownBody
-                        content={item.lastMessage}
-                        testId="subagent-response-markdown"
-                        onOpenFilePath={ctx.onOpenReadFile}
-                        worktreePath={ctx.worktreePath}
-                      />
-                    </div>
-                  )}
+                    {hasExploreSteps && (
+                      <div className="px-1 text-xs">
+                        <details
+                          open={ctx.subagentExploreExpandedById.get(item.id) === true}
+                        >
+                          <summary
+                            className="cursor-pointer list-none text-muted-foreground hover:text-foreground transition-colors select-none flex items-center gap-1.5"
+                            onClick={(event) => {
+                              const exploreExpanded = ctx.subagentExploreExpandedById.get(item.id) === true;
+                              handleControlledSummaryClick(event, exploreExpanded, (nextOpen) => {
+                                ctx.setSubagentExploreExpandedById((current) => setBooleanMapEntry(current, item.id, nextOpen));
+                              });
+                            }}
+                          >
+                            <span>{exploreSummaryText}</span>
+                            <span className={cn("inline-flex transition-transform duration-150", ctx.subagentExploreExpandedById.get(item.id) === true ? "rotate-90" : "")}>
+                              <ChevronRight className="h-3 w-3" />
+                            </span>
+                          </summary>
+                          <div className="mt-1 flex flex-col gap-0.5 text-muted-foreground">
+                            {readSteps.map((step, idx) => (
+                              <span key={`explore:${idx}`}>
+                                {step.toolName === "Read" ? (
+                                  <>
+                                    Read{" "}
+                                    {step.openPath && ctx.onOpenReadFile ? (
+                                      <button
+                                        type="button"
+                                        className="inline text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
+                                        onClick={() => {
+                                          if (step.openPath && ctx.onOpenReadFile) {
+                                            void ctx.onOpenReadFile(step.openPath);
+                                          }
+                                        }}
+                                      >
+                                        {step.label}
+                                      </button>
+                                    ) : (
+                                      <span>{step.label}</span>
+                                    )}
+                                  </>
+                                ) : (
+                                  step.label
+                                )}
+                              </span>
+                            ))}
+                          </div>
+                        </details>
+                      </div>
+                    )}
 
-                  {!item.lastMessage && isRunning && (
-                    <div className="px-1 text-sm text-muted-foreground">
-                      <span>Thinking…</span>
-                    </div>
-                  )}
-                </>
-              )}
+                    {otherSteps.map((step, idx) => {
+                      const isFailedStep = step.status === "failed";
+                      const isRunningStep = step.status === "running";
+
+                      return (
+                        <div
+                          key={`tool:${idx}`}
+                          className={cn(
+                            "px-1 text-xs flex items-center gap-1.5",
+                            isFailedStep ? "text-destructive" : "text-muted-foreground",
+                          )}
+                        >
+                          {isFailedStep
+                            ? <XCircle className="h-3.5 w-3.5 shrink-0" />
+                            : isRunningStep
+                              ? <Loader2 className="h-3 w-3 shrink-0 text-muted-foreground/50 animate-spin" />
+                              : null}
+                          <span>
+                            {step.label}
+                          </span>
+                        </div>
+                      );
+                    })}
+
+                    {item.lastMessage && (
+                      <div className="px-1 text-sm text-foreground">
+                        <MarkdownBody
+                          content={item.lastMessage}
+                          testId="subagent-response-markdown"
+                          onOpenFilePath={ctx.onOpenReadFile}
+                          worktreePath={ctx.worktreePath}
+                        />
+                      </div>
+                    )}
+
+                    {!item.lastMessage && isRunning && (
+                      <div className="px-1 text-sm text-muted-foreground">
+                        <span>Thinking…</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="border-t border-border/20 px-3 py-1.5 text-[10px] text-muted-foreground/50 flex items-center gap-1.5">
+                <Bot className="h-3 w-3 shrink-0" />
+                <span>
+                  {statusText}
+                </span>
+              </div>
             </div>
-
-            <div className="border-t border-border/20 px-3 py-1.5 text-[10px] text-muted-foreground/50 flex items-center gap-1.5">
-              <Bot className="h-3 w-3 shrink-0" />
-              <span>
-                {statusText}
-              </span>
-            </div>
-          </div>
+          ) : null}
         </details>
       </article>
     );
@@ -869,26 +920,31 @@ export const TimelineItem = memo(function TimelineItem({
       <article className="px-1" data-testid="timeline-activity">
         <details
           open={expanded}
-          onToggle={(event) => {
-            const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
-            ctx.setExploreActivityExpandedById((current) => setBooleanMapEntry(current, `activity:${item.messageId}`, nextOpen));
-          }}
         >
-          <summary className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden">
+          <summary
+            className="flex cursor-pointer items-center gap-1.5 select-none list-none text-xs text-muted-foreground/70 transition-colors hover:text-muted-foreground [&::-webkit-details-marker]:hidden"
+            onClick={(event) => {
+              handleControlledSummaryClick(event, expanded, (nextOpen) => {
+                ctx.setExploreActivityExpandedById((current) => setBooleanMapEntry(current, `activity:${item.messageId}`, nextOpen));
+              });
+            }}
+          >
             <span>{introText.length > 0 ? introText : "Activity"}</span>
             <span className={cn("inline-flex shrink-0 transition-transform duration-150", expanded ? "rotate-90" : "") }>
               <ChevronRight className="h-3 w-3" />
             </span>
           </summary>
 
-          <div className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground" data-testid="timeline-activity-steps">
-            {item.steps.map((step) => (
-              <div key={step.id} className="px-1 text-xs text-muted-foreground flex items-center gap-1.5">
-                <span>{step.label}</span>
-                {step.detail.length > 0 ? <span className="text-muted-foreground/70">· {step.detail}</span> : null}
-              </div>
-            ))}
-          </div>
+          {expanded ? (
+            <div className="mt-1 flex flex-col gap-1 text-xs text-muted-foreground" data-testid="timeline-activity-steps">
+              {item.steps.map((step) => (
+                <div key={step.id} className="px-1 text-xs text-muted-foreground flex items-center gap-1.5">
+                  <span>{step.label}</span>
+                  {step.detail.length > 0 ? <span className="text-muted-foreground/70">· {step.detail}</span> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </details>
       </article>
     );
@@ -897,7 +953,7 @@ export const TimelineItem = memo(function TimelineItem({
   // item.kind === "message"
   const message = item.message;
   const isRawOutputMode = message.role === "assistant" && ctx.rawOutputMessageIds.has(message.id);
-  if (message.role === "assistant") {
+  if (message.role === "assistant" && ctx.renderDebugEnabled) {
     const signature = [
       isRawOutputMode ? "raw" : "beauty",
       item.renderHint ?? "none",

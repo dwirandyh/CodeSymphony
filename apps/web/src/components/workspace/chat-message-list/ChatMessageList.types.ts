@@ -123,6 +123,7 @@ export type ChatMessageListEmptyState =
   | "existing-thread-empty";
 
 export type ChatMessageListProps = {
+  threadId?: string | null;
   items: ChatTimelineItem[];
   emptyState?: ChatMessageListEmptyState | null;
   showThinkingPlaceholder?: boolean;

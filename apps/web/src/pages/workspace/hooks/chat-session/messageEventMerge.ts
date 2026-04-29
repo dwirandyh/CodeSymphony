@@ -1,6 +1,30 @@
 import type { ChatEvent, ChatMessage } from "@codesymphony/shared-types";
 import type { PendingMessageMutation } from "./useChatSession.types";
 
+function keysMatchAtSameIndex<T>(
+  prefix: T[],
+  superset: T[],
+  getKey: (row: T) => string,
+  areComparable?: (left: T, right: T) => boolean,
+): boolean {
+  if (prefix.length > superset.length) {
+    return false;
+  }
+
+  for (let index = 0; index < prefix.length; index += 1) {
+    const left = prefix[index];
+    const right = superset[index];
+    if (getKey(left) !== getKey(right)) {
+      return false;
+    }
+    if (areComparable && !areComparable(left, right)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function computeAssistantDeltaSuffix(existingContent: string, incomingDelta: string): string {
   if (incomingDelta.length === 0) {
     return "";
@@ -170,6 +194,23 @@ export function prunePendingStreamUpdatesForSnapshot(params: {
 }
 
 export function mergeEventsWithCurrent(queriedEvents: ChatEvent[], current: ChatEvent[]): ChatEvent[] {
+  if (queriedEvents.length === 0) {
+    return current;
+  }
+
+  if (current.length === 0) {
+    return queriedEvents;
+  }
+
+  if (keysMatchAtSameIndex(
+    current,
+    queriedEvents,
+    (event) => event.id,
+    (left, right) => left.idx === right.idx,
+  )) {
+    return queriedEvents.length === current.length ? current : queriedEvents;
+  }
+
   if (current.length > 0 && queriedEvents.length > 0) {
     const currentLastIdx = current[current.length - 1].idx;
     const queriedLastIdx = queriedEvents[queriedEvents.length - 1].idx;

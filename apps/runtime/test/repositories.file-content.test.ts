@@ -46,6 +46,7 @@ describe("worktree file content routes", () => {
     app.decorate("fileService", {
       searchFiles: vi.fn(),
       listFileIndex: vi.fn(),
+      listDirectory: vi.fn(),
     } as never);
     app.decorate("systemService", {
       pickDirectory: vi.fn(),

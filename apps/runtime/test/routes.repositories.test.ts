@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerRepositoryRoutes } from "../src/routes/repositories";
@@ -28,6 +31,7 @@ const mockReviewService = {
 const mockFileService = {
   searchFiles: vi.fn(),
   listFileIndex: vi.fn(),
+  listDirectory: vi.fn(),
 };
 
 const mockSystemService = {
@@ -360,6 +364,28 @@ describe("repository routes", () => {
     it("returns 404 when worktree not found", async () => {
       mockWorktreeService.getById.mockResolvedValue(null);
       const res = await app.inject({ method: "GET", url: "/api/worktrees/xxx/files/index" });
+      expect(res.statusCode).toBe(404);
+    });
+  });
+
+  describe("GET /api/worktrees/:id/files/tree", () => {
+    it("returns directory entries", async () => {
+      const worktreePath = await mkdtemp(join(tmpdir(), "codesymphony-route-tree-"));
+      await mkdir(join(worktreePath, "ignored"), { recursive: true });
+      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: worktreePath });
+      mockFileService.listDirectory.mockResolvedValue([{ path: "ignored/cache.json", type: "file" }]);
+      try {
+        const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/files/tree?path=ignored" });
+        expect(res.statusCode).toBe(200);
+        expect(res.json().data).toEqual([{ path: "ignored/cache.json", type: "file" }]);
+      } finally {
+        await rm(worktreePath, { recursive: true, force: true });
+      }
+    });
+
+    it("returns 404 when worktree not found", async () => {
+      mockWorktreeService.getById.mockResolvedValue(null);
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/xxx/files/tree" });
       expect(res.statusCode).toBe(404);
     });
   });

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
+  type ChatQueuedMessage,
   type CursorModelCatalogEntry,
   DEFAULT_CHAT_MODEL_BY_AGENT,
   type ChatMode,
@@ -37,6 +38,7 @@ import {
 } from "../../../lib/attachments";
 import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
+import { QueuedMessageList } from "../QueuedMessageList";
 import { createAttachmentChipElement } from "./composerChipUtils";
 import { getSerializedTextFromEditor } from "./composerEditorUtils";
 import { useComposerMention } from "./useComposerMention";
@@ -53,8 +55,10 @@ type ComposerSubmitPayload = {
 type ComposerProps = {
   disabled: boolean;
   sending: boolean;
+  queueing?: boolean;
   showStop: boolean;
   stopping: boolean;
+  attachedTop?: boolean;
   threadId: string | null;
   worktreeId: string | null;
   mode: ChatMode;
@@ -71,11 +75,16 @@ type ComposerProps = {
   modelProviderId?: string | null;
   permissionMode: ChatThreadPermissionMode;
   hasMessages: boolean;
+  queuedMessages?: ChatQueuedMessage[];
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
+  onQueueDraft?: (payload: ComposerSubmitPayload) => Promise<boolean>;
   onModeChange: (mode: ChatMode) => void;
   onStop: () => void;
   onAgentSelectionChange?: (selection: UpdateChatThreadAgentSelectionInput) => void;
   onPermissionModeChange: (permissionMode: ChatThreadPermissionMode) => void;
+  onDeleteQueuedMessage?: (queueMessageId: string) => void;
+  onDispatchQueuedMessage?: (queueMessageId: string) => void;
+  onUpdateQueuedMessage?: (queueMessageId: string, content: string) => Promise<boolean>;
 };
 
 type AgentSelectionOption = {
@@ -333,8 +342,10 @@ function AttachmentPreviewDialog({
 function ComposerContent({
   disabled,
   sending,
+  queueing = false,
   showStop,
   stopping,
+  attachedTop = false,
   threadId,
   worktreeId,
   mode,
@@ -351,11 +362,16 @@ function ComposerContent({
   modelProviderId: providedModelProviderId,
   permissionMode,
   hasMessages,
+  queuedMessages = [],
   onSubmitMessage,
+  onQueueDraft,
   onModeChange,
   onStop,
   onAgentSelectionChange: onAgentSelectionChangeProp,
   onPermissionModeChange,
+  onDeleteQueuedMessage,
+  onDispatchQueuedMessage,
+  onUpdateQueuedMessage,
 }: ComposerProps) {
   const [draftText, setDraftText] = useState("");
   const [attachmentPreviewId, setAttachmentPreviewId] = useState<string | null>(null);
@@ -371,6 +387,8 @@ function ComposerContent({
   const permissionPopoverRef = useRef<HTMLDivElement>(null);
   const [permissionPreviewMode, setPermissionPreviewMode] = useState<ChatThreadPermissionMode | null>(null);
   const [mobileSessionSheetOpen, setMobileSessionSheetOpen] = useState(false);
+  const hasProvidedFileIndex = fileIndex !== undefined && typeof fileIndexLoading === "boolean";
+  const [hasRequestedFileIndex, setHasRequestedFileIndex] = useState(() => hasProvidedFileIndex);
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return false;
@@ -427,6 +445,18 @@ function ComposerContent({
     setPermissionPreviewMode(null);
   }, [mobileSessionSheetOpen]);
 
+  useEffect(() => {
+    setHasRequestedFileIndex(hasProvidedFileIndex);
+  }, [hasProvidedFileIndex, worktreeId]);
+
+  const queuedMessageHandlers = onDeleteQueuedMessage && onDispatchQueuedMessage && onUpdateQueuedMessage
+    ? {
+      onDelete: onDeleteQueuedMessage,
+      onDispatch: onDispatchQueuedMessage,
+      onUpdate: onUpdateQueuedMessage,
+    }
+    : null;
+  const canRenderQueuedMessages = queuedMessages.length > 0 && queuedMessageHandlers !== null;
   const selectionLocked = hasMessages || !threadId;
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => ({
     claude: [
@@ -539,6 +569,10 @@ function ComposerContent({
   const prevContentLenRef = useRef(0);
   const afterChipHTMLRef = useRef<string | null>(null);
   const lastStableHTMLRef = useRef<string>("");
+  const shouldLoadInternalFileIndex = !hasProvidedFileIndex && hasRequestedFileIndex;
+  const fileIndexState = useFileIndex(shouldLoadInternalFileIndex ? worktreeId : null);
+  const mentionFileIndex = fileIndex ?? fileIndexState.entries;
+  const mentionFileIndexLoading = fileIndexLoading ?? fileIndexState.loading;
 
   const {
     mention,
@@ -553,10 +587,16 @@ function ComposerContent({
   } = useComposerMention({
     editorRef,
     popoverRef,
-    fileIndex: fileIndex ?? [],
-    fileIndexLoading: fileIndexLoading ?? false,
+    fileIndex: mentionFileIndex,
+    fileIndexLoading: mentionFileIndexLoading,
     onChange: setDraftText,
   });
+
+  useEffect(() => {
+    if (!hasProvidedFileIndex && mention.active && !hasRequestedFileIndex) {
+      setHasRequestedFileIndex(true);
+    }
+  }, [hasProvidedFileIndex, hasRequestedFileIndex, mention.active]);
 
   const {
     attachments,
@@ -620,6 +660,7 @@ function ComposerContent({
   const cannotSend = disabled
     || pendingAttachmentReads > 0
     || (draftText.trim().length === 0 && mentionedFilesRef.current.length === 0 && attachments.length === 0);
+  const cannotQueue = cannotSend || !onQueueDraft;
   const composerPlaceholder = isPlan
     ? "Describe what you want to plan..."
     : "Message CodeSymphony... (type / for commands, @ to mention files)";
@@ -742,41 +783,97 @@ function ComposerContent({
     afterChipHTMLRef.current = null;
   }, [applyAttachmentsChange, closeMention, closeSlashCommand]);
 
-  const handleSubmit = useCallback(async () => {
-    if (cannotSend) return;
-    if (pendingAttachmentReadsRef.current > 0) return;
+  const buildSubmissionPayload = useCallback((): {
+    content: string;
+    attachments: PendingAttachment[];
+  } | null => {
     const content = buildFinalContent();
     const currentAttachments = attachmentsRef.current;
-    if (!content.trim() && currentAttachments.length === 0) return;
+    if (!content.trim() && currentAttachments.length === 0) {
+      return null;
+    }
 
     const editor = editorRef.current;
     const inlineAttachmentIds = new Set<string>();
     if (editor) {
       const chips = editor.querySelectorAll<HTMLElement>("[data-attachment-id]");
       for (const chip of chips) {
-        if (chip.dataset.attachmentId) inlineAttachmentIds.add(chip.dataset.attachmentId);
+        if (chip.dataset.attachmentId) {
+          inlineAttachmentIds.add(chip.dataset.attachmentId);
+        }
       }
     }
 
     const allAttachments = [
       ...currentAttachments,
       ...inlineAttachmentIds.size > 0
-        ? currentAttachments.filter((a) => inlineAttachmentIds.has(a.id))
+        ? currentAttachments.filter((attachment) => inlineAttachmentIds.has(attachment.id))
         : [],
     ];
 
     const seen = new Set<string>();
-    const dedupedAttachments = allAttachments.filter((a) => {
-      if (seen.has(a.id)) return false;
-      seen.add(a.id);
+    const dedupedAttachments = allAttachments.filter((attachment) => {
+      if (seen.has(attachment.id)) {
+        return false;
+      }
+      seen.add(attachment.id);
       return true;
     });
 
-    const didSubmit = await onSubmitMessage({ content, mode, attachments: dedupedAttachments });
+    return {
+      content,
+      attachments: dedupedAttachments,
+    };
+  }, [buildFinalContent]);
+
+  const handleSubmit = useCallback(async () => {
+    if (cannotSend) return;
+    if (pendingAttachmentReadsRef.current > 0) return;
+    const payload = buildSubmissionPayload();
+    if (!payload) return;
+
+    const didSubmit = await onSubmitMessage({ content: payload.content, mode, attachments: payload.attachments });
     if (didSubmit) {
       resetDraft();
     }
-  }, [cannotSend, buildFinalContent, onSubmitMessage, mode, resetDraft]);
+  }, [buildSubmissionPayload, cannotSend, onSubmitMessage, mode, resetDraft]);
+
+  const handleQueueDraft = useCallback(async () => {
+    if (cannotQueue || pendingAttachmentReadsRef.current > 0 || !onQueueDraft) {
+      return;
+    }
+
+    const payload = buildSubmissionPayload();
+    if (!payload) {
+      return;
+    }
+
+    const didQueue = await onQueueDraft({ content: payload.content, mode, attachments: payload.attachments });
+    if (didQueue) {
+      resetDraft();
+    }
+  }, [buildSubmissionPayload, cannotQueue, mode, onQueueDraft, resetDraft]);
+
+  const primaryAction: "send" | "queue" | "stop" = showStop
+    ? (!cannotQueue ? "queue" : "stop")
+    : "send";
+  const primaryActionDisabled =
+    primaryAction === "send"
+      ? cannotSend
+      : primaryAction === "queue"
+        ? (cannotQueue || queueing)
+        : stopping;
+  const primaryActionLabel =
+    primaryAction === "send"
+      ? (sending ? "Running..." : "Send message")
+      : primaryAction === "queue"
+        ? (queueing ? "Queueing..." : "Queue draft")
+        : (stopping ? "Stopping..." : "Stop run");
+  const handlePrimaryAction = primaryAction === "send"
+    ? handleSubmit
+    : primaryAction === "queue"
+      ? handleQueueDraft
+      : onStop;
 
   const handleEditorAttachmentPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const target = event.target instanceof HTMLElement
@@ -1187,7 +1284,9 @@ function ComposerContent({
     <section className="pb-1 pt-0.5 safe-bottom lg:pb-2 lg:pt-1">
       <div className="mx-auto w-full max-w-3xl">
         <div
-          className={`relative rounded-2xl border bg-background/20 px-3 pb-11 pt-2.5 lg:rounded-3xl lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
+          className={`relative border bg-background/35 px-3 pb-11 pt-2.5 shadow-sm backdrop-blur-sm lg:px-4 lg:pb-12 lg:pt-3 transition-colors ${
+            attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl lg:rounded-t-none" : "rounded-2xl lg:rounded-3xl"
+          } ${
             isDragOver ? "border-primary/60 bg-primary/5" : "border-input/50"
           }`}
           onDragOver={handleDragOver}
@@ -1196,7 +1295,7 @@ function ComposerContent({
           onDrop={handleDrop}
         >
           {isDragOver && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-primary/10 lg:rounded-3xl">
+            <div className={`absolute inset-0 z-10 flex items-center justify-center bg-primary/10 ${attachedTop ? "rounded-b-2xl rounded-t-none lg:rounded-b-3xl" : "rounded-2xl lg:rounded-3xl"}`}>
               <span className="text-sm font-medium text-primary">Drop files here</span>
             </div>
           )}
@@ -1210,12 +1309,23 @@ function ComposerContent({
             onChange={handleFileInputChange}
           />
 
-          {mention.active && (suggestions.length > 0 || (fileIndexLoading ?? false)) && (
+          {canRenderQueuedMessages ? (
+            <QueuedMessageList
+              embedded
+              messages={queuedMessages}
+              disabled={disabled}
+              onDelete={queuedMessageHandlers.onDelete}
+              onDispatch={queuedMessageHandlers.onDispatch}
+              onUpdate={queuedMessageHandlers.onUpdate}
+            />
+          ) : null}
+
+          {mention.active && (suggestions.length > 0 || mentionFileIndexLoading) && (
             <div
               ref={popoverRef}
               className="absolute bottom-full left-0 z-50 mb-2 w-full max-h-60 overflow-y-auto rounded-xl border border-border/60 bg-popover shadow-lg"
             >
-              {(fileIndexLoading ?? false) && suggestions.length === 0 ? (
+              {mentionFileIndexLoading && suggestions.length === 0 ? (
                 <div className="px-3 py-2 text-xs text-muted-foreground">Loading files...</div>
               ) : (
                 suggestions.map((entry, index) => (
@@ -1561,16 +1671,16 @@ function ComposerContent({
           <div className="absolute bottom-2 right-2.5 flex items-center gap-2 lg:bottom-3 lg:right-3">
             <Button
               type="button"
-              onClick={showStop ? onStop : handleSubmit}
-              disabled={showStop ? stopping : cannotSend}
+              onClick={handlePrimaryAction}
+              disabled={primaryActionDisabled}
               size="icon"
-              aria-label={showStop ? "Stop run" : "Send message"}
+              aria-label={primaryActionLabel}
               className="h-8 w-8 rounded-full bg-white text-black hover:bg-white/90 disabled:bg-white/80 disabled:text-black/70"
             >
-              {showStop ? <Square className="h-3.5 w-3.5" fill="currentColor" /> : <ArrowUp className="h-3.5 w-3.5" />}
-              <span className="sr-only">
-                {showStop ? (stopping ? "Stopping..." : "Stop run") : sending ? "Running..." : "Send message"}
-              </span>
+              {primaryAction === "send" || primaryAction === "queue"
+                ? <ArrowUp className="h-3.5 w-3.5" />
+                : <Square className="h-3.5 w-3.5" fill="currentColor" />}
+              <span className="sr-only">{primaryActionLabel}</span>
             </Button>
           </div>
         </div>
@@ -1588,22 +1698,6 @@ function ComposerContent({
   );
 }
 
-function ComposerFileIndexBridge(props: ComposerProps) {
-  const fileIndex = useFileIndex(props.worktreeId);
-
-  return (
-    <ComposerContent
-      {...props}
-      fileIndex={fileIndex.entries}
-      fileIndexLoading={fileIndex.loading}
-    />
-  );
-}
-
 export function Composer(props: ComposerProps) {
-  if (props.fileIndex !== undefined && typeof props.fileIndexLoading === "boolean") {
-    return <ComposerContent {...props} />;
-  }
-
-  return <ComposerFileIndexBridge {...props} />;
+  return <ComposerContent {...props} />;
 }

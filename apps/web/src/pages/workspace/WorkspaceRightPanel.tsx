@@ -11,6 +11,7 @@ import type { useGitChanges } from "./hooks/useGitChanges";
 type GitChangesData = ReturnType<typeof useGitChanges>;
 
 export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
+  desktopApp = false,
   rightPanelId,
   worktreeId,
   gitChanges,
@@ -27,6 +28,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   prMrActionBusy,
   onPrMrAction,
 }: {
+  desktopApp?: boolean;
   rightPanelId: "explorer" | "git" | "device" | null;
   worktreeId: string | null;
   gitChanges: GitChangesData;
@@ -54,7 +56,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
     <>
       {/* ── Right panel resize handle ── */}
       {rightPanelId && (
-        <div className="relative hidden w-0 lg:block" aria-hidden="true">
+        <div className={cn("relative w-0", desktopApp ? "block" : "hidden lg:block")} aria-hidden="true">
           <button
             type="button"
             className={cn(
@@ -75,7 +77,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
       )}
 
       {/* ── Right Sidebar ── */}
-      <div className="mb-1 hidden min-h-0 shrink-0 flex-row bg-card/75 sm:mb-2 lg:mb-0 lg:flex">
+      <div className={cn("mb-1 min-h-0 shrink-0 flex-row bg-card/75 sm:mb-2 lg:mb-0", desktopApp ? "flex" : "hidden lg:flex")}>
         {/* ── Right panel content ── */}
         {rightPanelId && (
           <aside
