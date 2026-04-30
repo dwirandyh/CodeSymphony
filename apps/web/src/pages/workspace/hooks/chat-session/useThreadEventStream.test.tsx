@@ -972,14 +972,22 @@ describe("useThreadEventStream", () => {
 
   it("resyncs the selected thread from snapshots when the stream stays stale but backend progress has advanced", async () => {
     const threadId = "selected-thread";
+    const startedEvent = makeEvent({
+      id: "event-1",
+      threadId,
+      idx: 1,
+      type: "tool.started",
+      payload: { toolUseId: "tool-1", toolName: "Read" },
+    });
+    const finishedEvent = makeEvent({
+      id: "event-8",
+      threadId,
+      idx: 8,
+      type: "tool.finished",
+      payload: { toolUseId: "tool-1", toolName: "Read", summary: "Read fresh.txt" },
+    });
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot([
-      makeEvent({
-        id: "event-1",
-        threadId,
-        idx: 1,
-        type: "tool.started",
-        payload: { toolUseId: "tool-1", toolName: "Read" },
-      }),
+      startedEvent,
     ]));
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
       {
@@ -998,15 +1006,7 @@ describe("useThreadEventStream", () => {
       } satisfies ChatThread,
     ]);
     getThreadStatusSnapshotMock.mockResolvedValueOnce({ status: "running", newestIdx: 8 });
-    getTimelineSnapshotMock.mockResolvedValueOnce(makeSnapshot([
-      makeEvent({
-        id: "event-8",
-        threadId,
-        idx: 8,
-        type: "tool.finished",
-        payload: { toolName: "Read", summary: "Read fresh.txt" },
-      }),
-    ]));
+    getTimelineSnapshotMock.mockResolvedValueOnce(makeSnapshot([startedEvent, finishedEvent]));
 
     renderHook(threadId, {
       initialWaitingAssistant: { threadId, afterIdx: 1 },
@@ -1031,5 +1031,10 @@ describe("useThreadEventStream", () => {
     expect(queryClient.getQueryData(queryKeys.threads.timelineSnapshot(threadId))).toEqual(expect.objectContaining({
       newestIdx: 8,
     }));
+    expect((getThreadEventsCollection(threadId).toArray as ChatEvent[]).map((event) => event.id)).toEqual([
+      "event-1",
+      "event-8",
+    ]);
+    expect(latestWaitingAssistant).toBeNull();
   });
 });

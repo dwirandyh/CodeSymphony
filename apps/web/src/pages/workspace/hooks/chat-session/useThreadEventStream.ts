@@ -24,6 +24,7 @@ import {
   getThreadEventsCollection,
   getThreadMessagesCollection,
 } from "../../../../collections/threadCollections";
+import { hydrateThreadFromSnapshot } from "../../../../collections/threadHydrator";
 import {
   allocateNextThreadMessageSeq,
   clearThreadReconnectTimer,
@@ -66,6 +67,10 @@ const STREAM_WATCHDOG_INTERVAL_MS = 2_000;
 const STREAM_STALE_THRESHOLD_MS = 7_000;
 const STREAM_CONNECTING_RESTART_THRESHOLD_MS = 15_000;
 
+function getSnapshotNewestEventIdx(snapshot: ChatTimelineSnapshot): number | null {
+  return snapshot.newestIdx ?? snapshot.events[snapshot.events.length - 1]?.idx ?? null;
+}
+
 function isLiveActivityEvent(event: ChatEvent): boolean {
   return LIVE_ACTIVITY_EVENT_TYPES.has(event.type) && !isMetadataToolEvent(event);
 }
@@ -106,7 +111,7 @@ interface UseThreadEventStreamParams {
 }
 
 function syncThreadStreamCursorFromSnapshot(threadId: string, snapshot: ChatTimelineSnapshot) {
-  const snapshotNewestIdx = snapshot.newestIdx ?? snapshot.events[snapshot.events.length - 1]?.idx ?? null;
+  const snapshotNewestIdx = getSnapshotNewestEventIdx(snapshot);
   const localNewestIdx = getThreadLastEventIdx(threadId);
 
   if (
@@ -124,6 +129,25 @@ function syncThreadStreamCursorFromSnapshot(threadId: string, snapshot: ChatTime
   if (snapshotNewestIdx != null) {
     setThreadLastEventIdx(threadId, snapshotNewestIdx);
   }
+}
+
+function clearWaitingAssistantFromRemoteSnapshot(params: {
+  threadId: string;
+  snapshot: ChatTimelineSnapshot;
+  setWaitingAssistant: Dispatch<SetStateAction<{ threadId: string; afterIdx: number } | null>>;
+}) {
+  const snapshotNewestIdx = getSnapshotNewestEventIdx(params.snapshot);
+  if (snapshotNewestIdx == null) {
+    return;
+  }
+
+  params.setWaitingAssistant((current) => {
+    if (!current || current.threadId !== params.threadId || snapshotNewestIdx <= current.afterIdx) {
+      return current;
+    }
+
+    return null;
+  });
 }
 
 function syncThreadStreamCursorFromStatus(threadId: string, snapshot: ChatThreadStatusSnapshot) {
@@ -437,6 +461,18 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         }
 
         queryClient.setQueryData(queryKeys.threads.timelineSnapshot(selectedThreadId), timelineSnapshot);
+        if (timelineSnapshot.collectionsIncluded !== false) {
+          hydrateThreadFromSnapshot({
+            threadId: selectedThreadId,
+            snapshot: timelineSnapshot,
+            mode: "merge",
+          });
+        }
+        clearWaitingAssistantFromRemoteSnapshot({
+          threadId: selectedThreadId,
+          snapshot: timelineSnapshot,
+          setWaitingAssistant,
+        });
         syncThreadStreamCursorFromSnapshot(selectedThreadId, timelineSnapshot);
         markStreamActivity();
         onError(null);
