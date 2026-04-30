@@ -1,5 +1,5 @@
 import type { Repository, Worktree } from "@codesymphony/shared-types";
-import { findRootWorktree } from "../lib/worktree";
+import { findRootWorktree, isOperationalWorktreeStatus } from "../lib/worktree";
 
 export type WorktreeWithRepository = Worktree & {
   repository: Repository;
@@ -28,7 +28,7 @@ export function buildRepositoryWorktreeIndex(repositories: Repository[]): Reposi
         repository,
       });
 
-      if (worktree.status === "active") {
+      if (isOperationalWorktreeStatus(worktree.status)) {
         activeWorktreeIds.push(worktree.id);
       }
     }

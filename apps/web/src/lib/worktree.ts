@@ -137,3 +137,15 @@ export function isRootWorktree(worktree: Worktree, repository: Repository): bool
 export function findRootWorktree(repository: Repository): Worktree | null {
   return repository.worktrees.find((worktree) => isRootWorktree(worktree, repository)) ?? null;
 }
+
+export function isOperationalWorktreeStatus(status: Worktree["status"]): boolean {
+  return status === "active" || status === "delete_failed";
+}
+
+export function isPendingWorktreeStatus(status: Worktree["status"]): boolean {
+  return status === "creating";
+}
+
+export function isSelectableWorktreeStatus(status: Worktree["status"]): boolean {
+  return isOperationalWorktreeStatus(status) || isPendingWorktreeStatus(status);
+}

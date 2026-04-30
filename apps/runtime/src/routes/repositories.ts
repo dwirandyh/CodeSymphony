@@ -13,6 +13,11 @@ import {
 import { z } from "zod";
 import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHead, gitCommitAll, discardGitChange, syncCurrentBranch } from "../services/git.js";
 import { detectMimeType, isImageMimeType } from "../services/filesystemService.js";
+import {
+  getUnavailableWorktreeErrorMessage,
+  isOperationalWorktreeStatus,
+  isUnavailableWorktreeErrorMessage,
+} from "../services/worktreeService.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
@@ -214,6 +219,37 @@ function writeSseHeaders(request: FastifyRequest, reply: FastifyReply) {
   reply.raw.writeHead(200, headers);
 }
 
+async function getOperationalWorktree(
+  app: FastifyInstance,
+  worktreeId: string,
+): Promise<Awaited<ReturnType<FastifyInstance["worktreeService"]["getById"]>>> {
+  const worktree = await app.worktreeService.getById(worktreeId);
+  if (!worktree) {
+    return null;
+  }
+
+  if (!isOperationalWorktreeStatus(worktree.status)) {
+    throw new Error(getUnavailableWorktreeErrorMessage(worktree));
+  }
+
+  return worktree;
+}
+
+function respondForWorktreeRouteError(
+  reply: FastifyReply,
+  error: unknown,
+  fallbackMessage: string,
+) {
+  const message = error instanceof Error ? error.message : fallbackMessage;
+  if (message === "Worktree not found") {
+    return reply.code(404).send({ error: message });
+  }
+  if (isUnavailableWorktreeErrorMessage(message)) {
+    return reply.code(409).send({ error: message });
+  }
+  return reply.code(400).send({ error: message });
+}
+
 export async function registerRepositoryRoutes(app: FastifyInstance) {
   app.get("/repositories", async () => {
     const repositories = await app.repositoryService.list();
@@ -315,12 +351,12 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const params = repositoryParams.parse(request.params);
 
     try {
-      const { worktree, scriptResult } = await app.worktreeService.create(params.id, request.body);
+      const result = await app.worktreeService.create(params.id, request.body);
       app.workspaceEventHub.emit("worktree.created", {
-        repositoryId: worktree.repositoryId,
-        worktreeId: worktree.id,
+        repositoryId: result.worktree.repositoryId,
+        worktreeId: result.worktree.id,
       });
-      return reply.code(201).send({ data: worktree, scriptResult });
+      return reply.code(201).send({ data: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to create worktree";
       return reply.code(400).send({ error: message });
@@ -404,11 +440,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       });
       return reply.code(201).send({ data: thread });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to get PR/MR thread";
-      if (message === "Worktree not found") {
-        return reply.code(404).send({ error: message });
-      }
-      return reply.code(400).send({ error: message });
+      return respondForWorktreeRouteError(reply, error, "Unable to get PR/MR thread");
     }
   });
 
@@ -416,16 +448,21 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const params = worktreeParams.parse(request.params);
 
     try {
+      await getOperationalWorktree(app, params.id);
       const result = await app.worktreeService.rerunSetup(params.id);
       return { data: result };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to run setup scripts";
-      return reply.code(400).send({ error: message });
+      return respondForWorktreeRouteError(reply, error, "Unable to run setup scripts");
     }
   });
 
   app.get("/worktrees/:id/run-setup/stream", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
+    try {
+      await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      return respondForWorktreeRouteError(reply, error, "Unable to stream setup scripts");
+    }
     const context = await app.worktreeService.getSetupContext(params.id);
 
     if (!context) {
@@ -478,10 +515,14 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const params = worktreeParams.parse(request.params);
     const query = filesQuery.parse(request.query);
 
-    const worktree = await app.worktreeService.getById(params.id);
-    if (!worktree) {
-      return reply.code(404).send({ error: "Worktree not found" });
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to search files";
+      return reply.code(409).send({ error: message });
     }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
       const results = await app.fileService.searchFiles(worktree.path, query.q, 20);
@@ -495,10 +536,14 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
   app.get("/worktrees/:id/files/index", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
 
-    const worktree = await app.worktreeService.getById(params.id);
-    if (!worktree) {
-      return reply.code(404).send({ error: "Worktree not found" });
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list files";
+      return reply.code(409).send({ error: message });
     }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
       const results = await app.fileService.listFileIndex(worktree.path);
@@ -513,10 +558,14 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const params = worktreeParams.parse(request.params);
     const query = fileTreeQuery.parse(request.query);
 
-    const worktree = await app.worktreeService.getById(params.id);
-    if (!worktree) {
-      return reply.code(404).send({ error: "Worktree not found" });
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list directory";
+      return reply.code(409).send({ error: message });
     }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
       const { relativePath } = await resolveWorktreeDirectory(worktree, query.path);
@@ -532,10 +581,14 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const params = worktreeParams.parse(request.params);
     const query = GetWorktreeFileContentQuerySchema.parse(request.query);
 
-    const worktree = await app.worktreeService.getById(params.id);
-    if (!worktree) {
-      return reply.code(404).send({ error: "Worktree not found" });
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to read file";
+      return reply.code(409).send({ error: message });
     }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
       const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, query.path);
@@ -572,10 +625,14 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const params = worktreeParams.parse(request.params);
     const input = UpdateWorktreeFileContentInputSchema.parse(request.body);
 
-    const worktree = await app.worktreeService.getById(params.id);
-    if (!worktree) {
-      return reply.code(404).send({ error: "Worktree not found" });
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save file";
+      return reply.code(409).send({ error: message });
     }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
       const { canonicalTargetPath, relativePath } = await resolveWorktreeFile(worktree, input.path);
@@ -600,7 +657,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.get("/worktrees/:id/git/status", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
-    const worktree = await app.worktreeService.getById(params.id);
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to get git status";
+      return reply.code(409).send({ error: message });
+    }
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
@@ -614,7 +677,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.get("/worktrees/:id/git/branch-diff-summary", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
-    const worktree = await app.worktreeService.getById(params.id);
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to get branch diff summary";
+      return reply.code(409).send({ error: message });
+    }
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
@@ -631,7 +700,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
   app.get("/worktrees/:id/git/diff", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
     const query = diffQuery.parse(request.query);
-    const worktree = await app.worktreeService.getById(params.id);
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to get git diff";
+      return reply.code(409).send({ error: message });
+    }
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
@@ -650,7 +725,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
   app.get("/worktrees/:id/git/file-contents", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
     const query = fileContentsQuery.parse(request.query);
-    const worktree = await app.worktreeService.getById(params.id);
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to get file contents";
+      return reply.code(409).send({ error: message });
+    }
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     const oldContent = await getFileAtHead(worktree.path, query.path);
@@ -667,7 +748,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
   app.post("/worktrees/:id/git/commit", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
     const { message, agent, model, modelProviderId } = GitCommitInputSchema.parse(request.body);
-    const worktree = await app.worktreeService.getById(params.id);
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Commit failed";
+      return reply.code(409).send({ error: message });
+    }
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
@@ -696,7 +783,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.post("/worktrees/:id/git/sync", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
-    const worktree = await app.worktreeService.getById(params.id);
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Sync failed";
+      return reply.code(409).send({ error: message });
+    }
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
@@ -719,7 +812,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
   app.post("/worktrees/:id/git/discard", async (request, reply) => {
     const params = discardParams.parse(request.params);
     const { filePath } = discardBody.parse(request.body);
-    const worktree = await app.worktreeService.getById(params.id);
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Discard failed";
+      return reply.code(409).send({ error: message });
+    }
     if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
@@ -740,10 +839,14 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const params = worktreeParams.parse(request.params);
     const input = OpenWorktreeFileInputSchema.parse(request.body);
 
-    const worktree = await app.worktreeService.getById(params.id);
-    if (!worktree) {
-      return reply.code(404).send({ error: "Worktree not found" });
+    let worktree;
+    try {
+      worktree = await getOperationalWorktree(app, params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to open file";
+      return reply.code(409).send({ error: message });
     }
+    if (!worktree) return reply.code(404).send({ error: "Worktree not found" });
 
     try {
       const { canonicalTargetPath } = await resolveWorktreeFile(worktree, input.path);

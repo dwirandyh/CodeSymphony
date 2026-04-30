@@ -166,24 +166,24 @@ describe("api", () => {
       mockFetch.mockReturnValueOnce(
         Promise.resolve({
           ok: true, status: 200,
-          json: () => Promise.resolve({ data: worktree }),
+          json: () => Promise.resolve({ data: { worktree, pending: true } }),
         }),
       );
       const result = await api.createWorktree("r1", { branch: "feature" });
       expect(result.worktree).toEqual(worktree);
+      expect(result.pending).toBe(true);
     });
 
-    it("includes script result if present", async () => {
+    it("returns the pending flag from the response", async () => {
       const worktree = { id: "w1" };
-      const scriptResult = { success: true, output: "ok" };
       mockFetch.mockReturnValueOnce(
         Promise.resolve({
           ok: true, status: 200,
-          json: () => Promise.resolve({ data: worktree, scriptResult }),
+          json: () => Promise.resolve({ data: { worktree, pending: false } }),
         }),
       );
       const result = await api.createWorktree("r1");
-      expect(result.scriptResult).toEqual(scriptResult);
+      expect(result.pending).toBe(false);
     });
 
     it("throws on error", async () => {

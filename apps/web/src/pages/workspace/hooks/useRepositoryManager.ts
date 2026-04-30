@@ -10,7 +10,11 @@ import { useDeleteWorktree } from "../../../hooks/mutations/useDeleteWorktree";
 import { useDeleteRepository } from "../../../hooks/mutations/useDeleteRepository";
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { useUpdateWorktreeBaseBranch } from "../../../hooks/mutations/useUpdateWorktreeBaseBranch";
-import { isRootWorktree } from "../../../lib/worktree";
+import {
+  isPendingWorktreeStatus,
+  isRootWorktree,
+  isSelectableWorktreeStatus,
+} from "../../../lib/worktree";
 import { buildRepositoryWorktreeIndex } from "../../../collections/worktrees";
 
 export interface ScriptUpdateEvent {
@@ -27,12 +31,6 @@ interface UseRepositoryManagerOptions {
   onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
   onScriptUpdate?: (event: ScriptUpdateEvent) => void;
   onScriptOutputChunk?: (event: { worktreeId: string; chunk: string }) => void;
-}
-
-const SELECTABLE_WORKTREE_STATUSES = new Set<Worktree["status"]>(["active", "delete_failed"]);
-
-function isSelectableWorktreeStatus(status: Worktree["status"]): boolean {
-  return SELECTABLE_WORKTREE_STATUSES.has(status);
 }
 
 function isSelectableWorktree(worktree: Pick<Worktree, "status"> | null | undefined): boolean {
@@ -60,6 +58,33 @@ function markWorktreeDeletionRequested(repositories: Repository[], worktreeId: s
         : worktree,
     ),
   }));
+}
+
+function upsertPendingWorktree(
+  repositories: Repository[],
+  repositoryId: string,
+  nextWorktree: Worktree,
+): Repository[] {
+  return repositories.map((repository) => {
+    if (repository.id !== repositoryId) {
+      return repository;
+    }
+
+    const existingIndex = repository.worktrees.findIndex((worktree) => worktree.id === nextWorktree.id);
+    if (existingIndex === -1) {
+      return {
+        ...repository,
+        worktrees: [nextWorktree, ...repository.worktrees],
+      };
+    }
+
+    const updatedWorktrees = [...repository.worktrees];
+    updatedWorktrees[existingIndex] = nextWorktree;
+    return {
+      ...repository,
+      worktrees: updatedWorktrees,
+    };
+  });
 }
 
 export function useRepositoryManager(
@@ -146,6 +171,8 @@ export function useRepositoryManager(
     repoId: null,
     worktreeId: null,
   });
+  const pendingCreatedWorktreesRef = useRef<Map<string, { previousSelection: { repositoryId: string | null; worktreeId: string | null } }>>(new Map());
+  const pendingSetupWorktreeIdsRef = useRef<Set<string>>(new Set());
 
   const selectedRepository = useMemo(() => {
     if (selectedRepositoryId) {
@@ -165,6 +192,70 @@ export function useRepositoryManager(
   function findWorktreeName(worktreeId: string): string {
     return repositoryWorktreeIndex.worktreeById.get(worktreeId)?.branch ?? worktreeId;
   }
+
+  useEffect(() => {
+    const pendingCreatedWorktrees = pendingCreatedWorktreesRef.current;
+    const pendingSetupWorktreeIds = pendingSetupWorktreeIdsRef.current;
+
+    for (const [worktreeId, pendingState] of pendingCreatedWorktrees) {
+      const worktree = repositoryWorktreeIndex.worktreeById.get(worktreeId) ?? null;
+      if (!worktree) {
+        pendingCreatedWorktrees.delete(worktreeId);
+        pendingSetupWorktreeIds.delete(worktreeId);
+        continue;
+      }
+
+      if (isPendingWorktreeStatus(worktree.status)) {
+        continue;
+      }
+
+      pendingCreatedWorktrees.delete(worktreeId);
+
+      if (worktree.status === "create_failed") {
+        pendingSetupWorktreeIds.delete(worktreeId);
+        if (selectedWorktreeId === worktreeId) {
+          const fallbackRepositoryId = pendingState.previousSelection.repositoryId ?? worktree.repository.id;
+          const fallbackRepository = repositoryWorktreeIndex.repositoryById.get(fallbackRepositoryId)
+            ?? repositories[0]
+            ?? null;
+          const fallbackWorktreeId = fallbackRepository
+            ? resolveAvailableWorktreeId(fallbackRepository, worktreeId)
+            : null;
+          setSelectedRepositoryId(fallbackRepository?.id ?? null);
+          setSelectedWorktreeId(fallbackWorktreeId);
+        }
+        onError(worktree.lastCreateError ?? "Failed to create worktree");
+        continue;
+      }
+
+      if (worktree.repository.setupScript && worktree.repository.setupScript.length > 0) {
+        pendingSetupWorktreeIds.add(worktreeId);
+      }
+    }
+
+    if (activeStreamRef.current || pendingSetupWorktreeIds.size === 0) {
+      return;
+    }
+
+    const nextSetupWorktreeId = Array.from(pendingSetupWorktreeIds).find((worktreeId) => {
+      const worktree = repositoryWorktreeIndex.worktreeById.get(worktreeId);
+      return worktree?.repository.setupScript != null && worktree.repository.setupScript.length > 0;
+    }) ?? null;
+
+    if (!nextSetupWorktreeId) {
+      pendingSetupWorktreeIds.clear();
+      return;
+    }
+
+    const nextSetupWorktree = repositoryWorktreeIndex.worktreeById.get(nextSetupWorktreeId);
+    if (!nextSetupWorktree) {
+      pendingSetupWorktreeIds.delete(nextSetupWorktreeId);
+      return;
+    }
+
+    pendingSetupWorktreeIds.delete(nextSetupWorktreeId);
+    runSetupStreaming(nextSetupWorktreeId, nextSetupWorktree.branch);
+  }, [onError, repositories, repositoryWorktreeIndex, selectedWorktreeId, setupRunning]);
 
   function applyRequestedSelection(requestedRepoId: string | null, requestedWorktreeId: string | null): boolean {
     if (requestedWorktreeId) {
@@ -246,7 +337,10 @@ export function useRepositoryManager(
       : repositoryWorktreeIndex.worktreeById.get(selectedWorktreeId) ?? null;
     const selectedWorktreeStillExists = selectedWorktreeId == null || selectedWorktree != null;
     const selectedWorktreeStillSelectable = selectedWorktreeId == null || isSelectableWorktree(selectedWorktree);
-    const unavailableSelectedWorktree = selectedWorktree != null && !isSelectableWorktree(selectedWorktree)
+    const pendingCreatedSelection = selectedWorktreeId != null
+      ? pendingCreatedWorktreesRef.current.get(selectedWorktreeId) ?? null
+      : null;
+    const unavailableSelectedWorktree = selectedWorktree != null && !isSelectableWorktree(selectedWorktree) && pendingCreatedSelection == null
       ? selectedWorktree
       : null;
     const selectedRepositoryExistedPreviously =
@@ -346,11 +440,17 @@ export function useRepositoryManager(
   async function submitWorktree(repositoryId: string) {
     onError(null);
     try {
+      const previousSelection = {
+        repositoryId: selectedRepositoryId,
+        worktreeId: selectedWorktreeId,
+      };
       const { worktree } = await createWorktreeMutation.mutateAsync({ repositoryId });
+      queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (current) =>
+        upsertPendingWorktree(current ?? repositories, repositoryId, worktree),
+      );
+      pendingCreatedWorktreesRef.current.set(worktree.id, { previousSelection });
       setSelectedWorktreeId(worktree.id);
       setSelectedRepositoryId(repositoryId);
-      // Fire setup scripts in background — does not block worktree creation
-      runSetupStreaming(worktree.id, worktree.branch);
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create worktree");
     }

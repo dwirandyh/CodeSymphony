@@ -69,6 +69,22 @@ vi.mock("../src/services/git.js", () => ({
   discardGitChange: vi.fn().mockResolvedValue(undefined),
 }));
 
+function buildOperationalWorktree(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "w1",
+    repositoryId: "r1",
+    branch: "feature-x",
+    path: "/tmp/wt",
+    baseBranch: "main",
+    status: "active",
+    lastCreateError: null,
+    branchRenamed: false,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 function buildApp(): FastifyInstance {
   const app = Fastify({ logger: false });
   app.decorate("repositoryService", mockRepoService as never);
@@ -311,13 +327,17 @@ describe("repository routes", () => {
 
   describe("POST /api/repositories/:id/worktrees", () => {
     it("creates worktree", async () => {
-      mockWorktreeService.create.mockResolvedValue({ worktree: { id: "w1" } });
+      mockWorktreeService.create.mockResolvedValue({ worktree: buildOperationalWorktree(), pending: true });
       const res = await app.inject({
         method: "POST",
         url: "/api/repositories/r1/worktrees",
         payload: {},
       });
       expect(res.statusCode).toBe(201);
+      expect(res.json().data).toEqual({
+        worktree: buildOperationalWorktree(),
+        pending: true,
+      });
     });
   });
 
@@ -371,7 +391,7 @@ describe("repository routes", () => {
 
   describe("GET /api/worktrees/:id/files", () => {
     it("searches files", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       mockFileService.searchFiles.mockResolvedValue([{ path: "index.ts", type: "file" }]);
       const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/files?q=index" });
       expect(res.statusCode).toBe(200);
@@ -380,7 +400,7 @@ describe("repository routes", () => {
 
   describe("GET /api/worktrees/:id/files/index", () => {
     it("returns file index", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       mockFileService.listFileIndex.mockResolvedValue([]);
       const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/files/index" });
       expect(res.statusCode).toBe(200);
@@ -397,7 +417,7 @@ describe("repository routes", () => {
     it("returns directory entries", async () => {
       const worktreePath = await mkdtemp(join(tmpdir(), "codesymphony-route-tree-"));
       await mkdir(join(worktreePath, "ignored"), { recursive: true });
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: worktreePath });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree({ path: worktreePath }));
       mockFileService.listDirectory.mockResolvedValue([{ path: "ignored/cache.json", type: "file" }]);
       try {
         const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/files/tree?path=ignored" });
@@ -406,6 +426,12 @@ describe("repository routes", () => {
       } finally {
         await rm(worktreePath, { recursive: true, force: true });
       }
+    });
+
+    it("returns 409 when worktree is still being prepared", async () => {
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree({ status: "creating" }));
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/files/tree" });
+      expect(res.statusCode).toBe(409);
     });
 
     it("returns 404 when worktree not found", async () => {
@@ -417,7 +443,7 @@ describe("repository routes", () => {
 
   describe("GET /api/worktrees/:id/git/status", () => {
     it("returns git status", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/git/status" });
       expect(res.statusCode).toBe(200);
     });
@@ -431,7 +457,7 @@ describe("repository routes", () => {
 
   describe("GET /api/worktrees/:id/git/branch-diff-summary", () => {
     it("returns branch diff summary", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt", baseBranch: "main" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/git/branch-diff-summary" });
       expect(res.statusCode).toBe(200);
       expect(res.json().data.baseBranch).toBe("main");
@@ -447,14 +473,14 @@ describe("repository routes", () => {
 
   describe("GET /api/worktrees/:id/git/diff", () => {
     it("returns git diff", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/git/diff" });
       expect(res.statusCode).toBe(200);
       expect(res.json().data.diff).toBe("diff output");
     });
 
     it("passes filePath query", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       const res = await app.inject({
         method: "GET",
         url: "/api/worktrees/w1/git/diff?filePath=src/index.ts",
@@ -471,7 +497,7 @@ describe("repository routes", () => {
 
   describe("GET /api/worktrees/:id/git/file-contents", () => {
     it("returns old and new file contents", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       const res = await app.inject({
         method: "GET",
         url: "/api/worktrees/w1/git/file-contents?path=src/test.ts",
@@ -492,7 +518,7 @@ describe("repository routes", () => {
 
   describe("POST /api/worktrees/:id/git/commit", () => {
     it("commits with provided message", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       const res = await app.inject({
         method: "POST",
         url: "/api/worktrees/w1/git/commit",
@@ -502,7 +528,7 @@ describe("repository routes", () => {
     });
 
     it("generates commit message when empty", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       mockChatService.generateCommitMessage.mockResolvedValue("auto: generated message");
       const res = await app.inject({
         method: "POST",
@@ -526,7 +552,7 @@ describe("repository routes", () => {
 
   describe("POST /api/worktrees/:id/git/sync", () => {
     it("syncs the current branch", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt", repositoryId: "r1" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       const res = await app.inject({
         method: "POST",
         url: "/api/worktrees/w1/git/sync",
@@ -547,7 +573,7 @@ describe("repository routes", () => {
 
   describe("POST /api/worktrees/:id/git/discard", () => {
     it("discards a file change", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", path: "/tmp/wt" });
+      mockWorktreeService.getById.mockResolvedValue(buildOperationalWorktree());
       const res = await app.inject({
         method: "POST",
         url: "/api/worktrees/w1/git/discard",

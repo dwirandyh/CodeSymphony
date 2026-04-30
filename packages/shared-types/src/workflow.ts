@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const WorktreeStatusSchema = z.enum(["active", "archived", "deleting", "delete_failed"]);
+export const WorktreeStatusSchema = z.enum(["active", "archived", "creating", "create_failed", "deleting", "delete_failed"]);
 export type WorktreeStatus = z.infer<typeof WorktreeStatusSchema>;
 
 export const ChatRoleSchema = z.enum(["user", "assistant", "system"]);
@@ -34,6 +34,7 @@ export const WorktreeSchema = z.object({
   path: z.string().min(1),
   baseBranch: z.string().min(1),
   status: WorktreeStatusSchema,
+  lastCreateError: z.string().nullable().optional(),
   lastDeleteError: z.string().nullable().optional(),
   branchRenamed: z.boolean(),
   createdAt: z.string().datetime(),
@@ -500,6 +501,11 @@ export const CreateWorktreeInputSchema = z.object({
   baseBranch: z.string().trim().min(1).optional(),
 });
 
+export const CreateWorktreeResultSchema = z.object({
+  worktree: WorktreeSchema,
+  pending: z.boolean(),
+});
+
 const MAX_THREAD_TITLE_LENGTH = 48;
 
 export const CreateChatThreadInputSchema = z.object({
@@ -669,6 +675,7 @@ export type ChatThreadStatus = z.infer<typeof ChatThreadStatusSchema>;
 export type ChatThreadStatusSnapshot = z.infer<typeof ChatThreadStatusSnapshotSchema>;
 export type CreateRepositoryInput = z.infer<typeof CreateRepositoryInputSchema>;
 export type CreateWorktreeInput = z.infer<typeof CreateWorktreeInputSchema>;
+export type CreateWorktreeResult = z.infer<typeof CreateWorktreeResultSchema>;
 export type CreateChatThreadInput = z.infer<typeof CreateChatThreadInputSchema>;
 
 export const FileEntrySchema = z.object({

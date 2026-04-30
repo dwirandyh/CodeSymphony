@@ -87,6 +87,8 @@ const DEFAULT_THREAD_TITLE = "New Thread";
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_EVENTS: ChatEvent[] = [];
 const pendingAutoCreateWorktreeIds = new Set<string>();
+const PENDING_WORKTREE_THREAD_ID_PREFIX = "pending-worktree-thread:";
+const WORKTREE_PREPARING_MESSAGE = "Worktree is still being prepared. Please wait until it is ready.";
 
 type ThreadNavigationPerfSession = {
   navId: string;
@@ -362,6 +364,40 @@ function createOptimisticThread(params: {
     createdAt,
     updatedAt: createdAt,
   };
+}
+
+function createPendingWorktreePlaceholderThread(params: {
+  worktreeId: string;
+  permissionMode: ChatThreadPermissionMode;
+  selection: Pick<CreateChatThreadInput, "agent" | "model" | "modelProviderId">;
+}): ChatThread {
+  const createdAt = new Date().toISOString();
+  const agent = params.selection.agent ?? "claude";
+
+  return {
+    id: `${PENDING_WORKTREE_THREAD_ID_PREFIX}${params.worktreeId}`,
+    worktreeId: params.worktreeId,
+    title: DEFAULT_THREAD_TITLE,
+    kind: "default",
+    permissionProfile: "default",
+    permissionMode: params.permissionMode,
+    mode: "default",
+    titleEditedManually: false,
+    agent,
+    model: params.selection.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+    modelProviderId: params.selection.modelProviderId ?? null,
+    claudeSessionId: null,
+    codexSessionId: null,
+    cursorSessionId: null,
+    opencodeSessionId: null,
+    active: false,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+function isPendingWorktreePlaceholderThreadId(threadId: string | null | undefined): boolean {
+  return typeof threadId === "string" && threadId.startsWith(PENDING_WORKTREE_THREAD_ID_PREFIX);
 }
 
 function shouldHydratePristineThreadSelectionFromDefaults(params: {
@@ -664,6 +700,9 @@ export function useChatSession(
   const queryClient = useQueryClient();
   const repositoryId = options?.repositoryId ?? null;
   const timelineEnabled = options?.timelineEnabled !== false;
+  const selectedWorktreeStatus = options?.worktreeStatus ?? null;
+  const selectedWorktreeProvisioning = selectedWorktreeStatus === "creating";
+  const selectedWorktreeOperational = selectedWorktreeStatus === "active" || selectedWorktreeStatus === "delete_failed";
   const requestedThreadSelectionDeferred =
     options?.desiredWorktreeId != null
     && options.desiredWorktreeId !== selectedWorktreeId;
@@ -700,6 +739,7 @@ export function useChatSession(
   const prevRequestedThreadExistsRef = useRef(false);
   const restoredActiveThreadIdsRef = useRef<Set<string>>(new Set());
   const restoredWaitingThreadIdsRef = useRef<Set<string>>(new Set());
+  const awaitingProvisionedThreadByWorktreeRef = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
   const pendingAgentSelectionUpdatesRef = useRef<Map<string, Promise<void>>>(new Map());
   const activeThreadNavigationPerfRef = useRef<ThreadNavigationPerfSession | null>(null);
@@ -753,6 +793,7 @@ export function useChatSession(
 
     if (!selectedWorktreeId) {
       prevWorktreeIdRef2.current = selectedWorktreeId;
+      awaitingProvisionedThreadByWorktreeRef.current.clear();
       setWaitingAssistant(null);
       setThreads([]);
       setSelectedThreadId(null);
@@ -764,6 +805,26 @@ export function useChatSession(
     }
 
     if (worktreeChanged) {
+      if (selectedWorktreeProvisioning) {
+        const placeholderSelection = lastThreadSelectionRef.current?.worktreeId === selectedWorktreeId
+          ? lastThreadSelectionRef.current
+          : buildPreferredSelectionInput("newChat");
+        const placeholderThread = createPendingWorktreePlaceholderThread({
+          worktreeId: selectedWorktreeId,
+          permissionMode: pendingComposerPermissionMode,
+          selection: placeholderSelection,
+        });
+
+        awaitingProvisionedThreadByWorktreeRef.current.add(selectedWorktreeId);
+        prevWorktreeIdRef2.current = selectedWorktreeId;
+        setWaitingAssistant(null);
+        setThreads([placeholderThread]);
+        setSelectedThreadId(placeholderThread.id);
+        pendingAgentSelectionUpdatesRef.current.clear();
+        setPendingComposerPermissionMode("default");
+        return;
+      }
+
       const worktreeSwitchSeed = resolveWorktreeSwitchSeed({
         cachedThreads: getCachedThreadsForWorktree(queryClient, selectedWorktreeId),
         requestedThreadId,
@@ -776,6 +837,28 @@ export function useChatSession(
       setSelectedThreadId(worktreeSwitchSeed.selectedThreadId);
       pendingAgentSelectionUpdatesRef.current.clear();
       setPendingComposerPermissionMode("default");
+    }
+
+    if (selectedWorktreeProvisioning) {
+      const placeholderSelection = lastThreadSelectionRef.current?.worktreeId === selectedWorktreeId
+        ? lastThreadSelectionRef.current
+        : buildPreferredSelectionInput("newChat");
+      const placeholderThread = createPendingWorktreePlaceholderThread({
+        worktreeId: selectedWorktreeId,
+        permissionMode: pendingComposerPermissionMode,
+        selection: placeholderSelection,
+      });
+
+      awaitingProvisionedThreadByWorktreeRef.current.add(selectedWorktreeId);
+      prevWorktreeIdRef2.current = selectedWorktreeId;
+      setWaitingAssistant(null);
+      setThreads((current) => (
+        current.length === 1 && current[0]?.id === placeholderThread.id ? current : [placeholderThread]
+      ));
+      if (selectedThreadId !== placeholderThread.id) {
+        setSelectedThreadId(placeholderThread.id);
+      }
+      return;
     }
 
     if (!queriedThreads) return;
@@ -825,6 +908,10 @@ export function useChatSession(
       pendingAutoCreateWorktreeIds.delete(selectedWorktreeId);
     }
 
+    if (queriedThreads.length > 0) {
+      awaitingProvisionedThreadByWorktreeRef.current.delete(selectedWorktreeId);
+    }
+
     const requestedThreadIdChanged = prevRequestedThreadIdRef.current !== requestedThreadId;
 
     if (requestedThreadIdChanged) {
@@ -840,8 +927,13 @@ export function useChatSession(
       return;
     }
 
+    if (awaitingProvisionedThreadByWorktreeRef.current.has(selectedWorktreeId) && queriedThreads.length === 0) {
+      return;
+    }
+
     const shouldAutoCreateInitialThread =
-      !queriedThreadsLoading
+      selectedWorktreeOperational
+      && !queriedThreadsLoading
       && queriedThreads != null
       && queriedThreads.length === 0
       && trackedThreads.length === 0
@@ -931,10 +1023,13 @@ export function useChatSession(
     closingThreadId,
     pendingComposerPermissionMode,
     queriedThreads,
+    queriedThreadsLoading,
     requestedThreadId,
     requestedThreadSelectionDeferred,
     selectedThreadId,
+    selectedWorktreeOperational,
     selectedWorktreeId,
+    selectedWorktreeProvisioning,
   ]);
 
   useEffect(() => {
@@ -949,7 +1044,9 @@ export function useChatSession(
   }, [selectedThreadId, threads]);
 
   const selectedThreadIdForData =
-    selectedThreadId != null && !locallyDeletedThreadIdsRef.current.has(selectedThreadId)
+    selectedThreadId != null
+    && !isPendingWorktreePlaceholderThreadId(selectedThreadId)
+    && !locallyDeletedThreadIdsRef.current.has(selectedThreadId)
       ? selectedThreadId
       : null;
   const { data: liveMessages } = useLiveQuery(
@@ -1051,6 +1148,7 @@ export function useChatSession(
   ]);
   const composerDisabled =
     !selectedThreadId
+    || !selectedWorktreeOperational
     || sendingMessage
     || (selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running");
   const selectedThreadIsRunning = selectedThreadUiStatus === "running";
@@ -1750,12 +1848,13 @@ export function useChatSession(
       return;
     }
 
-    const willNotify = prevThreadIdRef.current !== selectedThreadId;
+    const nextThreadIdForNavigation = selectedThreadIdForData ?? null;
+    const willNotify = prevThreadIdRef.current !== nextThreadIdForNavigation;
     if (willNotify) {
-      prevThreadIdRef.current = selectedThreadId;
-      options?.onThreadChange?.(selectedThreadId);
+      prevThreadIdRef.current = nextThreadIdForNavigation;
+      options?.onThreadChange?.(nextThreadIdForNavigation);
     }
-  }, [requestedThreadId, selectedThreadId]);
+  }, [requestedThreadId, selectedThreadIdForData]);
 
   useThreadEventStream({
     selectedThreadId: remoteBootstrapThreadId,
@@ -1891,6 +1990,11 @@ export function useChatSession(
   }
 
   async function createAdditionalThread() {
+    if (!selectedWorktreeOperational) {
+      onError(WORKTREE_PREPARING_MESSAGE);
+      return null;
+    }
+
     onError(null);
     try {
       const result = await createThreadInCurrentContext(DEFAULT_THREAD_TITLE);
@@ -1961,6 +2065,10 @@ export function useChatSession(
   async function createOrSelectPrMrThreadAndSendMessage(content: string, mode: ChatMode = "default") {
     if (!selectedWorktreeId) {
       onError("Worktree is not selected");
+      return null;
+    }
+    if (!selectedWorktreeOperational) {
+      onError(WORKTREE_PREPARING_MESSAGE);
       return null;
     }
 
@@ -2266,6 +2374,11 @@ export function useChatSession(
     mode: ChatMode,
     messageAttachments: Array<AttachmentInput & { sizeBytes?: number; isInline?: boolean }>,
   ) {
+    if (!selectedWorktreeOperational) {
+      onError(WORKTREE_PREPARING_MESSAGE);
+      return false;
+    }
+
     const shouldInvalidateSnapshot = shouldInvalidateSnapshotImmediatelyAfterSubmit();
     const attachmentsToSend: AttachmentInput[] = messageAttachments.map((att) => ({
       id: att.id,
@@ -2407,6 +2520,11 @@ export function useChatSession(
     mode: ChatMode,
     messageAttachments: Array<AttachmentInput & { sizeBytes?: number; isInline?: boolean }>,
   ) {
+    if (!selectedWorktreeOperational) {
+      onError(WORKTREE_PREPARING_MESSAGE);
+      return false;
+    }
+
     const threadId = activeThreadIdRef.current;
     if (!threadId) {
       return false;

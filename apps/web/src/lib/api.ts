@@ -12,6 +12,7 @@ import type {
   CreateChatThreadInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
+  CreateWorktreeResult,
   CreateWorktreeInput,
   CursorModelCatalog,
   DeviceInventorySnapshot,
@@ -296,7 +297,7 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to delete repository");
     }
   },
-  createWorktree: async (repositoryId: string, input: CreateWorktreeInput = {}): Promise<{ worktree: Worktree; scriptResult?: ScriptResult }> => {
+  createWorktree: async (repositoryId: string, input: CreateWorktreeInput = {}): Promise<CreateWorktreeResult> => {
     const response = await runtimeFetch(`/repositories/${repositoryId}/worktrees`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -309,11 +310,7 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to create worktree");
     }
 
-    const envelope = payload as { scriptResult?: ScriptResult } | null;
-    return {
-      worktree: extractDataEnvelope<Worktree>(payload),
-      scriptResult: envelope?.scriptResult,
-    };
+    return extractDataEnvelope<CreateWorktreeResult>(payload);
   },
   deleteWorktree: async (worktreeId: string, options?: { force?: boolean }) => {
     const query = options?.force ? "?force=true" : "";

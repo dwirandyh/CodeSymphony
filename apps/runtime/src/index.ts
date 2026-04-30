@@ -63,7 +63,7 @@ function createApp() {
   const eventHub = createEventHub(prisma);
   const workspaceEventHub = createWorkspaceEventHub();
   const repositoryService = createRepositoryService(prisma);
-  const worktreeService = createWorktreeService(prisma);
+  const worktreeService = createWorktreeService(prisma, { workspaceEventHub });
   const systemService = createSystemService();
   const fileService = createFileService();
   const terminalService = createTerminalService();
@@ -214,6 +214,7 @@ async function main() {
 
     const app = createApp();
     const recoveredStuckThreadCount = await app.chatService.recoverStuckThreads();
+    const recoveredPendingCreationCount = await app.worktreeService.recoverPendingCreations();
     const recoveredPendingDeletionCount = await app.worktreeDeletionService.recoverPendingDeletions();
 
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
@@ -225,6 +226,9 @@ async function main() {
     }, `Runtime listening on http://${host}:${port}`);
     if (recoveredStuckThreadCount > 0) {
       app.logService.log("info", "runtime", `Recovered ${recoveredStuckThreadCount} stuck thread(s)`);
+    }
+    if (recoveredPendingCreationCount > 0) {
+      app.logService.log("info", "runtime", `Recovered ${recoveredPendingCreationCount} interrupted worktree creation(s)`);
     }
     if (recoveredPendingDeletionCount > 0) {
       app.logService.log("info", "runtime", `Recovered ${recoveredPendingDeletionCount} interrupted worktree deletion(s)`);

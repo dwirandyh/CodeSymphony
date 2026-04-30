@@ -46,6 +46,7 @@ import {
   type UpdateChatThreadAgentSelectionInput,
   type UpdateChatThreadModeInput,
   type UpdateChatThreadPermissionModeInput,
+  type Worktree,
 } from "@codesymphony/shared-types";
 import type { RuntimeDeps } from "../../types.js";
 import { mapChatMessage, mapChatQueuedMessage, mapChatThread } from "../mappers.js";
@@ -101,6 +102,7 @@ import { buildCodexCliProviderHint, resolveCodexCliProviderOverride } from "../.
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
 import { listCursorSlashCommands } from "../../cursor/sessionRunner.js";
 import { shouldAutoApproveWorkspaceEdit } from "./workspaceEditPermissions.js";
+import { getUnavailableWorktreeErrorMessage, isOperationalWorktreeStatus } from "../worktreeService.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
@@ -598,6 +600,14 @@ async function requireThreadExists(deps: RuntimeDeps, threadId: string) {
   return thread;
 }
 
+function assertWorktreeOperational(worktree: Pick<Worktree, "status" | "lastCreateError">): void {
+  if (isOperationalWorktreeStatus(worktree.status)) {
+    return;
+  }
+
+  throw new Error(getUnavailableWorktreeErrorMessage(worktree));
+}
+
 export function createChatService(deps: RuntimeDeps) {
   const threadRuns = new Map<string, ThreadRunState>();
   const pendingPermissionsByThread = new Map<string, Map<string, PendingPermissionEntry>>();
@@ -736,6 +746,7 @@ export function createChatService(deps: RuntimeDeps) {
           if (!thread) {
             throw new Error("Chat thread not found");
           }
+          assertWorktreeOperational(thread.worktree);
 
           if (input.expectedWorktreeId && input.expectedWorktreeId !== thread.worktreeId) {
             throw new Error("Selected worktree no longer matches this thread. Please retry from the active worktree.");
@@ -925,6 +936,7 @@ export function createChatService(deps: RuntimeDeps) {
     if (!thread) {
       throw new Error("Chat thread not found");
     }
+    assertWorktreeOperational(thread.worktree);
 
     if (thread.mode !== params.mode) {
       await deps.prisma.chatThread.update({
@@ -1890,6 +1902,7 @@ export function createChatService(deps: RuntimeDeps) {
       if (!worktree) {
         throw new Error("Worktree not found");
       }
+      assertWorktreeOperational(worktree);
       const permissionMode = normalizePermissionMode(input.permissionMode);
       const selection = await resolveThreadSelection(deps, {
         agent: input.agent,
@@ -1980,6 +1993,7 @@ export function createChatService(deps: RuntimeDeps) {
       if (!worktree) {
         throw new Error("Worktree not found");
       }
+      assertWorktreeOperational(worktree);
 
       const kind = normalizeThreadKind(input.kind);
       const permissionProfile = normalizePermissionProfile(kind);
@@ -2068,6 +2082,7 @@ export function createChatService(deps: RuntimeDeps) {
       if (!worktree) {
         throw new Error("Worktree not found");
       }
+      assertWorktreeOperational(worktree);
 
       if (agent === "codex") {
         try {
@@ -2725,6 +2740,7 @@ export function createChatService(deps: RuntimeDeps) {
       if (!thread) {
         throw new Error("Chat thread not found");
       }
+      assertWorktreeOperational(thread.worktree);
 
       if (input.expectedWorktreeId && input.expectedWorktreeId !== thread.worktreeId) {
         throw new Error("Selected worktree no longer matches this thread. Please retry from the active worktree.");

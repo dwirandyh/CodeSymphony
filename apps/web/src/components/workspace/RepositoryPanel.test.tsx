@@ -178,6 +178,34 @@ describe("RepositoryPanel", () => {
     expect(container.textContent).toContain("test-repo");
   });
 
+  it("limits metadata queries to the selected or expanded repositories", async () => {
+    renderPanel({
+      repositories: [
+        makeRepo({ id: "r1", name: "repo-one" }),
+        makeRepo({ id: "r2", name: "repo-two" }),
+      ],
+      selectedRepositoryId: "r1",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getRepositoryReviewsMock).toHaveBeenCalledTimes(1);
+    expect(getRepositoryReviewsMock).toHaveBeenCalledWith("r1");
+    expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-root");
+    expect(getGitBranchDiffSummaryMock).toHaveBeenCalledWith("r1-wt-feat");
+    expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-root");
+    expect(listThreadsMock).toHaveBeenCalledWith("r1-wt-feat");
+    expect(getRepositoryReviewsMock).not.toHaveBeenCalledWith("r2");
+    expect(getGitBranchDiffSummaryMock).not.toHaveBeenCalledWith("r2-wt-root");
+    expect(getGitBranchDiffSummaryMock).not.toHaveBeenCalledWith("r2-wt-feat");
+    expect(listThreadsMock).not.toHaveBeenCalledWith("r2-wt-root");
+    expect(listThreadsMock).not.toHaveBeenCalledWith("r2-wt-feat");
+  });
+
   it("shows root and branch worktrees without section separators", () => {
     renderPanel({
       repositories: [makeRepo()],
