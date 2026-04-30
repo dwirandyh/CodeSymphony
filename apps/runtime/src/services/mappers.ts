@@ -35,6 +35,8 @@ export function mapWorktree(worktree: DbWorktree): Worktree {
     path: worktree.path,
     baseBranch: worktree.baseBranch,
     status: worktree.status,
+    lastCreateError: worktree.lastCreateError,
+    lastDeleteError: worktree.lastDeleteError,
     branchRenamed: worktree.branchRenamed,
     createdAt: worktree.createdAt.toISOString(),
     updatedAt: worktree.updatedAt.toISOString(),

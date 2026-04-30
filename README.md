@@ -143,6 +143,76 @@ APPLE_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)" pnpm --filter @co
 
 Use `CODESYMPHONY_MACOS_SIGN_IDENTITY` as an alias for the signing identity. Use `pnpm --filter @codesymphony/desktop build:app:adhoc` only for local ad-hoc builds; TCC-sensitive features (e.g. screen recording) may not behave like a properly signed app.
 
+Build outputs:
+
+- `.app`: `apps/desktop/src-tauri/target/release/bundle/macos/CodeSymphony.app`
+- `.dmg`: `apps/desktop/src-tauri/target/release/bundle/dmg/` when you run `pnpm --filter @codesymphony/desktop build`
+
+## Desktop app troubleshooting
+
+If the installed `.app` / `.dmg` build feels stale, the thread UI gets stuck, or the app fails while the browser at `http://127.0.0.1:4322` still works, inspect the packaged runtime logs first.
+
+Find the app data directory used by the installed macOS app:
+
+```bash
+APP_SUPPORT_DIR="${HOME}/Library/Application Support/com.codesymphony.app"
+test -d "${APP_SUPPORT_DIR}" || APP_SUPPORT_DIR="$(find "${HOME}/Library/Application Support" -maxdepth 1 -name 'com.codesymphony.app' -print -quit)"
+printf '%s\n' "${APP_SUPPORT_DIR}"
+```
+
+Important packaged-app files:
+
+- `debug.log` — client + runtime debug events written through `POST /api/debug/log`
+- `runtime.stdout.log` — packaged runtime stdout
+- `runtime.stderr.log` — packaged runtime stderr
+- `codesymphony.db` — packaged desktop SQLite database
+
+Read the latest lines:
+
+```bash
+tail -n 200 "${APP_SUPPORT_DIR}/debug.log"
+tail -n 200 "${APP_SUPPORT_DIR}/runtime.stdout.log"
+tail -n 200 "${APP_SUPPORT_DIR}/runtime.stderr.log"
+```
+
+If the app fails before those files are created, launch the bundle binary directly from Terminal to capture desktop-shell errors:
+
+```bash
+/Applications/CodeSymphony.app/Contents/MacOS/codesymphony-desktop
+```
+
+If the packaged runtime is up, these endpoints are available on the desktop runtime port (`4322`):
+
+```bash
+curl http://127.0.0.1:4322/health
+curl http://127.0.0.1:4322/api/debug/runtime-info
+curl "http://127.0.0.1:4322/api/debug/log-buffer?limit=200"
+```
+
+For thread ordering / stale-stream issues, filter the log buffer to the selected thread:
+
+```bash
+curl "http://127.0.0.1:4322/api/debug/log-buffer?source=thread.stream,thread.workspace&threadId=<thread-id>&limit=200"
+```
+
+If the installed app UI is stuck but the runtime is healthy, open the same packaged runtime in a normal browser at `http://127.0.0.1:4322`, enable focused debug logging there, reproduce once, then inspect `debug.log` or `/api/debug/log-buffer`:
+
+```js
+localStorage.setItem("codesymphony.debugLog", "true");
+localStorage.setItem("codesymphony.debugLog.sources", "thread.stream,thread.workspace");
+localStorage.setItem("codesymphony.debugLog.threadId", "<thread-id>");
+location.reload();
+```
+
+Clear the filters after capture:
+
+```js
+localStorage.removeItem("codesymphony.debugLog");
+localStorage.removeItem("codesymphony.debugLog.sources");
+localStorage.removeItem("codesymphony.debugLog.threadId");
+location.reload();
+```
+
 ## Makefile shortcuts
 
 ```bash
@@ -184,7 +254,7 @@ High-level groups (non-exhaustive — see `apps/runtime/src/routes/*.ts`):
 - **Devices** — `GET /devices`, `GET /devices/stream`, stream start/stop/control, Android viewer proxy, iOS native bridge hooks.
 - **Models & providers** — `GET /model-providers`, Cursor/OpenCode model discovery, create/activate custom providers (Claude/Codex/OpenCode), activation tests.
 - **System & filesystem** — `POST /system/pick-directory`, clipboard, `GET /filesystem/browse`, attachments.
-- **Debug** — `POST /debug/log`, `GET /debug/runtime-info`.
+- **Debug** — `POST /debug/log`, `GET /debug/log-buffer`, `GET /debug/runtime-info`.
 - **Health** — `GET /health` on the runtime host root (same port as `/api`, no `/api` prefix).
 
 ## Test, lint, and build

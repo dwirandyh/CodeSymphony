@@ -11,6 +11,10 @@ datasource db {
 enum WorktreeStatus {
   active
   archived
+  creating
+  create_failed
+  deleting
+  delete_failed
 }
 
 enum ChatRole {
@@ -93,6 +97,8 @@ model Worktree {
   path           String         @unique
   baseBranch     String
   status         WorktreeStatus @default(active)
+  lastCreateError String?
+  lastDeleteError String?
   branchRenamed  Boolean        @default(false)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt

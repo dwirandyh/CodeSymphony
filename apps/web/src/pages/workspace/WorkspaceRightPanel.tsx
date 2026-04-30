@@ -14,6 +14,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   desktopApp = false,
   rightPanelId,
   worktreeId,
+  worktreePending = false,
   gitChanges,
   activeFilePath,
   selectedDiffFilePath,
@@ -31,6 +32,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
   desktopApp?: boolean;
   rightPanelId: "explorer" | "git" | "device" | null;
   worktreeId: string | null;
+  worktreePending?: boolean;
   gitChanges: GitChangesData;
   activeFilePath: string | null;
   selectedDiffFilePath: string | null;
@@ -99,6 +101,7 @@ export const WorkspaceRightPanel = memo(function WorkspaceRightPanel({
                 <WorkspaceExplorerPanel
                   worktreeId={worktreeId}
                   gitEntries={gitChanges.entries}
+                  pending={worktreePending}
                   activeFilePath={activeFilePath}
                   onOpenFile={(path) => void onOpenReadFile(path)}
                   onClose={() => onUpdatePanel(undefined)}

@@ -10,14 +10,17 @@ import {
 } from "react";
 import { useQueries } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   Filter,
   FolderGit2,
   GitBranch,
   GitPullRequestArrow,
+  Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
 } from "lucide-react";
 import type {
@@ -31,7 +34,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../../lib/utils";
-import { isRootWorktree } from "../../lib/worktree";
+import { isPendingWorktreeStatus, isRootWorktree, isSelectableWorktreeStatus } from "../../lib/worktree";
 import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBranchDiffSummary";
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
@@ -76,7 +79,7 @@ type RepositoryPanelProps = {
     worktreeId: string,
     preferredThreadId?: string | null,
   ) => void;
-  onDeleteWorktree: (worktreeId: string) => void;
+  onDeleteWorktree: (worktreeId: string, options?: { force?: boolean }) => void;
   onRenameWorktreeBranch: (worktreeId: string, newBranch: string) => void;
 };
 
@@ -265,10 +268,58 @@ function WorktreeMetaSlot({
   );
 }
 
+function isVisibleWorktreeStatus(status: Repository["worktrees"][number]["status"]): boolean {
+  return status === "active" || status === "creating" || status === "create_failed" || status === "delete_failed";
+}
+
+function renderWorktreeLifecycleBadge(worktree: Repository["worktrees"][number]) {
+  if (worktree.status === "creating") {
+    return (
+      <Badge
+        variant="secondary"
+        className="inline-flex h-4 items-center gap-1 rounded-md px-1 py-0 text-[9px] leading-none shadow-sm"
+        title="Preparing worktree"
+      >
+        <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
+        Preparing
+      </Badge>
+    );
+  }
+
+  if (worktree.status === "create_failed") {
+    return (
+      <Badge
+        variant="destructive"
+        className="inline-flex h-4 items-center gap-1 rounded-md px-1 py-0 text-[9px] leading-none shadow-sm"
+        title={worktree.lastCreateError ?? "Create failed"}
+      >
+        <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
+        Create failed
+      </Badge>
+    );
+  }
+
+  if (worktree.status === "delete_failed") {
+    return (
+      <Badge
+        variant="destructive"
+        className="inline-flex h-4 items-center gap-1 rounded-md px-1 py-0 text-[9px] leading-none shadow-sm"
+        title={worktree.lastDeleteError ?? "Delete failed"}
+      >
+        <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
+        Delete failed
+      </Badge>
+    );
+  }
+
+  return null;
+}
+
 function WorktreeRowContent({
   icon,
   branchContent,
   status,
+  detailBadge,
   review,
   reviewKind,
   insertions,
@@ -279,6 +330,7 @@ function WorktreeRowContent({
   icon: ReactNode;
   branchContent: ReactNode;
   status: WorktreeThreadUiStatus | undefined;
+  detailBadge?: ReactNode;
   review: ReviewRef | null;
   reviewKind: ReviewKind | null | undefined;
   insertions: number;
@@ -300,6 +352,9 @@ function WorktreeRowContent({
         </WorktreeMetaSlot>
       </div>
       <div className={cn("flex min-w-0 items-center gap-1.5 pt-0.5", metaIndentClass)}>
+        <WorktreeMetaSlot>
+          {detailBadge}
+        </WorktreeMetaSlot>
         <WorktreeMetaSlot>
           <WorktreeReviewBadge
             review={review}
@@ -390,6 +445,12 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     () => new Map(visibleRepositories.map((repository) => [repository.id, repository])),
     [visibleRepositories],
   );
+  const metadataRepositories = useMemo(
+    () => visibleRepositories.filter((repository) => (
+      expandedByRepo[repository.id] ?? selectedRepositoryId === repository.id
+    )),
+    [expandedByRepo, selectedRepositoryId, visibleRepositories],
+  );
   const renderedVisibleRepositoryIds = previewVisibleRepositoryIds ?? visibleRepositoryIds;
   const hiddenRepositoryCount =
     repositories.length - visibleRepositories.length;
@@ -403,8 +464,8 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   }, [previewVisibleRepositoryIds]);
 
   const repositoryWorktreeIndex = useMemo(
-    () => buildRepositoryWorktreeIndex(repositories),
-    [repositories],
+    () => buildRepositoryWorktreeIndex(metadataRepositories),
+    [metadataRepositories],
   );
   const activeWorktreeSummaries = useMemo(
     () => repositoryWorktreeIndex.activeWorktreeIds.flatMap((worktreeId) => {
@@ -420,7 +481,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     }),
     [repositoryWorktreeIndex],
   );
-  const worktreeStatuses = useWorktreeStatuses(repositories, enableMetadataQueries);
+  const worktreeStatuses = useWorktreeStatuses(metadataRepositories, enableMetadataQueries);
   const gitBranchDiffQueries = useQueries({
     queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) => ({
       ...gitBranchDiffSummaryQueryOptions(worktreeId, baseBranch),
@@ -428,30 +489,42 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     })),
   });
   const repositoryReviewQueries = useQueries({
-    queries: repositories.map((repository) => ({
+    queries: metadataRepositories.map((repository) => ({
       ...repositoryReviewsQueryOptions(repository.id),
       enabled: enableMetadataQueries && repository.id.length > 0,
     })),
   });
   const reviewsByRepositoryId = useMemo(
-    () =>
-      Object.fromEntries(
-        repositories.map((repository, index) => [
-          repository.id,
-          repositoryReviewQueries[index]?.data?.reviewsByBranch ?? {},
-        ]),
-      ) as Record<string, Record<string, ReviewRef>>,
-    [repositories, repositoryReviewQueries],
+    () => {
+      const byRepositoryId: Record<string, Record<string, ReviewRef>> = {};
+
+      for (const repository of repositories) {
+        byRepositoryId[repository.id] = {};
+      }
+
+      for (const [index, repository] of metadataRepositories.entries()) {
+        byRepositoryId[repository.id] = repositoryReviewQueries[index]?.data?.reviewsByBranch ?? {};
+      }
+
+      return byRepositoryId;
+    },
+    [metadataRepositories, repositories, repositoryReviewQueries],
   );
   const reviewKindsByRepositoryId = useMemo(
-    () =>
-      Object.fromEntries(
-        repositories.map((repository, index) => [
-          repository.id,
-          repositoryReviewQueries[index]?.data?.kind ?? null,
-        ]),
-      ) as Record<string, ReviewKind | null>,
-    [repositories, repositoryReviewQueries],
+    () => {
+      const byRepositoryId: Record<string, ReviewKind | null> = {};
+
+      for (const repository of repositories) {
+        byRepositoryId[repository.id] = null;
+      }
+
+      for (const [index, repository] of metadataRepositories.entries()) {
+        byRepositoryId[repository.id] = repositoryReviewQueries[index]?.data?.kind ?? null;
+      }
+
+      return byRepositoryId;
+    },
+    [metadataRepositories, repositories, repositoryReviewQueries],
   );
   const worktreeStats = useMemo(() => {
     return activeWorktreeSummaries.reduce<Record<string, GitBranchDiffSummary>>(
@@ -994,18 +1067,18 @@ export const RepositoryPanel = memo(function RepositoryPanel({
             }
 
             const isSelected = selectedRepositoryId === repository.id;
-            const activeWorktrees = repository.worktrees.filter(
-              (worktree) => worktree.status === "active",
+            const visibleWorktrees = repository.worktrees.filter(
+              (worktree) => isVisibleWorktreeStatus(worktree.status),
             );
             const rootWorkspace =
-              activeWorktrees.find((worktree) =>
+              visibleWorktrees.find((worktree) =>
                 isRootWorktree(worktree, repository),
               ) ?? null;
             const branchWorktrees = rootWorkspace
-              ? activeWorktrees.filter(
+              ? visibleWorktrees.filter(
                   (worktree) => worktree.id !== rootWorkspace.id,
                 )
-              : activeWorktrees;
+              : visibleWorktrees;
             const isExpanded = expandedByRepo[repository.id] ?? isSelected;
             const rootPriorityThreadId = rootWorkspace
               ? resolvePriorityThreadId(worktreeStatuses[rootWorkspace.id])
@@ -1168,6 +1241,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                         {branchWorktrees.map((worktree) => {
                           const isWorktreeSelected =
                             selectedWorktreeId === worktree.id;
+                          const isWorktreeSelectable = isSelectableWorktreeStatus(worktree.status);
                           const stats = worktreeStats[worktree.id];
                           const priorityThreadId = resolvePriorityThreadId(
                             worktreeStatuses[worktree.id],
@@ -1188,32 +1262,43 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                   "flex w-full min-w-0 cursor-pointer items-start gap-1.5 overflow-hidden rounded-md px-2.5 py-1.5 text-left text-muted-foreground transition-colors hover:bg-secondary/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                                   isWorktreeSelected &&
                                     "bg-secondary/60 text-foreground",
+                                  !isWorktreeSelectable && "cursor-default opacity-80",
                                 )}
                                 onPointerEnter={() =>
-                                  onPrefetchWorktree?.(
-                                    worktree.id,
-                                    priorityThreadId,
-                                  )
+                                  isWorktreeSelectable
+                                    ? onPrefetchWorktree?.(
+                                      worktree.id,
+                                      priorityThreadId,
+                                    )
+                                    : undefined
                                 }
                                 onFocus={() =>
-                                  onPrefetchWorktree?.(
-                                    worktree.id,
-                                    priorityThreadId,
-                                  )
+                                  isWorktreeSelectable
+                                    ? onPrefetchWorktree?.(
+                                      worktree.id,
+                                      priorityThreadId,
+                                    )
+                                    : undefined
                                 }
-                                onClick={() =>
+                                onClick={() => {
+                                  if (!isWorktreeSelectable) {
+                                    return;
+                                  }
                                   onSelectWorktree(
                                     repository.id,
                                     worktree.id,
                                     priorityThreadId,
-                                  )
-                                }
+                                  );
+                                }}
                                 onKeyDown={(e) => {
                                   if (e.target !== e.currentTarget) {
                                     return;
                                   }
                                   if (e.key === "Enter" || e.key === " ") {
                                     e.preventDefault();
+                                    if (!isWorktreeSelectable) {
+                                      return;
+                                    }
                                     onSelectWorktree(
                                       repository.id,
                                       worktree.id,
@@ -1225,10 +1310,17 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                 <WorktreeRowContent
                                   icon={
                                     <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-                                      <GitBranch
-                                        className="h-3.5 w-3.5 text-muted-foreground"
-                                        aria-hidden="true"
-                                      />
+                                      {isPendingWorktreeStatus(worktree.status) ? (
+                                        <Loader2
+                                          className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+                                          aria-hidden="true"
+                                        />
+                                      ) : (
+                                        <GitBranch
+                                          className="h-3.5 w-3.5 text-muted-foreground"
+                                          aria-hidden="true"
+                                        />
+                                      )}
                                     </span>
                                   }
                                   branchContent={
@@ -1292,6 +1384,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                     )
                                   }
                                   status={worktreeStatuses[worktree.id]?.kind}
+                                  detailBadge={renderWorktreeLifecycleBadge(worktree)}
                                   review={review}
                                   reviewKind={repositoryReviewKind}
                                   insertions={stats?.insertions ?? 0}
@@ -1302,33 +1395,80 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                               </div>
 
                               <div className="pointer-events-none absolute top-0 right-2 bottom-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:pointer-events-auto group-hover/wt:opacity-100 group-focus-within/wt:pointer-events-auto group-focus-within/wt:opacity-100">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingWorktreeId(worktree.id);
-                                    setEditingBranchValue(worktree.branch);
-                                  }}
-                                  title="Rename branch"
-                                >
-                                  <Pencil className="h-3.5 w-3.5" />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteWorktree(worktree.id);
-                                  }}
-                                  title="Delete worktree"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
+                                {worktree.status === "delete_failed" ? (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteWorktree(worktree.id);
+                                      }}
+                                      title="Retry delete"
+                                    >
+                                      <RefreshCw className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-destructive hover:text-destructive"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteWorktree(worktree.id, { force: true });
+                                      }}
+                                      title="Force delete worktree"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </>
+                                ) : worktree.status === "create_failed" ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7 text-destructive hover:text-destructive"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onDeleteWorktree(worktree.id, { force: true });
+                                    }}
+                                    title="Remove failed worktree"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                ) : worktree.status === "creating" ? null : (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingWorktreeId(worktree.id);
+                                        setEditingBranchValue(worktree.branch);
+                                      }}
+                                      title="Rename branch"
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteWorktree(worktree.id);
+                                      }}
+                                      title="Delete worktree"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </>
+                                )}
                               </div>
                             </div>
                           );

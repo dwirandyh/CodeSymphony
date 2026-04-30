@@ -90,6 +90,35 @@ function appendDebugLogEntries(entries: DebugLogEntry[]): number {
 
 let runtimeDebugSeq = 0;
 
+function parseCsvFilter(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function extractThreadIdFromDebugData(data: unknown): string | null {
+  if (
+    data != null
+    && typeof data === "object"
+    && "threadId" in data
+    && typeof (data as Record<string, unknown>).threadId === "string"
+  ) {
+    const threadId = ((data as Record<string, unknown>).threadId as string).trim();
+    return threadId.length > 0 ? threadId : null;
+  }
+
+  return null;
+}
+
+function matchesSourcePrefixes(source: string, prefixes: string[]): boolean {
+  if (prefixes.length === 0) {
+    return true;
+  }
+
+  return prefixes.some((prefix) => source === prefix || source.startsWith(`${prefix}.`));
+}
+
 export function appendRuntimeDebugLog(entry: DebugLogPayload): number {
   const seq = ++runtimeDebugSeq;
   appendDebugLogEntries([
@@ -134,6 +163,9 @@ export function resolveDatabaseInfo(databaseUrl: string | undefined): RuntimeDat
 export async function registerDebugRoutes(app: FastifyInstance) {
   const debugLogBufferQuery = z.object({
     limit: z.string().optional(),
+    source: z.string().optional(),
+    message: z.string().optional(),
+    threadId: z.string().optional(),
   }).strict();
 
   // Accept both application/json and text/plain (sendBeacon sends text/plain)
@@ -173,13 +205,32 @@ export async function registerDebugRoutes(app: FastifyInstance) {
     const limit = Number.isFinite(parsedLimit) && parsedLimit > 0
       ? Math.min(parsedLimit, DEBUG_LOG_BUFFER_LIMIT)
       : 500;
+    const sourcePrefixes = parseCsvFilter(query.source);
+    const messageNeedle = query.message?.trim().toLowerCase() ?? "";
+    const threadIdFilter = query.threadId?.trim() ?? "";
+    const filteredEntries = runtimeDebugBuffer.filter((entry) => {
+      if (!matchesSourcePrefixes(entry.source, sourcePrefixes)) {
+        return false;
+      }
+
+      if (messageNeedle.length > 0 && !entry.message.toLowerCase().includes(messageNeedle)) {
+        return false;
+      }
+
+      if (threadIdFilter.length > 0 && extractThreadIdFromDebugData(entry.data) !== threadIdFilter) {
+        return false;
+      }
+
+      return true;
+    });
 
     return {
       data: {
         logPath: LOG_PATH,
         totalBufferedEntries: runtimeDebugBuffer.length,
         lastAppendError: lastDebugLogAppendError,
-        entries: runtimeDebugBuffer.slice(-limit),
+        filteredEntries: filteredEntries.length,
+        entries: filteredEntries.slice(-limit),
       },
     };
   });

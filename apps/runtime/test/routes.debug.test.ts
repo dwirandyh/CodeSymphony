@@ -61,4 +61,32 @@ describe("debug routes", () => {
       expect(data).toHaveProperty("listenAddress");
     });
   });
+
+  describe("GET /api/debug/log-buffer", () => {
+    it("filters debug log entries by source prefix and threadId", async () => {
+      await app.inject({
+        method: "POST",
+        url: "/api/debug/log",
+        payload: [
+          { seq: 1, ts: 100.5, source: "thread.stream.lifecycle", message: "stream.open", data: { threadId: "thread-1" } },
+          { seq: 2, ts: 200.0, source: "thread.workspace.event", message: "thread.updated", data: { threadId: "thread-2" } },
+        ],
+      });
+
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/debug/log-buffer?source=thread.stream&threadId=thread-1",
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.filteredEntries).toBe(1);
+      expect(res.json().data.entries).toEqual([
+        expect.objectContaining({
+          source: "thread.stream.lifecycle",
+          message: "stream.open",
+          data: { threadId: "thread-1" },
+        }),
+      ]);
+    });
+  });
 });

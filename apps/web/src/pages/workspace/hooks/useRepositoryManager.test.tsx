@@ -7,7 +7,21 @@ import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositoryManager } from "./useRepositoryManager";
 
 const mockCreateRepoMutateAsync = vi.fn();
-const mockCreateWorktreeMutateAsync = vi.fn().mockResolvedValue({ worktree: { id: "wt-new", branch: "new-feature" } });
+const mockCreateWorktreeMutateAsync = vi.fn().mockResolvedValue({
+  worktree: {
+    id: "wt-new",
+    repositoryId: "r1",
+    branch: "new-feature",
+    path: "/home/user/.codesymphony/worktrees/test-repo/new-feature",
+    baseBranch: "main",
+    status: "creating",
+    lastCreateError: null,
+    branchRenamed: false,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
+  pending: true,
+});
 const mockDeleteWorktreeMutateAsync = vi.fn();
 const mockDeleteRepoMutateAsync = vi.fn();
 const mockRenameBranchMutateAsync = vi.fn();
@@ -106,13 +120,6 @@ vi.mock("../../../lib/api", () => ({
     runSetupStream: (...args: unknown[]) => mockRunSetupStream(...args),
     stopSetupScript: vi.fn().mockResolvedValue(undefined),
   },
-  TeardownFailedError: class extends Error {
-    output: string;
-    constructor(output: string) {
-      super("Teardown scripts failed");
-      this.output = output;
-    }
-  },
 }));
 
 let container: HTMLDivElement;
@@ -123,7 +130,6 @@ let mockOptions: {
   onSelectionChange?: ReturnType<typeof vi.fn>;
   onScriptUpdate?: ReturnType<typeof vi.fn>;
   onScriptOutputChunk?: ReturnType<typeof vi.fn>;
-  onTeardownError?: ReturnType<typeof vi.fn>;
   desiredRepoId?: string;
   desiredWorktreeId?: string;
 };
@@ -159,7 +165,6 @@ beforeEach(() => {
     onSelectionChange: vi.fn(),
     onScriptUpdate: vi.fn(),
     onScriptOutputChunk: vi.fn(),
-    onTeardownError: vi.fn(),
   };
   vi.clearAllMocks();
 });
@@ -311,17 +316,107 @@ describe("useRepositoryManager", () => {
   });
 
   describe("submitWorktree", () => {
-    it("creates worktree and starts setup streaming", async () => {
+    it("creates a pending worktree and selects it immediately", async () => {
       render();
       await act(async () => {
         await hookResult.submitWorktree("r1");
       });
+
+      const cachedRepositories = queryClient.getQueryData<Repository[]>(queryKeys.repositories.all) ?? [];
+      const pendingWorktree = cachedRepositories
+        .flatMap((repository) => repository.worktrees)
+        .find((worktree) => worktree.id === "wt-new");
+
       expect(mockCreateWorktreeMutateAsync).toHaveBeenCalledWith({ repositoryId: "r1" });
       expect(hookResult.selectedWorktreeId).toBe("wt-new");
       expect(hookResult.selectedRepositoryId).toBe("r1");
+      expect(pendingWorktree?.status).toBe("creating");
+      expect(mockRunSetupStream).not.toHaveBeenCalled();
+    });
+
+    it("starts setup streaming after the pending worktree becomes active", async () => {
+      repositoriesState.data = [
+        {
+          ...makeRepositories()[0],
+          setupScript: ["pnpm install"],
+        },
+      ];
+      mockCreateWorktreeMutateAsync.mockImplementationOnce(async () => {
+        repositoriesState.data = [
+          {
+            ...makeRepositories()[0],
+            setupScript: ["pnpm install"],
+            worktrees: [
+              {
+                id: "wt-new",
+                repositoryId: "r1",
+                branch: "new-feature",
+                path: "/home/user/.codesymphony/worktrees/test-repo/new-feature",
+                baseBranch: "main",
+                status: "creating",
+                lastCreateError: null,
+                branchRenamed: false,
+                createdAt: "2026-01-01T00:00:00Z",
+                updatedAt: "2026-01-01T00:00:00Z",
+              },
+              ...makeRepositories()[0].worktrees,
+            ],
+          },
+        ];
+
+        return {
+          worktree: {
+            id: "wt-new",
+            repositoryId: "r1",
+            branch: "new-feature",
+            path: "/home/user/.codesymphony/worktrees/test-repo/new-feature",
+            baseBranch: "main",
+            status: "creating" as const,
+            lastCreateError: null,
+            branchRenamed: false,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+          pending: true,
+        };
+      });
+      render();
+      await act(async () => {
+        await hookResult.submitWorktree("r1");
+      });
+
+      act(() => {
+        repositoriesState.data = [
+          {
+            ...makeRepositories()[0],
+            setupScript: ["pnpm install"],
+            worktrees: [
+              ...makeRepositories()[0].worktrees,
+              {
+                id: "wt-new",
+                repositoryId: "r1",
+                branch: "new-feature",
+                path: "/home/user/.codesymphony/worktrees/test-repo/new-feature",
+                baseBranch: "main",
+                status: "active",
+                lastCreateError: null,
+                branchRenamed: false,
+                createdAt: "2026-01-01T00:00:00Z",
+                updatedAt: "2026-01-01T00:00:00Z",
+              },
+            ],
+          },
+        ];
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <TestComponent />
+          </QueryClientProvider>
+        );
+      });
+
       expect(mockRunSetupStream).toHaveBeenCalledWith("wt-new");
       expect(mockOptions.onScriptUpdate).toHaveBeenCalledWith(
-        expect.objectContaining({ worktreeId: "wt-new", type: "setup", status: "running" })
+        expect.objectContaining({ worktreeId: "wt-new", type: "setup", status: "running" }),
       );
     });
 
@@ -342,29 +437,32 @@ describe("useRepositoryManager", () => {
       await act(async () => {
         await hookResult.removeWorktree("wt-feat");
       });
-      expect(mockDeleteWorktreeMutateAsync).toHaveBeenCalledWith("wt-feat");
-    });
-
-    it("handles teardown error", async () => {
-      const { TeardownFailedError } = await import("../../../lib/api");
-      const teardownErr = new TeardownFailedError("script output");
-      mockDeleteWorktreeMutateAsync.mockRejectedValueOnce(teardownErr);
-      render();
-      await act(async () => {
-        await hookResult.removeWorktree("wt-feat");
+      expect(mockDeleteWorktreeMutateAsync).toHaveBeenCalledWith({
+        worktreeId: "wt-feat",
+        options: { force: undefined },
       });
-      expect(mockOptions.onTeardownError).toHaveBeenCalledWith(
-        expect.objectContaining({ worktreeId: "wt-feat", output: "script output" })
-      );
+      expect(hookResult.selectedWorktreeId).toBe("wt-root");
     });
 
     it("calls onError for non-teardown errors", async () => {
       mockDeleteWorktreeMutateAsync.mockRejectedValueOnce(new Error("Network error"));
-      render();
+      render({ desiredWorktreeId: "wt-feat" });
       await act(async () => {
         await hookResult.removeWorktree("wt-feat");
       });
       expect(mockOnError).toHaveBeenCalledWith("Network error");
+      expect(hookResult.selectedWorktreeId).toBe("wt-feat");
+    });
+
+    it("passes force delete options through to the mutation", async () => {
+      render();
+      await act(async () => {
+        await hookResult.removeWorktree("wt-feat", { force: true });
+      });
+      expect(mockDeleteWorktreeMutateAsync).toHaveBeenCalledWith({
+        worktreeId: "wt-feat",
+        options: { force: true },
+      });
     });
   });
 
