@@ -159,4 +159,21 @@ describe("worktree file content routes", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "Path must be inside the selected worktree" });
   });
+
+  it("returns 409 while the worktree is still being prepared", async () => {
+    const worktreePath = path.join(tempRoot, "worktree");
+    await mkdir(worktreePath, { recursive: true });
+    getWorktreeById.mockResolvedValueOnce({
+      ...buildWorktree(worktreePath),
+      status: "creating",
+      lastCreateError: null,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/worktrees/wt-1/files/content?path=src/index.ts",
+    });
+
+    expect(response.statusCode).toBe(409);
+  });
 });

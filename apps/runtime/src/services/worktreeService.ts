@@ -2,18 +2,14 @@ import { mkdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import prismaClientPkg, { type PrismaClient } from "@prisma/client";
-import { CreateWorktreeInputSchema, type CreateWorktreeInput, type ScriptResult, type Worktree } from "@codesymphony/shared-types";
-import { createGitWorktree, getCurrentBranch, removeGitWorktree, renameBranch as renameBranchGit } from "./git.js";
+import { CreateWorktreeInputSchema, type CreateWorktreeInput, type CreateWorktreeResult, type ScriptResult, type Worktree } from "@codesymphony/shared-types";
+import { createGitWorktree, getCurrentBranch, listLocalBranches, removeGitWorktree, renameBranch as renameBranchGit } from "./git.js";
 import { mapWorktree } from "./mappers.js";
 import { areLikelySameFsPath } from "./repositoryService.js";
 import { runScripts } from "./scriptRunner.js";
+import type { WorkspaceSyncEventHub } from "../types.js";
 
 const { Prisma } = prismaClientPkg as { Prisma: typeof import("@prisma/client").Prisma };
-
-interface CreateWorktreeResult {
-  worktree: Worktree;
-  scriptResult?: ScriptResult;
-}
 
 export class TeardownError extends Error {
   public readonly output: string;
@@ -103,12 +99,12 @@ function buildProvinceBranchName(attempt: number): string {
   return cycle === 0 ? provinceSlug : `${provinceSlug}-${cycle + 1}`;
 }
 
-function isBranchAlreadyExistsError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message.toLowerCase() : "";
-  return message.includes("already exists");
-}
-
 const PROVINCE_SLUGS = new Set(INDONESIAN_PROVINCES.map((name) => slugify(name)));
+const RECOVERED_PENDING_CREATE_ERROR = "Worktree creation was interrupted when the runtime restarted.";
+const WORKTREE_PREPARING_ERROR_MESSAGE = "Worktree is still being prepared. Please wait until it is ready.";
+const WORKTREE_CREATE_FAILED_ERROR_MESSAGE = "Worktree creation failed. Delete it and create a new worktree.";
+const WORKTREE_DELETING_ERROR_MESSAGE = "Worktree is being deleted.";
+const WORKTREE_ARCHIVED_ERROR_MESSAGE = "Worktree is archived.";
 
 export function isDefaultBranchName(branch: string): boolean {
   const match = /^(.+?)(?:-(\d+))?$/.exec(branch);
@@ -116,7 +112,145 @@ export function isDefaultBranchName(branch: string): boolean {
   return PROVINCE_SLUGS.has(match[1]);
 }
 
-export function createWorktreeService(prisma: PrismaClient) {
+export function isOperationalWorktreeStatus(status: Worktree["status"]): boolean {
+  return status === "active" || status === "delete_failed";
+}
+
+export function getUnavailableWorktreeErrorMessage(worktree: Pick<Worktree, "status" | "lastCreateError">): string {
+  switch (worktree.status) {
+    case "creating":
+      return WORKTREE_PREPARING_ERROR_MESSAGE;
+    case "create_failed":
+      return worktree.lastCreateError
+        ? `${WORKTREE_CREATE_FAILED_ERROR_MESSAGE} Last error: ${worktree.lastCreateError}`
+        : WORKTREE_CREATE_FAILED_ERROR_MESSAGE;
+    case "deleting":
+      return WORKTREE_DELETING_ERROR_MESSAGE;
+    case "archived":
+      return WORKTREE_ARCHIVED_ERROR_MESSAGE;
+    default:
+      return "Worktree is not available.";
+  }
+}
+
+export function isUnavailableWorktreeErrorMessage(message: string): boolean {
+  return message === WORKTREE_PREPARING_ERROR_MESSAGE
+    || message === WORKTREE_DELETING_ERROR_MESSAGE
+    || message === WORKTREE_ARCHIVED_ERROR_MESSAGE
+    || message.startsWith(WORKTREE_CREATE_FAILED_ERROR_MESSAGE);
+}
+
+export function createWorktreeService(
+  prisma: PrismaClient,
+  options?: {
+    workspaceEventHub?: WorkspaceSyncEventHub;
+  },
+) {
+  const activeProvisionJobs = new Map<string, Promise<void>>();
+
+  async function ensureInitialThread(worktreeId: string): Promise<string> {
+    const existing = await prisma.chatThread.findFirst({
+      where: { worktreeId },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+
+    if (existing) {
+      return existing.id;
+    }
+
+    const created = await prisma.chatThread.create({
+      data: {
+        worktreeId,
+        title: "New Thread",
+      },
+    });
+
+    return created.id;
+  }
+
+  function emitWorktreeUpdate(repositoryId: string, worktreeId: string): void {
+    options?.workspaceEventHub?.emit("worktree.updated", {
+      repositoryId,
+      worktreeId,
+    });
+  }
+
+  function emitThreadCreated(repositoryId: string, worktreeId: string, threadId: string): void {
+    options?.workspaceEventHub?.emit("thread.created", {
+      repositoryId,
+      worktreeId,
+      threadId,
+    });
+  }
+
+  function scheduleProvisioning(params: {
+    worktreeId: string;
+    repositoryId: string;
+    repositoryRootPath: string;
+    worktreePath: string;
+    branch: string;
+    baseBranch: string;
+  }): void {
+    if (activeProvisionJobs.has(params.worktreeId)) {
+      return;
+    }
+
+    const job = (async () => {
+      let gitWorktreeCreated = false;
+
+      try {
+        await createGitWorktree({
+          repositoryPath: params.repositoryRootPath,
+          worktreePath: params.worktreePath,
+          branch: params.branch,
+          baseBranch: params.baseBranch,
+        });
+        gitWorktreeCreated = true;
+
+        const threadId = await ensureInitialThread(params.worktreeId);
+        await prisma.worktree.update({
+          where: { id: params.worktreeId },
+          data: {
+            status: "active",
+            lastCreateError: null,
+          },
+        });
+
+        emitWorktreeUpdate(params.repositoryId, params.worktreeId);
+        emitThreadCreated(params.repositoryId, params.worktreeId, threadId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+
+        if (!gitWorktreeCreated) {
+          await rm(params.worktreePath, { recursive: true, force: true }).catch(() => undefined);
+        }
+
+        try {
+          await prisma.worktree.update({
+            where: { id: params.worktreeId },
+            data: {
+              status: "create_failed",
+              lastCreateError: message,
+            },
+          });
+          emitWorktreeUpdate(params.repositoryId, params.worktreeId);
+        } catch (updateError) {
+          if (!(updateError instanceof Prisma.PrismaClientKnownRequestError && updateError.code === "P2025")) {
+            throw updateError;
+          }
+        }
+      } finally {
+        activeProvisionJobs.delete(params.worktreeId);
+      }
+    })();
+
+    activeProvisionJobs.set(params.worktreeId, job);
+    queueMicrotask(() => {
+      void job;
+    });
+  }
+
   return {
     async getById(id: string): Promise<Worktree | null> {
       const worktree = await prisma.worktree.findUnique({ where: { id } });
@@ -155,9 +289,12 @@ export function createWorktreeService(prisma: PrismaClient) {
         select: { branch: true },
       });
       const existingBranches = new Set(existingWorktrees.map((worktree) => worktree.branch));
+      const existingLocalBranches = await listLocalBranches(repository.rootPath).catch(() => []);
+      for (const branch of existingLocalBranches) {
+        existingBranches.add(branch);
+      }
 
       const requestedBranch = input.branch?.trim() || null;
-      const isAutomaticBranch = requestedBranch === null;
       const baseBranch = input.baseBranch ?? repository.defaultBranch;
 
       if (requestedBranch && existingBranches.has(requestedBranch)) {
@@ -189,43 +326,35 @@ export function createWorktreeService(prisma: PrismaClient) {
         await mkdir(path.dirname(worktreePath), { recursive: true });
 
         try {
-          await createGitWorktree({
-            repositoryPath: repository.rootPath,
-            worktreePath,
-            branch,
-            baseBranch,
-          });
-
           const created = await prisma.worktree.create({
             data: {
               repositoryId,
               branch,
               path: worktreePath,
               baseBranch,
-              status: "active",
+              status: "creating",
+              lastCreateError: null,
             },
           });
 
-          await prisma.chatThread.create({
-            data: {
-              worktreeId: created.id,
-              title: "New Thread",
-            },
+          scheduleProvisioning({
+            worktreeId: created.id,
+            repositoryId,
+            repositoryRootPath: repository.rootPath,
+            worktreePath,
+            branch,
+            baseBranch,
           });
 
-          return { worktree: mapWorktree(created) };
+          return {
+            worktree: mapWorktree(created),
+            pending: true,
+          };
         } catch (error) {
-          await rm(worktreePath, { recursive: true, force: true }).catch(() => undefined);
-
           if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
             if (requestedBranch) {
               throw new Error("Branch already has a worktree in this repository");
             }
-            existingBranches.add(branch);
-            continue;
-          }
-
-          if (!requestedBranch && isBranchAlreadyExistsError(error)) {
             existingBranches.add(branch);
             continue;
           }
@@ -253,6 +382,22 @@ export function createWorktreeService(prisma: PrismaClient) {
 
       if (worktree.path === worktree.repository.rootPath) {
         throw new Error("Cannot delete primary worktree");
+      }
+
+      if (worktree.status === "create_failed") {
+        try {
+          await removeGitWorktree({
+            repositoryPath: worktree.repository.rootPath,
+            worktreePath: worktree.path,
+          });
+        } catch {
+          // Failed provisioning can leave an incomplete worktree behind.
+          // Deleting the record should still succeed even when git metadata is missing.
+        }
+
+        await prisma.worktree.delete({ where: { id } });
+        await rm(worktree.path, { recursive: true, force: true }).catch(() => undefined);
+        return;
       }
 
       // Run teardown scripts if configured (skip if force-deleting)
@@ -455,6 +600,29 @@ export function createWorktreeService(prisma: PrismaClient) {
         where: { worktreeId },
         orderBy: { createdAt: "asc" },
       });
+    },
+
+    async recoverPendingCreations(): Promise<number> {
+      const pendingWorktrees = await prisma.worktree.findMany({
+        where: { status: "creating" },
+        select: {
+          id: true,
+          repositoryId: true,
+        },
+      });
+
+      await Promise.all(pendingWorktrees.map(async (worktree) => {
+        await prisma.worktree.update({
+          where: { id: worktree.id },
+          data: {
+            status: "create_failed",
+            lastCreateError: RECOVERED_PENDING_CREATE_ERROR,
+          },
+        });
+        emitWorktreeUpdate(worktree.repositoryId, worktree.id);
+      }));
+
+      return pendingWorktrees.length;
     },
   };
 }

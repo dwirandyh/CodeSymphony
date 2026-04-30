@@ -16,6 +16,33 @@ function git(args: string, cwd = repoDir) {
   execSync(`git ${args}`, { cwd, encoding: "utf8", stdio: "pipe" });
 }
 
+async function waitForProvisionedWorktree(
+  service: ReturnType<typeof createWorktreeService>,
+  worktreeId: string,
+  timeoutMs = 5_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const worktree = await service.getById(worktreeId);
+    if (!worktree) {
+      throw new Error(`Worktree ${worktreeId} disappeared before provisioning completed`);
+    }
+
+    if (worktree.status === "active") {
+      return worktree;
+    }
+
+    if (worktree.status === "create_failed") {
+      throw new Error(worktree.lastCreateError ?? "Worktree provisioning failed");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error(`Timed out waiting for worktree ${worktreeId} to become active`);
+}
+
 beforeAll(async () => {
   prisma = new PrismaClient({ datasources: { db: { url: "file:./test.db" } } });
   await prisma.$connect();
@@ -115,16 +142,44 @@ describe("worktreeService", () => {
       const result = await service.create(repositoryId, {});
       createdWorktreeIds.push(result.worktree.id);
 
+      expect(result.pending).toBe(true);
       expect(result.worktree.id).toBeDefined();
+      expect(result.worktree.status).toBe("creating");
       expect(result.worktree.branch).toBeTruthy();
       expect(isDefaultBranchName(result.worktree.branch)).toBe(true);
+      const readyWorktree = await waitForProvisionedWorktree(service, result.worktree.id);
+      expect(readyWorktree.status).toBe("active");
+    });
+
+    it("skips automatic names that already exist as local git branches", async () => {
+      const first = await service.create(repositoryId, {});
+      createdWorktreeIds.push(first.worktree.id);
+      const firstReadyWorktree = await waitForProvisionedWorktree(service, first.worktree.id);
+
+      await service.remove(first.worktree.id, { force: true });
+      createdWorktreeIds.splice(createdWorktreeIds.indexOf(first.worktree.id), 1);
+
+      try {
+        const second = await service.create(repositoryId, {});
+        createdWorktreeIds.push(second.worktree.id);
+
+        expect(second.worktree.branch).not.toBe(firstReadyWorktree.branch);
+        const readyWorktree = await waitForProvisionedWorktree(service, second.worktree.id);
+        expect(readyWorktree.status).toBe("active");
+      } finally {
+        git(`branch -D ${firstReadyWorktree.branch}`);
+      }
     });
 
     it("creates a worktree with specified branch name", async () => {
       const result = await service.create(repositoryId, { branch: "feature-test-x" });
       createdWorktreeIds.push(result.worktree.id);
 
+      expect(result.pending).toBe(true);
       expect(result.worktree.branch).toBe("feature-test-x");
+      expect(result.worktree.status).toBe("creating");
+      const readyWorktree = await waitForProvisionedWorktree(service, result.worktree.id);
+      expect(readyWorktree.branch).toBe("feature-test-x");
     });
 
     it("throws for non-existent repository", async () => {
@@ -145,6 +200,7 @@ describe("worktreeService", () => {
     it("returns a worktree by id", async () => {
       const created = await service.create(repositoryId, { branch: "getbyid-test" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const found = await service.getById(created.worktree.id);
       expect(found).toBeDefined();
@@ -160,22 +216,28 @@ describe("worktreeService", () => {
   describe("remove", () => {
     it("removes a worktree successfully", async () => {
       const created = await service.create(repositoryId, { branch: "to-remove-test" });
+      createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       await service.remove(created.worktree.id);
       const found = await service.getById(created.worktree.id);
       expect(found).toBeNull();
+      createdWorktreeIds.splice(createdWorktreeIds.indexOf(created.worktree.id), 1);
     });
 
     it("force-removes a worktree with broken gitdir metadata", async () => {
       const created = await service.create(repositoryId, { branch: "broken-gitdir-test" });
+      createdWorktreeIds.push(created.worktree.id);
+      const readyWorktree = await waitForProvisionedWorktree(service, created.worktree.id);
       const brokenGitdir = join(repoDir, ".git", "worktrees", "broken-gitdir-test-missing");
-      await writeFile(join(created.worktree.path, ".git"), `gitdir: ${brokenGitdir}\n`);
+      await writeFile(join(readyWorktree.path, ".git"), `gitdir: ${brokenGitdir}\n`);
 
       await service.remove(created.worktree.id);
 
       const found = await service.getById(created.worktree.id);
       expect(found).toBeNull();
-      await expect(stat(created.worktree.path)).rejects.toThrow();
+      await expect(stat(readyWorktree.path)).rejects.toThrow();
+      createdWorktreeIds.splice(createdWorktreeIds.indexOf(created.worktree.id), 1);
     });
 
     it("throws when trying to remove primary worktree", async () => {
@@ -196,6 +258,7 @@ describe("worktreeService", () => {
     it("renames a worktree branch", async () => {
       const created = await service.create(repositoryId, { branch: "rename-src" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const renamed = await service.renameBranch(created.worktree.id, "rename-dest");
       expect(renamed.branch).toBe("rename-dest");
@@ -204,6 +267,7 @@ describe("worktreeService", () => {
     it("returns same worktree when new name matches current", async () => {
       const created = await service.create(repositoryId, { branch: "same-name" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const result = await service.renameBranch(created.worktree.id, "same-name");
       expect(result.branch).toBe("same-name");
@@ -220,6 +284,7 @@ describe("worktreeService", () => {
     it("updates target branch for a non-root worktree", async () => {
       const created = await service.create(repositoryId, { branch: "target-base-branch-test" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const updated = await service.updateBaseBranch(created.worktree.id, "develop");
 
@@ -229,6 +294,7 @@ describe("worktreeService", () => {
     it("returns same worktree when target branch is unchanged", async () => {
       const created = await service.create(repositoryId, { branch: "same-target-base-branch-test" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const updated = await service.updateBaseBranch(created.worktree.id, created.worktree.baseBranch);
 
@@ -257,6 +323,7 @@ describe("worktreeService", () => {
     it("returns success when no setup script configured", async () => {
       const created = await service.create(repositoryId, { branch: "setup-test" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const result = await service.rerunSetup(created.worktree.id);
       expect(result.success).toBe(true);
@@ -277,6 +344,7 @@ describe("worktreeService", () => {
     it("returns null when no setup script configured", async () => {
       const created = await service.create(repositoryId, { branch: "ctx-test" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const result = await service.getSetupContext(created.worktree.id);
       expect(result).toBeNull();
@@ -292,6 +360,7 @@ describe("worktreeService", () => {
     it("returns null when no run script configured", async () => {
       const created = await service.create(repositoryId, { branch: "run-ctx-test" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const result = await service.getRunScriptContext(created.worktree.id);
       expect(result).toBeNull();
@@ -302,6 +371,7 @@ describe("worktreeService", () => {
     it("returns threads for a worktree", async () => {
       const created = await service.create(repositoryId, { branch: "threads-test" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const threads = await service.listThreads(created.worktree.id);
       expect(threads.length).toBeGreaterThanOrEqual(1);
@@ -310,6 +380,7 @@ describe("worktreeService", () => {
     it("returns threads in createdAt ascending order", async () => {
       const created = await service.create(repositoryId, { branch: "threads-order-test" });
       createdWorktreeIds.push(created.worktree.id);
+      await waitForProvisionedWorktree(service, created.worktree.id);
 
       const mainThread = await prisma.chatThread.findFirst({
         where: { worktreeId: created.worktree.id },

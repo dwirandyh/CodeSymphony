@@ -232,6 +232,20 @@ export async function listBranches(rootPath: string): Promise<string[]> {
   return [...new Set(branches)].sort();
 }
 
+export async function listLocalBranches(rootPath: string): Promise<string[]> {
+  const output = await runGit([
+    "-C", rootPath, "branch", "--format=%(refname:short)",
+  ]);
+
+  if (!output) return [];
+
+  return output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .sort();
+}
+
 export async function getCurrentBranch(cwd: string): Promise<string | null> {
   try {
     const branch = await runGit(["branch", "--show-current"], cwd);

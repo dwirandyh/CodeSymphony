@@ -515,6 +515,7 @@ export function MobileFilesSheet({
   open,
   onOpenChange,
   worktreeId,
+  pending = false,
   activeFilePath,
   fileTabs,
   recentFilePaths,
@@ -526,6 +527,7 @@ export function MobileFilesSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   worktreeId: string | null;
+  pending?: boolean;
   activeFilePath: string | null;
   fileTabs: WorkspaceFileTab[];
   recentFilePaths: string[];
@@ -561,11 +563,27 @@ export function MobileFilesSheet({
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search files in this worktree"
               className="h-11 rounded-xl border-border/40 bg-background/60 pl-9 text-sm"
+              disabled={pending}
             />
           </div>
         </div>
 
-        {query.trim().length > 0 ? (
+        {pending ? (
+          <WorkspaceExplorerPanel
+            worktreeId={worktreeId}
+            entries={fileEntries}
+            gitEntries={[]}
+            pending
+            loading={loading}
+            activeFilePath={activeFilePath}
+            onOpenFile={(path) => {
+              onOpenFile(path);
+              onOpenChange(false);
+            }}
+            onClose={() => onOpenChange(false)}
+            showHeader={false}
+          />
+        ) : query.trim().length > 0 ? (
           <ScrollArea className="min-h-0 flex-1 px-2 py-2">
             {results.length === 0 ? (
               <div className="px-3 py-6 text-center text-sm text-muted-foreground">No matching files.</div>
@@ -680,6 +698,7 @@ export function MobileFilesSheet({
                 worktreeId={worktreeId}
                 entries={fileEntries}
                 gitEntries={[]}
+                pending={pending}
                 loading={loading}
                 activeFilePath={activeFilePath}
                 onOpenFile={(path) => {

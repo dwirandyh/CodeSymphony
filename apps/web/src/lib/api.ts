@@ -12,6 +12,7 @@ import type {
   CreateChatThreadInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
+  CreateWorktreeResult,
   CreateWorktreeInput,
   CursorModelCatalog,
   DeviceInventorySnapshot,
@@ -209,15 +210,6 @@ function extractDataEnvelope<T>(payload: unknown, debug?: {
   });
 }
 
-export class TeardownFailedError extends Error {
-  public readonly output: string;
-  constructor(output: string) {
-    super("Teardown scripts failed");
-    this.name = "TeardownFailedError";
-    this.output = output;
-  }
-}
-
 export type RuntimeListenAddress =
   | {
     kind: "pipe";
@@ -305,7 +297,7 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to delete repository");
     }
   },
-  createWorktree: async (repositoryId: string, input: CreateWorktreeInput = {}): Promise<{ worktree: Worktree; scriptResult?: ScriptResult }> => {
+  createWorktree: async (repositoryId: string, input: CreateWorktreeInput = {}): Promise<CreateWorktreeResult> => {
     const response = await runtimeFetch(`/repositories/${repositoryId}/worktrees`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -318,11 +310,7 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to create worktree");
     }
 
-    const envelope = payload as { scriptResult?: ScriptResult } | null;
-    return {
-      worktree: extractDataEnvelope<Worktree>(payload),
-      scriptResult: envelope?.scriptResult,
-    };
+    return extractDataEnvelope<CreateWorktreeResult>(payload);
   },
   deleteWorktree: async (worktreeId: string, options?: { force?: boolean }) => {
     const query = options?.force ? "?force=true" : "";
@@ -332,9 +320,6 @@ export const api = {
 
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
-      if (response.status === 409 && payload?.output) {
-        throw new TeardownFailedError(payload.output);
-      }
       throw new Error(payload?.error ?? "Failed to delete worktree");
     }
   },

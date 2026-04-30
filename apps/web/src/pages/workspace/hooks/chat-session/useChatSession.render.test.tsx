@@ -56,9 +56,11 @@ vi.mock("./useThreadEventStream", () => ({
 const { useWorkspaceTimelineMock } = vi.hoisted(() => ({
   useWorkspaceTimelineMock: vi.fn((): {
     items: ChatTimelineItem[];
+    hasIncompleteCoverage: boolean;
     summary: ChatTimelineSnapshot["summary"];
   } => ({
     items: [],
+    hasIncompleteCoverage: false,
     summary: {
       oldestRenderableKey: null,
       oldestRenderableKind: null,
@@ -279,6 +281,7 @@ afterEach(() => {
   useWorkspaceTimelineMock.mockReset();
   useWorkspaceTimelineMock.mockReturnValue({
     items: [],
+    hasIncompleteCoverage: false,
     summary: {
       oldestRenderableKey: null,
       oldestRenderableKind: null,
@@ -997,6 +1000,63 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
   });
 
+  it("preserves a newer manual thread selection when optimistic thread creation resolves", async () => {
+    threadsState.data = [makeThread("thread-a", true), makeThread("thread-b")];
+    const createDeferredThread = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(createDeferredThread.promise);
+
+    renderHook("thread-a");
+
+    let createPromise: Promise<ChatThread | null> | undefined;
+    await act(async () => {
+      createPromise = hookResult.createAdditionalThread();
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadId).toMatch(/^optimistic-thread:/);
+
+    act(() => {
+      hookResult.setSelectedThreadId("thread-b");
+    });
+
+    await act(async () => {
+      createDeferredThread.resolve({
+        ...makeThread("thread-new"),
+        title: "New Thread",
+      });
+      await createPromise;
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-b");
+  });
+
+  it("preserves a newer manual thread selection when optimistic thread creation fails", async () => {
+    threadsState.data = [makeThread("thread-a", true), makeThread("thread-b")];
+    const createDeferredThread = createDeferred<ChatThread>();
+    vi.mocked(api.createThread).mockReturnValue(createDeferredThread.promise);
+
+    renderHook("thread-a");
+
+    let createPromise: Promise<ChatThread | null> | undefined;
+    await act(async () => {
+      createPromise = hookResult.createAdditionalThread();
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadId).toMatch(/^optimistic-thread:/);
+
+    act(() => {
+      hookResult.setSelectedThreadId("thread-b");
+    });
+
+    await act(async () => {
+      createDeferredThread.reject(new Error("create failed"));
+      await createPromise;
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-b");
+  });
+
   it("targets the newly created thread for immediate follow-up composer actions", async () => {
     threadsState.data = [{
       ...makeThread("thread-a", true),
@@ -1271,6 +1331,7 @@ describe("useChatSession", () => {
 
     useWorkspaceTimelineMock.mockReturnValue({
       items: [],
+      hasIncompleteCoverage: false,
       summary: {
         oldestRenderableKey: null,
         oldestRenderableKind: null,
@@ -1317,6 +1378,7 @@ describe("useChatSession", () => {
 
     useWorkspaceTimelineMock.mockReturnValue({
       items: [],
+      hasIncompleteCoverage: false,
       summary: {
         oldestRenderableKey: null,
         oldestRenderableKind: null,
@@ -1697,6 +1759,7 @@ describe("useChatSession", () => {
           context: [],
         },
       ] as ChatTimelineItem[],
+      hasIncompleteCoverage: false,
       summary: {
         oldestRenderableKey: "message:assistant-1:segment:0",
         oldestRenderableKind: "message",
@@ -1722,6 +1785,59 @@ describe("useChatSession", () => {
 
     expect(hookResult.selectedThreadUiStatus).toBe("idle");
     expect(hookResult.timelineItems).toEqual(serverTimelineItems);
+  });
+
+  it("keeps semantic hydration enabled while canonical server state and local timeline drift apart", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 1,
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical answer.",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-1",
+        threadId: "thread-a",
+        idx: 1,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    renderHook("thread-a");
+
+    act(() => {
+      const { eventsCollection } = getThreadCollections("thread-a");
+      eventsCollection.insert({
+        id: "event-local-extra",
+        threadId: "thread-a",
+        idx: 2,
+        type: "tool.finished",
+        payload: {
+          toolName: "Read",
+          summary: "Read stale-local.txt",
+          precedingToolUseIds: ["read-local-1"],
+        },
+        createdAt: "2026-01-01T00:00:02Z",
+      });
+      setThreadLastEventIdx("thread-a", 2);
+    });
+
+    renderHook("thread-a");
+
+    const lastOptions = (useWorkspaceTimelineMock.mock.calls.at(-1) as unknown[] | undefined)?.[4] as
+      | { semanticHydrationInProgress?: boolean; disabled?: boolean }
+      | undefined;
+    expect(lastOptions).toMatchObject({
+      semanticHydrationInProgress: true,
+      disabled: false,
+    });
   });
 
   it("shows a submitted follow-up user message immediately from the send response", async () => {

@@ -14,6 +14,7 @@ import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 
 const DEFAULT_EXPANDED_ROOT_PATHS = ["src", "app", "apps", "packages"];
+const PENDING_EXPLORER_SKELETON_WIDTHS = ["58%", "72%", "46%", "67%", "54%", "61%", "39%"];
 
 type ExplorerNode = {
   name: string;
@@ -212,6 +213,24 @@ function buildTree(entries: FileEntry[], gitEntries: GitChangeEntry[]): Explorer
   return sortTree(root);
 }
 
+function PendingExplorerSkeleton() {
+  return (
+    <div data-testid="pending-worktree-explorer-skeleton" className="space-y-1.5 px-1 py-1">
+      {PENDING_EXPLORER_SKELETON_WIDTHS.map((width, index) => (
+        <div
+          key={`${width}-${index}`}
+          className="flex items-center gap-2 rounded-md px-2 py-1.5"
+          style={{ paddingLeft: `${8 + (index % 3) * 14}px` }}
+        >
+          <div className="h-3.5 w-3.5 shrink-0 animate-pulse rounded-sm bg-muted/70" />
+          <div className="h-4 w-4 shrink-0 animate-pulse rounded-sm bg-muted/70" />
+          <div className="h-3.5 animate-pulse rounded bg-muted/70" style={{ width }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function useExplorerPresentationState(
   activeFilePath: string | null,
   initialExpandedPaths: string[] = [],
@@ -273,6 +292,7 @@ function useExplorerPresentationState(
 }
 
 function WorkspaceExplorerShell({
+  pending,
   loading,
   empty,
   error,
@@ -281,6 +301,7 @@ function WorkspaceExplorerShell({
   showHeader = true,
   children,
 }: {
+  pending: boolean;
   loading: boolean;
   empty: boolean;
   error: string | null;
@@ -312,7 +333,9 @@ function WorkspaceExplorerShell({
       ) : null}
 
       <ScrollArea ref={scrollAreaRef} className={cn("min-h-0 flex-1 px-2 py-2", !showHeader && "pb-4")}>
-        {loading ? (
+        {pending ? (
+          <PendingExplorerSkeleton />
+        ) : loading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
@@ -335,6 +358,7 @@ function WorkspaceExplorerShell({
 function WorkspaceExplorerFlatContent({
   gitEntries,
   entries,
+  pending = false,
   loading,
   activeFilePath,
   onOpenFile,
@@ -343,6 +367,7 @@ function WorkspaceExplorerFlatContent({
 }: {
   entries: FileEntry[];
   gitEntries: GitChangeEntry[];
+  pending?: boolean;
   loading: boolean;
   activeFilePath: string | null;
   onOpenFile: (path: string) => void;
@@ -424,6 +449,7 @@ function WorkspaceExplorerFlatContent({
 
   return (
     <WorkspaceExplorerShell
+      pending={pending}
       loading={loading}
       empty={tree.children.length === 0}
       error={null}
@@ -440,6 +466,7 @@ interface WorkspaceExplorerPanelProps {
   worktreeId?: string | null;
   gitEntries: GitChangeEntry[];
   entries?: FileEntry[];
+  pending?: boolean;
   loading?: boolean;
   activeFilePath: string | null;
   onOpenFile: (path: string) => void;
@@ -450,12 +477,14 @@ interface WorkspaceExplorerPanelProps {
 function WorkspaceExplorerPanelBridge({
   worktreeId,
   gitEntries,
+  pending = false,
   activeFilePath,
   onOpenFile,
   onClose,
   showHeader = true,
 }: Required<Pick<WorkspaceExplorerPanelProps, "gitEntries" | "activeFilePath" | "onOpenFile" | "onClose">> & {
   worktreeId?: string | null;
+  pending?: boolean;
   showHeader?: boolean;
 }) {
   const { expandedPaths, setExpandedPaths, iconManifest, scrollAreaRef } = useExplorerPresentationState(activeFilePath);
@@ -479,7 +508,7 @@ function WorkspaceExplorerPanelBridge({
       queryKey: queryKeys.worktrees.fileTree(worktreeId ?? "__missing__", directoryPath || undefined),
       queryFn: ({ signal }) =>
         api.getWorktreeDirectoryEntries(worktreeId!, directoryPath || undefined, signal),
-      enabled: Boolean(worktreeId),
+      enabled: Boolean(worktreeId) && !pending,
       staleTime: 30_000,
     })),
   });
@@ -512,11 +541,17 @@ function WorkspaceExplorerPanelBridge({
   );
 
   const rootEntries = entriesByDirectory.get("") ?? [];
-  const rootLoading = Boolean(worktreeId) && loadingPaths.has("");
-  const rootError = errorByDirectory.get("") ?? null;
+  const rootLoading = !pending && Boolean(worktreeId) && loadingPaths.has("");
+  const rootError = pending ? null : (errorByDirectory.get("") ?? null);
 
   useEffect(() => {
-    if (!worktreeId || rootLoading || rootEntries.length === 0 || initialExpansionAppliedRef.current === worktreeId) {
+    if (
+      pending
+      || !worktreeId
+      || rootLoading
+      || rootEntries.length === 0
+      || initialExpansionAppliedRef.current === worktreeId
+    ) {
       return;
     }
 
@@ -532,7 +567,7 @@ function WorkspaceExplorerPanelBridge({
     startTransition(() => {
       setExpandedPaths((current) => mergeExpandedPaths(current, matchingDefaultPaths));
     });
-  }, [rootEntries, rootLoading, setExpandedPaths, worktreeId]);
+  }, [pending, rootEntries, rootLoading, setExpandedPaths, worktreeId]);
 
   function toggleDirectory(path: string) {
     startTransition(() => {
@@ -627,6 +662,7 @@ function WorkspaceExplorerPanelBridge({
 
   return (
     <WorkspaceExplorerShell
+      pending={pending}
       loading={rootLoading}
       empty={rootEntries.length === 0}
       error={rootError}
@@ -645,6 +681,7 @@ export function WorkspaceExplorerPanel(props: WorkspaceExplorerPanelProps) {
       <WorkspaceExplorerFlatContent
         entries={props.entries}
         gitEntries={props.gitEntries}
+        pending={props.pending}
         loading={props.loading}
         activeFilePath={props.activeFilePath}
         onOpenFile={props.onOpenFile}
@@ -655,10 +692,11 @@ export function WorkspaceExplorerPanel(props: WorkspaceExplorerPanelProps) {
   }
 
   return (
-    <WorkspaceExplorerPanelBridge
-      worktreeId={props.worktreeId}
-      gitEntries={props.gitEntries}
-      activeFilePath={props.activeFilePath}
+      <WorkspaceExplorerPanelBridge
+        worktreeId={props.worktreeId}
+        gitEntries={props.gitEntries}
+        pending={props.pending}
+        activeFilePath={props.activeFilePath}
       onOpenFile={props.onOpenFile}
       onClose={props.onClose}
       showHeader={props.showHeader}

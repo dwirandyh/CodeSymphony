@@ -10,6 +10,7 @@ import { CliAgentSchema } from "@codesymphony/shared-types";
 import { z } from "zod";
 import { appendRuntimeDebugLog } from "./debug.js";
 import { areLikelySameFsPath } from "../services/repositoryService.js";
+import { isUnavailableWorktreeErrorMessage } from "../services/worktreeService.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
@@ -78,6 +79,9 @@ function respondForChatRouteError(reply: { code: (statusCode: number) => { send:
   if (message === "Selected model provider not found") {
     return reply.code(404).send({ error: message });
   }
+  if (isUnavailableWorktreeErrorMessage(message)) {
+    return reply.code(409).send({ error: message });
+  }
   if (message === "Cannot delete a thread while assistant is processing") {
     return reply.code(409).send({ error: message });
   }
@@ -124,8 +128,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const threads = await app.chatService.listThreads(params.id);
       return { data: threads };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to list threads";
-      return reply.code(400).send({ error: message });
+      return respondForChatRouteError(reply, error, "Unable to list threads");
     }
   });
 
@@ -138,11 +141,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const slashCommands = await app.chatService.listSlashCommands(params.id, agent);
       return { data: slashCommands };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to list slash commands";
-      if (message === "Worktree not found") {
-        return reply.code(404).send({ error: message });
-      }
-      return reply.code(400).send({ error: message });
+      return respondForChatRouteError(reply, error, "Unable to list slash commands");
     }
   });
 
@@ -154,8 +153,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       await emitThreadWorkspaceEvent(app, "thread.created", thread);
       return reply.code(201).send({ data: thread });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to create thread";
-      return reply.code(400).send({ error: message });
+      return respondForChatRouteError(reply, error, "Unable to create thread");
     }
   });
 
@@ -194,8 +192,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       await emitThreadWorkspaceEvent(app, "thread.created", thread);
       return reply.code(201).send({ data: thread });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to create thread";
-      return reply.code(400).send({ error: message });
+      return respondForChatRouteError(reply, error, "Unable to create thread");
     }
   });
 
@@ -396,8 +393,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const message = await app.chatService.sendMessage(params.id, request.body);
       return reply.code(201).send({ data: message });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to send message";
-      return reply.code(400).send({ error: message });
+      return respondForChatRouteError(reply, error, "Unable to send message");
     }
   });
 

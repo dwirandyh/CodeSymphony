@@ -125,4 +125,29 @@ describe("WorkspaceExplorerPanel", () => {
     expect(api.getWorktreeDirectoryEntries).toHaveBeenCalledWith("wt-1", undefined, expect.any(AbortSignal));
     expect(api.getWorktreeDirectoryEntries).toHaveBeenCalledWith("wt-1", "ignored", expect.any(AbortSignal));
   });
+
+  it("shows a skeleton and skips directory queries while the worktree is pending", async () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspaceExplorerPanel
+            worktreeId="wt-1"
+            gitEntries={[]}
+            pending
+            activeFilePath={null}
+            onOpenFile={vi.fn()}
+            onClose={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector("[data-testid='pending-worktree-explorer-skeleton']")).toBeTruthy();
+    expect(api.getWorktreeDirectoryEntries).not.toHaveBeenCalled();
+  });
 });

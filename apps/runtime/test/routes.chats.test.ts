@@ -5,6 +5,8 @@ import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
 import { registerChatRoutes, parseStreamStartCursor, formatSseEvent } from "../src/routes/chats";
 
+const WORKTREE_PREPARING_ERROR = "Worktree is still being prepared. Please wait until it is ready.";
+
 describe("parseStreamStartCursor", () => {
   it("returns undefined when both inputs are null/undefined", () => {
     expect(parseStreamStartCursor(undefined, undefined)).toBeUndefined();
@@ -158,6 +160,12 @@ describe("chat routes", () => {
       expect(res.statusCode).toBe(201);
     });
 
+    it("returns 409 while the worktree is still being prepared", async () => {
+      mockChatService.createThread.mockRejectedValue(new Error(WORKTREE_PREPARING_ERROR));
+      const res = await app.inject({ method: "POST", url: "/api/worktrees/w1/threads", payload: {} });
+      expect(res.statusCode).toBe(409);
+    });
+
     it("returns 400 on error", async () => {
       mockChatService.createThread.mockRejectedValue(new Error("fail"));
       const res = await app.inject({ method: "POST", url: "/api/worktrees/w1/threads", payload: {} });
@@ -205,6 +213,13 @@ describe("chat routes", () => {
 
       const res = await app.inject({ method: "GET", url: "/api/worktrees/missing/slash-commands" });
       expect(res.statusCode).toBe(404);
+    });
+
+    it("returns 409 while the worktree is still being prepared", async () => {
+      mockChatService.listSlashCommands.mockRejectedValue(new Error(WORKTREE_PREPARING_ERROR));
+
+      const res = await app.inject({ method: "GET", url: "/api/worktrees/w1/slash-commands" });
+      expect(res.statusCode).toBe(409);
     });
   });
 
@@ -364,6 +379,16 @@ describe("chat routes", () => {
         payload: { content: "Hello" },
       });
       expect(res.statusCode).toBe(201);
+    });
+
+    it("returns 409 while the worktree is still being prepared", async () => {
+      mockChatService.sendMessage.mockRejectedValue(new Error(WORKTREE_PREPARING_ERROR));
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/threads/t1/messages",
+        payload: { content: "Hello" },
+      });
+      expect(res.statusCode).toBe(409);
     });
 
     it("returns 400 on error", async () => {

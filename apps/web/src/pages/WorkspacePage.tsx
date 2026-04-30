@@ -21,7 +21,6 @@ import { MacDesktopTitleBar } from "../components/workspace/MacDesktopTitleBar";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
-import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
 import { QuickFilePicker } from "../components/workspace/QuickFilePicker";
 const MobileActionBar = lazy(() =>
   import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileActionBar }))
@@ -59,9 +58,14 @@ import { api, type RuntimeInfo } from "../lib/api";
 import { scheduleWindowIdleTask } from "../lib/idleTask";
 import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
-import { findRootWorktree, isRootWorktree } from "../lib/worktree";
+import {
+  findRootWorktree,
+  isOperationalWorktreeStatus,
+  isPendingWorktreeStatus,
+  isRootWorktree,
+} from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
-import type { TeardownErrorState, ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
+import type { ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
 import { useChatSession } from "./workspace/hooks/chat-session";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
@@ -386,7 +390,6 @@ export function WorkspacePage() {
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(() => loadStoredBoolean(LEFT_SIDEBAR_VISIBLE_STORAGE_KEY, true));
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [bottomPanelStateByWorktreeId, setBottomPanelStateByWorktreeId] = useState<Record<string, BottomPanelWorktreeState>>({});
-  const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
   const showMacDesktopTitleBar = isMacDesktopShell();
 
   const {
@@ -473,10 +476,6 @@ export function WorkspacePage() {
     }
   }, [updateBottomPanelState]);
 
-  const handleTeardownError = useCallback((state: TeardownErrorState) => {
-    setTeardownError(state);
-  }, []);
-
   const handleScriptOutputChunk = useCallback(({ worktreeId, chunk }: { worktreeId: string; chunk: string }) => {
     setScriptOutputs((prev) => appendScriptOutputChunk(prev, { worktreeId, chunk }));
   }, []);
@@ -501,7 +500,6 @@ export function WorkspacePage() {
     desiredWorktreeId: search.worktreeId,
     onScriptUpdate: handleScriptUpdate,
     onScriptOutputChunk: handleScriptOutputChunk,
-    onTeardownError: handleTeardownError,
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
         const pendingSelection = pendingWorktreeSearchSelectionRef.current;
@@ -548,6 +546,12 @@ export function WorkspacePage() {
   const visibleRepositories = useMemo(
     () => orderedRepositories.filter((repository) => !hiddenRepositoryIdSet.has(repository.id)),
     [hiddenRepositoryIdSet, orderedRepositories],
+  );
+  const metadataScopedRepositories = useMemo(
+    () => visibleRepositories.filter((repository) => (
+      expandedByRepo[repository.id] ?? repos.selectedRepositoryId === repository.id
+    )),
+    [expandedByRepo, repos.selectedRepositoryId, visibleRepositories],
   );
   const desiredVisibleRepositoryId = useMemo(() => {
     if (search.worktreeId) {
@@ -696,12 +700,18 @@ export function WorkspacePage() {
   const queryClient = useQueryClient();
   const prioritizeConversationBootstrap = activeView === "chat" && !!(search.worktreeId ?? repos.selectedWorktreeId);
   const [enableNonCriticalWorkspaceData, setEnableNonCriticalWorkspaceData] = useState(() => !prioritizeConversationBootstrap);
+  const backgroundStatusRepositories = enableNonCriticalWorkspaceData
+    ? metadataScopedRepositories
+    : [];
+  const selectedWorktreeStatus = repos.selectedWorktree?.status ?? null;
+  const selectedWorktreeOperational = selectedWorktreeStatus != null && isOperationalWorktreeStatus(selectedWorktreeStatus);
+  const selectedWorktreePending = selectedWorktreeStatus != null && isPendingWorktreeStatus(selectedWorktreeStatus);
   const nonCriticalRepositoryId = enableNonCriticalWorkspaceData ? repos.selectedRepositoryId : null;
-  const nonCriticalWorktreeId = enableNonCriticalWorkspaceData ? repos.selectedWorktreeId : null;
+  const nonCriticalWorktreeId = enableNonCriticalWorkspaceData && selectedWorktreeOperational ? repos.selectedWorktreeId : null;
   const prioritizeGitPanelData = rightPanelId === "git" || reviewTabOpen;
   const gitChanges = useGitChanges(
     repos.selectedWorktreeId,
-    (enableNonCriticalWorkspaceData || prioritizeGitPanelData) && !!repos.selectedWorktreeId,
+    (enableNonCriticalWorkspaceData || prioritizeGitPanelData) && !!repos.selectedWorktreeId && selectedWorktreeOperational,
   );
   const repositoryReviews = useRepositoryReviews(
     enableNonCriticalWorkspaceData || prioritizeGitPanelData
@@ -720,6 +730,7 @@ export function WorkspacePage() {
     : null;
   const selectedReviewRef = selectedLatestReviewRef?.state === "open" ? selectedLatestReviewRef : null;
   const reviewKind: ReviewKind = repositoryReviews.data?.kind ?? "pr";
+  const displayGitBranch = gitChanges.branch || repos.selectedWorktree?.branch || "";
   const activeGitChangeEntry = activeFilePath
     ? gitChanges.entries.find((entry) => entry.path === activeFilePath) ?? null
     : null;
@@ -734,6 +745,7 @@ export function WorkspacePage() {
     desiredThreadId: desiredChatThreadId,
     desiredWorktreeId: desiredChatWorktreeId,
     repositoryId: repos.selectedRepositoryId,
+    worktreeStatus: selectedWorktreeStatus,
     timelineEnabled: !reviewTabOpen,
     onThreadChange: useCallback(
       (threadId: string | null) => {
@@ -823,37 +835,6 @@ export function WorkspacePage() {
     navigationPrefetchRef.current.set(worktreeId, prefetchTask);
     return prefetchTask;
   }, [prefetchDisplayThreadSnapshot, queryClient]);
-  const navigationPrefetchWorktreeIds = useMemo(() => {
-    const worktreeIds: string[] = [];
-    const pushWorktreeId = (worktreeId: string) => {
-      if (worktreeId === repos.selectedWorktreeId || worktreeIds.includes(worktreeId)) {
-        return;
-      }
-
-      worktreeIds.push(worktreeId);
-    };
-
-    const selectedRepository = visibleRepositories.find((repository) => repository.id === repos.selectedRepositoryId) ?? null;
-    const prioritizedRepositories = selectedRepository
-      ? [selectedRepository, ...visibleRepositories.filter((repository) => repository.id !== selectedRepository.id)]
-      : visibleRepositories;
-
-    for (const repository of prioritizedRepositories) {
-      for (const worktree of repository.worktrees) {
-        if (worktree.status !== "active") {
-          continue;
-        }
-
-        pushWorktreeId(worktree.id);
-        if (worktreeIds.length >= 6) {
-          return worktreeIds;
-        }
-      }
-    }
-
-    return worktreeIds;
-  }, [repos.selectedRepositoryId, repos.selectedWorktreeId, visibleRepositories]);
-
   useEffect(() => {
     if (!prioritizeConversationBootstrap) {
       setEnableNonCriticalWorkspaceData(true);
@@ -872,21 +853,6 @@ export function WorkspacePage() {
       fallbackDelayMs: 1200,
     });
   }, [conversationReady, prioritizeConversationBootstrap, repos.selectedWorktreeId, search.worktreeId]);
-
-  useEffect(() => {
-    if (!conversationReady || navigationPrefetchWorktreeIds.length === 0) {
-      return;
-    }
-
-    return scheduleWindowIdleTask(() => {
-      for (const worktreeId of navigationPrefetchWorktreeIds) {
-        void prefetchWorktreeNavigationTarget(worktreeId);
-      }
-    }, {
-      timeout: 800,
-      fallbackDelayMs: 250,
-    });
-  }, [conversationReady, navigationPrefetchWorktreeIds, prefetchWorktreeNavigationTarget]);
   const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId);
 
   useEffect(() => {
@@ -898,7 +864,7 @@ export function WorkspacePage() {
   }, [search.threadId, search.worktreeId]);
 
   useEffect(() => {
-    if (!repos.selectedWorktreeId || !chat.selectedThreadId) {
+    if (!repos.selectedWorktreeId || !chat.selectedThreadId || !chat.selectedThreadIdForData) {
       return;
     }
 
@@ -907,8 +873,8 @@ export function WorkspacePage() {
       return;
     }
 
-    rememberedThreadIdsByWorktree.set(repos.selectedWorktreeId, chat.selectedThreadId);
-  }, [chat.selectedThreadId, chat.threads, repos.selectedWorktreeId]);
+    rememberedThreadIdsByWorktree.set(repos.selectedWorktreeId, chat.selectedThreadIdForData);
+  }, [chat.selectedThreadId, chat.selectedThreadIdForData, chat.threads, repos.selectedWorktreeId]);
 
   const gates = usePendingGates(chat.selectedThreadIdForData ?? chat.selectedThreadId, {
     onError: setError,
@@ -1415,6 +1381,7 @@ export function WorkspacePage() {
   const prMrActionBusy = !selectedReviewRef && prMrThreadIsActiveOrPending;
   const prMrActionDisabled = (
     !repos.selectedWorktree
+    || !selectedWorktreeOperational
     || selectedWorktreeIsBaseBranch
     || (!selectedReviewRef && !reviewLookupAvailable)
     || (!selectedReviewRef && prMrThreadIsActiveOrPending)
@@ -1425,25 +1392,9 @@ export function WorkspacePage() {
       ? "PR/MR thread is already active"
       : repositoryReviews.data?.unavailableReason;
 
-  const forceDeleteQueryClient = queryClient;
-
-  const handleForceDelete = useCallback(async (worktreeId: string) => {
-    try {
-      await api.deleteWorktree(worktreeId, { force: true });
-      setTeardownError(null);
-      if (repos.selectedWorktreeId === worktreeId) {
-        repos.setSelectedWorktreeId(null);
-      }
-      void forceDeleteQueryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Force delete failed");
-      setTeardownError(null);
-    }
-  }, [repos.selectedWorktreeId, repos.setSelectedWorktreeId, forceDeleteQueryClient]);
-
   const handleRerunSetup = useCallback(() => {
     const worktreeId = repos.selectedWorktreeId;
-    if (!worktreeId) return;
+    if (!worktreeId || !selectedWorktreeOperational) return;
     setScriptOutputs((prev) => clearLifecycleScriptOutputs(prev, worktreeId));
     updateBottomPanelState(worktreeId, (current) => ({
       ...current,
@@ -1451,7 +1402,7 @@ export function WorkspacePage() {
       openSignal: current.openSignal + 1,
     }));
     void repos.rerunSetup(worktreeId);
-  }, [repos.rerunSetup, repos.selectedWorktreeId, updateBottomPanelState]);
+  }, [repos.rerunSetup, repos.selectedWorktreeId, selectedWorktreeOperational, updateBottomPanelState]);
 
   const resolveActiveRunScriptSessionId = useCallback(() => {
     if (!repos.selectedWorktreeId) {
@@ -1466,7 +1417,7 @@ export function WorkspacePage() {
   ), []);
 
   const handleRunScript = useCallback(async () => {
-    if (!repos.selectedWorktreeId || !repos.selectedWorktree) return;
+    if (!repos.selectedWorktreeId || !repos.selectedWorktree || !selectedWorktreeOperational) return;
     const runCommands = (repos.selectedRepository?.runScript ?? [])
       .map((command) => command.trim())
       .filter((command) => command.length > 0);
@@ -1498,7 +1449,7 @@ export function WorkspacePage() {
       }));
       setError(e instanceof Error ? e.message : "Failed to run script");
     }
-  }, [createRunScriptSessionId, repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, updateBottomPanelState]);
+  }, [createRunScriptSessionId, repos.selectedWorktreeId, repos.selectedWorktree, repos.selectedRepository, selectedWorktreeOperational, updateBottomPanelState]);
 
   const handleStopRunScript = useCallback(async () => {
     const sessionId = resolveActiveRunScriptSessionId();
@@ -1760,7 +1711,7 @@ export function WorkspacePage() {
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-secondary/35 text-foreground transition-colors active:bg-secondary/60 disabled:opacity-40"
                 aria-label={selectedBottomPanelState.runScriptActive ? "Stop script" : "Run script"}
                 title={selectedBottomPanelState.runScriptActive ? "Stop script" : "Run script"}
-                disabled={!repos.selectedWorktreeId}
+                disabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
               >
                 {selectedBottomPanelState.runScriptActive ? (
                   <FilledPauseIcon className="h-3.5 w-3.5" />
@@ -1799,16 +1750,17 @@ export function WorkspacePage() {
                 targetBranchDisabled={
                   !enableNonCriticalWorkspaceData
                   || !repos.selectedWorktreeId
+                  || !selectedWorktreeOperational
                   || !repos.selectedRepositoryId
                   || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
                 }
-                worktreePath={repos.selectedWorktree?.path ?? null}
+                worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
                 threads={chat.threads}
                 selectedThreadId={chat.selectedThreadId}
                 fileTabs={workspaceFileTabs}
                 activeFilePath={activeFilePath}
-                disabled={!repos.selectedWorktreeId}
-                createThreadDisabled={!repos.selectedWorktreeId || chat.sendingMessage}
+                disabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
+                createThreadDisabled={!repos.selectedWorktreeId || !selectedWorktreeOperational || chat.sendingMessage}
                 closingThreadId={chat.closingThreadId}
                 protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
                 showReviewTab={reviewTabOpen}
@@ -1871,6 +1823,7 @@ export function WorkspacePage() {
                     recentFilePaths={recentFilePaths}
                     fileEntries={fileIndex.entries}
                     loading={fileIndex.loading}
+                    pending={selectedWorktreePending}
                     onOpenFile={(path) => {
                       void openReadFile(path);
                     }}
@@ -1889,8 +1842,8 @@ export function WorkspacePage() {
                       }
                     }}
                     entries={gitChanges.entries}
-                    branch={gitChanges.branch}
-                    loading={gitChanges.loading}
+                    branch={displayGitBranch}
+                    loading={selectedWorktreePending || gitChanges.loading}
                     committing={gitChanges.committing}
                     syncing={gitChanges.syncing}
                     canSync={gitChanges.canSync}
@@ -1965,8 +1918,8 @@ export function WorkspacePage() {
                       }
                     }}
                     onBack={() => setMobilePanelOpen("more")}
-                    worktreeId={repos.selectedWorktreeId}
-                    worktreePath={repos.selectedWorktree?.path ?? null}
+                    worktreeId={selectedWorktreeOperational ? repos.selectedWorktreeId : null}
+                    worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
                     selectedThreadId={chat.selectedThreadId}
                     scriptOutputs={scriptOutputs}
                     activeTab={selectedBottomPanelState.activeTab}
@@ -1978,7 +1931,7 @@ export function WorkspacePage() {
                   />
                 </Suspense>
               </section>
-            ) : activeView === "review" && reviewTabOpen && repos.selectedWorktreeId ? (
+            ) : activeView === "review" && reviewTabOpen && repos.selectedWorktreeId && selectedWorktreeOperational ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading review...</div>}>
                   <DiffReviewPanel worktreeId={repos.selectedWorktreeId} selectedFilePath={selectedDiffFilePath} />
@@ -2023,7 +1976,7 @@ export function WorkspacePage() {
                       emptyState={chat.messageListEmptyState}
                       showThinkingPlaceholder={showThinkingPlaceholder}
                       onOpenReadFile={openReadFile}
-                      worktreePath={repos.selectedWorktree?.path ?? null}
+                      worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
                       footer={gates.showPlanDecisionComposer ? (
                         <PlanDecisionComposer
                           busy={gates.planActionBusy}
@@ -2178,8 +2131,8 @@ export function WorkspacePage() {
 
           <div className={desktopLayout ? "block" : "hidden"}>
             <BottomPanel
-              worktreeId={repos.selectedWorktreeId}
-              worktreePath={repos.selectedWorktree?.path ?? null}
+              worktreeId={selectedWorktreeOperational ? repos.selectedWorktreeId : null}
+              worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
               selectedThreadId={chat.selectedThreadId}
               scriptOutputs={scriptOutputs}
               activeTab={selectedBottomPanelState.activeTab}
@@ -2205,6 +2158,7 @@ export function WorkspacePage() {
           desktopApp={desktopApp}
           rightPanelId={rightPanelId}
           worktreeId={nonCriticalWorktreeId}
+          worktreePending={selectedWorktreePending}
           gitChanges={gitChanges}
           activeFilePath={activeFilePath}
           selectedDiffFilePath={selectedDiffFilePath}
@@ -2337,18 +2291,9 @@ export function WorkspacePage() {
         }}
       />
 
-      <TeardownErrorDialog
-        open={teardownError !== null}
-        worktreeId={teardownError?.worktreeId ?? null}
-        worktreeName={teardownError?.worktreeName ?? ""}
-        output={teardownError?.output ?? ""}
-        onForceDelete={(id) => void handleForceDelete(id)}
-        onClose={() => setTeardownError(null)}
-      />
-
       {enableNonCriticalWorkspaceData ? (
         <BackgroundWorktreeStatusStreamBridge
-          repositories={repos.repositories}
+          repositories={backgroundStatusRepositories}
           selectedWorktreeId={repos.selectedWorktreeId}
           selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
         />

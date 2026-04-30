@@ -24,7 +24,7 @@ import { useRenameWorktreeBranch } from "./useRenameWorktreeBranch";
 vi.mock("../../lib/api", () => ({
   api: {
     createRepository: vi.fn().mockResolvedValue({ id: "r1", name: "repo" }),
-    createWorktree: vi.fn().mockResolvedValue({ worktree: { id: "w1", branch: "main" } }),
+    createWorktree: vi.fn().mockResolvedValue({ worktree: { id: "w1", branch: "main" }, pending: true }),
     deleteWorktree: vi.fn().mockResolvedValue(undefined),
     deleteRepository: vi.fn().mockResolvedValue(undefined),
     createThread: vi.fn().mockResolvedValue({ id: "t1", title: "Thread" }),

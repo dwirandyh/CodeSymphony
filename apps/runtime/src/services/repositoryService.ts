@@ -30,7 +30,7 @@ async function canonicalizeRepositoryPaths(
   repository: {
     id?: string;
     rootPath: string;
-    worktrees: Array<{ id?: string; path: string; status?: "active" | "archived" }>;
+    worktrees: Array<{ id?: string; path: string; status?: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" }>;
   },
 ): Promise<void> {
   const canonicalRootPath = await realpath(repository.rootPath).catch(() => normalizeFsPath(repository.rootPath));
@@ -51,7 +51,7 @@ export function createRepositoryService(prisma: PrismaClient) {
       branch: string;
       path: string;
       baseBranch: string;
-      status: "active" | "archived";
+      status: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed";
       branchRenamed: boolean;
       createdAt: Date;
       updatedAt: Date;
@@ -166,7 +166,7 @@ export function createRepositoryService(prisma: PrismaClient) {
   }
 
   async function syncWorktreeBranches(
-    worktrees: Array<{ id: string; branch: string; path: string; status: "active" | "archived" }>,
+    worktrees: Array<{ id: string; branch: string; path: string; status: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" }>,
   ): Promise<void> {
     const candidates = worktrees.filter((worktree) => worktree.status === "active");
 

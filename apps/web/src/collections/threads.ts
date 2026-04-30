@@ -78,6 +78,13 @@ export function refetchThreadsCollection(queryClient: QueryClient, worktreeId: s
   return getThreadsCollection(queryClient, worktreeId).utils.refetch();
 }
 
+export function refetchAllThreadsCollections(queryClient: QueryClient) {
+  const registry = getThreadCollectionsRegistry(queryClient);
+  return Promise.allSettled(
+    [...registry.values()].map((collection) => collection.utils.refetch()),
+  );
+}
+
 export function removeThreadFromCollection(queryClient: QueryClient, worktreeId: string, threadId: string) {
   const collection = getThreadsCollection(queryClient, worktreeId);
   if (!(collection.toArray as ChatThread[]).some((thread) => thread.id === threadId)) {
