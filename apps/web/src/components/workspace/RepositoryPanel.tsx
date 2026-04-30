@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useQueries } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   Filter,
@@ -18,6 +19,7 @@ import {
   GitPullRequestArrow,
   Pencil,
   Plus,
+  RefreshCw,
   Trash2,
 } from "lucide-react";
 import type {
@@ -76,7 +78,7 @@ type RepositoryPanelProps = {
     worktreeId: string,
     preferredThreadId?: string | null,
   ) => void;
-  onDeleteWorktree: (worktreeId: string) => void;
+  onDeleteWorktree: (worktreeId: string, options?: { force?: boolean }) => void;
   onRenameWorktreeBranch: (worktreeId: string, newBranch: string) => void;
 };
 
@@ -265,10 +267,32 @@ function WorktreeMetaSlot({
   );
 }
 
+function isVisibleWorktreeStatus(status: Repository["worktrees"][number]["status"]): boolean {
+  return status === "active" || status === "delete_failed";
+}
+
+function renderWorktreeLifecycleBadge(worktree: Repository["worktrees"][number]) {
+  if (worktree.status !== "delete_failed") {
+    return null;
+  }
+
+  return (
+    <Badge
+      variant="destructive"
+      className="inline-flex h-4 items-center gap-1 rounded-md px-1 py-0 text-[9px] leading-none shadow-sm"
+      title={worktree.lastDeleteError ?? "Delete failed"}
+    >
+      <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
+      Delete failed
+    </Badge>
+  );
+}
+
 function WorktreeRowContent({
   icon,
   branchContent,
   status,
+  detailBadge,
   review,
   reviewKind,
   insertions,
@@ -279,6 +303,7 @@ function WorktreeRowContent({
   icon: ReactNode;
   branchContent: ReactNode;
   status: WorktreeThreadUiStatus | undefined;
+  detailBadge?: ReactNode;
   review: ReviewRef | null;
   reviewKind: ReviewKind | null | undefined;
   insertions: number;
@@ -300,6 +325,9 @@ function WorktreeRowContent({
         </WorktreeMetaSlot>
       </div>
       <div className={cn("flex min-w-0 items-center gap-1.5 pt-0.5", metaIndentClass)}>
+        <WorktreeMetaSlot>
+          {detailBadge}
+        </WorktreeMetaSlot>
         <WorktreeMetaSlot>
           <WorktreeReviewBadge
             review={review}
@@ -994,18 +1022,18 @@ export const RepositoryPanel = memo(function RepositoryPanel({
             }
 
             const isSelected = selectedRepositoryId === repository.id;
-            const activeWorktrees = repository.worktrees.filter(
-              (worktree) => worktree.status === "active",
+            const visibleWorktrees = repository.worktrees.filter(
+              (worktree) => isVisibleWorktreeStatus(worktree.status),
             );
             const rootWorkspace =
-              activeWorktrees.find((worktree) =>
+              visibleWorktrees.find((worktree) =>
                 isRootWorktree(worktree, repository),
               ) ?? null;
             const branchWorktrees = rootWorkspace
-              ? activeWorktrees.filter(
+              ? visibleWorktrees.filter(
                   (worktree) => worktree.id !== rootWorkspace.id,
                 )
-              : activeWorktrees;
+              : visibleWorktrees;
             const isExpanded = expandedByRepo[repository.id] ?? isSelected;
             const rootPriorityThreadId = rootWorkspace
               ? resolvePriorityThreadId(worktreeStatuses[rootWorkspace.id])
@@ -1292,6 +1320,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                     )
                                   }
                                   status={worktreeStatuses[worktree.id]?.kind}
+                                  detailBadge={renderWorktreeLifecycleBadge(worktree)}
                                   review={review}
                                   reviewKind={repositoryReviewKind}
                                   insertions={stats?.insertions ?? 0}
@@ -1302,33 +1331,66 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                               </div>
 
                               <div className="pointer-events-none absolute top-0 right-2 bottom-0 flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/wt:pointer-events-auto group-hover/wt:opacity-100 group-focus-within/wt:pointer-events-auto group-focus-within/wt:opacity-100">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingWorktreeId(worktree.id);
-                                    setEditingBranchValue(worktree.branch);
-                                  }}
-                                  title="Rename branch"
-                                >
-                                  <Pencil className="h-3.5 w-3.5" />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteWorktree(worktree.id);
-                                  }}
-                                  title="Delete worktree"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </Button>
+                                {worktree.status === "delete_failed" ? (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteWorktree(worktree.id);
+                                      }}
+                                      title="Retry delete"
+                                    >
+                                      <RefreshCw className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-destructive hover:text-destructive"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteWorktree(worktree.id, { force: true });
+                                      }}
+                                      title="Force delete worktree"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingWorktreeId(worktree.id);
+                                        setEditingBranchValue(worktree.branch);
+                                      }}
+                                      title="Rename branch"
+                                    >
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteWorktree(worktree.id);
+                                      }}
+                                      title="Delete worktree"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </>
+                                )}
                               </div>
                             </div>
                           );

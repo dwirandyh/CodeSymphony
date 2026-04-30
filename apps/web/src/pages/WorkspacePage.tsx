@@ -21,7 +21,6 @@ import { MacDesktopTitleBar } from "../components/workspace/MacDesktopTitleBar";
 import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
-import { TeardownErrorDialog } from "../components/workspace/TeardownErrorDialog";
 import { QuickFilePicker } from "../components/workspace/QuickFilePicker";
 const MobileActionBar = lazy(() =>
   import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileActionBar }))
@@ -61,7 +60,7 @@ import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
 import { findRootWorktree, isRootWorktree } from "../lib/worktree";
 import { useRepositoryManager } from "./workspace/hooks/useRepositoryManager";
-import type { TeardownErrorState, ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
+import type { ScriptUpdateEvent } from "./workspace/hooks/useRepositoryManager";
 import { useChatSession } from "./workspace/hooks/chat-session";
 import { usePendingGates } from "./workspace/hooks/usePendingGates";
 import { useGitChanges } from "./workspace/hooks/useGitChanges";
@@ -386,7 +385,6 @@ export function WorkspacePage() {
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(() => loadStoredBoolean(LEFT_SIDEBAR_VISIBLE_STORAGE_KEY, true));
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [bottomPanelStateByWorktreeId, setBottomPanelStateByWorktreeId] = useState<Record<string, BottomPanelWorktreeState>>({});
-  const [teardownError, setTeardownError] = useState<TeardownErrorState | null>(null);
   const showMacDesktopTitleBar = isMacDesktopShell();
 
   const {
@@ -473,10 +471,6 @@ export function WorkspacePage() {
     }
   }, [updateBottomPanelState]);
 
-  const handleTeardownError = useCallback((state: TeardownErrorState) => {
-    setTeardownError(state);
-  }, []);
-
   const handleScriptOutputChunk = useCallback(({ worktreeId, chunk }: { worktreeId: string; chunk: string }) => {
     setScriptOutputs((prev) => appendScriptOutputChunk(prev, { worktreeId, chunk }));
   }, []);
@@ -501,7 +495,6 @@ export function WorkspacePage() {
     desiredWorktreeId: search.worktreeId,
     onScriptUpdate: handleScriptUpdate,
     onScriptOutputChunk: handleScriptOutputChunk,
-    onTeardownError: handleTeardownError,
     onSelectionChange: useCallback(
       (selection: { repoId: string | null; worktreeId: string | null }) => {
         const pendingSelection = pendingWorktreeSearchSelectionRef.current;
@@ -1425,22 +1418,6 @@ export function WorkspacePage() {
       ? "PR/MR thread is already active"
       : repositoryReviews.data?.unavailableReason;
 
-  const forceDeleteQueryClient = queryClient;
-
-  const handleForceDelete = useCallback(async (worktreeId: string) => {
-    try {
-      await api.deleteWorktree(worktreeId, { force: true });
-      setTeardownError(null);
-      if (repos.selectedWorktreeId === worktreeId) {
-        repos.setSelectedWorktreeId(null);
-      }
-      void forceDeleteQueryClient.invalidateQueries({ queryKey: queryKeys.repositories.all });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Force delete failed");
-      setTeardownError(null);
-    }
-  }, [repos.selectedWorktreeId, repos.setSelectedWorktreeId, forceDeleteQueryClient]);
-
   const handleRerunSetup = useCallback(() => {
     const worktreeId = repos.selectedWorktreeId;
     if (!worktreeId) return;
@@ -2335,15 +2312,6 @@ export function WorkspacePage() {
           setSettingsOpen(false);
           void repos.removeRepository(id);
         }}
-      />
-
-      <TeardownErrorDialog
-        open={teardownError !== null}
-        worktreeId={teardownError?.worktreeId ?? null}
-        worktreeName={teardownError?.worktreeName ?? ""}
-        output={teardownError?.output ?? ""}
-        onForceDelete={(id) => void handleForceDelete(id)}
-        onClose={() => setTeardownError(null)}
       />
 
       {enableNonCriticalWorkspaceData ? (

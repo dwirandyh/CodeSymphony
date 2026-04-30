@@ -27,6 +27,10 @@ vi.mock("../../../../lib/logService", () => ({
   },
 }));
 
+vi.mock("../../../../lib/debugLog", () => ({
+  debugLog: vi.fn(),
+}));
+
 vi.mock("../../../../lib/renderDebug", () => ({
   pushRenderDebug: vi.fn(),
 }));
@@ -70,14 +74,16 @@ class MockEventSource {
   }
 }
 
-const { runtimeBaseUrlMock, getThreadStatusSnapshotMock } = vi.hoisted(() => ({
+const { runtimeBaseUrlMock, getThreadStatusSnapshotMock, getTimelineSnapshotMock } = vi.hoisted(() => ({
   runtimeBaseUrlMock: "http://127.0.0.1:4331",
   getThreadStatusSnapshotMock: vi.fn(),
+  getTimelineSnapshotMock: vi.fn(),
 }));
 
 vi.mock("../../../../lib/api", () => ({
   api: {
     getThreadStatusSnapshot: getThreadStatusSnapshotMock,
+    getTimelineSnapshot: getTimelineSnapshotMock,
     get runtimeBaseUrl() {
       return runtimeBaseUrlMock;
     },
@@ -151,7 +157,9 @@ function HookHarness({
   const renderDecisionByMessageIdRef = useRef(new Map<string, string>());
   const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
   const activeThreadIdRef = useRef<string | null>(selectedThreadId);
+  const waitingAssistantRef = useRef<{ threadId: string; afterIdx: number } | null>(waitingAssistant);
   activeThreadIdRef.current = selectedThreadId;
+  waitingAssistantRef.current = waitingAssistant;
 
   useThreadEventStream({
     selectedThreadId,
@@ -160,6 +168,7 @@ function HookHarness({
     selectedThreadIsPrMr,
     locallyDeletedThreadIdsRef,
     activeThreadIdRef,
+    waitingAssistantRef,
     setThreads,
     setWaitingAssistant,
     setStoppingThreadId,
@@ -226,6 +235,7 @@ function renderHookInStrictMode(
 beforeEach(() => {
   resetThreadCollectionsForTest();
   resetThreadStreamStateRegistryForTest();
+  vi.useFakeTimers();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -239,6 +249,8 @@ beforeEach(() => {
   cancelQueriesMock.mockResolvedValue(undefined);
   getThreadStatusSnapshotMock.mockReset();
   getThreadStatusSnapshotMock.mockResolvedValue({ status: "idle", newestIdx: null });
+  getTimelineSnapshotMock.mockReset();
+  getTimelineSnapshotMock.mockResolvedValue(makeSnapshot());
   queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
   queryClient.cancelQueries = cancelQueriesMock as typeof queryClient.cancelQueries;
 
@@ -261,6 +273,7 @@ afterEach(() => {
   container.remove();
   resetThreadCollectionsForTest();
   resetThreadStreamStateRegistryForTest();
+  vi.useRealTimers();
   if (originalEventSource) {
     globalThis.EventSource = originalEventSource;
   }
@@ -921,45 +934,102 @@ describe("useThreadEventStream", () => {
   });
 
   it("reconnects with afterIdx from the local thread registry", async () => {
-    vi.useFakeTimers();
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
-    try {
-      const threadId = "selected-thread";
-      queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+    renderHook(threadId);
 
-      renderHook(threadId);
+    await act(async () => {
+      await Promise.resolve();
+    });
 
-      await act(async () => {
-        await Promise.resolve();
-      });
+    const firstStream = MockEventSource.instances[0]!;
+    act(() => {
+      firstStream.emit(
+        "tool.started",
+        makeEvent({
+          id: "e-reconnect-1",
+          threadId,
+          idx: 4,
+          type: "tool.started",
+          payload: { toolUseId: "tool-1", toolName: "Bash" },
+        }),
+      );
+    });
 
-      const firstStream = MockEventSource.instances[0]!;
-      act(() => {
-        firstStream.emit(
-          "tool.started",
-          makeEvent({
-            id: "e-reconnect-1",
-            threadId,
-            idx: 4,
-            type: "tool.started",
-            payload: { toolUseId: "tool-1", toolName: "Bash" },
-          }),
-        );
-      });
+    expect(firstStream.url).not.toContain("afterIdx=4");
 
-      expect(firstStream.url).not.toContain("afterIdx=4");
+    await act(async () => {
+      firstStream.readyState = MockEventSource.CLOSED;
+      firstStream.onerror?.();
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+    });
 
-      await act(async () => {
-        firstStream.readyState = MockEventSource.CLOSED;
-        firstStream.onerror?.();
-        vi.advanceTimersByTime(1000);
-        await Promise.resolve();
-      });
+    expect(MockEventSource.instances).toHaveLength(2);
+    expect(MockEventSource.instances[1]?.url).toContain("afterIdx=4");
+  });
 
-      expect(MockEventSource.instances).toHaveLength(2);
-      expect(MockEventSource.instances[1]?.url).toContain("afterIdx=4");
-    } finally {
-      vi.useRealTimers();
-    }
+  it("resyncs the selected thread from snapshots when the stream stays stale but backend progress has advanced", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot([
+      makeEvent({
+        id: "event-1",
+        threadId,
+        idx: 1,
+        type: "tool.started",
+        payload: { toolUseId: "tool-1", toolName: "Read" },
+      }),
+    ]));
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Thread",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: true,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      } satisfies ChatThread,
+    ]);
+    getThreadStatusSnapshotMock.mockResolvedValueOnce({ status: "running", newestIdx: 8 });
+    getTimelineSnapshotMock.mockResolvedValueOnce(makeSnapshot([
+      makeEvent({
+        id: "event-8",
+        threadId,
+        idx: 8,
+        type: "tool.finished",
+        payload: { toolName: "Read", summary: "Read fresh.txt" },
+      }),
+    ]));
+
+    renderHook(threadId, {
+      initialWaitingAssistant: { threadId, afterIdx: 1 },
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(8_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getThreadStatusSnapshotMock).toHaveBeenCalledWith(threadId);
+    expect(getTimelineSnapshotMock).toHaveBeenCalledWith(threadId);
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot(threadId))).toEqual({
+      status: "running",
+      newestIdx: 8,
+    });
+    expect(queryClient.getQueryData(queryKeys.threads.timelineSnapshot(threadId))).toEqual(expect.objectContaining({
+      newestIdx: 8,
+    }));
   });
 });

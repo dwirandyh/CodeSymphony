@@ -209,15 +209,6 @@ function extractDataEnvelope<T>(payload: unknown, debug?: {
   });
 }
 
-export class TeardownFailedError extends Error {
-  public readonly output: string;
-  constructor(output: string) {
-    super("Teardown scripts failed");
-    this.name = "TeardownFailedError";
-    this.output = output;
-  }
-}
-
 export type RuntimeListenAddress =
   | {
     kind: "pipe";
@@ -332,9 +323,6 @@ export const api = {
 
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
-      if (response.status === 409 && payload?.output) {
-        throw new TeardownFailedError(payload.output);
-      }
       throw new Error(payload?.error ?? "Failed to delete worktree");
     }
   },

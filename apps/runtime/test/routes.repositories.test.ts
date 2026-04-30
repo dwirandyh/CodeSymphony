@@ -27,6 +27,12 @@ const mockReviewService = {
   getRepositoryReviews: vi.fn(),
 };
 
+const mockWorktreeDeletionService = {
+  requestDeletion: vi.fn(),
+  deleteWorktreeNow: vi.fn(),
+  recoverPendingDeletions: vi.fn(),
+};
+
 
 const mockFileService = {
   searchFiles: vi.fn(),
@@ -73,6 +79,7 @@ function buildApp(): FastifyInstance {
   app.decorate("scriptStreamService", mockScriptStreamService as never);
   app.decorate("reviewService", mockReviewService as never);
   app.decorate("workspaceEventHub", mockWorkspaceEventHub as never);
+  app.decorate("worktreeDeletionService", mockWorktreeDeletionService as never);
   return app;
 }
 
@@ -288,12 +295,17 @@ describe("repository routes", () => {
     it("force-removes worktrees first", async () => {
       mockRepoService.getById.mockResolvedValue({
         id: "r1",
-        worktrees: [{ id: "w1" }, { id: "w2" }],
+        rootPath: "/tmp/repo",
+        worktrees: [
+          { id: "w-root", path: "/tmp/repo" },
+          { id: "w-branch", path: "/tmp/worktrees/feature" },
+        ],
       });
       mockRepoService.remove.mockResolvedValue(undefined);
-      mockWorktreeService.remove.mockResolvedValue(undefined);
+      mockWorktreeDeletionService.deleteWorktreeNow.mockResolvedValue(undefined);
       await app.inject({ method: "DELETE", url: "/api/repositories/r1" });
-      expect(mockWorktreeService.remove).toHaveBeenCalledTimes(2);
+      expect(mockWorktreeDeletionService.deleteWorktreeNow).toHaveBeenCalledTimes(1);
+      expect(mockWorktreeDeletionService.deleteWorktreeNow).toHaveBeenCalledWith("w-branch", { force: true });
     });
   });
 
@@ -324,11 +336,24 @@ describe("repository routes", () => {
   });
 
   describe("DELETE /api/worktrees/:id", () => {
-    it("deletes worktree", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", repositoryId: "r1" });
-      mockWorktreeService.remove.mockResolvedValue(undefined);
+    it("accepts background worktree deletion", async () => {
+      mockWorktreeDeletionService.requestDeletion.mockResolvedValue(undefined);
       const res = await app.inject({ method: "DELETE", url: "/api/worktrees/w1" });
-      expect(res.statusCode).toBe(204);
+      expect(res.statusCode).toBe(202);
+      expect(mockWorktreeDeletionService.requestDeletion).toHaveBeenCalledWith("w1", { force: false });
+    });
+
+    it("passes through force deletes", async () => {
+      mockWorktreeDeletionService.requestDeletion.mockResolvedValue(undefined);
+      const res = await app.inject({ method: "DELETE", url: "/api/worktrees/w1?force=true" });
+      expect(res.statusCode).toBe(202);
+      expect(mockWorktreeDeletionService.requestDeletion).toHaveBeenCalledWith("w1", { force: true });
+    });
+
+    it("returns 404 when the worktree is missing", async () => {
+      mockWorktreeDeletionService.requestDeletion.mockRejectedValue(new Error("Worktree not found"));
+      const res = await app.inject({ method: "DELETE", url: "/api/worktrees/missing" });
+      expect(res.statusCode).toBe(404);
     });
   });
 
@@ -566,14 +591,13 @@ describe("repository routes", () => {
 
   describe("DELETE /api/worktrees/:id (force)", () => {
     it("force-deletes a worktree", async () => {
-      mockWorktreeService.getById.mockResolvedValue({ id: "w1", repositoryId: "r1" });
-      mockWorktreeService.remove.mockResolvedValue(undefined);
+      mockWorktreeDeletionService.requestDeletion.mockResolvedValue(undefined);
       const res = await app.inject({
         method: "DELETE",
         url: "/api/worktrees/w1?force=true",
       });
-      expect(res.statusCode).toBe(204);
-      expect(mockWorktreeService.remove).toHaveBeenCalledWith("w1", { force: true });
+      expect(res.statusCode).toBe(202);
+      expect(mockWorktreeDeletionService.requestDeletion).toHaveBeenCalledWith("w1", { force: true });
     });
   });
 

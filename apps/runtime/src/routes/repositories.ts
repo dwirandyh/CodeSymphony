@@ -13,7 +13,6 @@ import {
 import { z } from "zod";
 import { getGitStatus, getGitDiff, getGitBranchDiffSummary, getFileAtHead, gitCommitAll, discardGitChange, syncCurrentBranch } from "../services/git.js";
 import { detectMimeType, isImageMimeType } from "../services/filesystemService.js";
-import { TeardownError } from "../services/worktreeService.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
@@ -295,10 +294,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "Repository not found" });
     }
 
-    // Force-remove all worktrees (skip teardown, log errors but don't abort)
+    // Force-remove non-primary worktrees (skip teardown, log errors but don't abort).
     for (const wt of repository.worktrees) {
       try {
-        await app.worktreeService.remove(wt.id, { force: true });
+        if (wt.path === repository.rootPath) {
+          continue;
+        }
+        await app.worktreeDeletionService.deleteWorktreeNow(wt.id, { force: true });
       } catch (error) {
         app.log.warn({ worktreeId: wt.id, error }, "Failed to remove worktree during repository deletion");
       }
@@ -342,21 +344,13 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
     const force = query.force === "true";
 
     try {
-      const worktree = await app.worktreeService.getById(params.id);
-      if (!worktree) {
-        return reply.code(404).send({ error: "Worktree not found" });
-      }
-      await app.worktreeService.remove(params.id, { force });
-      app.workspaceEventHub.emit("worktree.deleted", {
-        repositoryId: worktree.repositoryId,
-        worktreeId: worktree.id,
-      });
-      return reply.code(204).send();
+      await app.worktreeDeletionService.requestDeletion(params.id, { force });
+      return reply.code(202).send();
     } catch (error) {
-      if (error instanceof TeardownError) {
-        return reply.code(409).send({ error: "Teardown scripts failed", output: error.output });
-      }
       const message = error instanceof Error ? error.message : "Unable to delete worktree";
+      if (message === "Worktree not found") {
+        return reply.code(404).send({ error: message });
+      }
       return reply.code(400).send({ error: message });
     }
   });

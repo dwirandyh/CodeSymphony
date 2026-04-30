@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Repository, ScriptResult } from "@codesymphony/shared-types";
+import type { Repository, ScriptResult, Worktree } from "@codesymphony/shared-types";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, TeardownFailedError } from "../../../lib/api";
+import { api } from "../../../lib/api";
 import { queryKeys } from "../../../lib/queryKeys";
 import { useRepositories } from "../../../hooks/queries/useRepositories";
 import { useCreateRepository } from "../../../hooks/mutations/useCreateRepository";
@@ -11,13 +11,7 @@ import { useDeleteRepository } from "../../../hooks/mutations/useDeleteRepositor
 import { useRenameWorktreeBranch } from "../../../hooks/mutations/useRenameWorktreeBranch";
 import { useUpdateWorktreeBaseBranch } from "../../../hooks/mutations/useUpdateWorktreeBaseBranch";
 import { isRootWorktree } from "../../../lib/worktree";
-import { buildRepositoryWorktreeIndex, resolveFallbackWorktreeId } from "../../../collections/worktrees";
-
-export interface TeardownErrorState {
-  worktreeId: string;
-  worktreeName: string;
-  output: string;
-}
+import { buildRepositoryWorktreeIndex } from "../../../collections/worktrees";
 
 export interface ScriptUpdateEvent {
   worktreeId: string;
@@ -33,7 +27,39 @@ interface UseRepositoryManagerOptions {
   onSelectionChange?: (selection: { repoId: string | null; worktreeId: string | null }) => void;
   onScriptUpdate?: (event: ScriptUpdateEvent) => void;
   onScriptOutputChunk?: (event: { worktreeId: string; chunk: string }) => void;
-  onTeardownError?: (state: TeardownErrorState) => void;
+}
+
+const SELECTABLE_WORKTREE_STATUSES = new Set<Worktree["status"]>(["active", "delete_failed"]);
+
+function isSelectableWorktreeStatus(status: Worktree["status"]): boolean {
+  return SELECTABLE_WORKTREE_STATUSES.has(status);
+}
+
+function isSelectableWorktree(worktree: Pick<Worktree, "status"> | null | undefined): boolean {
+  return !!worktree && isSelectableWorktreeStatus(worktree.status);
+}
+
+function resolveAvailableWorktreeId(repository: Repository, excludedWorktreeId?: string | null): string | null {
+  const selectableWorktrees = repository.worktrees.filter((worktree) =>
+    isSelectableWorktree(worktree) && worktree.id !== excludedWorktreeId,
+  );
+  const rootWorktree = selectableWorktrees.find((worktree) => isRootWorktree(worktree, repository)) ?? null;
+  return rootWorktree?.id ?? selectableWorktrees[0]?.id ?? null;
+}
+
+function markWorktreeDeletionRequested(repositories: Repository[], worktreeId: string): Repository[] {
+  return repositories.map((repository) => ({
+    ...repository,
+    worktrees: repository.worktrees.map((worktree) =>
+      worktree.id === worktreeId
+        ? {
+            ...worktree,
+            status: "deleting",
+            lastDeleteError: null,
+          }
+        : worktree,
+    ),
+  }));
 }
 
 export function useRepositoryManager(
@@ -143,9 +169,10 @@ export function useRepositoryManager(
   function applyRequestedSelection(requestedRepoId: string | null, requestedWorktreeId: string | null): boolean {
     if (requestedWorktreeId) {
       const worktree = repositoryWorktreeIndex.worktreeById.get(requestedWorktreeId);
-      if (worktree) {
-        if (selectedRepositoryId !== worktree.repository.id) {
-          setSelectedRepositoryId(worktree.repository.id);
+      const selectableWorktree = worktree && isSelectableWorktree(worktree) ? worktree : null;
+      if (selectableWorktree) {
+        if (selectedRepositoryId !== selectableWorktree.repository.id) {
+          setSelectedRepositoryId(selectableWorktree.repository.id);
         }
         if (selectedWorktreeId !== requestedWorktreeId) {
           setSelectedWorktreeId(requestedWorktreeId);
@@ -160,7 +187,7 @@ export function useRepositoryManager(
         return false;
       }
 
-      const fallbackWorktreeId = resolveFallbackWorktreeId(repo);
+      const fallbackWorktreeId = resolveAvailableWorktreeId(repo);
       if (selectedRepositoryId !== repo.id) {
         setSelectedRepositoryId(repo.id);
       }
@@ -214,8 +241,14 @@ export function useRepositoryManager(
 
     const selectedRepositoryStillExists =
       selectedRepositoryId == null || repositoryWorktreeIndex.repositoryById.has(selectedRepositoryId);
-    const selectedWorktreeStillExists =
-      selectedWorktreeId == null || repositoryWorktreeIndex.worktreeById.has(selectedWorktreeId);
+    const selectedWorktree = selectedWorktreeId == null
+      ? null
+      : repositoryWorktreeIndex.worktreeById.get(selectedWorktreeId) ?? null;
+    const selectedWorktreeStillExists = selectedWorktreeId == null || selectedWorktree != null;
+    const selectedWorktreeStillSelectable = selectedWorktreeId == null || isSelectableWorktree(selectedWorktree);
+    const unavailableSelectedWorktree = selectedWorktree != null && !isSelectableWorktree(selectedWorktree)
+      ? selectedWorktree
+      : null;
     const selectedRepositoryExistedPreviously =
       selectedRepositoryId != null && previousRepositories.some((repository) => repository.id === selectedRepositoryId);
     const selectedWorktreeExistedPreviously =
@@ -229,6 +262,19 @@ export function useRepositoryManager(
       setSelectedWorktreeId(null);
       return;
     }
+    if (unavailableSelectedWorktree) {
+      const fallbackWorktreeId = resolveAvailableWorktreeId(
+        unavailableSelectedWorktree.repository,
+        unavailableSelectedWorktree.id,
+      );
+      if (selectedRepositoryId !== unavailableSelectedWorktree.repository.id) {
+        setSelectedRepositoryId(unavailableSelectedWorktree.repository.id);
+      }
+      if (selectedWorktreeId !== fallbackWorktreeId) {
+        setSelectedWorktreeId(fallbackWorktreeId);
+      }
+      return;
+    }
 
     if (!selectedRepositoryId && repositories[0]) {
       setSelectedRepositoryId(repositories[0].id);
@@ -236,7 +282,7 @@ export function useRepositoryManager(
     if (!selectedWorktreeId) {
       const firstRepo = repositories[0];
       if (firstRepo) {
-        const fallbackWorktreeId = resolveFallbackWorktreeId(firstRepo);
+        const fallbackWorktreeId = resolveAvailableWorktreeId(firstRepo);
         if (fallbackWorktreeId) {
           setSelectedWorktreeId(fallbackWorktreeId);
         }
@@ -310,21 +356,41 @@ export function useRepositoryManager(
     }
   }
 
-  async function removeWorktree(worktreeId: string) {
+  async function removeWorktree(worktreeId: string, options?: { force?: boolean }) {
     onError(null);
-    const worktreeName = findWorktreeName(worktreeId);
+    const repositoriesSnapshot = queryClient.getQueryData<Repository[]>(queryKeys.repositories.all) ?? repositories;
+    const targetWorktree = repositoryWorktreeIndex.worktreeById.get(worktreeId) ?? null;
+    const targetRepository = targetWorktree?.repository ?? null;
+    const previousSelection = {
+      repositoryId: selectedRepositoryId,
+      worktreeId: selectedWorktreeId,
+    };
+    const fallbackWorktreeId =
+      selectedWorktreeId === worktreeId && targetRepository
+        ? resolveAvailableWorktreeId(targetRepository, worktreeId)
+        : selectedWorktreeId;
+
+    queryClient.setQueryData<Repository[]>(queryKeys.repositories.all, (old) =>
+      markWorktreeDeletionRequested(old ?? repositoriesSnapshot, worktreeId),
+    );
+
+    if (selectedWorktreeId === worktreeId) {
+      setSelectedRepositoryId(targetRepository?.id ?? previousSelection.repositoryId);
+      setSelectedWorktreeId(fallbackWorktreeId ?? null);
+    }
+
     try {
-      await deleteWorktreeMutation.mutateAsync(worktreeId);
-      if (selectedWorktreeId === worktreeId) {
-        setSelectedWorktreeId(null);
-      }
+      await deleteWorktreeMutation.mutateAsync({
+        worktreeId,
+        options: { force: options?.force },
+      });
     } catch (e) {
-      if (e instanceof TeardownFailedError) {
-        options?.onScriptUpdate?.({ worktreeId, worktreeName, type: "teardown", status: "completed", result: { success: false, output: e.output } });
-        options?.onTeardownError?.({ worktreeId, worktreeName, output: e.output });
-      } else {
-        onError(e instanceof Error ? e.message : "Failed to delete worktree");
+      queryClient.setQueryData(queryKeys.repositories.all, repositoriesSnapshot);
+      if (selectedWorktreeId === worktreeId) {
+        setSelectedRepositoryId(previousSelection.repositoryId);
+        setSelectedWorktreeId(previousSelection.worktreeId);
       }
+      onError(e instanceof Error ? e.message : "Failed to delete worktree");
     }
   }
 

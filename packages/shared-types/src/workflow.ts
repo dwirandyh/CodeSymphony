@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const WorktreeStatusSchema = z.enum(["active", "archived"]);
+export const WorktreeStatusSchema = z.enum(["active", "archived", "deleting", "delete_failed"]);
 export type WorktreeStatus = z.infer<typeof WorktreeStatusSchema>;
 
 export const ChatRoleSchema = z.enum(["user", "assistant", "system"]);
@@ -34,6 +34,7 @@ export const WorktreeSchema = z.object({
   path: z.string().min(1),
   baseBranch: z.string().min(1),
   status: WorktreeStatusSchema,
+  lastDeleteError: z.string().nullable().optional(),
   branchRenamed: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -211,6 +212,8 @@ export const WorkspaceSyncEventTypeSchema = z.enum([
   "repository.deleted",
   "worktree.created",
   "worktree.updated",
+  "worktree.deletion_started",
+  "worktree.deletion_failed",
   "worktree.deleted",
   "thread.created",
   "thread.updated",

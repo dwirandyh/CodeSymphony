@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { TeardownFailedError } from "./api";
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
@@ -203,16 +202,6 @@ describe("api", () => {
       mockFetch.mockReturnValueOnce(mock204());
       await api.deleteWorktree("w1", { force: true });
       expect(mockFetch.mock.calls[0][0]).toContain("force=true");
-    });
-
-    it("throws TeardownFailedError on 409", async () => {
-      mockFetch.mockReturnValueOnce(
-        Promise.resolve({
-          ok: false, status: 409,
-          json: () => Promise.resolve({ output: "script failed" }),
-        }),
-      );
-      await expect(api.deleteWorktree("w1")).rejects.toThrow("Teardown scripts failed");
     });
   });
 
@@ -722,14 +711,5 @@ describe("api", () => {
       );
       await expect(api.listRepositories()).rejects.toThrow("Request failed");
     });
-  });
-});
-
-describe("TeardownFailedError", () => {
-  it("has correct name and output", () => {
-    const error = new TeardownFailedError("script output");
-    expect(error.name).toBe("TeardownFailedError");
-    expect(error.output).toBe("script output");
-    expect(error.message).toBe("Teardown scripts failed");
   });
 });

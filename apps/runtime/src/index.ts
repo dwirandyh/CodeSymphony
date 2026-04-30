@@ -25,6 +25,7 @@ import { createScriptStreamService } from "./services/scriptStreamService.js";
 import { createModelProviderService } from "./services/modelProviderService.js";
 import { createReviewService } from "./services/reviewService.js";
 import { createDeviceService } from "./services/deviceService.js";
+import { createWorktreeDeletionService } from "./services/worktreeDeletionService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -53,6 +54,7 @@ declare module "fastify" {
     modelProviderService: ReturnType<typeof createModelProviderService>;
     reviewService: ReturnType<typeof createReviewService>;
     deviceService: ReturnType<typeof createDeviceService>;
+    worktreeDeletionService: ReturnType<typeof createWorktreeDeletionService>;
   }
 }
 
@@ -71,6 +73,12 @@ function createApp() {
   const modelProviderService = createModelProviderService(prisma);
   const reviewService = createReviewService(prisma);
   const deviceService = createDeviceService(logService);
+  const worktreeDeletionService = createWorktreeDeletionService({
+    prisma,
+    workspaceEventHub,
+    worktreeService,
+    logService,
+  });
   const chatService = createChatService({
     prisma,
     eventHub,
@@ -98,6 +106,7 @@ function createApp() {
   app.decorate("modelProviderService", modelProviderService);
   app.decorate("reviewService", reviewService);
   app.decorate("deviceService", deviceService);
+  app.decorate("worktreeDeletionService", worktreeDeletionService);
 
   app.register(cors, {
     origin: true,
@@ -205,6 +214,7 @@ async function main() {
 
     const app = createApp();
     const recoveredStuckThreadCount = await app.chatService.recoverStuckThreads();
+    const recoveredPendingDeletionCount = await app.worktreeDeletionService.recoverPendingDeletions();
 
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
 
@@ -215,6 +225,9 @@ async function main() {
     }, `Runtime listening on http://${host}:${port}`);
     if (recoveredStuckThreadCount > 0) {
       app.logService.log("info", "runtime", `Recovered ${recoveredStuckThreadCount} stuck thread(s)`);
+    }
+    if (recoveredPendingDeletionCount > 0) {
+      app.logService.log("info", "runtime", `Recovered ${recoveredPendingDeletionCount} interrupted worktree deletion(s)`);
     }
   } catch (error) {
     if (error instanceof DatabaseNotReadyError) {

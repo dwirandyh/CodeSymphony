@@ -216,6 +216,55 @@ describe("RepositoryPanel", () => {
     expect(onSelectWorktree).toHaveBeenCalledWith("r1", "r1-wt-feat", null);
   });
 
+  it("shows delete_failed worktrees with retry and force-delete actions", () => {
+    const onDeleteWorktree = vi.fn();
+    renderPanel({
+      repositories: [makeRepo({
+        worktrees: [
+          {
+            id: "r1-wt-root",
+            repositoryId: "r1",
+            branch: "main",
+            path: "/home/user/test-repo",
+            baseBranch: "main",
+            status: "active",
+            branchRenamed: false,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "r1-wt-failed",
+            repositoryId: "r1",
+            branch: "feature-x",
+            path: "/home/user/.cs/worktrees/test-repo/feature-x",
+            baseBranch: "main",
+            status: "delete_failed",
+            lastDeleteError: "teardown failed",
+            branchRenamed: false,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        ],
+      })],
+      selectedRepositoryId: "r1",
+      onDeleteWorktree,
+    });
+
+    expect(container.textContent).toContain("Delete failed");
+
+    const retryButton = container.querySelector('button[title="Retry delete"]') as HTMLButtonElement | null;
+    const forceButton = container.querySelector('button[title="Force delete worktree"]') as HTMLButtonElement | null;
+
+    expect(retryButton).toBeTruthy();
+    expect(forceButton).toBeTruthy();
+
+    act(() => retryButton?.click());
+    act(() => forceButton?.click());
+
+    expect(onDeleteWorktree).toHaveBeenNthCalledWith(1, "r1-wt-failed");
+    expect(onDeleteWorktree).toHaveBeenNthCalledWith(2, "r1-wt-failed", { force: true });
+  });
+
   it("collapses the selected repository on the first toggle after initial render", () => {
     function Harness() {
       const [expandedByRepo, setExpandedByRepo] = useState<Record<string, boolean>>({});
