@@ -67,6 +67,90 @@ private struct DragPathPoint {
 
 private let SIMULATOR_HARDWARE_KEYBOARD_TYPE_DEFAULT: UInt8 = 0
 
+private enum IosSimulatorCaptureModePreference {
+  case framebuffer
+  case window
+}
+
+private enum IosSimulatorStreamCodec {
+  case h264
+  case jpeg
+}
+
+private enum IosSimulatorStreamCodecPreference {
+  case automatic
+  case h264
+  case jpeg
+}
+
+private func getIosSimulatorCaptureModePreference() -> IosSimulatorCaptureModePreference {
+  let raw = ProcessInfo.processInfo.environment["IOS_SIMULATOR_CAPTURE_MODE"]?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased()
+
+  switch raw {
+  case "window", "screen", "screencapturekit":
+    return .window
+  default:
+    return .framebuffer
+  }
+}
+
+private func getIosSimulatorStreamCodecPreference() -> IosSimulatorStreamCodecPreference {
+  let raw = ProcessInfo.processInfo.environment["IOS_SIMULATOR_STREAM_CODEC"]?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased()
+
+  switch raw {
+  case "h264", "avc", "avc1":
+    return .h264
+  case "jpeg", "jpg":
+    return .jpeg
+  default:
+    return .automatic
+  }
+}
+
+private func preferredIosSimulatorStreamCodec(
+  for captureMode: IosSimulatorCaptureModePreference
+) -> IosSimulatorStreamCodec {
+  switch getIosSimulatorStreamCodecPreference() {
+  case .h264:
+    return .h264
+  case .jpeg:
+    return .jpeg
+  case .automatic:
+    return .jpeg
+  }
+}
+
+private func getIosSimulatorFramebufferStreamScale() -> CGFloat {
+  let raw = Double(ProcessInfo.processInfo.environment["IOS_SIMULATOR_FRAMEBUFFER_SCALE"] ?? "1") ?? 1
+  guard raw.isFinite, raw >= 0.5, raw <= 3 else {
+    return 1
+  }
+
+  return CGFloat(raw)
+}
+
+private func preferredFramebufferTargetPixelSize(
+  screenSize: DeviceProfile.ScreenSize?
+) -> (height: Int, width: Int)? {
+  guard
+    let screenSize,
+    screenSize.width > 0,
+    screenSize.height > 0
+  else {
+    return nil
+  }
+
+  let scale = getIosSimulatorFramebufferStreamScale()
+  return (
+    height: max(Int((screenSize.height * scale).rounded()), 1),
+    width: max(Int((screenSize.width * scale).rounded()), 1)
+  )
+}
+
 private enum ControlAction {
   case tap(x: Double, y: Double)
   case touch(x: Double, y: Double, phase: String, edge: String?)
@@ -482,7 +566,14 @@ private struct PendingVideoFrame {
   let pixelBuffer: CVPixelBuffer
 }
 
-private final class JpegEncoder {
+private protocol StreamVideoEncoder: AnyObject {
+  func encode(sampleBuffer: CMSampleBuffer, capturedAtMs: UInt64) throws
+  func encode(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64, changeRatio: Double?) throws
+  func finish()
+  func updateTargetPixelSize(height: Int?, width: Int?)
+}
+
+private final class JpegEncoder: StreamVideoEncoder {
   private let writer: PacketWriter
   private let deviceName: String
   private let pointHeight: Int
@@ -492,6 +583,8 @@ private final class JpegEncoder {
   private let colorSpace = CGColorSpaceCreateDeviceRGB()
 
   private var lastMetadataSignature = ""
+  private var targetPixelHeight: Int?
+  private var targetPixelWidth: Int?
 
   init(deviceName: String, pointHeight: Int, pointWidth: Int, udid: String, writer: PacketWriter) {
     self.deviceName = deviceName
@@ -499,6 +592,11 @@ private final class JpegEncoder {
     self.pointWidth = pointWidth
     self.udid = udid
     self.writer = writer
+  }
+
+  func updateTargetPixelSize(height: Int?, width: Int?) {
+    targetPixelHeight = height
+    targetPixelWidth = width
   }
 
   func encode(sampleBuffer: CMSampleBuffer, capturedAtMs: UInt64) throws {
@@ -510,8 +608,12 @@ private final class JpegEncoder {
   }
 
   func encode(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64, changeRatio: Double?) throws {
-    let width = max(CVPixelBufferGetWidth(pixelBuffer), 1)
-    let height = max(CVPixelBufferGetHeight(pixelBuffer), 1)
+    let sourceWidth = max(CVPixelBufferGetWidth(pixelBuffer), 1)
+    let sourceHeight = max(CVPixelBufferGetHeight(pixelBuffer), 1)
+    let sourceImage = CIImage(cvPixelBuffer: pixelBuffer)
+    let encodedImage = scaledImageIfNeeded(image: sourceImage, sourceHeight: sourceHeight, sourceWidth: sourceWidth)
+    let width = max(Int(encodedImage.extent.width.rounded()), 1)
+    let height = max(Int(encodedImage.extent.height.rounded()), 1)
     let metadataSignature = "jpeg:\(width)x\(height)"
 
     if metadataSignature != lastMetadataSignature {
@@ -527,14 +629,13 @@ private final class JpegEncoder {
       ))
     }
 
-    let image = CIImage(cvPixelBuffer: pixelBuffer)
     let compressionQuality = jpegCompressionQuality(
       pixelWidth: width,
       pixelHeight: height,
       changeRatio: changeRatio
     )
     guard let jpegData = ciContext.jpegRepresentation(
-      of: image,
+      of: encodedImage,
       colorSpace: colorSpace,
       options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: compressionQuality]
     ) else {
@@ -546,15 +647,37 @@ private final class JpegEncoder {
 
   func finish() {}
 
+  private func scaledImageIfNeeded(image: CIImage, sourceHeight: Int, sourceWidth: Int) -> CIImage {
+    guard
+      let requestedWidth = targetPixelWidth,
+      let requestedHeight = targetPixelHeight,
+      requestedWidth > 0,
+      requestedHeight > 0,
+      sourceWidth > 0,
+      sourceHeight > 0
+    else {
+      return image
+    }
+
+    let widthScale = CGFloat(requestedWidth) / CGFloat(sourceWidth)
+    let heightScale = CGFloat(requestedHeight) / CGFloat(sourceHeight)
+    let scale = min(widthScale, heightScale, 1)
+    guard scale < 0.999 else {
+      return image
+    }
+
+    return image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+  }
+
   private func jpegCompressionQuality(pixelWidth: Int, pixelHeight: Int, changeRatio: Double?) -> Double {
     let pixelCount = max(pixelWidth, 1) * max(pixelHeight, 1)
     let baseQuality: Double
     if pixelCount <= 400_000 {
-      baseQuality = 0.95
+      baseQuality = 0.84
     } else if pixelCount <= 900_000 {
-      baseQuality = 0.93
+      baseQuality = 0.8
     } else {
-      baseQuality = 0.9
+      baseQuality = 0.76
     }
 
     guard let changeRatio else {
@@ -563,19 +686,19 @@ private final class JpegEncoder {
 
     let normalizedChangeRatio = min(max(changeRatio, 0), 1)
     if normalizedChangeRatio <= 0.02 {
-      return min(baseQuality + 0.03, 0.98)
+      return min(baseQuality + 0.05, 0.9)
     }
     if normalizedChangeRatio <= 0.08 {
-      return min(baseQuality + 0.02, 0.97)
+      return min(baseQuality + 0.03, 0.88)
     }
     if normalizedChangeRatio <= 0.2 {
-      return min(baseQuality + 0.01, 0.96)
+      return min(baseQuality + 0.02, 0.86)
     }
     if normalizedChangeRatio >= 0.75 {
-      return max(baseQuality - 0.05, 0.88)
+      return max(baseQuality - 0.08, 0.68)
     }
     if normalizedChangeRatio >= 0.4 {
-      return max(baseQuality - 0.03, 0.89)
+      return max(baseQuality - 0.05, 0.7)
     }
     return baseQuality
   }
@@ -1085,8 +1208,19 @@ private final class StatusCommandRunner {
     let screenSize = DeviceProfile.screenSize(for: simulator.deviceTypeIdentifier)
     let deviceWidth = max(Int((screenSize?.width ?? CGFloat(resolved?.pixelWidth ?? 0)).rounded()), 1)
     let deviceHeight = max(Int((screenSize?.height ?? CGFloat(resolved?.pixelHeight ?? 0)).rounded()), 1)
-    let pixelWidth = max(resolved?.pixelWidth ?? deviceWidth, 1)
-    let pixelHeight = max(resolved?.pixelHeight ?? deviceHeight, 1)
+    let preferredFramebufferSize = preferredFramebufferTargetPixelSize(screenSize: screenSize)
+    let pixelWidth = max(
+      resolved?.pixelWidth
+        ?? (getIosSimulatorCaptureModePreference() == .framebuffer ? preferredFramebufferSize?.width : nil)
+        ?? deviceWidth,
+      1
+    )
+    let pixelHeight = max(
+      resolved?.pixelHeight
+        ?? (getIosSimulatorCaptureModePreference() == .framebuffer ? preferredFramebufferSize?.height : nil)
+        ?? deviceHeight,
+      1
+    )
     let payload = SimulatorStatusPayload(
       session_info: .init(
         device_height: deviceHeight,
@@ -1895,20 +2029,28 @@ private final class ControlCommandRunner {
   }
 }
 
-private final class H264Encoder {
+private final class H264Encoder: StreamVideoEncoder {
   private let writer: PacketWriter
   private let deviceName: String
   private let fps: Int
   private let pointHeight: Int
   private let pointWidth: Int
   private let udid: String
+  private let ciContext = CIContext()
+  private let colorSpace = CGColorSpaceCreateDeviceRGB()
 
   private var compressionSession: VTCompressionSession?
   private var currentHeight = 0
   private var currentWidth = 0
+  private var frameIndex: Int64 = 0
   private var lastCodec = ""
   private var lastMetadataSignature = ""
   private var pendingForcedKeyFrame = true
+  private var scaledBufferHeight = 0
+  private var scaledBufferPool: CVPixelBufferPool?
+  private var scaledBufferWidth = 0
+  private var targetPixelHeight: Int?
+  private var targetPixelWidth: Int?
 
   init(deviceName: String, fps: Int, pointHeight: Int, pointWidth: Int, udid: String, writer: PacketWriter) {
     self.deviceName = deviceName
@@ -1924,12 +2066,33 @@ private final class H264Encoder {
       return
     }
 
+    let preparedPixelBuffer = try preparedPixelBuffer(for: pixelBuffer)
     try encode(
-      pixelBuffer: pixelBuffer,
+      pixelBuffer: preparedPixelBuffer,
       presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
       duration: CMSampleBufferGetDuration(sampleBuffer),
       capturedAtMs: capturedAtMs
     )
+  }
+
+  func encode(pixelBuffer: CVPixelBuffer, capturedAtMs: UInt64, changeRatio _: Double?) throws {
+    frameIndex += 1
+    let safeFps = max(fps, 1)
+    let preparedPixelBuffer = try preparedPixelBuffer(for: pixelBuffer)
+    try encode(
+      pixelBuffer: preparedPixelBuffer,
+      presentationTimeStamp: CMTime(value: frameIndex, timescale: CMTimeScale(safeFps)),
+      duration: CMTime(value: 1, timescale: CMTimeScale(safeFps)),
+      capturedAtMs: capturedAtMs
+    )
+  }
+
+  func updateTargetPixelSize(height: Int?, width: Int?) {
+    targetPixelHeight = height
+    targetPixelWidth = width
+    scaledBufferPool = nil
+    scaledBufferHeight = 0
+    scaledBufferWidth = 0
   }
 
   func encode(pixelBuffer: CVPixelBuffer, presentationTimeStamp: CMTime, duration: CMTime, capturedAtMs: UInt64) throws {
@@ -1979,6 +2142,7 @@ private final class H264Encoder {
 
     currentWidth = width
     currentHeight = height
+    frameIndex = 0
     pendingForcedKeyFrame = true
 
     let callback: VTCompressionOutputCallback = { outputRefCon, sourceFrameRefCon, status, _, sampleBuffer in
@@ -2006,7 +2170,7 @@ private final class H264Encoder {
 
     var newSession: VTCompressionSession?
     let encoderSpecification: CFDictionary = [
-      kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanFalse as Any
+      kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanTrue as Any
     ] as CFDictionary
     let status = VTCompressionSessionCreate(
       allocator: kCFAllocatorDefault,
@@ -2031,8 +2195,6 @@ private final class H264Encoder {
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel)
-    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_OutputBitDepth, value: 8 as CFTypeRef)
-    setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 1 as CFTypeRef)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: fps as CFTypeRef)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: 1 as CFTypeRef)
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFTypeRef)
@@ -2051,6 +2213,77 @@ private final class H264Encoder {
     setCompressionProperty(newSession, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits as CFArray)
 
     VTCompressionSessionPrepareToEncodeFrames(newSession)
+  }
+
+  private func preparedPixelBuffer(for pixelBuffer: CVPixelBuffer) throws -> CVPixelBuffer {
+    guard
+      let requestedWidth = targetPixelWidth,
+      let requestedHeight = targetPixelHeight,
+      requestedWidth > 0,
+      requestedHeight > 0
+    else {
+      return pixelBuffer
+    }
+
+    let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
+    let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+    guard sourceWidth > 0, sourceHeight > 0 else {
+      return pixelBuffer
+    }
+
+    let widthScale = CGFloat(requestedWidth) / CGFloat(sourceWidth)
+    let heightScale = CGFloat(requestedHeight) / CGFloat(sourceHeight)
+    let scale = min(widthScale, heightScale, 1)
+    guard scale < 0.999 else {
+      return pixelBuffer
+    }
+
+    let outputWidth = max(Int((CGFloat(sourceWidth) * scale).rounded()), 1)
+    let outputHeight = max(Int((CGFloat(sourceHeight) * scale).rounded()), 1)
+    let outputPixelBuffer = try makeScaledPixelBuffer(width: outputWidth, height: outputHeight)
+    let image = CIImage(cvPixelBuffer: pixelBuffer)
+      .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    ciContext.render(
+      image,
+      to: outputPixelBuffer,
+      bounds: CGRect(x: 0, y: 0, width: outputWidth, height: outputHeight),
+      colorSpace: colorSpace
+    )
+    return outputPixelBuffer
+  }
+
+  private func makeScaledPixelBuffer(width: Int, height: Int) throws -> CVPixelBuffer {
+    if scaledBufferPool == nil || scaledBufferWidth != width || scaledBufferHeight != height {
+      scaledBufferPool = nil
+      scaledBufferWidth = width
+      scaledBufferHeight = height
+
+      let attributes: CFDictionary = [
+        kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferWidthKey: width,
+        kCVPixelBufferHeightKey: height,
+        kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+      ] as CFDictionary
+
+      var newPool: CVPixelBufferPool?
+      let status = CVPixelBufferPoolCreate(kCFAllocatorDefault, nil, attributes, &newPool)
+      guard status == kCVReturnSuccess, let newPool else {
+        throw BridgeError.failedToCreateEncoder
+      }
+      scaledBufferPool = newPool
+    }
+
+    guard let scaledBufferPool else {
+      throw BridgeError.failedToCreateEncoder
+    }
+
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, scaledBufferPool, &pixelBuffer)
+    guard status == kCVReturnSuccess, let pixelBuffer else {
+      throw BridgeError.failedToCreateEncoder
+    }
+
+    return pixelBuffer
   }
 
   private func setCompressionProperty(_ session: VTCompressionSession, key: CFString, value: CFTypeRef) {
@@ -2206,9 +2439,11 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
 
   private let controlExecutor: SimulatorControlExecutor
   private let controlQueue = DispatchQueue(label: "codesymphony.simulator-bridge.control", qos: .userInitiated)
+  private var directFramebufferCapture: DirectSimulatorFramebufferCapture?
+  private var encoderCodec: IosSimulatorStreamCodec = .jpeg
   private let encoderQueue = DispatchQueue(label: "codesymphony.simulator-bridge.encode", qos: .userInteractive)
   private let frameStateLock = NSLock()
-  private var encoder: JpegEncoder?
+  private var encoder: StreamVideoEncoder?
   private var encodeLoopRunning = false
   private var controlBuffer = Data()
   private var latestFrame: PendingVideoFrame?
@@ -2223,17 +2458,118 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
 
   @MainActor
   func start() async throws {
-    let resolved = try await SimulatorDiscovery.resolve(udid: udid)
-    let screenSize = DeviceProfile.screenSize(for: resolved.device.deviceTypeIdentifier)
+    let simulator = try SimulatorDiscovery.bootedSimulator(udid: udid)
+    let screenSize = DeviceProfile.screenSize(for: simulator.deviceTypeIdentifier)
+    let pointHeight = max(Int((screenSize?.height ?? 0).rounded()), 1)
+    let pointWidth = max(Int((screenSize?.width ?? 0).rounded()), 1)
 
-    encoder = JpegEncoder(
-      deviceName: resolved.device.name,
-      pointHeight: max(Int((screenSize?.height ?? CGFloat(resolved.pixelHeight)).rounded()), 1),
-      pointWidth: max(Int((screenSize?.width ?? CGFloat(resolved.pixelWidth)).rounded()), 1),
-      udid: udid,
-      writer: writer
+    installControlInputHandler()
+
+    let preferredTargetSize = preferredFramebufferTargetPixelSize(screenSize: screenSize)
+    switch getIosSimulatorCaptureModePreference() {
+    case .framebuffer:
+      if try await startDirectFramebufferCapture(
+        deviceName: simulator.name,
+        pointHeight: pointHeight,
+        pointWidth: pointWidth,
+        preferredTargetSize: preferredTargetSize
+      ) {
+        prewarmControlExecutor()
+        return
+      }
+      try await startScreenCaptureKitStream(
+        deviceName: simulator.name,
+        pointHeight: pointHeight,
+        pointWidth: pointWidth,
+        simulator: simulator,
+        screenSize: screenSize
+      )
+      prewarmControlExecutor()
+    case .window:
+      try await startScreenCaptureKitStream(
+        deviceName: simulator.name,
+        pointHeight: pointHeight,
+        pointWidth: pointWidth,
+        simulator: simulator,
+        screenSize: screenSize
+      )
+      prewarmControlExecutor()
+    }
+  }
+
+  @MainActor
+  func stop() async {
+    clearControlInputHandler()
+    clearPendingFrames()
+    directFramebufferCapture?.stop()
+    directFramebufferCapture = nil
+
+    if let stream {
+      try? await stream.stopCapture()
+      self.stream = nil
+    }
+
+    encoderQueue.sync {}
+    encoder?.finish()
+    encoder = nil
+    controlExecutor.stop()
+  }
+
+  @MainActor
+  private func startDirectFramebufferCapture(
+    deviceName: String,
+    pointHeight: Int,
+    pointWidth: Int,
+    preferredTargetSize: (height: Int, width: Int)?
+  ) async throws -> Bool {
+    let capture = DirectSimulatorFramebufferCapture()
+    configureEncoder(
+      captureMode: .framebuffer,
+      deviceName: deviceName,
+      pointHeight: pointHeight,
+      pointWidth: pointWidth,
+      preferredTargetSize: preferredTargetSize
     )
 
+    do {
+      try await capture.start(deviceUDID: udid) { [weak self] pixelBuffer, capturedAtMs in
+        self?.enqueueFrame(
+          pixelBuffer: pixelBuffer,
+          capturedAtMs: capturedAtMs,
+          changeRatio: nil
+        )
+      }
+      directFramebufferCapture = capture
+      let targetDescription = preferredTargetSize.map { "\($0.width)x\($0.height)" } ?? "native"
+      StderrLogger.log(
+        "SimulatorBridge streaming \(deviceName) (\(udid)) via direct framebuffer capture (codec: \(encoderCodecLabel()), target: \(targetDescription))."
+      )
+      return true
+    } catch {
+      encoder?.finish()
+      encoder = nil
+      directFramebufferCapture = nil
+      StderrLogger.log("SimulatorBridge framebuffer capture unavailable for \(udid): \(error.localizedDescription)")
+      return false
+    }
+  }
+
+  @MainActor
+  private func startScreenCaptureKitStream(
+    deviceName _: String,
+    pointHeight: Int,
+    pointWidth: Int,
+    simulator: BootedSimulator,
+    screenSize: DeviceProfile.ScreenSize?
+  ) async throws {
+    configureEncoder(
+      captureMode: .window,
+      deviceName: simulator.name,
+      pointHeight: pointHeight,
+      pointWidth: pointWidth,
+      preferredTargetSize: nil
+    )
+    let resolved = try await SimulatorDiscovery.resolve(udid: udid)
     let config = SCStreamConfiguration()
     config.sourceRect = resolved.captureRect
     config.width = resolved.pixelWidth
@@ -2252,27 +2588,13 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
 
     try captureStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
     stream = captureStream
-    controlExecutor.prepareForStreaming()
-    installControlInputHandler()
     try await captureStream.startCapture()
 
-    StderrLogger.log("SimulatorBridge streaming \(resolved.device.name) (\(udid)).")
-  }
-
-  @MainActor
-  func stop() async {
-    clearControlInputHandler()
-    clearPendingFrames()
-
-    if let stream {
-      try? await stream.stopCapture()
-      self.stream = nil
-    }
-
-    encoderQueue.sync {}
-    encoder?.finish()
-    encoder = nil
-    controlExecutor.stop()
+    let logicalWidth = max(Int((screenSize?.width ?? CGFloat(resolved.pixelWidth)).rounded()), 1)
+    let logicalHeight = max(Int((screenSize?.height ?? CGFloat(resolved.pixelHeight)).rounded()), 1)
+    StderrLogger.log(
+      "SimulatorBridge streaming \(simulator.name) (\(udid)) via ScreenCaptureKit (codec: \(encoderCodecLabel())) at \(resolved.pixelWidth)x\(resolved.pixelHeight) (logical: \(logicalWidth)x\(logicalHeight))."
+    )
   }
 
   func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -2331,6 +2653,62 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
     frameStateLock.lock()
     latestFrame = nil
     frameStateLock.unlock()
+  }
+
+  private func configureEncoder(
+    captureMode: IosSimulatorCaptureModePreference,
+    deviceName: String,
+    pointHeight: Int,
+    pointWidth: Int,
+    preferredTargetSize: (height: Int, width: Int)?
+  ) {
+    encoder?.finish()
+    encoderCodec = preferredIosSimulatorStreamCodec(for: captureMode)
+
+    switch encoderCodec {
+    case .jpeg:
+      let nextEncoder = JpegEncoder(
+        deviceName: deviceName,
+        pointHeight: pointHeight,
+        pointWidth: pointWidth,
+        udid: udid,
+        writer: writer
+      )
+      nextEncoder.updateTargetPixelSize(
+        height: preferredTargetSize?.height,
+        width: preferredTargetSize?.width
+      )
+      encoder = nextEncoder
+    case .h264:
+      let nextEncoder = H264Encoder(
+        deviceName: deviceName,
+        fps: fps,
+        pointHeight: pointHeight,
+        pointWidth: pointWidth,
+        udid: udid,
+        writer: writer
+      )
+      nextEncoder.updateTargetPixelSize(
+        height: preferredTargetSize?.height,
+        width: preferredTargetSize?.width
+      )
+      encoder = nextEncoder
+    }
+  }
+
+  private func encoderCodecLabel() -> String {
+    switch encoderCodec {
+    case .h264:
+      return "h264"
+    case .jpeg:
+      return "jpeg"
+    }
+  }
+
+  private func prewarmControlExecutor() {
+    controlQueue.async { [controlExecutor] in
+      controlExecutor.prepareForStreaming()
+    }
   }
 
   private func runEncodeLoop() {

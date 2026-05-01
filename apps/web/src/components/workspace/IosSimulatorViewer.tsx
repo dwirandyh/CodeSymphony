@@ -494,8 +494,12 @@ async function detectViewportFromScreenshot(args: {
 }
 
 export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewerProps) {
+  const viewerInstanceIdRef = useRef(`ios-viewer-${Math.random().toString(36).slice(2, 10)}`);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const liveImagePrimaryRef = useRef<HTMLImageElement | null>(null);
+  const liveImageSecondaryRef = useRef<HTMLImageElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const keyboardInputRef = useRef<HTMLTextAreaElement | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
@@ -529,6 +533,9 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const touchIndicatorRef = useRef<HTMLDivElement | null>(null);
   const touchIndicatorFrameRef = useRef<number | null>(null);
   const touchIndicatorActiveRef = useRef(false);
+  const activeImageSlotRef = useRef<0 | 1>(0);
+  const directImageModeRef = useRef(false);
+  const imageSlotUrlsRef = useRef<[string | null, string | null]>([null, null]);
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(
     supportsIosNativeViewer() ? "connecting" : "error",
@@ -539,6 +546,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const [hasFrame, setHasFrame] = useState(false);
   const [liveAttempt, setLiveAttempt] = useState(0);
   const [liveViewportAligned, setLiveViewportAligned] = useState(false);
+  const [directImageMode, setDirectImageMode] = useState(false);
   const [viewerExpanded, setViewerExpanded] = useState(false);
   const [keyboardBridgeFocused, setKeyboardBridgeFocused] = useState(false);
   const showMobileViewerControls = useMemo(() => getMobileDeviceViewerControlsFlag(), []);
@@ -554,6 +562,21 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   );
 
   const screenInteractionEnabled = liveViewportAligned;
+
+  useEffect(() => {
+    const instanceId = viewerInstanceIdRef.current;
+    debugLog("ios.viewer", "mount", {
+      instanceId,
+      sessionId,
+    });
+
+    return () => {
+      debugLog("ios.viewer", "unmount", {
+        instanceId,
+        sessionId,
+      });
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     if (!viewerExpanded || typeof document === "undefined") {
@@ -573,6 +596,55 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     setLiveViewportAligned((current) => current === aligned ? current : aligned);
   };
 
+  const updateDirectImageMode = (enabled: boolean) => {
+    directImageModeRef.current = enabled;
+    setDirectImageMode((current) => current === enabled ? current : enabled);
+  };
+
+  const getLiveImageElement = (slot: 0 | 1) => (
+    slot === 0 ? liveImagePrimaryRef.current : liveImageSecondaryRef.current
+  );
+
+  const revokeLiveImageSlotUrl = (slot: 0 | 1) => {
+    const url = imageSlotUrlsRef.current[slot];
+    if (!url) {
+      return;
+    }
+
+    URL.revokeObjectURL(url);
+    imageSlotUrlsRef.current[slot] = null;
+  };
+
+  const clearLiveImageSlot = (slot: 0 | 1) => {
+    const image = getLiveImageElement(slot);
+    if (image) {
+      image.onload = null;
+      image.onerror = null;
+      image.src = "";
+    }
+    revokeLiveImageSlotUrl(slot);
+  };
+
+  const applyActiveLiveImageSlot = (slot: 0 | 1) => {
+    activeImageSlotRef.current = slot;
+    const primary = liveImagePrimaryRef.current;
+    const secondary = liveImageSecondaryRef.current;
+    if (primary) {
+      primary.style.opacity = slot === 0 ? "1" : "0";
+      primary.style.zIndex = slot === 0 ? "1" : "0";
+    }
+    if (secondary) {
+      secondary.style.opacity = slot === 1 ? "1" : "0";
+      secondary.style.zIndex = slot === 1 ? "1" : "0";
+    }
+  };
+
+  const resetLiveImages = () => {
+    clearLiveImageSlot(0);
+    clearLiveImageSlot(1);
+    applyActiveLiveImageSlot(0);
+  };
+
   const clearLiveCalibrationRetryTimer = () => {
     if (liveCalibrationRetryTimerRef.current != null) {
       window.clearTimeout(liveCalibrationRetryTimerRef.current);
@@ -590,6 +662,8 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     rawFrameContextRef.current = null;
     rawFramePixelSizeRef.current = { height: 844, width: 390 };
     redrawLiveFrameRef.current = null;
+    resetLiveImages();
+    updateDirectImageMode(false);
     updateLiveViewportAligned(false);
   };
 
@@ -612,6 +686,34 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     };
   };
 
+  const updateLiveSurfaceLayout = (contentHeight: number, contentWidth: number) => {
+    const containerSize = containerSizeRef.current;
+    const measuredContainerSize = containerRef.current
+      ? getElementContentBoxSize(containerRef.current)
+      : null;
+    const boundsWidth = Math.max(containerSize.width || measuredContainerSize?.width || contentWidth, 1);
+    const boundsHeight = Math.max(containerSize.height || measuredContainerSize?.height || contentHeight, 1);
+    const displayBox = getContainedContentBox(boundsHeight, boundsWidth, contentHeight, contentWidth);
+    const displayWidth = Math.max(Math.round(displayBox.width), 1);
+    const displayHeight = Math.max(Math.round(displayBox.height), 1);
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, IOS_MAX_RENDER_PIXEL_RATIO);
+    const renderWidth = Math.max(Math.round(displayWidth * pixelRatio), 1);
+    const renderHeight = Math.max(Math.round(displayHeight * pixelRatio), 1);
+    const surface = surfaceRef.current;
+    if (surface) {
+      surface.style.width = `${displayWidth}px`;
+      surface.style.height = `${displayHeight}px`;
+    }
+
+    return {
+      displayHeight,
+      displayWidth,
+      pixelRatio,
+      renderHeight,
+      renderWidth,
+    };
+  };
+
   const drawLiveSourceToCanvas = (
     context: CanvasRenderingContext2D,
     source: CanvasImageSource,
@@ -619,18 +721,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     frameWidth: number,
   ) => {
     const viewport = getVisibleViewport(frameHeight, frameWidth);
-    const containerSize = containerSizeRef.current;
-    const measuredContainerSize = containerRef.current
-      ? getElementContentBoxSize(containerRef.current)
-      : null;
-    const boundsWidth = Math.max(containerSize.width || measuredContainerSize?.width || viewport.width, 1);
-    const boundsHeight = Math.max(containerSize.height || measuredContainerSize?.height || viewport.height, 1);
-    const displayBox = getContainedContentBox(boundsHeight, boundsWidth, viewport.height, viewport.width);
-    const displayWidth = Math.max(Math.round(displayBox.width), 1);
-    const displayHeight = Math.max(Math.round(displayBox.height), 1);
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, IOS_MAX_RENDER_PIXEL_RATIO);
-    const renderWidth = Math.max(Math.round(displayWidth * pixelRatio), 1);
-    const renderHeight = Math.max(Math.round(displayHeight * pixelRatio), 1);
+    const {
+      displayHeight,
+      displayWidth,
+      pixelRatio,
+      renderHeight,
+      renderWidth,
+    } = updateLiveSurfaceLayout(viewport.height, viewport.width);
     const canvas = canvasRef.current;
     if (!canvas) {
       return;
@@ -981,6 +1078,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   }, [urls.control]);
 
   useEffect(() => {
+    debugLog("ios.viewer", "video_socket.connect", {
+      instanceId: viewerInstanceIdRef.current,
+      liveAttempt,
+      sessionId,
+      videoUrl: urls.video,
+    });
+
     if (!supportsIosNativeViewer()) {
       setConnectionState("error");
       setError("This browser cannot decode the iOS native stream.");
@@ -1004,12 +1108,38 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     let configPacket: Uint8Array | null = null;
     let loggedFirstBinaryPacket = false;
     let loggedFirstFrameOutput = false;
+    let loggedJpegCanvasPath = false;
+    let loggedJpegDirectPath = false;
     let jpegDecodeInFlight = false;
+    type PendingRenderedFrameBase = {
+      frameCapturedAtMs: number | null;
+      pixelHeight: number;
+      pixelWidth: number;
+      receivedAtMs: number | null;
+    };
+    type PendingRenderedFrame =
+      | (PendingRenderedFrameBase & {
+        kind: "canvas-source";
+        release: () => void;
+        source: CanvasImageSource;
+      })
+      | (PendingRenderedFrameBase & {
+        blobUrl: string;
+        kind: "direct-jpeg-url";
+        release: () => void;
+      });
+    type PendingDirectImageFrame = Extract<PendingRenderedFrame, { kind: "direct-jpeg-url" }>;
     let pendingJpegFrame: {
       capturedAtMs: number | null;
       payload: Uint8Array;
       receivedAtMs: number;
     } | null = null;
+    let directImageFrameInFlight = false;
+    let pendingDirectImageFrame: PendingDirectImageFrame | null = null;
+    let pendingRenderedFrame: PendingRenderedFrame | null = null;
+    let renderFrameRequest: number | null = null;
+    let renderBackpressureDrops = 0;
+    let lastRenderBackpressureLogAt = 0;
     const frameTimings = new Map<number, {
       capturedAtMs: number;
       receivedAtMs: number;
@@ -1025,99 +1155,41 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     const videoSocket = new WebSocket(urls.video);
     videoSocket.binaryType = "arraybuffer";
 
-    const renderDecodedSource = (args: {
-      decodedAtMs: number;
+    const releasePendingRenderedFrame = (frame: PendingRenderedFrame | null) => {
+      frame?.release();
+    };
+
+    const releasePendingDirectImageFrame = () => {
+      if (!pendingDirectImageFrame) {
+        return;
+      }
+
+      pendingDirectImageFrame.release();
+      pendingDirectImageFrame = null;
+    };
+
+    const markPresentedFrame = (args: {
       frameCapturedAtMs: number | null;
       pixelHeight: number;
       pixelWidth: number;
       receivedAtMs: number | null;
-      release?: () => void;
-      source: CanvasImageSource;
     }) => {
       const {
-        decodedAtMs,
         frameCapturedAtMs,
         pixelHeight,
         pixelWidth,
         receivedAtMs,
-        release,
-        source,
       } = args;
+      const renderedAtMs = Date.now();
       const frameAgeMs = frameCapturedAtMs != null
-        ? Math.max(decodedAtMs - frameCapturedAtMs, 0)
+        ? Math.max(renderedAtMs - frameCapturedAtMs, 0)
         : null;
       const frameTransportAgeMs = frameCapturedAtMs != null && receivedAtMs != null
         ? Math.max(receivedAtMs - frameCapturedAtMs, 0)
         : null;
       const frameDecodeLatencyMs = receivedAtMs != null
-        ? Math.max(decodedAtMs - receivedAtMs, 0)
+        ? Math.max(renderedAtMs - receivedAtMs, 0)
         : null;
-
-      const deviceWidth = pointSizeRef.current.width;
-      const deviceHeight = pointSizeRef.current.height;
-      const frameAlreadyAligned = frameLikelyMatchesDeviceAspect({
-        deviceHeight,
-        deviceWidth,
-        frameHeight: pixelHeight,
-        frameWidth: pixelWidth,
-      });
-      const calibrationKey = `${pixelWidth}x${pixelHeight}:${deviceWidth}x${deviceHeight}`;
-      const rawFrameSurface = !frameAlreadyAligned
-        ? ensureRawFrameSurface(pixelHeight, pixelWidth)
-        : null;
-
-      if (!frameAlreadyAligned && !rawFrameSurface) {
-        release?.();
-        if (!frameAlreadyAligned && !hasFrameRef.current) {
-          setConnectionState("error");
-          setError("Unable to initialize the iOS stream.");
-        }
-        return;
-      }
-
-      if (rawFrameSurface) {
-        rawFrameSurface.rawContext.drawImage(source, 0, 0, pixelWidth, pixelHeight);
-      }
-
-      rawFramePixelSizeRef.current = {
-        height: pixelHeight,
-        width: pixelWidth,
-      };
-
-      if (frameAlreadyAligned) {
-        if (!liveViewportAlignedRef.current) {
-          updateLiveViewportAligned(true);
-        }
-        if (rawFrameSurface) {
-          redrawLiveFrameRef.current = () => {
-            drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
-          };
-          redrawLiveFrameRef.current();
-        } else {
-          redrawLiveFrameRef.current = null;
-          drawLiveSourceToCanvas(context, source, pixelHeight, pixelWidth);
-        }
-      } else {
-        const requiredRawFrameSurface = rawFrameSurface;
-        if (!requiredRawFrameSurface) {
-          release?.();
-          if (!hasFrameRef.current) {
-            setConnectionState("error");
-            setError("Unable to initialize the iOS stream.");
-          }
-          return;
-        }
-
-        redrawLiveFrameRef.current = () => {
-          drawLiveSourceToCanvas(context, requiredRawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
-        };
-        redrawLiveFrameRef.current();
-      }
-
-      if (!frameAlreadyAligned && liveCalibrationKeyRef.current !== calibrationKey) {
-        void recalibrateLiveViewport();
-      }
-      release?.();
 
       metrics.markFrame({
         frameDecodeLatencyMs,
@@ -1151,6 +1223,270 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       setError(null);
     };
 
+    const presentDirectImageFrame = (frame: PendingDirectImageFrame) => {
+      const {
+        frameCapturedAtMs,
+        pixelHeight,
+        pixelWidth,
+        receivedAtMs,
+      } = frame;
+      const currentSlot = activeImageSlotRef.current;
+      const nextSlot: 0 | 1 = currentSlot === 0 ? 1 : 0;
+      const image = getLiveImageElement(nextSlot);
+      if (!image) {
+        frame.release();
+        return;
+      }
+
+      clearLiveImageSlot(nextSlot);
+      updateLiveSurfaceLayout(pixelHeight, pixelWidth);
+      framePixelSizeRef.current = {
+        height: pixelHeight,
+        width: pixelWidth,
+      };
+      rawFramePixelSizeRef.current = {
+        height: pixelHeight,
+        width: pixelWidth,
+      };
+      liveViewportRef.current = null;
+      redrawLiveFrameRef.current = null;
+      if (!liveViewportAlignedRef.current) {
+        updateLiveViewportAligned(true);
+      }
+      updateDirectImageMode(true);
+
+      const blobUrl = frame.blobUrl;
+      directImageFrameInFlight = true;
+      image.onload = () => {
+        if (imageSlotUrlsRef.current[nextSlot] !== blobUrl) {
+          return;
+        }
+
+        const commitFrame = () => {
+          if (imageSlotUrlsRef.current[nextSlot] !== blobUrl) {
+            return;
+          }
+
+          directImageFrameInFlight = false;
+          applyActiveLiveImageSlot(nextSlot);
+          markPresentedFrame({
+            frameCapturedAtMs,
+            pixelHeight,
+            pixelWidth,
+            receivedAtMs,
+          });
+
+          const nextFrame = pendingDirectImageFrame;
+          pendingDirectImageFrame = null;
+          if (nextFrame) {
+            presentDirectImageFrame(nextFrame);
+          }
+        };
+
+        if (typeof image.decode === "function") {
+          void image.decode().catch(() => undefined).finally(commitFrame);
+          return;
+        }
+
+        commitFrame();
+      };
+      image.onerror = () => {
+        if (imageSlotUrlsRef.current[nextSlot] === blobUrl) {
+          clearLiveImageSlot(nextSlot);
+        }
+        directImageFrameInFlight = false;
+        if (!hasFrameRef.current) {
+          setConnectionState("error");
+          setError("Unable to decode the iOS stream.");
+        }
+
+        const nextFrame = pendingDirectImageFrame;
+        pendingDirectImageFrame = null;
+        if (nextFrame) {
+          presentDirectImageFrame(nextFrame);
+        }
+      };
+
+      imageSlotUrlsRef.current[nextSlot] = blobUrl;
+      image.src = blobUrl;
+    };
+
+    const drawDecodedSourceNow = (frame: PendingRenderedFrame) => {
+      const {
+        frameCapturedAtMs,
+        pixelHeight,
+        pixelWidth,
+        receivedAtMs,
+      } = frame;
+
+      if (frame.kind === "direct-jpeg-url") {
+        presentDirectImageFrame(frame);
+        return;
+      }
+
+      const { release, source } = frame;
+      resetLiveImages();
+      updateDirectImageMode(false);
+      const deviceWidth = pointSizeRef.current.width;
+      const deviceHeight = pointSizeRef.current.height;
+      const frameAlreadyAligned = frameLikelyMatchesDeviceAspect({
+        deviceHeight,
+        deviceWidth,
+        frameHeight: pixelHeight,
+        frameWidth: pixelWidth,
+      });
+      const calibrationKey = `${pixelWidth}x${pixelHeight}:${deviceWidth}x${deviceHeight}`;
+      const rawFrameSurface = !frameAlreadyAligned
+        ? ensureRawFrameSurface(pixelHeight, pixelWidth)
+        : null;
+
+      if (!frameAlreadyAligned && !rawFrameSurface) {
+        release();
+        if (!hasFrameRef.current) {
+          setConnectionState("error");
+          setError("Unable to initialize the iOS stream.");
+        }
+        return;
+      }
+
+      if (rawFrameSurface) {
+        rawFrameSurface.rawContext.drawImage(source, 0, 0, pixelWidth, pixelHeight);
+      }
+
+      rawFramePixelSizeRef.current = {
+        height: pixelHeight,
+        width: pixelWidth,
+      };
+
+      if (frameAlreadyAligned) {
+        if (!liveViewportAlignedRef.current) {
+          updateLiveViewportAligned(true);
+        }
+        if (rawFrameSurface) {
+          redrawLiveFrameRef.current = () => {
+            drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
+          };
+          redrawLiveFrameRef.current();
+        } else {
+          redrawLiveFrameRef.current = null;
+          drawLiveSourceToCanvas(context, source, pixelHeight, pixelWidth);
+        }
+      } else {
+        const requiredRawFrameSurface = rawFrameSurface;
+        if (!requiredRawFrameSurface) {
+          release();
+          if (!hasFrameRef.current) {
+            setConnectionState("error");
+            setError("Unable to initialize the iOS stream.");
+          }
+          return;
+        }
+
+        redrawLiveFrameRef.current = () => {
+          drawLiveSourceToCanvas(context, requiredRawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
+        };
+        redrawLiveFrameRef.current();
+      }
+
+      if (!frameAlreadyAligned && liveCalibrationKeyRef.current !== calibrationKey) {
+        void recalibrateLiveViewport();
+      }
+      release();
+      markPresentedFrame({
+        frameCapturedAtMs,
+        pixelHeight,
+        pixelWidth,
+        receivedAtMs,
+      });
+    };
+
+    const scheduleRenderedFrame = () => {
+      if (renderFrameRequest != null) {
+        return;
+      }
+
+      renderFrameRequest = window.requestAnimationFrame(() => {
+        renderFrameRequest = null;
+        const frame = pendingRenderedFrame;
+        pendingRenderedFrame = null;
+        if (!frame) {
+          return;
+        }
+
+        drawDecodedSourceNow(frame);
+
+        if (!disposed && pendingRenderedFrame) {
+          scheduleRenderedFrame();
+        }
+      });
+    };
+
+    const queueRenderedFrame = (frame: PendingRenderedFrame) => {
+      if (disposed) {
+        frame.release();
+        return;
+      }
+
+      if (pendingRenderedFrame) {
+        releasePendingRenderedFrame(pendingRenderedFrame);
+        renderBackpressureDrops += 1;
+        const now = performance.now();
+        if (now - lastRenderBackpressureLogAt >= 2_000) {
+          lastRenderBackpressureLogAt = now;
+          debugLog("ios.viewer", "render.backpressure", {
+            codec,
+            decodeQueueSize: codec === "jpeg" || !decoder ? null : decoder.decodeQueueSize,
+            droppedFrames: renderBackpressureDrops,
+          });
+        }
+      }
+
+      pendingRenderedFrame = frame;
+      scheduleRenderedFrame();
+    };
+
+    const queueDirectImageFrame = (frame: PendingDirectImageFrame) => {
+      if (disposed) {
+        frame.release();
+        return;
+      }
+
+      if (!directImageFrameInFlight) {
+        presentDirectImageFrame(frame);
+        return;
+      }
+
+      if (pendingDirectImageFrame) {
+        pendingDirectImageFrame.release();
+        renderBackpressureDrops += 1;
+        const now = performance.now();
+        if (now - lastRenderBackpressureLogAt >= 2_000) {
+          lastRenderBackpressureLogAt = now;
+          debugLog("ios.viewer", "render.backpressure", {
+            codec,
+            decodeQueueSize: null,
+            droppedFrames: renderBackpressureDrops,
+            mode: "direct-image",
+          });
+        }
+      }
+
+      pendingDirectImageFrame = frame;
+    };
+
+    const canUseDirectJpegPath = () => {
+      const pointWidth = pointSizeRef.current.width;
+      const pointHeight = pointSizeRef.current.height;
+      const pixelWidth = rawFramePixelSizeRef.current.width;
+      const pixelHeight = rawFramePixelSizeRef.current.height;
+      return frameLikelyMatchesDeviceAspect({
+        deviceHeight: pointHeight,
+        deviceWidth: pointWidth,
+        frameHeight: pixelHeight,
+        frameWidth: pixelWidth,
+      });
+    };
+
     const decodeJpegFrame = (frame: {
       capturedAtMs: number | null;
       payload: Uint8Array;
@@ -1166,9 +1502,17 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             bitmap.close();
             return;
           }
-          renderDecodedSource({
-            decodedAtMs: Date.now(),
+          if (!loggedJpegCanvasPath) {
+            loggedJpegCanvasPath = true;
+            debugLog("ios.viewer", "jpeg.render_path", {
+              mode: "canvas",
+              pixelHeight: Math.max(bitmap.height, 1),
+              pixelWidth: Math.max(bitmap.width, 1),
+            });
+          }
+          queueRenderedFrame({
             frameCapturedAtMs: frame.capturedAtMs,
+            kind: "canvas-source",
             pixelHeight: Math.max(bitmap.height, 1),
             pixelWidth: Math.max(bitmap.width, 1),
             receivedAtMs: frame.receivedAtMs,
@@ -1227,16 +1571,15 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             return;
           }
 
-          const decodedAtMs = Date.now();
           const frameTiming = typeof frame.timestamp === "number"
             ? frameTimings.get(frame.timestamp) ?? null
             : null;
           if (typeof frame.timestamp === "number") {
             frameTimings.delete(frame.timestamp);
           }
-          renderDecodedSource({
-            decodedAtMs,
+          queueRenderedFrame({
             frameCapturedAtMs: frameTiming?.capturedAtMs ?? null,
+            kind: "canvas-source",
             pixelHeight: Math.max(frame.displayHeight, 1),
             pixelWidth: Math.max(frame.displayWidth, 1),
             receivedAtMs: frameTiming?.receivedAtMs ?? null,
@@ -1319,6 +1662,30 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             debugLog("ios.viewer", "jpeg.packet.first", {
               payloadBytes: payloadWithoutTimestamp.byteLength,
             });
+          }
+          if (canUseDirectJpegPath()) {
+            if (!loggedJpegDirectPath) {
+              loggedJpegDirectPath = true;
+              debugLog("ios.viewer", "jpeg.render_path", {
+                deviceHeight: pointSizeRef.current.height,
+                deviceWidth: pointSizeRef.current.width,
+                mode: "direct-image",
+                pixelHeight: rawFramePixelSizeRef.current.height,
+                pixelWidth: rawFramePixelSizeRef.current.width,
+              });
+            }
+            const blob = new Blob([payloadWithoutTimestamp], { type: "image/jpeg" });
+            const blobUrl = URL.createObjectURL(blob);
+            queueDirectImageFrame({
+              blobUrl,
+              frameCapturedAtMs: capturedAtMs,
+              kind: "direct-jpeg-url",
+              pixelHeight: rawFramePixelSizeRef.current.height,
+              pixelWidth: rawFramePixelSizeRef.current.width,
+              receivedAtMs,
+              release: () => URL.revokeObjectURL(blobUrl),
+            });
+            return;
           }
           queueJpegFrame({
             capturedAtMs,
@@ -1493,6 +1860,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       if (startupTimer != null) {
         window.clearTimeout(startupTimer);
       }
+      if (renderFrameRequest != null) {
+        window.cancelAnimationFrame(renderFrameRequest);
+      }
+      releasePendingRenderedFrame(pendingRenderedFrame);
+      releasePendingDirectImageFrame();
+      directImageFrameInFlight = false;
+      resetLiveImages();
       videoSocket.close();
       if (decoder && decoder.state !== "closed") {
         decoder.close();
@@ -1538,7 +1912,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     if (closeKeyboard || document.activeElement === input || keyboardBridgeFocused) {
       dismissKeyboardInput();
       setSoftwareKeyboardVisible(false);
-      canvasRef.current?.focus({
+      surfaceRef.current?.focus({
         preventScroll: true,
       });
       return;
@@ -1762,7 +2136,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   }, []);
 
   const getInteractivePoint = (clientX: number, clientY: number) => {
-    const element = canvasRef.current;
+    const element = surfaceRef.current;
     if (!element) {
       return null;
     }
@@ -2320,16 +2694,44 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       ) : null}
 
       <div ref={containerRef} className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-3 pt-3">
-        <canvas
-          ref={canvasRef}
-          className="block max-h-full max-w-full touch-none rounded-[22px] bg-black shadow-[0_24px_90px_rgba(0,0,0,0.55)] outline-none"
+        <div
+          ref={surfaceRef}
+          className="relative block max-h-full max-w-full touch-none overflow-hidden rounded-[22px] bg-black shadow-[0_24px_90px_rgba(0,0,0,0.55)] outline-none"
           tabIndex={0}
           onContextMenu={(event) => event.preventDefault()}
           onPointerCancel={finishPointerGesture}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={finishPointerGesture}
-        />
+        >
+          <img
+            ref={liveImagePrimaryRef}
+            alt={`${deviceName} live stream`}
+            decoding="async"
+            className={cn(
+              "pointer-events-none absolute inset-0 h-full w-full object-fill transition-none",
+              !directImageMode && "hidden",
+            )}
+            draggable={false}
+          />
+          <img
+            ref={liveImageSecondaryRef}
+            alt={`${deviceName} live stream`}
+            decoding="async"
+            className={cn(
+              "pointer-events-none absolute inset-0 h-full w-full object-fill transition-none",
+              !directImageMode && "hidden",
+            )}
+            draggable={false}
+          />
+          <canvas
+            ref={canvasRef}
+            className={cn(
+              "pointer-events-none absolute inset-0 h-full w-full rounded-[22px]",
+              directImageMode ? "hidden" : "block",
+            )}
+          />
+        </div>
 
         <div
           ref={touchIndicatorRef}
