@@ -18,6 +18,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api";
 import { isTauriDesktop, openExternalUrl } from "../../lib/openExternalUrl";
+import { useRuntimeInfo } from "../../hooks/queries/useRuntimeInfo";
 import { useDevices } from "../../pages/workspace/hooks/useDevices";
 import { AndroidDeviceViewer } from "./AndroidDeviceViewer";
 import { supportsAndroidNativeViewer } from "./deviceViewerEnvironment";
@@ -81,16 +82,49 @@ function deviceStatusLabel(status: DeviceStatus): string {
 
 const MACOS_SCREEN_RECORDING_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 
-function normalizeIssueMessage(issue: DeviceIssue): string {
-  if (issue.platform === "ios-simulator" && /declined TCCs/i.test(issue.message) && /ad-hoc signed/i.test(issue.message)) {
-    return "This installed CodeSymphony build is using an ad-hoc-signed runtime binary, so macOS keeps denying Screen Recording to the simulator bridge. Reinstall the latest signed app, then fully quit and reopen CodeSymphony before reconnecting the stream.";
+function resolveRuntimeModeLabel(desktopApp: boolean, runtimePort: number | null): string {
+  if (desktopApp) {
+    return "CodeSymphony";
   }
 
-  if (issue.platform === "ios-simulator" && /declined TCCs/i.test(issue.message)) {
-    return "Grant Screen Recording to CodeSymphony in System Settings > Privacy & Security > Screen & System Audio Recording, then fully quit and reopen the app before reconnecting the stream.";
+  if (runtimePort === 4331) {
+    return "the macOS app hosting your local dev runtime";
   }
 
-  return issue.message
+  return "the macOS app hosting the local runtime";
+}
+
+function isIosScreenRecordingIssueMessage(message: string): boolean {
+  return /declined TCCs/i.test(message) || /ad-hoc signed/i.test(message);
+}
+
+function isIosScreenRecordingIssue(issue: DeviceIssue): boolean {
+  return issue.platform === "ios-simulator" && isIosScreenRecordingIssueMessage(issue.message);
+}
+
+function normalizeDeviceIssueMessage(
+  message: string,
+  options: {
+    desktopApp: boolean;
+    runtimePort: number | null;
+  },
+): string {
+  const { desktopApp, runtimePort } = options;
+  const runtimeHostLabel = resolveRuntimeModeLabel(desktopApp, runtimePort);
+
+  if (/declined TCCs/i.test(message) && /ad-hoc signed/i.test(message)) {
+    return desktopApp
+      ? "This installed CodeSymphony build is using an ad-hoc-signed runtime binary, so macOS keeps denying Screen Recording to the simulator bridge. Reinstall the latest signed app, then fully quit and reopen CodeSymphony before reconnecting the stream."
+      : "The local runtime binary is ad-hoc signed, so macOS can keep denying Screen Recording to the simulator bridge. Re-run the signed desktop build or switch to a runtime host with Screen Recording access before reconnecting the stream.";
+  }
+
+  if (/declined TCCs/i.test(message)) {
+    return desktopApp
+      ? "Grant Screen Recording to CodeSymphony in System Settings > Privacy & Security > Screen & System Audio Recording, then fully quit and reopen the app before reconnecting the stream."
+      : `Grant Screen Recording to ${runtimeHostLabel} in System Settings > Privacy & Security > Screen & System Audio Recording, then fully quit and reopen that app before reconnecting the stream.`;
+  }
+
+  return message
     .replace(/^Native iOS simulator streaming is unavailable:\s*/i, "")
     .replace(/^Android discovery unavailable:\s*/i, "")
     .trim();
@@ -148,6 +182,7 @@ function DeviceActionIconButton({
 
 export function DevicePanel({ onClose }: DevicePanelProps) {
   const { snapshot, loading, error, refresh, startStream, stopStream, startingDeviceId, stoppingSessionId } = useDevices();
+  const runtimeInfo = useRuntimeInfo();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceSelectorOpen, setDeviceSelectorOpen] = useState(false);
   const [viewerNonce, setViewerNonce] = useState(0);
@@ -187,8 +222,38 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
   }, [activeDevice, snapshot.issues]);
   const viewerSrc = activeSession ? `${api.runtimeBaseUrl}${activeSession.viewerUrl}` : null;
   const desktopApp = isTauriDesktop();
+  const runtimePort = runtimeInfo.data?.listenAddress?.kind === "tcp"
+    ? runtimeInfo.data.listenAddress.port
+    : runtimeInfo.data?.runtimePort ?? null;
   const canUseAndroidNativePanelViewer = supportsAndroidNativeViewer();
   const selectorDevice = activeDevice ?? snapshot.devices[0] ?? null;
+  const normalizedActiveIssues = useMemo(() => activeIssues.map((issue) => ({
+    ...issue,
+    isScreenRecordingIssue: isIosScreenRecordingIssue(issue),
+    normalizedMessage: normalizeDeviceIssueMessage(issue.message, {
+      desktopApp,
+      runtimePort,
+    }),
+  })), [activeIssues, desktopApp, runtimePort]);
+  const blockingIosIssue = useMemo(
+    () => activeDevice?.platform === "ios-simulator"
+      ? normalizedActiveIssues.find((issue) => issue.isScreenRecordingIssue) ?? null
+      : null,
+    [activeDevice?.platform, normalizedActiveIssues],
+  );
+  const normalizedError = useMemo(
+    () => error ? normalizeDeviceIssueMessage(error, { desktopApp, runtimePort }) : null,
+    [desktopApp, error, runtimePort],
+  );
+  const visiblePanelError = useMemo(() => {
+    if (!normalizedError) {
+      return null;
+    }
+
+    return normalizedActiveIssues.some((issue) => issue.normalizedMessage === normalizedError)
+      ? null
+      : normalizedError;
+  }, [normalizedActiveIssues, normalizedError]);
 
   useEffect(() => {
     setViewerNonce(0);
@@ -318,13 +383,13 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
           <div className="flex shrink-0 items-center gap-1.5">
             {activeDevice && !activeSession ? (
               <DeviceActionIconButton
-                icon={startingDeviceId === activeDevice.id ? RefreshCw : Play}
-                label={startingDeviceId === activeDevice.id ? "Starting Stream" : "Start Stream"}
-                variant="default"
-                className="shadow-sm"
+                icon={blockingIosIssue ? AlertTriangle : startingDeviceId === activeDevice.id ? RefreshCw : Play}
+                label={blockingIosIssue ? "Stream Blocked" : startingDeviceId === activeDevice.id ? "Starting Stream" : "Start Stream"}
+                variant={blockingIosIssue ? "outline" : "default"}
+                className={cn("shadow-sm", blockingIosIssue && "border-amber-500/35 bg-amber-500/10 text-amber-100 hover:bg-amber-500/10")}
                 iconClassName={cn(startingDeviceId === activeDevice.id && "animate-spin")}
                 onClick={() => void handleStartStream()}
-                disabled={!activeDevice.supportsEmbeddedStream || startingDeviceId === activeDevice.id}
+                disabled={!activeDevice.supportsEmbeddedStream || startingDeviceId === activeDevice.id || Boolean(blockingIosIssue)}
               />
             ) : null}
             {activeDevice && activeSession && viewerSrc ? (
@@ -362,21 +427,18 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
         </div>
       </div>
 
-      {error ? (
+      {visiblePanelError ? (
         <div className="border-b border-border/30 px-3 py-2 text-xs text-destructive">
-          {error}
+          {visiblePanelError}
         </div>
       ) : null}
 
       {activeDevice ? (
         <>
           <div className="flex min-h-0 flex-1 flex-col px-2 pb-2 pt-1.5">
-            {activeIssues.length > 0 ? (
+            {normalizedActiveIssues.length > 0 ? (
               <div className="space-y-2 px-1 pb-2">
-                {activeIssues.map((issue) => {
-                  const isScreenRecordingIssue = issue.platform === "ios-simulator"
-                    && (/declined TCCs/i.test(issue.message) || /ad-hoc signed/i.test(issue.message));
-
+                {normalizedActiveIssues.map((issue) => {
                   return (
                     <div
                       key={issue.id}
@@ -390,13 +452,13 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
                         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                         <div className="min-w-0 flex-1">
                           <div className="font-semibold">
-                            {isScreenRecordingIssue ? "Screen Recording required" : issue.severity === "error" ? "Device issue" : "Device notice"}
+                            {issue.isScreenRecordingIssue ? "Screen Recording required" : issue.severity === "error" ? "Device issue" : "Device notice"}
                           </div>
                           <p className="mt-1 break-words opacity-90">
-                            {normalizeIssueMessage(issue)}
+                            {issue.normalizedMessage}
                           </p>
                         </div>
-                        {desktopApp && isScreenRecordingIssue ? (
+                        {desktopApp && issue.isScreenRecordingIssue ? (
                           <Button
                             type="button"
                             variant="outline"
@@ -437,6 +499,36 @@ export function DevicePanel({ onClose }: DevicePanelProps) {
                     allow="clipboard-read; clipboard-write; fullscreen"
                   />
                 )
+              ) : blockingIosIssue ? (
+                <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+                  <AlertTriangle className="mb-4 h-8 w-8 text-amber-300" />
+                  <h3 className="text-sm font-medium text-white">iOS stream is blocked</h3>
+                  <p className="mt-2 max-w-xs text-xs leading-5 text-slate-300">
+                    {blockingIosIssue.normalizedMessage}
+                  </p>
+                  <div className="mt-4 flex items-center gap-2">
+                    {desktopApp ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="border-white/15 bg-white/5 text-white hover:bg-white/10"
+                        onClick={() => void openExternalUrl(MACOS_SCREEN_RECORDING_SETTINGS_URL)}
+                      >
+                        Open Settings
+                      </Button>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="border-white/15 bg-white/5 text-white hover:bg-white/10"
+                      onClick={() => void refresh()}
+                    >
+                      Refresh Devices
+                    </Button>
+                  </div>
+                </div>
               ) : (
                 <div className="flex h-full flex-col items-center justify-center px-6 text-center">
                   <Smartphone className="mb-4 h-8 w-8 text-muted-foreground" />

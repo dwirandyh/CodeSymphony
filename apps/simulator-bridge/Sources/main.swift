@@ -69,7 +69,7 @@ private let SIMULATOR_HARDWARE_KEYBOARD_TYPE_DEFAULT: UInt8 = 0
 
 private enum ControlAction {
   case tap(x: Double, y: Double)
-  case touch(x: Double, y: Double, phase: String)
+  case touch(x: Double, y: Double, phase: String, edge: String?)
   case drag(phase: String, points: [DragPathPoint])
   case swipe(startX: Double, startY: Double, endX: Double, endY: Double, duration: Double, delta: Double?)
   case text(String)
@@ -217,10 +217,10 @@ private enum BridgeCommand {
       }
 
       let phase = values["phase"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-      guard phase == "down" || phase == "up" else {
-        throw BridgeError.invalidArguments("touch requires --phase <down|up>.")
+      guard phase == "down" || phase == "move" || phase == "up" else {
+        throw BridgeError.invalidArguments("touch requires --phase <down|move|up>.")
       }
-      action = .touch(x: x, y: y, phase: phase)
+      action = .touch(x: x, y: y, phase: phase, edge: values["edge"])
     case "drag":
       let phase = values["phase"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
       guard phase == "start" || phase == "move" || phase == "end" else {
@@ -1119,13 +1119,14 @@ private enum ControlMessageParser {
       )
     case "touch":
       let phase = try readString(payload, key: "phase").lowercased()
-      guard phase == "down" || phase == "up" else {
-        throw BridgeError.invalidArguments("touch requires phase down or up.")
+      guard phase == "down" || phase == "move" || phase == "up" else {
+        throw BridgeError.invalidArguments("touch requires phase down, move, or up.")
       }
       return .touch(
         x: try readNumber(payload, key: "x"),
         y: try readNumber(payload, key: "y"),
-        phase: phase
+        phase: phase,
+        edge: payload["edge"] as? String
       )
     case "drag":
       let phase = try readString(payload, key: "phase").lowercased()
@@ -1257,8 +1258,8 @@ private final class SimulatorControlExecutor {
     switch action {
     case .tap(let x, let y):
       try performTap(x: x, y: y)
-    case .touch(let x, let y, let phase):
-      try performTouch(x: x, y: y, phase: phase)
+    case .touch(let x, let y, let phase, let edge):
+      try performTouch(x: x, y: y, phase: phase, edge: edge)
     case .drag(let phase, let points):
       try performDrag(phase: phase, points: points)
     case .swipe(let startX, let startY, let endX, let endY, let duration, let delta):
@@ -1331,7 +1332,7 @@ private final class SimulatorControlExecutor {
     ])
   }
 
-  private func performTouch(x: Double, y: Double, phase: String) throws {
+  private func performTouch(x: Double, y: Double, phase: String, edge: String?) throws {
     var arguments = [
       "touch",
       "-x",
@@ -1339,7 +1340,7 @@ private final class SimulatorControlExecutor {
       "-y",
       coordinateString(y),
     ]
-    if phase == "down" {
+    if phase == "down" || phase == "move" {
       arguments.append("--down")
     } else {
       arguments.append("--up")
@@ -1350,6 +1351,10 @@ private final class SimulatorControlExecutor {
     ]
 
     try runAxe(arguments: arguments)
+
+    if edge != nil {
+      StderrLogger.log("SimulatorBridge edge touch fallback in use for \(udid); native edge semantics unavailable.")
+    }
   }
 
   private func performDrag(phase: String, points: [DragPathPoint]) throws {
@@ -1514,9 +1519,16 @@ private final class SimulatorControlExecutor {
       throw BridgeError.invalidArguments(
         "Simulator software keyboard control requires native simulator access."
       )
-    case "app_switcher":
+    case "swipe_home", "app_switcher":
+      prepareForStreaming()
+      #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+      if let nativeSession {
+        try nativeSession.performSystemGesture(gesture)
+        return
+      }
+      #endif
       throw BridgeError.invalidArguments(
-        "Unsupported native simulator system gesture: app_switcher. Use a direct drag gesture instead."
+        "Simulator system gesture \(gesture) requires native simulator access."
       )
     default:
       throw BridgeError.invalidArguments("Unsupported native simulator system gesture: \(gesture)")
@@ -1595,6 +1607,7 @@ private enum SimulatorAppPrivateCategoryLoader {
 private final class NativeSimulatorControlSession {
   private let hid: FBSimulatorHID
   private let control: FBSimulatorControl
+  private let privateHIDBridge: PrivateSimulatorHIDBridge?
   private let simulator: FBSimulator
   private let udid: String
   private var activeDragPoint: DragPathPoint?
@@ -1610,6 +1623,11 @@ private final class NativeSimulatorControlSession {
     }
     self.simulator = simulator
     self.hid = try FBSimulatorHID.hid(for: simulator).await(withTimeout: 5)
+    if let device = simulator.perform(NSSelectorFromString("device"))?.takeUnretainedValue() as? NSObject {
+      self.privateHIDBridge = try? PrivateSimulatorHIDBridge(device: device)
+    } else {
+      self.privateHIDBridge = nil
+    }
   }
 
   func canHandle(_ action: ControlAction) -> Bool {
@@ -1625,12 +1643,25 @@ private final class NativeSimulatorControlSession {
     switch action {
     case .tap(let x, let y):
       _ = try FBSimulatorHIDEvent.tapAt(x: x, y: y).perform(on: hid).await(withTimeout: 5)
-    case .touch(let x, let y, let phase):
-      let event = phase == "down"
-        ? FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
-        : FBSimulatorHIDEvent.touchUpAt(x: x, y: y)
+    case .touch(let x, let y, let phase, let edge):
+      let edgeValue = PrivateSimulatorHIDBridge.edgeValue(for: edge)
+      if let privateHIDBridge, (edgeValue != PrivateSimulatorHIDBridge.edgeNone || phase == "move") {
+        try privateHIDBridge.sendTouch(phase: phase, x: x, y: y, edge: edgeValue)
+        activeDragPoint = phase == "up" ? nil : DragPathPoint(delayMs: 0, x: x, y: y)
+        return
+      }
+
+      let event: FBSimulatorHIDEvent
+      switch phase {
+      case "down", "move":
+        event = FBSimulatorHIDEvent.touchDownAt(x: x, y: y)
+      case "up":
+        event = FBSimulatorHIDEvent.touchUpAt(x: x, y: y)
+      default:
+        throw BridgeError.invalidArguments("Unsupported simulator touch phase: \(phase)")
+      }
       _ = try event.perform(on: hid).await(withTimeout: 5)
-      activeDragPoint = phase == "down" ? DragPathPoint(delayMs: 0, x: x, y: y) : nil
+      activeDragPoint = phase == "up" ? nil : DragPathPoint(delayMs: 0, x: x, y: y)
     case .drag(let phase, let points):
       try performDrag(phase: phase, points: points)
     case .swipe(let startX, let startY, let endX, let endY, let duration, let delta):
@@ -1654,8 +1685,7 @@ private final class NativeSimulatorControlSession {
       _ = try hid.sendKeyboardEvent(with: .up, keyCode: keyCode).await(withTimeout: 5)
     case .button(let button):
       let hidButton = try buttonValue(for: button)
-      _ = try hid.sendButtonEvent(with: .down, button: hidButton).await(withTimeout: 5)
-      _ = try hid.sendButtonEvent(with: .up, button: hidButton).await(withTimeout: 5)
+      try pressButton(hidButton)
     case .systemGesture(let gesture):
       throw BridgeError.invalidArguments("Unsupported native simulator system gesture: \(gesture)")
     }
@@ -1669,6 +1699,20 @@ private final class NativeSimulatorControlSession {
       try setSoftwareKeyboardVisible(true)
     case "hide_keyboard":
       try setSoftwareKeyboardVisible(false)
+    case "swipe_home":
+      if let privateHIDBridge {
+        try privateHIDBridge.sendSwipeHome()
+        return
+      }
+      try pressButton(.homeButton)
+    case "app_switcher":
+      if let privateHIDBridge {
+        try privateHIDBridge.sendAppSwitcher()
+        return
+      }
+      try pressButton(.homeButton)
+      Thread.sleep(forTimeInterval: 0.15)
+      try pressButton(.homeButton)
     default:
       throw BridgeError.invalidArguments("Unsupported native simulator system gesture: \(gesture)")
     }
@@ -1711,6 +1755,11 @@ private final class NativeSimulatorControlSession {
     default:
       throw BridgeError.invalidArguments("Unsupported simulator button: \(button)")
     }
+  }
+
+  private func pressButton(_ button: FBSimulatorHIDButton) throws {
+    _ = try hid.sendButtonEvent(with: .down, button: button).await(withTimeout: 5)
+    _ = try hid.sendButtonEvent(with: .up, button: button).await(withTimeout: 5)
   }
 
   private func performDrag(phase: String, points: [DragPathPoint]) throws {
