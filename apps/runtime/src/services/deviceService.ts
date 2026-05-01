@@ -1578,6 +1578,50 @@ export function createDeviceService(logService?: RuntimeLogService) {
     return value;
   }
 
+  function normalizeIosEdgeTouchCoordinate(value: number, max: number): number {
+    if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) {
+      return value;
+    }
+
+    if (value <= 1 && value >= 0) {
+      return value;
+    }
+
+    return Math.min(Math.max(value / max, 0), 1);
+  }
+
+  function normalizeIosTouchInputForBridge(
+    session: InternalStreamSession,
+    input: SendDeviceControlInput,
+  ): SendDeviceControlInput {
+    if (input.action !== "touch") {
+      return input;
+    }
+
+    const payload = input.payload ?? {};
+    const edge = typeof payload.edge === "string" ? payload.edge.trim() : "";
+    if (!edge) {
+      return input;
+    }
+
+    const width = session.iosVideoBridge?.latestPointWidth ?? 0;
+    const height = session.iosVideoBridge?.latestPointHeight ?? 0;
+    const x = Number(payload.x);
+    const y = Number(payload.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || width <= 0 || height <= 0) {
+      return input;
+    }
+
+    return {
+      ...input,
+      payload: {
+        ...payload,
+        x: normalizeIosEdgeTouchCoordinate(x, width),
+        y: normalizeIosEdgeTouchCoordinate(y, height),
+      },
+    };
+  }
+
   function quoteForPosixShell(value: string): string {
     return `'${value.replace(/'/g, `'\"'\"'`)}'`;
   }
@@ -1690,9 +1734,11 @@ export function createDeviceService(logService?: RuntimeLogService) {
       throw new Error("iOS simulator UDID is unavailable for native control.");
     }
 
+    const normalizedInput = normalizeIosTouchInputForBridge(session, input);
+
     if (session.iosVideoBridge) {
       try {
-        await writeNativeIosBridgeControl(session.iosVideoBridge, input);
+        await writeNativeIosBridgeControl(session.iosVideoBridge, normalizedInput);
         return;
       } catch (error) {
         logService?.log("warn", "devices.ios-simulator-bridge", "Falling back to one-shot iOS control command", {
@@ -1703,10 +1749,10 @@ export function createDeviceService(logService?: RuntimeLogService) {
       }
     }
 
-    const payload = input.payload ?? {};
+    const payload = normalizedInput.payload ?? {};
     let args: string[];
 
-    switch (input.action) {
+    switch (normalizedInput.action) {
       case "tap":
         args = [
           "control",
@@ -1734,6 +1780,9 @@ export function createDeviceService(logService?: RuntimeLogService) {
           "--phase",
           readPayloadString(payload, "phase"),
         ];
+        if (typeof payload.edge === "string" && payload.edge.trim().length > 0) {
+          args.push("--edge", payload.edge.trim());
+        }
         break;
       case "swipe":
         args = [
@@ -1818,7 +1867,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
         ];
         break;
       default:
-        throw new Error(`Unsupported control action: ${input.action}`);
+        throw new Error(`Unsupported control action: ${normalizedInput.action}`);
     }
 
     await runLocalIosSimulatorBridge(args);

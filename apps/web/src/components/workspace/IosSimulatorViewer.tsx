@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { House, Keyboard, LoaderCircle, Lock, Maximize2, Minimize2, RefreshCw, Smartphone } from "lucide-react";
+import { House, Keyboard, LayoutGrid, LoaderCircle, Lock, Maximize2, Minimize2, RefreshCw, Smartphone } from "lucide-react";
 import { Button } from "../ui/button";
 import { api } from "../../lib/api";
 import { debugLog } from "../../lib/debugLog";
@@ -38,6 +38,7 @@ type ViewportRect = {
 type DragState = {
   axis: IosGestureAxis | null;
   edge: IosGestureEdge | null;
+  edgeTouchActive: boolean;
   dragActive: boolean;
   dragFlushTimer: number | null;
   dragPoints: IosGesturePathPoint[];
@@ -91,6 +92,12 @@ const IOS_LIVE_CALIBRATION_RETRY_DELAY_MS = 900;
 const IOS_LIVE_ALIGNMENT_ASPECT_TOLERANCE = 0.012;
 const IOS_LIVE_ALIGNMENT_FULL_FRAME_TOLERANCE_PX = 2;
 const IOS_MAX_RENDER_PIXEL_RATIO = 2;
+const IOS_BOTTOM_EDGE_HOME_MIN_DISTANCE_RATIO = 0.22;
+const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_DISTANCE_RATIO = 0.16;
+const IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT = 56;
+const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_HOLD_MS = 420;
+const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_END_RATIO = 0.4;
+const IOS_BOTTOM_EDGE_APP_SWITCHER_MAX_END_RATIO = 0.72;
 const VIDEO_CHUNK_INTERVAL_US = 16_667;
 const IOS_SPECIAL_KEY_MAP: Record<string, string> = {
   Backspace: "DELETE",
@@ -259,6 +266,46 @@ function fitViewportToAspect(frameHeight: number, frameWidth: number, aspectRati
     top: (frameHeight - height) / 2,
     width,
   };
+}
+
+function resolveBottomEdgeSystemGesture(args: {
+  clientDx: number;
+  clientDy: number;
+  deviceHeight: number;
+  endY: number;
+  elapsedMs: number;
+  startY: number;
+}): "app_switcher" | "swipe_home" | null {
+  const { clientDx, clientDy, deviceHeight, endY, elapsedMs, startY } = args;
+  if (deviceHeight <= 0 || clientDy >= -IOS_GESTURE_TAP_SLOP_CSS_PX) {
+    return null;
+  }
+
+  const upwardDistance = startY - endY;
+  const minDistance = Math.max(deviceHeight * IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_DISTANCE_RATIO, IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT);
+  if (upwardDistance < minDistance) {
+    return null;
+  }
+
+  const verticalBias = Math.abs(clientDy) >= Math.abs(clientDx) * 1.1;
+  if (!verticalBias) {
+    return null;
+  }
+
+  const endRatio = endY / deviceHeight;
+  const heldLongEnough = elapsedMs >= IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_HOLD_MS;
+  const endedInSwitcherBand = endRatio >= IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_END_RATIO
+    && endRatio <= IOS_BOTTOM_EDGE_APP_SWITCHER_MAX_END_RATIO;
+  if (heldLongEnough && endedInSwitcherBand) {
+    return "app_switcher";
+  }
+
+  const homeDistance = Math.max(deviceHeight * IOS_BOTTOM_EDGE_HOME_MIN_DISTANCE_RATIO, IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT);
+  if (upwardDistance >= homeDistance) {
+    return "swipe_home";
+  }
+
+  return heldLongEnough ? "app_switcher" : null;
 }
 
 function viewportCoversFrame(
@@ -479,6 +526,9 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const hasFrameRef = useRef(false);
   const liveViewportAlignedRef = useRef(false);
   const pointerGestureStartedAtRef = useRef<number | null>(null);
+  const touchIndicatorRef = useRef<HTMLDivElement | null>(null);
+  const touchIndicatorFrameRef = useRef<number | null>(null);
+  const touchIndicatorActiveRef = useRef(false);
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(
     supportsIosNativeViewer() ? "connecting" : "error",
@@ -1582,6 +1632,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
 
     if (activeDrag.touchDownSent) {
       sendControl({
+        ...(activeDrag.edgeTouchActive && activeDrag.edge === "bottom" ? { edge: "bottom" } : {}),
         phase: "up",
         t: "touch",
         x: activeDrag.x,
@@ -1734,6 +1785,57 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     }
   };
 
+  const cancelTouchIndicatorFrame = () => {
+    if (touchIndicatorFrameRef.current != null) {
+      window.cancelAnimationFrame(touchIndicatorFrameRef.current);
+      touchIndicatorFrameRef.current = null;
+    }
+  };
+
+  const updateTouchIndicatorPosition = (clientX: number, clientY: number) => {
+    const indicator = touchIndicatorRef.current;
+    const container = containerRef.current;
+    if (!indicator || !container) {
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+
+    const left = clamp(clientX - rect.left, 0, rect.width);
+    const top = clamp(clientY - rect.top, 0, rect.height);
+    cancelTouchIndicatorFrame();
+    touchIndicatorFrameRef.current = window.requestAnimationFrame(() => {
+      indicator.style.left = `${left}px`;
+      indicator.style.top = `${top}px`;
+      touchIndicatorFrameRef.current = null;
+    });
+  };
+
+  const showTouchIndicator = (clientX: number, clientY: number) => {
+    touchIndicatorActiveRef.current = true;
+    updateTouchIndicatorPosition(clientX, clientY);
+    touchIndicatorRef.current?.style.setProperty("opacity", "1");
+    touchIndicatorRef.current?.style.setProperty("transform", "translate(-50%, -50%) scale(1)");
+  };
+
+  const moveTouchIndicator = (clientX: number, clientY: number) => {
+    if (!touchIndicatorActiveRef.current) {
+      return;
+    }
+
+    updateTouchIndicatorPosition(clientX, clientY);
+  };
+
+  const hideTouchIndicator = () => {
+    touchIndicatorActiveRef.current = false;
+    cancelTouchIndicatorFrame();
+    touchIndicatorRef.current?.style.setProperty("opacity", "0");
+    touchIndicatorRef.current?.style.setProperty("transform", "translate(-50%, -50%) scale(0.72)");
+  };
+
   const clearDragFlushTimer = (dragState: DragState) => {
     if (dragState.dragFlushTimer != null) {
       window.clearTimeout(dragState.dragFlushTimer);
@@ -1826,6 +1928,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     if (!point) {
       return;
     }
+    showTouchIndicator(event.clientX, event.clientY);
 
     dragStateRef.current = {
       axis: null,
@@ -1838,6 +1941,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         startX: point.x,
         startY: point.y,
       }),
+      edgeTouchActive: false,
       lastPathAtMs: performance.now(),
       lastPathClientX: event.clientX,
       lastPathClientY: event.clientY,
@@ -1856,6 +1960,15 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       y: point.y,
     };
     pointerGestureStartedAtRef.current = performance.now();
+
+    if (dragStateRef.current.edge === "bottom") {
+      dragStateRef.current = {
+        ...dragStateRef.current,
+        edgeTouchActive: true,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
 
     const touchTimer = window.setTimeout(() => {
       const activeDrag = dragStateRef.current;
@@ -1893,6 +2006,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     if (!point) {
       return;
     }
+    moveTouchIndicator(event.clientX, event.clientY);
 
     const now = Date.now();
     const nowMs = performance.now();
@@ -1925,6 +2039,11 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       x: point.x,
       y: point.y,
     };
+
+    if (activeDrag.edgeTouchActive && activeDrag.edge === "bottom") {
+      dragStateRef.current = nextDragState;
+      return;
+    }
 
     const shouldContinueAsDrag = (!nextDragState.touchDownSent && scrollIntent)
       || (nextDragState.touchDownSent && clientDistance >= IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX);
@@ -1971,6 +2090,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    hideTouchIndicator();
     if (!activeDrag) {
       return;
     }
@@ -1983,6 +2103,24 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     const clientDx = event.clientX - activeDrag.startClientX;
     const clientDy = event.clientY - activeDrag.startClientY;
     const clientDistance = Math.hypot(clientDx, clientDy);
+
+    if (activeDrag.edgeTouchActive && activeDrag.edge === "bottom") {
+      const gesture = resolveBottomEdgeSystemGesture({
+        clientDx,
+        clientDy,
+        deviceHeight: pointSizeRef.current.height,
+        endY: point.y,
+        elapsedMs: Math.max(performance.now() - activeDrag.startAtMs, 0),
+        startY: activeDrag.startY,
+      });
+      if (gesture) {
+        sendControl({
+          name: gesture,
+          t: "system",
+        });
+      }
+      return;
+    }
 
     if (!activeDrag.scrollIntent && clientDistance <= IOS_GESTURE_TAP_SLOP_CSS_PX) {
       if (activeDrag.touchDownSent) {
@@ -2051,6 +2189,18 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       });
     }
   };
+
+  useEffect(() => {
+    if (screenInteractionEnabled) {
+      return;
+    }
+
+    hideTouchIndicator();
+  }, [screenInteractionEnabled]);
+
+  useEffect(() => () => {
+    hideTouchIndicator();
+  }, []);
 
   const statusLabel = connectionState === "connected"
     ? liveViewportAligned
@@ -2169,7 +2319,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         </div>
       ) : null}
 
-      <div ref={containerRef} className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-3 pt-3">
+      <div ref={containerRef} className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden px-3 pt-3">
         <canvas
           ref={canvasRef}
           className="block max-h-full max-w-full touch-none rounded-[22px] bg-black shadow-[0_24px_90px_rgba(0,0,0,0.55)] outline-none"
@@ -2179,6 +2329,16 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={finishPointerGesture}
+        />
+
+        <div
+          ref={touchIndicatorRef}
+          className="pointer-events-none absolute z-20 h-7 w-7 rounded-full border border-sky-100/70 bg-sky-400/45 opacity-0 shadow-[0_0_0_6px_rgba(56,189,248,0.14),0_10px_30px_rgba(14,165,233,0.22)] transition-[opacity,transform] duration-100"
+          style={{
+            left: 0,
+            top: 0,
+            transform: "translate(-50%, -50%) scale(0.72)",
+          }}
         />
 
         {!hasFrame ? (
@@ -2226,6 +2386,17 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             onClick={() => sendControl({ t: "button", button: "home" })}
           >
             <House className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+            aria-label="iOS Recent Apps"
+            title="iOS Recent Apps"
+            onClick={() => sendControl({ t: "system", name: "app_switcher" })}
+          >
+            <LayoutGrid className="h-4 w-4" />
           </Button>
           {!showMobileViewerControls ? (
             <Button
