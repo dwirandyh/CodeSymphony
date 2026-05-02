@@ -18,11 +18,19 @@ export const IOS_TOUCH_DOWN_DELAY_LIVE_MS = 220;
 const IOS_GESTURE_AXIS_LOCK_RATIO = 1.12;
 const IOS_GESTURE_EDGE_DIRECTION_DISTANCE_CSS_PX = 6;
 const IOS_GESTURE_EDGE_MARGIN_RATIO = 0.08;
+const IOS_GESTURE_BOTTOM_EDGE_MARGIN_RATIO = 0.04;
 const IOS_GESTURE_EDGE_MIN_MARGIN_PT = 18;
+const IOS_GESTURE_BOTTOM_EDGE_MAX_MARGIN_PT = 32;
 const IOS_GESTURE_PATH_DWELL_DELAY_MAX_MS = 320;
 const IOS_GESTURE_PATH_STEP_DELAY_MAX_MS = 20;
 const IOS_BOTTOM_EDGE_HORIZONTAL_AXIS_COMMIT_RATIO = 1.45;
 const IOS_BOTTOM_EDGE_VERTICAL_AXIS_BIAS_RATIO = 1.28;
+const IOS_BOTTOM_EDGE_HOME_MIN_DISTANCE_RATIO = 0.22;
+const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_DISTANCE_RATIO = 0.16;
+const IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT = 56;
+const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_HOLD_MS = 420;
+const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_END_RATIO = 0.4;
+const IOS_BOTTOM_EDGE_APP_SWITCHER_MAX_END_RATIO = 0.72;
 
 function clamp(value: number, min: number, max: number): number {
   if (value < min) {
@@ -43,6 +51,11 @@ export function detectIosGestureEdge(args: {
   const { deviceHeight, deviceWidth, startX, startY } = args;
   const horizontalMargin = Math.max(Math.round(deviceWidth * IOS_GESTURE_EDGE_MARGIN_RATIO), IOS_GESTURE_EDGE_MIN_MARGIN_PT);
   const verticalMargin = Math.max(Math.round(deviceHeight * IOS_GESTURE_EDGE_MARGIN_RATIO), IOS_GESTURE_EDGE_MIN_MARGIN_PT);
+  const bottomMargin = clamp(
+    Math.round(deviceHeight * IOS_GESTURE_BOTTOM_EDGE_MARGIN_RATIO),
+    IOS_GESTURE_EDGE_MIN_MARGIN_PT,
+    IOS_GESTURE_BOTTOM_EDGE_MAX_MARGIN_PT,
+  );
 
   if (startX <= horizontalMargin) {
     return "left";
@@ -53,7 +66,7 @@ export function detectIosGestureEdge(args: {
   if (startY <= verticalMargin) {
     return "top";
   }
-  if (startY >= deviceHeight - verticalMargin) {
+  if (startY >= deviceHeight - bottomMargin) {
     return "bottom";
   }
   return null;
@@ -136,6 +149,69 @@ export function shouldAppendIosGesturePathPoint(args: {
   const { clientDx, clientDy, elapsedMs } = args;
   return Math.hypot(clientDx, clientDy) >= IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX
     || elapsedMs >= IOS_GESTURE_PATH_POINT_MIN_INTERVAL_MS;
+}
+
+function resolveBottomEdgeSystemGesture(args: {
+  clientDx: number;
+  clientDy: number;
+  deviceHeight: number;
+  endY: number;
+  elapsedMs: number;
+  startY: number;
+}): "app_switcher" | "swipe_home" | null {
+  const { clientDx, clientDy, deviceHeight, endY, elapsedMs, startY } = args;
+  if (deviceHeight <= 0 || clientDy >= -IOS_GESTURE_TAP_SLOP_CSS_PX) {
+    return null;
+  }
+
+  const upwardDistance = startY - endY;
+  const minDistance = Math.max(
+    deviceHeight * IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_DISTANCE_RATIO,
+    IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT,
+  );
+  if (upwardDistance < minDistance) {
+    return null;
+  }
+
+  const verticalBias = Math.abs(clientDy) >= Math.abs(clientDx) * 1.1;
+  if (!verticalBias) {
+    return null;
+  }
+
+  const endRatio = endY / deviceHeight;
+  const heldLongEnough = elapsedMs >= IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_HOLD_MS;
+  const endedInSwitcherBand = endRatio >= IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_END_RATIO
+    && endRatio <= IOS_BOTTOM_EDGE_APP_SWITCHER_MAX_END_RATIO;
+  if (heldLongEnough && endedInSwitcherBand) {
+    return "app_switcher";
+  }
+
+  const homeDistance = Math.max(
+    deviceHeight * IOS_BOTTOM_EDGE_HOME_MIN_DISTANCE_RATIO,
+    IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT,
+  );
+  if (upwardDistance >= homeDistance) {
+    return "swipe_home";
+  }
+
+  return heldLongEnough ? "app_switcher" : null;
+}
+
+export function resolveIosBottomEdgeReleaseAction(args: {
+  clientDx: number;
+  clientDy: number;
+  clientDistance: number;
+  deviceHeight: number;
+  endY: number;
+  elapsedMs: number;
+  startY: number;
+}): "app_switcher" | "swipe_home" | "tap" | null {
+  const systemGesture = resolveBottomEdgeSystemGesture(args);
+  if (systemGesture) {
+    return systemGesture;
+  }
+
+  return args.clientDistance <= IOS_GESTURE_TAP_SLOP_CSS_PX ? "tap" : null;
 }
 
 export function buildIosDragPayload(args: {

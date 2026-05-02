@@ -5,6 +5,7 @@ import { registerDeviceRoutes } from "../src/routes/devices";
 
 describe("device routes", () => {
   let app: FastifyInstance;
+  const getNativeIosStatus = vi.fn();
   const readAndroidClipboard = vi.fn();
   const writeAndroidClipboard = vi.fn();
 
@@ -13,6 +14,7 @@ describe("device routes", () => {
     app = Fastify({ logger: false });
     await app.register(websocket);
     app.decorate("deviceService", {
+      getNativeIosStatus,
       readAndroidClipboard,
       writeAndroidClipboard,
     } as never);
@@ -60,5 +62,36 @@ describe("device routes", () => {
       paste: true,
       text: "host to android",
     });
+  });
+
+  it("GET /api/device-streams/:sessionId/native/status returns iOS keyboard sync fields", async () => {
+    getNativeIosStatus.mockReturnValue({
+      session_info: {
+        device_height: 844,
+        device_width: 390,
+        keyboard_sync_available: true,
+        pixel_height: 1688,
+        pixel_width: 780,
+        software_keyboard_visible: true,
+      },
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/device-streams/session-1/native/status",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      session_info: {
+        device_height: 844,
+        device_width: 390,
+        keyboard_sync_available: true,
+        pixel_height: 1688,
+        pixel_width: 780,
+        software_keyboard_visible: true,
+      },
+    });
+    expect(getNativeIosStatus).toHaveBeenCalledWith("session-1");
   });
 });

@@ -7,6 +7,12 @@ import { createDeviceStreamMetrics } from "../../lib/deviceStreamMetrics";
 import { cn } from "../../lib/utils";
 import { getMobileDeviceViewerControlsFlag, supportsIosNativeViewer } from "./deviceViewerEnvironment";
 import {
+  resolveIosKeyboardUiState,
+  shouldFocusIosKeyboardBridgeOnSurfacePointerDown,
+  shouldMaintainIosKeyboardBridgeFocusOnBlur,
+} from "./iosKeyboardSync";
+import { buildIosViewportGeometryKey, shouldRetainIosViewportAlignment } from "./iosViewportAlignment";
+import {
   buildIosDragPayload,
   detectIosGestureEdge,
   IOS_GESTURE_PATH_FLUSH_INTERVAL_MS,
@@ -14,6 +20,7 @@ import {
   IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX,
   IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX,
   IOS_TOUCH_DOWN_DELAY_LIVE_MS,
+  resolveIosBottomEdgeReleaseAction,
   resolveIosGestureAxis,
   type IosGestureAxis,
   type IosGestureEdge,
@@ -64,6 +71,8 @@ type IosStatusResponse = {
   session_info?: {
     device_height?: number;
     device_width?: number;
+    keyboard_sync_available?: boolean;
+    software_keyboard_visible?: boolean;
   };
 };
 
@@ -71,10 +80,12 @@ type IosControlPayload = Record<string, unknown>;
 
 type IosStreamMetadata = {
   codec?: string;
+  keyboardSyncAvailable?: boolean;
   pointHeight?: number;
   pointWidth?: number;
   pixelHeight?: number;
   pixelWidth?: number;
+  softwareKeyboardVisible?: boolean;
 };
 
 const IOS_H264_PACKET_CONFIG = 1;
@@ -92,12 +103,6 @@ const IOS_LIVE_CALIBRATION_RETRY_DELAY_MS = 900;
 const IOS_LIVE_ALIGNMENT_ASPECT_TOLERANCE = 0.012;
 const IOS_LIVE_ALIGNMENT_FULL_FRAME_TOLERANCE_PX = 2;
 const IOS_MAX_RENDER_PIXEL_RATIO = 2;
-const IOS_BOTTOM_EDGE_HOME_MIN_DISTANCE_RATIO = 0.22;
-const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_DISTANCE_RATIO = 0.16;
-const IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT = 56;
-const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_HOLD_MS = 420;
-const IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_END_RATIO = 0.4;
-const IOS_BOTTOM_EDGE_APP_SWITCHER_MAX_END_RATIO = 0.72;
 const VIDEO_CHUNK_INTERVAL_US = 16_667;
 const IOS_SPECIAL_KEY_MAP: Record<string, string> = {
   Backspace: "DELETE",
@@ -266,46 +271,6 @@ function fitViewportToAspect(frameHeight: number, frameWidth: number, aspectRati
     top: (frameHeight - height) / 2,
     width,
   };
-}
-
-function resolveBottomEdgeSystemGesture(args: {
-  clientDx: number;
-  clientDy: number;
-  deviceHeight: number;
-  endY: number;
-  elapsedMs: number;
-  startY: number;
-}): "app_switcher" | "swipe_home" | null {
-  const { clientDx, clientDy, deviceHeight, endY, elapsedMs, startY } = args;
-  if (deviceHeight <= 0 || clientDy >= -IOS_GESTURE_TAP_SLOP_CSS_PX) {
-    return null;
-  }
-
-  const upwardDistance = startY - endY;
-  const minDistance = Math.max(deviceHeight * IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_DISTANCE_RATIO, IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT);
-  if (upwardDistance < minDistance) {
-    return null;
-  }
-
-  const verticalBias = Math.abs(clientDy) >= Math.abs(clientDx) * 1.1;
-  if (!verticalBias) {
-    return null;
-  }
-
-  const endRatio = endY / deviceHeight;
-  const heldLongEnough = elapsedMs >= IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_HOLD_MS;
-  const endedInSwitcherBand = endRatio >= IOS_BOTTOM_EDGE_APP_SWITCHER_MIN_END_RATIO
-    && endRatio <= IOS_BOTTOM_EDGE_APP_SWITCHER_MAX_END_RATIO;
-  if (heldLongEnough && endedInSwitcherBand) {
-    return "app_switcher";
-  }
-
-  const homeDistance = Math.max(deviceHeight * IOS_BOTTOM_EDGE_HOME_MIN_DISTANCE_RATIO, IOS_BOTTOM_EDGE_SYSTEM_GESTURE_MIN_DISTANCE_PT);
-  if (upwardDistance >= homeDistance) {
-    return "swipe_home";
-  }
-
-  return heldLongEnough ? "app_switcher" : null;
 }
 
 function viewportCoversFrame(
@@ -524,9 +489,14 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const liveViewportRef = useRef<ViewportRect | null>(null);
   const redrawLiveFrameRef = useRef<(() => void) | null>(null);
   const keyboardActiveRef = useRef(false);
+  const keyboardBlurSuppressedRef = useRef(false);
   const keyboardFlushTimerRef = useRef<number | null>(null);
+  const keyboardRefocusTimerRef = useRef<number | null>(null);
+  const keyboardSyncAvailableRef = useRef(false);
   const keyboardTextBufferRef = useRef("");
   const keyboardToggleSnapshotRef = useRef(false);
+  const lastAlignedViewportGeometryKeyRef = useRef("");
+  const softwareKeyboardVisibleRef = useRef(false);
   const hasFrameRef = useRef(false);
   const liveViewportAlignedRef = useRef(false);
   const pointerGestureStartedAtRef = useRef<number | null>(null);
@@ -549,6 +519,8 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   const [directImageMode, setDirectImageMode] = useState(false);
   const [viewerExpanded, setViewerExpanded] = useState(false);
   const [keyboardBridgeFocused, setKeyboardBridgeFocused] = useState(false);
+  const [keyboardSyncAvailable, setKeyboardSyncAvailable] = useState(false);
+  const [softwareKeyboardVisible, setSoftwareKeyboardVisible] = useState(false);
   const showMobileViewerControls = useMemo(() => getMobileDeviceViewerControlsFlag(), []);
 
   const urls = useMemo(() => buildIosViewerUrls(sessionId), [sessionId]);
@@ -562,6 +534,36 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   );
 
   const screenInteractionEnabled = liveViewportAligned;
+  const keyboardUiState = resolveIosKeyboardUiState({
+    keyboardBridgeFocused,
+    keyboardSyncAvailable,
+    showMobileViewerControls,
+    softwareKeyboardVisible,
+  });
+
+  const clearKeyboardRefocusTimer = () => {
+    if (keyboardRefocusTimerRef.current != null) {
+      window.clearTimeout(keyboardRefocusTimerRef.current);
+      keyboardRefocusTimerRef.current = null;
+    }
+  };
+
+  const updateKeyboardSyncState = (
+    nextAvailable: boolean,
+    nextVisible: boolean,
+    source: "metadata" | "status" | "sync" | "toggle",
+  ) => {
+    keyboardSyncAvailableRef.current = nextAvailable;
+    softwareKeyboardVisibleRef.current = nextVisible;
+    setKeyboardSyncAvailable((current) => current === nextAvailable ? current : nextAvailable);
+    setSoftwareKeyboardVisible((current) => current === nextVisible ? current : nextVisible);
+
+    debugLog("ios.viewer", "keyboard.sync_state", {
+      available: nextAvailable,
+      source,
+      visible: nextVisible,
+    });
+  };
 
   useEffect(() => {
     const instanceId = viewerInstanceIdRef.current;
@@ -591,9 +593,26 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     };
   }, [viewerExpanded]);
 
-  const updateLiveViewportAligned = (aligned: boolean) => {
-    liveViewportAlignedRef.current = aligned;
-    setLiveViewportAligned((current) => current === aligned ? current : aligned);
+  const updateLiveViewportAligned = (aligned: boolean, geometryKey: string | null = null) => {
+    const retainedAlignment = shouldRetainIosViewportAlignment({
+      aligned,
+      hasFrame: hasFrameRef.current,
+      lastAlignedGeometryKey: lastAlignedViewportGeometryKeyRef.current,
+      nextGeometryKey: geometryKey,
+    });
+    const nextAligned = retainedAlignment ? true : aligned;
+    if (nextAligned && geometryKey) {
+      lastAlignedViewportGeometryKeyRef.current = geometryKey;
+    }
+
+    if (retainedAlignment) {
+      debugLog("ios.viewer", "viewport.alignment_retained", {
+        geometryKey,
+      });
+    }
+
+    liveViewportAlignedRef.current = nextAligned;
+    setLiveViewportAligned((current) => current === nextAligned ? current : nextAligned);
   };
 
   const updateDirectImageMode = (enabled: boolean) => {
@@ -657,6 +676,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     liveCalibrationInFlightRef.current = false;
     liveCalibrationAttemptAtRef.current = 0;
     liveCalibrationKeyRef.current = "";
+    lastAlignedViewportGeometryKeyRef.current = "";
     liveViewportRef.current = null;
     rawFrameCanvasRef.current = null;
     rawFrameContextRef.current = null;
@@ -823,19 +843,21 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       frameWidth: rawCanvas.width,
     });
 
-    if (frameAlreadyAligned && !liveViewportAlignedRef.current) {
-      updateLiveViewportAligned(true);
-    }
-
-    const calibrationKey = `${rawCanvas.width}x${rawCanvas.height}:${deviceWidth}x${deviceHeight}`;
+    const calibrationKey = buildIosViewportGeometryKey({
+      deviceHeight,
+      deviceWidth,
+      frameHeight: rawCanvas.height,
+      frameWidth: rawCanvas.width,
+    });
     if (frameAlreadyAligned) {
+      updateLiveViewportAligned(true, calibrationKey);
       clearLiveCalibrationRetryTimer();
       liveViewportRef.current = null;
-      liveCalibrationKeyRef.current = calibrationKey;
+      liveCalibrationKeyRef.current = calibrationKey ?? "";
       return;
     }
 
-    if (liveCalibrationKeyRef.current === calibrationKey) {
+    if (calibrationKey && liveCalibrationKeyRef.current === calibrationKey) {
       return;
     }
 
@@ -864,7 +886,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       if (!response.ok) {
         liveViewportRef.current = normalizedFallbackViewport;
         redrawLiveFrameRef.current?.();
-        updateLiveViewportAligned(frameAlreadyAligned);
+        updateLiveViewportAligned(frameAlreadyAligned, calibrationKey);
         liveCalibrationRetryTimerRef.current = window.setTimeout(() => {
           liveCalibrationRetryTimerRef.current = null;
           void recalibrateLiveViewport();
@@ -881,9 +903,9 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       liveViewportRef.current = viewportCoversFrame(resolvedViewport, rawCanvas.height, rawCanvas.width)
         ? null
         : resolvedViewport;
-      liveCalibrationKeyRef.current = calibrationKey;
+      liveCalibrationKeyRef.current = calibrationKey ?? "";
       redrawLiveFrameRef.current?.();
-      updateLiveViewportAligned(viewport !== null || frameAlreadyAligned);
+      updateLiveViewportAligned(viewport !== null || frameAlreadyAligned, calibrationKey);
     } catch {
       const fallbackViewport = fitViewportToAspect(
         rawCanvas.height,
@@ -894,7 +916,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         ? null
         : fallbackViewport;
       redrawLiveFrameRef.current?.();
-      updateLiveViewportAligned(frameAlreadyAligned);
+      updateLiveViewportAligned(frameAlreadyAligned, calibrationKey);
       liveCalibrationRetryTimerRef.current = window.setTimeout(() => {
         liveCalibrationRetryTimerRef.current = null;
         void recalibrateLiveViewport();
@@ -919,6 +941,12 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
         return;
       }
+
+      updateKeyboardSyncState(
+        payload?.session_info?.keyboard_sync_available === true,
+        payload?.session_info?.software_keyboard_visible === true,
+        "status",
+      );
 
       pointSizeRef.current = {
         height,
@@ -948,6 +976,32 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       liveViewportAligned,
     });
   }, [liveViewportAligned, metrics]);
+
+  useEffect(() => {
+    if (!showMobileViewerControls || !keyboardSyncAvailable || !softwareKeyboardVisible) {
+      return;
+    }
+
+    const input = keyboardInputRef.current;
+    if (document.activeElement === input) {
+      return;
+    }
+
+    focusKeyboardInput();
+  }, [keyboardSyncAvailable, showMobileViewerControls, softwareKeyboardVisible]);
+
+  useEffect(() => {
+    if (!showMobileViewerControls || !keyboardSyncAvailable || softwareKeyboardVisible) {
+      return;
+    }
+
+    const input = keyboardInputRef.current;
+    if (document.activeElement !== input && !keyboardBridgeFocused) {
+      return;
+    }
+
+    dismissKeyboardInput();
+  }, [keyboardBridgeFocused, keyboardSyncAvailable, showMobileViewerControls, softwareKeyboardVisible]);
 
   useEffect(() => {
     void loadPointDimensions();
@@ -1250,9 +1304,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       };
       liveViewportRef.current = null;
       redrawLiveFrameRef.current = null;
-      if (!liveViewportAlignedRef.current) {
-        updateLiveViewportAligned(true);
-      }
+      const geometryKey = buildIosViewportGeometryKey({
+        deviceHeight: pointSizeRef.current.height,
+        deviceWidth: pointSizeRef.current.width,
+        frameHeight: pixelHeight,
+        frameWidth: pixelWidth,
+      });
+      updateLiveViewportAligned(true, geometryKey);
       updateDirectImageMode(true);
 
       const blobUrl = frame.blobUrl;
@@ -1335,7 +1393,12 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         frameHeight: pixelHeight,
         frameWidth: pixelWidth,
       });
-      const calibrationKey = `${pixelWidth}x${pixelHeight}:${deviceWidth}x${deviceHeight}`;
+      const calibrationKey = buildIosViewportGeometryKey({
+        deviceHeight,
+        deviceWidth,
+        frameHeight: pixelHeight,
+        frameWidth: pixelWidth,
+      });
       const rawFrameSurface = !frameAlreadyAligned
         ? ensureRawFrameSurface(pixelHeight, pixelWidth)
         : null;
@@ -1359,9 +1422,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       };
 
       if (frameAlreadyAligned) {
-        if (!liveViewportAlignedRef.current) {
-          updateLiveViewportAligned(true);
-        }
+        updateLiveViewportAligned(true, calibrationKey);
         if (rawFrameSurface) {
           redrawLiveFrameRef.current = () => {
             drawLiveSourceToCanvas(context, rawFrameSurface.rawCanvas, pixelHeight, pixelWidth);
@@ -1388,7 +1449,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
         redrawLiveFrameRef.current();
       }
 
-      if (!frameAlreadyAligned && liveCalibrationKeyRef.current !== calibrationKey) {
+      if (!frameAlreadyAligned && calibrationKey && liveCalibrationKeyRef.current !== calibrationKey) {
         void recalibrateLiveViewport();
       }
       release();
@@ -1779,6 +1840,11 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
           const pixelHeight = Number(metadata.pixelHeight);
           const pointWidth = Number(metadata.pointWidth);
           const pointHeight = Number(metadata.pointHeight);
+          updateKeyboardSyncState(
+            metadata.keyboardSyncAvailable === true,
+            metadata.softwareKeyboardVisible === true,
+            "metadata",
+          );
           if (Number.isFinite(pointWidth) && Number.isFinite(pointHeight) && pointWidth > 0 && pointHeight > 0) {
             pointSizeRef.current = {
               height: pointHeight,
@@ -1883,6 +1949,15 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   };
 
   const focusKeyboardInput = () => {
+    clearKeyboardRefocusTimer();
+    if (document.activeElement === keyboardInputRef.current) {
+      keyboardActiveRef.current = true;
+      if (!keyboardBridgeFocused) {
+        setKeyboardBridgeFocused(true);
+      }
+      return;
+    }
+
     keyboardActiveRef.current = true;
     keyboardInputRef.current?.focus({
       preventScroll: true,
@@ -1890,13 +1965,16 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
   };
 
   const dismissKeyboardInput = () => {
+    clearKeyboardRefocusTimer();
     flushKeyboardTextBuffer();
     keyboardActiveRef.current = false;
+    keyboardBlurSuppressedRef.current = true;
     keyboardInputRef.current?.blur();
     setKeyboardBridgeFocused(false);
   };
 
-  const setSoftwareKeyboardVisible = (visible: boolean) => {
+  const requestSoftwareKeyboardVisible = (visible: boolean, source: "toggle" | "sync" = "sync") => {
+    updateKeyboardSyncState(keyboardSyncAvailableRef.current, visible, source);
     sendControl({
       t: "system",
       name: visible ? "show_keyboard" : "hide_keyboard",
@@ -1909,16 +1987,19 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       return;
     }
 
-    if (closeKeyboard || document.activeElement === input || keyboardBridgeFocused) {
+    const keyboardOpen = keyboardUiState.usesSimulatorKeyboardSync
+      ? softwareKeyboardVisibleRef.current
+      : document.activeElement === input || keyboardBridgeFocused;
+    if (closeKeyboard || keyboardOpen) {
       dismissKeyboardInput();
-      setSoftwareKeyboardVisible(false);
+      requestSoftwareKeyboardVisible(false, "toggle");
       surfaceRef.current?.focus({
         preventScroll: true,
       });
       return;
     }
 
-    setSoftwareKeyboardVisible(true);
+    requestSoftwareKeyboardVisible(true, "toggle");
     focusKeyboardInput();
   };
 
@@ -2130,6 +2211,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       window.removeEventListener("pointerdown", handlePointerDown, true);
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("paste", handlePaste, true);
+      clearKeyboardRefocusTimer();
       flushKeyboardTextBuffer();
       keyboardActiveRef.current = false;
     };
@@ -2294,10 +2376,23 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
       return;
     }
 
-    event.currentTarget.focus({
-      preventScroll: true,
+    const shouldFocusKeyboardBridge = shouldFocusIosKeyboardBridgeOnSurfacePointerDown({
+      keyboardBridgeFocused,
+      keyboardSyncAvailable: keyboardSyncAvailableRef.current,
+      showMobileViewerControls,
+      softwareKeyboardVisible: softwareKeyboardVisibleRef.current,
     });
-    focusKeyboardInput();
+
+    if (shouldFocusKeyboardBridge) {
+      // Prevent the focusable stream surface from stealing focus before we
+      // restore it to the hidden keyboard bridge on every simulator tap.
+      event.preventDefault();
+      focusKeyboardInput();
+    } else {
+      event.currentTarget.focus({
+        preventScroll: true,
+      });
+    }
     const point = getInteractivePoint(event.clientX, event.clientY);
     if (!point) {
       return;
@@ -2479,17 +2574,27 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     const clientDistance = Math.hypot(clientDx, clientDy);
 
     if (activeDrag.edgeTouchActive && activeDrag.edge === "bottom") {
-      const gesture = resolveBottomEdgeSystemGesture({
+      const releaseAction = resolveIosBottomEdgeReleaseAction({
         clientDx,
         clientDy,
+        clientDistance,
         deviceHeight: pointSizeRef.current.height,
         endY: point.y,
         elapsedMs: Math.max(performance.now() - activeDrag.startAtMs, 0),
         startY: activeDrag.startY,
       });
-      if (gesture) {
+      if (releaseAction === "tap") {
         sendControl({
-          name: gesture,
+          t: "tap",
+          x: point.x,
+          y: point.y,
+        });
+        return;
+      }
+
+      if (releaseAction) {
+        sendControl({
+          name: releaseAction,
           t: "system",
         });
       }
@@ -2591,7 +2696,8 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
     : connectionState === "connecting"
       ? "Starting the iOS stream directly in this panel."
       : "Streaming iOS directly in this panel.";
-  const showMobileKeyboardBridge = showMobileViewerControls && keyboardBridgeFocused;
+  const showMobileKeyboardBridge = keyboardUiState.showMobileKeyboardBridge;
+  const keyboardButtonActive = keyboardUiState.keyboardButtonActive;
 
   return (
     <div
@@ -2622,8 +2728,30 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
           flushKeyboardTextBuffer();
           keyboardActiveRef.current = false;
           setKeyboardBridgeFocused(false);
+          if (keyboardBlurSuppressedRef.current) {
+            keyboardBlurSuppressedRef.current = false;
+            return;
+          }
+
+          if (!shouldMaintainIosKeyboardBridgeFocusOnBlur({
+            keyboardSyncAvailable: keyboardSyncAvailableRef.current,
+            showMobileViewerControls,
+            softwareKeyboardVisible: softwareKeyboardVisibleRef.current,
+          })) {
+            return;
+          }
+
+          clearKeyboardRefocusTimer();
+          keyboardRefocusTimerRef.current = window.setTimeout(() => {
+            keyboardRefocusTimerRef.current = null;
+            if (!softwareKeyboardVisibleRef.current || !keyboardSyncAvailableRef.current) {
+              return;
+            }
+            focusKeyboardInput();
+          }, 120);
         }}
         onFocus={() => {
+          clearKeyboardRefocusTimer();
           keyboardActiveRef.current = true;
           setKeyboardBridgeFocused(true);
         }}
@@ -2643,12 +2771,14 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             size="icon"
             className={cn(
               "h-8 w-8 rounded-full border border-white/10 bg-black/45 text-white/80 shadow-[0_10px_30px_rgba(0,0,0,0.25)] hover:bg-white/10 hover:text-white",
-              keyboardBridgeFocused && "bg-white/12 text-white",
+              keyboardButtonActive && "bg-white/12 text-white",
             )}
-            aria-label={keyboardBridgeFocused ? "Hide iOS keyboard" : "Show iOS keyboard"}
-            title={keyboardBridgeFocused ? "Hide iOS keyboard" : "Show iOS keyboard"}
+            aria-label={keyboardButtonActive ? "Hide iOS keyboard" : "Show iOS keyboard"}
+            title={keyboardButtonActive ? "Hide iOS keyboard" : "Show iOS keyboard"}
             onPointerDown={() => {
-              keyboardToggleSnapshotRef.current = document.activeElement === keyboardInputRef.current || keyboardBridgeFocused;
+              keyboardToggleSnapshotRef.current = keyboardUiState.usesSimulatorKeyboardSync
+                ? softwareKeyboardVisibleRef.current
+                : document.activeElement === keyboardInputRef.current || keyboardBridgeFocused;
             }}
             onClick={() => {
               toggleKeyboardInput(keyboardToggleSnapshotRef.current);
@@ -2731,6 +2861,14 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
               directImageMode ? "hidden" : "block",
             )}
           />
+          {hasFrame && !liveViewportAligned ? (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/10 px-4">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[11px] font-medium text-white/80 shadow-[0_16px_48px_rgba(0,0,0,0.28)] backdrop-blur-md">
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                <span>Aligning simulator viewport…</span>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div
@@ -2753,15 +2891,6 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
             <div>
               <p className="text-sm font-semibold text-white">{deviceName}</p>
               <p className="mt-1 text-xs leading-5 text-white/65">{overlayMessage}</p>
-            </div>
-          </div>
-        ) : null}
-
-        {hasFrame && !liveViewportAligned ? (
-          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/10 px-6">
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[11px] font-medium text-white/80 shadow-[0_16px_48px_rgba(0,0,0,0.28)] backdrop-blur-md">
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-              <span>Aligning simulator viewport…</span>
             </div>
           </div>
         ) : null}
@@ -2807,11 +2936,13 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
               size="icon"
               className={cn(
                 "h-8 w-8 rounded-full text-white/80 hover:bg-white/10 hover:text-white",
-                keyboardBridgeFocused && "bg-white/12 text-white",
+                keyboardButtonActive && "bg-white/12 text-white",
               )}
-              aria-label={keyboardBridgeFocused ? "Hide iOS keyboard" : "Show iOS keyboard"}
+              aria-label={keyboardButtonActive ? "Hide iOS keyboard" : "Show iOS keyboard"}
               onPointerDown={() => {
-                keyboardToggleSnapshotRef.current = document.activeElement === keyboardInputRef.current || keyboardBridgeFocused;
+                keyboardToggleSnapshotRef.current = keyboardUiState.usesSimulatorKeyboardSync
+                  ? softwareKeyboardVisibleRef.current
+                  : document.activeElement === keyboardInputRef.current || keyboardBridgeFocused;
               }}
               onClick={() => {
                 toggleKeyboardInput(keyboardToggleSnapshotRef.current);

@@ -14,11 +14,12 @@ let simulatorBridgeTargetSettings: [Target] = [
   .executableTarget(
     name: "SimulatorBridge",
     path: "Sources",
-    swiftSettings: axeFrameworksPath.map {
-      [
-        .unsafeFlags(["-F", $0]),
-      ]
-    } ?? [],
+    swiftSettings: [
+      [.unsafeFlags(["-parse-as-library"])],
+      axeFrameworksPath.map {
+        [.unsafeFlags(["-F", $0])]
+      } ?? [],
+    ].flatMap { $0 },
     linkerSettings: axeFrameworksPath.map {
       [
         .unsafeFlags([
