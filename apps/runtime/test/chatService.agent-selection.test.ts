@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CliAgent, ChatThreadKind } from "@codesymphony/shared-types";
 import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
@@ -26,6 +27,23 @@ const stubModelProviderService = {
   getProviderById: async () => null,
 };
 
+function createStubModelProviderService(
+  providersById: Record<string, {
+    id: string;
+    agent: CliAgent;
+    apiKey: string | null;
+    baseUrl: string | null;
+    name: string;
+    modelId: string;
+    isActive?: boolean;
+  }> = {},
+) {
+  return {
+    getActiveProvider: async () => null,
+    getProviderById: async (id: string) => providersById[id] ?? null,
+  };
+}
+
 function uniqueSuffix(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -39,7 +57,7 @@ async function resetDatabase(): Promise<void> {
   await prisma.repository.deleteMany();
 }
 
-async function seedThread(title = "Agent selection thread") {
+async function seedThread(title = "Agent selection thread", kind: ChatThreadKind = "default") {
   const suffix = uniqueSuffix();
   const worktreePath = `/tmp/codesymphony-worktree-${suffix}`;
   mkdirSync(worktreePath, { recursive: true });
@@ -64,8 +82,8 @@ async function seedThread(title = "Agent selection thread") {
     data: {
       worktreeId: worktree.id,
       title,
-      kind: "default",
-      permissionProfile: "default",
+      kind,
+      permissionProfile: kind === "review" ? "review_git" : "default",
     },
   });
 
@@ -429,6 +447,88 @@ describe("chatService agent selection", () => {
     }
   });
 
+  it.each([
+    {
+      agent: "claude" as const,
+      initialModel: "claude-sonnet-4-6",
+      nextModel: "claude-opus-4-6",
+      sessionField: "claudeSessionId" as const,
+      sessionId: "claude-session-1",
+    },
+    {
+      agent: "codex" as const,
+      initialModel: "gpt-5.4",
+      nextModel: "gpt-5.4-mini",
+      sessionField: "codexSessionId" as const,
+      sessionId: "codex-session-1",
+    },
+    {
+      agent: "cursor" as const,
+      initialModel: "default[]",
+      nextModel: "gpt-5.4[context=272k,reasoning=medium,fast=false]",
+      sessionField: "cursorSessionId" as const,
+      sessionId: "cursor-session-1",
+    },
+    {
+      agent: "opencode" as const,
+      initialModel: "opencode/minimax-m2.5-free",
+      nextModel: "opencode/ling-2.6-flash-free",
+      sessionField: "opencodeSessionId" as const,
+      sessionId: "opencode-session-1",
+    },
+  ])("preserves $sessionField on same-agent built-in model switches after messages", async ({
+    agent,
+    initialModel,
+    nextModel,
+    sessionField,
+    sessionId,
+  }) => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      })),
+      codexRunner: vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      })),
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("Locked thread");
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent,
+        model: initialModel,
+        [sessionField]: sessionId,
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Already used",
+      },
+    });
+
+    const updatedThread = await chatService.updateThreadAgentSelection(thread.id, {
+      agent,
+      model: nextModel,
+      modelProviderId: null,
+    });
+
+    expect(updatedThread.agent).toBe(agent);
+    expect(updatedThread.model).toBe(nextModel);
+    expect(updatedThread[sessionField]).toBe(sessionId);
+
+    const persistedThread = await chatService.getThreadById(thread.id);
+    expect(persistedThread?.[sessionField]).toBe(sessionId);
+  });
+
   it("rejects agent changes once a thread already has messages", async () => {
     const chatService = createChatService({
       prisma,
@@ -458,6 +558,140 @@ describe("chatService agent selection", () => {
       agent: "codex",
       model: "gpt-5.4",
       modelProviderId: null,
-    })).rejects.toThrow("Cannot change agent or model after the thread has messages");
+    })).rejects.toThrow("Cannot change agent after the thread has messages");
+  });
+
+  it("rejects provider source changes once a thread already has messages", async () => {
+    const modelProviderService = createStubModelProviderService({
+      "provider-codex-1": {
+        id: "provider-codex-1",
+        agent: "codex",
+        apiKey: "sk-test",
+        baseUrl: "https://example.invalid/v1",
+        name: "Team Codex",
+        modelId: "gpt-5-custom",
+      },
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      })),
+      codexRunner: vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      })),
+      modelProviderService,
+    });
+    const { thread } = await seedThread("Provider source locked");
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "codex",
+        model: "gpt-5.4",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Already used",
+      },
+    });
+
+    await expect(chatService.updateThreadAgentSelection(thread.id, {
+      agent: "codex",
+      model: "gpt-5-custom",
+      modelProviderId: "provider-codex-1",
+    })).rejects.toThrow("Cannot change provider source after the thread has messages");
+  });
+
+  it("rejects model changes for review threads once they have messages", async () => {
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      })),
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("Review thread locked", "review");
+
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Already used",
+      },
+    });
+
+    await expect(chatService.updateThreadAgentSelection(thread.id, {
+      agent: "claude",
+      model: "claude-opus-4-6",
+      modelProviderId: null,
+    })).rejects.toThrow("Cannot change model for non-default threads");
+  });
+
+  it("rejects model changes for provider-backed Claude threads once they have messages", async () => {
+    const modelProviderService = createStubModelProviderService({
+      "provider-claude-remote": {
+        id: "provider-claude-remote",
+        agent: "claude",
+        apiKey: "provider-key",
+        baseUrl: "https://provider.example.com/v1",
+        name: "Remote Claude",
+        modelId: "glm-4.7",
+      },
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub: createEventHub(prisma),
+      claudeRunner: vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      })),
+      modelProviderService,
+    });
+    const { thread } = await seedThread("Provider-backed Claude locked");
+    await prisma.modelProvider.create({
+      data: {
+        id: "provider-claude-remote",
+        agent: "claude",
+        name: "Remote Claude",
+        modelId: "glm-4.7",
+        baseUrl: "https://provider.example.com/v1",
+        apiKey: "provider-key",
+      },
+    });
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "claude",
+        model: "glm-4.7",
+        modelProviderId: "provider-claude-remote",
+        claudeSessionId: "claude-session-remote",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Already used",
+      },
+    });
+
+    await expect(chatService.updateThreadAgentSelection(thread.id, {
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+    })).rejects.toThrow("Cannot change model for provider-backed Claude threads");
   });
 });

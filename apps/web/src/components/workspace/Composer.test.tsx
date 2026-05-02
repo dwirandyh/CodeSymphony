@@ -1,5 +1,6 @@
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatQueuedMessage, FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
 import { api } from "../../lib/api";
@@ -112,6 +113,8 @@ const defaultProps = {
   agent: "claude" as const,
   model: "claude-sonnet-4-6",
   modelProviderId: null,
+  threadKind: "default" as const,
+  threadRunning: false,
   permissionMode: "default" as const,
   hasMessages: false,
   onSubmitMessage: vi.fn().mockResolvedValue(true),
@@ -139,6 +142,7 @@ function act(callback: () => void | Promise<void>): void | Promise<void> {
 describe("Composer", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let queryClient: QueryClient;
 
   function setMobileViewport(isMobile: boolean) {
     Object.defineProperty(window, "matchMedia", {
@@ -159,6 +163,12 @@ describe("Composer", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
     // jsdom does not implement scrollIntoView
     Element.prototype.scrollIntoView = vi.fn();
     setMobileViewport(false);
@@ -175,7 +185,11 @@ describe("Composer", () => {
 
   function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
     act(() => {
-      root.render(<Composer {...defaultProps} {...overrides} />);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Composer {...defaultProps} {...overrides} />
+        </QueryClientProvider>,
+      );
     });
   }
 
@@ -200,6 +214,14 @@ describe("Composer", () => {
       throw new Error("Permission selector button not found");
     }
     return permissionButton;
+  }
+
+  function getSessionSettingsButton(): HTMLButtonElement {
+    const sessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open session settings"]');
+    if (!sessionButton) {
+      throw new Error("Session settings button not found");
+    }
+    return sessionButton;
   }
 
   function getPermissionOptionButton(label: string): HTMLButtonElement {
@@ -580,12 +602,105 @@ describe("Composer", () => {
     expect(container.textContent).not.toContain("Shift+Tab");
   });
 
-  it("locks model selector when thread already has messages", () => {
-    renderComposer({ hasMessages: true });
+  it("keeps the built-in model selector active after history and hides agent switching", () => {
+    const providers: ModelProvider[] = [
+      {
+        id: "provider-claude-1",
+        agent: "claude",
+        name: "Team Claude",
+        modelId: "claude-opus-4-6",
+        baseUrl: "https://api.example.com/v1",
+        apiKeyMasked: "",
+        isActive: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+
+    renderComposer({
+      hasMessages: true,
+      threadKind: "default",
+      providers,
+    });
+
+    const modelButton = getModelSelectorButton();
+    expect(modelButton.disabled).toBe(false);
+
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-cli-agent-list="true"]')).toBeNull();
+    expect(container.querySelector('[data-agent-model-panel="single"]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-model-panel="overlay"]')).toBeNull();
+    expect(container.textContent).toContain("Sonnet 4.6");
+    expect(container.textContent).toContain("Opus 4.6");
+    expect(container.textContent).not.toContain("Team Claude");
+  });
+
+  it("blocks model switching for review threads with history", () => {
+    renderComposer({
+      hasMessages: true,
+      threadKind: "review",
+    });
 
     const modelButton = getModelSelectorButton();
     expect(modelButton.disabled).toBe(true);
-    expect(modelButton.title).toContain("CLI agent is locked for this thread");
+    expect(modelButton.title).toContain("Review threads keep their model locked");
+  });
+
+  it("blocks provider-backed Claude model switching after the first message", () => {
+    const providers: ModelProvider[] = [
+      {
+        id: "provider-claude-1",
+        agent: "claude",
+        name: "Anthropic Proxy",
+        modelId: "claude-sonnet-4-6",
+        baseUrl: "https://api.example.com/v1",
+        apiKeyMasked: "",
+        isActive: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+
+    renderComposer({
+      hasMessages: true,
+      providers,
+      modelProviderId: "provider-claude-1",
+    });
+
+    const modelButton = getModelSelectorButton();
+    expect(modelButton.disabled).toBe(true);
+    expect(modelButton.title).toContain("Claude threads using a custom endpoint keep their model locked");
+  });
+
+  it("blocks custom-provider model switching after the first message", () => {
+    const providers: ModelProvider[] = [
+      {
+        id: "provider-codex-1",
+        agent: "codex",
+        name: "Team Codex",
+        modelId: "gpt-5.4-enterprise",
+        baseUrl: null,
+        apiKeyMasked: "",
+        isActive: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+
+    renderComposer({
+      hasMessages: true,
+      agent: "codex",
+      model: "gpt-5.4-enterprise",
+      modelProviderId: "provider-codex-1",
+      providers,
+    });
+
+    const modelButton = getModelSelectorButton();
+    expect(modelButton.disabled).toBe(true);
+    expect(modelButton.title).toContain("Threads using a custom model provider keep their model locked");
   });
 
   it("shows Claude, Codex, Cursor, and OpenCode icons with a compact desktop agent list", () => {
@@ -764,7 +879,7 @@ describe("Composer", () => {
     });
   });
 
-  it("switches the model preview list when hovering between CLI agents", () => {
+  it("switches the model preview list when moving between CLI agents", () => {
     const providers: ModelProvider[] = [
       {
         id: "provider-claude-1",
@@ -817,7 +932,7 @@ describe("Composer", () => {
 
     const claudeButton = getButtonByExactText("Claude");
     act(() => {
-      claudeButton.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      claudeButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
     expect(container.textContent).toContain("Sonnet 4.6");
@@ -826,7 +941,7 @@ describe("Composer", () => {
 
     const codexButton = getButtonByExactText("Codex");
     act(() => {
-      codexButton.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      codexButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
     expect(container.textContent).toContain("GPT-5.4");
@@ -835,7 +950,7 @@ describe("Composer", () => {
 
     const cursorButton = getButtonByExactText("Cursor");
     act(() => {
-      cursorButton.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      cursorButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
     expect(container.textContent).toContain("Auto");
@@ -844,7 +959,7 @@ describe("Composer", () => {
 
     const opencodeButton = getButtonByExactText("OpenCode");
     act(() => {
-      opencodeButton.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      opencodeButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
     });
 
     expect(container.textContent).toContain("MiniMax M2.5 Free");
@@ -927,28 +1042,46 @@ describe("Composer", () => {
     setMobileViewport(true);
     renderComposer();
 
-    const sessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open session settings"]');
-    if (!sessionButton) {
-      throw new Error("Session settings button not found");
-    }
+    const sessionButton = getSessionSettingsButton();
     act(() => {
       sessionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Session settings");
-    expect(container.textContent).toContain("Ask before approval-gated actions");
-    expect(container.textContent).toContain("Always allow approval-gated actions");
+    const screenText = document.body.textContent ?? "";
+    expect(screenText).toContain("Session settings");
+    expect(screenText).toContain("Ask before approval-gated actions");
+    expect(screenText).toContain("Always allow approval-gated actions");
   });
 
   it("collapses model and permission controls into one mobile session button", () => {
     setMobileViewport(true);
     renderComposer({ permissionMode: "full_access" });
 
-    const sessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open session settings"]');
+    const sessionButton = getSessionSettingsButton();
     expect(sessionButton).not.toBeNull();
     expect(sessionButton?.textContent).toContain("Claude");
     expect(container.querySelector('button[aria-label="Select CLI agent and model"]')).toBeNull();
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Full Access")).toBe(false);
+  });
+
+  it("keeps mobile session settings accessible when model switching is blocked", () => {
+    setMobileViewport(true);
+    renderComposer({
+      hasMessages: true,
+      threadKind: "review",
+    });
+
+    const sessionButton = getSessionSettingsButton();
+    expect(sessionButton.disabled).toBe(false);
+
+    act(() => {
+      sessionButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const screenText = document.body.textContent ?? "";
+    expect(screenText).toContain("Session settings");
+    expect(screenText).toContain("Review threads keep their model locked. Start a new thread to change it.");
+    expect(screenText).toContain("Permission mode");
   });
 
   it("filters out already-mentioned files from suggestions", async () => {

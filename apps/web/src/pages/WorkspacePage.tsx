@@ -1013,6 +1013,9 @@ export function WorkspacePage() {
     );
   const fileIndex = useFileIndex(workspaceFileIndexEnabled ? nonCriticalWorktreeId : null);
   const slashCommands = useSlashCommands(nonCriticalWorktreeId, chat.composerAgent);
+  const selectedChatThread = chat.selectedThreadId
+    ? chat.threads.find((thread) => thread.id === chat.selectedThreadId) ?? null
+    : null;
 
   useEffect(() => {
     if (!enableNonCriticalWorkspaceData || !repos.selectedWorktreeId || !chat.selectedThreadId) {
@@ -2077,6 +2080,8 @@ export function WorkspacePage() {
                       agent={chat.composerAgent}
                       model={chat.composerModel}
                       modelProviderId={chat.composerModelProviderId}
+                      threadKind={selectedChatThread?.kind ?? null}
+                      threadRunning={chat.selectedThreadUiStatus === "running"}
                       permissionMode={chat.composerPermissionMode}
                       hasMessages={chat.messages.length > 0}
                       queuedMessages={chat.queuedMessages}

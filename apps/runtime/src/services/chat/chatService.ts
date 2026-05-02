@@ -434,6 +434,26 @@ type ResolvedThreadSelection = {
   provider: ActiveModelProvider | null;
 };
 
+async function resolvePersistedThreadProvider(
+  deps: RuntimeDeps,
+  thread: { modelProviderId: string | null },
+): Promise<ActiveModelProvider | null> {
+  const providerId = normalizeOptionalModelId(thread.modelProviderId);
+  if (!providerId) {
+    return null;
+  }
+
+  const provider = await deps.modelProviderService.getProviderById(providerId);
+  return provider ? toActiveModelProvider(provider) : null;
+}
+
+function isProviderBackedClaudeSelection(selection: {
+  agent: CliAgent;
+  provider: ActiveModelProvider | null;
+}): boolean {
+  return selection.agent === "claude" && Boolean(selection.provider?.baseUrl?.trim());
+}
+
 async function resolveThreadSelection(
   deps: RuntimeDeps,
   input: {
@@ -542,11 +562,22 @@ function buildSessionIdUpdate(agent: CliAgent, sessionId: string | null) {
   return { claudeSessionId: sessionId };
 }
 
-function buildSelectionUpdate(selection: ResolvedThreadSelection) {
-  return {
+function buildSelectionUpdate(
+  selection: ResolvedThreadSelection,
+  options?: { resetSessionIds?: boolean },
+) {
+  const baseUpdate = {
     agent: selection.agent,
     model: selection.model,
     modelProviderId: selection.modelProviderId,
+  };
+
+  if (options?.resetSessionIds === false) {
+    return baseUpdate;
+  }
+
+  return {
+    ...baseUpdate,
     claudeSessionId: null,
     codexSessionId: null,
     cursorSessionId: null,
@@ -2237,21 +2268,43 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Cannot change agent or model while assistant is processing");
       }
 
-      const messageCount = await deps.prisma.chatMessage.count({
-        where: { threadId },
-      });
-      if (messageCount > 0) {
-        throw new Error("Cannot change agent or model after the thread has messages");
-      }
-
       const selection = await resolveThreadSelection(deps, input);
       if (hasSameSelection(thread, selection)) {
         return mapChatThread(thread, isThreadActive(thread.id));
       }
 
+      const messageCount = await deps.prisma.chatMessage.count({
+        where: { threadId },
+      });
+
+      let resetSessionIds = true;
+      if (messageCount > 0) {
+        if (thread.kind !== "default") {
+          throw new Error("Cannot change model for non-default threads");
+        }
+
+        if (thread.agent !== selection.agent) {
+          throw new Error("Cannot change agent after the thread has messages");
+        }
+
+        const currentProvider = await resolvePersistedThreadProvider(deps, thread);
+        if (isProviderBackedClaudeSelection({
+          agent: thread.agent,
+          provider: currentProvider,
+        })) {
+          throw new Error("Cannot change model for provider-backed Claude threads");
+        }
+
+        if (thread.modelProviderId !== selection.modelProviderId) {
+          throw new Error("Cannot change provider source after the thread has messages");
+        }
+
+        resetSessionIds = false;
+      }
+
       const updatedThread = await deps.prisma.chatThread.update({
         where: { id: threadId },
-        data: buildSelectionUpdate(selection),
+        data: buildSelectionUpdate(selection, { resetSessionIds }),
       });
 
       return mapChatThread(updatedThread, isThreadActive(updatedThread.id));

@@ -18,6 +18,7 @@ import {
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
   type ChatQueuedMessage,
+  type ChatThreadKind,
   type CursorModelCatalogEntry,
   DEFAULT_CHAT_MODEL_BY_AGENT,
   type ChatMode,
@@ -73,6 +74,8 @@ type ComposerProps = {
   agent?: CliAgent;
   model?: string;
   modelProviderId?: string | null;
+  threadKind?: ChatThreadKind | null;
+  threadRunning?: boolean;
   permissionMode: ChatThreadPermissionMode;
   hasMessages: boolean;
   queuedMessages?: ChatQueuedMessage[];
@@ -95,6 +98,16 @@ type AgentSelectionOption = {
   label: string;
   detail: string;
   source: "builtin" | "custom";
+};
+
+type ModelSelectionBlockedReasonParams = {
+  threadId: string | null;
+  hasMessages: boolean;
+  threadKind: ChatThreadKind | null | undefined;
+  threadRunning: boolean;
+  agent: CliAgent;
+  modelProviderId: string | null;
+  currentProvider: ModelProvider | null;
 };
 
 type PermissionOption = {
@@ -247,6 +260,38 @@ function formatFriendlyModelName(agent: CliAgent, modelId: string): string {
   return segments.join(" ");
 }
 
+function getModelSelectionBlockedReason(params: ModelSelectionBlockedReasonParams): string | null {
+  if (!params.threadId) {
+    return "Start a new thread before choosing an agent or model.";
+  }
+
+  if (params.threadRunning) {
+    return "Wait for the current run to finish before changing the model.";
+  }
+
+  if (!params.hasMessages) {
+    return null;
+  }
+
+  if (params.threadKind !== "default") {
+    return "Review threads keep their model locked. Start a new thread to change it.";
+  }
+
+  if (
+    params.agent === "claude"
+    && params.modelProviderId !== null
+    && Boolean(params.currentProvider?.baseUrl?.trim())
+  ) {
+    return "Claude threads using a custom endpoint keep their model locked after the first message.";
+  }
+
+  if (params.modelProviderId !== null) {
+    return "Threads using a custom model provider keep their model locked after the first message.";
+  }
+
+  return null;
+}
+
 function isFirstCustomModelOption(
   options: AgentSelectionOption[],
   index: number,
@@ -360,6 +405,8 @@ function ComposerContent({
   agent: providedAgent,
   model: providedModel,
   modelProviderId: providedModelProviderId,
+  threadKind,
+  threadRunning = false,
   permissionMode,
   hasMessages,
   queuedMessages = [],
@@ -457,7 +504,6 @@ function ComposerContent({
     }
     : null;
   const canRenderQueuedMessages = queuedMessages.length > 0 && queuedMessageHandlers !== null;
-  const selectionLocked = hasMessages || !threadId;
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => ({
     claude: [
       ...BUILTIN_CHAT_MODELS_BY_AGENT.claude.map((entry) => ({
@@ -535,7 +581,30 @@ function ComposerContent({
         })),
     ],
   }), [cursorModels, opencodeModels, providers]);
-  const modelPreviewOptions = agentOptions[modelPreviewAgent];
+  const currentProvider = useMemo(
+    () => (modelProviderId ? providers.find((provider) => provider.id === modelProviderId) ?? null : null),
+    [modelProviderId, providers],
+  );
+  const selectionBlockedReason = useMemo(() => getModelSelectionBlockedReason({
+    threadId,
+    hasMessages,
+    threadKind,
+    threadRunning,
+    agent,
+    modelProviderId,
+    currentProvider,
+  }), [agent, currentProvider, hasMessages, modelProviderId, threadId, threadKind, threadRunning]);
+  const selectionLocked = selectionBlockedReason !== null;
+  const showAgentList = !hasMessages;
+  const modelPreviewTargetAgent = showAgentList ? modelPreviewAgent : agent;
+  const modelPreviewOptions = useMemo(() => {
+    const options = agentOptions[modelPreviewTargetAgent];
+    if (!hasMessages) {
+      return options;
+    }
+
+    return options.filter((option) => option.modelProviderId === modelProviderId);
+  }, [agentOptions, hasMessages, modelPreviewTargetAgent, modelProviderId]);
   const currentSelection = useMemo(() => {
     return agentOptions[agent].find((option) => (
       option.model === model
@@ -560,7 +629,9 @@ function ComposerContent({
     [permissionPreviewMode],
   );
   const permissionTriggerClassName = permissionMode === "full_access" ? "text-orange-500" : "text-muted-foreground";
-  const mobileSessionSummaryLabel = permissionMode === "full_access" ? `${AGENT_LABELS[agent]} · Full Access` : AGENT_LABELS[agent];
+  const mobileSessionSummaryLabel = permissionMode === "full_access"
+    ? `${AGENT_LABELS[agent]} · Full Access`
+    : modelLabel;
 
   const editorRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -1140,92 +1211,118 @@ function ComposerContent({
     resetDraft();
   }, [threadId, worktreeId, resetDraft]);
 
-  const renderModelOptions = (mobile: boolean) => (
-    <>
-      <div className="space-y-1" data-cli-agent-list="true">
-        {(Object.keys(AGENT_LABELS) as CliAgent[]).map((entryAgent) => {
-          const selectedAgent = modelPreviewAgent === entryAgent;
-          const currentAgent = agent === entryAgent;
+  const renderModelOptionList = (mobile: boolean) => (
+    <div className={cn("max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto", mobile && "pt-1")}>
+      {modelPreviewOptions.map((option, index) => {
+        const selected = option.agent === agent
+          && option.model === model
+          && option.modelProviderId === modelProviderId;
+        const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
 
-          return (
+        return (
+          <div key={option.id}>
+            {showCustomSeparator ? (
+              <div
+                data-model-separator="custom"
+                className="mx-2.5 my-1 border-t border-border/60"
+              />
+            ) : null}
             <button
-              key={entryAgent}
               type="button"
-              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
-                selectedAgent
+              disabled={selectionLocked}
+              title={option.model}
+              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                selected
                   ? "bg-accent text-accent-foreground"
                   : "text-foreground hover:bg-accent/50"
-              }`}
-              aria-current={currentAgent ? "true" : undefined}
-              onMouseEnter={() => {
-                if (!mobile) {
-                  setModelPreviewAgent(entryAgent);
-                }
-              }}
-              onFocus={() => setModelPreviewAgent(entryAgent)}
+              } disabled:cursor-not-allowed disabled:opacity-60`}
               onMouseDown={(e) => {
                 e.preventDefault();
-                setModelPreviewAgent(entryAgent);
+                if (selectionLocked) {
+                  return;
+                }
+                onAgentSelectionChange({
+                  agent: option.agent,
+                  model: option.model,
+                  modelProviderId: option.modelProviderId,
+                });
+                setModelPopoverOpen(false);
+                if (mobile) {
+                  setMobileSessionSheetOpen(false);
+                }
               }}
             >
-              <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
-              <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
-              {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+              <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
+              {option.source === "custom" || !mobile ? (
+                <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
+                  {option.detail}
+                </span>
+              ) : null}
+              {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
             </button>
-          );
-        })}
-      </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const renderModelOptions = (mobile: boolean) => (
+    <>
+      {showAgentList ? (
+        <div className="space-y-1" data-cli-agent-list="true">
+          {(Object.keys(AGENT_LABELS) as CliAgent[]).map((entryAgent) => {
+            const selectedAgent = modelPreviewAgent === entryAgent;
+            const currentAgent = agent === entryAgent;
+
+            return (
+              <button
+                key={entryAgent}
+                type="button"
+                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
+                  selectedAgent
+                    ? "bg-accent text-accent-foreground"
+                    : "text-foreground hover:bg-accent/50"
+                }`}
+                aria-current={currentAgent ? "true" : undefined}
+                onMouseEnter={() => {
+                  if (!mobile) {
+                    setModelPreviewAgent(entryAgent);
+                  }
+                }}
+                onMouseOver={() => {
+                  if (!mobile) {
+                    setModelPreviewAgent(entryAgent);
+                  }
+                }}
+                onFocus={() => setModelPreviewAgent(entryAgent)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setModelPreviewAgent(entryAgent);
+                }}
+              >
+                <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
+                <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
+                {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
 
       {mobile ? (
         <div
           data-agent-model-panel="stacked"
-          className="mt-1 border-t border-border/60 pt-1"
+          className={cn(
+            showAgentList ? "mt-1 border-t border-border/60 pt-1" : "pt-1",
+            selectionBlockedReason ? "space-y-2" : "",
+          )}
         >
-          <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto pt-1">
-            {modelPreviewOptions.map((option, index) => {
-              const selected = option.agent === agent
-                && option.model === model
-                && option.modelProviderId === modelProviderId;
-              const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
-
-              return (
-                <div key={option.id}>
-                  {showCustomSeparator ? (
-                    <div
-                      data-model-separator="custom"
-                      className="mx-2.5 my-1 border-t border-border/60"
-                    />
-                  ) : null}
-                  <button
-                    type="button"
-                    className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                      selected
-                        ? "bg-accent text-accent-foreground"
-                        : "text-foreground hover:bg-accent/50"
-                    }`}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      onAgentSelectionChange({
-                        agent: option.agent,
-                        model: option.model,
-                        modelProviderId: option.modelProviderId,
-                      });
-                      setModelPopoverOpen(false);
-                      setMobileSessionSheetOpen(false);
-                    }}
-                  >
-                    <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-                    {option.source === "custom" ? (
-                      <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                        {option.detail}
-                      </span>
-                    ) : null}
-                    {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+          {selectionBlockedReason ? (
+            <p className="px-1 text-[11px] leading-relaxed text-muted-foreground">
+              {selectionBlockedReason}
+            </p>
+          ) : null}
+          {renderModelOptionList(true)}
         </div>
       ) : null}
     </>
@@ -1491,17 +1588,17 @@ function ComposerContent({
                 <button
                   type="button"
                   onClick={() => {
-                    if (selectionLocked || disabled) {
+                    if (disabled) {
                       return;
                     }
                     setModelPreviewAgent(agent);
                     setMobileSessionSheetOpen(true);
                   }}
-                  disabled={selectionLocked || disabled}
-                  title={selectionLocked ? "CLI agent is locked for this thread. Start a new thread to change it." : undefined}
+                  disabled={disabled}
+                  title={selectionBlockedReason ?? undefined}
                   className={cn(
                     "flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium transition-colors",
-                    selectionLocked || disabled
+                    disabled
                       ? "cursor-not-allowed opacity-50"
                       : "hover:bg-secondary/70 hover:text-foreground",
                     permissionMode === "full_access" ? "text-orange-500" : "text-muted-foreground",
@@ -1551,9 +1648,7 @@ function ComposerContent({
                       setModelPopoverOpen(!modelPopoverOpen);
                     }}
                     disabled={selectionLocked}
-                    title={selectionLocked
-                      ? "CLI agent is locked for this thread. Start a new thread to change it."
-                      : currentSelection.model}
+                    title={selectionBlockedReason ?? currentSelection.model}
                     className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors ${
                       selectionLocked
                         ? "cursor-not-allowed opacity-50"
@@ -1568,60 +1663,27 @@ function ComposerContent({
 
                   {modelPopoverOpen && (
                     <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[210px]">
-                      <div className="relative">
-                        <div className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg">
-                          {renderModelOptions(false)}
-                        </div>
+                      {showAgentList ? (
+                        <div className="relative">
+                          <div className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg">
+                            {renderModelOptions(false)}
+                          </div>
 
-                        <div
-                          data-agent-model-panel="overlay"
-                          className="absolute bottom-0 left-full z-10 ml-2 w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
-                        >
-                          <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
-                            {modelPreviewOptions.map((option, index) => {
-                              const selected = option.agent === agent
-                                && option.model === model
-                                && option.modelProviderId === modelProviderId;
-                              const showCustomSeparator = isFirstCustomModelOption(modelPreviewOptions, index);
-
-                              return (
-                                <div key={option.id}>
-                                  {showCustomSeparator ? (
-                                    <div
-                                      data-model-separator="custom"
-                                      className="mx-2.5 my-1 border-t border-border/60"
-                                    />
-                                  ) : null}
-                                  <button
-                                    type="button"
-                                    title={option.model}
-                                    className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                                      selected
-                                        ? "bg-accent text-accent-foreground"
-                                        : "text-foreground hover:bg-accent/50"
-                                    }`}
-                                    onMouseDown={(e) => {
-                                      e.preventDefault();
-                                      onAgentSelectionChange({
-                                        agent: option.agent,
-                                        model: option.model,
-                                        modelProviderId: option.modelProviderId,
-                                      });
-                                      setModelPopoverOpen(false);
-                                    }}
-                                  >
-                                    <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-                                    <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                                      {option.detail}
-                                    </span>
-                                    {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                                  </button>
-                                </div>
-                              );
-                            })}
+                          <div
+                            data-agent-model-panel="overlay"
+                            className="absolute bottom-0 left-full z-10 ml-2 w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+                          >
+                            {renderModelOptionList(false)}
                           </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div
+                          data-agent-model-panel="single"
+                          className="w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+                        >
+                          {renderModelOptionList(false)}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
