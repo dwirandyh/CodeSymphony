@@ -100,6 +100,7 @@ type IosSimulatorVideoBridge = {
   child: ChildProcess;
   clients: Set<WebSocket>;
   closeReason: string | null;
+  keyboardSyncAvailable: boolean;
   latestConfigPacket: Buffer | null;
   latestPointHeight: number | null;
   latestPointWidth: number | null;
@@ -107,6 +108,7 @@ type IosSimulatorVideoBridge = {
   latestMetadata: string | null;
   latestPixelHeight: number | null;
   latestPixelWidth: number | null;
+  latestSoftwareKeyboardVisible: boolean;
 };
 
 type ManagedSidecar = {
@@ -725,24 +727,30 @@ export function createDeviceService(logService?: RuntimeLogService) {
         bridge.latestMetadata = message;
         try {
           const parsed = JSON.parse(message) as {
+            keyboardSyncAvailable?: unknown;
             pixelHeight?: unknown;
             pixelWidth?: unknown;
             pointHeight?: unknown;
             pointWidth?: unknown;
+            softwareKeyboardVisible?: unknown;
           };
           const pixelHeight = Number(parsed.pixelHeight);
           const pixelWidth = Number(parsed.pixelWidth);
           const pointHeight = Number(parsed.pointHeight);
           const pointWidth = Number(parsed.pointWidth);
+          bridge.keyboardSyncAvailable = parsed.keyboardSyncAvailable === true;
           bridge.latestPixelHeight = Number.isFinite(pixelHeight) && pixelHeight > 0 ? pixelHeight : null;
           bridge.latestPixelWidth = Number.isFinite(pixelWidth) && pixelWidth > 0 ? pixelWidth : null;
           bridge.latestPointHeight = Number.isFinite(pointHeight) && pointHeight > 0 ? pointHeight : null;
           bridge.latestPointWidth = Number.isFinite(pointWidth) && pointWidth > 0 ? pointWidth : null;
+          bridge.latestSoftwareKeyboardVisible = parsed.softwareKeyboardVisible === true;
         } catch {
+          bridge.keyboardSyncAvailable = false;
           bridge.latestPointHeight = null;
           bridge.latestPointWidth = null;
           bridge.latestPixelHeight = null;
           bridge.latestPixelWidth = null;
+          bridge.latestSoftwareKeyboardVisible = false;
         }
         sendIosVideoBridgePacket(bridge, message, false);
         continue;
@@ -784,6 +792,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
       child,
       clients: new Set(),
       closeReason: null,
+      keyboardSyncAvailable: false,
       latestConfigPacket: null,
       latestPointHeight: null,
       latestPointWidth: null,
@@ -791,6 +800,7 @@ export function createDeviceService(logService?: RuntimeLogService) {
       latestMetadata: null,
       latestPixelHeight: null,
       latestPixelWidth: null,
+      latestSoftwareKeyboardVisible: false,
     };
 
     const stderrLines: string[] = [];
@@ -1334,8 +1344,10 @@ export function createDeviceService(logService?: RuntimeLogService) {
     session_info: {
       device_height: number;
       device_width: number;
+      keyboard_sync_available: boolean;
       pixel_height: number;
       pixel_width: number;
+      software_keyboard_visible: boolean;
     };
   } | null {
     const session = getNativeIosControlSession(sessionId);
@@ -1355,8 +1367,10 @@ export function createDeviceService(logService?: RuntimeLogService) {
       session_info: {
         device_height: deviceHeight,
         device_width: deviceWidth,
+        keyboard_sync_available: session.iosVideoBridge?.keyboardSyncAvailable ?? false,
         pixel_height: pixelHeight,
         pixel_width: pixelWidth,
+        software_keyboard_visible: session.iosVideoBridge?.latestSoftwareKeyboardVisible ?? false,
       },
     };
   }

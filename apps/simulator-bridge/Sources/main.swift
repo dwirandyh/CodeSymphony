@@ -496,20 +496,29 @@ private struct SimulatorStatusPayload: Encodable {
   struct SessionInfo: Encodable {
     let device_height: Int
     let device_width: Int
+    let keyboard_sync_available: Bool
     let pixel_height: Int
     let pixel_width: Int
+    let software_keyboard_visible: Bool
   }
 
   let session_info: SessionInfo
 }
 
-private struct StreamMetadata: Encodable {
+private struct KeyboardSyncState: Equatable {
+  let available: Bool
+  let visible: Bool
+}
+
+private struct StreamMetadata: Encodable, Equatable {
   let codec: String
   let deviceName: String
+  let keyboardSyncAvailable: Bool
   let pointHeight: Int
   let pointWidth: Int
   let pixelHeight: Int
   let pixelWidth: Int
+  let softwareKeyboardVisible: Bool
   let udid: String
 }
 
@@ -574,6 +583,8 @@ private protocol StreamVideoEncoder: AnyObject {
 }
 
 private final class JpegEncoder: StreamVideoEncoder {
+  private let metadataObserver: (StreamMetadata) -> Void
+  private let metadataStateProvider: () -> KeyboardSyncState
   private let writer: PacketWriter
   private let deviceName: String
   private let pointHeight: Int
@@ -586,8 +597,18 @@ private final class JpegEncoder: StreamVideoEncoder {
   private var targetPixelHeight: Int?
   private var targetPixelWidth: Int?
 
-  init(deviceName: String, pointHeight: Int, pointWidth: Int, udid: String, writer: PacketWriter) {
+  init(
+    deviceName: String,
+    pointHeight: Int,
+    pointWidth: Int,
+    udid: String,
+    writer: PacketWriter,
+    metadataStateProvider: @escaping () -> KeyboardSyncState,
+    metadataObserver: @escaping (StreamMetadata) -> Void
+  ) {
     self.deviceName = deviceName
+    self.metadataObserver = metadataObserver
+    self.metadataStateProvider = metadataStateProvider
     self.pointHeight = pointHeight
     self.pointWidth = pointWidth
     self.udid = udid
@@ -618,15 +639,20 @@ private final class JpegEncoder: StreamVideoEncoder {
 
     if metadataSignature != lastMetadataSignature {
       lastMetadataSignature = metadataSignature
-      try writer.sendJSON(StreamMetadata(
+      let keyboardSyncState = metadataStateProvider()
+      let metadata = StreamMetadata(
         codec: "jpeg",
         deviceName: deviceName,
+        keyboardSyncAvailable: keyboardSyncState.available,
         pointHeight: pointHeight,
         pointWidth: pointWidth,
         pixelHeight: height,
         pixelWidth: width,
+        softwareKeyboardVisible: keyboardSyncState.visible,
         udid: udid
-      ))
+      )
+      metadataObserver(metadata)
+      try writer.sendJSON(metadata)
     }
 
     let compressionQuality = jpegCompressionQuality(
@@ -1221,12 +1247,29 @@ private final class StatusCommandRunner {
         ?? deviceHeight,
       1
     )
+    #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+    let keyboardSyncState: KeyboardSyncState
+    do {
+      let nativeSession = try NativeSimulatorControlSession(udid: udid)
+      keyboardSyncState = KeyboardSyncState(
+        available: true,
+        visible: nativeSession.currentSoftwareKeyboardVisible
+      )
+      nativeSession.disconnect()
+    } catch {
+      keyboardSyncState = KeyboardSyncState(available: false, visible: false)
+    }
+    #else
+    let keyboardSyncState = KeyboardSyncState(available: false, visible: false)
+    #endif
     let payload = SimulatorStatusPayload(
       session_info: .init(
         device_height: deviceHeight,
         device_width: deviceWidth,
+        keyboard_sync_available: keyboardSyncState.available,
         pixel_height: pixelHeight,
-        pixel_width: pixelWidth
+        pixel_width: pixelWidth,
+        software_keyboard_visible: keyboardSyncState.visible
       )
     )
     let data = try JSONEncoder().encode(payload)
@@ -1341,6 +1384,7 @@ private enum ControlMessageParser {
 private final class SimulatorControlExecutor {
   private let udid: String
   private let axeExecutableURL: URL
+  var onKeyboardSyncStateChange: ((KeyboardSyncState) -> Void)?
   #if canImport(FBControlCore) && canImport(FBSimulatorControl)
   private var nativeControlUnavailableReason: String?
   private var nativeSession: NativeSimulatorControlSession?
@@ -1351,9 +1395,23 @@ private final class SimulatorControlExecutor {
     self.axeExecutableURL = SimulatorControlExecutor.resolveAxeExecutableURL()
   }
 
+  var currentKeyboardSyncState: KeyboardSyncState {
+    #if canImport(FBControlCore) && canImport(FBSimulatorControl)
+    if let nativeSession {
+      return KeyboardSyncState(
+        available: true,
+        visible: nativeSession.currentSoftwareKeyboardVisible
+      )
+    }
+    #endif
+
+    return KeyboardSyncState(available: false, visible: false)
+  }
+
   func prepareForStreaming() {
     #if canImport(FBControlCore) && canImport(FBSimulatorControl)
     guard nativeSession == nil, nativeControlUnavailableReason == nil else {
+      onKeyboardSyncStateChange?(currentKeyboardSyncState)
       return
     }
 
@@ -1365,6 +1423,8 @@ private final class SimulatorControlExecutor {
       StderrLogger.log("SimulatorBridge falling back to axe control for \(udid): \(error.localizedDescription)")
     }
     #endif
+
+    onKeyboardSyncStateChange?(currentKeyboardSyncState)
   }
 
   func stop() {
@@ -1647,6 +1707,7 @@ private final class SimulatorControlExecutor {
       #if canImport(FBControlCore) && canImport(FBSimulatorControl)
       if let nativeSession {
         try nativeSession.performSystemGesture(gesture)
+        onKeyboardSyncStateChange?(currentKeyboardSyncState)
         return
       }
       #endif
@@ -1745,6 +1806,7 @@ private final class NativeSimulatorControlSession {
   private let simulator: FBSimulator
   private let udid: String
   private var activeDragPoint: DragPathPoint?
+  private var softwareKeyboardVisible: Bool
 
   init(udid: String) throws {
     self.udid = udid
@@ -1759,8 +1821,10 @@ private final class NativeSimulatorControlSession {
     self.hid = try FBSimulatorHID.hid(for: simulator).await(withTimeout: 5)
     if let device = simulator.perform(NSSelectorFromString("device"))?.takeUnretainedValue() as? NSObject {
       self.privateHIDBridge = try? PrivateSimulatorHIDBridge(device: device)
+      self.softwareKeyboardVisible = Self.resolveSoftwareKeyboardVisible(on: device)
     } else {
       self.privateHIDBridge = nil
+      self.softwareKeyboardVisible = false
     }
   }
 
@@ -1771,6 +1835,10 @@ private final class NativeSimulatorControlSession {
     case .text, .systemGesture:
       return false
     }
+  }
+
+  var currentSoftwareKeyboardVisible: Bool {
+    softwareKeyboardVisible
   }
 
   func perform(_ action: ControlAction) throws {
@@ -2007,6 +2075,34 @@ private final class NativeSimulatorControlSession {
     guard succeeded else {
       throw BridgeError.invalidArguments("Simulator keyboard toggle was rejected.")
     }
+    softwareKeyboardVisible = visible
+  }
+
+  private static func readBoolSelector(on object: AnyObject, selectorNames: [String]) -> Bool? {
+    typealias BoolGetter = @convention(c) (AnyObject, Selector) -> Bool
+
+    for selectorName in selectorNames {
+      let selector = NSSelectorFromString(selectorName)
+      guard object.responds(to: selector) else {
+        continue
+      }
+
+      let implementation = unsafeBitCast(object.method(for: selector), to: BoolGetter.self)
+      return implementation(object, selector)
+    }
+
+    return nil
+  }
+
+  private static func resolveSoftwareKeyboardVisible(on device: NSObject) -> Bool {
+    if let hardwareKeyboardEnabled = readBoolSelector(
+      on: device,
+      selectorNames: ["hardwareKeyboardEnabled", "isHardwareKeyboardEnabled"]
+    ) {
+      return !hardwareKeyboardEnabled
+    }
+
+    return false
   }
 }
 #endif
@@ -2030,6 +2126,8 @@ private final class ControlCommandRunner {
 }
 
 private final class H264Encoder: StreamVideoEncoder {
+  private let metadataObserver: (StreamMetadata) -> Void
+  private let metadataStateProvider: () -> KeyboardSyncState
   private let writer: PacketWriter
   private let deviceName: String
   private let fps: Int
@@ -2052,9 +2150,20 @@ private final class H264Encoder: StreamVideoEncoder {
   private var targetPixelHeight: Int?
   private var targetPixelWidth: Int?
 
-  init(deviceName: String, fps: Int, pointHeight: Int, pointWidth: Int, udid: String, writer: PacketWriter) {
+  init(
+    deviceName: String,
+    fps: Int,
+    pointHeight: Int,
+    pointWidth: Int,
+    udid: String,
+    writer: PacketWriter,
+    metadataStateProvider: @escaping () -> KeyboardSyncState,
+    metadataObserver: @escaping (StreamMetadata) -> Void
+  ) {
     self.deviceName = deviceName
     self.fps = fps
+    self.metadataObserver = metadataObserver
+    self.metadataStateProvider = metadataStateProvider
     self.pointHeight = pointHeight
     self.pointWidth = pointWidth
     self.udid = udid
@@ -2361,15 +2470,20 @@ private final class H264Encoder: StreamVideoEncoder {
     if codec != lastCodec || metadataSignature != lastMetadataSignature {
       lastCodec = codec
       lastMetadataSignature = metadataSignature
-      try writer.sendJSON(StreamMetadata(
+      let keyboardSyncState = metadataStateProvider()
+      let metadata = StreamMetadata(
         codec: codec,
         deviceName: deviceName,
+        keyboardSyncAvailable: keyboardSyncState.available,
         pointHeight: pointHeight,
         pointWidth: pointWidth,
         pixelHeight: currentHeight,
         pixelWidth: currentWidth,
+        softwareKeyboardVisible: keyboardSyncState.visible,
         udid: udid
-      ))
+      )
+      metadataObserver(metadata)
+      try writer.sendJSON(metadata)
     }
 
     if configPayload.isEmpty == false {
@@ -2443,9 +2557,12 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
   private var encoderCodec: IosSimulatorStreamCodec = .jpeg
   private let encoderQueue = DispatchQueue(label: "codesymphony.simulator-bridge.encode", qos: .userInteractive)
   private let frameStateLock = NSLock()
+  private let metadataStateLock = NSLock()
   private var encoder: StreamVideoEncoder?
   private var encodeLoopRunning = false
   private var controlBuffer = Data()
+  private var keyboardSyncState = KeyboardSyncState(available: false, visible: false)
+  private var latestMetadata: StreamMetadata?
   private var latestFrame: PendingVideoFrame?
   private let sampleQueue = DispatchQueue(label: "codesymphony.simulator-bridge.capture", qos: .userInteractive)
   private var stream: SCStream?
@@ -2454,6 +2571,10 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
     self.fps = fps
     self.udid = udid
     self.controlExecutor = SimulatorControlExecutor(udid: udid)
+    super.init()
+    self.controlExecutor.onKeyboardSyncStateChange = { [weak self] nextState in
+      self?.updateKeyboardSyncState(nextState)
+    }
   }
 
   @MainActor
@@ -2672,7 +2793,13 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
         pointHeight: pointHeight,
         pointWidth: pointWidth,
         udid: udid,
-        writer: writer
+        writer: writer,
+        metadataStateProvider: { [weak self] in
+          self?.currentKeyboardSyncState() ?? KeyboardSyncState(available: false, visible: false)
+        },
+        metadataObserver: { [weak self] metadata in
+          self?.rememberLatestMetadata(metadata)
+        }
       )
       nextEncoder.updateTargetPixelSize(
         height: preferredTargetSize?.height,
@@ -2686,13 +2813,68 @@ private final class StreamCommandRunner: NSObject, SCStreamOutput, SCStreamDeleg
         pointHeight: pointHeight,
         pointWidth: pointWidth,
         udid: udid,
-        writer: writer
+        writer: writer,
+        metadataStateProvider: { [weak self] in
+          self?.currentKeyboardSyncState() ?? KeyboardSyncState(available: false, visible: false)
+        },
+        metadataObserver: { [weak self] metadata in
+          self?.rememberLatestMetadata(metadata)
+        }
       )
       nextEncoder.updateTargetPixelSize(
         height: preferredTargetSize?.height,
         width: preferredTargetSize?.width
       )
       encoder = nextEncoder
+    }
+  }
+
+  private func currentKeyboardSyncState() -> KeyboardSyncState {
+    metadataStateLock.lock()
+    defer { metadataStateLock.unlock() }
+    return keyboardSyncState
+  }
+
+  private func rememberLatestMetadata(_ metadata: StreamMetadata) {
+    metadataStateLock.lock()
+    latestMetadata = metadata
+    metadataStateLock.unlock()
+  }
+
+  private func updateKeyboardSyncState(_ nextState: KeyboardSyncState) {
+    let metadataToSend: StreamMetadata?
+
+    metadataStateLock.lock()
+    keyboardSyncState = nextState
+    if let latestMetadata {
+      let updatedMetadata = StreamMetadata(
+        codec: latestMetadata.codec,
+        deviceName: latestMetadata.deviceName,
+        keyboardSyncAvailable: nextState.available,
+        pointHeight: latestMetadata.pointHeight,
+        pointWidth: latestMetadata.pointWidth,
+        pixelHeight: latestMetadata.pixelHeight,
+        pixelWidth: latestMetadata.pixelWidth,
+        softwareKeyboardVisible: nextState.visible,
+        udid: latestMetadata.udid
+      )
+      metadataToSend = updatedMetadata == latestMetadata ? nil : updatedMetadata
+      if let metadataToSend {
+        self.latestMetadata = metadataToSend
+      }
+    } else {
+      metadataToSend = nil
+    }
+    metadataStateLock.unlock()
+
+    guard let metadataToSend else {
+      return
+    }
+
+    do {
+      try writer.sendJSON(metadataToSend)
+    } catch {
+      StderrLogger.log("SimulatorBridge metadata update failed: \(error.localizedDescription)")
     }
   }
 

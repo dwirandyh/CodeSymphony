@@ -4,6 +4,7 @@ import {
   detectIosGestureEdge,
   IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX,
   IOS_GESTURE_PATH_POINT_MIN_INTERVAL_MS,
+  resolveIosBottomEdgeReleaseAction,
   resolveIosGestureAxis,
   shouldAppendIosGesturePathPoint,
 } from "./iosGesture";
@@ -30,6 +31,13 @@ describe("iosGesture", () => {
       startX: 180,
       startY: 24,
     })).toBe("top");
+
+    expect(detectIosGestureEdge({
+      deviceHeight: 852,
+      deviceWidth: 393,
+      startX: 180,
+      startY: 810,
+    })).toBeNull();
 
     expect(detectIosGestureEdge({
       deviceHeight: 852,
@@ -147,6 +155,48 @@ describe("iosGesture", () => {
       clientDy: 0,
       elapsedMs: IOS_GESTURE_PATH_POINT_MIN_INTERVAL_MS,
     })).toBe(true);
+  });
+
+  it("falls back to taps for bottom-edge touches that are not system swipes", () => {
+    expect(resolveIosBottomEdgeReleaseAction({
+      clientDx: 2,
+      clientDy: -1,
+      clientDistance: Math.hypot(2, -1),
+      deviceHeight: 852,
+      endY: 838,
+      elapsedMs: 120,
+      startY: 840,
+    })).toBe("tap");
+
+    expect(resolveIosBottomEdgeReleaseAction({
+      clientDx: 0,
+      clientDy: -220,
+      clientDistance: 220,
+      deviceHeight: 852,
+      endY: 600,
+      elapsedMs: 160,
+      startY: 820,
+    })).toBe("swipe_home");
+
+    expect(resolveIosBottomEdgeReleaseAction({
+      clientDx: 0,
+      clientDy: -220,
+      clientDistance: 220,
+      deviceHeight: 852,
+      endY: 520,
+      elapsedMs: 500,
+      startY: 820,
+    })).toBe("app_switcher");
+
+    expect(resolveIosBottomEdgeReleaseAction({
+      clientDx: 0,
+      clientDy: -24,
+      clientDistance: 24,
+      deviceHeight: 852,
+      endY: 796,
+      elapsedMs: 160,
+      startY: 820,
+    })).toBeNull();
   });
 
   it("serializes drag payload points with per-step delays capped for live streaming", () => {
