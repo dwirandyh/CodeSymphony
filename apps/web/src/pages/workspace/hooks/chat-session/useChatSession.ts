@@ -210,6 +210,16 @@ function applyThreadActiveUpdate(
   return updated;
 }
 
+function shouldPreserveSessionIdsForSelectionUpdate(
+  thread: ChatThread,
+  selection: UpdateChatThreadAgentSelectionInput,
+): boolean {
+  return thread.kind === "default"
+    && thread.agent === selection.agent
+    && thread.modelProviderId == null
+    && (selection.modelProviderId ?? null) == null;
+}
+
 function applyThreadAgentSelectionUpdate(
   threads: ChatThread[],
   threadId: string,
@@ -225,24 +235,21 @@ function applyThreadAgentSelectionUpdate(
     current?.agent === selection.agent
     && current.model === selection.model
     && current.modelProviderId === (selection.modelProviderId ?? null)
-    && current.claudeSessionId === null
-    && current.codexSessionId === null
-    && current.cursorSessionId === null
-    && current.opencodeSessionId === null
   ) {
     return threads;
   }
 
+  const preserveSessionIds = current ? shouldPreserveSessionIdsForSelectionUpdate(current, selection) : false;
   const updated = [...threads];
   updated[index] = {
     ...current!,
     agent: selection.agent,
     model: selection.model,
     modelProviderId: selection.modelProviderId ?? null,
-    claudeSessionId: null,
-    codexSessionId: null,
-    cursorSessionId: null,
-    opencodeSessionId: null,
+    claudeSessionId: preserveSessionIds ? current!.claudeSessionId : null,
+    codexSessionId: preserveSessionIds ? current!.codexSessionId : null,
+    cursorSessionId: preserveSessionIds ? current!.cursorSessionId : null,
+    opencodeSessionId: preserveSessionIds ? current!.opencodeSessionId : null,
   };
   return updated;
 }

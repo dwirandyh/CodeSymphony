@@ -346,6 +346,28 @@ describe("chat routes", () => {
         modelProviderId: null,
       });
     });
+
+    it.each([
+      "Cannot change agent after the thread has messages",
+      "Cannot change model for non-default threads",
+      "Cannot change model for provider-backed Claude threads",
+      "Cannot change provider source after the thread has messages",
+    ])("returns 409 for selection lock errors: %s", async (message) => {
+      mockChatService.updateThreadAgentSelection.mockRejectedValueOnce(new Error(message));
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/api/threads/t1/agent-selection",
+        payload: {
+          agent: "claude",
+          model: "claude-sonnet-4-6",
+          modelProviderId: null,
+        },
+      });
+
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toEqual({ error: message });
+    });
   });
 
   describe("DELETE /api/threads/:id", () => {

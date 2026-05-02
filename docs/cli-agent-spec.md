@@ -66,7 +66,10 @@ Expected behavior:
 - a thread stores the effective model string
 - a thread stores the optional model provider reference
 - changing the agent resets any provider-specific session ID
-- changing the agent or model is blocked once the thread has messages
+- changing the agent is blocked once the thread has messages
+- changing the provider source is blocked once the thread has messages
+- changing the model is only allowed for idle `default` threads that stay on the same agent and same provider source
+- provider-backed Claude selections keep their model locked once the thread has messages
 - changing the agent or model is blocked while the assistant is running
 
 ### 2. Session Lifecycle
@@ -80,6 +83,7 @@ Expected behavior:
 - the runtime persists the provider session ID on the thread
 - subsequent turns reuse the persisted session ID for the same agent
 - switching to another agent clears this session state
+- an allowed in-thread model switch keeps the existing provider session and applies on the next turn
 
 ### 3. Streaming Output
 
@@ -412,7 +416,7 @@ Required updates:
 - custom provider listing for the new agent
 - agent hover/preview behavior
 - mobile session settings flow
-- model selector lock behavior still applies when thread has messages
+- post-history selector behavior matches product rules for same-agent model switches vs blocked provider/agent changes
 
 If the agent has special slash command semantics, the composer must still keep UI behavior stable. Codex is the current example:
 

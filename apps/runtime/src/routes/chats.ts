@@ -100,7 +100,10 @@ function respondForChatRouteError(reply: { code: (statusCode: number) => { send:
   }
   if (
     message === "Cannot change agent or model while assistant is processing"
-    || message === "Cannot change agent or model after the thread has messages"
+    || message === "Cannot change agent after the thread has messages"
+    || message === "Cannot change model for non-default threads"
+    || message === "Cannot change model for provider-backed Claude threads"
+    || message === "Cannot change provider source after the thread has messages"
   ) {
     return reply.code(409).send({ error: message });
   }
