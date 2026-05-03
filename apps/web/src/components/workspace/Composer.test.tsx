@@ -200,7 +200,9 @@ describe("Composer", () => {
   }
 
   function getModelSelectorButton(): HTMLButtonElement {
-    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label="Select CLI agent and model"]');
+    const modelButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Select CLI agent and model"], button[aria-label^="Select "][aria-label$=" model"]',
+    );
     if (!modelButton) {
       throw new Error("Model selector button not found");
     }
@@ -784,6 +786,26 @@ describe("Composer", () => {
       model: "gpt-5.3-codex-enterprise",
       modelProviderId: "provider-codex-1",
     });
+  });
+
+  it("clarifies when an existing thread can only switch models for the current agent", () => {
+    renderComposer({
+      hasMessages: true,
+      agent: "codex",
+      model: "gpt-5.4-mini",
+      modelProviderId: null,
+    });
+
+    const modelButton = getModelSelectorButton();
+    expect(modelButton.getAttribute("aria-label")).toBe("Select Codex model");
+
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Models for Codex");
+    expect(container.querySelector('[data-cli-agent-list="true"]')).toBeNull();
+    expect(container.textContent).not.toContain("Models for Claude");
   });
 
   it("shows OpenCode model options and emits thread agent selection updates", () => {

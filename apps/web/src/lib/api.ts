@@ -1,4 +1,6 @@
 import type {
+  ApprovePlanInput,
+  ApprovePlanResult,
   AnswerQuestionInput,
   ChatEvent,
   ChatMessage,
@@ -541,17 +543,20 @@ export const api = {
       throw new Error(payload?.error ?? "Failed to resolve permission");
     }
   },
-  approvePlan: async (threadId: string) => {
+  approvePlan: async (threadId: string, input?: ApprovePlanInput): Promise<ApprovePlanResult> => {
     const response = await runtimeFetch(`/threads/${threadId}/plan/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify(input ?? {}),
     });
 
-    if (!response.ok && response.status !== 204) {
+    if (!response.ok) {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to approve plan");
     }
+
+    const payload = await response.json().catch(() => null);
+    return payload?.data;
   },
   dismissPlan: async (threadId: string) => {
     const response = await runtimeFetch(`/threads/${threadId}/plan/dismiss`, {

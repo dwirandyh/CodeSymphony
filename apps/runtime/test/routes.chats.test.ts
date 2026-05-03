@@ -469,10 +469,30 @@ describe("chat routes", () => {
   });
 
   describe("POST /api/threads/:id/plan/approve", () => {
-    it("approves a plan (204)", async () => {
-      mockChatService.approvePlan.mockResolvedValue(undefined);
-      const res = await app.inject({ method: "POST", url: "/api/threads/t1/plan/approve" });
-      expect(res.statusCode).toBe(204);
+    it("approves a plan with an explicit execution target", async () => {
+      mockChatService.approvePlan.mockResolvedValue({
+        executionKind: "same_thread_switch",
+        sourceThreadId: "t1",
+        executionThreadId: "t1",
+      });
+      const payload = {
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+        executionKind: "same_thread_switch",
+      };
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/threads/t1/plan/approve",
+        payload,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(mockChatService.approvePlan).toHaveBeenCalledWith("t1", payload);
+      expect(res.json().data).toEqual({
+        executionKind: "same_thread_switch",
+        sourceThreadId: "t1",
+        executionThreadId: "t1",
+      });
     });
   });
 

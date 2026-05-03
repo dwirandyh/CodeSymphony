@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  ApprovePlanInputSchema,
+  ApprovePlanResultSchema,
   BUILTIN_CHAT_MODELS_BY_AGENT,
   CliAgentSchema,
   CreateChatThreadInputSchema,
   CreateModelProviderInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
   ModelProviderSchema,
+  shouldHandoffApprovedPlanExecution,
   TestModelProviderInputSchema,
   UpdateChatThreadAgentSelectionInputSchema,
   UpdateModelProviderInputSchema,
@@ -86,5 +89,51 @@ describe("Cursor shared workflow schemas", () => {
       agent: "cursor",
       modelId: "default[]",
     });
+  });
+
+  it("accepts explicit plan execution target payloads and results", () => {
+    expect(ApprovePlanInputSchema.parse({
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+      executionKind: "handoff",
+    })).toMatchObject({
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+      executionKind: "handoff",
+    });
+
+    expect(ApprovePlanResultSchema.parse({
+      executionKind: "same_thread_switch",
+      sourceThreadId: "t1",
+      executionThreadId: "t1",
+    })).toMatchObject({
+      executionKind: "same_thread_switch",
+      sourceThreadId: "t1",
+      executionThreadId: "t1",
+    });
+  });
+
+  it("shares the approved-plan handoff rules across runtime and web", () => {
+    expect(shouldHandoffApprovedPlanExecution({
+      messageCount: 1,
+      threadKind: "default",
+      sourceAgent: "codex",
+      sourceModelProviderId: null,
+      sourceProviderHasBaseUrl: false,
+      targetAgent: "codex",
+      targetModelProviderId: null,
+    })).toBe(false);
+
+    expect(shouldHandoffApprovedPlanExecution({
+      messageCount: 1,
+      threadKind: "default",
+      sourceAgent: "claude",
+      sourceModelProviderId: "provider-1",
+      sourceProviderHasBaseUrl: true,
+      targetAgent: "claude",
+      targetModelProviderId: null,
+    })).toBe(true);
   });
 });

@@ -403,6 +403,7 @@ export async function processStreamMessages(
       }
       if (message.subtype === "success" && state.finalOutput.trim().length === 0 && message.result.trim().length > 0) {
         state.finalOutput = message.result.trim();
+        await onText(state.finalOutput);
       }
       continue;
     }
@@ -715,6 +716,7 @@ export async function processStreamMessages(
 
       if (textParts.length > 0 && state.finalOutput.length === 0) {
         state.finalOutput = textParts.join("\n");
+        await onText(state.finalOutput);
       }
     }
   }

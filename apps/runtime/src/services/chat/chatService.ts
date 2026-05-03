@@ -3,7 +3,9 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import type { Prisma } from "@prisma/client";
 import {
+  ApprovePlanInputSchema,
   AnswerQuestionInputSchema,
+  ApprovePlanResult,
   BUILTIN_CHAT_MODELS_BY_AGENT,
   CreateChatThreadInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
@@ -15,6 +17,7 @@ import {
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   SlashCommandCatalogSchema,
+  shouldHandoffApprovedPlanExecution,
   UpdateQueuedMessageInputSchema,
   UpdateChatThreadAgentSelectionInputSchema,
   UpdateChatThreadModeInputSchema,
@@ -759,6 +762,44 @@ export function createChatService(deps: RuntimeDeps) {
       repositoryId: thread.worktree.repositoryId,
       worktreeId: thread.worktreeId,
       threadId,
+    });
+  }
+
+  async function seedHandoffThreadWithApprovedPlan(
+    threadId: string,
+    plan: PendingPlanEntry,
+  ): Promise<void> {
+    const assistantSeq = await nextMessageSeq(deps.prisma, threadId);
+    const assistantMessage = await deps.prisma.chatMessage.create({
+      data: {
+        threadId,
+        seq: assistantSeq,
+        role: "assistant",
+        content: plan.content,
+      },
+    });
+    const syntheticToolUseId = `handoff-exit-plan:${threadId}:${Date.now().toString(36)}`;
+
+    await deps.eventHub.emit(threadId, "plan.created", {
+      content: plan.content,
+      filePath: plan.filePath,
+      messageId: assistantMessage.id,
+      source: inferPlanDetectionSource(plan.filePath),
+    });
+    await deps.eventHub.emit(threadId, "plan.approved", {
+      filePath: plan.filePath,
+      messageId: assistantMessage.id,
+    });
+    await deps.eventHub.emit(threadId, "tool.started", {
+      toolName: "ExitPlanMode",
+      toolUseId: syntheticToolUseId,
+      messageId: assistantMessage.id,
+    });
+    await deps.eventHub.emit(threadId, "tool.finished", {
+      toolName: "ExitPlanMode",
+      toolUseId: syntheticToolUseId,
+      precedingToolUseIds: [syntheticToolUseId],
+      messageId: assistantMessage.id,
     });
   }
 
@@ -1624,15 +1665,16 @@ export function createChatService(deps: RuntimeDeps) {
         onPlanFileDetected: async (payload) => {
           markThreadWaiting(threadId, "waiting_plan");
           const source = inferPlanDetectionSource(payload.filePath, payload.source);
-          pendingPlanByThread.set(threadId, {
-            content: payload.content,
-            filePath: payload.filePath,
-          });
-          await deps.eventHub.emit(threadId, "plan.created", {
+          const planEvent = await deps.eventHub.emit(threadId, "plan.created", {
             content: payload.content,
             filePath: payload.filePath,
             messageId: assistantMessage.id,
             source,
+          });
+          pendingPlanByThread.set(threadId, {
+            eventId: planEvent.id,
+            content: payload.content,
+            filePath: payload.filePath,
           });
         },
         onPermissionRequest: async (payload) => {
@@ -2672,7 +2714,8 @@ export function createChatService(deps: RuntimeDeps) {
       await this.stopRun(threadId);
     },
 
-    async approvePlan(threadId: string): Promise<void> {
+    async approvePlan(threadId: string, rawInput: unknown): Promise<ApprovePlanResult> {
+      const input = ApprovePlanInputSchema.parse(rawInput);
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
       if (!thread) {
         throw new Error("Chat thread not found");
@@ -2690,20 +2733,93 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Assistant is still processing");
       }
 
-      pendingPlanByThread.delete(threadId);
-      setThreadRunState(threadId, { status: "scheduled", mode: "default" });
-
-      await deps.prisma.chatThread.update({
-        where: { id: threadId },
-        data: { mode: "default" },
+      const selection = await resolveThreadSelection(deps, input);
+      const messageCount = await deps.prisma.chatMessage.count({
+        where: { threadId },
       });
+      const currentProvider = await resolvePersistedThreadProvider(deps, thread);
+      const selectionChanged = !hasSameSelection(thread, selection);
+      const autoHandoffRequired = selectionChanged && shouldHandoffApprovedPlanExecution({
+        messageCount,
+        threadKind: thread.kind,
+        sourceAgent: thread.agent,
+        sourceModelProviderId: thread.modelProviderId,
+        sourceProviderHasBaseUrl: isProviderBackedClaudeSelection({
+          agent: thread.agent,
+          provider: currentProvider,
+        }),
+        targetAgent: selection.agent,
+        targetModelProviderId: selection.modelProviderId,
+      });
+      const handoffRequired = input.executionKind === "handoff" || autoHandoffRequired;
+
+      let selectionUpdate = null;
+      if (!handoffRequired && selectionChanged) {
+        let resetSessionIds = true;
+        if (messageCount > 0) {
+          resetSessionIds = false;
+        }
+
+        selectionUpdate = buildSelectionUpdate(selection, { resetSessionIds });
+      }
+
+      pendingPlanByThread.delete(threadId);
+      let executionThreadId = threadId;
+      let executionKind: ApprovePlanResult["executionKind"] = "same_thread_switch";
+
+      if (handoffRequired) {
+        const executionThread = await deps.prisma.chatThread.create({
+          data: {
+            worktreeId: thread.worktreeId,
+            title: thread.title,
+            kind: "default",
+            permissionProfile: thread.permissionProfile,
+            permissionMode: thread.permissionMode,
+            mode: "default",
+            handoffSourceThreadId: threadId,
+            handoffSourcePlanEventId: plan.eventId,
+            ...buildSelectionUpdate(selection),
+          },
+        });
+        executionThreadId = executionThread.id;
+        executionKind = "handoff";
+
+        if (deps.workspaceEventHub) {
+          deps.workspaceEventHub.emit("thread.created", {
+            worktreeId: executionThread.worktreeId,
+            threadId: executionThread.id,
+          });
+        }
+
+        await deps.prisma.chatThread.update({
+          where: { id: threadId },
+          data: { mode: "default" },
+        });
+        await seedHandoffThreadWithApprovedPlan(executionThread.id, plan);
+        await emitThreadWorkspaceUpdate(threadId);
+      } else {
+        await deps.prisma.chatThread.update({
+          where: { id: threadId },
+          data: {
+            mode: "default",
+            ...(selectionUpdate ?? {}),
+          },
+        });
+        await emitThreadWorkspaceUpdate(threadId);
+      }
 
       await deps.eventHub.emit(threadId, "plan.approved", {
         filePath: plan.filePath,
       });
 
       const executePrompt = `The user has approved the following plan. Please execute it now:\n\n${plan.content}`;
-      scheduleAssistant(threadId, executePrompt, "default", { autoAcceptTools: true });
+      scheduleAssistant(executionThreadId, executePrompt, "default", { autoAcceptTools: true });
+
+      return {
+        executionKind,
+        sourceThreadId: threadId,
+        executionThreadId,
+      };
     },
 
     async dismissPlan(threadId: string, rawInput: unknown): Promise<void> {

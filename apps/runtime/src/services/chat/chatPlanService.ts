@@ -13,7 +13,7 @@ export async function recoverPendingPlan(
       const content = typeof event.payload.content === "string" ? event.payload.content : "";
       const filePath = typeof event.payload.filePath === "string" ? event.payload.filePath : "";
       if (content.length > 0) {
-        lastPlan = { content, filePath };
+        lastPlan = { eventId: event.id, content, filePath };
       }
     } else if (
       event.type === "plan.approved"

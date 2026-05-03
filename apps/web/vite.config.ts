@@ -4,12 +4,18 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import {
   getConfiguredRuntimeProxyTarget,
   getConfiguredWebDevPort,
+  type RuntimeConfigViteEnv,
 } from "./runtimeConfig";
 
 export default defineConfig(({ mode }) => {
   const env = {
     ...process.env,
     ...loadEnv(mode, process.cwd(), ""),
+  };
+  const runtimeConfigEnv: RuntimeConfigViteEnv = {
+    VITE_DEV_PORT: env.VITE_DEV_PORT,
+    VITE_RUNTIME_PORT: env.VITE_RUNTIME_PORT,
+    VITE_RUNTIME_PROXY_TARGET: env.VITE_RUNTIME_PROXY_TARGET,
   };
   const plugins: PluginOption[] = [
     TanStackRouterVite({
@@ -31,11 +37,11 @@ export default defineConfig(({ mode }) => {
   return {
     plugins,
     server: {
-      port: parseInt(getConfiguredWebDevPort(env), 10),
+      port: parseInt(getConfiguredWebDevPort(runtimeConfigEnv), 10),
       host: true,
       proxy: {
         "/api": {
-          target: getConfiguredRuntimeProxyTarget(env),
+          target: getConfiguredRuntimeProxyTarget(runtimeConfigEnv),
           changeOrigin: true,
         },
       },

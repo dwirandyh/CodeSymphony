@@ -80,6 +80,8 @@ export function mapChatThread(thread: DbChatThread, isActive = false): ChatThrea
     agent: thread.agent,
     model: thread.model,
     modelProviderId: thread.modelProviderId,
+    handoffSourceThreadId: thread.handoffSourceThreadId,
+    handoffSourcePlanEventId: thread.handoffSourcePlanEventId,
     claudeSessionId: thread.claudeSessionId,
     codexSessionId: thread.codexSessionId,
     cursorSessionId: thread.cursorSessionId,

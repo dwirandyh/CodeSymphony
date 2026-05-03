@@ -53,6 +53,7 @@ async function resetDatabase(): Promise<void> {
   await prisma.chatAttachment.deleteMany();
   await prisma.chatMessage.deleteMany();
   await prisma.chatThread.deleteMany();
+  await prisma.modelProvider.deleteMany();
   await prisma.worktree.deleteMany();
   await prisma.repository.deleteMany();
 }
@@ -527,6 +528,397 @@ describe("chatService agent selection", () => {
 
     const persistedThread = await chatService.getThreadById(thread.id);
     expect(persistedThread?.[sessionField]).toBe(sessionId);
+  });
+
+  it("approves a pending plan with a same-thread execution switch for valid same-agent targets", async () => {
+    const eventHub = createEventHub(prisma);
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const codexRunner: ClaudeRunner = vi.fn(async ({ model, onText, sessionId }) => {
+      expect(model).toBe("gpt-5.4-mini");
+      expect(sessionId).toBe("codex-session-existing");
+      await onText("Executing approved plan");
+      return {
+        output: "Executing approved plan",
+        sessionId: "codex-session-existing",
+      };
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner,
+      codexRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("Plan switch thread");
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "codex",
+        model: "gpt-5.4",
+        mode: "plan",
+        codexSessionId: "codex-session-existing",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Please make a plan",
+      },
+    });
+    await eventHub.emit(thread.id, "plan.created", {
+      content: "# Plan\n\n1. Implement the feature",
+      filePath: ".claude/plans/plan.md",
+    });
+
+    const result = await chatService.approvePlan(thread.id, {
+      agent: "codex",
+      model: "gpt-5.4-mini",
+      modelProviderId: null,
+    });
+    await waitForCompletion(chatService, thread.id);
+
+    expect(result).toEqual({
+      executionKind: "same_thread_switch",
+      sourceThreadId: thread.id,
+      executionThreadId: thread.id,
+    });
+    expect(codexRunner).toHaveBeenCalledTimes(1);
+    const persistedThread = await chatService.getThreadById(thread.id);
+    expect(persistedThread?.agent).toBe("codex");
+    expect(persistedThread?.model).toBe("gpt-5.4-mini");
+    expect(persistedThread?.mode).toBe("default");
+    expect(persistedThread?.codexSessionId).toBe("codex-session-existing");
+  });
+
+  it("approves a pending plan by handing off to a new execution thread when the target agent changes", async () => {
+    const eventHub = createEventHub(prisma);
+    const claudeRunner: ClaudeRunner = vi.fn(async () => ({
+      output: "",
+      sessionId: null,
+    }));
+    const codexRunner: ClaudeRunner = vi.fn(async ({ model, onText, sessionId }) => {
+      expect(model).toBe("gpt-5.4");
+      expect(sessionId).toBeNull();
+      await onText("Codex executed the approved plan");
+      return {
+        output: "Codex executed the approved plan",
+        sessionId: "codex-handoff-session",
+      };
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner,
+      codexRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread, worktree } = await seedThread("Plan handoff thread");
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "claude",
+        model: "claude-sonnet-4-6",
+        mode: "plan",
+        permissionMode: "full_access",
+        permissionProfile: "default",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Please make a plan",
+      },
+    });
+    const createdEvent = await eventHub.emit(thread.id, "plan.created", {
+      content: "# Plan\n\n1. Implement the feature",
+      filePath: ".claude/plans/plan.md",
+    });
+
+    const result = await chatService.approvePlan(thread.id, {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+    });
+    await waitForCompletion(chatService, result.executionThreadId);
+
+    expect(result.executionKind).toBe("handoff");
+    expect(result.sourceThreadId).toBe(thread.id);
+    expect(result.executionThreadId).not.toBe(thread.id);
+
+    const executionThread = await chatService.getThreadById(result.executionThreadId);
+    expect(executionThread?.worktreeId).toBe(worktree.id);
+    expect(executionThread?.permissionMode).toBe("full_access");
+    expect(executionThread?.permissionProfile).toBe("default");
+    expect(executionThread?.agent).toBe("codex");
+    expect(executionThread?.model).toBe("gpt-5.4");
+
+    const persistedExecutionThread = await prisma.chatThread.findUniqueOrThrow({
+      where: { id: result.executionThreadId },
+    }) as any;
+    expect(persistedExecutionThread.handoffSourceThreadId).toBe(thread.id);
+    expect(persistedExecutionThread.handoffSourcePlanEventId).toBe(createdEvent.id);
+  });
+
+  it("supports an explicit handoff even when the current thread could execute in place", async () => {
+    const eventHub = createEventHub(prisma);
+    const codexRunner: ClaudeRunner = vi.fn(async ({ model, onText, sessionId }) => {
+      expect(model).toBe("gpt-5.4");
+      expect(sessionId).toBeNull();
+      await onText("Codex executed the approved plan from a forced handoff thread");
+      return {
+        output: "Codex executed the approved plan from a forced handoff thread",
+        sessionId: "codex-forced-handoff-session",
+      };
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner: vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      })),
+      codexRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("Plan explicit handoff thread");
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "codex",
+        model: "gpt-5.4",
+        mode: "plan",
+        codexSessionId: "codex-session-existing",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Please make a plan",
+      },
+    });
+    await eventHub.emit(thread.id, "plan.created", {
+      content: "# Plan\n\n1. Implement the feature",
+      filePath: ".claude/plans/plan.md",
+    });
+
+    const result = await chatService.approvePlan(thread.id, {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+      executionKind: "handoff",
+    });
+    await waitForCompletion(chatService, result.executionThreadId);
+
+    expect(result.executionKind).toBe("handoff");
+    expect(result.executionThreadId).not.toBe(thread.id);
+
+    const sourceThread = await chatService.getThreadById(thread.id);
+    expect(sourceThread?.codexSessionId).toBe("codex-session-existing");
+
+    const executionThread = await chatService.getThreadById(result.executionThreadId);
+    expect(executionThread?.agent).toBe("codex");
+    expect(executionThread?.model).toBe("gpt-5.4");
+    expect(executionThread?.codexSessionId).toBe("codex-forced-handoff-session");
+  });
+
+  it("seeds the handoff thread with the approved plan card state", async () => {
+    const eventHub = createEventHub(prisma);
+    const codexRunner: ClaudeRunner = vi.fn(async ({ model, onText }) => {
+      expect(model).toBe("gpt-5.4");
+      await onText("Executing approved plan in seeded handoff thread");
+      return {
+        output: "Executing approved plan in seeded handoff thread",
+        sessionId: "codex-seeded-handoff-session",
+      };
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner: vi.fn(async () => ({
+        output: "",
+        sessionId: null,
+      })),
+      codexRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("Plan seed handoff thread");
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "claude",
+        model: "claude-sonnet-4-6",
+        mode: "plan",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Please make a plan",
+      },
+    });
+
+    const planContent = "# Plan\n\n1. Implement the feature";
+    const planFilePath = ".claude/plans/plan.md";
+    const createdEvent = await eventHub.emit(thread.id, "plan.created", {
+      content: planContent,
+      filePath: planFilePath,
+    });
+
+    const result = await chatService.approvePlan(thread.id, {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+      executionKind: "handoff",
+    });
+    await waitForCompletion(chatService, result.executionThreadId);
+
+    const handoffMessages = await prisma.chatMessage.findMany({
+      where: { threadId: result.executionThreadId },
+      orderBy: { seq: "asc" },
+    });
+    expect(handoffMessages[0]).toMatchObject({
+      role: "assistant",
+      content: planContent,
+    });
+
+    const handoffEvents = await chatService.listEvents(result.executionThreadId);
+    const handoffPlanCreated = handoffEvents.find((event) => event.type === "plan.created");
+    expect(handoffPlanCreated?.payload).toMatchObject({
+      content: planContent,
+      filePath: planFilePath,
+      messageId: handoffMessages[0]?.id,
+    });
+
+    expect(handoffEvents.some((event) =>
+      event.type === "plan.approved"
+      && event.payload.filePath === planFilePath,
+    )).toBe(true);
+
+    expect(handoffEvents.some((event) =>
+      event.type === "tool.started"
+      && event.payload.toolName === "ExitPlanMode",
+    )).toBe(true);
+
+    expect(handoffEvents.some((event) =>
+      event.type === "tool.finished"
+      && event.payload.toolName === "ExitPlanMode",
+    )).toBe(true);
+
+    const handoffSnapshot = await chatService.listThreadSnapshot(result.executionThreadId);
+    expect(handoffSnapshot.timeline.timelineItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "plan-file-output",
+          messageId: handoffMessages[0]?.id,
+          content: planContent,
+          filePath: planFilePath,
+        }),
+      ]),
+    );
+
+    const persistedExecutionThread = await prisma.chatThread.findUniqueOrThrow({
+      where: { id: result.executionThreadId },
+    }) as any;
+    expect(persistedExecutionThread.handoffSourceThreadId).toBe(thread.id);
+    expect(persistedExecutionThread.handoffSourcePlanEventId).toBe(createdEvent.id);
+  });
+
+  it("approves a pending plan by auto-handoff when a provider-backed Claude thread is locked", async () => {
+    const eventHub = createEventHub(prisma);
+    const modelProviderService = createStubModelProviderService({
+      "provider-claude-remote": {
+        id: "provider-claude-remote",
+        agent: "claude",
+        apiKey: "provider-key",
+        baseUrl: "https://provider.example.com/v1",
+        name: "Remote Claude",
+        modelId: "glm-4.7",
+      },
+    });
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ model, onText, sessionId }) => {
+      expect(model).toBe("claude-sonnet-4-6");
+      expect(sessionId).toBeNull();
+      await onText("Claude executed the approved plan in a handoff thread");
+      return {
+        output: "Claude executed the approved plan in a handoff thread",
+        sessionId: "claude-handoff-session",
+      };
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner,
+      modelProviderService,
+    });
+    const { thread } = await seedThread("Provider-backed Claude handoff");
+    await prisma.modelProvider.create({
+      data: {
+        id: "provider-claude-remote",
+        agent: "claude",
+        name: "Remote Claude",
+        modelId: "glm-4.7",
+        baseUrl: "https://provider.example.com/v1",
+        apiKey: "provider-key",
+      },
+    });
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "claude",
+        model: "glm-4.7",
+        modelProviderId: "provider-claude-remote",
+        claudeSessionId: "claude-session-remote",
+        mode: "plan",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Please make a plan",
+      },
+    });
+    await eventHub.emit(thread.id, "plan.created", {
+      content: "# Plan\n\n1. Implement the feature",
+      filePath: ".claude/plans/plan.md",
+    });
+
+    const result = await chatService.approvePlan(thread.id, {
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+    });
+    await waitForCompletion(chatService, result.executionThreadId);
+
+    expect(result.executionKind).toBe("handoff");
+    expect(result.executionThreadId).not.toBe(thread.id);
+
+    const sourceThread = await chatService.getThreadById(thread.id);
+    expect(sourceThread?.model).toBe("glm-4.7");
+    expect(sourceThread?.modelProviderId).toBe("provider-claude-remote");
+    expect(sourceThread?.claudeSessionId).toBe("claude-session-remote");
+
+    const executionThread = await chatService.getThreadById(result.executionThreadId);
+    expect(executionThread?.agent).toBe("claude");
+    expect(executionThread?.model).toBe("claude-sonnet-4-6");
+    expect(executionThread?.modelProviderId).toBeNull();
   });
 
   it("rejects agent changes once a thread already has messages", async () => {

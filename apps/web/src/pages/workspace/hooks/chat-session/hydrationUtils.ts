@@ -17,6 +17,7 @@ export function resolveSnapshotSeedDecision(params: {
   lastAppliedSnapshotKey: string | null;
   localLatestEventIdx?: number | null;
   localLatestMessageSeq?: number | null;
+  sendingMessage?: boolean;
   waitingForAssistant?: boolean;
   hasPendingUserGate?: boolean;
 }): SnapshotSeedDecision {
@@ -27,6 +28,7 @@ export function resolveSnapshotSeedDecision(params: {
     lastAppliedSnapshotKey,
     localLatestEventIdx = null,
     localLatestMessageSeq = null,
+    sendingMessage = false,
     waitingForAssistant = false,
     hasPendingUserGate = false,
   } = params;
@@ -35,10 +37,6 @@ export function resolveSnapshotSeedDecision(params: {
   }
 
   const snapshotKey = buildSnapshotKey(queriedThreadSnapshot);
-  if (threadChanged) {
-    return { shouldApply: true, reason: "thread-changed", snapshotKey };
-  }
-
   const snapshotNewestIdx = queriedThreadSnapshot.newestIdx ?? null;
   if (
     localLatestEventIdx != null
@@ -50,11 +48,23 @@ export function resolveSnapshotSeedDecision(params: {
 
   const snapshotNewestSeq = queriedThreadSnapshot.newestSeq ?? null;
   if (
+    sendingMessage
+    && localLatestMessageSeq != null
+    && (snapshotNewestSeq == null || localLatestMessageSeq > snapshotNewestSeq)
+  ) {
+    return { shouldApply: false, reason: "local-message-ahead-while-sending", snapshotKey };
+  }
+
+  if (
     waitingForAssistant
     && localLatestMessageSeq != null
     && (snapshotNewestSeq == null || localLatestMessageSeq > snapshotNewestSeq)
   ) {
     return { shouldApply: false, reason: "local-message-ahead-while-waiting", snapshotKey };
+  }
+
+  if (threadChanged) {
+    return { shouldApply: true, reason: "thread-changed", snapshotKey };
   }
 
   if (hasPendingUserGate) {

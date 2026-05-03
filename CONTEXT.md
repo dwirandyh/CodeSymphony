@@ -24,6 +24,18 @@ _Avoid_: custom Claude model
 A same-agent model change on an existing thread that keeps the provider session and takes effect on the next turn.
 _Avoid_: forked thread, silent new session
 
+**Plan execution target**:
+The explicit agent, model, and optional provider chosen when approving a pending plan.
+_Avoid_: composer state, inferred target
+
+**Plan execution switch**:
+Plan approval that keeps execution in the source thread by persisting a new same-agent thread selection before the execution turn starts.
+_Avoid_: one-off override, transient target
+
+**Plan execution handoff**:
+Plan approval that creates a new execution thread because the target cannot run as a same-thread switch.
+_Avoid_: implicit retry, background clone
+
 ## Relationships
 
 - A **Thread selection** chooses exactly one agent and one model
@@ -32,6 +44,10 @@ _Avoid_: forked thread, silent new session
 - An **Alias-only model selection** and a **Provider-backed model selection** are distinct kinds of model selection
 - An **In-thread model switch** preserves the existing provider session
 - An **In-thread model switch** applies its new model on the next turn, not the in-flight turn
+- A **Plan execution target** is chosen explicitly at approval time
+- A **Plan execution switch** persists its new thread selection before execution starts
+- A **Plan execution handoff** creates a new default execution thread on the same worktree
+- A **Plan execution handoff** inherits permission settings from the source thread
 
 ## Example dialogue
 
@@ -40,7 +56,16 @@ _Avoid_: forked thread, silent new session
 >
 > **Dev:** "If the user changes model in the same thread, do we restart the provider session?"
 > **Domain expert:** "No. An in-thread model switch keeps the provider session and the new model starts on the next turn."
+>
+> **Dev:** "The user approved a plan and picked Codex instead of Claude. Is that just another in-thread model switch?"
+> **Domain expert:** "No. That's a plan execution handoff. Agent changes do not stay in the same thread."
+>
+> **Dev:** "What if the user keeps the same agent but the source thread is provider-backed Claude and locked?"
+> **Domain expert:** "Approval still succeeds, but it becomes a plan execution handoff to a new execution thread."
 
 ## Flagged ambiguities
 
 - "custom Claude model" was used to mean both alias-only Claude entries and provider-backed Claude entries; resolved: the risky case is **Provider-backed Claude selection**
+- "execute approved plan with another model" was ambiguous between same-thread switching and new-thread delegation; resolved:
+  - same-agent valid target => **Plan execution switch**
+  - invalid same-thread target or cross-agent target => **Plan execution handoff**

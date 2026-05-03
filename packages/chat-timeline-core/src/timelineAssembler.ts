@@ -17,6 +17,7 @@ import {
   isExploreLikeBashEvent,
   isLikelyDiffContent,
   isPlanFilePath,
+  isPlanModeToolEvent,
   isReadToolEvent,
   isTodoWriteToolEvent,
   normalizePlanCreatedEvent,
@@ -83,6 +84,38 @@ type PlanFileOutput = {
   revealIdx: number;
   revealedAt: string;
 };
+
+function shouldSuppressPlanSeedMessage(params: {
+  message: ChatMessage;
+  normalizedPlan: ReturnType<typeof normalizePlanCreatedEvent> | undefined;
+  planFileOutput: PlanFileOutput | undefined;
+  context: ChatEvent[];
+}): boolean {
+  const {
+    message,
+    normalizedPlan,
+    planFileOutput,
+    context,
+  } = params;
+
+  if (
+    message.role !== "assistant"
+    || !normalizedPlan
+    || !planFileOutput
+    || message.content.trim().length === 0
+    || message.content.trim() !== normalizedPlan.content.trim()
+  ) {
+    return false;
+  }
+
+  return context.every((event) =>
+    event.type === "plan.created"
+    || event.type === "plan.approved"
+    || event.type === "plan.dismissed"
+    || event.type === "plan.revision_requested"
+    || isPlanModeToolEvent(event),
+  );
+}
 
 function getFinishedToolNames(
   event: ChatEvent,
@@ -431,6 +464,12 @@ export function buildTimelineFromSeed(params: {
       && !!normalizedPlan
       && message.content.trim().length > 0
       && message.content.trim() === normalizedPlan.content.trim();
+    const shouldSuppressPlanSeedBody = shouldSuppressPlanSeedMessage({
+      message,
+      normalizedPlan,
+      planFileOutput,
+      context,
+    });
 
     const hasToolEventsInContext = message.role === "assistant"
       && (assistantContextById.get(message.id)?.length ?? 0) > 0;
@@ -447,8 +486,10 @@ export function buildTimelineFromSeed(params: {
 
     if (
       message.role === "assistant"
-      && !hasToolEventsInContext
-      && (shouldSkipMessageBecausePlanCard || (message.content.trim().length === 0 && !isCompleted && !hasMessageDelta))
+      && (
+        shouldSuppressPlanSeedBody
+        || (!hasToolEventsInContext && (shouldSkipMessageBecausePlanCard || (message.content.trim().length === 0 && !isCompleted && !hasMessageDelta)))
+      )
     ) {
       continue;
     }
