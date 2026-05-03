@@ -1,40 +1,123 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type {
+  ApprovePlanInput,
+  ChatThreadKind,
+  CursorModelCatalogEntry,
+  ModelProvider,
+  OpencodeModelCatalogEntry,
+} from "@codesymphony/shared-types";
+import { shouldHandoffApprovedPlanExecution } from "@codesymphony/shared-types";
 import { Lightbulb } from "lucide-react";
 import { Button } from "../ui/button";
 import { cn } from "../../lib/utils";
+import {
+  AgentModelSelector,
+  type AgentModelSelection,
+  buildAgentSelectionOptions,
+  findAgentSelectionOption,
+  flattenAgentSelectionOptions,
+} from "./composer/AgentModelSelector";
 
 type PlanDecisionComposerProps = {
   busy: boolean;
-  onApprove: () => void;
+  currentSelection: ApprovePlanInput;
+  threadKind: ChatThreadKind | null;
+  hasMessages: boolean;
+  providers: ModelProvider[];
+  cursorModels: CursorModelCatalogEntry[];
+  opencodeModels: OpencodeModelCatalogEntry[];
+  onApprove: (selection: ApprovePlanInput) => void;
   onRevise: (feedback: string) => void;
-  onDismiss: () => void;
 };
 
 type DecisionMode = "accept" | "revise";
 
-export function PlanDecisionComposer({ busy, onApprove, onRevise, onDismiss }: PlanDecisionComposerProps) {
+function normalizeSelection(selection: ApprovePlanInput): AgentModelSelection {
+  return {
+    agent: selection.agent,
+    model: selection.model,
+    modelProviderId: selection.modelProviderId ?? null,
+  };
+}
+
+export function PlanDecisionComposer({
+  busy,
+  currentSelection,
+  threadKind,
+  hasMessages,
+  providers,
+  cursorModels,
+  opencodeModels,
+  onApprove,
+  onRevise,
+}: PlanDecisionComposerProps) {
   const [mode, setMode] = useState<DecisionMode>("accept");
   const [feedback, setFeedback] = useState("");
+  const normalizedCurrentSelection = normalizeSelection(currentSelection);
+  const [selection, setSelection] = useState<AgentModelSelection>(normalizedCurrentSelection);
 
-  const canSubmit = useMemo(() => {
-    if (busy) {
-      return false;
-    }
+  useEffect(() => {
+    setSelection(normalizeSelection(currentSelection));
+  }, [currentSelection.agent, currentSelection.model, currentSelection.modelProviderId]);
 
-    if (mode === "accept") {
-      return true;
-    }
+  const agentOptions = useMemo(() => buildAgentSelectionOptions({
+    providers,
+    cursorModels,
+    opencodeModels,
+  }), [cursorModels, opencodeModels, providers]);
 
-    return feedback.trim().length > 0;
-  }, [busy, feedback, mode]);
-
-  function handleSubmit() {
-    if (!canSubmit) {
+  useEffect(() => {
+    if (findAgentSelectionOption(agentOptions, selection)) {
       return;
     }
 
-    if (mode === "accept") {
-      onApprove();
+    const fallbackOption = flattenAgentSelectionOptions(agentOptions)[0];
+    if (!fallbackOption) {
+      return;
+    }
+
+    setSelection({
+      agent: fallbackOption.agent,
+      model: fallbackOption.model,
+      modelProviderId: fallbackOption.modelProviderId,
+    });
+  }, [agentOptions, selection]);
+
+  const canSubmitRevision = feedback.trim().length > 0;
+  const currentProvider = useMemo(() => {
+    const providerId = currentSelection.modelProviderId ?? null;
+    if (!providerId) {
+      return null;
+    }
+
+    return providers.find((provider) => provider.id === providerId) ?? null;
+  }, [currentSelection.modelProviderId, providers]);
+  const selectionChanged = selection.agent !== normalizedCurrentSelection.agent
+    || selection.model !== normalizedCurrentSelection.model
+    || selection.modelProviderId !== normalizedCurrentSelection.modelProviderId;
+  const handoffRequired = selectionChanged && shouldHandoffApprovedPlanExecution({
+    messageCount: hasMessages ? 1 : 0,
+    threadKind: threadKind ?? "default",
+    sourceAgent: currentSelection.agent,
+    sourceModelProviderId: currentSelection.modelProviderId ?? null,
+    sourceProviderHasBaseUrl: currentSelection.agent === "claude" && Boolean(currentProvider?.baseUrl?.trim()),
+    targetAgent: selection.agent,
+    targetModelProviderId: selection.modelProviderId ?? null,
+  });
+
+  function handleApprove(executionKind: NonNullable<ApprovePlanInput["executionKind"]>) {
+    if (busy) {
+      return;
+    }
+
+    onApprove({
+      ...selection,
+      executionKind,
+    });
+  }
+
+  function handleSubmitRevision() {
+    if (busy || !canSubmitRevision) {
       return;
     }
 
@@ -44,7 +127,7 @@ export function PlanDecisionComposer({ busy, onApprove, onRevise, onDismiss }: P
   return (
     <section className="pb-2 pt-1" data-testid="plan-decision-composer-container">
       <div className="mx-auto w-full max-w-3xl">
-        <section className="rounded-lg border border-amber-500/30 bg-background/20 px-3 py-3 backdrop-blur-sm">
+        <section className="rounded-lg border border-amber-500/30 bg-background/20 px-3 py-2.5 backdrop-blur-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2">
               <Lightbulb className="h-4 w-4 shrink-0 text-amber-400" />
@@ -55,7 +138,7 @@ export function PlanDecisionComposer({ busy, onApprove, onRevise, onDismiss }: P
             </span>
           </div>
 
-          <p className="mt-3 text-left text-sm text-foreground/90">Implement this plan?</p>
+          <p className="mt-2 text-left text-sm text-foreground/90">Implement this plan?</p>
 
           <div className="mt-2 space-y-1.5" role="radiogroup" aria-label="Plan decision">
             <div
@@ -139,9 +222,9 @@ export function PlanDecisionComposer({ busy, onApprove, onRevise, onDismiss }: P
                     mode === "revise" ? "text-amber-300" : "text-muted-foreground",
                   )}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" && canSubmit) {
+                    if (event.key === "Enter" && canSubmitRevision) {
                       event.preventDefault();
-                      handleSubmit();
+                      handleSubmitRevision();
                     }
                   }}
                 />
@@ -149,26 +232,64 @@ export function PlanDecisionComposer({ busy, onApprove, onRevise, onDismiss }: P
             </section>
           </div>
 
-          <div className="mt-3 flex items-center justify-end gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              aria-label="Dismiss plan decision"
-              onClick={onDismiss}
-            >
-              Dismiss
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={!canSubmit}
-              aria-label={mode === "accept" ? "Submit plan acceptance" : "Submit plan revision"}
-              onClick={handleSubmit}
-            >
-              {mode === "accept" ? "Submit" : "Submit revision"}
-            </Button>
+          <div className="mt-2.5 flex flex-wrap items-center justify-end gap-2 sm:flex-nowrap">
+            {mode === "accept" ? (
+              <AgentModelSelector
+                disabled={busy}
+                selection={selection}
+                providers={providers}
+                cursorModels={cursorModels}
+                opencodeModels={opencodeModels}
+                showAgentList={true}
+                ariaLabel="Select plan execution target"
+                onSelectionChange={(nextSelection) => setSelection(nextSelection)}
+              />
+            ) : null}
+            {mode === "accept" ? (
+              handoffRequired ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={busy}
+                  aria-label="Handover plan"
+                  onClick={() => handleApprove("handoff")}
+                >
+                  Handover
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={busy}
+                    aria-label="Implement plan"
+                    onClick={() => handleApprove("same_thread_switch")}
+                  >
+                    Implement
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    aria-label="Handover plan"
+                    onClick={() => handleApprove("handoff")}
+                  >
+                    Handover
+                  </Button>
+                </>
+              )
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy || !canSubmitRevision}
+                aria-label="Submit plan revision"
+                onClick={handleSubmitRevision}
+              >
+                Submit revision
+              </Button>
+            )}
           </div>
         </section>
       </div>

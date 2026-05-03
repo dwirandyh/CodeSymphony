@@ -71,6 +71,7 @@ export type PendingQuestionEntry = {
 };
 
 export type PendingPlanEntry = {
+  eventId: string;
   content: string;
   filePath: string;
 };

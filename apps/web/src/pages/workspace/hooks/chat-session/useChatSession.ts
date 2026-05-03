@@ -704,6 +704,10 @@ export function useChatSession(
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void,
   options?: UseChatSessionOptions,
 ) {
+  type SetSelectedThreadOptions = {
+    preserveWhileMissing?: boolean;
+  };
+
   const queryClient = useQueryClient();
   const repositoryId = options?.repositoryId ?? null;
   const timelineEnabled = options?.timelineEnabled !== false;
@@ -735,6 +739,7 @@ export function useChatSession(
   const activeThreadIdRef = useRef<string | null>(null);
   const waitingAssistantRef = useRef<{ threadId: string; afterIdx: number } | null>(null);
   const selectedThreadIdOverrideRef = useRef<string | null>(null);
+  const pendingSelectedThreadIdRef = useRef<string | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
   const threadByIdRef = useRef<Map<string, ChatThread>>(new Map());
   const creatingThreadRef = useRef(false);
@@ -771,11 +776,29 @@ export function useChatSession(
     }
   }
 
-  const { data: queriedThreads, isLoading: queriedThreadsLoading } = useThreads(selectedWorktreeId);
+  const {
+    data: queriedThreads,
+    isLoading: queriedThreadsLoading,
+    error: queriedThreadsError,
+  } = useThreads(selectedWorktreeId);
 
   const prevWorktreeIdRef2 = useRef<string | null>(selectedWorktreeId);
 
-  const setSelectedThreadId = useCallback((threadId: string | null) => {
+  const setSelectedThreadId = useCallback((threadId: string | null, options?: SetSelectedThreadOptions) => {
+    if (
+      threadId == null
+      || isPendingWorktreePlaceholderThreadId(threadId)
+      || locallyDeletedThreadIdsRef.current.has(threadId)
+    ) {
+      pendingSelectedThreadIdRef.current = null;
+    } else {
+      const threadExistsLocally = threadByIdRef.current.has(threadId);
+      pendingSelectedThreadIdRef.current =
+        !threadExistsLocally || options?.preserveWhileMissing
+          ? threadId
+          : null;
+    }
+
     selectedThreadIdOverrideRef.current = threadId;
     setSelectedThreadIdState(threadId);
   }, []);
@@ -785,6 +808,25 @@ export function useChatSession(
       selectedThreadIdOverrideRef.current = null;
     }
   }, [selectedThreadIdState]);
+
+  useEffect(() => {
+    if (!(queriedThreadsError instanceof Error)) {
+      return;
+    }
+
+    onError(queriedThreadsError.message);
+  }, [onError, queriedThreadsError]);
+
+  useEffect(() => {
+    const pendingThreadId = pendingSelectedThreadIdRef.current;
+    if (!pendingThreadId) {
+      return;
+    }
+
+    if (selectedThreadId !== pendingThreadId || threadByIdRef.current.has(pendingThreadId)) {
+      pendingSelectedThreadIdRef.current = null;
+    }
+  }, [selectedThreadId, threads]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -998,10 +1040,18 @@ export function useChatSession(
       requestedThreadId != null && trackedThreads.some((thread) => thread.id === requestedThreadId);
     const selectedThreadStillExists =
       selectedThreadId != null && trackedThreads.some((thread) => thread.id === selectedThreadId);
+    const selectedThreadPendingHydration =
+      selectedThreadId != null
+      && pendingSelectedThreadIdRef.current === selectedThreadId
+      && !selectedThreadStillExists;
     const requestedThreadReappeared =
       requestedThreadId != null && requestedThreadExists && !prevRequestedThreadExistsRef.current;
 
     prevRequestedThreadExistsRef.current = requestedThreadExists;
+
+    if (selectedThreadPendingHydration) {
+      return;
+    }
 
     if (requestedThreadIdChanged || requestedThreadReappeared) {
       const nextThreadId = requestedThreadExists
@@ -1450,6 +1500,7 @@ export function useChatSession(
       lastAppliedSnapshotKey,
       localLatestEventIdx,
       localLatestMessageSeq,
+      sendingMessage,
       waitingForAssistant: waitingAssistant?.threadId === selectedThreadId,
       hasPendingUserGate: !threadChanged && activeThreadIdRef.current === selectedThreadId && hasPendingUserGate,
     });
@@ -1548,6 +1599,7 @@ export function useChatSession(
     selectedThread?.active,
     selectedThreadId,
     selectedWorktreeId,
+    sendingMessage,
     threadNavigationPerfEnabled,
     waitingAssistant,
   ]);

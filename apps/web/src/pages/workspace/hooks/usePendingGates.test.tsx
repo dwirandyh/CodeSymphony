@@ -16,7 +16,11 @@ const {
 } = vi.hoisted(() => ({
   mockResolvePermission: vi.fn().mockResolvedValue(undefined),
   mockAnswerQuestion: vi.fn().mockResolvedValue(undefined),
-  mockApprovePlan: vi.fn().mockResolvedValue(undefined),
+  mockApprovePlan: vi.fn().mockResolvedValue({
+    executionKind: "same_thread_switch",
+    sourceThreadId: "t1",
+    executionThreadId: "t1",
+  }),
   mockDismissPlan: vi.fn().mockResolvedValue(undefined),
   mockRevisePlan: vi.fn().mockResolvedValue(undefined),
   mockDismissQuestion: vi.fn().mockResolvedValue(undefined),
@@ -80,7 +84,8 @@ beforeEach(() => {
     onError: vi.fn(),
     startWaitingAssistant: vi.fn(),
     clearWaitingAssistantForThread: vi.fn(),
-  };
+    onPlanApproved: vi.fn(),
+  } as PendingGatesDeps & { onPlanApproved: ReturnType<typeof vi.fn> };
   vi.clearAllMocks();
 });
 
@@ -496,7 +501,7 @@ describe("usePendingGates", () => {
   });
 
   describe("handleApprovePlan", () => {
-    it("calls approve mutation and optimistically hides plan", async () => {
+    it("calls approve mutation with an explicit execution target and optimistically hides plan", async () => {
       const events = [
         makeEvent(0, "plan.created", { content: "Plan content", filePath: ".claude/plans/plan.md" }),
         makeEvent(1, "chat.completed", {}),
@@ -505,10 +510,22 @@ describe("usePendingGates", () => {
       expect(hookResult.showPlanDecisionComposer).toBe(true);
 
       await act(async () => {
-        await hookResult.handleApprovePlan();
+        await (hookResult.handleApprovePlan as unknown as (input: {
+          agent: string;
+          model: string;
+          modelProviderId: string | null;
+        }) => Promise<void>)({
+          agent: "codex",
+          model: "gpt-5.4",
+          modelProviderId: null,
+        });
       });
 
-      expect(mockApprovePlan).toHaveBeenCalledWith("t1");
+      expect(mockApprovePlan).toHaveBeenCalledWith("t1", {
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+      });
       expect(mockDeps.startWaitingAssistant).toHaveBeenCalledWith("t1");
       expect(hookResult.showPlanDecisionComposer).toBe(false);
     });
@@ -516,7 +533,15 @@ describe("usePendingGates", () => {
     it("does nothing when no thread is selected", async () => {
       render([], null);
       await act(async () => {
-        await hookResult.handleApprovePlan();
+        await (hookResult.handleApprovePlan as unknown as (input: {
+          agent: string;
+          model: string;
+          modelProviderId: string | null;
+        }) => Promise<void>)({
+          agent: "claude",
+          model: "claude-sonnet-4-6",
+          modelProviderId: null,
+        });
       });
       expect(mockApprovePlan).not.toHaveBeenCalled();
     });
@@ -530,11 +555,50 @@ describe("usePendingGates", () => {
       render(events);
 
       await act(async () => {
-        await hookResult.handleApprovePlan();
+        await (hookResult.handleApprovePlan as unknown as (input: {
+          agent: string;
+          model: string;
+          modelProviderId: string | null;
+        }) => Promise<void>)({
+          agent: "claude",
+          model: "claude-sonnet-4-6",
+          modelProviderId: null,
+        });
       });
 
       expect(mockDeps.clearWaitingAssistantForThread).toHaveBeenCalledWith("t1");
       expect(mockDeps.onError).toHaveBeenCalledWith("Approve failed");
+    });
+
+    it("forwards handoff results so the caller can navigate to the execution thread", async () => {
+      mockApprovePlan.mockResolvedValueOnce({
+        executionKind: "handoff",
+        sourceThreadId: "t1",
+        executionThreadId: "t-exec",
+      });
+      const events = [
+        makeEvent(0, "plan.created", { content: "Plan", filePath: ".claude/plans/plan.md" }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+
+      await act(async () => {
+        await (hookResult.handleApprovePlan as unknown as (input: {
+          agent: string;
+          model: string;
+          modelProviderId: string | null;
+        }) => Promise<void>)({
+          agent: "codex",
+          model: "gpt-5.4",
+          modelProviderId: null,
+        });
+      });
+
+      expect((mockDeps as PendingGatesDeps & { onPlanApproved: ReturnType<typeof vi.fn> }).onPlanApproved).toHaveBeenCalledWith({
+        executionKind: "handoff",
+        sourceThreadId: "t1",
+        executionThreadId: "t-exec",
+      });
     });
   });
 

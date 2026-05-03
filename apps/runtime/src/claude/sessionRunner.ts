@@ -96,7 +96,7 @@ function readClaudeSettingsEnv(path: string): Record<string, string> {
   }
 }
 
-function resolveConfiguredClaudeBaseUrl(cwd: string): string | undefined {
+function resolveConfiguredClaudeBaseUrl(cwd: string, runtimeEnv: NodeJS.ProcessEnv = process.env): string | undefined {
   const homeDir = process.env.HOME?.trim();
   const candidateSettingsPaths = [
     "/Library/Application Support/ClaudeCode/managed-settings.json",
@@ -110,16 +110,24 @@ function resolveConfiguredClaudeBaseUrl(cwd: string): string | undefined {
     return acc;
   }, {});
 
-  const configuredBaseUrl = mergedEnv.ANTHROPIC_BASE_URL?.trim();
-  return configuredBaseUrl && configuredBaseUrl.length > 0 ? configuredBaseUrl : undefined;
+  const candidateBaseUrls = [
+    runtimeEnv.ANTHROPIC_BASE_URL?.trim(),
+    mergedEnv.ANTHROPIC_BASE_URL?.trim(),
+  ].filter((baseUrl): baseUrl is string => Boolean(baseUrl && baseUrl.length > 0));
+
+  return candidateBaseUrls.find((baseUrl) => shouldUseNativeClaudeCliAlias(baseUrl)) ?? candidateBaseUrls[0];
 }
 
-function resolveRequestedNativeClaudeCliModel(model: string | undefined, cwd: string): string | undefined {
+function resolveRequestedNativeClaudeCliModel(
+  model: string | undefined,
+  cwd: string,
+  runtimeEnv: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   if (!model) {
     return undefined;
   }
 
-  const configuredBaseUrl = resolveConfiguredClaudeBaseUrl(cwd);
+  const configuredBaseUrl = resolveConfiguredClaudeBaseUrl(cwd, runtimeEnv);
   if (!shouldUseNativeClaudeCliAlias(configuredBaseUrl)) {
     return model;
   }
@@ -248,9 +256,13 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
   const configuredExecutable = process.env.CLAUDE_CODE_EXECUTABLE?.trim() || DEFAULT_CLAUDE_EXECUTABLE;
 
-  const baseEnv = buildClaudeRuntimeEnv({
+  const resolvedClaudeRuntimeEnv = buildClaudeRuntimeEnv({
     ...process.env,
   } as NodeJS.ProcessEnv);
+  const initialRequestedModel = providerApiKey || providerBaseUrl
+    ? (model || undefined)
+    : resolveRequestedNativeClaudeCliModel(model || undefined, cwd, resolvedClaudeRuntimeEnv);
+  const baseEnv = { ...resolvedClaudeRuntimeEnv };
   delete baseEnv.CLAUDECODE;
   delete baseEnv.ANTHROPIC_API_KEY;
   delete baseEnv.ANTHROPIC_BASE_URL;
@@ -444,6 +456,10 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
         return runAttempt(resolveNativeClaudeCliModel(requestedModel), false);
       }
 
+      if (state.finalOutput.trim().length > 0 && maps.startedToolUseIds.size === 0) {
+        throw new Error(state.finalOutput.trim(), { cause: error instanceof Error ? error : undefined });
+      }
+
       throw withClaudeSetupHint(error, recentStderr, state.recentDiagnostics, claudeExecutable);
     } finally {
       if (stream) {
@@ -455,10 +471,6 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
       }
     }
   }
-
-  const initialRequestedModel = providerApiKey || providerBaseUrl
-    ? (model || undefined)
-    : resolveRequestedNativeClaudeCliModel(model || undefined, cwd);
 
   return runAttempt(initialRequestedModel, true);
 };

@@ -15,6 +15,8 @@ const { threadsState, snapshotState } = vi.hoisted(() => ({
     data: undefined as ChatThread[] | undefined,
     isLoading: false,
     isFetching: false,
+    error: null as Error | null,
+    isError: false,
   },
   snapshotState: {
     data: null as ChatTimelineSnapshot | null,
@@ -28,6 +30,8 @@ vi.mock("../../../../hooks/queries/useThreads", () => ({
     data: threadsState.data,
     isLoading: threadsState.isLoading,
     isFetching: threadsState.isFetching,
+    error: threadsState.error,
+    isError: threadsState.isError,
   })),
 }));
 
@@ -54,7 +58,7 @@ vi.mock("./useThreadEventStream", () => ({
 }));
 
 const { useWorkspaceTimelineMock } = vi.hoisted(() => ({
-  useWorkspaceTimelineMock: vi.fn((): {
+  useWorkspaceTimelineMock: vi.fn((..._args: unknown[]): {
     items: ChatTimelineItem[];
     hasIncompleteCoverage: boolean;
     summary: ChatTimelineSnapshot["summary"];
@@ -111,6 +115,7 @@ vi.mock("../../../../lib/api", () => ({
 
 const invalidateQueriesMock = vi.fn();
 const cancelQueriesMock = vi.fn();
+const onErrorMock = vi.fn();
 
 let container: HTMLDivElement;
 let root: Root;
@@ -155,16 +160,19 @@ function HookHarness({
   desiredWorktreeId,
   repositoryId = null,
   selectedWorktreeId = "wt-1",
+  selectedWorktreeStatus = "active",
 }: {
   desiredThreadId?: string;
   desiredWorktreeId?: string | null;
   repositoryId?: string | null;
   selectedWorktreeId?: string | null;
+  selectedWorktreeStatus?: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" | null;
 }) {
-  hookResult = useChatSession(selectedWorktreeId, vi.fn(), undefined, {
+  hookResult = useChatSession(selectedWorktreeId, onErrorMock, undefined, {
     desiredThreadId,
     desiredWorktreeId,
     repositoryId,
+    worktreeStatus: selectedWorktreeStatus,
   });
   return null;
 }
@@ -174,6 +182,7 @@ function renderHook(
   repositoryId?: string | null,
   selectedWorktreeId: string | null = "wt-1",
   desiredWorktreeId?: string | null,
+  selectedWorktreeStatus: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" | null = "active",
 ) {
   act(() => {
     root.render(
@@ -183,18 +192,27 @@ function renderHook(
           desiredWorktreeId={desiredWorktreeId}
           repositoryId={repositoryId}
           selectedWorktreeId={selectedWorktreeId}
+          selectedWorktreeStatus={selectedWorktreeStatus}
         />
       </QueryClientProvider>,
     );
   });
 }
 
-function renderHookInStrictMode(desiredThreadId?: string, repositoryId?: string | null) {
+function renderHookInStrictMode(
+  desiredThreadId?: string,
+  repositoryId?: string | null,
+  selectedWorktreeStatus: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" | null = "active",
+) {
   act(() => {
     root.render(
       <StrictMode>
         <QueryClientProvider client={queryClient}>
-          <HookHarness desiredThreadId={desiredThreadId} repositoryId={repositoryId} />
+          <HookHarness
+            desiredThreadId={desiredThreadId}
+            repositoryId={repositoryId}
+            selectedWorktreeStatus={selectedWorktreeStatus}
+          />
         </QueryClientProvider>
       </StrictMode>,
     );
@@ -230,12 +248,21 @@ function makeEvent(idx: number, type: ChatEvent["type"], payload: Record<string,
   };
 }
 
+function makeMessageTimelineItem(message: ChatMessage): ChatTimelineItem {
+  return {
+    kind: "message",
+    message,
+  };
+}
+
 beforeEach(() => {
   resetPendingAutoCreateWorktreesForTest();
   resetThreadCollectionsForTest();
   threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
   threadsState.isLoading = false;
   threadsState.isFetching = false;
+  threadsState.error = null;
+  threadsState.isError = false;
   snapshotState.data = null;
   snapshotState.isLoading = false;
   snapshotState.isFetching = false;
@@ -268,6 +295,7 @@ beforeEach(() => {
   vi.mocked(useThreadSnapshot).mockClear();
   scheduleWindowIdleTaskMock.mockReset();
   scheduleWindowIdleTaskMock.mockReturnValue(() => undefined);
+  onErrorMock.mockReset();
 });
 
 afterEach(() => {
@@ -306,6 +334,26 @@ describe("useChatSession", () => {
 
     renderHook("thread-b");
     expect(hookResult.selectedThreadId).toBe("thread-b");
+  });
+
+  it("preserves a pending handoff thread selection until the thread list catches up", () => {
+    renderHook("thread-a");
+    expect(hookResult.selectedThreadId).toBe("thread-a");
+
+    act(() => {
+      hookResult.setSelectedThreadId("thread-handoff", { preserveWhileMissing: true });
+    });
+
+    renderHook("thread-a");
+    expect(hookResult.selectedThreadId).toBe("thread-handoff");
+
+    renderHook("thread-handoff");
+    expect(hookResult.selectedThreadId).toBe("thread-handoff");
+
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true), makeThread("thread-handoff")];
+    renderHook("thread-handoff");
+
+    expect(hookResult.selectedThreadId).toBe("thread-handoff");
   });
 
   it("updates composer permission mode for the selected thread", async () => {
@@ -348,6 +396,15 @@ describe("useChatSession", () => {
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+
+  it("surfaces thread list query failures through the page error handler", () => {
+    threadsState.error = new Error("Runtime database schema is out of date");
+    threadsState.isError = true;
+
+    renderHook("thread-a");
+
+    expect(onErrorMock).toHaveBeenCalledWith("Runtime database schema is out of date");
   });
 
   it("clears stale stop state after session activity sync without refetching the thread list", async () => {
@@ -2061,5 +2118,77 @@ describe("useChatSession", () => {
         createdAt: "2026-01-01T00:00:02Z",
       },
     ]);
+  });
+
+  it("does not let an empty snapshot replace local messages while a new thread starts running", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    snapshotState.data = makeSnapshot();
+    useWorkspaceTimelineMock.mockImplementation((...args: unknown[]) => ({
+      items: ((args[0] as ChatMessage[] | undefined) ?? []).map((message) => makeMessageTimelineItem(message)),
+      hasIncompleteCoverage: false,
+      summary: {
+        oldestRenderableKey: null,
+        oldestRenderableKind: null,
+        oldestRenderableMessageId: null,
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+    }));
+
+    const createThreadDeferred = createDeferred<ChatThread>();
+    const sendDeferred = createDeferred<ChatMessage>();
+    vi.mocked(api.createThread).mockReturnValue(createThreadDeferred.promise);
+    vi.mocked(api.sendMessage).mockReturnValue(sendDeferred.promise);
+
+    renderHook("thread-a");
+
+    let createPromise: Promise<void> | undefined;
+    await act(async () => {
+      createPromise = hookResult.createThreadAndSendMessage("Fresh thread", "Hello");
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadId).toMatch(/^optimistic-thread:/);
+
+    await act(async () => {
+      createThreadDeferred.resolve({
+        ...makeThread("thread-new"),
+        title: "Fresh thread",
+      });
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.selectedThreadUiStatus).toBe("running");
+    expect(hookResult.messages).toEqual([
+      expect.objectContaining({
+        threadId: "thread-new",
+        role: "user",
+        content: "Hello",
+      }),
+    ]);
+    expect(hookResult.timelineItems).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        message: expect.objectContaining({
+          threadId: "thread-new",
+          role: "user",
+          content: "Hello",
+        }),
+      }),
+    ]);
+
+    await act(async () => {
+      sendDeferred.resolve({
+        id: "user-1",
+        threadId: "thread-new",
+        seq: 0,
+        role: "user",
+        content: "Hello",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:02Z",
+      });
+      await createPromise;
+    });
   });
 });

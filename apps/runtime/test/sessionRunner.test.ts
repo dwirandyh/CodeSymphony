@@ -3065,6 +3065,99 @@ describe("thinking_delta", () => {
     }
   });
 
+  it("preemptively maps native Claude models to CLI aliases when the runtime environment uses a proxy base URL", () => {
+    const previousBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:8317";
+    try {
+      expect(__testing.resolveRequestedNativeClaudeCliModel("claude-sonnet-4-6", process.cwd())).toBe("sonnet");
+      expect(__testing.resolveRequestedNativeClaudeCliModel("claude-opus-4-6", process.cwd())).toBe("opus");
+    } finally {
+      if (previousBaseUrl === undefined) {
+        delete process.env.ANTHROPIC_BASE_URL;
+      } else {
+        process.env.ANTHROPIC_BASE_URL = previousBaseUrl;
+      }
+    }
+  });
+
+  it("surfaces assistant error text when Claude exits after returning an authentication failure", async () => {
+    const onText = vi.fn();
+    mockQuery.mockImplementation(() => {
+      return attachQueryControls((async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "session-auth-failure-1",
+          model: "glm-5.1",
+          apiKeySource: "ANTHROPIC_API_KEY",
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{
+              type: "text",
+              text: "Failed to authenticate. API Error: 403 quota exceeded.",
+            }],
+          },
+          error: "authentication_failed",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          duration_ms: 125,
+          duration_api_ms: 0,
+          num_turns: 1,
+          result: "Failed to authenticate. API Error: 403 quota exceeded.",
+          stop_reason: "stop_sequence",
+          session_id: "session-auth-failure-1",
+          total_cost_usd: 0,
+          usage: {
+            input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+            output_tokens: 0,
+            server_tool_use: {
+              web_search_requests: 0,
+              web_fetch_requests: 0,
+            },
+            service_tier: "standard",
+            cache_creation: {
+              ephemeral_1h_input_tokens: 0,
+              ephemeral_5m_input_tokens: 0,
+            },
+            inference_geo: "",
+            iterations: [],
+            speed: "standard",
+          },
+          modelUsage: {},
+          permission_denials: [],
+          uuid: "result-auth-failure-1",
+        };
+        throw new Error("Claude Code process exited with code 1");
+      })());
+    });
+
+    await expect(runClaudeWithStreaming({
+      prompt: "reply with ok",
+      sessionId: null,
+      cwd: process.cwd(),
+      permissionMode: "plan",
+      onText,
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    })).rejects.toThrow("Failed to authenticate. API Error: 403 quota exceeded.");
+
+    expect(onText).toHaveBeenCalledWith("Failed to authenticate. API Error: 403 quota exceeded.");
+  });
+
   it("retries native Claude runs with CLI aliases when proxy rejects canonical model ids", async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "codesymphony-claude-retry-"));
     const tempHome = join(tempRoot, "home");

@@ -526,4 +526,58 @@ describe("buildTimelineFromSeed", () => {
       filePath: "/Users/test/.cursor/plans/ship-cursor.plan.md",
     });
   });
+
+  it("suppresses raw handoff plan seed text when the plan card is the only semantic output", () => {
+    const planContent = "# Plan\n\n1. Implement the feature";
+    const messages = [
+      makeMessage("m1", 0, "user", "Please execute the approved plan."),
+      makeMessage("m2", 1, "assistant", planContent),
+    ];
+    const events = [
+      makeEvent(10, "plan.created", {
+        messageId: "m2",
+        content: planContent,
+        filePath: ".claude/plans/plan.md",
+        source: "claude_plan_file",
+      }),
+      makeEvent(11, "plan.approved", {
+        messageId: "m2",
+        filePath: ".claude/plans/plan.md",
+      }),
+      makeEvent(12, "tool.started", {
+        messageId: "m2",
+        toolName: "ExitPlanMode",
+        toolUseId: "exit-plan-1",
+      }),
+      makeEvent(13, "tool.finished", {
+        messageId: "m2",
+        toolName: "ExitPlanMode",
+        toolUseId: "exit-plan-1",
+        precedingToolUseIds: ["exit-plan-1"],
+      }),
+      makeEvent(14, "chat.completed", { messageId: "m3", threadMode: "default" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(result.items.some((item) =>
+      item.kind === "message"
+      && item.message.id === "m2",
+    )).toBe(false);
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "plan-file-output",
+          messageId: "m2",
+          content: planContent,
+          filePath: ".claude/plans/plan.md",
+        }),
+      ]),
+    );
+  });
 });

@@ -295,3 +295,4 @@ Manual end-to-end:
 Edge cases: duplicate approve/deny should no-op after the first decision; unknown `requestId` on resolve should `400`; no tool execution before resolution; restart during pending should fail clearly rather than hang.
 
 **Exit criteria:** no spurious `runtime-integrity-warning` in assistant output; gated work only proceeds after UI approve/deny; stream reaches a terminal `chat.completed` / `chat.failed`; `permission.requested` / `permission.resolved` events replay after reload.
+last updated: 2026-05-03

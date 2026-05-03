@@ -880,6 +880,11 @@ export function WorkspacePage() {
     onError: setError,
     startWaitingAssistant: chat.startWaitingAssistant,
     clearWaitingAssistantForThread: chat.clearWaitingAssistantForThread,
+    onPlanApproved: (result) => {
+      if (result.executionKind === "handoff") {
+        chat.setSelectedThreadId(result.executionThreadId, { preserveWhileMissing: true });
+      }
+    },
   });
   const [activePermissionRequestId, setActivePermissionRequestId] = useState<string | null>(null);
 
@@ -1972,6 +1977,15 @@ export function WorkspacePage() {
             ) : (
               <>
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                  {selectedChatThread?.handoffSourceThreadId ? (
+                    <div className="mx-auto w-full max-w-3xl px-3 pb-2">
+                      <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                        Plan handoff thread
+                        {" · "}
+                        Created from approved plan in thread {selectedChatThread.handoffSourceThreadId.slice(0, 8)}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="min-h-0 min-w-0 flex-1">
                     <ChatMessageList
                       threadId={chat.selectedThreadId}
@@ -1983,9 +1997,18 @@ export function WorkspacePage() {
                       footer={gates.showPlanDecisionComposer ? (
                         <PlanDecisionComposer
                           busy={gates.planActionBusy}
-                          onApprove={() => void gates.handleApprovePlan()}
+                          currentSelection={{
+                            agent: chat.composerAgent,
+                            model: chat.composerModel,
+                            modelProviderId: chat.composerModelProviderId,
+                          }}
+                          threadKind={selectedChatThread?.kind ?? null}
+                          hasMessages={chat.messages.length > 0}
+                          providers={modelProviders}
+                          cursorModels={cursorModels}
+                          opencodeModels={opencodeModels}
+                          onApprove={(selection) => void gates.handleApprovePlan(selection)}
                           onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
-                          onDismiss={() => void gates.handleDismissPlan()}
                         />
                       ) : null}
                     />

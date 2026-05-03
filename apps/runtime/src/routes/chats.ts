@@ -503,8 +503,8 @@ export async function registerChatRoutes(app: FastifyInstance) {
     const params = threadParams.parse(request.params);
 
     try {
-      await app.chatService.approvePlan(params.id);
-      return reply.code(204).send();
+      const result = await app.chatService.approvePlan(params.id, request.body ?? {});
+      return reply.code(200).send({ data: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to approve plan";
       return reply.code(400).send({ error: message });

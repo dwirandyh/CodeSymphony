@@ -122,6 +122,8 @@ model ChatThread {
   agent               CliAgent                    @default(claude)
   model               String                      @default("claude-sonnet-4-6")
   modelProviderId     String?
+  handoffSourceThreadId String?
+  handoffSourcePlanEventId String?
   claudeSessionId     String?
   codexSessionId      String?
   cursorSessionId     String?

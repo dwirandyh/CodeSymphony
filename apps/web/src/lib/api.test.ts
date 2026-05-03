@@ -359,8 +359,34 @@ describe("api", () => {
 
   describe("plan operations", () => {
     it("approves plan", async () => {
-      mockFetch.mockReturnValueOnce(mock204());
-      await api.approvePlan("t1");
+      mockFetch.mockReturnValueOnce(mockOk({
+        executionKind: "same_thread_switch",
+        sourceThreadId: "t1",
+        executionThreadId: "t1",
+      }));
+      const result = await api.approvePlan("t1", {
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+        executionKind: "same_thread_switch",
+      });
+      expect(result).toEqual({
+        executionKind: "same_thread_switch",
+        sourceThreadId: "t1",
+        executionThreadId: "t1",
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/threads/t1/plan/approve"),
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            agent: "codex",
+            model: "gpt-5.4",
+            modelProviderId: null,
+            executionKind: "same_thread_switch",
+          }),
+        }),
+      );
     });
 
     it("revises plan", async () => {
@@ -370,7 +396,12 @@ describe("api", () => {
 
     it("approve throws on error", async () => {
       mockFetch.mockReturnValueOnce(mockError(400, "fail"));
-      await expect(api.approvePlan("t1")).rejects.toThrow("fail");
+      await expect(api.approvePlan("t1", {
+        agent: "codex",
+        model: "gpt-5.4",
+        modelProviderId: null,
+        executionKind: "handoff",
+      })).rejects.toThrow("fail");
     });
 
     it("revise throws on error", async () => {

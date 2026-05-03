@@ -125,6 +125,8 @@ export const ChatThreadSchema = z.object({
   agent: CliAgentSchema.optional(),
   model: z.string().min(1).optional(),
   modelProviderId: z.string().nullable().optional(),
+  handoffSourceThreadId: z.string().nullable().optional(),
+  handoffSourcePlanEventId: z.string().nullable().optional(),
   claudeSessionId: z.string().nullable(),
   codexSessionId: z.string().nullable().optional(),
   cursorSessionId: z.string().nullable().optional(),
@@ -597,6 +599,52 @@ export const PlanRevisionInputSchema = z.object({
   feedback: z.string().trim().min(1),
 });
 export type PlanRevisionInput = z.infer<typeof PlanRevisionInputSchema>;
+
+export const ApprovePlanExecutionKindSchema = z.enum(["same_thread_switch", "handoff"]);
+export type ApprovePlanExecutionKind = z.infer<typeof ApprovePlanExecutionKindSchema>;
+
+export const ApprovePlanInputSchema = z.object({
+  agent: CliAgentSchema,
+  model: z.string().trim().min(1),
+  modelProviderId: z.string().trim().min(1).nullable().optional(),
+  executionKind: ApprovePlanExecutionKindSchema.optional(),
+});
+export type ApprovePlanInput = z.infer<typeof ApprovePlanInputSchema>;
+
+export function shouldHandoffApprovedPlanExecution(params: {
+  messageCount: number;
+  threadKind: ChatThreadKind;
+  sourceAgent: CliAgent;
+  sourceModelProviderId: string | null | undefined;
+  sourceProviderHasBaseUrl: boolean;
+  targetAgent: CliAgent;
+  targetModelProviderId: string | null | undefined;
+}): boolean {
+  if (params.messageCount === 0) {
+    return false;
+  }
+
+  if (params.threadKind !== "default") {
+    return true;
+  }
+
+  if (params.sourceAgent !== params.targetAgent) {
+    return true;
+  }
+
+  if (params.sourceAgent === "claude" && params.sourceProviderHasBaseUrl) {
+    return true;
+  }
+
+  return (params.sourceModelProviderId ?? null) !== (params.targetModelProviderId ?? null);
+}
+
+export const ApprovePlanResultSchema = z.object({
+  executionKind: ApprovePlanExecutionKindSchema,
+  sourceThreadId: z.string().trim().min(1),
+  executionThreadId: z.string().trim().min(1),
+});
+export type ApprovePlanResult = z.infer<typeof ApprovePlanResultSchema>;
 
 export const OpenWorktreeFileInputSchema = z.object({
   path: z.string().trim().min(1),

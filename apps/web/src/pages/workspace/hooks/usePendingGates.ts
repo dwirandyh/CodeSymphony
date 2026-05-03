@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChatEvent } from "@codesymphony/shared-types";
+import type { ApprovePlanInput, ApprovePlanResult, ChatEvent } from "@codesymphony/shared-types";
 import { useLiveQuery } from "@tanstack/react-db";
 import { api } from "../../../lib/api";
 import { getThreadCollections } from "../../../collections/threadCollections";
@@ -27,6 +27,7 @@ export interface PendingGatesDeps {
   onError: (msg: string | null) => void;
   startWaitingAssistant: (threadId: string) => void;
   clearWaitingAssistantForThread: (threadId: string) => void;
+  onPlanApproved?: (result: ApprovePlanResult) => void;
 }
 
 export function usePendingGates(
@@ -191,7 +192,7 @@ export function usePendingGates(
   // completion fallback for those snapshots.
   const isPlanReadyForReview = useMemo(() => isPlanReviewReady(events, pendingPlan), [events, pendingPlan]);
 
-  async function handleApprovePlan() {
+  async function handleApprovePlan(input: ApprovePlanInput) {
     if (!selectedThreadId) return;
 
     startWaitingAssistant(selectedThreadId);
@@ -199,10 +200,11 @@ export function usePendingGates(
     onError(null);
 
     try {
-      await api.approvePlan(selectedThreadId);
+      const result = await api.approvePlan(selectedThreadId, input);
       if (pendingPlan) {
         setClosedPlanDecision({ threadId: selectedThreadId, createdIdx: pendingPlan.createdIdx });
       }
+      deps.onPlanApproved?.(result);
     } catch (e) {
       clearWaitingAssistantForThread(selectedThreadId);
       onError(e instanceof Error ? e.message : "Failed to approve plan");
