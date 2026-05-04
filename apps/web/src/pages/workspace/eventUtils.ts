@@ -54,6 +54,45 @@ export function isClaudePlanFilePayload(payload: Record<string, unknown>): boole
   return isPlanFilePath(filePath);
 }
 
+function isReviewableCodexPlanContent(content: string): boolean {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const numberedListLines = lines.filter((line) => /^\d+\.\s+/.test(line));
+  const bulletListLines = lines.filter((line) => /^[-*]\s+/.test(line));
+  const hasHeading = lines.some((line) => /^#{1,6}\s+\S+/.test(line));
+
+  if (numberedListLines.length >= 2) {
+    return true;
+  }
+
+  return hasHeading && (numberedListLines.length + bulletListLines.length) >= 1;
+}
+
+function isClarificationShapedPlanCandidate(content: string): boolean {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const numberedListLines = lines.filter((line) => /^\d+\.\s+/.test(line));
+  if (numberedListLines.length >= 2) {
+    return false;
+  }
+
+  const firstLine = lines[0] ?? "";
+  const firstTwoLines = lines.slice(0, 2).join(" ");
+  const bulletListLines = lines.filter((line) => /^[-*]\s+/.test(line));
+  const hasClarifyingHeading = lines.some((line) => /^#{1,6}\s+.*question\b/i.test(line));
+  const hasQuestionLead = hasClarifyingHeading
+    || /^question\b/i.test(firstLine)
+    || firstTwoLines.includes("?");
+  const hasRecommendationLine = lines.some((line) => /^recommended answer\b\s*:?/i.test(line));
+  const optionBulletCount = lines.filter((line) => /^[-*]\s+option\b/i.test(line)).length;
+
+  return hasQuestionLead && (hasRecommendationLine || optionBulletCount >= 2 || bulletListLines.length >= 2);
+}
+
 type NormalizedPlanCreatedEvent = {
   id: string;
   messageId: string;
@@ -77,6 +116,14 @@ export function normalizePlanCreatedEvent(event: ChatEvent, orderedEvents: ChatE
   let content = payloadStringOrNull(event.payload.content) ?? "";
   let filePath = payloadStringOrNull(event.payload.filePath) ?? "plan.md";
   if (content.trim().length === 0) {
+    return null;
+  }
+
+  if ((event.payload.source === "codex_plan_item" || event.payload.source === "streaming_fallback") && isClarificationShapedPlanCandidate(content)) {
+    return null;
+  }
+
+  if (event.payload.source === "codex_plan_item" && !isReviewableCodexPlanContent(content)) {
     return null;
   }
 

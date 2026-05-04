@@ -190,6 +190,61 @@ describe("normalizePlanCreatedEvent", () => {
       createdAt: "2025-01-01T00:00:00.000Z",
     });
   });
+
+  it("ignores codex plan items that are still clarification questions", () => {
+    const events = [
+      makeEvent({
+        id: "plan-1",
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          messageId: "m2",
+          content: [
+            "Question 1: should the mobile app call the start endpoint immediately?",
+            "",
+            "Recommended answer: yes.",
+            "",
+            "The branch I want to close:",
+            "- Option A: unify start behavior around the backend response.",
+            "- Option B: keep the existing picker for first-time play.",
+            "",
+            "Which is it?",
+          ].join("\n"),
+          filePath: "codex-plan-item",
+          source: "codex_plan_item",
+        },
+      }),
+    ];
+
+    expect(normalizePlanCreatedEvent(events[0]!, events)).toBeNull();
+  });
+
+  it("ignores streaming fallback clarifications with heading-plus-options formatting", () => {
+    const events = [
+      makeEvent({
+        id: "plan-1",
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          messageId: "m2",
+          content: [
+            "### Clarifying Question",
+            "",
+            "What specific handoff are you referring to?",
+            "",
+            "Recommended answer:",
+            "- A code/task handoff from another human",
+            "- An existing codebase change or pull request I should review",
+          ].join("\n"),
+          filePath: ".claude/plans/opencode-plan.md",
+          source: "streaming_fallback",
+        },
+      }),
+      makeEvent({ id: "done", idx: 2, type: "chat.completed", payload: {} }),
+    ];
+
+    expect(normalizePlanCreatedEvent(events[0]!, events)).toBeNull();
+  });
 });
 
 describe("isPlanFilePath", () => {
