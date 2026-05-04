@@ -750,7 +750,30 @@ describe("usePendingGates", () => {
             "- A code/task handoff from another human",
             "- An existing codebase change or pull request I should review",
           ].join("\n"),
-          filePath: ".claude/plans/opencode-plan.md",
+          filePath: ".opencode/plans/opencode-plan.md",
+          source: "streaming_fallback",
+        }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+      expect(hookResult.pendingPlan).toBeNull();
+    });
+
+    it("ignores streaming_fallback clarifications with numbered clarification options", () => {
+      const events = [
+        makeEvent(0, "plan.created", {
+          content: [
+            "Saya akan menganalisis codebase untuk memahami implementasi plan card dan membuat rencana perbaikan.",
+            "",
+            "Saya tidak menemukan implementasi \"OpenCode plan card\" di repo Flutter ini. Sebelum menyusun rencana, bisa jelaskan:",
+            "",
+            "**Apa yang dimaksud dengan \"OpenCode plan card\" di konteks ini?**",
+            "",
+            "1. Konfigurasi agent/prompt OpenCode di repo ini yang perlu diperbaiki?",
+            "2. Fitur di dalam Flutter app yang menampilkan plan card dari AI?",
+            "3. Atau sesuatu yang berbeda?",
+          ].join("\n"),
+          filePath: ".opencode/plans/opencode-plan.md",
           source: "streaming_fallback",
         }),
         makeEvent(1, "chat.completed", {}),
@@ -816,6 +839,21 @@ describe("usePendingGates", () => {
       render(events);
       expect(hookResult.pendingPlan).not.toBeNull();
       expect(hookResult.pendingPlan?.content).toBe("Cursor plan");
+      expect(hookResult.showPlanDecisionComposer).toBe(true);
+    });
+
+    it("treats OpenCode streaming_fallback plan paths as canonical reviewable plans", () => {
+      const events = [
+        makeEvent(0, "plan.created", {
+          content: "OpenCode plan",
+          filePath: "/Users/test/.opencode/plans/ship-opencode.plan.md",
+          source: "streaming_fallback",
+        }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+      expect(hookResult.pendingPlan).not.toBeNull();
+      expect(hookResult.pendingPlan?.content).toBe("OpenCode plan");
       expect(hookResult.showPlanDecisionComposer).toBe(true);
     });
   });

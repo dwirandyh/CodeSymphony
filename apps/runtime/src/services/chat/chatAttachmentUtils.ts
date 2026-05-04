@@ -158,6 +158,10 @@ export function inferPlanDetectionSource(filePath: string, source?: PlanDetectio
   }
 
   if (!filePath.endsWith(".md")) return "streaming_fallback";
-  if (filePath.includes(".claude/plans/") || filePath.includes("codesymphony-claude-provider/plans/")) return "claude_plan_file";
+  if (
+    filePath.includes(".claude/plans/")
+    || filePath.includes(".opencode/plans/")
+    || filePath.includes("codesymphony-claude-provider/plans/")
+  ) return "claude_plan_file";
   return "streaming_fallback";
 }

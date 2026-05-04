@@ -10,6 +10,10 @@ describe("inferPlanDetectionSource", () => {
     expect(inferPlanDetectionSource(".claude/plans/plan.md", "claude_plan_file")).toBe("claude_plan_file");
   });
 
+  it("treats OpenCode plan files as canonical plan files", () => {
+    expect(inferPlanDetectionSource(".opencode/plans/final-plan.md")).toBe("claude_plan_file");
+  });
+
   it("falls back to streaming_fallback for non-plan paths", () => {
     expect(inferPlanDetectionSource("streaming-plan")).toBe("streaming_fallback");
   });

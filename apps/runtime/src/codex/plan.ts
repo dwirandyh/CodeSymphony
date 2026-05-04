@@ -9,6 +9,7 @@ const PLAN_APPROVAL_BOILERPLATE_PATTERNS = [
   /^approve this plan to continue\.?$/gim,
   /^let me know if you want me to proceed\.?$/gim,
 ];
+const TRAILING_APPROVAL_PROMPT_LINE_PATTERN = /^(apakah saya harus lanjut|apakah ada yang ingin|should i continue|would you like me to continue|do you want me to continue|is there anything (?:else )?(?:you'd|you would) like)/i;
 
 export type CodexPlanStep = {
   step: string;
@@ -36,9 +37,36 @@ function stripPlanApprovalBoilerplate(text: string): string {
     .trim();
 }
 
+function stripTrailingApprovalPrompt(text: string): string {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trimEnd());
+  let cutIndex = lines.length;
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim() ?? "";
+    if (line.length === 0) {
+      continue;
+    }
+    if (TRAILING_APPROVAL_PROMPT_LINE_PATTERN.test(line)) {
+      cutIndex = index;
+      continue;
+    }
+    break;
+  }
+
+  return lines
+    .slice(0, cutIndex)
+    .join("\n")
+    .replace(/\n(?:---|\*\*\*)\s*$/g, "")
+    .trim();
+}
+
 function normalizePlanCandidate(text: string | null | undefined): string | null {
   const proposedPlan = extractProposedPlanMarkdown(text ?? undefined);
-  const candidate = stripPlanApprovalBoilerplate((proposedPlan ?? text ?? "").trim());
+  const candidate = stripTrailingApprovalPrompt(
+    stripPlanApprovalBoilerplate((proposedPlan ?? text ?? "").trim()),
+  );
   return candidate.length > 0 ? candidate : null;
 }
 
@@ -78,21 +106,30 @@ export function isClarificationShapedPlanCandidate(text: string | null | undefin
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
   const numberedListLines = lines.filter((line) => /^\d+\.\s+/.test(line));
-  if (numberedListLines.length >= 2) {
-    return false;
-  }
-
   const firstLine = lines[0] ?? "";
   const firstTwoLines = lines.slice(0, 2).join(" ");
   const bulletListLines = lines.filter((line) => /^[-*]\s+/.test(line));
   const hasClarifyingHeading = lines.some((line) => /^#{1,6}\s+.*question\b/i.test(line));
+  const hasClarificationPrompt = lines.some((line) =>
+    /\b(clarifying question|need clarification|butuh klarifikasi|which is it|what specific|what do you mean|can you clarify|bisa jelaskan|apa yang dimaksud|sebelum menyusun rencana)\b/i.test(
+      line,
+    )
+    || /\?\s*$/.test(line),
+  );
   const hasQuestionLead = hasClarifyingHeading
     || /^question\b/i.test(firstLine)
+    || hasClarificationPrompt
     || firstTwoLines.includes("?");
   const hasRecommendationLine = lines.some((line) => /^recommended answer\b\s*:?/i.test(line));
   const optionBulletCount = lines.filter((line) => /^[-*]\s+option\b/i.test(line)).length;
 
-  return hasQuestionLead && (hasRecommendationLine || optionBulletCount >= 2 || bulletListLines.length >= 2);
+  return hasQuestionLead
+    && (
+      hasRecommendationLine
+      || optionBulletCount >= 2
+      || bulletListLines.length >= 2
+      || numberedListLines.length >= 2
+    );
 }
 
 export function buildCodexPlanMarkdown(plan: CodexStructuredPlan | null | undefined): string | null {

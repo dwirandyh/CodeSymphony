@@ -24,6 +24,7 @@ function isPlanFilePath(filePath: string): boolean {
 
   return (
     filePath.includes(".claude/plans/")
+    || filePath.includes(".opencode/plans/")
     || filePath.includes(".cursor/plans/")
     || filePath.includes("codesymphony-claude-provider/plans/")
   );

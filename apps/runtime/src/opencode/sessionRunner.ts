@@ -18,6 +18,7 @@ import {
   skillNameFromUnknownToolInput,
 } from "../claude/toolClassification.js";
 import { resolveHeuristicPlanContent } from "../codex/plan.js";
+import { runOpencodePlanModeViaAcp } from "./acpRunner.js";
 import { ensureConfiguredOpencodeBinaryOnPath } from "./binary.js";
 
 const OPENCODE_CUSTOM_PROVIDER_ID = "codesymphony_custom";
@@ -25,7 +26,7 @@ const OPENCODE_SERVER_HOST = "127.0.0.1";
 const OPENCODE_SERVER_START_TIMEOUT_MS = 20_000;
 const OPENCODE_INITIAL_ACTIVITY_TIMEOUT_MS = 30_000;
 const OPENCODE_PROGRESS_STALL_TIMEOUT_MS = 45_000;
-const OPENCODE_PLAN_FILE_PATH = ".claude/plans/opencode-plan.md";
+const OPENCODE_PLAN_FILE_PATH = ".opencode/plans/opencode-plan.md";
 
 type ToolLifecycleEntry = {
   status: "pending" | "running" | "completed" | "error" | null;
@@ -447,8 +448,6 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   onSubagentStarted,
   onSubagentStopped,
 }) => {
-  void onQuestionRequest;
-
   if (listSlashCommandsOnly) {
     return {
       output: "",
@@ -456,6 +455,35 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
       slashCommands: [],
     };
   }
+
+  const hasCustomProviderOverride = Boolean(providerApiKey?.trim() || providerBaseUrl?.trim());
+  if (permissionMode === "plan" && !hasCustomProviderOverride) {
+    return await runOpencodePlanModeViaAcp({
+      prompt,
+      sessionId,
+      listSlashCommandsOnly,
+      cwd,
+      abortController,
+      onSessionId,
+      permissionMode,
+      threadPermissionMode,
+      autoAcceptTools,
+      model,
+      providerApiKey,
+      providerBaseUrl,
+      onText,
+      onToolStarted,
+      onToolOutput,
+      onToolFinished,
+      onQuestionRequest,
+      onPermissionRequest,
+      onPlanFileDetected,
+      onSubagentStarted,
+      onSubagentStopped,
+    });
+  }
+
+  void onQuestionRequest;
 
   const { config, model: resolvedModel, agent } = buildOpencodeRuntimeConfig({
     permissionMode,
