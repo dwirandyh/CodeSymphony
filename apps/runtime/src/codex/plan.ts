@@ -42,7 +42,7 @@ function normalizePlanCandidate(text: string | null | undefined): string | null 
   return candidate.length > 0 ? candidate : null;
 }
 
-function hasActionablePlanContent(text: string | null | undefined): boolean {
+export function isReviewableCodexPlanContent(text: string | null | undefined): boolean {
   const candidate = normalizePlanCandidate(text);
   if (!candidate) {
     return false;
@@ -52,17 +52,47 @@ function hasActionablePlanContent(text: string | null | undefined): boolean {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  const listLines = lines.filter((line) => /^([-*]|\d+\.)\s+/.test(line));
+  const numberedListLines = lines.filter((line) => /^\d+\.\s+/.test(line));
+  const bulletListLines = lines.filter((line) => /^[-*]\s+/.test(line));
+  const hasHeading = lines.some((line) => /^#{1,6}\s+\S+/.test(line));
 
-  if (listLines.length >= 2) {
+  if (numberedListLines.length >= 2) {
     return true;
   }
 
-  if (lines.some((line) => /^#{1,6}\s+\S+/.test(line)) && lines.length >= 2) {
+  if (hasHeading && (numberedListLines.length + bulletListLines.length) >= 1) {
     return true;
   }
 
-  return candidate.length >= 120 && lines.length >= 3;
+  return false;
+}
+
+export function isClarificationShapedPlanCandidate(text: string | null | undefined): boolean {
+  const candidate = normalizePlanCandidate(text);
+  if (!candidate) {
+    return false;
+  }
+
+  const lines = candidate
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const numberedListLines = lines.filter((line) => /^\d+\.\s+/.test(line));
+  if (numberedListLines.length >= 2) {
+    return false;
+  }
+
+  const firstLine = lines[0] ?? "";
+  const firstTwoLines = lines.slice(0, 2).join(" ");
+  const bulletListLines = lines.filter((line) => /^[-*]\s+/.test(line));
+  const hasClarifyingHeading = lines.some((line) => /^#{1,6}\s+.*question\b/i.test(line));
+  const hasQuestionLead = hasClarifyingHeading
+    || /^question\b/i.test(firstLine)
+    || firstTwoLines.includes("?");
+  const hasRecommendationLine = lines.some((line) => /^recommended answer\b\s*:?/i.test(line));
+  const optionBulletCount = lines.filter((line) => /^[-*]\s+option\b/i.test(line)).length;
+
+  return hasQuestionLead && (hasRecommendationLine || optionBulletCount >= 2 || bulletListLines.length >= 2);
 }
 
 export function buildCodexPlanMarkdown(plan: CodexStructuredPlan | null | undefined): string | null {
@@ -99,7 +129,7 @@ export function buildCodexPlanMarkdown(plan: CodexStructuredPlan | null | undefi
   }
 
   const content = lines.join("\n").trim();
-  return hasActionablePlanContent(content) ? content : null;
+  return isReviewableCodexPlanContent(content) ? content : null;
 }
 
 export function findPlanTextInTurn(turn: Record<string, unknown> | undefined): string | null {
@@ -123,7 +153,7 @@ export function findPlanTextInTurn(turn: Record<string, unknown> | undefined): s
   return null;
 }
 
-export function resolveCodexPlanContent(input: {
+export function resolveHeuristicPlanContent(input: {
   planText?: string | null;
   structuredPlan?: CodexStructuredPlan | null;
   agentOutput?: string | null;
@@ -135,7 +165,34 @@ export function resolveCodexPlanContent(input: {
   ];
 
   for (const candidate of candidates) {
-    if (hasActionablePlanContent(candidate)) {
+    if (isClarificationShapedPlanCandidate(candidate)) {
+      continue;
+    }
+    if (isReviewableCodexPlanContent(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+// Backward-compatible alias for runners that still import the older helper name.
+export const resolveCodexPlanContent = resolveHeuristicPlanContent;
+
+export function resolveExplicitCodexPlanContent(input: {
+  planText?: string | null;
+  structuredPlan?: CodexStructuredPlan | null;
+  agentOutput?: string | null;
+}): string | null {
+  const explicitAgentOutput = extractProposedPlanMarkdown(input.agentOutput ?? undefined);
+  const candidates = [
+    normalizePlanCandidate(input.planText),
+    buildCodexPlanMarkdown(input.structuredPlan),
+    normalizePlanCandidate(explicitAgentOutput),
+  ];
+
+  for (const candidate of candidates) {
+    if (isReviewableCodexPlanContent(candidate)) {
       return candidate;
     }
   }

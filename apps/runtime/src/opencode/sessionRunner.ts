@@ -17,7 +17,7 @@ import {
   searchParamsFromUnknownToolInput,
   skillNameFromUnknownToolInput,
 } from "../claude/toolClassification.js";
-import { resolveCodexPlanContent } from "../codex/plan.js";
+import { resolveHeuristicPlanContent } from "../codex/plan.js";
 import { ensureConfiguredOpencodeBinaryOnPath } from "./binary.js";
 
 const OPENCODE_CUSTOM_PROVIDER_ID = "codesymphony_custom";
@@ -1028,7 +1028,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
     }
 
     if (permissionMode === "plan") {
-      const planContent = resolveCodexPlanContent({
+      const planContent = resolveHeuristicPlanContent({
         agentOutput: fullOutput,
       });
       if (planContent) {

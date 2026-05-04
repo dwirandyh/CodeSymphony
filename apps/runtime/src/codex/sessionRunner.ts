@@ -13,6 +13,7 @@ import {
   PLAN_FILE_PATH,
   type CodexPlanStep,
   findPlanTextInTurn,
+  resolveExplicitCodexPlanContent,
   resolveCodexPlanContent,
   type CodexStructuredPlan,
 } from "./plan.js";
@@ -37,6 +38,8 @@ export {
 } from "./collaborationMode.js";
 export {
   buildCodexPlanMarkdown,
+  resolveHeuristicPlanContent,
+  resolveExplicitCodexPlanContent,
   resolveCodexPlanContent,
 } from "./plan.js";
 export { selectPrimaryCodexFileChange } from "./toolContext.js";
@@ -1123,7 +1126,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
 
     const normalizedOutput = finalOutput.trim().length > 0 ? finalOutput : fallbackAgentOutput;
     const detectedPlanContent = permissionMode === "plan"
-      ? resolveCodexPlanContent({
+      ? resolveExplicitCodexPlanContent({
         planText: latestPlanText,
         structuredPlan: latestStructuredPlan,
         agentOutput: normalizedOutput,

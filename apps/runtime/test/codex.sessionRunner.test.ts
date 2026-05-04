@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
   buildCodexPlanMarkdown,
+  resolveExplicitCodexPlanContent,
+  resolveHeuristicPlanContent,
   requestedPermissionsIncludeFileWrite,
   resolveCodexPlanContent,
   resolveCodexRuntimePolicy,
@@ -38,7 +40,7 @@ describe("codex session runner plan helpers", () => {
   });
 
   it("falls back to the proposed_plan block in agent output", () => {
-    expect(resolveCodexPlanContent({
+    expect(resolveHeuristicPlanContent({
       planText: "Reply with approval if you want me to execute it.",
       agentOutput: [
         "Here is the plan.",
@@ -54,6 +56,83 @@ describe("codex session runner plan helpers", () => {
         "1. Reproduce the failure locally",
         "2. Patch the failing selector flow",
         "3. Re-run plan mode dogfood",
+      ].join("\n"),
+    );
+  });
+
+  it("does not treat clarification questions as a reviewable plan", () => {
+    expect(resolveHeuristicPlanContent({
+      planText: [
+        "Question 1: should the mobile app call the start endpoint immediately?",
+        "",
+        "Recommended answer: yes.",
+        "",
+        "The branch I want to close:",
+        "- Option A: unify start behavior around the backend response.",
+        "- Option B: keep the existing picker for first-time play.",
+        "",
+        "Which is it?",
+      ].join("\n"),
+    })).toBeNull();
+  });
+
+  it("does not treat heading-plus-options clarifications as heuristic plans", () => {
+    expect(resolveHeuristicPlanContent({
+      agentOutput: [
+        "### Clarifying Question",
+        "",
+        "What specific handoff are you referring to?",
+        "",
+        "Recommended answer:",
+        "- A code/task handoff from another human",
+        "- An existing codebase change or pull request I should review",
+      ].join("\n"),
+    })).toBeNull();
+  });
+
+  it("keeps resolveCodexPlanContent as a compatibility alias", () => {
+    expect(resolveCodexPlanContent({
+      agentOutput: [
+        "<proposed_plan>",
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
+        "</proposed_plan>",
+      ].join("\n"),
+    })).toBe(resolveHeuristicPlanContent({
+      agentOutput: [
+        "<proposed_plan>",
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
+        "</proposed_plan>",
+      ].join("\n"),
+    }));
+  });
+
+  it("only accepts explicit Codex plan sources", () => {
+    expect(resolveExplicitCodexPlanContent({
+      agentOutput: [
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
+      ].join("\n"),
+    })).toBeNull();
+
+    expect(resolveExplicitCodexPlanContent({
+      agentOutput: [
+        "Here is the plan.",
+        "<proposed_plan>",
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
+        "</proposed_plan>",
+      ].join("\n"),
+    })).toBe(
+      [
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
       ].join("\n"),
     );
   });

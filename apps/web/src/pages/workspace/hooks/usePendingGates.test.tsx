@@ -704,7 +704,7 @@ describe("usePendingGates", () => {
     it("treats codex_plan_item as a canonical reviewable plan", () => {
       const events = [
         makeEvent(0, "plan.created", {
-          content: "Codex plan content",
+          content: "# Codex Plan\n- Step 1",
           filePath: "codex-plan-item",
           source: "codex_plan_item",
         }),
@@ -712,7 +712,51 @@ describe("usePendingGates", () => {
       ];
       render(events);
       expect(hookResult.pendingPlan).not.toBeNull();
-      expect(hookResult.pendingPlan?.content).toBe("Codex plan content");
+      expect(hookResult.pendingPlan?.content).toBe("# Codex Plan\n- Step 1");
+    });
+
+    it("ignores codex_plan_item clarification questions", () => {
+      const events = [
+        makeEvent(0, "plan.created", {
+          content: [
+            "Question 1: should the mobile app call the start endpoint immediately?",
+            "",
+            "Recommended answer: yes.",
+            "",
+            "The branch I want to close:",
+            "- Option A: unify start behavior around the backend response.",
+            "- Option B: keep the existing picker for first-time play.",
+            "",
+            "Which is it?",
+          ].join("\n"),
+          filePath: "codex-plan-item",
+          source: "codex_plan_item",
+        }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+      expect(hookResult.pendingPlan).toBeNull();
+    });
+
+    it("ignores streaming_fallback clarification questions with heading-plus-options formatting", () => {
+      const events = [
+        makeEvent(0, "plan.created", {
+          content: [
+            "### Clarifying Question",
+            "",
+            "What specific handoff are you referring to?",
+            "",
+            "Recommended answer:",
+            "- A code/task handoff from another human",
+            "- An existing codebase change or pull request I should review",
+          ].join("\n"),
+          filePath: ".claude/plans/opencode-plan.md",
+          source: "streaming_fallback",
+        }),
+        makeEvent(1, "chat.completed", {}),
+      ];
+      render(events);
+      expect(hookResult.pendingPlan).toBeNull();
     });
 
     it("handles streaming_fallback with matching real write", () => {
