@@ -14,6 +14,7 @@ import {
   getInlineEventMessageId,
   hasUnclosedCodeFence,
   isBashToolEvent,
+  isExploreLikeBashCommand,
   isExploreLikeBashEvent,
   isLikelyDiffContent,
   isPlanFilePath,
@@ -553,8 +554,8 @@ export function buildTimelineFromSeed(params: {
     const exploreLikeBashEventIds = new Set<string>();
     if (message.role === "assistant") {
       for (const run of allBashRuns) {
-        const command = nonSubagentContext.find((event) => run.eventIds.has(event.id) && event.type === "tool.started");
-        if (command && isExploreLikeBashEvent(command)) {
+        const runEvents = nonSubagentContext.filter((event) => run.eventIds.has(event.id));
+        if (runEvents.some((event) => isExploreLikeBashEvent(event))) {
           run.eventIds.forEach((id) => exploreLikeBashEventIds.add(id));
         }
       }
@@ -569,6 +570,7 @@ export function buildTimelineFromSeed(params: {
 
     const bashRunEventIds = new Set<string>();
     const permissionToolNameByRequestId = new Map<string, string>();
+    const exploreLikePermissionEventIds = new Set<string>();
     if (message.role === "assistant") {
       for (const event of nonSubagentContext) {
         if (event.type !== "permission.requested") {
@@ -580,6 +582,28 @@ export function buildTimelineFromSeed(params: {
           continue;
         }
         permissionToolNameByRequestId.set(requestId, toolName.toLowerCase());
+        if (toolName.toLowerCase() === "bash") {
+          const command = payloadStringOrNull(event.payload.command);
+          if (isExploreLikeBashCommand(command)) {
+            exploreLikePermissionEventIds.add(event.id);
+          }
+        }
+      }
+      for (const event of nonSubagentContext) {
+        if (event.type !== "permission.resolved") {
+          continue;
+        }
+        const requestId = payloadStringOrNull(event.payload.requestId);
+        if (requestId && exploreLikePermissionEventIds.size > 0 && permissionToolNameByRequestId.get(requestId) === "bash") {
+          const requestedEvent = nonSubagentContext.find((candidate) =>
+            candidate.type === "permission.requested"
+            && payloadStringOrNull(candidate.payload.requestId) === requestId
+            && exploreLikePermissionEventIds.has(candidate.id),
+          );
+          if (requestedEvent) {
+            exploreLikePermissionEventIds.add(event.id);
+          }
+        }
       }
       for (const run of bashRuns) {
         run.eventIds.forEach((eventId) => bashRunEventIds.add(eventId));
@@ -590,6 +614,9 @@ export function buildTimelineFromSeed(params: {
       ? nonSubagentContext.filter((event) => {
         if (exploreLikeBashEventIds.has(event.id)) {
           return true;
+        }
+        if (exploreLikePermissionEventIds.has(event.id)) {
+          return false;
         }
         if (isBashToolEvent(event) || bashRunEventIds.has(event.id)) {
           return false;
@@ -699,6 +726,8 @@ export function buildTimelineFromSeed(params: {
       for (const group of exploreActivityGroups) {
         group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
       }
+      exploreLikeBashEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+      exploreLikePermissionEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
     }
 
     const hasInlineActivityCards =

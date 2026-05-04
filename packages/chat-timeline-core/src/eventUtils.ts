@@ -288,36 +288,150 @@ function extractShellCommandHead(segment: string): string | null {
   return head && head.length > 0 ? head : null;
 }
 
-function isExploreLikeBashCommand(command: string | null | undefined): boolean {
+function looksLikeShellFileTarget(value: string): boolean {
+  return /[./\\]/.test(value) || /\.[a-z0-9]{1,10}$/i.test(value);
+}
+
+function extractLastShellArgument(segment: string): string | null {
+  return segment.match(/(?:^|\s)(["'`])([^"'`]+)\1\s*$/)?.[2]
+    ?? segment.match(/(?:^|\s)([^\s"'`]+)\s*$/)?.[1]
+    ?? null;
+}
+
+function stripOuterMatchingQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) {
+    return trimmed;
+  }
+
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if ((first === "'" || first === "\"" || first === "`") && last === first) {
+    const inner = trimmed.slice(1, -1);
+    if (first === "\"") {
+      return inner.replace(/\\"/g, "\"");
+    }
+    if (first === "'") {
+      return inner.replace(/\\'/g, "'");
+    }
+    if (first === "`") {
+      return inner.replace(/\\`/g, "`");
+    }
+    return inner;
+  }
+
+  return trimmed;
+}
+
+function unwrapShellInvokerSegment(segment: string): string {
+  let current = segment.trim();
+
+  for (let depth = 0; depth < 2; depth += 1) {
+    const match = current.match(
+      /^(?:(?:\/usr\/bin\/env)\s+)?(?:(?:\/bin\/)?(?:bash|zsh|sh))\s+-lc\s+([\s\S]+)$/i,
+    );
+    if (!match) {
+      break;
+    }
+
+    const inner = stripOuterMatchingQuotes(match[1] ?? "");
+    if (inner.trim().length === 0 || inner.trim() === current) {
+      break;
+    }
+
+    current = inner.trim();
+  }
+
+  return current;
+}
+
+function normalizeExploreShellSegment(segment: string): string {
+  return unwrapShellInvokerSegment(segment).replace(/^rtk\b(?:\s+proxy\b)?\s+/i, "").trim();
+}
+
+function isReadOnlySedCommand(segment: string): boolean {
+  const normalized = normalizeExploreShellSegment(segment);
+  const head = extractShellCommandHead(normalized)?.toLowerCase();
+  if (head !== "sed") {
+    return false;
+  }
+
+  if (/(^|\s)-i(?:[^\s]*)?(?=\s|$)/.test(normalized)) {
+    return false;
+  }
+
+  return /(^|\s)-n(?=\s|$)/.test(normalized);
+}
+
+function isLineNumberingReadCommand(segment: string): boolean {
+  const normalized = normalizeExploreShellSegment(segment);
+  const head = extractShellCommandHead(normalized)?.toLowerCase();
+  if (head !== "nl") {
+    return false;
+  }
+
+  const candidate = extractLastShellArgument(normalized);
+  return candidate != null && looksLikeShellFileTarget(candidate);
+}
+
+type ExploreBashSegmentKind = "ls" | "read" | "search";
+
+function classifyExploreBashCommand(command: string | null | undefined): {
+  hasRead: boolean;
+  hasSearch: boolean;
+} | null {
   if (!command || command.trim().length === 0) {
-    return false;
+    return null;
   }
 
-  const segments = splitTopLevelShellCommandSegments(command);
+  const normalizedCommand = normalizeExploreShellSegment(command);
+  const segments = splitTopLevelShellCommandSegments(normalizedCommand);
   if (!segments || segments.length === 0) {
-    return false;
+    return null;
   }
 
-  let hasStrictExploreHead = false;
+  let hasRead = false;
+  let hasSearch = false;
   for (const segment of segments) {
-    const head = extractShellCommandHead(segment)?.toLowerCase();
+    const normalized = normalizeExploreShellSegment(segment);
+    const head = extractShellCommandHead(normalized)?.toLowerCase();
     if (!head) {
-      return false;
+      return null;
     }
 
-    if (EXPLORE_BASH_COMMAND_PATTERN.test(head)) {
-      hasStrictExploreHead = true;
-      continue;
+    let kind: ExploreBashSegmentKind | null = null;
+    if (isReadOnlySedCommand(normalized)) {
+      kind = "read";
+    } else if (isLineNumberingReadCommand(normalized)) {
+      kind = "read";
+    } else if (EXPLORE_BASH_COMMAND_PATTERN.test(head)) {
+      kind = "search";
+    } else if (head === "ls") {
+      kind = "ls";
     }
 
-    if (head === "ls") {
-      continue;
+    if (!kind) {
+      return null;
     }
 
-    return false;
+    if (kind === "read") {
+      hasRead = true;
+    } else if (kind === "search") {
+      hasSearch = true;
+    }
   }
 
-  return hasStrictExploreHead;
+  return { hasRead, hasSearch };
+}
+
+export function isReadLikeBashCommand(command: string | null | undefined): boolean {
+  const classification = classifyExploreBashCommand(command);
+  return classification != null && classification.hasRead && !classification.hasSearch;
+}
+
+export function isExploreLikeBashCommand(command: string | null | undefined): boolean {
+  const classification = classifyExploreBashCommand(command);
+  return classification != null && (classification.hasRead || classification.hasSearch);
 }
 
 function extractBashCommandFromPayload(payload: Record<string, unknown>): string | null {
@@ -336,6 +450,14 @@ export function isExploreLikeBashEvent(event: ChatEvent): boolean {
   }
   const command = extractBashCommandFromPayload(event.payload);
   return isExploreLikeBashCommand(command);
+}
+
+export function isReadLikeBashEvent(event: ChatEvent): boolean {
+  if (!isBashToolEvent(event)) {
+    return false;
+  }
+  const command = extractBashCommandFromPayload(event.payload);
+  return isReadLikeBashCommand(command);
 }
 
 const GIT_STATUS_INVALIDATION_EVENT_TYPES = new Set<ChatEvent["type"]>([

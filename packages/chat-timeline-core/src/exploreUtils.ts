@@ -1,5 +1,14 @@
 import type { ChatEvent, ExploreActivityEntry, ReadFileTimelineEntry } from "@codesymphony/shared-types";
-import { finishedToolUseIds, isExploreLikeBashEvent, isReadToolEvent, isSearchToolEvent, payloadStringOrNull } from "./eventUtils.js";
+import {
+  finishedToolUseIds,
+  isExploreLikeBashCommand,
+  isExploreLikeBashEvent,
+  isReadLikeBashEvent,
+  isReadToolEvent,
+  isRecord,
+  isSearchToolEvent,
+  payloadStringOrNull,
+} from "./eventUtils.js";
 import type { ExploreActivityGroup, ExploreRunKind, ExploreRunState } from "./types.js";
 
 export function shortenReadTargetForDisplay(target: string): string {
@@ -26,6 +35,10 @@ function extractReadTargetFromSummary(summary: string): string | null {
     return null;
   }
 
+  if (!/^(Read|Opened|Cat)\s+/i.test(summary)) {
+    return null;
+  }
+
   const stripped = summary.replace(/^(Read|Opened|Cat)\s+/i, "").trim();
   if (stripped.length === 0) {
     return null;
@@ -33,6 +46,109 @@ function extractReadTargetFromSummary(summary: string): string | null {
 
   const cleaned = stripped.replace(/^["'`]+|["'`]+$/g, "");
   return cleaned.length > 0 ? cleaned : null;
+}
+
+function stripOuterMatchingQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) {
+    return trimmed;
+  }
+
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if ((first === "'" || first === "\"" || first === "`") && last === first) {
+    const inner = trimmed.slice(1, -1);
+    if (first === "\"") {
+      return inner.replace(/\\"/g, "\"");
+    }
+    if (first === "'") {
+      return inner.replace(/\\'/g, "'");
+    }
+    if (first === "`") {
+      return inner.replace(/\\`/g, "`");
+    }
+    return inner;
+  }
+
+  return trimmed;
+}
+
+function unwrapShellInvokerCommand(command: string): string {
+  let current = command.trim();
+
+  for (let depth = 0; depth < 2; depth += 1) {
+    const match = current.match(
+      /^(?:(?:\/usr\/bin\/env)\s+)?(?:(?:\/bin\/)?(?:bash|zsh|sh))\s+-lc\s+([\s\S]+)$/i,
+    );
+    if (!match) {
+      break;
+    }
+
+    const inner = stripOuterMatchingQuotes(match[1] ?? "");
+    if (inner.trim().length === 0 || inner.trim() === current) {
+      break;
+    }
+
+    current = inner.trim();
+  }
+
+  return current;
+}
+
+function normalizeRtkWrappedCommand(command: string): string {
+  return unwrapShellInvokerCommand(command).replace(/^rtk\b(?:\s+proxy\b)?\s+/i, "").trim();
+}
+
+function extractCommandFromRanSummary(summary: string): string | null {
+  const match = summary.trim().match(/^ran\s+([\s\S]+)$/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function extractCommandFromFailedSummary(summary: string): string | null {
+  const match = summary.trim().match(/^command failed:\s+([\s\S]+)$/i);
+  return match?.[1]?.trim() ?? null;
+}
+
+function looksLikeFileTarget(value: string): boolean {
+  return /[./\\]/.test(value) || /\.[a-z0-9]{1,10}$/i.test(value);
+}
+
+function extractNlTargetFromCommand(command: string): string | null {
+  const segments = command.split("|").map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+  for (const segment of segments) {
+    if (!/^nl\b/i.test(segment)) {
+      continue;
+    }
+
+    const candidate = segment.match(/(?:^|\s)(["'`])([^"'`]+)\1\s*$/)?.[2]
+      ?? segment.match(/(?:^|\s)([^\s"'`]+)\s*$/)?.[1]
+      ?? null;
+    if (candidate && looksLikeFileTarget(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function extractReadTargetFromBashCommand(command: string): string | null {
+  const normalized = normalizeRtkWrappedCommand(command);
+  if (!/^sed\b/i.test(normalized)) {
+    return extractNlTargetFromCommand(normalized);
+  }
+
+  if (/(^|\s)-i(?:[^\s]*)?(?=\s|$)/.test(normalized) || !/(^|\s)-n(?=\s|$)/.test(normalized)) {
+    return null;
+  }
+
+  const candidate = normalized.match(/(?:^|\s)(["'`])([^"'`]+)\1\s*$/)?.[2]
+    ?? normalized.match(/(?:^|\s)([^\s"'`]+)\s*$/)?.[1]
+    ?? null;
+  if (!candidate || !looksLikeFileTarget(candidate)) {
+    return extractNlTargetFromCommand(normalized);
+  }
+
+  return candidate;
 }
 
 export function extractReadFileEntry(event: ChatEvent): ReadFileTimelineEntry | null {
@@ -55,15 +171,35 @@ export function extractReadFileEntry(event: ChatEvent): ReadFileTimelineEntry | 
       };
     }
 
+    const directCommand = payloadStringOrNull(event.payload.command);
+    const directTarget = directCommand ? extractReadTargetFromBashCommand(directCommand) : null;
+    if (directTarget) {
+      return {
+        label: shortenReadTargetForDisplay(directTarget),
+        openPath: directTarget,
+      };
+    }
+
+    const toolInput = isRecord(event.payload.toolInput) ? event.payload.toolInput : null;
+    const toolCommand = toolInput ? payloadStringOrNull(toolInput.command) : null;
+    const toolTarget = toolCommand ? extractReadTargetFromBashCommand(toolCommand) : null;
+    if (toolTarget) {
+      return {
+        label: shortenReadTargetForDisplay(toolTarget),
+        openPath: toolTarget,
+      };
+    }
+
     return {
       label: "file",
       openPath: null,
     };
   }
+
   return null;
 }
 
-function normalizeSearchSummary(summary: string): string {
+export function normalizeSearchSummary(summary: string): string {
   const normalized = summary.trim();
   if (normalized.length === 0) {
     return "Searched";
@@ -71,6 +207,10 @@ function normalizeSearchSummary(summary: string): string {
 
   if (/^searched\s+for\s+/i.test(normalized)) {
     return normalized;
+  }
+
+  if (/^search\s+for\s+/i.test(normalized)) {
+    return `Searched for ${normalized.replace(/^search\s+for\s+/i, "")}`;
   }
 
   if (/^completed\s+(glob|grep|search|find|list|scan|ls)\b/i.test(normalized)) {
@@ -81,10 +221,10 @@ function normalizeSearchSummary(summary: string): string {
 }
 
 export function searchContextFromEvent(event: ChatEvent): { toolName: string | null; searchParams: string | null } {
-  const toolName = payloadStringOrNull(event.payload.toolName);
+  const rawToolName = payloadStringOrNull(event.payload.toolName);
   const searchParams = payloadStringOrNull(event.payload.searchParams);
   return {
-    toolName: toolName ? toolName.trim() : null,
+    toolName: rawToolName && !/^bash$/i.test(rawToolName) ? rawToolName.trim() : null,
     searchParams: searchParams ? searchParams.trim() : null,
   };
 }
@@ -125,6 +265,17 @@ export function extractSearchEntryLabel(
     if (/^completed\s+(glob|grep|search|find|list|scan|ls)\b/i.test(normalized)) {
       return buildSearchCompletedFallbackLabel(fallbackToolName, fallbackSearchParams);
     }
+
+    const commandFromSummary = extractCommandFromRanSummary(normalized);
+    if (commandFromSummary && isExploreLikeBashCommand(commandFromSummary)) {
+      return buildSearchCompletedFallbackLabel(fallbackToolName, fallbackSearchParams);
+    }
+
+    const failedCommandFromSummary = extractCommandFromFailedSummary(normalized);
+    if (failedCommandFromSummary && isExploreLikeBashCommand(failedCommandFromSummary)) {
+      return "Failed search";
+    }
+
     return normalizeSearchSummary(summary);
   }
 
@@ -133,7 +284,10 @@ export function extractSearchEntryLabel(
 
 function shouldTreatAsExplicitToolRun(event: ChatEvent): boolean {
   const summary = payloadStringOrNull(event.payload.summary)?.trim().toLowerCase() ?? "";
-  const command = payloadStringOrNull(event.payload.command)?.trim().toLowerCase() ?? "";
+  const command = payloadStringOrNull(event.payload.command)?.trim() ?? "";
+  const normalizedCommand = normalizeRtkWrappedCommand(command).toLowerCase();
+  const summaryCommand = extractCommandFromRanSummary(summary) ?? summary;
+  const normalizedSummaryCommand = normalizeRtkWrappedCommand(summaryCommand).toLowerCase();
   const hasCommandChain = /&&|\|\||;|\|/.test(command);
   const hasSummaryChain = /&&|\|\||;|\|/.test(summary);
 
@@ -141,11 +295,11 @@ function shouldTreatAsExplicitToolRun(event: ChatEvent): boolean {
     return true;
   }
 
-  if (summary.startsWith("ran ls") && !hasSummaryChain) {
+  if ((normalizedSummaryCommand.startsWith("ls ") || normalizedSummaryCommand === "ls") && !hasSummaryChain) {
     return true;
   }
 
-  if ((command.startsWith("ls ") || command === "ls") && !hasCommandChain) {
+  if ((normalizedCommand.startsWith("ls ") || normalizedCommand === "ls") && !hasCommandChain) {
     return true;
   }
 
@@ -155,6 +309,10 @@ function shouldTreatAsExplicitToolRun(event: ChatEvent): boolean {
 function extractExploreRunKind(event: ChatEvent): ExploreRunKind | null {
   if (shouldTreatAsExplicitToolRun(event)) {
     return null;
+  }
+
+  if (isReadLikeBashEvent(event)) {
+    return "read";
   }
 
   if (isReadToolEvent(event)) {

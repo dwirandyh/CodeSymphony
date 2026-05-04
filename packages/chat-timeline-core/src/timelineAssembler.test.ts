@@ -30,6 +30,112 @@ function makeEvent(
 }
 
 describe("buildTimelineFromSeed", () => {
+  it("suppresses raw bash cards for explore-like runs when the command only appears on tool.finished", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Find last updated in README."),
+      makeMessage("m2", 1, "assistant", "**Results:**\n- found it"),
+    ];
+    const events = [
+      makeEvent(0, "message.delta", {
+        role: "assistant",
+        messageId: "m1-assistant-intro",
+        delta: "\n\n\n",
+      }),
+      makeEvent(1, "permission.requested", {
+        toolName: "bash",
+        requestId: "perm-1",
+        command: 'rtk rg -n "last updated" README.md',
+        messageId: "m2",
+      }),
+      makeEvent(2, "permission.resolved", {
+        requestId: "perm-1",
+        decision: "allow",
+        messageId: "m2",
+      }),
+      makeEvent(3, "permission.requested", {
+        toolName: "bash",
+        requestId: "perm-2",
+        command: "rtk sed -n '290,305p' README.md",
+        messageId: "m2",
+      }),
+      makeEvent(4, "permission.resolved", {
+        requestId: "perm-2",
+        decision: "allow",
+        messageId: "m2",
+      }),
+      makeEvent(5, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-rg",
+        messageId: "m2",
+      }),
+      makeEvent(6, "tool.output", {
+        toolName: "Bash",
+        toolUseId: "bash-rg",
+        messageId: "m2",
+      }),
+      makeEvent(7, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-sed",
+        messageId: "m2",
+      }),
+      makeEvent(8, "tool.output", {
+        toolName: "Bash",
+        toolUseId: "bash-sed",
+        messageId: "m2",
+      }),
+      makeEvent(9, "tool.finished", {
+        toolName: "Bash",
+        precedingToolUseIds: ["bash-rg"],
+        command: 'rtk rg -n "last updated" README.md',
+        summary: 'Search for "last updated" in README.md',
+        messageId: "m2",
+      }),
+      makeEvent(10, "tool.finished", {
+        toolName: "Bash",
+        precedingToolUseIds: ["bash-sed"],
+        command: "rtk sed -n '290,305p' README.md",
+        summary: "Read lines 290-305 of README.md",
+        messageId: "m2",
+      }),
+      makeEvent(11, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "**Results:**\n- found it",
+      }),
+      makeEvent(12, "chat.completed", {
+        messageId: "m2",
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(result.items.some((item) => item.kind === "tool" && item.toolName === "Bash")).toBe(false);
+
+    const exploreItems = result.items.filter(
+      (item): item is Extract<ChatTimelineItem, { kind: "explore-activity" }> => item.kind === "explore-activity",
+    );
+    expect(exploreItems).toHaveLength(1);
+    expect(exploreItems[0]).toMatchObject({
+      fileCount: 1,
+      searchCount: 1,
+      entries: [
+        expect.objectContaining({
+          kind: "search",
+          label: 'Searched for "last updated" in README.md',
+        }),
+        expect.objectContaining({
+          kind: "read",
+          label: "lines 290-305 of README.md",
+        }),
+      ],
+    });
+  });
+
   it("does not leak orphan subagent-linked tool events into the main timeline", () => {
     const messages = [
       makeMessage("m1", 0, "user", "Investigate this project."),

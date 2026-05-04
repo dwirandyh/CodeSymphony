@@ -90,6 +90,48 @@ describe("extractReadFileEntry", () => {
     expect(entry?.openPath).toBe("/src/file.ts");
   });
 
+  it("extracts entry from rtk sed bash commands", () => {
+    const event = makeEvent({
+      type: "tool.finished",
+      payload: {
+        toolName: "Bash",
+        command: "rtk sed -n 720,860p course_main_page.dart",
+        summary: "Ran rtk sed -n 720,860p course_main_page.dart",
+      },
+    });
+    const entry = extractReadFileEntry(event);
+    expect(entry?.label).toBe("course_main_page.dart");
+    expect(entry?.openPath).toBe("course_main_page.dart");
+  });
+
+  it("extracts entry from shell-wrapped rtk sed bash commands", () => {
+    const event = makeEvent({
+      type: "tool.finished",
+      payload: {
+        toolName: "Bash",
+        command: '/bin/zsh -lc "rtk sed -n 1,260p packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart"',
+        summary: 'Ran /bin/zsh -lc "rtk sed -n 1,260p packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart"',
+      },
+    });
+    const entry = extractReadFileEntry(event);
+    expect(entry?.label).toBe("node_training_flow_bloc.dart");
+    expect(entry?.openPath).toBe("packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart");
+  });
+
+  it("extracts entry from shell-wrapped nl | sed bash commands", () => {
+    const event = makeEvent({
+      type: "tool.finished",
+      payload: {
+        toolName: "Bash",
+        command: '/bin/zsh -lc "rtk nl -ba packages/course/lib/presentation/course_main_page/view/course_main_page.dart | sed -n \'1,220p\'"',
+        summary: 'Ran /bin/zsh -lc "rtk nl -ba packages/course/lib/presentation/course_main_page/view/course_main_page.dart | sed -n \'1,220p\'"',
+      },
+    });
+    const entry = extractReadFileEntry(event);
+    expect(entry?.label).toBe("course_main_page.dart");
+    expect(entry?.openPath).toBe("packages/course/lib/presentation/course_main_page/view/course_main_page.dart");
+  });
+
   it("returns generic entry for 'Completed Read' summary", () => {
     const event = makeEvent({ type: "tool.finished", payload: { summary: "Completed Read" } });
     const entry = extractReadFileEntry(event);
@@ -111,6 +153,10 @@ describe("normalizeSearchSummary", () => {
 
   it("passes through 'searched for' prefix", () => {
     expect(normalizeSearchSummary("Searched for pattern")).toBe("Searched for pattern");
+  });
+
+  it("normalizes 'Search for' summaries without duplicating the phrase", () => {
+    expect(normalizeSearchSummary('Search for "last updated" in README.md')).toBe('Searched for "last updated" in README.md');
   });
 
   it("returns 'Searched' for 'Completed Glob'", () => {
@@ -139,6 +185,12 @@ describe("searchContextFromEvent", () => {
     const ctx = searchContextFromEvent(event);
     expect(ctx.toolName).toBeNull();
     expect(ctx.searchParams).toBeNull();
+  });
+
+  it("treats Bash toolName as null for search fallback labels", () => {
+    const event = makeEvent({ type: "tool.finished", payload: { toolName: "Bash" } });
+    const ctx = searchContextFromEvent(event);
+    expect(ctx.toolName).toBeNull();
   });
 });
 
@@ -190,6 +242,30 @@ describe("extractSearchEntryLabel", () => {
     const event = makeEvent({ type: "tool.finished", payload: {} });
     expect(extractSearchEntryLabel(event, { toolName: "Grep", searchParams: "*.ts" })).toBe("Searched Grep (*.ts)");
   });
+
+  it("uses generic fallback for raw shell-wrapped bash search summaries", () => {
+    const event = makeEvent({
+      type: "tool.finished",
+      payload: {
+        toolName: "Bash",
+        command: "/bin/zsh -lc 'rg --files packages/course/lib/presentation/course_main_page'",
+        summary: "Ran /bin/zsh -lc 'rg --files packages/course/lib/presentation/course_main_page'",
+      },
+    });
+    expect(extractSearchEntryLabel(event)).toBe("Searched");
+  });
+
+  it("uses a failed-search label for failed shell-wrapped bash search summaries", () => {
+    const event = makeEvent({
+      type: "tool.finished",
+      payload: {
+        toolName: "Bash",
+        command: `/bin/zsh -lc "rtk rg -n \\"NodeTrainingFlowPage\\\\.route\\\\(|NodeTrainingFlowPage\\\\(\\" packages/course/lib -g '*.dart'"`,
+        summary: `Command failed: /bin/zsh -lc "rtk rg -n \\"NodeTrainingFlowPage\\\\.route\\\\(|NodeTrainingFlowPage\\\\(\\" packages/course/lib -g '*.dart'"`,
+      },
+    });
+    expect(extractSearchEntryLabel(event)).toBe("Failed search");
+  });
 });
 
 describe("extractExploreRunKind", () => {
@@ -198,18 +274,66 @@ describe("extractExploreRunKind", () => {
     expect(extractExploreRunKind(event)).toBe("read");
   });
 
+  it("returns read for read-only rtk sed bash commands", () => {
+    const event = makeEvent({
+      type: "tool.started",
+      payload: { toolName: "bash", isBash: true, command: "rtk sed -n 720,860p course_main_page.dart" },
+    });
+    expect(extractExploreRunKind(event)).toBe("read");
+  });
+
+  it("returns read for shell-wrapped read-only rtk sed bash commands", () => {
+    const event = makeEvent({
+      type: "tool.started",
+      payload: {
+        toolName: "bash",
+        isBash: true,
+        command: '/bin/zsh -lc "rtk sed -n 1,260p packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart"',
+      },
+    });
+    expect(extractExploreRunKind(event)).toBe("read");
+  });
+
+  it("returns read for shell-wrapped nl | sed bash commands", () => {
+    const event = makeEvent({
+      type: "tool.started",
+      payload: {
+        toolName: "bash",
+        isBash: true,
+        command: '/bin/zsh -lc "rtk nl -ba packages/course/lib/presentation/course_main_page/view/course_main_page.dart | sed -n \'1,220p\'"',
+      },
+    });
+    expect(extractExploreRunKind(event)).toBe("read");
+  });
+
   it("returns search for Glob tool events", () => {
     const event = makeEvent({ type: "tool.finished", payload: { toolName: "Glob" } });
     expect(extractExploreRunKind(event)).toBe("search");
   });
 
-  it("returns search for explore-like bash commands", () => {
+  it("keeps plain ls bash commands as regular tool runs", () => {
     const event = makeEvent({ type: "tool.started", payload: { toolName: "bash", isBash: true, command: "ls -la" } });
-    expect(extractExploreRunKind(event)).toBe("search");
+    expect(extractExploreRunKind(event)).toBeNull();
   });
 
   it("returns search for pure explore bash chains", () => {
     const event = makeEvent({ type: "tool.started", payload: { toolName: "bash", isBash: true, command: "ls && find . -name '*.ts'" } });
+    expect(extractExploreRunKind(event)).toBe("search");
+  });
+
+  it("returns search for rtk rg bash commands", () => {
+    const event = makeEvent({
+      type: "tool.started",
+      payload: { toolName: "bash", isBash: true, command: "rtk rg -n course_main_page.dart lib -S" },
+    });
+    expect(extractExploreRunKind(event)).toBe("search");
+  });
+
+  it("returns search for shell-wrapped rg bash commands", () => {
+    const event = makeEvent({
+      type: "tool.started",
+      payload: { toolName: "bash", isBash: true, command: "/bin/zsh -lc 'rg --files packages/course/lib/presentation/course_main_page'" },
+    });
     expect(extractExploreRunKind(event)).toBe("search");
   });
 
@@ -296,6 +420,98 @@ describe("extractExploreActivityGroups", () => {
     expect(groups.length).toBe(1);
     expect(groups[0].fileCount).toBe(1);
     expect(groups[0].searchCount).toBe(1);
+  });
+
+  it("groups shell-wrapped rg and rtk sed commands into one explore activity", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: { toolName: "Bash", toolUseId: "t1", command: "/bin/zsh -lc 'rg --files packages/course/lib/presentation/course_main_page'" },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "tool.finished",
+        idx: 2,
+        payload: {
+          toolName: "Bash",
+          command: "/bin/zsh -lc 'rg --files packages/course/lib/presentation/course_main_page'",
+          summary: "Ran /bin/zsh -lc 'rg --files packages/course/lib/presentation/course_main_page'",
+          precedingToolUseIds: ["t1"],
+        },
+      }),
+      makeEvent({
+        id: "e3",
+        type: "tool.started",
+        idx: 3,
+        payload: {
+          toolName: "Bash",
+          toolUseId: "t2",
+          command: '/bin/zsh -lc "rtk sed -n 1,260p packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart"',
+        },
+      }),
+      makeEvent({
+        id: "e4",
+        type: "tool.finished",
+        idx: 4,
+        payload: {
+          toolName: "Bash",
+          command: '/bin/zsh -lc "rtk sed -n 1,260p packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart"',
+          summary: 'Ran /bin/zsh -lc "rtk sed -n 1,260p packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart"',
+          precedingToolUseIds: ["t2"],
+        },
+      }),
+    ];
+
+    const groups = extractExploreActivityGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ fileCount: 1, searchCount: 1, status: "success" });
+    expect(groups[0]?.entries).toEqual([
+      expect.objectContaining({ kind: "search", label: "Searched" }),
+      expect.objectContaining({
+        kind: "read",
+        label: "node_training_flow_bloc.dart",
+        openPath: "packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart",
+      }),
+    ]);
+  });
+
+  it("groups shell-wrapped nl | sed commands into a read explore activity", () => {
+    const events = [
+      makeEvent({
+        id: "e1",
+        type: "tool.started",
+        idx: 1,
+        payload: {
+          toolName: "Bash",
+          toolUseId: "t1",
+          command: '/bin/zsh -lc "rtk nl -ba packages/course/lib/presentation/course_main_page/view/course_main_page.dart | sed -n \'1,220p\'"',
+        },
+      }),
+      makeEvent({
+        id: "e2",
+        type: "tool.finished",
+        idx: 2,
+        payload: {
+          toolName: "Bash",
+          command: '/bin/zsh -lc "rtk nl -ba packages/course/lib/presentation/course_main_page/view/course_main_page.dart | sed -n \'1,220p\'"',
+          summary: 'Ran /bin/zsh -lc "rtk nl -ba packages/course/lib/presentation/course_main_page/view/course_main_page.dart | sed -n \'1,220p\'"',
+          precedingToolUseIds: ["t1"],
+        },
+      }),
+    ];
+
+    const groups = extractExploreActivityGroups(events);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ fileCount: 1, searchCount: 0, status: "success" });
+    expect(groups[0]?.entries).toEqual([
+      expect.objectContaining({
+        kind: "read",
+        label: "course_main_page.dart",
+        openPath: "packages/course/lib/presentation/course_main_page/view/course_main_page.dart",
+      }),
+    ]);
   });
 
   it("marks group as running while pending", () => {

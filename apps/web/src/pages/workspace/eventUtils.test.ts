@@ -277,6 +277,24 @@ describe("isExploreLikeBashCommand", () => {
     expect(isExploreLikeBashCommand("rg pattern")).toBe(true);
   });
 
+  it("returns true for rtk-wrapped rg and sed inspection commands", () => {
+    expect(isExploreLikeBashCommand("rtk rg -n course_main_page.dart lib -S")).toBe(true);
+    expect(isExploreLikeBashCommand("rtk sed -n 720,860p course_main_page.dart")).toBe(true);
+  });
+
+  it("returns true for shell-wrapped rtk rg and sed inspection commands", () => {
+    expect(isExploreLikeBashCommand("/bin/zsh -lc 'rg --files packages/course/lib/presentation/course_main_page'")).toBe(true);
+    expect(
+      isExploreLikeBashCommand('/bin/zsh -lc "rtk sed -n 1,260p packages/course/lib/presentation/course_main_page/bloc/node_training_flow_bloc.dart"'),
+    ).toBe(true);
+  });
+
+  it("returns true for shell-wrapped nl | sed inspection commands", () => {
+    expect(
+      isExploreLikeBashCommand('/bin/zsh -lc "rtk nl -ba packages/course/lib/presentation/course_main_page/view/course_main_page.dart | sed -n \'1,220p\'"'),
+    ).toBe(true);
+  });
+
   it("returns true for pure explore chains", () => {
     expect(isExploreLikeBashCommand("ls && find . -name '*.ts'")).toBe(true);
     expect(isExploreLikeBashCommand("ls | grep src")).toBe(true);
@@ -286,6 +304,7 @@ describe("isExploreLikeBashCommand", () => {
     expect(isExploreLikeBashCommand("ls && rm -rf tmp")).toBe(false);
     expect(isExploreLikeBashCommand("ls && git status")).toBe(false);
     expect(isExploreLikeBashCommand("echo hi && ls")).toBe(false);
+    expect(isExploreLikeBashCommand("rtk sed -i '' 's/foo/bar/' course_main_page.dart")).toBe(false);
   });
 
   it("returns false for ambiguous or invalid chain parsing", () => {
