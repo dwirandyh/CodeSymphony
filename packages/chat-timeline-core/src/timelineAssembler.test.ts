@@ -633,6 +633,71 @@ describe("buildTimelineFromSeed", () => {
     });
   });
 
+  it("treats OpenCode .opencode plan files as canonical plan output", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Plan it."),
+      makeMessage("m2", 1, "assistant", "Drafting the plan."),
+    ];
+    const events = [
+      makeEvent(10, "plan.created", {
+        messageId: "m2",
+        content: "# OpenCode Plan\n1. Inspect\n2. Report",
+        filePath: "/Users/test/.opencode/plans/ship-opencode.plan.md",
+        source: "streaming_fallback",
+      }),
+      makeEvent(11, "chat.completed", { messageId: "m2", threadMode: "plan" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const planItem = result.items.find((item) => item.kind === "plan-file-output");
+    expect(planItem).toMatchObject({
+      kind: "plan-file-output",
+      content: "# OpenCode Plan\n1. Inspect\n2. Report",
+      filePath: "/Users/test/.opencode/plans/ship-opencode.plan.md",
+    });
+  });
+
+  it("suppresses OpenCode clarification-shaped fallback plans even when they include numbered options", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Plan it."),
+      makeMessage("m2", 1, "assistant", "Need clarification."),
+    ];
+    const events = [
+      makeEvent(10, "plan.created", {
+        messageId: "m2",
+        content: [
+          "Saya akan menganalisis codebase untuk memahami implementasi plan card dan membuat rencana perbaikan.",
+          "",
+          "Saya tidak menemukan implementasi \"OpenCode plan card\" di repo Flutter ini. Sebelum menyusun rencana, bisa jelaskan:",
+          "",
+          "**Apa yang dimaksud dengan \"OpenCode plan card\" di konteks ini?**",
+          "",
+          "1. Konfigurasi agent/prompt OpenCode di repo ini yang perlu diperbaiki?",
+          "2. Fitur di dalam Flutter app yang menampilkan plan card dari AI?",
+          "3. Atau sesuatu yang berbeda?",
+        ].join("\n"),
+        filePath: "/Users/test/.opencode/plans/ship-opencode.plan.md",
+        source: "streaming_fallback",
+      }),
+      makeEvent(11, "chat.completed", { messageId: "m2", threadMode: "plan" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(result.items.some((item) => item.kind === "plan-file-output")).toBe(false);
+  });
+
   it("suppresses raw handoff plan seed text when the plan card is the only semantic output", () => {
     const planContent = "# Plan\n\n1. Implement the feature";
     const messages = [

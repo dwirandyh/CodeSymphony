@@ -7,7 +7,7 @@ import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
 import { disposeThreadCollections, getThreadCollections, resetThreadCollectionsForTest } from "../../../../collections/threadCollections";
-import { setThreadLastEventIdx, setThreadLastMessageSeq } from "../../../../collections/threadStreamState";
+import { setThreadLastAppliedSnapshotKey, setThreadLastEventIdx, setThreadLastMessageSeq } from "../../../../collections/threadStreamState";
 import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useChatSession";
 
 const { threadsState, snapshotState } = vi.hoisted(() => ({
@@ -2190,5 +2190,96 @@ describe("useChatSession", () => {
       });
       await createPromise;
     });
+  });
+
+  it("re-enters loading bootstrap instead of new-thread-empty when a resolved created thread loses local state", async () => {
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "Fresh thread",
+    });
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "user-1",
+      threadId: "thread-new",
+      seq: 0,
+      role: "user",
+      content: "Hello",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:02Z",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.createThreadAndSendMessage("Fresh thread", "Hello");
+    });
+
+    threadsState.data = [
+      makeThread("thread-a"),
+      makeThread("thread-b", true),
+      {
+        ...makeThread("thread-new"),
+        title: "Fresh thread",
+      },
+    ];
+    act(() => {
+      hookResult.setSelectedThreadId("thread-new");
+    });
+    renderHook("thread-new");
+
+    expect(hookResult.selectedThreadId).toBe("thread-new");
+    expect(hookResult.messages).toEqual([
+      expect.objectContaining({
+        threadId: "thread-new",
+        role: "user",
+        content: "Hello",
+      }),
+    ]);
+
+    act(() => {
+      getThreadCollections("thread-new").eventsCollection.insert({
+        id: "local-chat-complete",
+        threadId: "thread-new",
+        idx: 1,
+        type: "chat.completed",
+        payload: {},
+        createdAt: "2026-01-01T00:00:03Z",
+      });
+      setThreadLastEventIdx("thread-new", 1);
+    });
+    renderHook("thread-new");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      disposeThreadCollections("thread-new");
+      setThreadLastAppliedSnapshotKey("thread-new", null);
+      setThreadLastMessageSeq("thread-new", null);
+      setThreadLastEventIdx("thread-new", null);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      hookResult.setSelectedThreadId("thread-a");
+    });
+    renderHook("thread-a");
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => {
+      hookResult.setSelectedThreadId("thread-new");
+    });
+
+    renderHook("thread-new");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(useThreadSnapshot)).toHaveBeenLastCalledWith(
+      "thread-new",
+      expect.any(Object),
+    );
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
   });
 });

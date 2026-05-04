@@ -90,6 +90,58 @@ describe("codex session runner plan helpers", () => {
     })).toBeNull();
   });
 
+  it("does not treat numbered clarification options as a reviewable plan", () => {
+    expect(resolveHeuristicPlanContent({
+      agentOutput: [
+        "Saya akan menganalisis codebase untuk memahami implementasi plan card dan membuat rencana perbaikan.",
+        "",
+        "Saya tidak menemukan implementasi \"OpenCode plan card\" di repo Flutter ini. Sebelum menyusun rencana, bisa jelaskan:",
+        "",
+        "**Apa yang dimaksud dengan \"OpenCode plan card\" di konteks ini?**",
+        "",
+        "1. Konfigurasi agent/prompt OpenCode di repo ini yang perlu diperbaiki?",
+        "2. Fitur di dalam Flutter app yang menampilkan plan card dari AI?",
+        "3. Atau sesuatu yang berbeda?",
+      ].join("\n"),
+    })).toBeNull();
+  });
+
+  it("keeps final plans when OpenCode appends a trailing approval question", () => {
+    expect(resolveHeuristicPlanContent({
+      agentOutput: [
+        "Berdasarkan analisis codebase, saya sudah memahami masalah dan solusinya. Berikut implementation plan:",
+        "",
+        "---",
+        "",
+        "## Implementation Plan: Perbaiki False Positive Plan Card saat Assistant Hanya Bertanya Klarifikasi",
+        "",
+        "### Masalah Inti",
+        "",
+        "1. Ketatkan classifier klarifikasi pada fallback plan detection.",
+        "2. Sinkronkan filter di web dan chat-timeline-core.",
+        "3. Tambahkan regression test untuk clarification-shaped outputs.",
+        "",
+        "---",
+        "",
+        "Apakah saya harus lanjut ke implementation, atau ada yang ingin ditanyakan/diklarifikasi dulu?",
+      ].join("\n"),
+    })).toBe(
+      [
+        "Berdasarkan analisis codebase, saya sudah memahami masalah dan solusinya. Berikut implementation plan:",
+        "",
+        "---",
+        "",
+        "## Implementation Plan: Perbaiki False Positive Plan Card saat Assistant Hanya Bertanya Klarifikasi",
+        "",
+        "### Masalah Inti",
+        "",
+        "1. Ketatkan classifier klarifikasi pada fallback plan detection.",
+        "2. Sinkronkan filter di web dan chat-timeline-core.",
+        "3. Tambahkan regression test untuk clarification-shaped outputs.",
+      ].join("\n"),
+    );
+  });
+
   it("keeps resolveCodexPlanContent as a compatibility alias", () => {
     expect(resolveCodexPlanContent({
       agentOutput: [

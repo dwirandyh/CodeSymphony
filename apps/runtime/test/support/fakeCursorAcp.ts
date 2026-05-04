@@ -13,6 +13,11 @@ type FakeCursorModel = {
   name: string;
 };
 
+type FakeCursorMode = {
+  id: string;
+  name: string;
+};
+
 type FakeCursorSessionState = {
   sessionId: string;
   currentModeId: string;
@@ -24,6 +29,7 @@ type FakeCursorSessionState = {
 export type FakeCursorScenario = {
   availableCommands?: AvailableCommand[];
   availableModels?: FakeCursorModel[];
+  availableModes?: FakeCursorMode[];
   onPrompt?: (params: {
     agent: FakeCursorAgent;
     sessionId: string;
@@ -77,9 +83,9 @@ function buildModelState(models: FakeCursorModel[], currentModelId: string) {
   };
 }
 
-function buildModeState(currentModeId: string) {
+function buildModeState(currentModeId: string, modes: FakeCursorMode[]) {
   return {
-    availableModes: DEFAULT_MODES,
+    availableModes: modes,
     currentModeId,
   };
 }
@@ -143,10 +149,12 @@ export class FakeCursorAgent {
   async newSession() {
     const sessionId = nextSessionId();
     const models = this.scenario.availableModels ?? DEFAULT_MODELS;
+    const modes = this.scenario.availableModes ?? DEFAULT_MODES;
     const currentModelId = models[0]?.modelId ?? DEFAULT_MODELS[0]!.modelId;
+    const currentModeId = modes[0]?.id ?? DEFAULT_MODES[0]!.id;
     fakeCursorSessions.set(sessionId, {
       sessionId,
-      currentModeId: "ask",
+      currentModeId,
       currentModelId,
       prompts: [],
       abortController: null,
@@ -156,7 +164,7 @@ export class FakeCursorAgent {
 
     return {
       sessionId,
-      modes: buildModeState("ask"),
+      modes: buildModeState(currentModeId, modes),
       models: buildModelState(models, currentModelId),
     };
   }
@@ -167,10 +175,12 @@ export class FakeCursorAgent {
       throw new Error(`Unknown fake Cursor session ${params.sessionId}`);
     }
 
+    const modes = this.scenario.availableModes ?? DEFAULT_MODES;
+
     queueAvailableCommands(this.connection, params.sessionId, this.scenario.availableCommands ?? []);
 
     return {
-      modes: buildModeState(state.currentModeId),
+      modes: buildModeState(state.currentModeId, modes),
       models: buildModelState(this.scenario.availableModels ?? DEFAULT_MODELS, state.currentModelId),
     };
   }

@@ -2109,6 +2109,7 @@ export function useChatSession(
           force: true,
           optimisticMessageId: optimisticMessage.id,
         });
+        optimisticCreatedThreadIdsRef.current.delete(sendThreadId);
       } catch (e) {
         removeOptimisticMessage(messageThreadId, optimisticMessage.id, { force: true });
         setWaitingAssistant(null);

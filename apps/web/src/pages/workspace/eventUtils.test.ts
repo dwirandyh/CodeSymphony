@@ -107,6 +107,10 @@ describe("isClaudePlanFilePayload", () => {
     expect(isClaudePlanFilePayload({ source: "other", filePath: "/project/.claude/plans/plan.md" })).toBe(true);
   });
 
+  it("returns true for OpenCode plan file path", () => {
+    expect(isClaudePlanFilePayload({ source: "other", filePath: "/project/.opencode/plans/plan.md" })).toBe(true);
+  });
+
   it("returns false for non-plan payload", () => {
     expect(isClaudePlanFilePayload({ source: "other", filePath: "/project/src/index.ts" })).toBe(false);
   });
@@ -236,7 +240,36 @@ describe("normalizePlanCreatedEvent", () => {
             "- A code/task handoff from another human",
             "- An existing codebase change or pull request I should review",
           ].join("\n"),
-          filePath: ".claude/plans/opencode-plan.md",
+          filePath: ".opencode/plans/opencode-plan.md",
+          source: "streaming_fallback",
+        },
+      }),
+      makeEvent({ id: "done", idx: 2, type: "chat.completed", payload: {} }),
+    ];
+
+    expect(normalizePlanCreatedEvent(events[0]!, events)).toBeNull();
+  });
+
+  it("ignores streaming fallback clarifications with numbered clarification options", () => {
+    const events = [
+      makeEvent({
+        id: "plan-1",
+        idx: 1,
+        type: "plan.created",
+        payload: {
+          messageId: "m2",
+          content: [
+            "Saya akan menganalisis codebase untuk memahami implementasi plan card dan membuat rencana perbaikan.",
+            "",
+            "Saya tidak menemukan implementasi \"OpenCode plan card\" di repo Flutter ini. Sebelum menyusun rencana, bisa jelaskan:",
+            "",
+            "**Apa yang dimaksud dengan \"OpenCode plan card\" di konteks ini?**",
+            "",
+            "1. Konfigurasi agent/prompt OpenCode di repo ini yang perlu diperbaiki?",
+            "2. Fitur di dalam Flutter app yang menampilkan plan card dari AI?",
+            "3. Atau sesuatu yang berbeda?",
+          ].join("\n"),
+          filePath: ".opencode/plans/opencode-plan.md",
           source: "streaming_fallback",
         },
       }),
@@ -258,6 +291,10 @@ describe("isPlanFilePath", () => {
 
   it("returns true for .cursor/plans path", () => {
     expect(isPlanFilePath("/Users/test/.cursor/plans/ship.plan.md")).toBe(true);
+  });
+
+  it("returns true for .opencode/plans path", () => {
+    expect(isPlanFilePath("/Users/test/.opencode/plans/final-plan.md")).toBe(true);
   });
 
   it("returns false for non-plan paths", () => {
