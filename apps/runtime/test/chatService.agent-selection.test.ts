@@ -2,7 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliAgent, ChatThreadKind } from "@codesymphony/shared-types";
 import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import { createEventHub } from "../src/events/eventHub";
@@ -26,6 +26,8 @@ const stubModelProviderService = {
   getActiveProvider: async () => null,
   getProviderById: async () => null,
 };
+
+let originalCodexHome: string | undefined;
 
 function createStubModelProviderService(
   providersById: Record<string, {
@@ -112,7 +114,17 @@ async function waitForCompletion(
 describe("chatService agent selection", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
+    originalCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = mkdtempSync(join(tmpdir(), "codesymphony-test-codex-home-"));
     await resetDatabase();
+  });
+
+  afterEach(() => {
+    if (originalCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = originalCodexHome;
+    }
   });
 
   afterAll(async () => {
@@ -159,6 +171,9 @@ describe("chatService agent selection", () => {
     await waitForCompletion(chatService, thread.id);
 
     expect(codexRunner).toHaveBeenCalledTimes(1);
+    expect(codexRunner).toHaveBeenCalledWith(expect.objectContaining({
+      includeCommentaryInText: true,
+    }));
     expect(claudeRunner).not.toHaveBeenCalled();
 
     const persistedThread = await chatService.getThreadById(thread.id);

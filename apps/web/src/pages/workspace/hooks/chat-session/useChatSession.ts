@@ -1739,14 +1739,16 @@ export function useChatSession(
       activeThreadIdRef.current = params.nextThread.id;
     }
 
+    // Move optimistic local state first so the first render on the real thread
+    // sees the submitted user message instead of an empty collection.
+    moveOptimisticThreadLocalState(params.previousThreadId, params.nextThread);
+
     setThreads((current) => replaceThreadIdentity(current, params.previousThreadId, params.nextThread));
     replaceThreadInCache(params.worktreeId, params.previousThreadId, params.nextThread);
 
     if (selectedOptimisticThread) {
       setSelectedThreadId(params.nextThread.id);
     }
-
-    moveOptimisticThreadLocalState(params.previousThreadId, params.nextThread);
   }
 
   function rollbackOptimisticThreadCreation(params: {

@@ -146,6 +146,7 @@ export type ClaudeRunner = (args: {
   prompt: string;
   sessionId: string | null;
   listSlashCommandsOnly?: boolean;
+  includeCommentaryInText?: boolean;
   sessionWorktreePath?: string | null;
   cwd: string;
   abortController?: AbortController;

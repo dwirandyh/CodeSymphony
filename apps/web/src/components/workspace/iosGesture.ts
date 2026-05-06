@@ -22,7 +22,10 @@ const IOS_GESTURE_BOTTOM_EDGE_MARGIN_RATIO = 0.04;
 const IOS_GESTURE_EDGE_MIN_MARGIN_PT = 18;
 const IOS_GESTURE_BOTTOM_EDGE_MAX_MARGIN_PT = 32;
 const IOS_GESTURE_PATH_DWELL_DELAY_MAX_MS = 320;
-const IOS_GESTURE_PATH_STEP_DELAY_MAX_MS = 20;
+// Preserve more of the original swipe cadence so mobile browser gestures do
+// not get replayed as overly fast simulator scrolls.
+const IOS_GESTURE_PATH_STEP_DELAY_MAX_MS = 80;
+const IOS_GESTURE_TOUCH_REPLAY_STEP_DELAY_MAX_MS = 180;
 const IOS_BOTTOM_EDGE_HORIZONTAL_AXIS_COMMIT_RATIO = 1.45;
 const IOS_BOTTOM_EDGE_VERTICAL_AXIS_BIAS_RATIO = 1.28;
 const IOS_BOTTOM_EDGE_HOME_MIN_DISTANCE_RATIO = 0.22;
@@ -215,9 +218,15 @@ export function resolveIosBottomEdgeReleaseAction(args: {
 }
 
 export function buildIosDragPayload(args: {
+  maxStepDelayMs?: number;
   phase: "end" | "move" | "start";
   points: IosGesturePathPoint[];
 }) {
+  const stepDelayMaxMs = clamp(
+    Math.round(args.maxStepDelayMs ?? IOS_GESTURE_PATH_STEP_DELAY_MAX_MS),
+    IOS_GESTURE_PATH_STEP_DELAY_MAX_MS,
+    IOS_GESTURE_PATH_DWELL_DELAY_MAX_MS,
+  );
   const serializedPoints = args.points.map((point, index, points) => {
     const previousPoint = index > 0 ? points[index - 1] : null;
     const previousAt = previousPoint ? previousPoint.atMs : point.atMs;
@@ -228,7 +237,7 @@ export function buildIosDragPayload(args: {
       ? clamp(
         Math.round(point.atMs - previousAt),
         0,
-        preservesDwell ? IOS_GESTURE_PATH_DWELL_DELAY_MAX_MS : IOS_GESTURE_PATH_STEP_DELAY_MAX_MS,
+        preservesDwell ? IOS_GESTURE_PATH_DWELL_DELAY_MAX_MS : stepDelayMaxMs,
       )
       : 0;
 
@@ -245,3 +254,7 @@ export function buildIosDragPayload(args: {
     t: "drag",
   };
 }
+
+export {
+  IOS_GESTURE_TOUCH_REPLAY_STEP_DELAY_MAX_MS,
+};

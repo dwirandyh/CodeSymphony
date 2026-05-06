@@ -19,6 +19,7 @@ import {
   IOS_GESTURE_TAP_SLOP_CSS_PX,
   IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX,
   IOS_GESTURE_TOUCH_CANCEL_DISTANCE_CSS_PX,
+  IOS_GESTURE_TOUCH_REPLAY_STEP_DELAY_MAX_MS,
   IOS_TOUCH_DOWN_DELAY_LIVE_MS,
   resolveIosBottomEdgeReleaseAction,
   resolveIosGestureAxis,
@@ -2350,6 +2351,7 @@ export function IosSimulatorViewer({ deviceName, sessionId }: IosSimulatorViewer
 
     activeDrag.dragPoints = [];
     sendControl(buildIosDragPayload({
+      maxStepDelayMs: showMobileViewerControls ? IOS_GESTURE_TOUCH_REPLAY_STEP_DELAY_MAX_MS : undefined,
       phase: end ? "end" : (activeDrag.dragActive || activeDrag.touchDownSent) ? "move" : "start",
       points,
     }) satisfies IosControlPayload);
