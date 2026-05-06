@@ -412,6 +412,17 @@ function resolveDefaultModelForAgent(agent: CliAgent): string {
   return DEFAULT_CHAT_MODEL_BY_AGENT[agent];
 }
 
+function resolveBuiltinModelSelection(agent: CliAgent, model: string): string {
+  if (agent === "codex" && isBuiltinModelForAgent(agent, model)) {
+    const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
+    if (codexCliModel) {
+      return codexCliModel;
+    }
+  }
+
+  return model;
+}
+
 function toActiveModelProvider(provider: {
   id: string;
   agent: CliAgent;
@@ -492,7 +503,7 @@ async function resolveThreadSelection(
   if (explicitModel) {
     return {
       agent,
-      model: explicitModel,
+      model: resolveBuiltinModelSelection(agent, explicitModel),
       modelProviderId: null,
       provider: null,
     };
@@ -1501,6 +1512,7 @@ export function createChatService(deps: RuntimeDeps) {
       const result = await runner({
         prompt,
         sessionId: currentSessionId,
+        includeCommentaryInText: true,
         sessionWorktreePath: currentSessionId ? worktreePath : null,
         cwd: worktreePath,
         abortController,

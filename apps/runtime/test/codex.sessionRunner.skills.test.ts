@@ -27,6 +27,7 @@ function attachJsonRpcServer(
     methods?: string[];
     skillsListResult?: unknown;
     completeTurn?: boolean;
+    onTurnStart?: () => void;
   },
 ) {
   let buffer = "";
@@ -78,6 +79,7 @@ function attachJsonRpcServer(
 
       if (message.method === "turn/start") {
         child.stdout.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
+        options?.onTurnStart?.();
         if (options?.completeTurn) {
           child.stdout.write(`${JSON.stringify({
             method: "turn/completed",
@@ -209,5 +211,203 @@ describe("codex session runner skill integration", () => {
     ]);
     expect(spawnOptions.env?.CODESYMPHONY_CODEX_API_KEY).toBe("sk-test");
     expect(spawnOptions.env?.CODEX_HOME).toBe(process.env.CODEX_HOME);
+  });
+
+  it("keeps default Codex streaming final-answer only", async () => {
+    const child = new MockCodexChildProcess();
+    attachJsonRpcServer(child, {
+      onTurnStart: () => {
+        child.stdout.write(`${JSON.stringify({
+          method: "item/started",
+          params: {
+            item: {
+              id: "msg-commentary",
+              type: "agentMessage",
+              phase: "commentary",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "msg-commentary",
+              type: "agentMessage",
+              phase: "commentary",
+              text: "Detailed question\\n\\n`svg tetap zoom/pan`",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/started",
+          params: {
+            item: {
+              id: "msg-final",
+              type: "agentMessage",
+              phase: "final_answer",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "msg-final",
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "`svg tetap zoom/pan`",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "turn/completed",
+          params: {
+            turn: {
+              status: "completed",
+            },
+          },
+        })}\n`);
+      },
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const onText = vi.fn();
+    const { runCodexWithStreaming } = await import("../src/codex/sessionRunner");
+    const result = await runCodexWithStreaming({
+      prompt: "Ask the next question.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText,
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(onText).toHaveBeenCalledTimes(1);
+    expect(onText).toHaveBeenCalledWith("`svg tetap zoom/pan`");
+    expect(result.output).toBe("`svg tetap zoom/pan`");
+  });
+
+  it("surfaces commentary text for chat threads and suppresses redundant short final answers", async () => {
+    const child = new MockCodexChildProcess();
+    attachJsonRpcServer(child, {
+      onTurnStart: () => {
+        child.stdout.write(`${JSON.stringify({
+          method: "item/started",
+          params: {
+            item: {
+              id: "msg-commentary",
+              type: "agentMessage",
+              phase: "commentary",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/agentMessage/delta",
+          params: {
+            itemId: "msg-commentary",
+            delta: "Detailed question",
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/agentMessage/delta",
+          params: {
+            itemId: "msg-commentary",
+            delta: "\n\n`svg tetap zoom/pan`",
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "msg-commentary",
+              type: "agentMessage",
+              phase: "commentary",
+              text: "Detailed question\\n\\n`svg tetap zoom/pan`",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/started",
+          params: {
+            item: {
+              id: "msg-final",
+              type: "agentMessage",
+              phase: "final_answer",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/agentMessage/delta",
+          params: {
+            itemId: "msg-final",
+            delta: "`svg tetap zoom/pan`",
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "msg-final",
+              type: "agentMessage",
+              phase: "final_answer",
+              text: "`svg tetap zoom/pan`",
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "turn/completed",
+          params: {
+            turn: {
+              status: "completed",
+            },
+          },
+        })}\n`);
+      },
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const chunks: string[] = [];
+    const { runCodexWithStreaming } = await import("../src/codex/sessionRunner");
+    const result = await runCodexWithStreaming({
+      prompt: "Ask the next question.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      includeCommentaryInText: true,
+      onText: (chunk) => {
+        chunks.push(chunk);
+      },
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(chunks).toEqual([
+      "Detailed question",
+      "\n\n`svg tetap zoom/pan`",
+    ]);
+    expect(result.output).toBe("Detailed question\n\n`svg tetap zoom/pan`");
   });
 });

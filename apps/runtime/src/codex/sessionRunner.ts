@@ -443,10 +443,50 @@ function killChildProcess(child: ChildProcessWithoutNullStreams): void {
   child.kill();
 }
 
+function normalizeAgentMessagePhase(phase: string | null | undefined): string {
+  const normalized = phase?.trim().toLowerCase();
+  return normalized && normalized.length > 0 ? normalized : "final_answer";
+}
+
+function shouldForwardAgentMessagePhase(phase: string, includeCommentaryInText: boolean): boolean {
+  return phase === "final_answer" || (includeCommentaryInText && phase === "commentary");
+}
+
+function shouldSuppressShortFinalAnswerAfterCommentary(finalText: string, visibleOutput: string): boolean {
+  const trimmedFinalText = finalText.trim();
+  if (trimmedFinalText.length === 0) {
+    return true;
+  }
+
+  const isShortFinal = trimmedFinalText.length <= 200 && trimmedFinalText.split(/\r?\n/).length <= 4;
+  if (!isShortFinal) {
+    return false;
+  }
+
+  return visibleOutput.includes(trimmedFinalText);
+}
+
+function prefixAgentMessageSegment(currentOutput: string, nextText: string): string {
+  if (currentOutput.length === 0 || nextText.length === 0) {
+    return nextText;
+  }
+
+  if (/\n\n$/u.test(currentOutput) || nextText.startsWith("\n\n")) {
+    return nextText;
+  }
+
+  if (/\n$/u.test(currentOutput) || nextText.startsWith("\n")) {
+    return `\n${nextText}`;
+  }
+
+  return `\n\n${nextText}`;
+}
+
 export const runCodexWithStreaming: ChatAgentRunner = async ({
   prompt,
   sessionId,
   listSlashCommandsOnly,
+  includeCommentaryInText = false,
   cwd,
   abortController,
   onSessionId,
@@ -495,13 +535,15 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   const toolStartedAt = new Map<string, number>();
   const toolContextById = new Map<string, ToolContext>();
   const agentMessagePhaseById = new Map<string, string>();
-  const streamedTextByMessageId = new Map<string, string>();
+  const observedTextByMessageId = new Map<string, string>();
+  const emittedTextByMessageId = new Map<string, string>();
   const subagentOwnerByThreadId = new Map<string, string>();
   const subagentDescriptionByToolUseId = new Map<string, string>();
   const planTextByItemId = new Map<string, string>();
 
   let providerThreadId: string | null = null;
   let finalOutput = "";
+  let visibleOutput = "";
   let fallbackAgentOutput = "";
   let latestPlanText: string | null = null;
   let latestStructuredPlan: CodexStructuredPlan | null = null;
@@ -510,6 +552,8 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   let completionError: Error | null = null;
   let resolveCompletion: (() => void) | null = null;
   let rejectCompletion: ((error: Error) => void) | null = null;
+  let lastForwardedAgentMessageId: string | null = null;
+  let sawForwardedCommentary = false;
 
   const resolveComplete = () => {
     if (completed) {
@@ -526,6 +570,30 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     completed = true;
     completionError = error;
     rejectCompletion?.(error);
+  };
+
+  const emitAgentMessageText = async (itemId: string, phase: string, text: string) => {
+    if (text.length === 0) {
+      return;
+    }
+
+    const alreadyEmitted = emittedTextByMessageId.get(itemId) ?? "";
+    const nextText = alreadyEmitted.length === 0
+      ? prefixAgentMessageSegment(
+        lastForwardedAgentMessageId && lastForwardedAgentMessageId !== itemId ? visibleOutput : "",
+        text,
+      )
+      : text;
+
+    emittedTextByMessageId.set(itemId, alreadyEmitted + text);
+    visibleOutput += nextText;
+    finalOutput += nextText;
+    lastForwardedAgentMessageId = itemId;
+    if (phase === "commentary") {
+      sawForwardedCommentary = true;
+    }
+
+    await onText(nextText);
   };
 
   const finish = (error?: Error) => {
@@ -840,11 +908,11 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
           }
 
           if (normalizedItemType === "agentmessage") {
-            const phase = asString(item.phase) ?? "final_answer";
+            const phase = normalizeAgentMessagePhase(asString(item.phase));
             agentMessagePhaseById.set(itemId, phase);
             const completedText = asString(item.text);
             if (completedText) {
-              streamedTextByMessageId.set(itemId, completedText);
+              observedTextByMessageId.set(itemId, completedText);
             }
             return;
           }
@@ -900,21 +968,32 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
 
         if (parsed.method === "item/agentMessage/delta") {
           const itemId = asString(params?.itemId);
-          const phase = itemId ? agentMessagePhaseById.get(itemId) ?? "final_answer" : "final_answer";
-          if (phase !== "final_answer") {
-            return;
-          }
-
+          const phase = normalizeAgentMessagePhase(itemId ? agentMessagePhaseById.get(itemId) : undefined);
           const delta = asString(params?.delta);
           if (!delta || delta.length === 0) {
             return;
           }
 
           if (itemId) {
-            streamedTextByMessageId.set(itemId, (streamedTextByMessageId.get(itemId) ?? "") + delta);
+            observedTextByMessageId.set(itemId, (observedTextByMessageId.get(itemId) ?? "") + delta);
           }
-          finalOutput += delta;
-          await onText(delta);
+
+          if (!shouldForwardAgentMessagePhase(phase, includeCommentaryInText)) {
+            return;
+          }
+
+          if (phase === "final_answer" && includeCommentaryInText && sawForwardedCommentary) {
+            return;
+          }
+
+          if (!itemId) {
+            visibleOutput += delta;
+            finalOutput += delta;
+            await onText(delta);
+            return;
+          }
+
+          await emitAgentMessageText(itemId, phase, delta);
           return;
         }
 
@@ -946,13 +1025,27 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
           }
 
           if (normalizedItemType === "agentmessage") {
-            const phase = agentMessagePhaseById.get(itemId) ?? asString(item.phase) ?? "final_answer";
-            const text = asString(item.text) ?? "";
+            const phase = normalizeAgentMessagePhase(agentMessagePhaseById.get(itemId) ?? asString(item.phase));
+            const text = asString(item.text) ?? observedTextByMessageId.get(itemId) ?? "";
             fallbackAgentOutput = text || fallbackAgentOutput;
-            if (phase === "final_answer" && text.length > 0 && !streamedTextByMessageId.has(itemId)) {
-              streamedTextByMessageId.set(itemId, text);
-              finalOutput += text;
-              await onText(text);
+            if (!shouldForwardAgentMessagePhase(phase, includeCommentaryInText)) {
+              return;
+            }
+
+            if (phase === "final_answer" && includeCommentaryInText && sawForwardedCommentary) {
+              if (shouldSuppressShortFinalAnswerAfterCommentary(text, visibleOutput)) {
+                return;
+              }
+            }
+
+            const emittedText = emittedTextByMessageId.get(itemId) ?? "";
+            if (text.length > 0 && emittedText.length === 0) {
+              await emitAgentMessageText(itemId, phase, text);
+              return;
+            }
+
+            if (text.length > emittedText.length && text.startsWith(emittedText)) {
+              await emitAgentMessageText(itemId, phase, text.slice(emittedText.length));
             }
             return;
           }

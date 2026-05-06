@@ -4,6 +4,7 @@ import {
   detectIosGestureEdge,
   IOS_GESTURE_PATH_POINT_MIN_DISTANCE_CSS_PX,
   IOS_GESTURE_PATH_POINT_MIN_INTERVAL_MS,
+  IOS_GESTURE_TOUCH_REPLAY_STEP_DELAY_MAX_MS,
   resolveIosBottomEdgeReleaseAction,
   resolveIosGestureAxis,
   shouldAppendIosGesturePathPoint,
@@ -199,7 +200,7 @@ describe("iosGesture", () => {
     })).toBeNull();
   });
 
-  it("serializes drag payload points with per-step delays capped for live streaming", () => {
+  it("serializes drag payload points without aggressively speeding up slower swipes", () => {
     expect(buildIosDragPayload({
       phase: "move",
       points: [
@@ -233,9 +234,96 @@ describe("iosGesture", () => {
           y: 552,
         },
         {
-          delay_ms: 20,
+          delay_ms: 49,
           x: 120,
           y: 500,
+        },
+      ],
+      t: "drag",
+    });
+  });
+
+  it("keeps slower scroll gestures closer to the original swipe timing", () => {
+    expect(buildIosDragPayload({
+      phase: "move",
+      points: [
+        {
+          atMs: 10,
+          x: 160,
+          y: 700,
+        },
+        {
+          atMs: 70,
+          x: 160,
+          y: 620,
+        },
+        {
+          atMs: 150,
+          x: 160,
+          y: 520,
+        },
+      ],
+    })).toEqual({
+      phase: "move",
+      points: [
+        {
+          delay_ms: 0,
+          x: 160,
+          y: 700,
+        },
+        {
+          delay_ms: 60,
+          x: 160,
+          y: 620,
+        },
+        {
+          delay_ms: 80,
+          x: 160,
+          y: 520,
+        },
+      ],
+      t: "drag",
+    });
+  });
+
+  it("allows mobile-browser touch replay to preserve slower swipe timing even more closely", () => {
+    expect(buildIosDragPayload({
+      maxStepDelayMs: IOS_GESTURE_TOUCH_REPLAY_STEP_DELAY_MAX_MS,
+      phase: "move",
+      points: [
+        {
+          atMs: 10,
+          x: 160,
+          y: 700,
+        },
+        {
+          atMs: 130,
+          x: 160,
+          y: 620,
+        },
+        {
+          atMs: 360,
+          x: 160,
+          y: 520,
+        },
+      ],
+    })).toEqual({
+      phase: "move",
+      points: [
+        {
+          delay_ms: 0,
+          x: 160,
+          y: 700,
+        },
+        {
+          delay_ms: 120,
+          x: 160,
+          y: 620,
+        },
+        {
+          delay_ms: 180,
+          x: 160,
+          y: 520,
         },
       ],
       t: "drag",
