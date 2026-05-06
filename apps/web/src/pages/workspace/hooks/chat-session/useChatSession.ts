@@ -238,21 +238,33 @@ function applyThreadAgentSelectionUpdate(
   }
 
   const current = threads[index];
-  if (hasSameThreadSelection(current, selection)) {
+  if (!current) {
     return threads;
   }
 
-  const preserveSessionIds = current ? shouldPreserveSessionIdsForSelectionUpdate(current, selection) : false;
+  if (
+    current.agent != null
+    && current.model != null
+    && hasSameThreadSelection({
+      agent: current.agent,
+      model: current.model,
+      modelProviderId: current.modelProviderId,
+    }, selection)
+  ) {
+    return threads;
+  }
+
+  const preserveSessionIds = shouldPreserveSessionIdsForSelectionUpdate(current, selection);
   const updated = [...threads];
   updated[index] = {
-    ...current!,
+    ...current,
     agent: selection.agent,
     model: selection.model,
     modelProviderId: selection.modelProviderId ?? null,
-    claudeSessionId: preserveSessionIds ? current!.claudeSessionId : null,
-    codexSessionId: preserveSessionIds ? current!.codexSessionId : null,
-    cursorSessionId: preserveSessionIds ? current!.cursorSessionId : null,
-    opencodeSessionId: preserveSessionIds ? current!.opencodeSessionId : null,
+    claudeSessionId: preserveSessionIds ? current.claudeSessionId : null,
+    codexSessionId: preserveSessionIds ? current.codexSessionId : null,
+    cursorSessionId: preserveSessionIds ? current.cursorSessionId : null,
+    opencodeSessionId: preserveSessionIds ? current.opencodeSessionId : null,
   };
   return updated;
 }
