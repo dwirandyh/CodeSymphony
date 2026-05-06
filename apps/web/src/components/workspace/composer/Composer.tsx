@@ -32,6 +32,7 @@ import {
 import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../ui/dialog";
 import type { PendingAttachment } from "../../../lib/attachments";
+import type { RuntimeInfo } from "../../../lib/api";
 import {
   generateAttachmentId,
   generateClipboardFilename,
@@ -82,6 +83,7 @@ type ComposerProps = {
   agent?: CliAgent;
   model?: string;
   modelProviderId?: string | null;
+  runtimeInfo?: RuntimeInfo | null;
   threadKind?: ChatThreadKind | null;
   threadRunning?: boolean;
   permissionMode: ChatThreadPermissionMode;
@@ -207,6 +209,7 @@ function ComposerContent({
   agent: providedAgent,
   model: providedModel,
   modelProviderId: providedModelProviderId,
+  runtimeInfo = null,
   threadKind,
   threadRunning = false,
   permissionMode,
@@ -300,11 +303,13 @@ function ComposerContent({
     }
     : null;
   const canRenderQueuedMessages = queuedMessages.length > 0 && queuedMessageHandlers !== null;
+  const codexBuiltinModelOverride = runtimeInfo?.codexCliProviderOverride?.model ?? null;
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => buildAgentSelectionOptions({
     providers,
     cursorModels,
     opencodeModels,
-  }), [cursorModels, opencodeModels, providers]);
+    codexBuiltinModelOverride,
+  }), [codexBuiltinModelOverride, cursorModels, opencodeModels, providers]);
   const currentProvider = useMemo(
     () => (modelProviderId ? providers.find((provider) => provider.id === modelProviderId) ?? null : null),
     [modelProviderId, providers],
@@ -541,13 +546,8 @@ function ComposerContent({
     prevContentLenRef.current = (editor.textContent ?? "").length;
     lastStableHTMLRef.current = editor.innerHTML;
     syncValueFromEditor();
-
-    queueMicrotask(() => {
-      if (editor) {
-        detectMention();
-        detectSlashCommand();
-      }
-    });
+    detectMention();
+    detectSlashCommand();
   }, [syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
 
   const buildFinalContent = useCallback((): string => {
@@ -1357,6 +1357,7 @@ function ComposerContent({
                   providers={providers}
                   cursorModels={cursorModels}
                   opencodeModels={opencodeModels}
+                  codexBuiltinModelOverride={codexBuiltinModelOverride}
                   showAgentList={showAgentList}
                   selectionLockedReason={selectionBlockedReason}
                   onSelectionChange={(nextSelection) => {

@@ -2007,6 +2007,7 @@ export function WorkspacePage() {
                           providers={modelProviders}
                           cursorModels={cursorModels}
                           opencodeModels={opencodeModels}
+                          runtimeInfo={runtimeInfo.data ?? null}
                           onApprove={(selection) => void gates.handleApprovePlan(selection)}
                           onRevise={(feedback) => void gates.handleRevisePlan(feedback)}
                         />
@@ -2100,6 +2101,7 @@ export function WorkspacePage() {
                       providers={modelProviders}
                       cursorModels={cursorModels}
                       opencodeModels={opencodeModels}
+                      runtimeInfo={runtimeInfo.data ?? null}
                       agent={chat.composerAgent}
                       model={chat.composerModel}
                       modelProviderId={chat.composerModelProviderId}

@@ -307,6 +307,9 @@ describe("chatService permission flow", () => {
   });
 
   it("auto renames default thread title after first assistant reply via metadata event", async () => {
+    const workspaceEventHub = {
+      emit: vi.fn(),
+    };
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
         await onText("Summarize README.md");
@@ -328,6 +331,7 @@ describe("chatService permission flow", () => {
       eventHub: createEventHub(prisma),
       claudeRunner,
       modelProviderService: stubModelProviderService,
+      workspaceEventHub,
     });
     const { threadId } = await seedThread();
 
@@ -353,6 +357,9 @@ describe("chatService permission flow", () => {
 
     const thread = await chatService.getThreadById(threadId);
     expect(thread?.title).toBe("Summarize README.md");
+    expect(workspaceEventHub.emit).toHaveBeenCalledWith("thread.updated", expect.objectContaining({
+      threadId,
+    }));
   });
 
   it("passes selected provider config to AI title generation", async () => {

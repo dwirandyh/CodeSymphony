@@ -7,7 +7,11 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
-import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
+import {
+  DEFAULT_CHAT_MODEL_BY_AGENT,
+  hasSameThreadSelection,
+  shouldPreserveThreadSelectionSessionIds,
+} from "@codesymphony/shared-types";
 import type {
   AttachmentInput,
   ChatAttachment,
@@ -214,10 +218,13 @@ function shouldPreserveSessionIdsForSelectionUpdate(
   thread: ChatThread,
   selection: UpdateChatThreadAgentSelectionInput,
 ): boolean {
-  return thread.kind === "default"
-    && thread.agent === selection.agent
-    && thread.modelProviderId == null
-    && (selection.modelProviderId ?? null) == null;
+  return shouldPreserveThreadSelectionSessionIds({
+    threadKind: thread.kind,
+    currentAgent: thread.agent,
+    currentModelProviderId: thread.modelProviderId,
+    nextAgent: selection.agent,
+    nextModelProviderId: selection.modelProviderId ?? null,
+  });
 }
 
 function applyThreadAgentSelectionUpdate(
@@ -231,11 +238,7 @@ function applyThreadAgentSelectionUpdate(
   }
 
   const current = threads[index];
-  if (
-    current?.agent === selection.agent
-    && current.model === selection.model
-    && current.modelProviderId === (selection.modelProviderId ?? null)
-  ) {
+  if (hasSameThreadSelection(current, selection)) {
     return threads;
   }
 
@@ -1585,6 +1588,12 @@ export function useChatSession(
     const latestMetadata = extractLatestThreadMetadata(queriedThreadSnapshot.events);
     if (latestMetadata.threadTitle) {
       setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, latestMetadata.threadTitle));
+      if (selectedWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(selectedWorktreeId),
+          (current) => current ? applyThreadTitleUpdate(current, selectedThreadId, latestMetadata.threadTitle) : current,
+        );
+      }
     }
     if (latestMetadata.worktreeBranch && selectedWorktreeId) {
       onBranchRenamed?.(selectedWorktreeId, latestMetadata.worktreeBranch);

@@ -28,6 +28,7 @@ type AgentModelSelectorProps = {
   providers: ModelProvider[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
+  codexBuiltinModelOverride?: string | null;
   showAgentList: boolean;
   selectionLockedReason?: string | null;
   ariaLabel?: string;
@@ -169,8 +170,15 @@ export function buildAgentSelectionOptions(params: {
   providers: ModelProvider[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
+  codexBuiltinModelOverride?: string | null;
 }): Record<CliAgent, AgentSelectionOption[]> {
   const cursorModels = params.cursorModels ?? [];
+  const normalizedCodexBuiltinModelOverride = typeof params.codexBuiltinModelOverride === "string"
+    ? params.codexBuiltinModelOverride.trim()
+    : "";
+  const codexBuiltinModels = normalizedCodexBuiltinModelOverride.length > 0
+    ? [normalizedCodexBuiltinModelOverride]
+    : [...BUILTIN_CHAT_MODELS_BY_AGENT.codex];
 
   return {
     claude: [
@@ -196,13 +204,13 @@ export function buildAgentSelectionOptions(params: {
         })),
     ],
     codex: [
-      ...BUILTIN_CHAT_MODELS_BY_AGENT.codex.map((entry) => ({
+      ...codexBuiltinModels.map((entry) => ({
         id: `codex:${entry}:builtin`,
         agent: "codex" as const,
         model: entry,
         modelProviderId: null,
         label: formatFriendlyModelName("codex", entry),
-        detail: "Built-in",
+        detail: normalizedCodexBuiltinModelOverride.length > 0 ? "Codex CLI" : "Built-in",
         source: "builtin" as const,
       })),
       ...params.providers
@@ -355,6 +363,7 @@ export function AgentModelSelector({
   providers,
   cursorModels = [],
   opencodeModels,
+  codexBuiltinModelOverride = null,
   showAgentList,
   selectionLockedReason = null,
   ariaLabel,
@@ -388,7 +397,8 @@ export function AgentModelSelector({
     providers,
     cursorModels,
     opencodeModels,
-  }), [cursorModels, opencodeModels, providers]);
+    codexBuiltinModelOverride,
+  }), [codexBuiltinModelOverride, cursorModels, opencodeModels, providers]);
   const currentSelection = useMemo(
     () => getCurrentAgentSelectionOption(agentOptions, selection),
     [agentOptions, selection],

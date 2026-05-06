@@ -326,6 +326,40 @@ describe("worktreeThreadStatus", () => {
     expect(result).toEqual({ kind: "waiting_approval", threadId: "t-waiting" });
   });
 
+  it("prefers the most recently updated review-plan thread when multiple plans are pending", () => {
+    const olderReviewThread = makeThread({
+      id: "t-review-old",
+      updatedAt: "2026-01-01T00:00:00Z",
+    });
+    const newerReviewThread = makeThread({
+      id: "t-review-new",
+      updatedAt: "2026-01-01T00:05:00Z",
+    });
+    const reviewPlanSnapshot = makeSnapshot([
+      makeEvent({
+        id: "e1",
+        threadId: "shared-thread",
+        idx: 1,
+        type: "plan.created",
+        payload: { content: "Plan body", filePath: "/tmp/.claude/plans/plan.md" },
+      }),
+      makeEvent({
+        id: "e2",
+        threadId: "shared-thread",
+        idx: 2,
+        type: "chat.completed",
+        payload: {},
+      }),
+    ]);
+
+    const result = aggregateWorktreeStatus([
+      { thread: olderReviewThread, snapshot: reviewPlanSnapshot },
+      { thread: newerReviewThread, snapshot: reviewPlanSnapshot },
+    ]);
+
+    expect(result).toEqual({ kind: "review_plan", threadId: "t-review-new" });
+  });
+
   it("returns idle for empty worktree thread list", () => {
     expect(aggregateWorktreeStatus([])).toEqual({ kind: "idle", threadId: null });
   });

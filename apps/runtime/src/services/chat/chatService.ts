@@ -6,7 +6,6 @@ import {
   ApprovePlanInputSchema,
   AnswerQuestionInputSchema,
   ApprovePlanResult,
-  BUILTIN_CHAT_MODELS_BY_AGENT,
   CreateChatThreadInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
   DismissPlanInputSchema,
@@ -17,7 +16,7 @@ import {
   ResolvePermissionInputSchema,
   SendChatMessageInputSchema,
   SlashCommandCatalogSchema,
-  shouldHandoffApprovedPlanExecution,
+  hasSameThreadSelection,
   UpdateQueuedMessageInputSchema,
   UpdateChatThreadAgentSelectionInputSchema,
   UpdateChatThreadModeInputSchema,
@@ -55,7 +54,6 @@ import type { RuntimeDeps } from "../../types.js";
 import { mapChatMessage, mapChatQueuedMessage, mapChatThread } from "../mappers.js";
 import { resolveReviewRemote } from "../git.js";
 import type {
-  ActiveModelProvider,
   PendingPermissionEntry,
   PendingPlanEntry,
   PendingQuestionEntry,
@@ -98,10 +96,21 @@ import {
   maybeAutoRenameThreadAfterFirstAssistantReply,
   maybeAutoRenameBranchAfterFirstAssistantReply,
 } from "./chatNamingService.js";
+import { approvePlanExecution } from "./planExecution.js";
 import { recoverPendingPlan } from "./chatPlanService.js";
 import { deriveThreadStatusFromEvents } from "./chatThreadStatus.js";
+import {
+  buildSelectionUpdate,
+  buildSessionIdUpdate,
+  getRunnerForAgent,
+  getThreadSessionId,
+  prepareThreadSelectionUpdate,
+  resolveThreadSelection,
+  toRunnerOptional,
+  type ResolvedThreadSelection,
+} from "./threadSelection.js";
 import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../claude/toolClassification.js";
-import { buildCodexCliProviderHint, resolveCodexCliProviderOverride } from "../../codex/config.js";
+import { buildCodexCliProviderHint } from "../../codex/config.js";
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
 import { listCursorSlashCommands } from "../../cursor/sessionRunner.js";
 import { shouldAutoApproveWorkspaceEdit } from "./workspaceEditPermissions.js";
@@ -377,241 +386,6 @@ function mergeSlashCommands(...catalogs: ReadonlyArray<ReadonlyArray<{ name: str
   return Array.from(merged.values()).sort((left, right) => left.name.localeCompare(right.name));
 }
 
-function normalizeAgent(agent: CliAgent | null | undefined): CliAgent {
-  if (agent === "codex" || agent === "cursor" || agent === "opencode") {
-    return agent;
-  }
-  return "claude";
-}
-
-function normalizeOptionalModelId(model: string | null | undefined): string | null {
-  if (typeof model !== "string") {
-    return null;
-  }
-
-  const normalized = model.trim();
-  return normalized.length > 0 ? normalized : null;
-}
-
-function toRunnerOptional(value: string | null | undefined): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function isBuiltinModelForAgent(agent: CliAgent, model: string): boolean {
-  return (BUILTIN_CHAT_MODELS_BY_AGENT[agent] as readonly string[]).includes(model);
-}
-
-function resolveDefaultModelForAgent(agent: CliAgent): string {
-  if (agent === "codex") {
-    const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
-    if (codexCliModel) {
-      return codexCliModel;
-    }
-  }
-
-  return DEFAULT_CHAT_MODEL_BY_AGENT[agent];
-}
-
-function resolveBuiltinModelSelection(agent: CliAgent, model: string): string {
-  if (agent === "codex" && isBuiltinModelForAgent(agent, model)) {
-    const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
-    if (codexCliModel) {
-      return codexCliModel;
-    }
-  }
-
-  return model;
-}
-
-function toActiveModelProvider(provider: {
-  id: string;
-  agent: CliAgent;
-  apiKey: string | null;
-  baseUrl: string | null;
-  name: string;
-  modelId: string;
-}): ActiveModelProvider {
-  return {
-    id: provider.id,
-    agent: provider.agent,
-    apiKey: provider.apiKey,
-    baseUrl: provider.baseUrl,
-    name: provider.name,
-    modelId: provider.modelId,
-  };
-}
-
-type ResolvedThreadSelection = {
-  agent: CliAgent;
-  model: string;
-  modelProviderId: string | null;
-  provider: ActiveModelProvider | null;
-};
-
-async function resolvePersistedThreadProvider(
-  deps: RuntimeDeps,
-  thread: { modelProviderId: string | null },
-): Promise<ActiveModelProvider | null> {
-  const providerId = normalizeOptionalModelId(thread.modelProviderId);
-  if (!providerId) {
-    return null;
-  }
-
-  const provider = await deps.modelProviderService.getProviderById(providerId);
-  return provider ? toActiveModelProvider(provider) : null;
-}
-
-function isProviderBackedClaudeSelection(selection: {
-  agent: CliAgent;
-  provider: ActiveModelProvider | null;
-}): boolean {
-  return selection.agent === "claude" && Boolean(selection.provider?.baseUrl?.trim());
-}
-
-async function resolveThreadSelection(
-  deps: RuntimeDeps,
-  input: {
-    agent?: CliAgent | null;
-    model?: string | null;
-    modelProviderId?: string | null;
-    preferActiveProvider?: boolean;
-  },
-): Promise<ResolvedThreadSelection> {
-  const agent = normalizeAgent(input.agent);
-  const requestedProviderId = normalizeOptionalModelId(input.modelProviderId);
-  if (requestedProviderId) {
-    const provider = await deps.modelProviderService.getProviderById(requestedProviderId);
-    if (!provider) {
-      throw new Error("Selected model provider not found");
-    }
-    if (provider.agent === "cursor") {
-      throw new Error("Cursor does not support custom model providers");
-    }
-    if (provider.agent !== agent) {
-      throw new Error(`Selected model provider belongs to ${provider.agent}, not ${agent}`);
-    }
-
-    return {
-      agent,
-      model: provider.modelId,
-      modelProviderId: provider.id,
-      provider: toActiveModelProvider(provider),
-    };
-  }
-
-  const explicitModel = normalizeOptionalModelId(input.model);
-  if (explicitModel) {
-    return {
-      agent,
-      model: resolveBuiltinModelSelection(agent, explicitModel),
-      modelProviderId: null,
-      provider: null,
-    };
-  }
-
-  if (input.preferActiveProvider) {
-    const activeProvider = await deps.modelProviderService.getActiveProvider(agent);
-    if (activeProvider) {
-      return {
-        agent,
-        model: activeProvider.modelId,
-        modelProviderId: activeProvider.id,
-        provider: toActiveModelProvider(activeProvider),
-      };
-    }
-  }
-
-  return {
-    agent,
-    model: resolveDefaultModelForAgent(agent),
-    modelProviderId: null,
-    provider: null,
-  };
-}
-
-function getRunnerForAgent(deps: RuntimeDeps, agent: CliAgent) {
-  if (agent === "codex") {
-    return deps.codexRunner ?? deps.claudeRunner;
-  }
-  if (agent === "cursor") {
-    return deps.cursorRunner ?? deps.claudeRunner;
-  }
-  if (agent === "opencode") {
-    return deps.opencodeRunner ?? deps.claudeRunner;
-  }
-  return deps.claudeRunner;
-}
-
-function getThreadSessionId(
-  thread: {
-    claudeSessionId: string | null;
-    codexSessionId: string | null;
-    cursorSessionId?: string | null;
-    opencodeSessionId?: string | null;
-  },
-  agent: CliAgent,
-): string | null {
-  if (agent === "codex") {
-    return thread.codexSessionId;
-  }
-  if (agent === "cursor") {
-    return thread.cursorSessionId ?? null;
-  }
-  if (agent === "opencode") {
-    return thread.opencodeSessionId ?? null;
-  }
-  return thread.claudeSessionId;
-}
-
-function buildSessionIdUpdate(agent: CliAgent, sessionId: string | null) {
-  if (agent === "codex") {
-    return { codexSessionId: sessionId };
-  }
-  if (agent === "cursor") {
-    return { cursorSessionId: sessionId };
-  }
-  if (agent === "opencode") {
-    return { opencodeSessionId: sessionId };
-  }
-  return { claudeSessionId: sessionId };
-}
-
-function buildSelectionUpdate(
-  selection: ResolvedThreadSelection,
-  options?: { resetSessionIds?: boolean },
-) {
-  const baseUpdate = {
-    agent: selection.agent,
-    model: selection.model,
-    modelProviderId: selection.modelProviderId,
-  };
-
-  if (options?.resetSessionIds === false) {
-    return baseUpdate;
-  }
-
-  return {
-    ...baseUpdate,
-    claudeSessionId: null,
-    codexSessionId: null,
-    cursorSessionId: null,
-    opencodeSessionId: null,
-  };
-}
-
-function hasSameSelection(
-  thread: {
-    agent: CliAgent;
-    model: string;
-    modelProviderId: string | null;
-  },
-  selection: ResolvedThreadSelection,
-): boolean {
-  return thread.agent === selection.agent
-    && thread.model === selection.model
-    && thread.modelProviderId === selection.modelProviderId;
-}
-
 function getReviewThreadTitle(provider: ReviewProvider): string {
   if (provider === "gitlab") {
     return REVIEW_THREAD_GITLAB_TITLE;
@@ -770,6 +544,34 @@ export function createChatService(deps: RuntimeDeps) {
     }
 
     deps.workspaceEventHub.emit("thread.updated", {
+      repositoryId: thread.worktree.repositoryId,
+      worktreeId: thread.worktreeId,
+      threadId,
+    });
+  }
+
+  async function emitWorktreeWorkspaceUpdateForThread(threadId: string): Promise<void> {
+    if (!deps.workspaceEventHub) {
+      return;
+    }
+
+    const thread = await deps.prisma.chatThread.findUnique({
+      where: { id: threadId },
+      include: {
+        worktree: {
+          select: {
+            id: true,
+            repositoryId: true,
+          },
+        },
+      },
+    });
+
+    if (!thread) {
+      return;
+    }
+
+    deps.workspaceEventHub.emit("worktree.updated", {
       repositoryId: thread.worktree.repositoryId,
       worktreeId: thread.worktreeId,
       threadId,
@@ -1304,6 +1106,8 @@ export function createChatService(deps: RuntimeDeps) {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+
+        await emitThreadWorkspaceUpdate(threadId);
       }
 
       if (!hasFileChanges) {
@@ -1332,6 +1136,8 @@ export function createChatService(deps: RuntimeDeps) {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+
+        await emitWorktreeWorkspaceUpdateForThread(threadId);
       }
     } catch (postError) {
       deps.logService?.log("warn", "chat.lifecycle", "Post-completion enrichment failed", {
@@ -2014,7 +1820,7 @@ export function createChatService(deps: RuntimeDeps) {
         const shouldUpgradePermissionProfile = existing.permissionProfile !== "review_git";
         const shouldUpgradeLegacyTitle = !existing.titleEditedManually && isLegacyReviewThreadTitle(existing.title);
         const shouldUpgradePermissionMode = existing.permissionMode !== permissionMode;
-        const shouldUpdateSelection = !hasSameSelection(existing, selection);
+        const shouldUpdateSelection = !hasSameThreadSelection(existing, selection);
         let canUpdateSelection = false;
         if (shouldUpdateSelection && !isThreadActive(existing.id)) {
           const messageCount = await deps.prisma.chatMessage.count({
@@ -2106,7 +1912,7 @@ export function createChatService(deps: RuntimeDeps) {
             ],
           });
           if (existingThread) {
-            if (!isThreadActive(existingThread.id) && !hasSameSelection(existingThread, selection)) {
+            if (!isThreadActive(existingThread.id) && !hasSameThreadSelection(existingThread, selection)) {
               const messageCount = await deps.prisma.chatMessage.count({
                 where: { threadId: existingThread.id },
               });
@@ -2322,43 +2128,22 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Cannot change agent or model while assistant is processing");
       }
 
-      const selection = await resolveThreadSelection(deps, input);
-      if (hasSameSelection(thread, selection)) {
-        return mapChatThread(thread, isThreadActive(thread.id));
-      }
-
       const messageCount = await deps.prisma.chatMessage.count({
         where: { threadId },
       });
-
-      let resetSessionIds = true;
-      if (messageCount > 0) {
-        if (thread.kind !== "default") {
-          throw new Error("Cannot change model for non-default threads");
-        }
-
-        if (thread.agent !== selection.agent) {
-          throw new Error("Cannot change agent after the thread has messages");
-        }
-
-        const currentProvider = await resolvePersistedThreadProvider(deps, thread);
-        if (isProviderBackedClaudeSelection({
-          agent: thread.agent,
-          provider: currentProvider,
-        })) {
-          throw new Error("Cannot change model for provider-backed Claude threads");
-        }
-
-        if (thread.modelProviderId !== selection.modelProviderId) {
-          throw new Error("Cannot change provider source after the thread has messages");
-        }
-
-        resetSessionIds = false;
+      const { selection, selectionChanged, selectionUpdate } = await prepareThreadSelectionUpdate({
+        deps,
+        thread,
+        input,
+        messageCount,
+      });
+      if (!selectionChanged) {
+        return mapChatThread(thread, isThreadActive(thread.id));
       }
 
       const updatedThread = await deps.prisma.chatThread.update({
         where: { id: threadId },
-        data: buildSelectionUpdate(selection, { resetSessionIds }),
+        data: selectionUpdate ?? buildSelectionUpdate(selection),
       });
 
       return mapChatThread(updatedThread, isThreadActive(updatedThread.id));
@@ -2728,110 +2513,20 @@ export function createChatService(deps: RuntimeDeps) {
 
     async approvePlan(threadId: string, rawInput: unknown): Promise<ApprovePlanResult> {
       const input = ApprovePlanInputSchema.parse(rawInput);
-      const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
-      if (!thread) {
-        throw new Error("Chat thread not found");
-      }
-
-      let plan = pendingPlanByThread.get(threadId);
-      if (!plan) {
-        plan = await recoverPendingPlan(deps.eventHub, threadId) ?? undefined;
-        if (!plan) {
-          throw new Error("No pending plan to approve for this thread");
-        }
-      }
-
-      if (isThreadActive(threadId)) {
-        throw new Error("Assistant is still processing");
-      }
-
-      const selection = await resolveThreadSelection(deps, input);
-      const messageCount = await deps.prisma.chatMessage.count({
-        where: { threadId },
-      });
-      const currentProvider = await resolvePersistedThreadProvider(deps, thread);
-      const selectionChanged = !hasSameSelection(thread, selection);
-      const autoHandoffRequired = selectionChanged && shouldHandoffApprovedPlanExecution({
-        messageCount,
-        threadKind: thread.kind,
-        sourceAgent: thread.agent,
-        sourceModelProviderId: thread.modelProviderId,
-        sourceProviderHasBaseUrl: isProviderBackedClaudeSelection({
-          agent: thread.agent,
-          provider: currentProvider,
-        }),
-        targetAgent: selection.agent,
-        targetModelProviderId: selection.modelProviderId,
-      });
-      const handoffRequired = input.executionKind === "handoff" || autoHandoffRequired;
-
-      let selectionUpdate = null;
-      if (!handoffRequired && selectionChanged) {
-        let resetSessionIds = true;
-        if (messageCount > 0) {
-          resetSessionIds = false;
-        }
-
-        selectionUpdate = buildSelectionUpdate(selection, { resetSessionIds });
-      }
-
-      pendingPlanByThread.delete(threadId);
-      let executionThreadId = threadId;
-      let executionKind: ApprovePlanResult["executionKind"] = "same_thread_switch";
-
-      if (handoffRequired) {
-        const executionThread = await deps.prisma.chatThread.create({
-          data: {
-            worktreeId: thread.worktreeId,
-            title: thread.title,
-            kind: "default",
-            permissionProfile: thread.permissionProfile,
-            permissionMode: thread.permissionMode,
-            mode: "default",
-            handoffSourceThreadId: threadId,
-            handoffSourcePlanEventId: plan.eventId,
-            ...buildSelectionUpdate(selection),
-          },
-        });
-        executionThreadId = executionThread.id;
-        executionKind = "handoff";
-
-        if (deps.workspaceEventHub) {
-          deps.workspaceEventHub.emit("thread.created", {
-            worktreeId: executionThread.worktreeId,
-            threadId: executionThread.id,
+      return approvePlanExecution({
+        deps,
+        threadId,
+        input,
+        pendingPlanByThread,
+        isThreadActive,
+        emitThreadWorkspaceUpdate,
+        seedHandoffThreadWithApprovedPlan,
+        scheduleAssistant: (executionThreadId, prompt, autoAcceptTools) => {
+          scheduleAssistant(executionThreadId, prompt, "default", {
+            autoAcceptTools,
           });
-        }
-
-        await deps.prisma.chatThread.update({
-          where: { id: threadId },
-          data: { mode: "default" },
-        });
-        await seedHandoffThreadWithApprovedPlan(executionThread.id, plan);
-        await emitThreadWorkspaceUpdate(threadId);
-      } else {
-        await deps.prisma.chatThread.update({
-          where: { id: threadId },
-          data: {
-            mode: "default",
-            ...(selectionUpdate ?? {}),
-          },
-        });
-        await emitThreadWorkspaceUpdate(threadId);
-      }
-
-      await deps.eventHub.emit(threadId, "plan.approved", {
-        filePath: plan.filePath,
+        },
       });
-
-      const executePrompt = `The user has approved the following plan. Please execute it now:\n\n${plan.content}`;
-      scheduleAssistant(executionThreadId, executePrompt, "default", { autoAcceptTools: true });
-
-      return {
-        executionKind,
-        sourceThreadId: threadId,
-        executionThreadId,
-      };
     },
 
     async dismissPlan(threadId: string, rawInput: unknown): Promise<void> {

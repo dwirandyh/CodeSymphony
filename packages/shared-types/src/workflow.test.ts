@@ -7,8 +7,11 @@ import {
   CreateChatThreadInputSchema,
   CreateModelProviderInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
+  hasSameThreadSelection,
   ModelProviderSchema,
+  resolveApprovedPlanExecutionKind,
   shouldHandoffApprovedPlanExecution,
+  shouldPreserveThreadSelectionSessionIds,
   TestModelProviderInputSchema,
   UpdateChatThreadAgentSelectionInputSchema,
   UpdateModelProviderInputSchema,
@@ -135,5 +138,76 @@ describe("Cursor shared workflow schemas", () => {
       targetAgent: "claude",
       targetModelProviderId: null,
     })).toBe(true);
+  });
+
+  it("compares thread selections and preserves session ids across same-source switches", () => {
+    expect(hasSameThreadSelection({
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: "provider-1",
+    }, {
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: "provider-1",
+    })).toBe(true);
+
+    expect(hasSameThreadSelection({
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: "provider-1",
+    }, {
+      agent: "codex",
+      model: "gpt-5.4-mini",
+      modelProviderId: "provider-1",
+    })).toBe(false);
+
+    expect(shouldPreserveThreadSelectionSessionIds({
+      threadKind: "default",
+      currentAgent: "codex",
+      currentModelProviderId: "provider-1",
+      nextAgent: "codex",
+      nextModelProviderId: "provider-1",
+    })).toBe(true);
+
+    expect(shouldPreserveThreadSelectionSessionIds({
+      threadKind: "default",
+      currentAgent: "codex",
+      currentModelProviderId: "provider-1",
+      nextAgent: "codex",
+      nextModelProviderId: null,
+    })).toBe(false);
+  });
+
+  it("resolves approved-plan execution kind with explicit and automatic handoffs", () => {
+    expect(resolveApprovedPlanExecutionKind({
+      requestedExecutionKind: "handoff",
+      messageCount: 0,
+      threadKind: "default",
+      sourceAgent: "codex",
+      sourceModelProviderId: null,
+      sourceProviderHasBaseUrl: false,
+      targetAgent: "codex",
+      targetModelProviderId: null,
+    })).toBe("handoff");
+
+    expect(resolveApprovedPlanExecutionKind({
+      messageCount: 1,
+      threadKind: "default",
+      sourceAgent: "codex",
+      sourceModelProviderId: null,
+      sourceProviderHasBaseUrl: false,
+      targetAgent: "codex",
+      targetModelProviderId: null,
+    })).toBe("same_thread_switch");
+
+    expect(resolveApprovedPlanExecutionKind({
+      messageCount: 1,
+      threadKind: "default",
+      sourceAgent: "claude",
+      sourceModelProviderId: "provider-1",
+      sourceProviderHasBaseUrl: true,
+      targetAgent: "claude",
+      targetModelProviderId: null,
+    })).toBe("handoff");
   });
 });
