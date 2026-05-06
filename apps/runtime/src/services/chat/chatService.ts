@@ -97,7 +97,11 @@ import {
   maybeAutoRenameBranchAfterFirstAssistantReply,
 } from "./chatNamingService.js";
 import { approvePlanExecution } from "./planExecution.js";
-import { recoverPendingPlan } from "./chatPlanService.js";
+import {
+  buildPendingPlanUpdate,
+  loadPendingPlan,
+  persistPendingPlan,
+} from "./chatPendingPlanState.js";
 import { deriveThreadStatusFromEvents } from "./chatThreadStatus.js";
 import {
   buildSelectionUpdate,
@@ -431,7 +435,6 @@ export function createChatService(deps: RuntimeDeps) {
   const threadRuns = new Map<string, ThreadRunState>();
   const pendingPermissionsByThread = new Map<string, Map<string, PendingPermissionEntry>>();
   const pendingQuestionsByThread = new Map<string, Map<string, PendingQuestionEntry>>();
-  const pendingPlanByThread = new Map<string, PendingPlanEntry>();
   const pendingThreadCreatesByKey = new Map<string, Promise<ChatThread>>();
   const queuedDispatchesByThread = new Map<string, Promise<void>>();
 
@@ -1489,10 +1492,14 @@ export function createChatService(deps: RuntimeDeps) {
             messageId: assistantMessage.id,
             source,
           });
-          pendingPlanByThread.set(threadId, {
-            eventId: planEvent.id,
-            content: payload.content,
-            filePath: payload.filePath,
+          await persistPendingPlan({
+            deps,
+            threadId,
+            plan: {
+              eventId: planEvent.id,
+              content: payload.content,
+              filePath: payload.filePath,
+            },
           });
         },
         onPermissionRequest: async (payload) => {
@@ -2517,7 +2524,6 @@ export function createChatService(deps: RuntimeDeps) {
         deps,
         threadId,
         input,
-        pendingPlanByThread,
         isThreadActive,
         emitThreadWorkspaceUpdate,
         seedHandoffThreadWithApprovedPlan,
@@ -2537,19 +2543,22 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
-      let plan = pendingPlanByThread.get(threadId);
+      const plan = await loadPendingPlan({
+        deps,
+        thread,
+      });
       if (!plan) {
-        plan = await recoverPendingPlan(deps.eventHub, threadId) ?? undefined;
-        if (!plan) {
-          throw new Error("No pending plan to dismiss for this thread");
-        }
+        throw new Error("No pending plan to dismiss for this thread");
       }
 
       if (isThreadActive(threadId)) {
         throw new Error("Assistant is still processing");
       }
 
-      pendingPlanByThread.delete(threadId);
+      await deps.prisma.chatThread.update({
+        where: { id: threadId },
+        data: buildPendingPlanUpdate(null),
+      });
 
       const normalizedReason = input.reason?.trim();
       await deps.eventHub.emit(threadId, "plan.dismissed", {
@@ -2566,24 +2575,26 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
-      let plan = pendingPlanByThread.get(threadId);
+      const plan = await loadPendingPlan({
+        deps,
+        thread,
+      });
       if (!plan) {
-        plan = await recoverPendingPlan(deps.eventHub, threadId) ?? undefined;
-        if (!plan) {
-          throw new Error("No pending plan to revise for this thread");
-        }
+        throw new Error("No pending plan to revise for this thread");
       }
 
       if (isThreadActive(threadId)) {
         throw new Error("Assistant is still processing");
       }
 
-      pendingPlanByThread.delete(threadId);
       setThreadRunState(threadId, { status: "scheduled", mode: "plan" });
 
       await deps.prisma.chatThread.update({
         where: { id: threadId },
-        data: { mode: "plan" },
+        data: {
+          mode: "plan",
+          ...buildPendingPlanUpdate(null),
+        },
       });
 
       const seq = await nextMessageSeq(deps.prisma, threadId);

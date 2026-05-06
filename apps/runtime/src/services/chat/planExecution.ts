@@ -2,7 +2,7 @@ import type { ApprovePlanInput, ApprovePlanResult } from "@codesymphony/shared-t
 import { hasSameThreadSelection, resolveApprovedPlanExecutionKind } from "@codesymphony/shared-types";
 import type { RuntimeDeps } from "../../types.js";
 import type { PendingPlanEntry } from "./chatService.types.js";
-import { recoverPendingPlan } from "./chatPlanService.js";
+import { buildPendingPlanUpdate, loadPendingPlan } from "./chatPendingPlanState.js";
 import {
   buildSelectionUpdate,
   isProviderBackedClaudeSelection,
@@ -14,7 +14,6 @@ export async function approvePlanExecution(params: {
   deps: RuntimeDeps;
   threadId: string;
   input: ApprovePlanInput;
-  pendingPlanByThread: Map<string, PendingPlanEntry>;
   isThreadActive: (threadId: string) => boolean;
   emitThreadWorkspaceUpdate: (threadId: string) => Promise<void>;
   seedHandoffThreadWithApprovedPlan: (threadId: string, plan: PendingPlanEntry) => Promise<void>;
@@ -25,12 +24,12 @@ export async function approvePlanExecution(params: {
     throw new Error("Chat thread not found");
   }
 
-  let plan = params.pendingPlanByThread.get(params.threadId);
+  const plan = await loadPendingPlan({
+    deps: params.deps,
+    thread,
+  });
   if (!plan) {
-    plan = await recoverPendingPlan(params.deps.eventHub, params.threadId) ?? undefined;
-    if (!plan) {
-      throw new Error("No pending plan to approve for this thread");
-    }
+    throw new Error("No pending plan to approve for this thread");
   }
 
   if (params.isThreadActive(params.threadId)) {
@@ -65,7 +64,6 @@ export async function approvePlanExecution(params: {
     });
   }
 
-  params.pendingPlanByThread.delete(params.threadId);
   let executionThreadId = params.threadId;
 
   if (handoffRequired) {
@@ -93,7 +91,10 @@ export async function approvePlanExecution(params: {
 
     await params.deps.prisma.chatThread.update({
       where: { id: params.threadId },
-      data: { mode: "default" },
+      data: {
+        mode: "default",
+        ...buildPendingPlanUpdate(null),
+      },
     });
     await params.seedHandoffThreadWithApprovedPlan(executionThread.id, plan);
     await params.emitThreadWorkspaceUpdate(params.threadId);
@@ -102,6 +103,7 @@ export async function approvePlanExecution(params: {
       where: { id: params.threadId },
       data: {
         mode: "default",
+        ...buildPendingPlanUpdate(null),
         ...(selectionUpdate ?? {}),
       },
     });

@@ -96,7 +96,7 @@ function toActiveModelProvider(provider: {
 
 export async function resolvePersistedThreadProvider(
   deps: RuntimeDeps,
-  thread: { modelProviderId: string | null },
+  thread: { modelProviderId?: string | null },
 ): Promise<ActiveModelProvider | null> {
   const providerId = normalizeOptionalModelId(thread.modelProviderId);
   if (!providerId) {

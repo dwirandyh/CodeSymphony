@@ -7,7 +7,12 @@ import { api } from "../../../../lib/api";
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
 import { disposeThreadCollections, getThreadCollections, resetThreadCollectionsForTest } from "../../../../collections/threadCollections";
-import { setThreadLastAppliedSnapshotKey, setThreadLastEventIdx, setThreadLastMessageSeq } from "../../../../collections/threadStreamState";
+import {
+  resetThreadStreamStateRegistryForTest,
+  setThreadLastAppliedSnapshotKey,
+  setThreadLastEventIdx,
+  setThreadLastMessageSeq,
+} from "../../../../collections/threadStreamState";
 import { resetPendingAutoCreateWorktreesForTest, useChatSession } from "./useChatSession";
 
 const { threadsState, snapshotState } = vi.hoisted(() => ({
@@ -219,6 +224,22 @@ function renderHookInStrictMode(
   });
 }
 
+function simulatePageReload() {
+  act(() => root.unmount());
+  queryClient.clear();
+  resetThreadCollectionsForTest();
+  resetThreadStreamStateRegistryForTest();
+  root = createRoot(container);
+  queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+  queryClient.invalidateQueries = invalidateQueriesMock as typeof queryClient.invalidateQueries;
+  queryClient.cancelQueries = cancelQueriesMock as typeof queryClient.cancelQueries;
+}
+
 function makeSnapshot(overrides?: Partial<ChatTimelineSnapshot>): ChatTimelineSnapshot {
   return {
     timelineItems: [],
@@ -258,6 +279,7 @@ function makeMessageTimelineItem(message: ChatMessage): ChatTimelineItem {
 beforeEach(() => {
   resetPendingAutoCreateWorktreesForTest();
   resetThreadCollectionsForTest();
+  resetThreadStreamStateRegistryForTest();
   threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
   threadsState.isLoading = false;
   threadsState.isFetching = false;
@@ -304,6 +326,7 @@ afterEach(() => {
   container.remove();
   resetPendingAutoCreateWorktreesForTest();
   resetThreadCollectionsForTest();
+  resetThreadStreamStateRegistryForTest();
   pushThreadNavigationPerfMock.mockReset();
   scheduleWindowIdleTaskMock.mockReset();
   useWorkspaceTimelineMock.mockReset();
@@ -1513,6 +1536,111 @@ describe("useChatSession", () => {
     expect(hookResult.selectedThreadUiStatus).toBe("review_plan");
     expect(hookResult.timelineItems).toEqual(serverTimelineItems);
     expect(hookResult.messageListEmptyState).toBeNull();
+  });
+
+  it("persists a pending plan after a page reload", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 2,
+      messages: [{
+        id: "assistant-plan",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical plan summary",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [
+        makeEvent(1, "plan.created", {
+          content: "# Plan\n\n1. Ship it",
+          filePath: ".claude/plans/plan.md",
+        }),
+        makeEvent(2, "chat.completed", {}),
+      ],
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadUiStatus).toBe("review_plan");
+    expect(hookResult.events.map((event) => event.type)).toEqual(["plan.created", "chat.completed"]);
+
+    simulatePageReload();
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadUiStatus).toBe("review_plan");
+    expect(hookResult.events.map((event) => event.type)).toEqual(["plan.created", "chat.completed"]);
+  });
+
+  it("clears a persisted pending plan after a page reload once the plan is approved", async () => {
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 2,
+      messages: [{
+        id: "assistant-plan",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical plan summary",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [
+        makeEvent(1, "plan.created", {
+          content: "# Plan\n\n1. Ship it",
+          filePath: ".claude/plans/plan.md",
+        }),
+        makeEvent(2, "chat.completed", {}),
+      ],
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadUiStatus).toBe("review_plan");
+
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 3,
+      messages: [{
+        id: "assistant-plan",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical plan summary",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [
+        makeEvent(1, "plan.created", {
+          content: "# Plan\n\n1. Ship it",
+          filePath: ".claude/plans/plan.md",
+        }),
+        makeEvent(2, "chat.completed", {}),
+        makeEvent(3, "plan.approved", {}),
+      ],
+    });
+
+    simulatePageReload();
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.selectedThreadUiStatus).toBe("idle");
+    expect(hookResult.events.map((event) => event.type)).toEqual(["plan.created", "chat.completed", "plan.approved"]);
   });
 
   it("replaces stale local messages and events when the latest snapshot for the same thread is empty", () => {

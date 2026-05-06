@@ -1530,6 +1530,12 @@ describe("chatService permission flow", () => {
     });
 
     await waitForTerminalEvent(chatService, threadId);
+    const persistedPendingPlan = await prisma.chatThread.findUniqueOrThrow({
+      where: { id: threadId },
+    });
+    expect(persistedPendingPlan.pendingPlanEventId).not.toBeNull();
+    expect(persistedPendingPlan.pendingPlanContent).toBe("# Plan\n\n1. Ship it");
+    expect(persistedPendingPlan.pendingPlanFilePath).toBe(".claude/plans/plan.md");
 
     await chatService.dismissPlan(threadId, {});
 
@@ -1540,6 +1546,12 @@ describe("chatService permission flow", () => {
     );
 
     expect(dismissed.payload.reason).toBe("Plan dismissed by user.");
+    const clearedPendingPlan = await prisma.chatThread.findUniqueOrThrow({
+      where: { id: threadId },
+    });
+    expect(clearedPendingPlan.pendingPlanEventId).toBeNull();
+    expect(clearedPendingPlan.pendingPlanContent).toBeNull();
+    expect(clearedPendingPlan.pendingPlanFilePath).toBeNull();
   });
 
   it("normalizes relative file mentions against the selected worktree root before scheduling the assistant", async () => {
