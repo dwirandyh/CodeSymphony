@@ -171,7 +171,11 @@ function MarkdownLink({
 const BASE_MARKDOWN_COMPONENTS = {
   p: createMarkdownRenderer<"p">(({ children }) => <p className="leading-6 [&:not(:first-child)]:mt-4 whitespace-pre-wrap break-words">{children}</p>),
   ul: createMarkdownRenderer<"ul">(({ children }) => <ul className="my-4 ml-6 list-disc [&>li]:mt-1.5">{children}</ul>),
-  ol: createMarkdownRenderer<"ol">(({ children }) => <ol className="my-4 ml-6 list-decimal [&>li]:mt-1.5">{children}</ol>),
+  ol: createMarkdownRenderer<"ol">(({ children, start }) => (
+    <ol start={start} className="my-4 ml-6 list-decimal [&>li]:mt-1.5">
+      {children}
+    </ol>
+  )),
   li: createMarkdownRenderer<"li">(({ children }) => <li>{children}</li>),
   h1: createMarkdownRenderer<"h1">(({ children }) => <h1 className="scroll-m-16 text-xl font-bold tracking-tight mb-3">{children}</h1>),
   h2: createMarkdownRenderer<"h2">(({ children }) => <h2 className="scroll-m-16 border-b pb-1.5 text-lg font-semibold tracking-tight mt-5 mb-3 first:mt-0">{children}</h2>),

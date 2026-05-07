@@ -1588,12 +1588,16 @@ export function createChatService(deps: RuntimeDeps) {
         flushTimer = null;
       }
 
+      const persistedAssistantContent = result.output.trim().length > 0
+        ? result.output.trim()
+        : fullOutput.trim();
+
       try {
         await deps.prisma.$transaction(async (tx) => {
           await tx.chatMessage.update({
             where: { id: assistantMessage.id },
             data: {
-              content: fullOutput.trim(),
+              content: persistedAssistantContent,
             },
           });
 
@@ -1610,7 +1614,7 @@ export function createChatService(deps: RuntimeDeps) {
         try {
           await deps.prisma.chatMessage.update({
             where: { id: assistantMessage.id },
-            data: { content: fullOutput.trim() },
+            data: { content: persistedAssistantContent },
           });
         } catch { /* incremental flush already persisted partial content */ }
         try {
