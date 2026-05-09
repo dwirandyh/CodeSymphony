@@ -665,6 +665,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         }
         if (completedThreadTitle) {
           setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, completedThreadTitle));
+          if (selectedWorktreeId) {
+            queryClient.setQueryData<ChatThread[] | undefined>(
+              queryKeys.threads.list(selectedWorktreeId),
+              (current) => current ? applyThreadTitleUpdate(current, selectedThreadId, completedThreadTitle) : current,
+            );
+          }
         }
         const completedMode = payloadStringOrNull(payload.payload.threadMode);
         if (completedMode === "default" || completedMode === "plan") {
@@ -688,6 +694,12 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           const metadataBranch = payloadStringOrNull(payload.payload.worktreeBranch);
           if (metadataThreadTitle) {
             setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, metadataThreadTitle));
+            if (selectedWorktreeId) {
+              queryClient.setQueryData<ChatThread[] | undefined>(
+                queryKeys.threads.list(selectedWorktreeId),
+                (current) => current ? applyThreadTitleUpdate(current, selectedThreadId, metadataThreadTitle) : current,
+              );
+            }
           }
           if (metadataBranch && selectedWorktreeId) {
             onBranchRenamed?.(selectedWorktreeId, metadataBranch);

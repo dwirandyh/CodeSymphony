@@ -254,6 +254,182 @@ describe("buildTimelineFromSeed", () => {
     expect(result.items.some((item) => item.kind === "activity")).toBe(false);
   });
 
+  it("keeps a completed explanatory message intact before a later AskUserQuestion card", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Plan this."),
+      makeMessage(
+        "m2",
+        1,
+        "assistant",
+        "Intro satu. Intro dua. Pertanyaan pertama harus kunci kontrak link reset. Tanpa ini, kita tidak bisa memastikan route app. Repo sudah punya pattern kuat.",
+      ),
+    ];
+    const events = [
+      makeEvent(10, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Intro satu. Intro dua. Pertanyaan pertama harus kunci kontrak link reset",
+      }),
+      makeEvent(20, "tool.started", {
+        toolName: "Read",
+        toolUseId: "read-1",
+        messageId: "m2",
+      }),
+      makeEvent(21, "tool.finished", {
+        toolName: "Read",
+        summary: "Read brief.md",
+        precedingToolUseIds: ["read-1"],
+        messageId: "m2",
+      }),
+      makeEvent(30, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: ". Tanpa ini, kita tidak bisa memastikan route app.",
+      }),
+      makeEvent(40, "question.requested", {
+        requestId: "ask-1",
+        questions: [{ question: "Link shape?" }],
+        messageId: "m2",
+      }),
+      makeEvent(41, "question.answered", {
+        requestId: "ask-1",
+        answers: { "Link shape?": "Universal Link" },
+      }),
+      makeEvent(60, "question.requested", {
+        requestId: "ask-2",
+        questions: [{ question: "Form rules?" }],
+        messageId: "m2",
+      }),
+      makeEvent(61, "question.answered", {
+        requestId: "ask-2",
+        answers: { "Form rules?": "Mirror change password" },
+      }),
+      makeEvent(70, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: " Repo sudah punya pattern kuat.",
+      }),
+      makeEvent(71, "chat.completed", { messageId: "m2" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const combinedMessageIndex = result.items.findIndex(
+      (item) =>
+        item.kind === "message"
+        && item.message.content.includes("Pertanyaan pertama harus kunci kontrak link reset. Tanpa ini, kita tidak bisa memastikan route app."),
+    );
+    const splitTailIndex = result.items.findIndex(
+      (item) =>
+        item.kind === "message"
+        && item.message.content.trim() === "Tanpa ini, kita tidak bisa memastikan route app.",
+    );
+    const firstQuestionIndex = result.items.findIndex(
+      (item) => item.kind === "tool" && item.toolName === "AskUserQuestion",
+    );
+
+    expect(combinedMessageIndex).toBeGreaterThan(-1);
+    expect(splitTailIndex).toBe(-1);
+    expect(firstQuestionIndex).toBeGreaterThan(-1);
+    expect(combinedMessageIndex).toBeLessThan(firstQuestionIndex);
+  });
+
+  it("keeps a completed explanatory message intact before a later explore activity card", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Investigate auth."),
+      makeMessage(
+        "m2",
+        1,
+        "assistant",
+        "Intro satu. Intro dua. Fakta sementara: forgot password sudah ada. Yang belum kelihatan: form reset password. Sekarang saya cek reuse.",
+      ),
+    ];
+    const events = [
+      makeEvent(10, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Intro satu. Intro dua. Fakta sementara: forgot password sudah ada",
+      }),
+      makeEvent(20, "tool.started", {
+        toolName: "Read",
+        toolUseId: "read-1",
+        messageId: "m2",
+      }),
+      makeEvent(21, "tool.finished", {
+        toolName: "Read",
+        summary: "Read forgot_password_page.dart",
+        precedingToolUseIds: ["read-1"],
+        messageId: "m2",
+      }),
+      makeEvent(30, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: ". Yang belum kelihatan: form reset password.",
+      }),
+      makeEvent(40, "tool.started", {
+        toolName: "Read",
+        toolUseId: "read-2",
+        messageId: "m2",
+      }),
+      makeEvent(41, "tool.finished", {
+        toolName: "Read",
+        summary: "Read change_password_page.dart",
+        precedingToolUseIds: ["read-2"],
+        messageId: "m2",
+      }),
+      makeEvent(60, "tool.started", {
+        toolName: "Read",
+        toolUseId: "read-3",
+        messageId: "m2",
+      }),
+      makeEvent(61, "tool.finished", {
+        toolName: "Read",
+        summary: "Read main.dart",
+        precedingToolUseIds: ["read-3"],
+        messageId: "m2",
+      }),
+      makeEvent(70, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: " Sekarang saya cek reuse.",
+      }),
+      makeEvent(71, "chat.completed", { messageId: "m2" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const combinedMessageIndex = result.items.findIndex(
+      (item) =>
+        item.kind === "message"
+        && item.message.content.includes("Fakta sementara: forgot password sudah ada. Yang belum kelihatan: form reset password."),
+    );
+    const splitTailIndex = result.items.findIndex(
+      (item) =>
+        item.kind === "message"
+        && item.message.content.trim() === "Yang belum kelihatan: form reset password.",
+    );
+    const secondExploreIndex = result.items.findIndex(
+      (item) =>
+        item.kind === "explore-activity"
+        && item.entries.some((entry) => entry.label.includes("change_password_page.dart")),
+    );
+
+    expect(combinedMessageIndex).toBeGreaterThan(-1);
+    expect(splitTailIndex).toBe(-1);
+    expect(secondExploreIndex).toBeGreaterThan(-1);
+    expect(combinedMessageIndex).toBeLessThan(secondExploreIndex);
+  });
+
   it("keeps streaming fenced markdown in markdown mode without raw fallback", () => {
     const content = [
       "Here is the plan:",
@@ -494,6 +670,80 @@ describe("buildTimelineFromSeed", () => {
     expect(editedItems[0]?.diff).toContain("+EDIT_OK");
   });
 
+  it("keeps a carried pre-edit announcement sentence ahead of the edit card", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "email To nya kok malah tidak terisi otomatis?"),
+      makeMessage(
+        "m2",
+        1,
+        "assistant",
+        "Ah iya, maaf! Ada masalah dengan email To-nya. Mari saya perbaiki lagi:Sip sudah diperbaiki! ✅",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", { role: "assistant", messageId: "m2", delta: "Ah iya" }),
+      makeEvent(2, "message.delta", { role: "assistant", messageId: "m2", delta: ", maaf!" }),
+      makeEvent(3, "tool.started", {
+        toolName: "Edit",
+        toolUseId: "e1",
+        toolInput: { file_path: "/repo/OTPLoginActivity.java", old_string: "a", new_string: "b" },
+      }),
+      makeEvent(4, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: " Ada masalah dengan email To-nya. Mari saya perbaiki lagi:",
+      }),
+      makeEvent(5, "tool.finished", {
+        toolName: "Edit",
+        summary: "Edited /repo/OTPLoginActivity.java",
+        precedingToolUseIds: ["e1"],
+        editTarget: "/repo/OTPLoginActivity.java",
+      }),
+      makeEvent(6, "message.delta", { role: "assistant", messageId: "m2", delta: "Sip sudah diperbaiki! ✅" }),
+      makeEvent(7, "tool.finished", {
+        source: "worktree.diff",
+        changedFiles: ["/repo/OTPLoginActivity.java"],
+        diff: [
+          "diff --git a/OTPLoginActivity.java b/OTPLoginActivity.java",
+          "--- a/OTPLoginActivity.java",
+          "+++ b/OTPLoginActivity.java",
+          "@@ -1 +1 @@",
+          "-a",
+          "+b",
+        ].join("\n"),
+      }),
+      makeEvent(8, "chat.completed", { messageId: "m2" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const issueIndex = result.items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Ada masalah dengan email To-nya."),
+    );
+    const announcementIndex = result.items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Mari saya perbaiki lagi:"),
+    );
+    const editIndex = result.items.findIndex(
+      (item) => item.kind === "edited-diff" && item.changedFiles.some((file) => file.includes("OTPLoginActivity.java")),
+    );
+    const completionIndex = result.items.findIndex(
+      (item) => item.kind === "message" && item.message.content.includes("Sip sudah diperbaiki!"),
+    );
+
+    expect(issueIndex).toBeGreaterThan(-1);
+    expect(announcementIndex).toBeGreaterThan(-1);
+    expect(editIndex).toBeGreaterThan(-1);
+    expect(completionIndex).toBeGreaterThan(-1);
+    expect(issueIndex).toBeLessThan(announcementIndex);
+    expect(announcementIndex).toBeLessThan(editIndex);
+    expect(editIndex).toBeLessThan(completionIndex);
+  });
+
   it("attaches resumed tool events to the new assistant turn when tool activity starts before text deltas", () => {
     const messages = [
       makeMessage("m1", 0, "user", "Start the task."),
@@ -601,6 +851,46 @@ describe("buildTimelineFromSeed", () => {
     expect(planIndex).toBeGreaterThan(-1);
     expect(editedIndex).toBeGreaterThan(-1);
     expect(planIndex).toBeLessThan(editedIndex);
+  });
+
+  it("keeps codex plans with inline-code question marks in the rendered plan card", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Plan it."),
+      makeMessage("m2", 1, "assistant", "Drafting the plan."),
+    ];
+    const content = [
+      "# Kotlin Plan",
+      "",
+      "1. Preserve nullable signatures like `Any?` during generation.",
+      "2. Update the parser to keep those types stable.",
+    ].join("\n");
+    const events = [
+      makeEvent(10, "plan.created", {
+        messageId: "m2",
+        content,
+        filePath: "codex-plan-item",
+        source: "codex_plan_item",
+      }),
+      makeEvent(11, "chat.completed", { messageId: "m2", threadMode: "plan" }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(result.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "plan-file-output",
+          messageId: "m2",
+          content,
+          filePath: "codex-plan-item",
+        }),
+      ]),
+    );
   });
 
   it("treats Cursor .cursor plan files as canonical plan output", () => {

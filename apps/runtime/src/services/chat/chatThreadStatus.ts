@@ -56,6 +56,14 @@ function isReviewableCodexPlanContent(content: string): boolean {
   return hasHeading && (numberedListLines.length + bulletListLines.length) >= 1;
 }
 
+function stripInlineCode(text: string): string {
+  return text.replace(/`[^`]*`/g, " ");
+}
+
+function containsStandaloneQuestionMark(text: string): boolean {
+  return /\?(?:\s|$|["')\]])/.test(stripInlineCode(text));
+}
+
 function isClarificationShapedPlanCandidate(content: string): boolean {
   const lines = content
     .split("\n")
@@ -72,7 +80,7 @@ function isClarificationShapedPlanCandidate(content: string): boolean {
   const hasClarifyingHeading = lines.some((line) => /^#{1,6}\s+.*question\b/i.test(line));
   const hasQuestionLead = hasClarifyingHeading
     || /^question\b/i.test(firstLine)
-    || firstTwoLines.includes("?");
+    || containsStandaloneQuestionMark(firstTwoLines);
   const hasRecommendationLine = lines.some((line) => /^recommended answer\b\s*:?/i.test(line));
   const optionBulletCount = lines.filter((line) => /^[-*]\s+option\b/i.test(line)).length;
 

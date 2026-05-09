@@ -86,6 +86,8 @@ export function buildSegmentBuckets(
   const segmentBuckets: SegmentBucket[] = Array.from({ length: inlineInserts.length + 1 }, () => ({
     content: "",
     anchorIdx: null,
+    firstIdx: null,
+    lastIdx: null,
     timestamp: null,
     hasLeadingCarry: false,
   }));
@@ -116,6 +118,8 @@ export function buildSegmentBuckets(
     const bucket = segmentBuckets[bucketIndex];
     bucket.content += deltaText;
     bucket.anchorIdx = bucket.anchorIdx == null ? deltaEvent.idx : Math.min(bucket.anchorIdx, deltaEvent.idx);
+    bucket.firstIdx = bucket.firstIdx == null ? deltaEvent.idx : Math.min(bucket.firstIdx, deltaEvent.idx);
+    bucket.lastIdx = bucket.lastIdx == null ? deltaEvent.idx : Math.max(bucket.lastIdx, deltaEvent.idx);
     if (bucket.timestamp == null) {
       bucket.timestamp = parseTimestamp(deltaEvent.createdAt);
     }
@@ -142,6 +146,10 @@ export function buildSegmentBuckets(
       if (prevBucket.anchorIdx == null) {
         prevBucket.anchorIdx = bkt.anchorIdx;
       }
+      if (bkt.firstIdx != null) {
+        prevBucket.firstIdx = prevBucket.firstIdx == null ? bkt.firstIdx : Math.min(prevBucket.firstIdx, bkt.firstIdx);
+        prevBucket.lastIdx = prevBucket.lastIdx == null ? bkt.firstIdx : Math.max(prevBucket.lastIdx, bkt.firstIdx);
+      }
       if (prevBucket.timestamp == null) {
         prevBucket.timestamp = bkt.timestamp;
       }
@@ -152,6 +160,8 @@ export function buildSegmentBuckets(
       } else {
         bkt.content = "";
         bkt.anchorIdx = null;
+        bkt.firstIdx = null;
+        bkt.lastIdx = null;
         bkt.timestamp = null;
         bkt.hasLeadingCarry = false;
       }
@@ -172,6 +182,17 @@ export function buildSegmentBuckets(
       segmentBuckets[bi + 1].content = trailing + segmentBuckets[bi + 1].content;
       if (segmentBuckets[bi + 1].anchorIdx == null) {
         segmentBuckets[bi + 1].anchorIdx = bkt.anchorIdx;
+      }
+      if (bkt.firstIdx != null) {
+        const nextBucket = segmentBuckets[bi + 1];
+        const nextFirstIdx = nextBucket.firstIdx;
+        const nextLastIdx = nextBucket.lastIdx;
+        nextBucket.firstIdx = nextFirstIdx == null
+          ? bkt.firstIdx
+          : Math.min(nextFirstIdx, bkt.firstIdx);
+        nextBucket.lastIdx = nextLastIdx == null
+          ? bkt.lastIdx
+          : Math.max(nextLastIdx, bkt.lastIdx ?? bkt.firstIdx);
       }
       if (segmentBuckets[bi + 1].timestamp == null) {
         segmentBuckets[bi + 1].timestamp = bkt.timestamp;
@@ -195,8 +216,16 @@ export function buildSegmentBuckets(
     if (firstChar && (firstChar === firstChar.toLowerCase() || /\d/.test(firstChar))) {
       bkt.content += nextBkt.content;
       bkt.hasLeadingCarry = bkt.hasLeadingCarry || nextBkt.hasLeadingCarry;
+      if (nextBkt.firstIdx != null) {
+        bkt.firstIdx = bkt.firstIdx == null ? nextBkt.firstIdx : Math.min(bkt.firstIdx, nextBkt.firstIdx);
+        bkt.lastIdx = bkt.lastIdx == null
+          ? (nextBkt.lastIdx ?? nextBkt.firstIdx)
+          : Math.max(bkt.lastIdx, nextBkt.lastIdx ?? nextBkt.firstIdx);
+      }
       nextBkt.content = "";
       nextBkt.anchorIdx = null;
+      nextBkt.firstIdx = null;
+      nextBkt.lastIdx = null;
       nextBkt.timestamp = null;
       nextBkt.hasLeadingCarry = false;
     }
@@ -229,6 +258,8 @@ export function applySubagentContentCleaning(
     for (const bucket of segmentBuckets) {
       bucket.content = "";
       bucket.anchorIdx = null;
+      bucket.firstIdx = null;
+      bucket.lastIdx = null;
       bucket.timestamp = null;
       bucket.hasLeadingCarry = false;
     }
@@ -248,12 +279,20 @@ export function applySubagentContentCleaning(
       for (const bucket of segmentBuckets) {
         bucket.content = "";
         bucket.anchorIdx = null;
+        bucket.firstIdx = null;
+        bucket.lastIdx = null;
         bucket.timestamp = null;
         bucket.hasLeadingCarry = false;
       }
       segmentBuckets[0] = {
         content: cleanedContent,
         anchorIdx: inlineInserts.length > 0
+          ? inlineInserts[inlineInserts.length - 1].startIdx + 1
+          : anchorIdx,
+        firstIdx: inlineInserts.length > 0
+          ? inlineInserts[inlineInserts.length - 1].startIdx + 1
+          : anchorIdx,
+        lastIdx: inlineInserts.length > 0
           ? inlineInserts[inlineInserts.length - 1].startIdx + 1
           : anchorIdx,
         timestamp,
@@ -264,6 +303,8 @@ export function applySubagentContentCleaning(
     for (const bucket of segmentBuckets) {
       bucket.content = "";
       bucket.anchorIdx = null;
+      bucket.firstIdx = null;
+      bucket.lastIdx = null;
       bucket.timestamp = null;
       bucket.hasLeadingCarry = false;
     }
@@ -276,6 +317,8 @@ export function applySubagentContentCleaning(
     segmentBuckets[fallbackBucketIndex] = {
       content: cleanedContent,
       anchorIdx: fallbackAnchorIdx,
+      firstIdx: fallbackAnchorIdx,
+      lastIdx: fallbackAnchorIdx,
       timestamp,
       hasLeadingCarry: false,
     };
@@ -320,12 +363,20 @@ export function rebalanceSentenceAwareSegmentBuckets(
     trailingBucket.content = splitSegment.tail;
     if (trailingBucket.content.length === 0) {
       trailingBucket.anchorIdx = null;
+      trailingBucket.firstIdx = null;
+      trailingBucket.lastIdx = null;
       trailingBucket.timestamp = null;
       continue;
     }
 
     if (trailingBucket.anchorIdx == null || trailingBucket.anchorIdx < insert.startIdx) {
       trailingBucket.anchorIdx = insert.startIdx;
+    }
+    if (trailingBucket.firstIdx == null || trailingBucket.firstIdx < insert.startIdx) {
+      trailingBucket.firstIdx = insert.startIdx;
+    }
+    if (trailingBucket.lastIdx == null) {
+      trailingBucket.lastIdx = trailingBucket.firstIdx;
     }
   }
 }
@@ -360,12 +411,25 @@ export function mergeSmallSegments(
           if (mBucket.anchorIdx != null && (nextAnchor == null || mBucket.anchorIdx < nextAnchor)) {
             segmentBuckets[nextIdx].anchorIdx = mBucket.anchorIdx;
           }
+          if (mBucket.firstIdx != null) {
+            const nextBucket = segmentBuckets[nextIdx];
+            const nextFirstIdx = nextBucket.firstIdx;
+            const nextLastIdx = nextBucket.lastIdx;
+            nextBucket.firstIdx = nextFirstIdx == null
+              ? mBucket.firstIdx
+              : Math.min(nextFirstIdx, mBucket.firstIdx);
+            nextBucket.lastIdx = nextLastIdx == null
+              ? (mBucket.lastIdx ?? mBucket.firstIdx)
+              : Math.max(nextLastIdx, mBucket.lastIdx ?? mBucket.firstIdx);
+          }
           if (segmentBuckets[nextIdx].timestamp == null) {
             segmentBuckets[nextIdx].timestamp = mBucket.timestamp;
           }
           segmentBuckets[nextIdx].hasLeadingCarry = segmentBuckets[nextIdx].hasLeadingCarry || mBucket.hasLeadingCarry;
           mBucket.content = "";
           mBucket.anchorIdx = null;
+          mBucket.firstIdx = null;
+          mBucket.lastIdx = null;
           mBucket.timestamp = null;
           mBucket.hasLeadingCarry = false;
           merged = true;
@@ -378,8 +442,21 @@ export function mergeSmallSegments(
       for (let prevIdx = mergeIdx - 1; prevIdx >= 0; prevIdx--) {
         if (segmentBuckets[prevIdx].content.length > 0) {
           segmentBuckets[prevIdx].content += mBucket.content;
+          if (mBucket.firstIdx != null) {
+            const previousBucket = segmentBuckets[prevIdx];
+            const previousFirstIdx = previousBucket.firstIdx;
+            const previousLastIdx = previousBucket.lastIdx;
+            previousBucket.firstIdx = previousFirstIdx == null
+              ? mBucket.firstIdx
+              : Math.min(previousFirstIdx, mBucket.firstIdx);
+            previousBucket.lastIdx = previousLastIdx == null
+              ? (mBucket.lastIdx ?? mBucket.firstIdx)
+              : Math.max(previousLastIdx, mBucket.lastIdx ?? mBucket.firstIdx);
+          }
           mBucket.content = "";
           mBucket.anchorIdx = null;
+          mBucket.firstIdx = null;
+          mBucket.lastIdx = null;
           mBucket.timestamp = null;
           mBucket.hasLeadingCarry = false;
           break;
@@ -638,6 +715,7 @@ export function processInlineInsertLoop(
 
   let delayedFirstSegmentContent = "";
   let delayedFirstSegmentAnchorIdx: number | null = null;
+  let delayedFirstSegmentLastIdx: number | null = null;
   let delayedFirstSegmentTimestamp: number | null = null;
 
   const doPushInlineInsert = (insert: InlineInsert, bTimestamp?: number | null, bAnchorIdx?: number | null) => {
@@ -646,6 +724,25 @@ export function processInlineInsertLoop(
 
   const doPushMessageSegment = (content: string, segmentIdSuffix: string, segmentAnchorIdx: number | null, segmentTimestamp: number | null) => {
     pushMessageSegment(content, segmentIdSuffix, segmentAnchorIdx, segmentTimestamp, sortable, message, renderHint, isCompleted, nonBashContext, anchorIdx, timestamp, stableOffset);
+  };
+
+  const bucketEndsBeforeInsert = (bucket: SegmentBucket, insert: InlineInsert): boolean =>
+    bucket.lastIdx != null && bucket.lastIdx < insert.startIdx;
+
+  const bucketStartsAfterInsert = (bucket: SegmentBucket, insert: InlineInsert): boolean => {
+    if (
+      bucket.hasLeadingCarry
+      && bucket.anchorIdx != null
+      && bucket.anchorIdx > insert.startIdx
+    ) {
+      return true;
+    }
+
+    if (bucket.firstIdx != null) {
+      return bucket.firstIdx > insert.startIdx;
+    }
+
+    return (bucket.anchorIdx ?? Number.NEGATIVE_INFINITY) > insert.startIdx;
   };
 
   for (let bucketIndex = 0; bucketIndex < segmentBuckets.length; bucketIndex += 1) {
@@ -668,6 +765,7 @@ export function processInlineInsertLoop(
         shouldDelayFirstInsert = false;
         delayedFirstSegmentContent = "";
         delayedFirstSegmentAnchorIdx = null;
+        delayedFirstSegmentLastIdx = null;
         delayedFirstSegmentTimestamp = null;
 
         while (nextInsertIndex < bucketIndex && nextInsertIndex < inlineInserts.length) {
@@ -687,6 +785,11 @@ export function processInlineInsertLoop(
           : bucket.anchorIdx == null
             ? delayedFirstSegmentAnchorIdx
             : Math.min(delayedFirstSegmentAnchorIdx, bucket.anchorIdx);
+        delayedFirstSegmentLastIdx = delayedFirstSegmentLastIdx == null
+          ? bucket.lastIdx
+          : bucket.lastIdx == null
+            ? delayedFirstSegmentLastIdx
+            : Math.max(delayedFirstSegmentLastIdx, bucket.lastIdx);
         if (delayedFirstSegmentTimestamp == null) {
           delayedFirstSegmentTimestamp = bucket.timestamp;
         }
@@ -694,34 +797,50 @@ export function processInlineInsertLoop(
         const splitSegment = splitAtContentBoundary(delayedFirstSegmentContent)
           ?? splitAtFirstSentenceBoundary(delayedFirstSegmentContent);
         const isLastBucket = bucketIndex === segmentBuckets.length - 1;
+        const delayedSegmentEndsBeforeFirstInsert =
+          delayedFirstSegmentLastIdx != null
+          && delayedFirstSegmentLastIdx < inlineInserts[0].startIdx;
         if (!splitSegment && !isLastBucket && bucketIndex === 0) {
+          continue;
+        }
+        if (delayedSegmentEndsBeforeFirstInsert && !isLastBucket) {
           continue;
         }
 
         if (splitSegment) {
-          const tailIsAnnouncement = (bucket.anchorIdx ?? 0) < inlineInserts[0].startIdx;
-          doPushMessageSegment(
-            splitSegment.head,
-            `${bucketIndex}:delayed-head`,
-            inlineInserts[0].startIdx - 0.5,
-            delayedFirstSegmentTimestamp,
-          );
-          if (tailIsAnnouncement && splitSegment.tail.length > 0) {
+          if (delayedSegmentEndsBeforeFirstInsert) {
             doPushMessageSegment(
-              splitSegment.tail,
-              `${bucketIndex}:delayed-tail`,
-              inlineInserts[0].startIdx,
-              bucket.timestamp ?? delayedFirstSegmentTimestamp,
+              delayedFirstSegmentContent,
+              `${bucketIndex}:delayed-before-insert`,
+              delayedFirstSegmentAnchorIdx,
+              delayedFirstSegmentTimestamp,
             );
-          }
-          doPushInlineInsert(inlineInserts[0], bucket.timestamp);
-          if (!tailIsAnnouncement && splitSegment.tail.length > 0) {
+            doPushInlineInsert(inlineInserts[0], bucket.timestamp);
+          } else {
+            const tailIsAnnouncement = (bucket.anchorIdx ?? 0) < inlineInserts[0].startIdx;
             doPushMessageSegment(
-              splitSegment.tail,
-              `${bucketIndex}:delayed-tail`,
-              inlineInserts[0].startIdx,
-              bucket.timestamp ?? delayedFirstSegmentTimestamp,
+              splitSegment.head,
+              `${bucketIndex}:delayed-head`,
+              inlineInserts[0].startIdx - 0.5,
+              delayedFirstSegmentTimestamp,
             );
+            if (tailIsAnnouncement && splitSegment.tail.length > 0) {
+              doPushMessageSegment(
+                splitSegment.tail,
+                `${bucketIndex}:delayed-tail`,
+                inlineInserts[0].startIdx,
+                bucket.timestamp ?? delayedFirstSegmentTimestamp,
+              );
+            }
+            doPushInlineInsert(inlineInserts[0], bucket.timestamp);
+            if (!tailIsAnnouncement && splitSegment.tail.length > 0) {
+              doPushMessageSegment(
+                splitSegment.tail,
+                `${bucketIndex}:delayed-tail`,
+                inlineInserts[0].startIdx,
+                bucket.timestamp ?? delayedFirstSegmentTimestamp,
+              );
+            }
           }
           nextInsertIndex = 1;
           shouldDelayFirstInsert = false;
@@ -739,6 +858,7 @@ export function processInlineInsertLoop(
 
         delayedFirstSegmentContent = "";
         delayedFirstSegmentAnchorIdx = null;
+        delayedFirstSegmentLastIdx = null;
         delayedFirstSegmentTimestamp = null;
 
         while (nextInsertIndex <= bucketIndex && nextInsertIndex < inlineInserts.length) {
@@ -754,7 +874,7 @@ export function processInlineInsertLoop(
         && firstInsertKind === "explore-activity"
         && inlineInserts.length > 0
       ) {
-        const textIsAfterInsert = (bucket.anchorIdx ?? 0) > inlineInserts[0].startIdx;
+        const textIsAfterInsert = bucketStartsAfterInsert(bucket, inlineInserts[0]);
         if (textIsAfterInsert && !hasAnyTrailingText) {
           doPushInlineInsert(inlineInserts[0], bucket.timestamp);
           doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
@@ -770,10 +890,15 @@ export function processInlineInsertLoop(
         && hasAnyTrailingText
         && inlineInserts.length > 0
       ) {
-        const textIsAfterInsert = (bucket.anchorIdx ?? 0) > inlineInserts[0].startIdx;
+        const textIsAfterInsert = bucketStartsAfterInsert(bucket, inlineInserts[0]);
+        const textEndsBeforeInsert = bucketEndsBeforeInsert(bucket, inlineInserts[0]);
         const splitSegment = splitAtContentBoundary(bucket.content)
           ?? (hasSentenceBoundary(bucket.content) ? splitAtFirstSentenceBoundary(bucket.content) : null);
-        if (textIsAfterInsert && !bucket.hasLeadingCarry) {
+        if (textEndsBeforeInsert) {
+          doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
+          shouldDelayFirstInsert = false;
+          segmentRendered = true;
+        } else if (textIsAfterInsert && !bucket.hasLeadingCarry) {
           doPushInlineInsert(inlineInserts[0], bucket.timestamp);
           doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
           nextInsertIndex = 1;
@@ -827,6 +952,12 @@ export function processInlineInsertLoop(
                   nextBucket.anchorIdx = nextBucket.anchorIdx == null
                     ? inlineInserts[0].startIdx + 0.5
                     : Math.min(nextBucket.anchorIdx, inlineInserts[0].startIdx + 0.5);
+                  nextBucket.firstIdx = nextBucket.firstIdx == null || nextBucket.firstIdx < inlineInserts[0].startIdx
+                    ? inlineInserts[0].startIdx
+                    : nextBucket.firstIdx;
+                  nextBucket.lastIdx = nextBucket.lastIdx == null
+                    ? (bucket.lastIdx ?? inlineInserts[0].startIdx)
+                    : Math.max(nextBucket.lastIdx, bucket.lastIdx ?? inlineInserts[0].startIdx);
                   if (nextBucket.timestamp == null) {
                     nextBucket.timestamp = bucket.timestamp;
                   }
@@ -856,7 +987,8 @@ export function processInlineInsertLoop(
         && isSentenceAwareInlineInsertKind(inlineInserts[nextInsertIndex]?.kind ?? null)
       ) {
         const currentInsert = inlineInserts[nextInsertIndex];
-        const textIsAfterCurrentInsert = (bucket.anchorIdx ?? 0) > currentInsert.startIdx;
+        const textIsAfterCurrentInsert = bucketStartsAfterInsert(bucket, currentInsert);
+        const textEndsBeforeCurrentInsert = bucketEndsBeforeInsert(bucket, currentInsert);
         const splitSegment = splitAtContentBoundary(bucket.content);
         const hasLaterNonEmptyBucket = segmentBuckets.slice(bucketIndex + 1).some((candidate) => candidate.content.length > 0);
         const hasLaterInlineInsert = nextInsertIndex + 1 < inlineInserts.length;
@@ -870,7 +1002,10 @@ export function processInlineInsertLoop(
               || hasLaterInlineInsert
             )
           );
-        if (splitSegment && shouldPinCurrentSentenceBeforeInsert) {
+        if (textEndsBeforeCurrentInsert) {
+          doPushMessageSegment(bucket.content, `${bucketIndex}`, bucket.anchorIdx, bucket.timestamp);
+          segmentRendered = true;
+        } else if (splitSegment && shouldPinCurrentSentenceBeforeInsert) {
           doPushMessageSegment(
             splitSegment.head,
             `${bucketIndex}:current-head`,

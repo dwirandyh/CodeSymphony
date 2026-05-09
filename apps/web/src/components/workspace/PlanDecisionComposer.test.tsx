@@ -134,6 +134,50 @@ describe("PlanDecisionComposer", () => {
     });
   });
 
+  it("clicks Handover plan in the handoff-required flow and requests handoff execution", () => {
+    const onApprove = vi.fn();
+    renderComposer({
+      onApprove,
+      currentSelection: {
+        agent: "claude",
+        model: "claude-sonnet-4-6",
+        modelProviderId: null,
+      },
+    });
+
+    const selectorButton = container.querySelector('button[aria-label="Select plan execution target"]') as HTMLButtonElement;
+    act(() => selectorButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    const agentList = container.querySelector('[data-cli-agent-list="true"]');
+    const codexAgentButton = Array.from(agentList?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+      .find((button) => button.textContent?.includes("Codex"));
+    if (!codexAgentButton) {
+      throw new Error("Codex agent button not found");
+    }
+
+    act(() => codexAgentButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+
+    const builtinCodexButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.includes("GPT-5.4") && button.textContent?.includes("Built-in"));
+    if (!builtinCodexButton) {
+      throw new Error("Built-in Codex model button not found");
+    }
+
+    act(() => builtinCodexButton.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+
+    const handoverButton = container.querySelector('button[aria-label="Handover plan"]');
+    expect(container.querySelector('button[aria-label="Implement plan"]')).toBeNull();
+
+    act(() => handoverButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(onApprove).toHaveBeenCalledWith({
+      agent: "codex",
+      model: "gpt-5.4",
+      modelProviderId: null,
+      executionKind: "handoff",
+    });
+  });
+
   it("preserves the selected handoff target across parent rerenders with unchanged current thread values", () => {
     const onApprove = vi.fn();
     renderComposer({ onApprove });

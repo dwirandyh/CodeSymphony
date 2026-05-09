@@ -532,6 +532,7 @@ describe("useThreadEventStream", () => {
 
     const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
     expect(updated?.[0]?.active).toBe(false);
+    expect(updated?.[0]?.title).toBe("Renamed thread");
   });
 
   it("patches selected thread as inactive on chat.completed", async () => {
@@ -577,7 +578,9 @@ describe("useThreadEventStream", () => {
 
     const updated = queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"));
     expect(updated?.[0]?.active).toBe(false);
+    expect(updated?.[0]?.title).toBe("Done");
     expect(latestThreads[0]?.active).toBe(false);
+    expect(latestThreads[0]?.title).toBe("Done");
   });
 
   it.each(["chat.completed", "chat.failed"] as const)(

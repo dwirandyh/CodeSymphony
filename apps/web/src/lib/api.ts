@@ -237,6 +237,14 @@ export type RuntimeInfo = {
     urlPreview: string | null;
   };
   listenAddress: RuntimeListenAddress | null;
+  codexCliProviderOverride?: {
+    configPath: string;
+    providerId: string;
+    providerName: string;
+    baseUrl: string | null;
+    model: string | null;
+    wireApi: string | null;
+  } | null;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

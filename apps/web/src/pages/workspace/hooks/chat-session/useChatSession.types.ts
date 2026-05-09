@@ -22,6 +22,7 @@ export type SnapshotSeedDecision = {
     | "same-snapshot-key"
     | "snapshot-key-changed"
     | "local-state-ahead"
+    | "local-state-missing"
     | "local-message-ahead-while-sending"
     | "local-message-ahead-while-waiting"
     | "pending-user-gate";

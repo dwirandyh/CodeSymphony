@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { resolveCodexCliProviderOverride } from "../codex/config.js";
 
 function resolveDebugLogPath(): string {
   const configuredPath = process.env.CODESYMPHONY_DEBUG_LOG_PATH?.trim();
@@ -243,6 +244,7 @@ export async function registerDebugRoutes(app: FastifyInstance) {
         ? { kind: "tcp" as const, value: address.address, family: address.family, port: address.port }
         : null;
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
+    const codexCliProviderOverride = resolveCodexCliProviderOverride();
 
     return {
       data: {
@@ -257,6 +259,7 @@ export async function registerDebugRoutes(app: FastifyInstance) {
         debugLastAppendError: lastDebugLogAppendError,
         database,
         listenAddress,
+        codexCliProviderOverride,
       },
     };
   });

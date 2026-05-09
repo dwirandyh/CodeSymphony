@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  buildCollaborationMode,
   buildCodexPlanMarkdown,
   resolveExplicitCodexPlanContent,
   resolveHeuristicPlanContent,
@@ -162,29 +162,93 @@ describe("codex session runner plan helpers", () => {
     }));
   });
 
-  it("only accepts explicit Codex plan sources", () => {
+  it("prefers the raw Codex final answer when it already contains a reviewable plan", () => {
     expect(resolveExplicitCodexPlanContent({
-      agentOutput: [
+      planText: [
         "1. Inspect the failing route",
         "2. Patch the handler",
         "3. Re-run the tests",
       ].join("\n"),
-    })).toBeNull();
-
-    expect(resolveExplicitCodexPlanContent({
       agentOutput: [
-        "Here is the plan.",
-        "<proposed_plan>",
+        "**Plan**",
         "1. Inspect the failing route",
         "2. Patch the handler",
         "3. Re-run the tests",
-        "</proposed_plan>",
+        "",
+        "Kalau mau, next saya langsung eksekusi plan ini.",
       ].join("\n"),
     })).toBe(
       [
+        "**Plan**",
         "1. Inspect the failing route",
         "2. Patch the handler",
         "3. Re-run the tests",
+        "",
+        "Kalau mau, next saya langsung eksekusi plan ini.",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps raw Codex plan item text verbatim", () => {
+    expect(resolveExplicitCodexPlanContent({
+      planText: [
+        "**Plan**",
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
+        "",
+        "Kalau mau, next saya langsung eksekusi plan ini.",
+      ].join("\n"),
+    })).toBe(
+      [
+        "**Plan**",
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
+        "",
+        "Kalau mau, next saya langsung eksekusi plan ini.",
+      ].join("\n"),
+    );
+  });
+
+  it("falls back to raw Codex agent output when no explicit plan item exists", () => {
+    expect(resolveExplicitCodexPlanContent({
+      agentOutput: [
+        "**Plan**",
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
+        "",
+        "Kalau mau, next saya langsung eksekusi plan ini.",
+      ].join("\n"),
+    })).toBe(
+      [
+        "**Plan**",
+        "1. Inspect the failing route",
+        "2. Patch the handler",
+        "3. Re-run the tests",
+        "",
+        "Kalau mau, next saya langsung eksekusi plan ini.",
+      ].join("\n"),
+    );
+  });
+
+  it("does not misclassify inline code question marks as clarification prompts", () => {
+    expect(resolveExplicitCodexPlanContent({
+      agentOutput: [
+        "Plan perubahan ke `scratch_at`:",
+        "",
+        "1. Rapikan tipe `scratchAt` yang masih `Any?`.",
+        "2. Ganti binding dari `updatedAt` ke `scratchAt`.",
+        "3. Tambahkan fallback saat `scratchAt` kosong.",
+      ].join("\n"),
+    })).toBe(
+      [
+        "Plan perubahan ke `scratch_at`:",
+        "",
+        "1. Rapikan tipe `scratchAt` yang masih `Any?`.",
+        "2. Ganti binding dari `updatedAt` ke `scratchAt`.",
+        "3. Tambahkan fallback saat `scratchAt` kosong.",
       ].join("\n"),
     );
   });
@@ -215,10 +279,24 @@ describe("codex session runner plan helpers", () => {
     });
   });
 
-  it("allows non-mutating exploration in Codex plan mode instructions", () => {
-    expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS).toContain("You may explore and execute non-mutating actions that improve the plan.");
-    expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS).toContain("Read or search files, configs, manifests, and docs.");
-    expect(CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS).not.toContain("Do not read files or use tools.");
+  it("matches Codex collaboration mode presets instead of injecting custom instructions", () => {
+    expect(buildCollaborationMode("gpt-5.4", "plan")).toEqual({
+      mode: "plan",
+      settings: {
+        model: "gpt-5.4",
+        reasoning_effort: "medium",
+        developer_instructions: null,
+      },
+    });
+
+    expect(buildCollaborationMode("gpt-5.4", "default")).toEqual({
+      mode: "default",
+      settings: {
+        model: "gpt-5.4",
+        reasoning_effort: null,
+        developer_instructions: null,
+      },
+    });
   });
 
   it("detects when requested Codex permissions include file writes", () => {

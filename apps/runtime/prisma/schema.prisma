@@ -122,6 +122,9 @@ model ChatThread {
   agent               CliAgent                    @default(claude)
   model               String                      @default("claude-sonnet-4-6")
   modelProviderId     String?
+  pendingPlanEventId  String?
+  pendingPlanFilePath String?
+  pendingPlanContent  String?
   handoffSourceThreadId String?
   handoffSourcePlanEventId String?
   claudeSessionId     String?

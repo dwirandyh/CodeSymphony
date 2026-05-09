@@ -307,6 +307,9 @@ describe("chatService permission flow", () => {
   });
 
   it("auto renames default thread title after first assistant reply via metadata event", async () => {
+    const workspaceEventHub = {
+      emit: vi.fn(),
+    };
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onText, prompt }) => {
       if (prompt.includes("You generate concise chat thread titles.")) {
         await onText("Summarize README.md");
@@ -328,6 +331,7 @@ describe("chatService permission flow", () => {
       eventHub: createEventHub(prisma),
       claudeRunner,
       modelProviderService: stubModelProviderService,
+      workspaceEventHub,
     });
     const { threadId } = await seedThread();
 
@@ -353,6 +357,9 @@ describe("chatService permission flow", () => {
 
     const thread = await chatService.getThreadById(threadId);
     expect(thread?.title).toBe("Summarize README.md");
+    expect(workspaceEventHub.emit).toHaveBeenCalledWith("thread.updated", expect.objectContaining({
+      threadId,
+    }));
   });
 
   it("passes selected provider config to AI title generation", async () => {
@@ -1523,6 +1530,12 @@ describe("chatService permission flow", () => {
     });
 
     await waitForTerminalEvent(chatService, threadId);
+    const persistedPendingPlan = await prisma.chatThread.findUniqueOrThrow({
+      where: { id: threadId },
+    });
+    expect(persistedPendingPlan.pendingPlanEventId).not.toBeNull();
+    expect(persistedPendingPlan.pendingPlanContent).toBe("# Plan\n\n1. Ship it");
+    expect(persistedPendingPlan.pendingPlanFilePath).toBe(".claude/plans/plan.md");
 
     await chatService.dismissPlan(threadId, {});
 
@@ -1533,6 +1546,12 @@ describe("chatService permission flow", () => {
     );
 
     expect(dismissed.payload.reason).toBe("Plan dismissed by user.");
+    const clearedPendingPlan = await prisma.chatThread.findUniqueOrThrow({
+      where: { id: threadId },
+    });
+    expect(clearedPendingPlan.pendingPlanEventId).toBeNull();
+    expect(clearedPendingPlan.pendingPlanContent).toBeNull();
+    expect(clearedPendingPlan.pendingPlanFilePath).toBeNull();
   });
 
   it("normalizes relative file mentions against the selected worktree root before scheduling the assistant", async () => {

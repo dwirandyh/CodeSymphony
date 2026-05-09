@@ -437,6 +437,28 @@ export const ChatMessageList = memo(function ChatMessageList({
     timelineEdges,
   ]);
 
+  useEffect(() => {
+    debugLog("thread.timeline.ui", "[DEBUG-new-thread-send] display.state", {
+      threadId,
+      emptyState,
+      displayItemCount,
+      timelineItemCount: items.length,
+      showThinkingPlaceholder,
+      shouldRenderFooter,
+      ...timelineEdges,
+    }, {
+      threadId,
+    });
+  }, [
+    displayItemCount,
+    emptyState,
+    items.length,
+    shouldRenderFooter,
+    showThinkingPlaceholder,
+    threadId,
+    timelineEdges,
+  ]);
+
   const toggleRawOutput = useCallback((id: string) => {
     setRawOutputMessageIds((prev) => {
       const next = new Set(prev);

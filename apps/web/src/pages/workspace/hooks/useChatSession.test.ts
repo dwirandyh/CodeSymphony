@@ -612,12 +612,32 @@ describe("snapshot seed decision helpers", () => {
       selectedThreadId: "thread-1",
       queriedThreadSnapshot: snapshot,
       threadChanged: false,
+      hasLocalCollections: true,
       lastAppliedSnapshotKey: snapshotKey,
     });
 
     expect(decision).toEqual({
       shouldApply: false,
       reason: "same-snapshot-key",
+      snapshotKey,
+    });
+  });
+
+  it("reapplies the same snapshot key when local collections are missing", () => {
+    const snapshot = makeSnapshot();
+    const snapshotKey = buildSnapshotKey(snapshot);
+
+    const decision = resolveSnapshotSeedDecision({
+      selectedThreadId: "thread-1",
+      queriedThreadSnapshot: snapshot,
+      threadChanged: false,
+      hasLocalCollections: false,
+      lastAppliedSnapshotKey: snapshotKey,
+    });
+
+    expect(decision).toEqual({
+      shouldApply: true,
+      reason: "local-state-missing",
       snapshotKey,
     });
   });
