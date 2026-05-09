@@ -55,6 +55,7 @@ const preloadCodeEditorPanel = () => import("../components/workspace/CodeEditorP
 const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewPanel");
 
 import { api, type RuntimeInfo } from "../lib/api";
+import { debugLog } from "../lib/debugLog";
 import { scheduleWindowIdleTask } from "../lib/idleTask";
 import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
@@ -126,6 +127,7 @@ import { resolveVisibleRepositorySelection } from "./workspace/visibleRepository
 import {
   FilledPauseIcon,
   FilledPlayIcon,
+  shouldShowThinkingPlaceholder,
 } from "./workspace/workspacePageUtils";
 import {
   computeMobileKeyboardState,
@@ -1291,8 +1293,52 @@ export function WorkspacePage() {
 
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
-  const showThinkingPlaceholder =
-    chat.selectedThreadUiStatus === "running" && !gates.isWaitingForUserGate;
+  const showThinkingPlaceholder = shouldShowThinkingPlaceholder({
+    selectedThreadUiStatus: chat.selectedThreadUiStatus,
+    isWaitingForUserGate: gates.isWaitingForUserGate,
+    timelineItems: chat.timelineItems,
+  });
+
+  useEffect(() => {
+    const lastTimelineItem = chat.timelineItems[chat.timelineItems.length - 1] ?? null;
+    const lastMessage = chat.messages[chat.messages.length - 1] ?? null;
+
+    debugLog("thread.workspace.ui", "[DEBUG-new-thread-send] workspace.renderState", {
+      threadId: chat.selectedThreadId,
+      worktreeId: repos.selectedWorktreeId,
+      selectedThreadUiStatus: chat.selectedThreadUiStatus,
+      sendingMessage: chat.sendingMessage,
+      showStopAction: chat.showStopAction,
+      waitingAssistantThreadId,
+      messageListEmptyState: chat.messageListEmptyState,
+      timelineItemsCount: chat.timelineItems.length,
+      messagesCount: chat.messages.length,
+      eventsCount: chat.events.length,
+      showThinkingPlaceholder,
+      isWaitingForUserGate: gates.isWaitingForUserGate,
+      composerDisabled: chat.composerDisabled,
+      lastTimelineItemKind: lastTimelineItem?.kind ?? null,
+      lastMessageRole: lastMessage?.role ?? null,
+      lastMessageId: lastMessage?.id ?? null,
+    }, {
+      threadId: chat.selectedThreadId,
+      worktreeId: repos.selectedWorktreeId,
+    });
+  }, [
+    chat.composerDisabled,
+    chat.events.length,
+    chat.messageListEmptyState,
+    chat.messages,
+    chat.selectedThreadId,
+    chat.selectedThreadUiStatus,
+    chat.sendingMessage,
+    chat.showStopAction,
+    chat.timelineItems,
+    gates.isWaitingForUserGate,
+    repos.selectedWorktreeId,
+    showThinkingPlaceholder,
+    waitingAssistantThreadId,
+  ]);
 
   const handleOpenReview = useCallback(() => {
     if (!confirmSwitchAwayFromActiveFile()) {

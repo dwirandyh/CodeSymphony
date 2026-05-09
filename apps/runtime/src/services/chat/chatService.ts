@@ -1588,9 +1588,9 @@ export function createChatService(deps: RuntimeDeps) {
         flushTimer = null;
       }
 
-      const persistedAssistantContent = result.output.trim().length > 0
-        ? result.output.trim()
-        : fullOutput.trim();
+      const persistedAssistantContent = fullOutput.trim().length > 0
+        ? fullOutput.trim()
+        : result.output.trim();
 
       try {
         await deps.prisma.$transaction(async (tx) => {

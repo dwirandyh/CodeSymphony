@@ -42,19 +42,22 @@ export async function approvePlanExecution(params: {
   });
   const currentProvider = await resolvePersistedThreadProvider(params.deps, thread);
   const selectionChanged = !hasSameThreadSelection(thread, selection);
-  const executionKind = resolveApprovedPlanExecutionKind({
-    requestedExecutionKind: params.input.executionKind,
-    messageCount,
-    threadKind: thread.kind,
-    sourceAgent: thread.agent,
-    sourceModelProviderId: thread.modelProviderId,
-    sourceProviderHasBaseUrl: isProviderBackedClaudeSelection({
-      agent: thread.agent,
-      provider: currentProvider,
-    }),
-    targetAgent: selection.agent,
-    targetModelProviderId: selection.modelProviderId,
-  });
+  const executionKind = params.input.executionKind === "handoff"
+    ? "handoff"
+    : selectionChanged
+      ? resolveApprovedPlanExecutionKind({
+        messageCount,
+        threadKind: thread.kind,
+        sourceAgent: thread.agent,
+        sourceModelProviderId: thread.modelProviderId,
+        sourceProviderHasBaseUrl: isProviderBackedClaudeSelection({
+          agent: thread.agent,
+          provider: currentProvider,
+        }),
+        targetAgent: selection.agent,
+        targetModelProviderId: selection.modelProviderId,
+      })
+      : "same_thread_switch";
   const handoffRequired = executionKind === "handoff";
 
   let selectionUpdate = null;

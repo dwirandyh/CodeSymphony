@@ -1113,6 +1113,158 @@ describe("chatService agent selection", () => {
     expect(executionThread?.modelProviderId).toBeNull();
   });
 
+  it("keeps approved-plan execution in the same review thread when the target selection did not change", async () => {
+    const eventHub = createEventHub(prisma);
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ model, onText, sessionId }) => {
+      expect(model).toBe("claude-sonnet-4-6");
+      expect(sessionId).toBeNull();
+      await onText("Executed the approved plan in-place");
+      return {
+        output: "Executed the approved plan in-place",
+        sessionId: "claude-review-session",
+      };
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { thread } = await seedThread("Review plan approval", "review");
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "claude",
+        model: "claude-sonnet-4-6",
+        mode: "plan",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Please make a plan",
+      },
+    });
+    const createdEvent = await eventHub.emit(thread.id, "plan.created", {
+      content: "# Plan\n\n1. Implement the feature",
+      filePath: ".claude/plans/plan.md",
+    });
+    await persistPendingPlanState({
+      threadId: thread.id,
+      eventId: createdEvent.id,
+      content: "# Plan\n\n1. Implement the feature",
+      filePath: ".claude/plans/plan.md",
+    });
+
+    const result = await chatService.approvePlan(thread.id, {
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+    });
+    await waitForCompletion(chatService, result.executionThreadId);
+
+    expect(result).toEqual({
+      executionKind: "same_thread_switch",
+      sourceThreadId: thread.id,
+      executionThreadId: thread.id,
+    });
+    expect(claudeRunner).toHaveBeenCalledTimes(1);
+    const persistedThread = await chatService.getThreadById(thread.id);
+    expect(persistedThread?.claudeSessionId).toBe("claude-review-session");
+    expect(persistedThread?.mode).toBe("default");
+  });
+
+  it("keeps provider-backed Claude plan approval in the same thread when the target selection did not change", async () => {
+    const eventHub = createEventHub(prisma);
+    const modelProviderService = createStubModelProviderService({
+      "provider-claude-remote": {
+        id: "provider-claude-remote",
+        agent: "claude",
+        apiKey: "provider-key",
+        baseUrl: "https://provider.example.com/v1",
+        name: "Remote Claude",
+        modelId: "glm-4.7",
+      },
+    });
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ model, onText, sessionId }) => {
+      expect(model).toBe("glm-4.7");
+      expect(sessionId).toBe("claude-session-remote");
+      await onText("Executed the provider-backed approved plan in-place");
+      return {
+        output: "Executed the provider-backed approved plan in-place",
+        sessionId: "claude-session-remote",
+      };
+    });
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner,
+      modelProviderService,
+    });
+    const { thread } = await seedThread("Provider-backed Claude in-place plan approval");
+    await prisma.modelProvider.create({
+      data: {
+        id: "provider-claude-remote",
+        agent: "claude",
+        name: "Remote Claude",
+        modelId: "glm-4.7",
+        baseUrl: "https://provider.example.com/v1",
+        apiKey: "provider-key",
+      },
+    });
+
+    await prisma.chatThread.update({
+      where: { id: thread.id },
+      data: {
+        agent: "claude",
+        model: "glm-4.7",
+        modelProviderId: "provider-claude-remote",
+        claudeSessionId: "claude-session-remote",
+        mode: "plan",
+      },
+    });
+    await prisma.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        seq: 0,
+        role: "user",
+        content: "Please make a plan",
+      },
+    });
+    const createdEvent = await eventHub.emit(thread.id, "plan.created", {
+      content: "# Plan\n\n1. Implement the feature",
+      filePath: ".claude/plans/plan.md",
+    });
+    await persistPendingPlanState({
+      threadId: thread.id,
+      eventId: createdEvent.id,
+      content: "# Plan\n\n1. Implement the feature",
+      filePath: ".claude/plans/plan.md",
+    });
+
+    const result = await chatService.approvePlan(thread.id, {
+      agent: "claude",
+      model: "glm-4.7",
+      modelProviderId: "provider-claude-remote",
+    });
+    await waitForCompletion(chatService, result.executionThreadId);
+
+    expect(result).toEqual({
+      executionKind: "same_thread_switch",
+      sourceThreadId: thread.id,
+      executionThreadId: thread.id,
+    });
+    expect(claudeRunner).toHaveBeenCalledTimes(1);
+
+    const persistedThread = await chatService.getThreadById(thread.id);
+    expect(persistedThread?.model).toBe("glm-4.7");
+    expect(persistedThread?.modelProviderId).toBe("provider-claude-remote");
+    expect(persistedThread?.claudeSessionId).toBe("claude-session-remote");
+  });
+
   it("rejects agent changes once a thread already has messages", async () => {
     const chatService = createChatService({
       prisma,

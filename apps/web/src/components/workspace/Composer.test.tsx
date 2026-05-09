@@ -474,6 +474,25 @@ describe("Composer", () => {
     });
   });
 
+  it("prioritizes Stop run over Queue draft while the current submit is still sending", async () => {
+    const onQueueDraft = vi.fn().mockResolvedValue(true);
+    renderComposer({ onQueueDraft });
+    const editor = getEditor();
+
+    typeInEditor(editor, "hello");
+    await flushMicrotasks();
+
+    renderComposer({
+      onQueueDraft,
+      sending: true,
+      showStop: true,
+      threadRunning: true,
+    });
+
+    expect(container.querySelector('button[aria-label="Stop run"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="Queue draft"]')).toBeNull();
+  });
+
   it("inserts selected slash command with Enter and submits as plain text", async () => {
     setMobileViewport(false);
     const onSubmitMessage = vi.fn().mockResolvedValue(true);

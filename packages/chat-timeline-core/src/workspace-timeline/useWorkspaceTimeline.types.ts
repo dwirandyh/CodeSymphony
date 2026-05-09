@@ -94,6 +94,8 @@ export type PlanFileOutput = {
 export type SegmentBucket = {
   content: string;
   anchorIdx: number | null;
+  firstIdx: number | null;
+  lastIdx: number | null;
   timestamp: number | null;
   hasLeadingCarry: boolean;
 };

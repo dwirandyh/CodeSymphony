@@ -33,6 +33,7 @@ import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../ui/dialog";
 import type { PendingAttachment } from "../../../lib/attachments";
 import type { RuntimeInfo } from "../../../lib/api";
+import { debugLog } from "../../../lib/debugLog";
 import {
   generateAttachmentId,
   generateClipboardFilename,
@@ -643,9 +644,12 @@ function ComposerContent({
     }
   }, [buildSubmissionPayload, cannotQueue, mode, onQueueDraft, resetDraft]);
 
-  const primaryAction: "send" | "queue" | "stop" = showStop
-    ? (!cannotQueue ? "queue" : "stop")
-    : "send";
+  const primaryAction: "send" | "queue" | "stop" =
+    sending || stopping
+      ? "stop"
+      : showStop
+        ? (!cannotQueue ? "queue" : "stop")
+        : "send";
   const primaryActionDisabled =
     primaryAction === "send"
       ? cannotSend
@@ -663,6 +667,45 @@ function ComposerContent({
     : primaryAction === "queue"
       ? handleQueueDraft
       : onStop;
+
+  useEffect(() => {
+    debugLog("thread.workspace.composer", "[DEBUG-new-thread-send] primaryAction.state", {
+      threadId,
+      worktreeId,
+      sending,
+      showStop,
+      stopping,
+      primaryAction,
+      primaryActionDisabled,
+      primaryActionLabel,
+      cannotSend,
+      cannotQueue,
+      draftLength: draftText.length,
+      attachmentCount: attachments.length,
+      queuedMessageCount: queuedMessages.length,
+      threadRunning,
+      disabled,
+    }, {
+      threadId,
+      worktreeId,
+    });
+  }, [
+    attachments.length,
+    cannotQueue,
+    cannotSend,
+    disabled,
+    draftText.length,
+    primaryAction,
+    primaryActionDisabled,
+    primaryActionLabel,
+    queuedMessages.length,
+    sending,
+    showStop,
+    stopping,
+    threadId,
+    threadRunning,
+    worktreeId,
+  ]);
 
   const handleEditorAttachmentPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const target = event.target instanceof HTMLElement
