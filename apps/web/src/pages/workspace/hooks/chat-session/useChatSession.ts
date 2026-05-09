@@ -87,6 +87,7 @@ import {
   extractLatestThreadMetadata,
 } from "./snapshotSeed";
 import { useThreadEventStream } from "./useThreadEventStream";
+import { resolveAgentDefaultModel } from "../../../../lib/agentModelDefaults";
 
 const DEFAULT_THREAD_TITLE = "New Thread";
 const EMPTY_MESSAGES: ChatMessage[] = [];
@@ -377,7 +378,7 @@ function createOptimisticThread(params: {
     mode: "default",
     titleEditedManually: false,
     agent,
-    model: params.selection.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+    model: params.selection.model ?? resolveAgentDefaultModel(agent),
     modelProviderId: params.selection.modelProviderId ?? null,
     claudeSessionId: null,
     codexSessionId: null,
@@ -407,7 +408,7 @@ function createPendingWorktreePlaceholderThread(params: {
     mode: "default",
     titleEditedManually: false,
     agent,
-    model: params.selection.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+    model: params.selection.model ?? resolveAgentDefaultModel(agent),
     modelProviderId: params.selection.modelProviderId ?? null,
     claudeSessionId: null,
     codexSessionId: null,
@@ -1289,7 +1290,7 @@ export function useChatSession(
     lastThreadSelectionRef.current = {
       worktreeId: selectedWorktreeId,
       agent: selectedThreadAgent,
-      model: selectedThread.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[selectedThreadAgent],
+      model: selectedThread.model ?? resolveAgentDefaultModel(selectedThreadAgent),
       modelProviderId: selectedThread.modelProviderId ?? null,
     };
   }
@@ -1299,7 +1300,7 @@ export function useChatSession(
       ? buildPreferredSelectionInput("newChat")
       : null;
   const composerAgent: CliAgent = selectedThread?.agent ?? fallbackThreadSelection?.agent ?? "claude";
-  const composerModel = selectedThread?.model ?? fallbackThreadSelection?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[composerAgent];
+  const composerModel = selectedThread?.model ?? fallbackThreadSelection?.model ?? resolveAgentDefaultModel(composerAgent);
   const composerModelProviderId = selectedThread?.modelProviderId ?? fallbackThreadSelection?.modelProviderId ?? null;
   const composerMode = selectedThreadUiStatus === "review_plan"
     ? "plan"

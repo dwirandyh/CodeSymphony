@@ -91,7 +91,7 @@ export type CliAgent = z.infer<typeof CliAgentSchema>;
 
 export const BUILTIN_CHAT_MODELS_BY_AGENT = {
   claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
-  codex: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark"],
+  codex: [],
   cursor: [
     "default[]",
     "composer-2[fast=true]",
@@ -108,7 +108,7 @@ export const BUILTIN_CHAT_MODELS_BY_AGENT = {
 
 export const DEFAULT_CHAT_MODEL_BY_AGENT = {
   claude: "claude-sonnet-4-6",
-  codex: "gpt-5.4",
+  codex: "",
   cursor: "default[]",
   opencode: "opencode/minimax-m2.5-free",
 } as const satisfies Record<CliAgent, string>;
@@ -983,6 +983,21 @@ export const TestModelProviderInputSchema = z.object({
   modelId: z.string().trim().min(1),
 });
 export type TestModelProviderInput = z.input<typeof TestModelProviderInputSchema>;
+
+export const CodexModelCatalogEntrySchema = z.object({
+  id: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  description: z.string(),
+  hidden: z.boolean(),
+  isDefault: z.boolean(),
+});
+export type CodexModelCatalogEntry = z.infer<typeof CodexModelCatalogEntrySchema>;
+
+export const CodexModelCatalogSchema = z.object({
+  models: z.array(CodexModelCatalogEntrySchema),
+  fetchedAt: z.string().datetime(),
+});
+export type CodexModelCatalog = z.infer<typeof CodexModelCatalogSchema>;
 
 export const OpencodeModelCatalogEntrySchema = z.object({
   id: z.string().trim().min(1),

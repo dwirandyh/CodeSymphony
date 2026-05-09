@@ -3,10 +3,12 @@ import { Check, ChevronDown } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
   type CliAgent,
+  type CodexModelCatalogEntry,
   type CursorModelCatalogEntry,
   type ModelProvider,
   type OpencodeModelCatalogEntry,
 } from "@codesymphony/shared-types";
+import { FALLBACK_CODEX_MODELS } from "../../../lib/agentModelDefaults";
 import { cn } from "../../../lib/utils";
 
 export type AgentModelSelection = {
@@ -26,6 +28,7 @@ type AgentModelSelectorProps = {
   disabled?: boolean;
   selection: AgentModelSelection;
   providers: ModelProvider[];
+  codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
   codexBuiltinModelOverride?: string | null;
@@ -166,19 +169,65 @@ export function formatFriendlyModelName(agent: CliAgent, modelId: string): strin
   return segments.join(" ");
 }
 
+type CodexBuiltinOptionSeed = {
+  id: string;
+  name: string;
+};
+
+function buildCodexBuiltinOptionSeeds(params: {
+  codexModels: readonly CodexModelCatalogEntry[];
+  codexBuiltinModelOverride?: string | null;
+}): Array<CodexBuiltinOptionSeed & { detail: string }> {
+  const normalizedCodexBuiltinModelOverride = typeof params.codexBuiltinModelOverride === "string"
+    ? params.codexBuiltinModelOverride.trim()
+    : "";
+  const catalogEntries = params.codexModels.length > 0
+    ? params.codexModels.map((entry) => ({
+      id: entry.id,
+      name: entry.name.trim() || formatFriendlyModelName("codex", entry.id),
+    }))
+    : FALLBACK_CODEX_MODELS.map((entry) => ({
+      id: entry.id,
+      name: entry.name.trim() || formatFriendlyModelName("codex", entry.id),
+    }));
+  const deduped = new Map<string, CodexBuiltinOptionSeed>();
+
+  if (normalizedCodexBuiltinModelOverride.length > 0) {
+    const overrideInCatalog = catalogEntries.some((entry) => entry.id === normalizedCodexBuiltinModelOverride);
+    if (!overrideInCatalog) {
+      deduped.set(normalizedCodexBuiltinModelOverride, {
+        id: normalizedCodexBuiltinModelOverride,
+        name: formatFriendlyModelName("codex", normalizedCodexBuiltinModelOverride),
+      });
+    }
+  }
+
+  for (const entry of catalogEntries) {
+    if (!deduped.has(entry.id)) {
+      deduped.set(entry.id, entry);
+    }
+  }
+
+  return Array.from(deduped.values()).map((entry) => ({
+    ...entry,
+    detail: normalizedCodexBuiltinModelOverride.length > 0 && entry.id === normalizedCodexBuiltinModelOverride
+      ? "Codex CLI default"
+      : "Built-in",
+  }));
+}
+
 export function buildAgentSelectionOptions(params: {
   providers: ModelProvider[];
+  codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
   codexBuiltinModelOverride?: string | null;
 }): Record<CliAgent, AgentSelectionOption[]> {
   const cursorModels = params.cursorModels ?? [];
-  const normalizedCodexBuiltinModelOverride = typeof params.codexBuiltinModelOverride === "string"
-    ? params.codexBuiltinModelOverride.trim()
-    : "";
-  const codexBuiltinModels = normalizedCodexBuiltinModelOverride.length > 0
-    ? [normalizedCodexBuiltinModelOverride]
-    : [...BUILTIN_CHAT_MODELS_BY_AGENT.codex];
+  const codexBuiltinModels = buildCodexBuiltinOptionSeeds({
+    codexModels: params.codexModels ?? [],
+    codexBuiltinModelOverride: params.codexBuiltinModelOverride,
+  });
 
   return {
     claude: [
@@ -205,12 +254,12 @@ export function buildAgentSelectionOptions(params: {
     ],
     codex: [
       ...codexBuiltinModels.map((entry) => ({
-        id: `codex:${entry}:builtin`,
+        id: `codex:${entry.id}:builtin`,
         agent: "codex" as const,
-        model: entry,
+        model: entry.id,
         modelProviderId: null,
-        label: formatFriendlyModelName("codex", entry),
-        detail: normalizedCodexBuiltinModelOverride.length > 0 ? "Codex CLI" : "Built-in",
+        label: entry.name.trim() || formatFriendlyModelName("codex", entry.id),
+        detail: entry.detail,
         source: "builtin" as const,
       })),
       ...params.providers
@@ -361,6 +410,7 @@ export function AgentModelSelector({
   disabled = false,
   selection,
   providers,
+  codexModels = [],
   cursorModels = [],
   opencodeModels,
   codexBuiltinModelOverride = null,
@@ -395,10 +445,11 @@ export function AgentModelSelector({
 
   const agentOptions = useMemo(() => buildAgentSelectionOptions({
     providers,
+    codexModels,
     cursorModels,
     opencodeModels,
     codexBuiltinModelOverride,
-  }), [codexBuiltinModelOverride, cursorModels, opencodeModels, providers]);
+  }), [codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
   const currentSelection = useMemo(
     () => getCurrentAgentSelectionOption(agentOptions, selection),
     [agentOptions, selection],

@@ -1,12 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import {
   type CliAgent,
+  CodexModelCatalogSchema,
   CreateModelProviderInputSchema,
   CursorModelCatalogSchema,
   OpencodeModelCatalogSchema,
   TestModelProviderInputSchema,
   UpdateModelProviderInputSchema,
 } from "@codesymphony/shared-types";
+import * as codexSessionRunner from "../codex/sessionRunner.js";
 import * as cursorSessionRunner from "../cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../opencode/modelCatalog.js";
 
@@ -29,6 +31,21 @@ function normalizeProviderTestUrl(baseUrl: string, agent: CliAgent): string {
 }
 
 export async function registerModelRoutes(app: FastifyInstance) {
+  app.get("/codex/models", async (_request, reply) => {
+    try {
+      const payload = CodexModelCatalogSchema.parse({
+        models: await codexSessionRunner.listCodexModels({
+          cwd: process.cwd(),
+        }),
+        fetchedAt: new Date().toISOString(),
+      });
+      return { data: payload };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to list Codex models";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
   app.get("/cursor/models", async (_request, reply) => {
     try {
       const payload = CursorModelCatalogSchema.parse({

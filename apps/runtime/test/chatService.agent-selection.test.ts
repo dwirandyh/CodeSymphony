@@ -424,7 +424,7 @@ describe("chatService agent selection", () => {
     }
   });
 
-  it("aligns built-in Codex model selection with the local Codex CLI config", async () => {
+  it("preserves explicit Codex built-in selections while keeping the local CLI default for new threads", async () => {
     const previousCodexHome = process.env.CODEX_HOME;
     const codexHome = mkdtempSync(join(tmpdir(), "codesymphony-codex-home-"));
     writeFileSync(join(codexHome, "config.toml"), [
@@ -457,12 +457,12 @@ describe("chatService agent selection", () => {
 
       const updatedThread = await chatService.updateThreadAgentSelection(thread.id, {
         agent: "codex",
-        model: "gpt-5.3-codex-spark",
+        model: "gpt-5.5",
         modelProviderId: null,
       });
 
       expect(updatedThread.agent).toBe("codex");
-      expect(updatedThread.model).toBe("gpt-5.4");
+      expect(updatedThread.model).toBe("gpt-5.5");
 
       const createdThread = await chatService.createThread(worktree.id, {
         agent: "codex",

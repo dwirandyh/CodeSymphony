@@ -1,4 +1,5 @@
-import { DEFAULT_CHAT_MODEL_BY_AGENT, type CliAgent } from "@codesymphony/shared-types";
+import type { CliAgent } from "@codesymphony/shared-types";
+import { resolveAgentDefaultModel } from "../../agentModelDefaults.js";
 import type { RuntimeDeps } from "../../types.js";
 import type { ProviderOptions } from "./chatService.types.js";
 import { isDefaultBranchName } from "../worktreeService.js";
@@ -118,7 +119,7 @@ async function buildThreadTitleWithAi(
       cwd: worktreePath,
       abortController,
       permissionMode: resolveNamingPermissionMode(agent),
-      model: providerOptions?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+      model: providerOptions?.model ?? resolveAgentDefaultModel(agent),
       providerApiKey: toRunnerOptional(providerOptions?.providerApiKey),
       providerBaseUrl: toRunnerOptional(providerOptions?.providerBaseUrl),
       onText: (chunk) => {
@@ -330,7 +331,7 @@ async function buildBranchNameWithAi(
       cwd: worktreePath,
       abortController,
       permissionMode: resolveNamingPermissionMode(agent),
-      model: providerOptions?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+      model: providerOptions?.model ?? resolveAgentDefaultModel(agent),
       providerApiKey: toRunnerOptional(providerOptions?.providerApiKey),
       providerBaseUrl: toRunnerOptional(providerOptions?.providerBaseUrl),
       onText: (chunk) => {

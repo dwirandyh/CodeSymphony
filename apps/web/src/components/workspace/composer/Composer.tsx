@@ -18,8 +18,8 @@ import {
 import {
   type ChatQueuedMessage,
   type ChatThreadKind,
+  type CodexModelCatalogEntry,
   type CursorModelCatalogEntry,
-  DEFAULT_CHAT_MODEL_BY_AGENT,
   type ChatMode,
   type ChatThreadPermissionMode,
   type CliAgent,
@@ -47,6 +47,7 @@ import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
 import { useComposerSlashCommand } from "./useComposerSlashCommand";
 import { useFileIndex } from "../../../pages/workspace/hooks/useFileIndex";
+import { resolveAgentDefaultModel } from "../../../lib/agentModelDefaults";
 import {
   AgentIcon,
   AgentModelSelector,
@@ -79,6 +80,7 @@ type ComposerProps = {
   slashCommands: SlashCommand[];
   slashCommandsLoading: boolean;
   providers: ModelProvider[];
+  codexModels?: readonly CodexModelCatalogEntry[];
   cursorModels?: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
   agent?: CliAgent;
@@ -205,6 +207,7 @@ function ComposerContent({
   slashCommands,
   slashCommandsLoading,
   providers,
+  codexModels = [],
   cursorModels = [],
   opencodeModels,
   agent: providedAgent,
@@ -229,7 +232,7 @@ function ComposerContent({
   const [draftText, setDraftText] = useState("");
   const [attachmentPreviewId, setAttachmentPreviewId] = useState<string | null>(null);
   const agent = providedAgent ?? "claude";
-  const model = providedModel ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent];
+  const model = providedModel ?? resolveAgentDefaultModel(agent);
   const modelProviderId = providedModelProviderId ?? null;
   const onAgentSelectionChange = onAgentSelectionChangeProp ?? (() => {});
   const isPlan = mode === "plan";
@@ -307,10 +310,11 @@ function ComposerContent({
   const codexBuiltinModelOverride = runtimeInfo?.codexCliProviderOverride?.model ?? null;
   const agentOptions = useMemo<Record<CliAgent, AgentSelectionOption[]>>(() => buildAgentSelectionOptions({
     providers,
+    codexModels,
     cursorModels,
     opencodeModels,
     codexBuiltinModelOverride,
-  }), [codexBuiltinModelOverride, cursorModels, opencodeModels, providers]);
+  }), [codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
   const currentProvider = useMemo(
     () => (modelProviderId ? providers.find((provider) => provider.id === modelProviderId) ?? null : null),
     [modelProviderId, providers],
@@ -1398,6 +1402,7 @@ function ComposerContent({
                 <AgentModelSelector
                   selection={{ agent, model, modelProviderId }}
                   providers={providers}
+                  codexModels={codexModels}
                   cursorModels={cursorModels}
                   opencodeModels={opencodeModels}
                   codexBuiltinModelOverride={codexBuiltinModelOverride}

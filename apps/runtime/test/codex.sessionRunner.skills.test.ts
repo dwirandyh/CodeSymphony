@@ -26,6 +26,7 @@ function attachJsonRpcServer(
   options?: {
     methods?: string[];
     skillsListResult?: unknown;
+    modelListResult?: unknown;
     completeTurn?: boolean;
     onTurnStart?: () => void;
   },
@@ -61,6 +62,14 @@ function attachJsonRpcServer(
         child.stdout.write(`${JSON.stringify({
           id: message.id,
           result: options?.skillsListResult ?? { data: [] },
+        })}\n`);
+        continue;
+      }
+
+      if (message.method === "model/list") {
+        child.stdout.write(`${JSON.stringify({
+          id: message.id,
+          result: options?.modelListResult ?? { data: [], nextCursor: null },
         })}\n`);
         continue;
       }
@@ -147,6 +156,68 @@ describe("codex session runner skill integration", () => {
     expect(slashCommands).toEqual([
       { name: "dogfood", description: "QA a web app", argumentHint: "" },
       { name: "vercel-react-best-practices", description: "Repo skill", argumentHint: "" },
+    ]);
+    expect(spawnMock).toHaveBeenCalledWith(
+      "codex",
+      ["app-server"],
+      expect.objectContaining({
+        cwd: "/tmp/project",
+      }),
+    );
+    expect(child.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists visible Codex models from the app-server catalog", async () => {
+    const child = new MockCodexChildProcess();
+    attachJsonRpcServer(child, {
+      modelListResult: {
+        data: [
+          {
+            id: "gpt-5.5",
+            model: "gpt-5.5",
+            displayName: "GPT-5.5",
+            description: "Frontier coding model",
+            hidden: false,
+            isDefault: true,
+          },
+          {
+            id: "gpt-5.4",
+            model: "gpt-5.4",
+            displayName: "gpt-5.4",
+            description: "Strong model for everyday coding.",
+            hidden: false,
+            isDefault: false,
+          },
+        ],
+        nextCursor: null,
+      },
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { listCodexModels } = await import("../src/codex/sessionRunner");
+    const models = await listCodexModels({
+      cwd: "/tmp/project",
+    });
+
+    expect(models).toEqual([
+      {
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        description: "Frontier coding model",
+        hidden: false,
+        isDefault: true,
+      },
+      {
+        id: "gpt-5.4",
+        name: "gpt-5.4",
+        description: "Strong model for everyday coding.",
+        hidden: false,
+        isDefault: false,
+      },
     ]);
     expect(spawnMock).toHaveBeenCalledWith(
       "codex",

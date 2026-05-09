@@ -9,12 +9,16 @@ import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
-  DEFAULT_CHAT_MODEL_BY_AGENT,
   type CliAgent,
+  type CodexModelCatalogEntry,
   type ModelProvider,
   type Repository,
   type SaveAutomationConfig,
 } from "@codesymphony/shared-types";
+import {
+  FALLBACK_CODEX_MODELS,
+  resolveAgentDefaultModel,
+} from "../../lib/agentModelDefaults";
 import { useModelProviders } from "../../pages/workspace/hooks/useModelProviders";
 import {
   loadAgentDefaults,
@@ -88,14 +92,45 @@ function formatAgentModelLabel(agent: CliAgent, model: string): string {
 }
 
 function buildAgentModelOptions(agent: CliAgent, providers: ModelProvider[]): AgentModelOption[] {
-  const builtins = BUILTIN_CHAT_MODELS_BY_AGENT[agent].map((model) => ({
-    key: `${agent}:${model}:builtin`,
-    model,
-    modelProviderId: null,
-    label: formatAgentModelLabel(agent, model),
-  }));
+  const builtins = agent === "codex"
+    ? []
+    : BUILTIN_CHAT_MODELS_BY_AGENT[agent].map((model) => ({
+      key: `${agent}:${model}:builtin`,
+      model,
+      modelProviderId: null,
+      label: formatAgentModelLabel(agent, model),
+    }));
   const custom = providers
     .filter((provider) => provider.agent === agent)
+    .map((provider) => ({
+      key: provider.id,
+      model: provider.modelId,
+      modelProviderId: provider.id,
+      label: `${provider.modelId} · ${provider.name}`,
+    }));
+
+  return [...builtins, ...custom];
+}
+
+function buildCodexAgentModelOptions(
+  providers: ModelProvider[],
+  codexModels: readonly CodexModelCatalogEntry[],
+): AgentModelOption[] {
+  const builtins = (codexModels.length > 0
+    ? codexModels.map((entry) => ({
+      key: `codex:${entry.id}:builtin`,
+      model: entry.id,
+      modelProviderId: null,
+      label: entry.name.trim() || formatAgentModelLabel("codex", entry.id),
+    }))
+    : FALLBACK_CODEX_MODELS.map((entry) => ({
+      key: `codex:${entry.id}:builtin`,
+      model: entry.id,
+      modelProviderId: null,
+      label: entry.name.trim() || formatAgentModelLabel("codex", entry.id),
+    })));
+  const custom = providers
+    .filter((provider) => provider.agent === "codex")
     .map((provider) => ({
       key: provider.id,
       model: provider.modelId,
@@ -119,6 +154,14 @@ function normalizeAgentDefaultSelection(
     return selection;
   }
 
+  if (selection.agent === "codex" && selection.modelProviderId === null && selection.model.trim().length > 0) {
+    return {
+      agent: selection.agent,
+      model: selection.model.trim(),
+      modelProviderId: null,
+    };
+  }
+
   const fallbackOption = options[0];
   if (fallbackOption) {
     return {
@@ -130,7 +173,7 @@ function normalizeAgentDefaultSelection(
 
   return {
     agent: selection.agent,
-    model: DEFAULT_CHAT_MODEL_BY_AGENT[selection.agent],
+    model: resolveAgentDefaultModel(selection.agent),
     modelProviderId: null,
   };
 }
@@ -209,6 +252,7 @@ interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
   repositories: Repository[];
+  codexModels: readonly CodexModelCatalogEntry[];
   runtimeLabel?: string | null;
   runtimeTitle?: string | null;
   onRemoveRepository: (id: string) => void;
@@ -234,6 +278,7 @@ export function SettingsDialog({
   open,
   onClose,
   repositories,
+  codexModels,
   runtimeLabel,
   runtimeTitle,
   onRemoveRepository,
@@ -347,10 +392,10 @@ export function SettingsDialog({
       : "Connection successful — provider is Responses API compatible.";
   const agentModelOptions = useMemo<Record<CliAgent, AgentModelOption[]>>(() => ({
     claude: buildAgentModelOptions("claude", providers),
-    codex: buildAgentModelOptions("codex", providers),
+    codex: buildCodexAgentModelOptions(providers, codexModels),
     cursor: buildAgentModelOptions("cursor", providers),
     opencode: buildAgentModelOptions("opencode", providers),
-  }), [providers]);
+  }), [codexModels, providers]);
 
   const resolvedAgentDefaults = useMemo<AgentDefaults>(() => ({
     newChat: normalizeAgentDefaultSelection(agentDefaults.newChat, agentModelOptions[agentDefaults.newChat.agent]),
@@ -999,7 +1044,7 @@ export function SettingsDialog({
 
                                   updateAgentDefault(key, () => ({
                                     agent: nextAgent,
-                                    model: fallbackOption?.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[nextAgent],
+                                    model: fallbackOption?.model ?? resolveAgentDefaultModel(nextAgent),
                                     modelProviderId: fallbackOption?.modelProviderId ?? null,
                                   }));
                                 }}

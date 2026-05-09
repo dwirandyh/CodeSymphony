@@ -597,6 +597,21 @@ describe("api", () => {
   });
 
   describe("model provider operations", () => {
+    it("lists Codex models", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({
+        models: [{ id: "gpt-5.5", name: "GPT-5.5", description: "Frontier coding model", hidden: false, isDefault: true }],
+        fetchedAt: "2026-01-01T00:00:00Z",
+      }));
+      await expect(api.listCodexModels()).resolves.toEqual({
+        models: [{ id: "gpt-5.5", name: "GPT-5.5", description: "Frontier coding model", hidden: false, isDefault: true }],
+        fetchedAt: "2026-01-01T00:00:00Z",
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/codex/models"),
+        expect.objectContaining({ headers: expect.any(Headers) }),
+      );
+    });
+
     it("lists Cursor models", async () => {
       mockFetch.mockReturnValueOnce(mockOk({
         models: [{ id: "default[]", name: "Auto" }],
