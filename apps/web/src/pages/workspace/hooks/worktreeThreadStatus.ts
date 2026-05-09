@@ -379,6 +379,20 @@ const WORKTREE_STATUS_PRIORITY: WorktreeThreadUiStatus[] = [
   "idle",
 ];
 
+function compareThreadRecency(left: ChatThread, right: ChatThread): number {
+  const updatedAtComparison = left.updatedAt.localeCompare(right.updatedAt);
+  if (updatedAtComparison !== 0) {
+    return updatedAtComparison;
+  }
+
+  const createdAtComparison = left.createdAt.localeCompare(right.createdAt);
+  if (createdAtComparison !== 0) {
+    return createdAtComparison;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
 export function aggregateWorktreeStatus(
   threadSummaries: Array<{
     thread: ChatThread;
@@ -388,12 +402,27 @@ export function aggregateWorktreeStatus(
 ): WorktreeStatusSummary {
   let bestStatus: WorktreeThreadUiStatus = "idle";
   let bestThreadId: string | null = null;
+  let bestThread: ChatThread | null = null;
 
   for (const summary of threadSummaries) {
     const status = summary.status ?? deriveThreadUiStatus(summary.thread, summary.snapshot);
-    if (WORKTREE_STATUS_PRIORITY.indexOf(status) < WORKTREE_STATUS_PRIORITY.indexOf(bestStatus)) {
+    const priority = WORKTREE_STATUS_PRIORITY.indexOf(status);
+    const bestPriority = WORKTREE_STATUS_PRIORITY.indexOf(bestStatus);
+    const hasHigherPriority = priority < bestPriority;
+    const hasSamePriority = priority === bestPriority;
+    const prefersCandidateActivity = hasSamePriority
+      && bestThread != null
+      && summary.thread.active !== bestThread.active
+      && summary.thread.active;
+    const isMoreRelevantSamePriority = hasSamePriority
+      && bestThread != null
+      && summary.thread.active === bestThread.active
+      && compareThreadRecency(summary.thread, bestThread) > 0;
+
+    if (hasHigherPriority || (bestThreadId == null && hasSamePriority) || prefersCandidateActivity || isMoreRelevantSamePriority) {
       bestStatus = status;
       bestThreadId = summary.thread.id;
+      bestThread = summary.thread;
     }
   }
 

@@ -30,8 +30,7 @@ import {
 } from "./toolContext.js";
 
 export {
-  CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-  CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  buildCollaborationMode,
   requestedPermissionsIncludeFileWrite,
   resolveCodexRuntimePolicy,
   shouldAutoDeclineCodexPlanApproval,
@@ -1218,11 +1217,12 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     await completionPromise;
 
     const normalizedOutput = finalOutput.trim().length > 0 ? finalOutput : fallbackAgentOutput;
+    const planCandidateOutput = fallbackAgentOutput.trim().length > 0 ? fallbackAgentOutput : normalizedOutput;
     const detectedPlanContent = permissionMode === "plan"
       ? resolveExplicitCodexPlanContent({
         planText: latestPlanText,
         structuredPlan: latestStructuredPlan,
-        agentOutput: normalizedOutput,
+        agentOutput: planCandidateOutput,
       })
       : null;
 
@@ -1234,8 +1234,12 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
       });
     }
 
+    const persistedOutput = normalizedOutput.trim().length > 0
+      ? normalizedOutput
+      : detectedPlanContent ?? normalizedOutput;
+
     return {
-      output: normalizedOutput,
+      output: persistedOutput,
       sessionId: providerThreadId,
       slashCommands: [],
     };

@@ -542,6 +542,47 @@ export const UpdateChatThreadAgentSelectionInputSchema = z.object({
 });
 export type UpdateChatThreadAgentSelectionInput = z.infer<typeof UpdateChatThreadAgentSelectionInputSchema>;
 
+export type ThreadSelectionLike = {
+  agent: CliAgent;
+  model: string;
+  modelProviderId?: string | null;
+};
+
+function normalizeThreadSelectionProviderId(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+export function hasSameThreadSelection(
+  current: ThreadSelectionLike | null | undefined,
+  next: ThreadSelectionLike | null | undefined,
+): boolean {
+  if (!current || !next) {
+    return false;
+  }
+
+  return current.agent === next.agent
+    && current.model === next.model
+    && normalizeThreadSelectionProviderId(current.modelProviderId) === normalizeThreadSelectionProviderId(next.modelProviderId);
+}
+
+export function shouldPreserveThreadSelectionSessionIds(params: {
+  threadKind: ChatThreadKind;
+  currentAgent: CliAgent | null | undefined;
+  currentModelProviderId?: string | null;
+  nextAgent: CliAgent;
+  nextModelProviderId?: string | null;
+}): boolean {
+  return params.threadKind === "default"
+    && params.currentAgent === params.nextAgent
+    && normalizeThreadSelectionProviderId(params.currentModelProviderId)
+      === normalizeThreadSelectionProviderId(params.nextModelProviderId);
+}
+
 export const SendChatMessageInputSchema = z.object({
   content: z.string().trim(),
   mode: ChatModeSchema.optional().default("default"),
@@ -637,6 +678,25 @@ export function shouldHandoffApprovedPlanExecution(params: {
   }
 
   return (params.sourceModelProviderId ?? null) !== (params.targetModelProviderId ?? null);
+}
+
+export function resolveApprovedPlanExecutionKind(params: {
+  requestedExecutionKind?: ApprovePlanExecutionKind | null | undefined;
+  messageCount: number;
+  threadKind: ChatThreadKind;
+  sourceAgent: CliAgent;
+  sourceModelProviderId: string | null | undefined;
+  sourceProviderHasBaseUrl: boolean;
+  targetAgent: CliAgent;
+  targetModelProviderId: string | null | undefined;
+}): ApprovePlanExecutionKind {
+  if (params.requestedExecutionKind === "handoff") {
+    return "handoff";
+  }
+
+  return shouldHandoffApprovedPlanExecution(params)
+    ? "handoff"
+    : "same_thread_switch";
 }
 
 export const ApprovePlanResultSchema = z.object({

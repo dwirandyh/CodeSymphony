@@ -1,5 +1,5 @@
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatQueuedMessage, FileEntry, ModelProvider, SlashCommand } from "@codesymphony/shared-types";
@@ -124,21 +124,6 @@ const defaultProps = {
   onPermissionModeChange: vi.fn(),
 };
 
-function act(callback: () => void): void;
-function act(callback: () => Promise<void>): Promise<void>;
-function act(callback: () => void | Promise<void>): void | Promise<void> {
-  let result: void | Promise<void> | undefined;
-  flushSync(() => {
-    result = callback();
-  });
-
-  if (result && typeof result.then === "function") {
-    return result.then(async () => {
-      await Promise.resolve();
-    });
-  }
-}
-
 describe("Composer", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -197,6 +182,14 @@ describe("Composer", () => {
     const el = container.querySelector<HTMLDivElement>('[role="textbox"]');
     if (!el) throw new Error("Editor not found");
     return el;
+  }
+
+  function getDragDropTarget(): HTMLDivElement {
+    const target = getEditor().parentElement;
+    if (!(target instanceof HTMLDivElement)) {
+      throw new Error("Composer drag/drop target not found");
+    }
+    return target;
   }
 
   function getModelSelectorButton(): HTMLButtonElement {
@@ -479,6 +472,25 @@ describe("Composer", () => {
       mode: "plan",
       attachments: [],
     });
+  });
+
+  it("prioritizes Stop run over Queue draft while the current submit is still sending", async () => {
+    const onQueueDraft = vi.fn().mockResolvedValue(true);
+    renderComposer({ onQueueDraft });
+    const editor = getEditor();
+
+    typeInEditor(editor, "hello");
+    await flushMicrotasks();
+
+    renderComposer({
+      onQueueDraft,
+      sending: true,
+      showStop: true,
+      threadRunning: true,
+    });
+
+    expect(container.querySelector('button[aria-label="Stop run"]')).toBeTruthy();
+    expect(container.querySelector('button[aria-label="Queue draft"]')).toBeNull();
   });
 
   it("inserts selected slash command with Enter and submits as plain text", async () => {
@@ -786,6 +798,46 @@ describe("Composer", () => {
       model: "gpt-5.3-codex-enterprise",
       modelProviderId: "provider-codex-1",
     });
+  });
+
+  it("limits Codex built-in model choices to the effective CLI override model", () => {
+    renderComposer({
+      agent: "codex",
+      model: "gpt-5.4",
+      runtimeInfo: {
+        pid: 1,
+        cwd: "/runtime",
+        nodeVersion: "v22.14.0",
+        runtimeHost: "0.0.0.0",
+        runtimePort: 4331,
+        uptimeSec: 1,
+        database: {
+          urlKind: "file",
+          resolvedPath: "/tmp/runtime.db",
+          urlPreview: "file:/tmp/runtime.db",
+        },
+        listenAddress: null,
+        codexCliProviderOverride: {
+          configPath: "/Users/test/.codex/config.toml",
+          providerId: "openai",
+          providerName: "OpenAI",
+          baseUrl: null,
+          model: "gpt-5.4",
+          wireApi: "responses",
+        },
+      },
+    });
+
+    const modelButton = getModelSelectorButton();
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Codex CLI");
+    expect(container.textContent).toContain("GPT-5.4");
+    expect(container.textContent).not.toContain("GPT-5.4 Mini");
+    expect(container.textContent).not.toContain("GPT-5.3 Codex");
+    expect(container.textContent).not.toContain("GPT-5.3 Codex Spark");
   });
 
   it("clarifies when an existing thread can only switch models for the current agent", () => {
@@ -1278,6 +1330,7 @@ describe("Composer", () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
 
     renderComposer();
+    await vi.dynamicImportSettled();
     await flushMicrotasks();
 
     expect(tauriDragDropState.handler).toBeTypeOf("function");
@@ -1297,24 +1350,24 @@ describe("Composer", () => {
   });
 
   it("falls back to DOM drag/drop attachments in desktop mode when native drop handling does not arrive", async () => {
-    vi.useFakeTimers();
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
 
     renderComposer();
+    await vi.dynamicImportSettled();
     await flushMicrotasks();
 
-    const editor = getEditor();
+    const dropTarget = getDragDropTarget();
     const file = new File(["desktop fallback"], "desktop-fallback.txt", { type: "text/plain" });
     const dragData = buildFileDragData(file);
     const dropEvent = new Event("drop", { bubbles: true, cancelable: true });
     Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
 
     act(() => {
-      editor.dispatchEvent(dropEvent);
+      dropTarget.dispatchEvent(dropEvent);
     });
 
     await act(async () => {
-      vi.advanceTimersByTime(151);
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
     });
     await flushMicrotasks();
 
@@ -1334,8 +1387,10 @@ describe("Composer", () => {
     (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
 
     renderComposer({ onSubmitMessage });
+    await vi.dynamicImportSettled();
     await flushMicrotasks();
 
+    const dropTarget = getDragDropTarget();
     const editor = getEditor();
     const file = new File(["desktop native"], "desktop-native.txt", { type: "text/plain" });
     const dragData = buildFileDragData(file);
@@ -1343,7 +1398,7 @@ describe("Composer", () => {
     Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
 
     act(() => {
-      editor.dispatchEvent(dropEvent);
+      dropTarget.dispatchEvent(dropEvent);
     });
 
     await act(async () => {
@@ -1379,6 +1434,7 @@ describe("Composer", () => {
     try {
       renderComposer();
       const editor = getEditor();
+      const dropTarget = getDragDropTarget();
       const imageFile = new File([new Uint8Array([137, 80, 78, 71])], "dropped.png", { type: "image/png" });
       const dragData = buildFileDragData(imageFile);
 
@@ -1386,7 +1442,7 @@ describe("Composer", () => {
       Object.defineProperty(dragEnterEvent, "dataTransfer", { value: dragData, configurable: true });
 
       act(() => {
-        editor.dispatchEvent(dragEnterEvent);
+        dropTarget.dispatchEvent(dragEnterEvent);
       });
 
       expect(container.textContent).toContain("Drop files here");
@@ -1396,7 +1452,7 @@ describe("Composer", () => {
       Object.defineProperty(dragLeaveEvent, "relatedTarget", { value: editor, configurable: true });
 
       act(() => {
-        editor.dispatchEvent(dragLeaveEvent);
+        dropTarget.dispatchEvent(dragLeaveEvent);
       });
 
       expect(container.textContent).toContain("Drop files here");
@@ -1405,7 +1461,7 @@ describe("Composer", () => {
       Object.defineProperty(dropEvent, "dataTransfer", { value: dragData, configurable: true });
 
       await act(async () => {
-        editor.dispatchEvent(dropEvent);
+        dropTarget.dispatchEvent(dropEvent);
       });
       await flushMicrotasks();
 

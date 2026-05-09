@@ -6,9 +6,10 @@ import type {
   ModelProvider,
   OpencodeModelCatalogEntry,
 } from "@codesymphony/shared-types";
-import { shouldHandoffApprovedPlanExecution } from "@codesymphony/shared-types";
+import { resolveApprovedPlanExecutionKind } from "@codesymphony/shared-types";
 import { Lightbulb } from "lucide-react";
 import { Button } from "../ui/button";
+import type { RuntimeInfo } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import {
   AgentModelSelector,
@@ -26,6 +27,7 @@ type PlanDecisionComposerProps = {
   providers: ModelProvider[];
   cursorModels: CursorModelCatalogEntry[];
   opencodeModels: OpencodeModelCatalogEntry[];
+  runtimeInfo?: RuntimeInfo | null;
   onApprove: (selection: ApprovePlanInput) => void;
   onRevise: (feedback: string) => void;
 };
@@ -48,6 +50,7 @@ export function PlanDecisionComposer({
   providers,
   cursorModels,
   opencodeModels,
+  runtimeInfo = null,
   onApprove,
   onRevise,
 }: PlanDecisionComposerProps) {
@@ -55,6 +58,7 @@ export function PlanDecisionComposer({
   const [feedback, setFeedback] = useState("");
   const normalizedCurrentSelection = normalizeSelection(currentSelection);
   const [selection, setSelection] = useState<AgentModelSelection>(normalizedCurrentSelection);
+  const codexBuiltinModelOverride = runtimeInfo?.codexCliProviderOverride?.model ?? null;
 
   useEffect(() => {
     setSelection(normalizeSelection(currentSelection));
@@ -64,7 +68,8 @@ export function PlanDecisionComposer({
     providers,
     cursorModels,
     opencodeModels,
-  }), [cursorModels, opencodeModels, providers]);
+    codexBuiltinModelOverride,
+  }), [codexBuiltinModelOverride, cursorModels, opencodeModels, providers]);
 
   useEffect(() => {
     if (findAgentSelectionOption(agentOptions, selection)) {
@@ -95,7 +100,7 @@ export function PlanDecisionComposer({
   const selectionChanged = selection.agent !== normalizedCurrentSelection.agent
     || selection.model !== normalizedCurrentSelection.model
     || selection.modelProviderId !== normalizedCurrentSelection.modelProviderId;
-  const handoffRequired = selectionChanged && shouldHandoffApprovedPlanExecution({
+  const handoffRequired = selectionChanged && resolveApprovedPlanExecutionKind({
     messageCount: hasMessages ? 1 : 0,
     threadKind: threadKind ?? "default",
     sourceAgent: currentSelection.agent,
@@ -103,7 +108,7 @@ export function PlanDecisionComposer({
     sourceProviderHasBaseUrl: currentSelection.agent === "claude" && Boolean(currentProvider?.baseUrl?.trim()),
     targetAgent: selection.agent,
     targetModelProviderId: selection.modelProviderId ?? null,
-  });
+  }) === "handoff";
 
   function handleApprove(executionKind: NonNullable<ApprovePlanInput["executionKind"]>) {
     if (busy) {
@@ -240,6 +245,7 @@ export function PlanDecisionComposer({
                 providers={providers}
                 cursorModels={cursorModels}
                 opencodeModels={opencodeModels}
+                codexBuiltinModelOverride={codexBuiltinModelOverride}
                 showAgentList={true}
                 ariaLabel="Select plan execution target"
                 onSelectionChange={(nextSelection) => setSelection(nextSelection)}

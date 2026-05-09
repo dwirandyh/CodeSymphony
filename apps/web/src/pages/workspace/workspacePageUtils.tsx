@@ -1,3 +1,5 @@
+import type { ChatTimelineItem } from "@codesymphony/shared-types";
+
 export function resolveChatMessageListKey(params: {
   previousKey: string;
   previousThreadId: string | null;
@@ -14,6 +16,23 @@ export function resolveChatMessageListKey(params: {
   }
 
   return previousKey;
+}
+
+export function shouldShowThinkingPlaceholder(params: {
+  selectedThreadUiStatus: string;
+  isWaitingForUserGate: boolean;
+  timelineItems: ChatTimelineItem[];
+}): boolean {
+  if (params.selectedThreadUiStatus !== "running" || params.isWaitingForUserGate) {
+    return false;
+  }
+
+  const lastTimelineItem = params.timelineItems[params.timelineItems.length - 1] ?? null;
+  if (lastTimelineItem?.kind === "message" && lastTimelineItem.message.role === "assistant") {
+    return false;
+  }
+
+  return true;
 }
 
 

@@ -7,7 +7,11 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLiveQuery } from "@tanstack/react-db";
-import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
+import {
+  DEFAULT_CHAT_MODEL_BY_AGENT,
+  hasSameThreadSelection,
+  shouldPreserveThreadSelectionSessionIds,
+} from "@codesymphony/shared-types";
 import type {
   AttachmentInput,
   ChatAttachment,
@@ -52,6 +56,7 @@ import { isThreadNavigationPerfEnabled, pushThreadNavigationPerf } from "../../.
 import { queryKeys } from "../../../../lib/queryKeys";
 import { useThreads } from "../../../../hooks/queries/useThreads";
 import { useThreadSnapshot } from "../../../../hooks/queries/useThreadSnapshot";
+import { useThreadStatusSnapshot } from "../../../../hooks/queries/useThreadStatusSnapshot";
 import {
   shouldClearWaitingAssistantOnEvent,
 } from "../../eventUtils";
@@ -214,10 +219,13 @@ function shouldPreserveSessionIdsForSelectionUpdate(
   thread: ChatThread,
   selection: UpdateChatThreadAgentSelectionInput,
 ): boolean {
-  return thread.kind === "default"
-    && thread.agent === selection.agent
-    && thread.modelProviderId == null
-    && (selection.modelProviderId ?? null) == null;
+  return shouldPreserveThreadSelectionSessionIds({
+    threadKind: thread.kind,
+    currentAgent: thread.agent,
+    currentModelProviderId: thread.modelProviderId,
+    nextAgent: selection.agent,
+    nextModelProviderId: selection.modelProviderId ?? null,
+  });
 }
 
 function applyThreadAgentSelectionUpdate(
@@ -231,25 +239,33 @@ function applyThreadAgentSelectionUpdate(
   }
 
   const current = threads[index];
+  if (!current) {
+    return threads;
+  }
+
   if (
-    current?.agent === selection.agent
-    && current.model === selection.model
-    && current.modelProviderId === (selection.modelProviderId ?? null)
+    current.agent != null
+    && current.model != null
+    && hasSameThreadSelection({
+      agent: current.agent,
+      model: current.model,
+      modelProviderId: current.modelProviderId,
+    }, selection)
   ) {
     return threads;
   }
 
-  const preserveSessionIds = current ? shouldPreserveSessionIdsForSelectionUpdate(current, selection) : false;
+  const preserveSessionIds = shouldPreserveSessionIdsForSelectionUpdate(current, selection);
   const updated = [...threads];
   updated[index] = {
-    ...current!,
+    ...current,
     agent: selection.agent,
     model: selection.model,
     modelProviderId: selection.modelProviderId ?? null,
-    claudeSessionId: preserveSessionIds ? current!.claudeSessionId : null,
-    codexSessionId: preserveSessionIds ? current!.codexSessionId : null,
-    cursorSessionId: preserveSessionIds ? current!.cursorSessionId : null,
-    opencodeSessionId: preserveSessionIds ? current!.opencodeSessionId : null,
+    claudeSessionId: preserveSessionIds ? current.claudeSessionId : null,
+    codexSessionId: preserveSessionIds ? current.codexSessionId : null,
+    cursorSessionId: preserveSessionIds ? current.cursorSessionId : null,
+    opencodeSessionId: preserveSessionIds ? current.opencodeSessionId : null,
   };
   return updated;
 }
@@ -1154,6 +1170,27 @@ export function useChatSession(
   const selectedThread = selectedThreadId
     ? threadByIdRef.current.get(selectedThreadId) ?? null
     : null;
+
+  function logNewThreadSendDebug(message: string, data?: Record<string, unknown>) {
+    const threadId =
+      (typeof data?.threadId === "string" ? data.threadId : null)
+      ?? activeThreadIdRef.current
+      ?? selectedThreadId
+      ?? null;
+
+    debugLog("thread.submit", `[DEBUG-new-thread-send] ${message}`, {
+      selectedWorktreeId,
+      selectedThreadId,
+      activeThreadId: activeThreadIdRef.current,
+      waitingAssistantThreadId: waitingAssistantRef.current?.threadId ?? null,
+      waitingAssistantAfterIdx: waitingAssistantRef.current?.afterIdx ?? null,
+      sendingMessage,
+      ...data,
+    }, {
+      threadId,
+      worktreeId: selectedWorktreeId,
+    });
+  }
   const pendingPermissionRequests = useMemo(
     () => derivePendingPermissionRequests(events),
     [events],
@@ -1216,12 +1253,18 @@ export function useChatSession(
     optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
     waitingAssistant,
   });
+  const selectedThreadCollectionCounts = selectedThreadId != null
+    ? getThreadCollectionCounts(selectedThreadId)
+    : null;
   const selectedThreadHasLocalState =
-    selectedThreadId != null && (messages.length > 0 || events.length > 0);
-  const selectedThreadHasAppliedSnapshot =
-    selectedThreadId != null && getThreadLastAppliedSnapshotKey(selectedThreadId) != null;
-  const selectedThreadHasCompleteLocalHistory =
-    selectedThreadHasLocalState || selectedThreadHasAppliedSnapshot;
+    selectedThreadId != null
+    && (
+      messages.length > 0
+      || events.length > 0
+      || (selectedThreadCollectionCounts?.messagesCount ?? 0) > 0
+      || (selectedThreadCollectionCounts?.eventsCount ?? 0) > 0
+    );
+  const selectedThreadHasCompleteLocalHistory = selectedThreadHasLocalState;
   const shouldUseLocalCompleteThreadCache =
     selectedThreadHasCompleteLocalHistory
     // Local collections are only safe to trust once assistant activity has fully settled.
@@ -1239,8 +1282,7 @@ export function useChatSession(
   const shouldFetchThreadSnapshot = !shouldUseLocalCompleteThreadCache;
   const isThreadHistoryLocallyComplete = useCallback((threadId: string) => {
     const counts = getThreadCollectionCounts(threadId);
-    return getThreadLastAppliedSnapshotKey(threadId) != null
-      || (counts != null && (counts.messagesCount > 0 || counts.eventsCount > 0));
+    return counts != null && (counts.messagesCount > 0 || counts.eventsCount > 0);
   }, []);
   if (selectedThread && selectedWorktreeId && selectedThread.worktreeId === selectedWorktreeId) {
     const selectedThreadAgent = selectedThread.agent ?? "claude";
@@ -1331,6 +1373,45 @@ export function useChatSession(
   } = useThreadSnapshot(snapshotBootstrapThreadId, {
     enabled: shouldFetchThreadSnapshot,
   });
+  const {
+    data: queriedThreadStatusSnapshot,
+  } = useThreadStatusSnapshot(selectedThreadIdForData, {
+    enabled: selectedThreadIdForData != null,
+  });
+  const serverTimelineItems = (queriedThreadSnapshot?.timelineItems ?? []) as unknown as ChatTimelineItem[];
+  const serverTimelineSummary = queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined;
+  const serverSnapshotContainsCanonicalState = hasCanonicalThreadSnapshot(queriedThreadSnapshot);
+  const serverSnapshotCoversLocalHead = useMemo(
+    () => doesSnapshotCoverLocalHead({
+      snapshot: queriedThreadSnapshot,
+      messages,
+      events,
+    }),
+    [events, messages, queriedThreadSnapshot],
+  );
+  const serverTimelineFreshEnough = useMemo(
+    () => isSnapshotFreshEnoughForAuthoritativeTimeline({
+      snapshot: queriedThreadSnapshot,
+      messages,
+      events,
+    }),
+    [events, messages, queriedThreadSnapshot],
+  );
+  const serverStatusSnapshotCoversLocalHead = useMemo(
+    () => {
+      if (!queriedThreadStatusSnapshot) {
+        return false;
+      }
+
+      const localNewestEventIdx = events[events.length - 1]?.idx ?? null;
+      const remoteNewestEventIdx = queriedThreadStatusSnapshot.newestIdx ?? null;
+      return localNewestEventIdx == null
+        || remoteNewestEventIdx == null
+        || remoteNewestEventIdx >= localNewestEventIdx;
+    },
+    [events, queriedThreadStatusSnapshot],
+  );
+  const authoritativeStatusSnapshotUiStatus = queriedThreadStatusSnapshot?.status ?? null;
   const threadNavigationPerfEnabled = isThreadNavigationPerfEnabled();
 
   useEffect(() => {
@@ -1498,6 +1579,7 @@ export function useChatSession(
       queriedThreadSnapshot,
       threadChanged,
       lastAppliedSnapshotKey,
+      hasLocalCollections: selectedThreadHasLocalState,
       localLatestEventIdx,
       localLatestMessageSeq,
       sendingMessage,
@@ -1585,6 +1667,12 @@ export function useChatSession(
     const latestMetadata = extractLatestThreadMetadata(queriedThreadSnapshot.events);
     if (latestMetadata.threadTitle) {
       setThreads((current) => applyThreadTitleUpdate(current, selectedThreadId, latestMetadata.threadTitle));
+      if (selectedWorktreeId) {
+        queryClient.setQueryData<ChatThread[] | undefined>(
+          queryKeys.threads.list(selectedWorktreeId),
+          (current) => current ? applyThreadTitleUpdate(current, selectedThreadId, latestMetadata.threadTitle) : current,
+        );
+      }
     }
     if (latestMetadata.worktreeBranch && selectedWorktreeId) {
       onBranchRenamed?.(selectedWorktreeId, latestMetadata.worktreeBranch);
@@ -1598,9 +1686,77 @@ export function useChatSession(
     queriedThreadSnapshot,
     selectedThread?.active,
     selectedThreadId,
+    selectedThreadHasLocalState,
     selectedWorktreeId,
     sendingMessage,
     threadNavigationPerfEnabled,
+    waitingAssistant,
+  ]);
+
+  useEffect(() => {
+    if (!selectedThreadId || authoritativeStatusSnapshotUiStatus == null) {
+      return;
+    }
+
+    const waitingAssistantMatchesSelectedThread = waitingAssistant?.threadId === selectedThreadId;
+    const waitingAssistantHasClearSignal =
+      waitingAssistantMatchesSelectedThread
+      && events.some(
+        (event) =>
+          event.idx > (waitingAssistant?.afterIdx ?? -1)
+          && shouldClearWaitingAssistantOnEvent(event),
+      );
+    const decision =
+      waitingAssistantMatchesSelectedThread && !waitingAssistantHasClearSignal
+        ? "skip-waiting-for-first-assistant-signal"
+        : !serverStatusSnapshotCoversLocalHead
+        ? "skip-status-snapshot-behind-local"
+        : authoritativeStatusSnapshotUiStatus === "running"
+          ? "skip-remote-running"
+          : selectedThread?.active === true || waitingAssistantMatchesSelectedThread
+            ? "reconcile-inactive"
+            : "skip-local-already-inactive";
+
+    debugLog("thread.submit", "[DEBUG-stop-button] reconcile.guard", {
+      threadId: selectedThreadId,
+      selectedThreadActive: selectedThread?.active ?? null,
+      waitingAssistantMatchesSelectedThread,
+      waitingAssistantAfterIdx: waitingAssistantMatchesSelectedThread ? waitingAssistant?.afterIdx ?? null : null,
+      waitingAssistantHasClearSignal,
+      remoteStatusSnapshotStatus: authoritativeStatusSnapshotUiStatus,
+      remoteStatusSnapshotNewestIdx: queriedThreadStatusSnapshot?.newestIdx ?? null,
+      localNewestEventIdx: events[events.length - 1]?.idx ?? null,
+      decision,
+    }, {
+      threadId: selectedThreadId,
+      worktreeId: selectedWorktreeId,
+    });
+
+    if (waitingAssistantMatchesSelectedThread && !waitingAssistantHasClearSignal) {
+      return;
+    }
+
+    if (!serverStatusSnapshotCoversLocalHead) {
+      return;
+    }
+
+    if (authoritativeStatusSnapshotUiStatus === "running") {
+      return;
+    }
+
+    if (selectedThread?.active !== true && !waitingAssistantMatchesSelectedThread) {
+      return;
+    }
+
+    reconcileInactiveThread(selectedThreadId);
+  }, [
+    authoritativeStatusSnapshotUiStatus,
+    events,
+    queriedThreadStatusSnapshot?.newestIdx,
+    selectedThread?.active,
+    selectedThreadId,
+    selectedWorktreeId,
+    serverStatusSnapshotCoversLocalHead,
     waitingAssistant,
   ]);
 
@@ -1749,6 +1905,15 @@ export function useChatSession(
     if (selectedOptimisticThread) {
       setSelectedThreadId(params.nextThread.id);
     }
+
+    logNewThreadSendDebug("optimisticThread.reconciled", {
+      threadId: params.nextThread.id,
+      previousThreadId: params.previousThreadId,
+      nextThreadId: params.nextThread.id,
+      selectedOptimisticThread,
+      currentWaitingAssistantThreadId: waitingAssistantRef.current?.threadId ?? null,
+      waitingAssistantNeedsRemap: waitingAssistantRef.current?.threadId === params.previousThreadId,
+    });
   }
 
   function rollbackOptimisticThreadCreation(params: {
@@ -2057,12 +2222,27 @@ export function useChatSession(
     }
 
     onError(null);
+    logNewThreadSendDebug("createAdditionalThread.start");
     try {
       const result = await createThreadInCurrentContext(DEFAULT_THREAD_TITLE);
       if (!result) return null;
-      return await result.finalize;
+      logNewThreadSendDebug("createAdditionalThread.optimisticCreated", {
+        threadId: result.created.id,
+        optimisticThreadId: result.optimisticThreadId,
+        createdTitle: result.created.title,
+      });
+      const finalizedThread = await result.finalize;
+      logNewThreadSendDebug("createAdditionalThread.finalized", {
+        threadId: finalizedThread.id,
+        finalizedThreadId: finalizedThread.id,
+        finalizedTitle: finalizedThread.title,
+      });
+      return finalizedThread;
     } catch (e) {
       onError(e instanceof Error ? e.message : "Failed to create thread");
+      logNewThreadSendDebug("createAdditionalThread.failed", {
+        error: e instanceof Error ? e.message : String(e),
+      });
       return null;
     }
   }
@@ -2451,20 +2631,46 @@ export function useChatSession(
     }));
 
     const threadId = activeThreadIdRef.current;
-    if (!threadId || (!content.trim() && attachmentsToSend.length === 0)) return false;
+    if (!threadId || (!content.trim() && attachmentsToSend.length === 0)) {
+      logNewThreadSendDebug("submitMessage.skipped.emptyOrNoThread", {
+        threadId,
+        contentLength: content.trim().length,
+        attachmentCount: attachmentsToSend.length,
+      });
+      return false;
+    }
+
+    logNewThreadSendDebug("submitMessage.start", {
+      threadId,
+      contentLength: content.length,
+      attachmentCount: attachmentsToSend.length,
+      mode,
+      shouldInvalidateSnapshot,
+    });
 
     const pendingAgentSelectionUpdate = pendingAgentSelectionUpdatesRef.current.get(threadId);
     if (pendingAgentSelectionUpdate) {
+      logNewThreadSendDebug("submitMessage.awaitPendingAgentSelection", {
+        threadId,
+      });
       await pendingAgentSelectionUpdate;
     }
 
     const activeThread = findThreadForWorktree(threadsRef.current, threadId, selectedWorktreeId);
     if (!activeThread) {
       onError("Selected thread is stale for the active worktree. Please retry.");
+      logNewThreadSendDebug("submitMessage.aborted.staleSelection", {
+        threadId,
+      });
       return false;
     }
 
     startWaitingAssistant(activeThread.id);
+    logNewThreadSendDebug("submitMessage.waitingAssistantStarted", {
+      threadId: activeThread.id,
+      selectedThreadActive: activeThread.active,
+      currentThreadTitle: activeThread.title,
+    });
     if (selectedWorktreeId) {
       queryClient.setQueryData<ChatThread[] | undefined>(queryKeys.threads.list(selectedWorktreeId), (current) => {
         if (!current) return current;
@@ -2476,6 +2682,9 @@ export function useChatSession(
       });
     }
     setSendingMessage(true);
+    logNewThreadSendDebug("submitMessage.sendingMessageSet", {
+      threadId: activeThread.id,
+    });
     onError(null);
     const optimisticMessage = createOptimisticUserMessage({
       threadId: activeThread.id,
@@ -2483,6 +2692,12 @@ export function useChatSession(
       attachments: messageAttachments,
     });
     insertOptimisticUserMessage(optimisticMessage);
+    logNewThreadSendDebug("submitMessage.optimisticMessageInserted", {
+      threadId: activeThread.id,
+      optimisticMessageId: optimisticMessage.id,
+      optimisticMessageSeq: optimisticMessage.seq,
+      threadMessageCount: getThreadCollectionCounts(activeThread.id)?.messagesCount ?? null,
+    });
 
     try {
       setThreads((current) => applyThreadModeUpdate(current, activeThread.id, mode));
@@ -2498,6 +2713,12 @@ export function useChatSession(
         attachments: attachmentsToSend,
         expectedWorktreeId: activeThread.worktreeId,
       });
+      logNewThreadSendDebug("submitMessage.sendResolved", {
+        threadId: activeThread.id,
+        sentMessageId: sentMessage.id,
+        sentMessageThreadId: sentMessage.threadId,
+        sentMessageSeq: sentMessage.seq,
+      });
       mergeReturnedMessageIntoVisibleState(activeThread.id, sentMessage, {
         optimisticMessageId: optimisticMessage.id,
       });
@@ -2508,10 +2729,20 @@ export function useChatSession(
     } catch (e) {
       removeOptimisticMessage(activeThread.id, optimisticMessage.id);
       setWaitingAssistant(null);
+      logNewThreadSendDebug("submitMessage.failed", {
+        threadId: activeThread.id,
+        optimisticMessageId: optimisticMessage.id,
+        error: e instanceof Error ? e.message : String(e),
+      });
       onError(e instanceof Error ? e.message : "Failed to send message");
       return false;
     } finally {
       setSendingMessage(false);
+      logNewThreadSendDebug("submitMessage.finally", {
+        threadId: activeThread.id,
+        optimisticMessageId: optimisticMessage.id,
+        threadMessageCount: getThreadCollectionCounts(activeThread.id)?.messagesCount ?? null,
+      });
     }
   }
 
@@ -2701,8 +2932,6 @@ export function useChatSession(
     }
   }
 
-  const serverTimelineItems = (queriedThreadSnapshot?.timelineItems ?? []) as unknown as ChatTimelineItem[];
-  const serverTimelineSummary = queriedThreadSnapshot?.summary as ChatTimelineSummary | undefined;
   const timelineSeedMatchesLiveState = useMemo(
     () => selectedThreadId != null && doesSnapshotMatchLocalLiveState({
       snapshot: queriedThreadSnapshot,
@@ -2711,20 +2940,6 @@ export function useChatSession(
     }),
     [events, messages, queriedThreadSnapshot, selectedThreadId],
   );
-  const serverSnapshotCoversLocalHead = useMemo(
-    () => doesSnapshotCoverLocalHead({
-      snapshot: queriedThreadSnapshot,
-      messages,
-      events,
-    }),
-    [events, messages, queriedThreadSnapshot],
-  );
-  const serverTimelineFreshEnough = isSnapshotFreshEnoughForAuthoritativeTimeline({
-    snapshot: queriedThreadSnapshot,
-    messages,
-    events,
-  });
-  const serverSnapshotContainsCanonicalState = hasCanonicalThreadSnapshot(queriedThreadSnapshot);
   const selectedThreadStableForAuthoritativeTimeline =
     waitingAssistant?.threadId !== selectedThreadId
     && !sendingMessage
@@ -2733,12 +2948,20 @@ export function useChatSession(
       || selectedThreadUiStatus === "review_plan"
       || selectedThreadUiStatus === "waiting_approval"
     );
+  const selectedThreadNeedsBootstrapFromServer =
+    selectedThreadId != null
+    && !selectedThreadHasLocalState
+    && serverSnapshotContainsCanonicalState
+    && serverTimelineFreshEnough
+    && serverSnapshotCoversLocalHead
+    && serverTimelineItems.length > 0;
   const preferServerTimeline =
     timelineEnabled
     && serverTimelineSummary != null
     && (
       timelineSeedMatchesLiveState
       || (selectedThreadStableForAuthoritativeTimeline && serverTimelineFreshEnough && serverSnapshotCoversLocalHead)
+      || selectedThreadNeedsBootstrapFromServer
     );
   const skipDerivedTimeline =
     preferServerTimeline
@@ -2841,6 +3064,7 @@ export function useChatSession(
         timelineSeedMatchesLiveState,
         serverTimelineFreshEnough,
         selectedThreadStableForAuthoritativeTimeline,
+        selectedThreadNeedsBootstrapFromServer,
         useServerTimeline,
         signaturesMatch: timelineComparison.signaturesMatch,
         preferDerivedBecauseServerLooksStale: timelineComparison.preferDerivedBecauseServerLooksStale,
@@ -2855,6 +3079,7 @@ export function useChatSession(
     timelineSeedMatchesLiveState,
     serverTimelineFreshEnough,
     selectedThreadStableForAuthoritativeTimeline,
+    selectedThreadNeedsBootstrapFromServer,
     useServerTimeline,
   ]);
 
@@ -2892,6 +3117,54 @@ export function useChatSession(
           ) && !selectedThreadHasLocalState
             ? "loading-thread"
             : "existing-thread-empty";
+
+  const lastSelectedMessage = selectedThreadId != null
+    ? [...messages].reverse().find((message) => message.threadId === selectedThreadId) ?? null
+    : null;
+  const lastSelectedTimelineItem = timelineItems[timelineItems.length - 1] ?? null;
+
+  useEffect(() => {
+    logNewThreadSendDebug("session.renderState", {
+      threadId: selectedThreadId,
+      messageListEmptyState,
+      timelineItemsCount: timelineItems.length,
+      messagesCount: messages.length,
+      eventsCount: events.length,
+      selectedThreadUiStatus,
+      showStopAction,
+      selectedThreadCreatedLocally,
+      selectedThreadHasLocalState,
+      selectedThreadActive: selectedThread?.active ?? null,
+      selectedThreadIsRunning,
+      composerDisabled,
+      remoteStatusSnapshotStatus: queriedThreadStatusSnapshot?.status ?? null,
+      remoteStatusSnapshotNewestIdx: queriedThreadStatusSnapshot?.newestIdx ?? null,
+      waitingAssistantMatchesSelectedThread:
+        waitingAssistant?.threadId != null && waitingAssistant.threadId === selectedThreadId,
+      lastSelectedMessageRole: lastSelectedMessage?.role ?? null,
+      lastSelectedMessageId: lastSelectedMessage?.id ?? null,
+      lastTimelineItemKind: lastSelectedTimelineItem?.kind ?? null,
+    });
+  }, [
+    composerDisabled,
+    events.length,
+    lastSelectedMessage?.id,
+    lastSelectedMessage?.role,
+    lastSelectedTimelineItem?.kind,
+    messageListEmptyState,
+    messages.length,
+    selectedThreadCreatedLocally,
+    selectedThreadHasLocalState,
+    selectedThread?.active,
+    selectedThreadId,
+    selectedThreadIsRunning,
+    selectedThreadUiStatus,
+    showStopAction,
+    timelineItems.length,
+    queriedThreadStatusSnapshot?.newestIdx,
+    queriedThreadStatusSnapshot?.status,
+    waitingAssistant,
+  ]);
 
   useEffect(() => {
     if (!threadNavigationPerfEnabled) {

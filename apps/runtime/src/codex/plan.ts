@@ -21,6 +21,11 @@ export type CodexStructuredPlan = {
   steps: CodexPlanStep[];
 };
 
+function trimPlanCandidate(text: string | null | undefined): string | null {
+  const trimmed = text?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
 function extractProposedPlanMarkdown(text: string | undefined): string | undefined {
   const match = text ? PROPOSED_PLAN_BLOCK_REGEX.exec(text) : null;
   const planMarkdown = match?.[1]?.trim();
@@ -35,6 +40,14 @@ function stripPlanApprovalBoilerplate(text: string): string {
   return normalized
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function stripInlineCode(text: string): string {
+  return text.replace(/`[^`]*`/g, " ");
+}
+
+function containsStandaloneQuestionMark(text: string): boolean {
+  return /\?(?:\s|$|["')\]])/.test(stripInlineCode(text));
 }
 
 function stripTrailingApprovalPrompt(text: string): string {
@@ -114,12 +127,12 @@ export function isClarificationShapedPlanCandidate(text: string | null | undefin
     /\b(clarifying question|need clarification|butuh klarifikasi|which is it|what specific|what do you mean|can you clarify|bisa jelaskan|apa yang dimaksud|sebelum menyusun rencana)\b/i.test(
       line,
     )
-    || /\?\s*$/.test(line),
+    || containsStandaloneQuestionMark(line),
   );
   const hasQuestionLead = hasClarifyingHeading
     || /^question\b/i.test(firstLine)
     || hasClarificationPrompt
-    || firstTwoLines.includes("?");
+    || containsStandaloneQuestionMark(firstTwoLines);
   const hasRecommendationLine = lines.some((line) => /^recommended answer\b\s*:?/i.test(line));
   const optionBulletCount = lines.filter((line) => /^[-*]\s+option\b/i.test(line)).length;
 
@@ -221,14 +234,17 @@ export function resolveExplicitCodexPlanContent(input: {
   structuredPlan?: CodexStructuredPlan | null;
   agentOutput?: string | null;
 }): string | null {
-  const explicitAgentOutput = extractProposedPlanMarkdown(input.agentOutput ?? undefined);
   const candidates = [
-    normalizePlanCandidate(input.planText),
+    trimPlanCandidate(input.agentOutput),
+    trimPlanCandidate(input.planText),
     buildCodexPlanMarkdown(input.structuredPlan),
-    normalizePlanCandidate(explicitAgentOutput),
+    trimPlanCandidate(extractProposedPlanMarkdown(input.agentOutput ?? undefined)),
   ];
 
   for (const candidate of candidates) {
+    if (isClarificationShapedPlanCandidate(candidate)) {
+      continue;
+    }
     if (isReviewableCodexPlanContent(candidate)) {
       return candidate;
     }

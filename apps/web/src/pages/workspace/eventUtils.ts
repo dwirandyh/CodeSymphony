@@ -70,6 +70,14 @@ function isReviewableCodexPlanContent(content: string): boolean {
   return hasHeading && (numberedListLines.length + bulletListLines.length) >= 1;
 }
 
+function stripInlineCode(text: string): string {
+  return text.replace(/`[^`]*`/g, " ");
+}
+
+function containsStandaloneQuestionMark(text: string): boolean {
+  return /\?(?:\s|$|["')\]])/.test(stripInlineCode(text));
+}
+
 function isClarificationShapedPlanCandidate(content: string): boolean {
   const lines = content
     .split("\n")
@@ -84,12 +92,12 @@ function isClarificationShapedPlanCandidate(content: string): boolean {
     /\b(clarifying question|need clarification|butuh klarifikasi|which is it|what specific|what do you mean|can you clarify|bisa jelaskan|apa yang dimaksud|sebelum menyusun rencana)\b/i.test(
       line,
     )
-    || /\?\s*$/.test(line),
+    || containsStandaloneQuestionMark(line),
   );
   const hasQuestionLead = hasClarifyingHeading
     || /^question\b/i.test(firstLine)
     || hasClarificationPrompt
-    || firstTwoLines.includes("?");
+    || containsStandaloneQuestionMark(firstTwoLines);
   const hasRecommendationLine = lines.some((line) => /^recommended answer\b\s*:?/i.test(line));
   const optionBulletCount = lines.filter((line) => /^[-*]\s+option\b/i.test(line)).length;
 

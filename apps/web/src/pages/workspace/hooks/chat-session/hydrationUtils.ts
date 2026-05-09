@@ -15,6 +15,7 @@ export function resolveSnapshotSeedDecision(params: {
   queriedThreadSnapshot: ChatTimelineSnapshot | undefined;
   threadChanged: boolean;
   lastAppliedSnapshotKey: string | null;
+  hasLocalCollections?: boolean;
   localLatestEventIdx?: number | null;
   localLatestMessageSeq?: number | null;
   sendingMessage?: boolean;
@@ -26,6 +27,7 @@ export function resolveSnapshotSeedDecision(params: {
     queriedThreadSnapshot,
     threadChanged,
     lastAppliedSnapshotKey,
+    hasLocalCollections = false,
     localLatestEventIdx = null,
     localLatestMessageSeq = null,
     sendingMessage = false,
@@ -65,6 +67,10 @@ export function resolveSnapshotSeedDecision(params: {
 
   if (threadChanged) {
     return { shouldApply: true, reason: "thread-changed", snapshotKey };
+  }
+
+  if (!hasLocalCollections) {
+    return { shouldApply: true, reason: "local-state-missing", snapshotKey };
   }
 
   if (hasPendingUserGate) {
