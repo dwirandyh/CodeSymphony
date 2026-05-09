@@ -1,8 +1,8 @@
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
-  DEFAULT_CHAT_MODEL_BY_AGENT,
   type CliAgent,
 } from "@codesymphony/shared-types";
+import { resolveAgentDefaultModel } from "../../lib/agentModelDefaults";
 
 export const AGENT_DEFAULTS_STORAGE_KEY = "codesymphony:workspace:agent-defaults";
 
@@ -21,17 +21,17 @@ export type AgentDefaults = {
 const DEFAULT_AGENT_DEFAULTS: AgentDefaults = {
   newChat: {
     agent: "claude",
-    model: DEFAULT_CHAT_MODEL_BY_AGENT.claude,
+    model: resolveAgentDefaultModel("claude"),
     modelProviderId: null,
   },
   commit: {
     agent: "claude",
-    model: DEFAULT_CHAT_MODEL_BY_AGENT.claude,
+    model: resolveAgentDefaultModel("claude"),
     modelProviderId: null,
   },
   pullRequest: {
     agent: "claude",
-    model: DEFAULT_CHAT_MODEL_BY_AGENT.claude,
+    model: resolveAgentDefaultModel("claude"),
     modelProviderId: null,
   },
 };
@@ -58,7 +58,7 @@ function normalizeSelection(input: unknown, fallback: AgentDefaultSelection): Ag
   if (typeof model !== "string" || model.trim().length === 0) {
     return {
       agent,
-      model: DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+      model: resolveAgentDefaultModel(agent),
       modelProviderId: null,
     };
   }
@@ -77,9 +77,17 @@ function normalizeSelection(input: unknown, fallback: AgentDefaultSelection): Ag
     };
   }
 
+  if (agent === "codex") {
+    return {
+      agent,
+      model: normalizedModel,
+      modelProviderId: null,
+    };
+  }
+
   return {
     agent,
-    model: DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+    model: resolveAgentDefaultModel(agent),
     modelProviderId: null,
   };
 }

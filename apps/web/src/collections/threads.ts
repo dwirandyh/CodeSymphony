@@ -1,8 +1,9 @@
 import { createCollection } from "@tanstack/db";
-import { DEFAULT_CHAT_MODEL_BY_AGENT, type ChatThread } from "@codesymphony/shared-types";
+import type { ChatThread } from "@codesymphony/shared-types";
 import type { QueryClient } from "@tanstack/react-query";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
 import { api } from "../lib/api";
+import { resolveAgentDefaultModel } from "../lib/agentModelDefaults";
 import { queryKeys } from "../lib/queryKeys";
 
 function compareThreads(left: ChatThread, right: ChatThread) {
@@ -21,7 +22,7 @@ export function toPlainChatThread(thread: ChatThread): ChatThread {
     mode: thread.mode,
     titleEditedManually: thread.titleEditedManually,
     agent,
-    model: thread.model ?? DEFAULT_CHAT_MODEL_BY_AGENT[agent],
+    model: thread.model ?? resolveAgentDefaultModel(agent),
     modelProviderId: thread.modelProviderId ?? null,
     claudeSessionId: thread.claudeSessionId,
     codexSessionId: thread.codexSessionId ?? null,

@@ -4,6 +4,7 @@ import {
   ApprovePlanResultSchema,
   BUILTIN_CHAT_MODELS_BY_AGENT,
   CliAgentSchema,
+  CodexModelCatalogSchema,
   CreateChatThreadInputSchema,
   CreateModelProviderInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
@@ -26,6 +27,11 @@ describe("Cursor shared workflow schemas", () => {
     const builtins = BUILTIN_CHAT_MODELS_BY_AGENT.cursor;
     expect(builtins.length).toBeGreaterThan(0);
     expect(builtins).toContain(DEFAULT_CHAT_MODEL_BY_AGENT.cursor);
+  });
+
+  it("keeps Codex built-in models out of shared-types", () => {
+    expect(BUILTIN_CHAT_MODELS_BY_AGENT.codex).toEqual([]);
+    expect(DEFAULT_CHAT_MODEL_BY_AGENT.codex).toBe("");
   });
 
   it("accepts Cursor thread creation and agent-selection payloads", () => {
@@ -91,6 +97,30 @@ describe("Cursor shared workflow schemas", () => {
     })).toMatchObject({
       agent: "cursor",
       modelId: "default[]",
+    });
+  });
+
+  it("accepts Codex model catalogs from the app-server", () => {
+    expect(CodexModelCatalogSchema.parse({
+      models: [
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          description: "Frontier model for complex coding.",
+          hidden: false,
+          isDefault: true,
+        },
+      ],
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+    })).toMatchObject({
+      models: [
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          hidden: false,
+          isDefault: true,
+        },
+      ],
     });
   });
 

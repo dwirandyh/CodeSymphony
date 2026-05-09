@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as codexSessionRunner from "../src/codex/sessionRunner.js";
 import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import * as opencodeModelCatalog from "../src/opencode/modelCatalog.js";
 import { registerModelRoutes } from "../src/routes/models";
@@ -60,6 +61,45 @@ describe("model provider routes", () => {
         id: "zai/glm-4.7-flash",
         name: "GLM-4.7-Flash",
         providerId: "zai",
+      },
+    ]);
+    expect(typeof res.json().data.fetchedAt).toBe("string");
+  });
+
+  it("GET /api/codex/models lists the Codex model catalog with display metadata", async () => {
+    vi.spyOn(codexSessionRunner, "listCodexModels")
+      .mockResolvedValue([
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          description: "Frontier coding model",
+          hidden: false,
+          isDefault: true,
+        },
+        {
+          id: "gpt-5.4",
+          name: "gpt-5.4",
+          description: "Strong model for everyday coding.",
+          hidden: false,
+          isDefault: false,
+        },
+      ]);
+    const res = await app.inject({ method: "GET", url: "/api/codex/models" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.models).toEqual([
+      {
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        description: "Frontier coding model",
+        hidden: false,
+        isDefault: true,
+      },
+      {
+        id: "gpt-5.4",
+        name: "gpt-5.4",
+        description: "Strong model for everyday coding.",
+        hidden: false,
+        isDefault: false,
       },
     ]);
     expect(typeof res.json().data.fetchedAt).toBe("string");

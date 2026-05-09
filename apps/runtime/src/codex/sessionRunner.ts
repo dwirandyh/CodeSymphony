@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 import type { PermissionDecision } from "@codesymphony/shared-types";
-import { DEFAULT_CHAT_MODEL_BY_AGENT, type SlashCommand } from "@codesymphony/shared-types";
+import {
+  type CodexModelCatalogEntry,
+  type SlashCommand,
+} from "@codesymphony/shared-types";
+import { DEFAULT_CODEX_MODEL_FALLBACK } from "../agentModelDefaults.js";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import {
   buildCollaborationMode,
@@ -215,13 +219,15 @@ function toSlashCommandsFromSkillsResponse(response: unknown): SlashCommand[] {
   return Array.from(deduped.values()).sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export async function listCodexSlashCommands(params: {
+async function withCodexAppServerSession<T>(params: {
   cwd: string;
   model?: string;
   providerApiKey?: string;
   providerBaseUrl?: string;
-}): Promise<SlashCommand[]> {
-  const resolvedModel = params.model?.trim() || DEFAULT_CHAT_MODEL_BY_AGENT.codex;
+}, callback: (session: {
+  sendRequest: <TResponse>(method: string, requestParams: unknown, timeoutMs?: number) => Promise<TResponse>;
+}) => Promise<T>): Promise<T> {
+  const resolvedModel = params.model?.trim() || DEFAULT_CODEX_MODEL_FALLBACK;
   const { args, env } = buildCodexRuntimeLaunchConfig({
     model: resolvedModel,
     providerApiKey: params.providerApiKey,
@@ -344,15 +350,89 @@ export async function listCodexSlashCommands(params: {
     });
     writeMessage(CODEX_APP_SERVER_INITIALIZED_MESSAGE);
 
+    return await callback({ sendRequest });
+  } finally {
+    finish();
+  }
+}
+
+function toCodexModelCatalogPage(response: unknown): {
+  models: CodexModelCatalogEntry[];
+  nextCursor: string | null;
+} {
+  const payload = asObject(response);
+  const entries = asArray(payload?.data);
+  const models: CodexModelCatalogEntry[] = [];
+
+  for (const rawEntry of entries) {
+    const entry = asObject(rawEntry);
+    if (!entry) {
+      continue;
+    }
+
+    const id = (asString(entry.model) ?? asString(entry.id) ?? "").trim();
+    if (!id) {
+      continue;
+    }
+
+    models.push({
+      id,
+      name: (asString(entry.displayName) ?? id).trim() || id,
+      description: (asString(entry.description) ?? "").trim(),
+      hidden: entry.hidden === true,
+      isDefault: entry.isDefault === true,
+    });
+  }
+
+  return {
+    models,
+    nextCursor: (asString(payload?.nextCursor) ?? "").trim() || null,
+  };
+}
+
+export async function listCodexSlashCommands(params: {
+  cwd: string;
+  model?: string;
+  providerApiKey?: string;
+  providerBaseUrl?: string;
+}): Promise<SlashCommand[]> {
+  return withCodexAppServerSession(params, async ({ sendRequest }) => {
     const response = await sendRequest("skills/list", {
       cwds: [params.cwd],
       forceReload: true,
     });
 
     return toSlashCommandsFromSkillsResponse(response);
-  } finally {
-    finish();
-  }
+  });
+}
+
+export async function listCodexModels(params: {
+  cwd: string;
+  model?: string;
+  providerApiKey?: string;
+  providerBaseUrl?: string;
+}): Promise<CodexModelCatalogEntry[]> {
+  return withCodexAppServerSession(params, async ({ sendRequest }) => {
+    const deduped = new Map<string, CodexModelCatalogEntry>();
+    let nextCursor: string | null = null;
+
+    do {
+      const response = await sendRequest("model/list", {
+        cursor: nextCursor,
+        includeHidden: false,
+        limit: 100,
+      });
+      const page = toCodexModelCatalogPage(response);
+      for (const model of page.models) {
+        if (!deduped.has(model.id)) {
+          deduped.set(model.id, model);
+        }
+      }
+      nextCursor = page.nextCursor;
+    } while (nextCursor);
+
+    return Array.from(deduped.values());
+  });
 }
 
 function createAbortError(): Error {
@@ -512,7 +592,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     };
   }
 
-  const resolvedModel = model?.trim() || DEFAULT_CHAT_MODEL_BY_AGENT.codex;
+  const resolvedModel = model?.trim() || DEFAULT_CODEX_MODEL_FALLBACK;
   const { approvalPolicy, sandbox } = resolveCodexRuntimePolicy({
     permissionMode,
     threadPermissionMode,

@@ -35,6 +35,29 @@ vi.mock("../../lib/api", () => ({
 let container: HTMLDivElement;
 let root: Root;
 let queryClient: QueryClient;
+const codexModels = [
+  {
+    id: "gpt-5.5",
+    name: "GPT-5.5",
+    description: "Frontier coding model",
+    hidden: false,
+    isDefault: true,
+  },
+  {
+    id: "gpt-5.4",
+    name: "GPT-5.4",
+    description: "Strong model for everyday coding.",
+    hidden: false,
+    isDefault: false,
+  },
+  {
+    id: "gpt-5.3-codex",
+    name: "GPT-5.3 Codex",
+    description: "Coding-optimized model.",
+    hidden: false,
+    isDefault: false,
+  },
+] as const;
 
 function act(callback: () => void): void;
 function act(callback: () => Promise<void>): Promise<void>;
@@ -121,6 +144,7 @@ function renderDialog(
           open={true}
           onClose={onClose}
           repositories={repositories}
+          codexModels={codexModels}
           runtimeLabel={options?.runtimeLabel}
           runtimeTitle={options?.runtimeTitle}
           onRemoveRepository={vi.fn()}
@@ -186,6 +210,7 @@ describe("SettingsDialog", () => {
             open={false}
             onClose={vi.fn()}
             repositories={[makeRepo()]}
+            codexModels={codexModels}
             onRemoveRepository={vi.fn()}
           />
         </QueryClientProvider>
@@ -202,6 +227,7 @@ describe("SettingsDialog", () => {
             open={true}
             onClose={vi.fn()}
             repositories={[makeRepo()]}
+            codexModels={codexModels}
             onRemoveRepository={vi.fn()}
           />
         </QueryClientProvider>
@@ -218,6 +244,7 @@ describe("SettingsDialog", () => {
             open={true}
             onClose={vi.fn()}
             repositories={[makeRepo()]}
+            codexModels={codexModels}
             onRemoveRepository={vi.fn()}
           />
         </QueryClientProvider>
@@ -308,6 +335,7 @@ describe("SettingsDialog", () => {
             open={true}
             onClose={vi.fn()}
             repositories={[makeRepo()]}
+            codexModels={codexModels}
             onRemoveRepository={vi.fn()}
           />
         </QueryClientProvider>
@@ -460,6 +488,7 @@ describe("SettingsDialog", () => {
             open={true}
             onClose={onClose}
             repositories={[]}
+            codexModels={codexModels}
             onRemoveRepository={vi.fn()}
           />
         </QueryClientProvider>

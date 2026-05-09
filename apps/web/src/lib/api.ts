@@ -11,6 +11,7 @@ import type {
   ChatTimelineSnapshot,
   CliAgent,
   ClipboardText,
+  CodexModelCatalog,
   CreateChatThreadInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
@@ -746,6 +747,7 @@ export const api = {
 
   // ── Model Providers ──
 
+  listCodexModels: () => request<CodexModelCatalog>("/codex/models"),
   listOpencodeModels: () => request<OpencodeModelCatalog>("/opencode/models"),
   listCursorModels: () => request<CursorModelCatalog>("/cursor/models"),
   listModelProviders: () => request<ModelProvider[]>("/model-providers"),

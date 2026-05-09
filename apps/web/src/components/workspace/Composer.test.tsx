@@ -800,10 +800,33 @@ describe("Composer", () => {
     });
   });
 
-  it("limits Codex built-in model choices to the effective CLI override model", () => {
+  it("shows the dynamic Codex catalog even when a Codex CLI default model is configured", () => {
     renderComposer({
       agent: "codex",
       model: "gpt-5.4",
+      codexModels: [
+        {
+          id: "gpt-5.4",
+          name: "GPT-5.4",
+          description: "Strong model for everyday coding",
+          hidden: false,
+          isDefault: false,
+        },
+        {
+          id: "gpt-5.4-mini",
+          name: "GPT-5.4-Mini",
+          description: "Small and fast",
+          hidden: false,
+          isDefault: false,
+        },
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          description: "Frontier coding model",
+          hidden: false,
+          isDefault: true,
+        },
+      ],
       runtimeInfo: {
         pid: 1,
         cwd: "/runtime",
@@ -833,10 +856,41 @@ describe("Composer", () => {
       modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Codex CLI");
+    expect(container.textContent).toContain("Codex CLI default");
     expect(container.textContent).toContain("GPT-5.4");
-    expect(container.textContent).not.toContain("GPT-5.4 Mini");
-    expect(container.textContent).not.toContain("GPT-5.3 Codex");
+    expect(container.textContent).toContain("GPT-5.4-Mini");
+    expect(container.textContent).toContain("GPT-5.5");
+  });
+
+  it("renders Codex built-in model choices from the dynamic catalog", () => {
+    renderComposer({
+      agent: "codex",
+      model: "gpt-5.5",
+      codexModels: [
+        {
+          id: "gpt-5.5",
+          name: "GPT-5.5",
+          description: "Frontier coding model",
+          hidden: false,
+          isDefault: true,
+        },
+        {
+          id: "gpt-5.2",
+          name: "GPT-5.2",
+          description: "Optimized for professional work",
+          hidden: false,
+          isDefault: false,
+        },
+      ],
+    });
+
+    const modelButton = getModelSelectorButton();
+    act(() => {
+      modelButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("GPT-5.5");
+    expect(container.textContent).toContain("GPT-5.2");
     expect(container.textContent).not.toContain("GPT-5.3 Codex Spark");
   });
 

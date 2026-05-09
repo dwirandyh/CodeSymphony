@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
   ApprovePlanInput,
+  CodexModelCatalogEntry,
   ChatThreadKind,
   CursorModelCatalogEntry,
   ModelProvider,
@@ -25,6 +26,7 @@ type PlanDecisionComposerProps = {
   threadKind: ChatThreadKind | null;
   hasMessages: boolean;
   providers: ModelProvider[];
+  codexModels: CodexModelCatalogEntry[];
   cursorModels: CursorModelCatalogEntry[];
   opencodeModels: OpencodeModelCatalogEntry[];
   runtimeInfo?: RuntimeInfo | null;
@@ -48,6 +50,7 @@ export function PlanDecisionComposer({
   threadKind,
   hasMessages,
   providers,
+  codexModels,
   cursorModels,
   opencodeModels,
   runtimeInfo = null,
@@ -66,10 +69,11 @@ export function PlanDecisionComposer({
 
   const agentOptions = useMemo(() => buildAgentSelectionOptions({
     providers,
+    codexModels,
     cursorModels,
     opencodeModels,
     codexBuiltinModelOverride,
-  }), [codexBuiltinModelOverride, cursorModels, opencodeModels, providers]);
+  }), [codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
 
   useEffect(() => {
     if (findAgentSelectionOption(agentOptions, selection)) {
@@ -243,6 +247,7 @@ export function PlanDecisionComposer({
                 disabled={busy}
                 selection={selection}
                 providers={providers}
+                codexModels={codexModels}
                 cursorModels={cursorModels}
                 opencodeModels={opencodeModels}
                 codexBuiltinModelOverride={codexBuiltinModelOverride}

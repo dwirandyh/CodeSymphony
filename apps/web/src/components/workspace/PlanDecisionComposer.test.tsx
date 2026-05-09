@@ -44,6 +44,7 @@ describe("PlanDecisionComposer", () => {
           threadKind="default"
           hasMessages={true}
           providers={providers}
+          codexModels={[]}
           cursorModels={[]}
           opencodeModels={[]}
           onApprove={vi.fn()}

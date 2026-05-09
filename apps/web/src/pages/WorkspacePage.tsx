@@ -55,6 +55,7 @@ const preloadCodeEditorPanel = () => import("../components/workspace/CodeEditorP
 const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewPanel");
 
 import { api, type RuntimeInfo } from "../lib/api";
+import { FALLBACK_CODEX_MODELS } from "../lib/agentModelDefaults";
 import { debugLog } from "../lib/debugLog";
 import { scheduleWindowIdleTask } from "../lib/idleTask";
 import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
@@ -83,6 +84,7 @@ import { resolveMacCloseShortcutTarget } from "./workspace/threadCloseShortcut";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryReviews } from "../hooks/queries/useRepositoryReviews";
 import { useRepositoryBranches } from "../hooks/queries/useRepositoryBranches";
+import { useCodexModels } from "../hooks/queries/useCodexModels";
 import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
@@ -397,6 +399,14 @@ export function WorkspacePage() {
   const {
     providers: modelProviders,
   } = useModelProviders();
+  const codexModelsQuery = useCodexModels();
+  const codexModels = useMemo(
+    () => [
+      ...(codexModelsQuery.data?.models
+        ?? FALLBACK_CODEX_MODELS),
+    ],
+    [codexModelsQuery.data?.models],
+  );
   const cursorModelsQuery = useCursorModels();
   const cursorModels = useMemo(
     () => [
@@ -2051,6 +2061,7 @@ export function WorkspacePage() {
                           threadKind={selectedChatThread?.kind ?? null}
                           hasMessages={chat.messages.length > 0}
                           providers={modelProviders}
+                          codexModels={codexModels}
                           cursorModels={cursorModels}
                           opencodeModels={opencodeModels}
                           runtimeInfo={runtimeInfo.data ?? null}
@@ -2145,6 +2156,7 @@ export function WorkspacePage() {
                       slashCommands={slashCommands.commands}
                       slashCommandsLoading={slashCommands.loading}
                       providers={modelProviders}
+                      codexModels={codexModels}
                       cursorModels={cursorModels}
                       opencodeModels={opencodeModels}
                       runtimeInfo={runtimeInfo.data ?? null}
@@ -2359,6 +2371,7 @@ export function WorkspacePage() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         repositories={repos.repositories}
+        codexModels={codexModels}
         runtimeLabel={runtimeLabel}
         runtimeTitle={runtimeTitle}
         onRemoveRepository={(id) => {

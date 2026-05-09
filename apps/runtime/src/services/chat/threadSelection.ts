@@ -1,14 +1,17 @@
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
-  DEFAULT_CHAT_MODEL_BY_AGENT,
   hasSameThreadSelection,
   shouldPreserveThreadSelectionSessionIds,
   type ChatThreadKind,
   type CliAgent,
   type ThreadSelectionLike,
 } from "@codesymphony/shared-types";
+import {
+  isBuiltinCodexModelSelection,
+  resolveAgentDefaultModel,
+  resolveBuiltinCodexModelSelection,
+} from "../../agentModelDefaults.js";
 import type { RuntimeDeps } from "../../types.js";
-import { resolveCodexCliProviderOverride } from "../../codex/config.js";
 import type { ActiveModelProvider } from "./chatService.types.js";
 
 export type ThreadSelectionInput = {
@@ -51,26 +54,22 @@ export function toRunnerOptional(value: string | null | undefined): string | und
 }
 
 function isBuiltinModelForAgent(agent: CliAgent, model: string): boolean {
+  if (agent === "codex") {
+    // Codex built-ins now come from the app-server catalog, so any
+    // providerless Codex model id should follow the local CLI override rules.
+    return isBuiltinCodexModelSelection(model);
+  }
+
   return (BUILTIN_CHAT_MODELS_BY_AGENT[agent] as readonly string[]).includes(model);
 }
 
 function resolveDefaultModelForAgent(agent: CliAgent): string {
-  if (agent === "codex") {
-    const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
-    if (codexCliModel) {
-      return codexCliModel;
-    }
-  }
-
-  return DEFAULT_CHAT_MODEL_BY_AGENT[agent];
+  return resolveAgentDefaultModel(agent);
 }
 
 function resolveBuiltinModelSelection(agent: CliAgent, model: string): string {
   if (agent === "codex" && isBuiltinModelForAgent(agent, model)) {
-    const codexCliModel = resolveCodexCliProviderOverride()?.model?.trim();
-    if (codexCliModel) {
-      return codexCliModel;
-    }
+    return resolveBuiltinCodexModelSelection(model);
   }
 
   return model;

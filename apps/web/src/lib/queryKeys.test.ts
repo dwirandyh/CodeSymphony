@@ -86,6 +86,10 @@ describe("queryKeys", () => {
     expect(queryKeys.models.opencodeCatalog).toEqual(["models", "opencode", "catalog"]);
   });
 
+  it("models.codexCatalog is correct", () => {
+    expect(queryKeys.models.codexCatalog).toEqual(["models", "codex", "catalog"]);
+  });
+
   it("models.cursorCatalog is correct", () => {
     expect(queryKeys.models.cursorCatalog).toEqual(["models", "cursor", "catalog"]);
   });
