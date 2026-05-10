@@ -1041,4 +1041,52 @@ describe("buildTimelineFromSeed", () => {
       ]),
     );
   });
+
+  it("renders coalesced skill cards before assistant text when skill events happen first", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "hi, what is today?"),
+      makeMessage("m2", 1, "assistant", "Today: 2026-05-10."),
+    ];
+    const events = [
+      makeEvent(1, "tool.started", {
+        messageId: "m2",
+        toolName: "Skill",
+        toolUseId: "call-skill-1",
+        skillName: "caveman",
+      }),
+      makeEvent(2, "tool.finished", {
+        messageId: "m2",
+        toolName: "Skill",
+        precedingToolUseIds: ["call-skill-1"],
+        skillName: "caveman",
+        summary: "Completed Skill",
+      }),
+      makeEvent(3, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Today: 2026-05-10.",
+      }),
+      makeEvent(4, "chat.completed", {
+        messageId: "m2",
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const skillItemIndex = result.items.findIndex((item) =>
+      item.kind === "tool" && item.toolName === "Skill" && item.toolUseId === "call-skill-1",
+    );
+    const assistantItemIndex = result.items.findIndex((item) =>
+      item.kind === "message" && item.message.id === "m2",
+    );
+
+    expect(skillItemIndex).toBeGreaterThanOrEqual(0);
+    expect(assistantItemIndex).toBeGreaterThanOrEqual(0);
+    expect(skillItemIndex).toBeLessThan(assistantItemIndex);
+  });
 });

@@ -328,11 +328,12 @@ export function processOrphanToolEvents(
 
   for (const [runId, events] of skillEventsByRunId.entries()) {
     const sortedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    const firstEvent = sortedEvents[0] ?? null;
     const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
       ?? sortedEvents.find((event) => event.type === "tool.output")
       ?? sortedEvents[sortedEvents.length - 1]
       ?? null;
-    if (!primaryEvent) {
+    if (!primaryEvent || !firstEvent) {
       continue;
     }
 
@@ -362,10 +363,10 @@ export function processOrphanToolEvents(
         durationSeconds: typeof primaryEvent.payload.elapsedTimeSeconds === "number" ? primaryEvent.payload.elapsedTimeSeconds : null,
         status: primaryEvent.type === "tool.started" ? "running" : typeof primaryEvent.payload.error === "string" && primaryEvent.payload.error.length > 0 ? "failed" : "success",
       },
-      anchorIdx: primaryEvent.idx,
-      timestamp: parseTimestamp(primaryEvent.createdAt),
+      anchorIdx: firstEvent.idx,
+      timestamp: parseTimestamp(firstEvent.createdAt),
       rank: 0,
-      stableOrder: primaryEvent.idx,
+      stableOrder: firstEvent.idx,
     });
   }
 
@@ -383,6 +384,7 @@ export function processOrphanToolEvents(
 
   for (const [runId, events] of askUserQuestionEventsByRunId.entries()) {
     const sortedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    const firstEvent = sortedEvents[0] ?? null;
     const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
       ?? [...sortedEvents].reverse().find((event) => event.type === "question.answered")
       ?? [...sortedEvents].reverse().find((event) => event.type === "question.dismissed")
@@ -390,7 +392,7 @@ export function processOrphanToolEvents(
       ?? sortedEvents.find((event) => event.type === "tool.started")
       ?? sortedEvents[sortedEvents.length - 1]
       ?? null;
-    if (!primaryEvent) {
+    if (!primaryEvent || !firstEvent) {
       continue;
     }
 
@@ -429,10 +431,10 @@ export function processOrphanToolEvents(
         durationSeconds: null,
         status: resolvedStatus,
       },
-      anchorIdx: primaryEvent.idx,
-      timestamp: parseTimestamp(primaryEvent.createdAt),
+      anchorIdx: firstEvent.idx,
+      timestamp: parseTimestamp(firstEvent.createdAt),
       rank: 0,
-      stableOrder: primaryEvent.idx,
+      stableOrder: firstEvent.idx,
     });
   }
 
@@ -556,11 +558,12 @@ export function processOrphanToolEvents(
 
   for (const [runId, events] of genericToolEventsByRunId.entries()) {
     const sortedEvents = [...events].sort((a, b) => a.idx - b.idx);
+    const firstEvent = sortedEvents[0] ?? null;
     const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
       ?? sortedEvents.find((event) => event.type === "tool.output")
       ?? sortedEvents[sortedEvents.length - 1]
       ?? null;
-    if (!primaryEvent) {
+    if (!primaryEvent || !firstEvent) {
       continue;
     }
 
@@ -591,10 +594,10 @@ export function processOrphanToolEvents(
         durationSeconds: durationEvent && typeof durationEvent.payload.elapsedTimeSeconds === "number" ? durationEvent.payload.elapsedTimeSeconds : null,
         status: resolvedStatus,
       },
-      anchorIdx: primaryEvent.idx,
-      timestamp: parseTimestamp(primaryEvent.createdAt),
+      anchorIdx: firstEvent.idx,
+      timestamp: parseTimestamp(firstEvent.createdAt),
       rank: 0,
-      stableOrder: primaryEvent.idx,
+      stableOrder: firstEvent.idx,
     });
   }
 
