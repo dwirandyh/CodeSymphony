@@ -110,4 +110,34 @@ describe("useWorkspaceNavigationHistory", () => {
     expect(hookResult.canGoBack).toBe(false);
     expect(hookResult.canGoForward).toBe(false);
   });
+
+  it("records automations panel navigation as a meaningful workspace snapshot", () => {
+    const updateSearch = vi.fn();
+
+    renderHook({ repoId: "repo-1", worktreeId: "wt-1" }, updateSearch);
+    renderHook({
+      repoId: "repo-1",
+      worktreeId: "wt-1",
+      view: "automations",
+      automationId: "automation-1",
+    }, updateSearch);
+
+    expect(hookResult.canGoBack).toBe(true);
+
+    act(() => {
+      hookResult.goBack();
+    });
+
+    expect(updateSearch).toHaveBeenLastCalledWith({
+      repoId: "repo-1",
+      worktreeId: "wt-1",
+      threadId: undefined,
+      view: undefined,
+      file: undefined,
+      fileLine: undefined,
+      fileColumn: undefined,
+      automationId: undefined,
+      automationCreate: undefined,
+    });
+  });
 });

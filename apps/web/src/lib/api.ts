@@ -1,6 +1,9 @@
 import type {
   ApprovePlanInput,
   ApprovePlanResult,
+  Automation,
+  AutomationPromptVersion,
+  AutomationRun,
   AnswerQuestionInput,
   ChatEvent,
   ChatMessage,
@@ -13,6 +16,7 @@ import type {
   ClipboardText,
   CodexModelCatalog,
   CreateChatThreadInput,
+  CreateAutomationInput,
   CreateModelProviderInput,
   CreateRepositoryInput,
   CreateWorktreeResult,
@@ -51,6 +55,7 @@ import type {
   StartDeviceStreamInput,
   StopDeviceStreamInput,
   TestModelProviderInput,
+  UpdateAutomationInput,
   UpdateAndroidClipboardInput,
   UpdateWorktreeFileContentInput,
   UpdateModelProviderInput,
@@ -278,6 +283,48 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   pickDirectory: () => request<{ path: string }>("/system/pick-directory", { method: "POST" }),
   listRepositories: () => request<Repository[]>("/repositories"),
+  listAutomations: (filters?: { repositoryId?: string; enabled?: boolean }) => {
+    const searchParams = new URLSearchParams();
+    if (filters?.repositoryId) {
+      searchParams.set("repositoryId", filters.repositoryId);
+    }
+    if (typeof filters?.enabled === "boolean") {
+      searchParams.set("enabled", String(filters.enabled));
+    }
+    const query = searchParams.toString();
+    return request<Automation[]>(`/automations${query.length > 0 ? `?${query}` : ""}`);
+  },
+  getAutomation: (id: string) => request<Automation>(`/automations/${id}`),
+  createAutomation: (input: CreateAutomationInput) =>
+    request<Automation>("/automations", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateAutomation: (id: string, input: UpdateAutomationInput) =>
+    request<Automation>(`/automations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteAutomation: async (automationId: string) => {
+    const response = await runtimeFetch(`/automations/${automationId}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to delete automation");
+    }
+  },
+  runAutomationNow: (id: string) =>
+    request<AutomationRun>(`/automations/${id}/run`, {
+      method: "POST",
+    }),
+  listAutomationRuns: (id: string) => request<AutomationRun[]>(`/automations/${id}/runs`),
+  listAutomationPromptVersions: (id: string) => request<AutomationPromptVersion[]>(`/automations/${id}/versions`),
+  restoreAutomationPromptVersion: (automationId: string, versionId: string) =>
+    request<Automation>(`/automations/${automationId}/versions/${versionId}/restore`, {
+      method: "POST",
+    }),
   getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
   createRepository: (input: CreateRepositoryInput) =>
     request<Repository>("/repositories", {

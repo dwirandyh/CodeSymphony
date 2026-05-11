@@ -9,7 +9,7 @@ vi.mock("@tanstack/react-router", () => ({
 
 
 import { useWorkspaceSearchParams } from "./useWorkspaceSearchParams";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -76,5 +76,41 @@ describe("useWorkspaceSearchParams", () => {
       await new Promise((r) => setTimeout(r, 10));
     });
     expect(mockNav).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears automation-only search params when leaving the automations view", async () => {
+    const mockNav = vi.fn();
+    vi.mocked(useNavigate).mockReturnValue(mockNav);
+    vi.mocked(useSearch).mockReturnValue({
+      view: "automations",
+      repoId: "r1",
+      automationId: "automation-1",
+      automationCreate: true,
+    });
+
+    act(() => {
+      root.render(<TestComponent />);
+    });
+
+    act(() => {
+      hookResult.updateSearch({ view: undefined });
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    const navigationCall = mockNav.mock.calls[0]?.[0];
+    expect(navigationCall).toBeTruthy();
+    if (typeof navigationCall?.search !== "function") {
+      throw new Error("Expected navigate search updater");
+    }
+
+    expect(navigationCall.search({
+      view: "automations",
+      repoId: "r1",
+      automationId: "automation-1",
+      automationCreate: true,
+    })).toEqual({ repoId: "r1" });
   });
 });

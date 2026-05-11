@@ -25,6 +25,14 @@ export function useWorkspaceSearchParams() {
             to: "/",
             search: (prev: WorkspaceSearch) => {
               const next = { ...prev, ...merged };
+
+              if (next.view !== "automations") {
+                next.automationId = undefined;
+                next.automationCreate = undefined;
+              } else if (next.automationId) {
+                next.automationCreate = undefined;
+              }
+
               if (next.view !== "file" || !next.file) {
                 next.fileLine = undefined;
                 next.fileColumn = undefined;

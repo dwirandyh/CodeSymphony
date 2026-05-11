@@ -5,10 +5,12 @@ export type WorkspaceSearch = {
   repoId?: string;
   worktreeId?: string;
   threadId?: string;
-  view?: "chat" | "review" | "file";
+  view?: "chat" | "review" | "file" | "automations";
   file?: string;
   fileLine?: number;
   fileColumn?: number;
+  automationId?: string;
+  automationCreate?: boolean;
   panel?: "explorer" | "git" | "device";
 };
 
@@ -25,17 +27,30 @@ function parsePositiveInteger(value: unknown): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-export const Route = createFileRoute("/")({
-  validateSearch: (search: Record<string, unknown>): WorkspaceSearch => ({
+function parseTrueBoolean(value: unknown): true | undefined {
+  return value === true || value === "true" ? true : undefined;
+}
+
+export function validateWorkspaceSearch(search: Record<string, unknown>): WorkspaceSearch {
+  return {
     repoId: typeof search.repoId === "string" ? search.repoId : undefined,
     worktreeId: typeof search.worktreeId === "string" ? search.worktreeId : undefined,
     threadId: typeof search.threadId === "string" ? search.threadId : undefined,
-    view: search.view === "review" || search.view === "file" ? search.view : undefined,
+    view:
+      search.view === "review" || search.view === "file" || search.view === "automations"
+        ? search.view
+        : undefined,
     file: typeof search.file === "string" ? search.file : undefined,
     fileLine: parsePositiveInteger(search.fileLine),
     fileColumn: parsePositiveInteger(search.fileColumn),
+    automationId: typeof search.automationId === "string" ? search.automationId : undefined,
+    automationCreate: parseTrueBoolean(search.automationCreate),
     panel: search.panel === "explorer" || search.panel === "git" || search.panel === "device" ? search.panel : undefined,
-  }),
+  };
+}
+
+export const Route = createFileRoute("/")({
+  validateSearch: validateWorkspaceSearch,
   component: WorkspacePage,
   notFoundComponent: () => {
     window.location.href = "/";
