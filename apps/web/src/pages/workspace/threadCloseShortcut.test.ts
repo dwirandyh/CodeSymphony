@@ -26,6 +26,18 @@ describe("resolveMacCloseShortcutTarget", () => {
     ).toBe("review");
   });
 
+  it("closes the automations panel when automations are active", () => {
+    expect(
+      resolveMacCloseShortcutTarget({
+        activeView: "automations",
+        selectedThreadId: "thread-1",
+        activeFilePath: null,
+        threadCount: 1,
+        messageListEmptyState: null,
+      }),
+    ).toBe("automations");
+  });
+
   it("closes the selected thread when multiple thread tabs exist", () => {
     expect(
       resolveMacCloseShortcutTarget({

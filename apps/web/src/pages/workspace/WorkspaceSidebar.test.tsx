@@ -41,6 +41,7 @@ function renderSidebar(overrides?: Partial<Parameters<typeof WorkspaceSidebar>[0
     loadingRepos: false,
     submittingRepo: false,
     submittingWorktree: false,
+    onOpenAutomations: vi.fn(),
     onOpenSettings: vi.fn(),
     onAttachRepository: vi.fn(),
     onSelectRepository: vi.fn(),
@@ -81,5 +82,11 @@ describe("WorkspaceSidebar", () => {
 
     expect(sidebar.className).toContain("flex");
     expect(sidebar.className).not.toContain("hidden lg:flex");
+  });
+
+  it("renders an automations entry above settings", () => {
+    renderSidebar();
+    expect(container.textContent).toContain("Automations");
+    expect(container.textContent).toContain("Settings");
   });
 });

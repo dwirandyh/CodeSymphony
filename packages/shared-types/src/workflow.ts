@@ -71,6 +71,50 @@ export const RepositorySchema = z.object({
   worktrees: z.array(WorktreeSchema),
 });
 
+export const AutomationRunStatusSchema = z.enum([
+  "queued",
+  "dispatching",
+  "running",
+  "waiting_input",
+  "succeeded",
+  "failed",
+  "canceled",
+  "skipped",
+]);
+export type AutomationRunStatus = z.infer<typeof AutomationRunStatusSchema>;
+
+export const AutomationTriggerKindSchema = z.enum(["manual", "schedule"]);
+export type AutomationTriggerKind = z.infer<typeof AutomationTriggerKindSchema>;
+
+export const AutomationRunSchema = z.object({
+  id: z.string(),
+  automationId: z.string(),
+  repositoryId: z.string(),
+  worktreeId: z.string(),
+  threadId: z.string().nullable(),
+  status: AutomationRunStatusSchema,
+  triggerKind: AutomationTriggerKindSchema,
+  scheduledFor: z.string().datetime(),
+  startedAt: z.string().datetime().nullable(),
+  finishedAt: z.string().datetime().nullable(),
+  error: z.string().nullable(),
+  summary: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type AutomationRun = z.infer<typeof AutomationRunSchema>;
+
+export const AutomationPromptVersionSchema = z.object({
+  id: z.string(),
+  automationId: z.string(),
+  content: z.string(),
+  source: z.string().min(1),
+  restoredFromVersionId: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type AutomationPromptVersion = z.infer<typeof AutomationPromptVersionSchema>;
+
 export const ChatThreadKindSchema = z.enum(["default", "review"]);
 export type ChatThreadKind = z.infer<typeof ChatThreadKindSchema>;
 
@@ -112,6 +156,30 @@ export const DEFAULT_CHAT_MODEL_BY_AGENT = {
   cursor: "default[]",
   opencode: "opencode/minimax-m2.5-free",
 } as const satisfies Record<CliAgent, string>;
+
+export const AutomationSchema = z.object({
+  id: z.string(),
+  repositoryId: z.string(),
+  targetWorktreeId: z.string(),
+  name: z.string().min(1),
+  prompt: z.string().min(1),
+  agent: CliAgentSchema,
+  model: z.string().min(1),
+  modelProviderId: z.string().nullable(),
+  permissionMode: ChatThreadPermissionModeSchema,
+  chatMode: ChatModeSchema,
+  enabled: z.boolean(),
+  rrule: z.string().min(1),
+  timezone: z.string().min(1),
+  dtstart: z.string().datetime(),
+  nextRunAt: z.string().datetime(),
+  lastRunAt: z.string().datetime().nullable(),
+  latestRun: AutomationRunSchema.nullable().optional(),
+  promptVersionCount: z.number().int().nonnegative().optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+export type Automation = z.infer<typeof AutomationSchema>;
 
 export const ChatThreadSchema = z.object({
   id: z.string(),
@@ -520,6 +588,21 @@ export const CreateChatThreadInputSchema = z.object({
   modelProviderId: z.string().trim().min(1).nullable().optional(),
 });
 
+export const CreateAutomationInputSchema = z.object({
+  repositoryId: z.string().trim().min(1),
+  targetWorktreeId: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+  prompt: z.string().trim().min(1),
+  agent: CliAgentSchema,
+  model: z.string().trim().min(1),
+  modelProviderId: z.string().trim().min(1).nullable().optional(),
+  permissionMode: ChatThreadPermissionModeSchema,
+  chatMode: ChatModeSchema,
+  rrule: z.string().trim().min(1),
+  timezone: z.string().trim().min(1),
+});
+export type CreateAutomationInput = z.infer<typeof CreateAutomationInputSchema>;
+
 export const RenameChatThreadTitleInputSchema = z.object({
   title: z.string().trim().min(1).max(MAX_THREAD_TITLE_LENGTH),
 });
@@ -529,6 +612,15 @@ export const UpdateChatThreadModeInputSchema = z.object({
   mode: ChatModeSchema,
 });
 export type UpdateChatThreadModeInput = z.infer<typeof UpdateChatThreadModeInputSchema>;
+
+export const UpdateAutomationInputSchema = CreateAutomationInputSchema.omit({
+  repositoryId: true,
+}).partial().extend({
+  enabled: z.boolean().optional(),
+}).refine((value) => Object.keys(value).length > 0, {
+  message: "At least one automation field must be updated",
+});
+export type UpdateAutomationInput = z.infer<typeof UpdateAutomationInputSchema>;
 
 export const UpdateChatThreadPermissionModeInputSchema = z.object({
   permissionMode: ChatThreadPermissionModeSchema,

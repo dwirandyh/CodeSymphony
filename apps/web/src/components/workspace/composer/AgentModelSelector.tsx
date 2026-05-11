@@ -36,6 +36,8 @@ type AgentModelSelectorProps = {
   selectionLockedReason?: string | null;
   ariaLabel?: string;
   className?: string;
+  triggerVariant?: "pill" | "picker";
+  triggerClassName?: string;
   onSelectionChange: (selection: AgentModelSelection) => void;
 };
 
@@ -418,6 +420,8 @@ export function AgentModelSelector({
   selectionLockedReason = null,
   ariaLabel,
   className,
+  triggerVariant = "pill",
+  triggerClassName: customTriggerClassName,
   onSelectionChange,
 }: AgentModelSelectorProps) {
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
@@ -470,9 +474,25 @@ export function AgentModelSelector({
       : `Select ${AGENT_LABELS[selection.agent]} model`
   );
   const interactionLocked = disabled || selectionLockedReason !== null;
+  const triggerClassName = triggerVariant === "picker"
+    ? `h-9 min-w-0 shrink-0 justify-between gap-1 rounded-md px-2.5 text-[12px] font-medium text-foreground/80 ${
+      interactionLocked
+        ? "cursor-not-allowed opacity-50"
+        : "hover:bg-secondary/40 hover:text-foreground"
+    }`
+    : `rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground ${
+      interactionLocked
+        ? "cursor-not-allowed opacity-50"
+        : "hover:bg-secondary/70 hover:text-foreground"
+    }`;
+  const iconClassName = triggerVariant === "picker"
+    ? "h-3.5 w-3.5 text-muted-foreground/80"
+    : "h-3.5 w-3.5";
+  const labelClassName = triggerVariant === "picker" ? "truncate" : "max-w-[160px] truncate";
+  const triggerTextColorClassName = triggerVariant === "picker" ? "" : "text-muted-foreground";
 
   const renderModelOptionList = () => (
-    <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
+    <div className="h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
       {modelPreviewOptions.map((option, index) => {
         const selected = option.agent === selection.agent
           && option.model === selection.model
@@ -536,15 +556,16 @@ export function AgentModelSelector({
         }}
         disabled={interactionLocked}
         title={selectionLockedReason ?? currentSelection.model}
-        className={`flex items-center gap-1.5 rounded-full bg-secondary/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors ${
-          interactionLocked
-            ? "cursor-not-allowed opacity-50"
-            : "hover:bg-secondary/70 hover:text-foreground"
-        }`}
+        className={cn(
+          "flex items-center transition-colors",
+          triggerTextColorClassName,
+          triggerClassName,
+          customTriggerClassName,
+        )}
         aria-label={resolvedAriaLabel}
       >
-        <AgentIcon agent={selection.agent} aria-hidden="true" className="h-3.5 w-3.5" />
-        <span className="max-w-[160px] truncate">{modelLabel}</span>
+        <AgentIcon agent={selection.agent} aria-hidden="true" className={iconClassName} />
+        <span className={labelClassName}>{modelLabel}</span>
         <ChevronDown className="h-3 w-3 shrink-0" />
       </button>
 
@@ -568,12 +589,21 @@ export function AgentModelSelector({
                             : "text-foreground hover:bg-accent/50"
                         }`}
                         aria-current={currentAgent ? "true" : undefined}
-                        onMouseEnter={() => setModelPreviewAgent(entryAgent)}
-                        onMouseOver={() => setModelPreviewAgent(entryAgent)}
-                        onFocus={() => setModelPreviewAgent(entryAgent)}
+                        onMouseEnter={() => {
+                          if (modelPreviewAgent !== entryAgent) {
+                            setModelPreviewAgent(entryAgent);
+                          }
+                        }}
+                        onFocus={() => {
+                          if (modelPreviewAgent !== entryAgent) {
+                            setModelPreviewAgent(entryAgent);
+                          }
+                        }}
                         onMouseDown={(event) => {
                           event.preventDefault();
-                          setModelPreviewAgent(entryAgent);
+                          if (modelPreviewAgent !== entryAgent) {
+                            setModelPreviewAgent(entryAgent);
+                          }
                         }}
                       >
                         <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
@@ -587,7 +617,7 @@ export function AgentModelSelector({
 
               <div
                 data-agent-model-panel="overlay"
-                className="absolute bottom-0 left-full z-10 ml-2 w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+                className="absolute left-full top-0 z-10 ml-2 w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
               >
                 {renderModelOptionList()}
               </div>

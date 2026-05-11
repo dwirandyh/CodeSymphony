@@ -1073,6 +1073,17 @@ describe("useChatSession", () => {
     expect(hookResult.selectedThreadId).toBe("thread-a");
   });
 
+  it("selects desiredThreadId after a deferred worktree handoff finishes", () => {
+    threadsState.data = [makeThread("thread-old"), makeThread("thread-target")];
+
+    renderHook("thread-target", null, null, "wt-1");
+    expect(hookResult.selectedThreadId).toBe(null);
+
+    renderHook("thread-target", null, "wt-1", "wt-1");
+
+    expect(hookResult.selectedThreadId).toBe("thread-target");
+  });
+
   it("reuses an existing titled thread instead of creating a duplicate", async () => {
     threadsState.data = [
       {

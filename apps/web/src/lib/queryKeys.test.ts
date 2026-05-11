@@ -101,4 +101,16 @@ describe("queryKeys", () => {
   it("system.installedApps is correct", () => {
     expect(queryKeys.system.installedApps).toEqual(["system", "installedApps"]);
   });
+
+  it("automations.list is correct", () => {
+    expect(queryKeys.automations.lists).toEqual(["automations", "list"]);
+    expect(queryKeys.automations.list()).toEqual(["automations", "list", "__all__", "__all__"]);
+    expect(queryKeys.automations.list("repo-1", true)).toEqual(["automations", "list", "repo-1", "enabled"]);
+  });
+
+  it("automations detail keys are correct", () => {
+    expect(queryKeys.automations.detail("automation-1")).toEqual(["automations", "automation-1"]);
+    expect(queryKeys.automations.runs("automation-1")).toEqual(["automations", "automation-1", "runs"]);
+    expect(queryKeys.automations.versions("automation-1")).toEqual(["automations", "automation-1", "versions"]);
+  });
 });

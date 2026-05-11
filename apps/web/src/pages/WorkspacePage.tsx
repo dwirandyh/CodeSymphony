@@ -43,6 +43,9 @@ const MobileSavePill = lazy(() =>
 const MobileUtilitiesSheet = lazy(() =>
   import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileUtilitiesSheet }))
 );
+const WorkspaceAutomationsPanel = lazy(() =>
+  import("./automations/AutomationsPage").then(m => ({ default: m.WorkspaceAutomationsPanel }))
+);
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
@@ -216,7 +219,7 @@ type MobileInlinePanel = "files" | "git" | "more" | "utilities" | "device";
 type MobilePanelState = "repos" | MobileInlinePanel | null;
 type MobileReposOrigin = {
   panel: MobileInlinePanel | null;
-  view: "chat" | "file" | "review";
+  view: "chat" | "file" | "review" | "automations";
 };
 
 function labelFromPath(filePath: string | null | undefined): string {
@@ -708,6 +711,7 @@ export function WorkspacePage() {
   const activeFileColumn = activeView === "file" ? search.fileColumn ?? null : null;
   const selectedDiffFilePath = search.file ?? null;
   const reviewTabOpen = activeView === "review";
+  const showWorkspaceHeader = activeView !== "automations";
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
   const prioritizeConversationBootstrap = activeView === "chat" && !!(search.worktreeId ?? repos.selectedWorktreeId);
@@ -948,10 +952,12 @@ export function WorkspacePage() {
           ? "Utilities"
           : mobilePanelOpen === "device"
             ? "Devices"
-          : activeView === "file"
-            ? labelFromPath(activeFilePath)
+            : activeView === "file"
+              ? labelFromPath(activeFilePath)
             : activeView === "review"
               ? "Review Changes"
+            : activeView === "automations"
+              ? "Automations"
               : selectedThreadTitle;
   const mobileSubtitle = repos.selectedRepository?.name
     ? `${repos.selectedRepository.name} · ${selectedIsRootWorkspace ? "Root Workspace" : repos.selectedWorktree?.branch ?? "No worktree"}`
@@ -961,7 +967,7 @@ export function WorkspacePage() {
     panel: mobilePanelOpen === "files" || mobilePanelOpen === "git" || mobilePanelOpen === "more" || mobilePanelOpen === "utilities" || mobilePanelOpen === "device"
       ? mobilePanelOpen
       : null,
-    view: activeView === "file" || activeView === "review" ? activeView : "chat",
+    view: activeView === "file" || activeView === "review" || activeView === "automations" ? activeView : "chat",
   }), [activeView, mobilePanelOpen]);
 
   const handleOpenMobileRepositories = useCallback(() => {
@@ -1642,6 +1648,11 @@ export function WorkspacePage() {
         return;
       }
 
+      if (closeTarget === "automations") {
+        updateSearch({ view: undefined });
+        return;
+      }
+
       if (chat.closingThreadId || !repos.selectedWorktreeId || !chat.selectedThreadId) {
         return;
       }
@@ -1664,6 +1675,7 @@ export function WorkspacePage() {
     handleCloseReview,
     handleRequestCloseThread,
     repos.selectedWorktreeId,
+    updateSearch,
   ]);
 
   const handleConfirmCloseThread = useCallback(async () => {
@@ -1724,8 +1736,16 @@ export function WorkspacePage() {
             loadingRepos={repos.loadingRepos}
             submittingRepo={repos.submittingRepo}
             submittingWorktree={repos.submittingWorktree}
+            automationActive={activeView === "automations"}
             enableRepositoryMetadata={enableNonCriticalWorkspaceData}
             isVisible={leftSidebarVisible}
+            onOpenAutomations={() => {
+              updateSearch({
+                view: "automations",
+                automationId: undefined,
+                automationCreate: undefined,
+              });
+            }}
             onOpenSettings={() => setSettingsOpen(true)}
             onAttachRepository={repos.openFileBrowser}
             onSelectRepository={handleSelectRepository}
@@ -1791,85 +1811,87 @@ export function WorkspacePage() {
               "flex min-h-0 min-w-0 flex-1 flex-col gap-0",
             )}
           >
-            <div
-              className={cn(
-                "px-1.5 pt-1.5 sm:px-2.5 sm:pt-2.5",
-                mobileInlinePanel && !desktopApp && "hidden lg:block",
-                activeView === "file" ? "lg:px-3 lg:pt-3" : "lg:px-0 lg:pt-0",
-              )}
-            >
-              <WorkspaceHeader
-                desktopApp={desktopApp}
-                selectedWorktreeBranch={repos.selectedWorktree?.branch ?? null}
-                selectedIsRootWorkspace={selectedIsRootWorkspace}
-                targetBranch={selectedTargetBranch}
-                targetBranchOptions={repositoryBranches.data ?? []}
-                targetBranchLoading={
-                  enableNonCriticalWorkspaceData && (
-                    repositoryBranches.isLoading
-                    || repositoryBranches.isFetching
+            {showWorkspaceHeader ? (
+              <div
+                className={cn(
+                  "px-1.5 pt-1.5 sm:px-2.5 sm:pt-2.5",
+                  mobileInlinePanel && !desktopApp && "hidden lg:block",
+                  activeView === "file" ? "lg:px-3 lg:pt-3" : "lg:px-0 lg:pt-0",
+                )}
+              >
+                <WorkspaceHeader
+                  desktopApp={desktopApp}
+                  selectedWorktreeBranch={repos.selectedWorktree?.branch ?? null}
+                  selectedIsRootWorkspace={selectedIsRootWorkspace}
+                  targetBranch={selectedTargetBranch}
+                  targetBranchOptions={repositoryBranches.data ?? []}
+                  targetBranchLoading={
+                    enableNonCriticalWorkspaceData && (
+                      repositoryBranches.isLoading
+                      || repositoryBranches.isFetching
+                      || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
+                    )
+                  }
+                  targetBranchDisabled={
+                    !enableNonCriticalWorkspaceData
+                    || !repos.selectedWorktreeId
+                    || !selectedWorktreeOperational
+                    || !repos.selectedRepositoryId
                     || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
-                  )
-                }
-                targetBranchDisabled={
-                  !enableNonCriticalWorkspaceData
-                  || !repos.selectedWorktreeId
-                  || !selectedWorktreeOperational
-                  || !repos.selectedRepositoryId
-                  || repos.updatingTargetBranchWorktreeId === repos.selectedWorktreeId
-                }
-                worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
-                threads={chat.threads}
-                selectedThreadId={chat.selectedThreadId}
-                fileTabs={workspaceFileTabs}
-                activeFilePath={activeFilePath}
-                disabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
-                createThreadDisabled={!repos.selectedWorktreeId || !selectedWorktreeOperational || chat.sendingMessage}
-                closingThreadId={chat.closingThreadId}
-                protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
-                showReviewTab={reviewTabOpen}
-                reviewTabActive={activeView === "review"}
-                onSelectThread={handleSelectThread}
-                onPrefetchThread={(threadId) => {
-                  void prefetchDisplayThreadSnapshot(threadId);
-                }}
-                onSelectFileTab={handleSelectFileTab}
-                onPinFileTab={handlePinFileTab}
-                onCloseFileTab={handleCloseFileTab}
-                onCreateThread={() => {
-                  if (!confirmSwitchAwayFromActiveFile()) {
-                    return;
                   }
-                  void chat.createAdditionalThread();
-                }}
-                onCloseThread={handleRequestCloseThread}
-                onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
-                onSelectTargetBranch={(branch) => {
-                  if (!repos.selectedWorktreeId) {
-                    return;
-                  }
-                  void repos.updateWorktreeTargetBranch(repos.selectedWorktreeId, branch);
-                }}
-                onSelectReviewTab={() => {
-                  if (!confirmSwitchAwayFromActiveFile()) {
-                    return;
-                  }
-                  updateSearch({ view: "review" });
-                }}
-                onCloseReviewTab={handleCloseReview}
-                runScriptRunning={selectedBottomPanelState.runScriptActive}
-                onToggleRunScript={handleToggleRunScript}
-                leftPanelVisible={leftSidebarVisible}
-                onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
-                mergeWithContent={activeView === "file"}
-              />
+                  worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
+                  threads={chat.threads}
+                  selectedThreadId={chat.selectedThreadId}
+                  fileTabs={workspaceFileTabs}
+                  activeFilePath={activeFilePath}
+                  disabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
+                  createThreadDisabled={!repos.selectedWorktreeId || !selectedWorktreeOperational || chat.sendingMessage}
+                  closingThreadId={chat.closingThreadId}
+                  protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
+                  showReviewTab={reviewTabOpen}
+                  reviewTabActive={activeView === "review"}
+                  onSelectThread={handleSelectThread}
+                  onPrefetchThread={(threadId) => {
+                    void prefetchDisplayThreadSnapshot(threadId);
+                  }}
+                  onSelectFileTab={handleSelectFileTab}
+                  onPinFileTab={handlePinFileTab}
+                  onCloseFileTab={handleCloseFileTab}
+                  onCreateThread={() => {
+                    if (!confirmSwitchAwayFromActiveFile()) {
+                      return;
+                    }
+                    void chat.createAdditionalThread();
+                  }}
+                  onCloseThread={handleRequestCloseThread}
+                  onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
+                  onSelectTargetBranch={(branch) => {
+                    if (!repos.selectedWorktreeId) {
+                      return;
+                    }
+                    void repos.updateWorktreeTargetBranch(repos.selectedWorktreeId, branch);
+                  }}
+                  onSelectReviewTab={() => {
+                    if (!confirmSwitchAwayFromActiveFile()) {
+                      return;
+                    }
+                    updateSearch({ view: "review" });
+                  }}
+                  onCloseReviewTab={handleCloseReview}
+                  runScriptRunning={selectedBottomPanelState.runScriptActive}
+                  onToggleRunScript={handleToggleRunScript}
+                  leftPanelVisible={leftSidebarVisible}
+                  onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
+                  mergeWithContent={activeView === "file"}
+                />
 
-              {uiError ? (
-                <div className="flex items-center gap-2 px-3 py-2 text-xs text-destructive">
-                  <strong>!</strong> {uiError}
-                </div>
-              ) : null}
-            </div>
+                {uiError ? (
+                  <div className="flex items-center gap-2 px-3 py-2 text-xs text-destructive">
+                    <strong>!</strong> {uiError}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {!desktopApp && mobilePanelOpen === "files" ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden lg:hidden">
@@ -2027,6 +2049,44 @@ export function WorkspacePage() {
                     onSave={() => void handleSaveActiveFile()}
                     onRetry={handleRetryActiveFileLoad}
                     onOpenFile={(path) => void openReadFile(path)}
+                  />
+                </Suspense>
+              </section>
+            ) : activeView === "automations" ? (
+              <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading automations...</div>}>
+                  <WorkspaceAutomationsPanel
+                    automationId={search.automationId ?? null}
+                    create={search.automationCreate === true}
+                    prefills={{
+                      repositoryId: repos.selectedRepositoryId ?? undefined,
+                      worktreeId: repos.selectedWorktreeId ?? undefined,
+                      agent: selectedChatThread?.agent,
+                      model: selectedChatThread?.model,
+                      permissionMode: selectedChatThread?.permissionMode,
+                      chatMode: selectedChatThread?.mode,
+                    }}
+                    onOpenAutomation={(automationId) => {
+                      updateSearch({
+                        view: "automations",
+                        automationId,
+                        automationCreate: undefined,
+                      });
+                    }}
+                    onBack={() => {
+                      updateSearch({
+                        view: "automations",
+                        automationId: undefined,
+                        automationCreate: undefined,
+                      });
+                    }}
+                    onCreateDialogOpenChange={(open) => {
+                      updateSearch({
+                        view: "automations",
+                        automationId: undefined,
+                        automationCreate: open ? true : undefined,
+                      });
+                    }}
                   />
                 </Suspense>
               </section>
@@ -2203,7 +2263,7 @@ export function WorkspacePage() {
             />
           </Suspense>
 
-          {!desktopApp && mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen && !mobileReposDrawerOpen ? (
+          {!desktopApp && activeView !== "automations" && mobileKeyboardOffset === 0 && !mobileUtilitiesFullscreen && !mobileReposDrawerOpen ? (
             <Suspense fallback={null}>
               <MobileActionBar
                 hasWorktree={!!repos.selectedWorktreeId}
