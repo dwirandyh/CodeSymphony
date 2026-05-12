@@ -44,6 +44,10 @@ function respondForAutomationRouteError(
     return reply.code(400).send({ error: message });
   }
 
+  if (message === "Automation already has an active run") {
+    return reply.code(409).send({ error: message });
+  }
+
   return reply.code(400).send({ error: message });
 }
 

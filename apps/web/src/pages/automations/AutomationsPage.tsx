@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type {
   Automation,
+  AutomationTargetMode,
   AutomationRun,
   ChatMode,
   ChatThreadPermissionMode,
@@ -13,10 +14,7 @@ import type {
   OpencodeModelCatalogEntry,
   Repository,
 } from "@codesymphony/shared-types";
-import {
-  BUILTIN_CHAT_MODELS_BY_AGENT,
-  DEFAULT_CHAT_MODEL_BY_AGENT,
-} from "@codesymphony/shared-types";
+import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
 import {
   CalendarClock,
   Check,
@@ -24,6 +22,7 @@ import {
   ChevronRight,
   Clock3,
   ExternalLink,
+  FolderGit2,
   FolderOpen,
   GitBranch,
   MoreHorizontal,
@@ -32,12 +31,11 @@ import {
   Play,
   Plus,
   Save,
-  ShieldCheck,
   Trash2,
+  X,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { ScrollArea } from "../../components/ui/scroll-area";
@@ -46,14 +44,8 @@ import { cn } from "../../lib/utils";
 import { queryKeys } from "../../lib/queryKeys";
 import { useRepositories } from "../../hooks/queries/useRepositories";
 import {
-  AGENT_LABELS,
-  AgentIcon,
-  CLI_AGENTS,
-  buildAgentSelectionOptions,
-  getCurrentAgentSelectionOption,
-  isFirstCustomModelOption,
+  AgentModelSelector,
   type AgentModelSelection,
-  type AgentSelectionOption,
 } from "../../components/workspace/composer/AgentModelSelector";
 import { useCodexModels } from "../../hooks/queries/useCodexModels";
 import { useCursorModels } from "../../hooks/queries/useCursorModels";
@@ -72,12 +64,12 @@ import {
 type AutomationFormState = {
   repositoryId: string;
   targetWorktreeId: string;
+  targetMode: AutomationTargetMode;
   name: string;
   prompt: string;
   agent: CliAgent;
   model: string;
   modelProviderId: string | null;
-  permissionMode: ChatThreadPermissionMode;
   chatMode: ChatMode;
   timezone: string;
   frequency: AutomationScheduleDraft["frequency"];
@@ -85,6 +77,9 @@ type AutomationFormState = {
   minute: number;
   daysOfWeek: string[];
 };
+
+type AutomationFormFieldError = "name" | "prompt" | "repositoryId" | "targetWorktreeId" | "session";
+type AutomationFormValidationErrors = Partial<Record<AutomationFormFieldError, string>>;
 
 type AutomationPageLayout = "page" | "panel";
 
@@ -137,25 +132,68 @@ const rememberedAutomationListState: {
   enabledFilter: "enabled",
 };
 
-const AUTOMATION_PERMISSION_OPTIONS: Array<{
-  value: ChatThreadPermissionMode;
+type AutomationSchedulePreset = "hourly" | "daily" | "weekdays" | "weekly";
+
+const AUTOMATION_TARGET_OPTIONS: Array<{
+  value: AutomationTargetMode;
   label: string;
-  description: string;
-  icon: React.ComponentType<{ className?: string }>;
 }> = [
-  {
-    value: "default",
-    label: "Default",
-    description: "Ask before approval-gated actions",
-    icon: Clock3,
-  },
-  {
-    value: "full_access",
-    label: "Full Access",
-    description: "Always allow approval-gated actions",
-    icon: ShieldCheck,
-  },
+  { value: "repo_root", label: "Root" },
+  { value: "worktree", label: "Worktree" },
 ];
+
+const AUTOMATION_WORKWEEK_DAYS = ["MO", "TU", "WE", "TH", "FR"] as const;
+const ACTIVE_AUTOMATION_RUN_STATUSES = new Set<AutomationRun["status"]>([
+  "queued",
+  "dispatching",
+  "running",
+  "waiting_input",
+]);
+
+const AUTOMATION_REPEAT_OPTIONS: Array<{
+  value: AutomationSchedulePreset;
+  label: string;
+}> = [
+  { value: "hourly", label: "Hourly" },
+  { value: "daily", label: "Daily" },
+  { value: "weekdays", label: "Weekdays" },
+  { value: "weekly", label: "Weekly" },
+];
+
+const AUTOMATION_WEEKDAY_LABELS: Record<(typeof AUTOMATION_WEEKDAYS)[number], string> = {
+  MO: "Monday",
+  TU: "Tuesday",
+  WE: "Wednesday",
+  TH: "Thursday",
+  FR: "Friday",
+  SA: "Saturday",
+  SU: "Sunday",
+};
+
+const AUTOMATION_WEEKDAY_SHORT_LABELS: Record<(typeof AUTOMATION_WEEKDAYS)[number], string> = {
+  MO: "Mon",
+  TU: "Tue",
+  WE: "Wed",
+  TH: "Thu",
+  FR: "Fri",
+  SA: "Sat",
+  SU: "Sun",
+};
+
+type AutomationWeekday = (typeof AUTOMATION_WEEKDAYS)[number];
+
+const AUTOMATION_HOUR_OPTIONS = Array.from({ length: 24 }, (_unused, hour) => ({
+  value: String(hour),
+  label: new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(2026, 0, 1, hour, 0))),
+}));
+
+const AUTOMATION_MINUTE_OPTIONS = Array.from({ length: 60 }, (_unused, minute) => ({
+  value: String(minute),
+  label: String(minute).padStart(2, "0"),
+}));
 
 function getCurrentTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -181,6 +219,10 @@ function findRootWorktree(repository: Repository | undefined) {
 
 function findRepositoryById(repositories: Repository[], repositoryId: string) {
   return repositories.find((repository) => repository.id === repositoryId);
+}
+
+function getAutomationContextWorktreeId(repository: Repository | undefined) {
+  return findRootWorktree(repository)?.id ?? "";
 }
 
 function defaultModelForAgent(agent: CliAgent): string {
@@ -227,19 +269,6 @@ function formatRelativeTime(input: string | null) {
   return formatter.format(deltaDays, "day");
 }
 
-function summarizeSchedule(automation: Pick<Automation, "rrule" | "timezone">) {
-  const schedule = parseAutomationRrule(automation.rrule);
-  if (schedule.frequency === "hourly") {
-    return `Hourly at :${String(schedule.minute).padStart(2, "0")} (${automation.timezone})`;
-  }
-
-  if (schedule.frequency === "weekly") {
-    return `Weekly on ${schedule.daysOfWeek.join(", ")} at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")} (${automation.timezone})`;
-  }
-
-  return `Daily at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")} (${automation.timezone})`;
-}
-
 function getRunStatusVariant(status: string | null | undefined) {
   if (status === "failed" || status === "canceled") {
     return "destructive" as const;
@@ -251,6 +280,73 @@ function getRunStatusVariant(status: string | null | undefined) {
     return "default" as const;
   }
   return "outline" as const;
+}
+
+function formatAutomationRunStatus(status: AutomationRun["status"]) {
+  return status
+    .split("_")
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function isAutomationRunActive(run: Pick<AutomationRun, "status"> | null | undefined) {
+  return Boolean(run && ACTIVE_AUTOMATION_RUN_STATUSES.has(run.status));
+}
+
+function getAutomationFormValidationErrors(
+  form: AutomationFormState,
+  repositories: Repository[],
+): AutomationFormValidationErrors {
+  const errors: AutomationFormValidationErrors = {};
+
+  if (form.name.trim().length === 0) {
+    errors.name = "Add a title before creating the automation.";
+  }
+
+  if (form.prompt.trim().length === 0) {
+    errors.prompt = "Add a prompt so the automation knows what to do.";
+  }
+
+  const repository = findRepositoryById(repositories, form.repositoryId);
+  if (!repository) {
+    errors.repositoryId = "Select a project for this automation.";
+  }
+
+  if (form.targetWorktreeId.trim().length === 0) {
+    errors.targetWorktreeId = form.targetMode === "worktree"
+      ? "Select a source worktree before creating the automation."
+      : "The selected project does not have an active root worktree.";
+  }
+
+  if (form.model.trim().length === 0) {
+    errors.session = "Select an automation session before creating the automation.";
+  }
+
+  return errors;
+}
+
+function withUpdatedLatestRun(automation: Automation, run: AutomationRun): Automation {
+  return {
+    ...automation,
+    latestRun: run,
+    lastRunAt: run.scheduledFor,
+  };
+}
+
+function applyAutomationLatestRunToCache(
+  queryClient: ReturnType<typeof useQueryClient>,
+  automationId: string,
+  run: AutomationRun,
+) {
+  queryClient.setQueriesData<Automation[]>({ queryKey: queryKeys.automations.lists }, (current) => (
+    current?.map((automation) => (
+      automation.id === automationId ? withUpdatedLatestRun(automation, run) : automation
+    )) ?? current
+  ));
+
+  queryClient.setQueryData<Automation | undefined>(queryKeys.automations.detail(automationId), (current) => (
+    current ? withUpdatedLatestRun(current, run) : current
+  ));
 }
 
 function toFormState(
@@ -273,14 +369,14 @@ function toFormState(
 
   return {
     repositoryId: automation?.repositoryId ?? repository?.id ?? "",
-    targetWorktreeId: automation?.targetWorktreeId ?? prefills?.worktreeId ?? rootWorktree?.id ?? "",
+    targetWorktreeId: getAutomationContextWorktreeId(repository) || automation?.targetWorktreeId || prefills?.worktreeId || "",
+    targetMode: automation?.targetMode ?? "repo_root",
     name: automation?.name ?? "",
     prompt: automation?.prompt ?? "",
     agent: automation?.agent ?? prefills?.agent ?? "claude",
     model: automation?.model ?? prefills?.model ?? defaultModelForAgent(prefills?.agent ?? "claude"),
     modelProviderId: activeProvider?.id ?? null,
-    permissionMode: automation?.permissionMode ?? prefills?.permissionMode ?? "default",
-    chatMode: automation?.chatMode ?? "default",
+    chatMode: "default",
     timezone: normalizeTimezone(automation?.timezone),
     frequency: schedule.frequency,
     hour: schedule.hour,
@@ -305,12 +401,13 @@ function formToPayload(form: AutomationFormState) {
   return {
     repositoryId: normalized.repositoryId,
     targetWorktreeId: normalized.targetWorktreeId,
+    targetMode: normalized.targetMode,
     name: normalized.name,
     prompt: normalized.prompt,
     agent: normalized.agent,
     model: normalized.model,
     modelProviderId: normalized.modelProviderId,
-    permissionMode: normalized.permissionMode,
+    permissionMode: "full_access" as const,
     chatMode: normalized.chatMode,
     rrule: buildAutomationRrule({
       frequency: normalized.frequency,
@@ -325,11 +422,6 @@ function formToPayload(form: AutomationFormState) {
 function formToUpdatePayload(form: AutomationFormState) {
   const { repositoryId: _repositoryId, ...payload } = formToPayload(form);
   return payload;
-}
-
-function getAvailableWorktrees(repositories: Repository[], repositoryId: string) {
-  const repository = findRepositoryById(repositories, repositoryId);
-  return repository?.worktrees.filter((worktree) => worktree.status === "active") ?? [];
 }
 
 function getProvidersForAgent(providers: ModelProvider[], agent: CliAgent) {
@@ -373,8 +465,8 @@ function AutomationPageShell({
 }) {
   if (layout === "panel") {
     return (
-      <div className="min-h-0 flex-1 overflow-auto bg-background text-foreground">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-3 py-3 sm:px-4 lg:px-5">
+      <div className="flex h-full min-h-0 flex-1 flex-col overflow-auto bg-background text-foreground">
+        <div className="mx-auto flex h-full min-h-full w-full max-w-6xl flex-1 flex-col gap-4 px-3 pb-0 pt-3 sm:px-4 lg:px-5">
           {children}
         </div>
       </div>
@@ -414,58 +506,12 @@ function CompactSelectControl({
   );
 }
 
-function CompactPopoverLabel({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <span className={cn("inline-flex w-full items-center justify-between gap-2 text-xs text-foreground", className)}>
-      <span className="min-w-0 truncate">{children}</span>
-      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
-    </span>
-  );
-}
-
-function CompactPopoverButton({
-  children,
-  className,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  return (
-    <button
-      type="button"
-      {...props}
-      className={cn(
-        "group inline-flex w-full items-center rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50",
-        className,
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function CompactInputField(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <Input
-      {...props}
-      className={cn(
-        "h-auto border-0 bg-transparent px-0 py-0 text-sm shadow-none outline-none ring-0 focus-visible:ring-0 focus-visible:ring-offset-0",
-        props.className,
-      )}
-    />
-  );
-}
-
 function BareInputField(props: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <Input
       {...props}
       className={cn(
-        "h-auto border-0 bg-transparent px-0 py-0 text-[2.25rem] font-semibold tracking-[-0.03em] shadow-none outline-none ring-0 placeholder:text-muted-foreground/60 focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-[2.75rem]",
+        "h-auto border-0 bg-transparent px-0 py-0 text-lg font-semibold tracking-[-0.015em] shadow-none outline-none ring-0 placeholder:text-muted-foreground/55 focus-visible:ring-0 focus-visible:ring-offset-0 sm:text-xl",
         props.className,
       )}
     />
@@ -480,6 +526,41 @@ function formatClockTime(hour: number, minute: number) {
   }).format(new Date(Date.UTC(2026, 0, 1, hour, minute)));
 }
 
+function normalizeScheduleDays(daysOfWeek: string[]): AutomationWeekday[] {
+  return [...new Set(daysOfWeek)]
+    .filter((day): day is AutomationWeekday => AUTOMATION_WEEKDAYS.includes(day as AutomationWeekday))
+    .sort((left, right) => AUTOMATION_WEEKDAYS.indexOf(left) - AUTOMATION_WEEKDAYS.indexOf(right));
+}
+
+function isWeekdaysSchedule(daysOfWeek: string[]) {
+  const normalized = normalizeScheduleDays(daysOfWeek);
+  return normalized.length === AUTOMATION_WORKWEEK_DAYS.length
+    && AUTOMATION_WORKWEEK_DAYS.every((day) => normalized.includes(day));
+}
+
+function getAutomationSchedulePreset(
+  schedule: Pick<AutomationFormState, "frequency" | "daysOfWeek">,
+): AutomationSchedulePreset {
+  if (schedule.frequency === "hourly") {
+    return "hourly";
+  }
+
+  if (schedule.frequency === "daily") {
+    return "daily";
+  }
+
+  return isWeekdaysSchedule(schedule.daysOfWeek) ? "weekdays" : "weekly";
+}
+
+function formatScheduleDayList(daysOfWeek: string[]) {
+  const normalized = normalizeScheduleDays(daysOfWeek);
+  if (normalized.length === 1) {
+    return `${AUTOMATION_WEEKDAY_LABELS[normalized[0]]}s`;
+  }
+
+  return normalized.map((day) => AUTOMATION_WEEKDAY_SHORT_LABELS[day]).join(", ");
+}
+
 function summarizeScheduleDraft(schedule: Pick<AutomationFormState, "frequency" | "hour" | "minute" | "daysOfWeek">) {
   if (schedule.frequency === "hourly") {
     return `Hourly at :${String(schedule.minute).padStart(2, "0")}`;
@@ -487,40 +568,109 @@ function summarizeScheduleDraft(schedule: Pick<AutomationFormState, "frequency" 
 
   const timeLabel = formatClockTime(schedule.hour, schedule.minute);
   if (schedule.frequency === "weekly") {
-    const isWeekdays =
-      schedule.daysOfWeek.length === 5 &&
-      ["MO", "TU", "WE", "TH", "FR"].every((day) => schedule.daysOfWeek.includes(day));
-    if (isWeekdays) {
+    if (isWeekdaysSchedule(schedule.daysOfWeek)) {
       return `Weekdays at ${timeLabel}`;
     }
 
-    if (schedule.daysOfWeek.length === 0) {
+    const normalizedDays = normalizeScheduleDays(schedule.daysOfWeek);
+    if (normalizedDays.length === 0) {
       return `Weekly at ${timeLabel}`;
     }
 
-    return `${schedule.daysOfWeek.join(", ")} at ${timeLabel}`;
+    return `${formatScheduleDayList(normalizedDays)} at ${timeLabel}`;
   }
 
   return `Daily at ${timeLabel}`;
 }
 
-function summarizeCreateTarget(repository: Repository | undefined, worktreeId: string) {
-  if (!repository) {
-    return "Select local or worktree";
-  }
+function ScheduleTimePicker({
+  hour,
+  minute,
+  minuteOnly = false,
+  onChange,
+}: {
+  hour: number;
+  minute: number;
+  minuteOnly?: boolean;
+  onChange: (next: { hour?: number; minute?: number }) => void;
+}) {
+  return (
+    <div className="flex w-full items-center gap-3 rounded-xl border border-border/50 bg-secondary/30 px-3 py-2.5 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/30">
+      <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
+      {minuteOnly ? (
+        <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,4.25rem)_1fr] items-center gap-3">
+          <select
+            value={String(minute)}
+            onChange={(event) => onChange({ minute: Number.parseInt(event.target.value, 10) })}
+            className="min-w-0 bg-transparent px-0 py-0 text-sm text-foreground outline-none"
+          >
+            {AUTOMATION_MINUTE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+            past each hour
+          </span>
+        </div>
+      ) : (
+        <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+          <select
+            value={String(hour)}
+            onChange={(event) => onChange({ hour: Number.parseInt(event.target.value, 10) })}
+            className="min-w-0 bg-transparent px-0 py-0 text-sm text-foreground outline-none"
+          >
+            {AUTOMATION_HOUR_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <span className="text-sm text-muted-foreground">:</span>
+          <select
+            value={String(minute)}
+            onChange={(event) => onChange({ minute: Number.parseInt(event.target.value, 10) })}
+            className="min-w-0 bg-transparent px-0 py-0 text-sm text-foreground outline-none"
+          >
+            {AUTOMATION_MINUTE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+    </div>
+  );
+}
 
-  const worktree = repository.worktrees.find((entry) => entry.id === worktreeId) ?? null;
-  if (!worktree) {
-    return "Select local or worktree";
-  }
+function getAutomationTargetIcon(targetMode: AutomationTargetMode) {
+  return targetMode === "worktree" ? GitBranch : FolderGit2;
+}
 
-  return findRootWorktree(repository)?.id === worktree.id ? "Local" : worktree.branch;
+function summarizeCreateTarget(targetMode: AutomationTargetMode) {
+  return targetMode === "worktree" ? "Worktree" : "Root";
 }
 
 type AutomationPickerOption = {
   value: string;
   label: string;
+  description?: string;
+  icon?: React.ComponentType<{ className?: string }>;
 };
+
+function describeAutomationTarget(repository: Repository | undefined, targetMode: AutomationTargetMode) {
+  if (!repository) {
+    return undefined;
+  }
+
+  if (targetMode === "repo_root") {
+    return "Runs in Root. If Root switches branch, future runs follow that branch.";
+  }
+
+  return `Creates a fresh worktree from ${repository.defaultBranch} for every run.`;
+}
 
 function WorkspaceHeaderStylePickerTrigger({
   icon: Icon,
@@ -528,7 +678,7 @@ function WorkspaceHeaderStylePickerTrigger({
   className,
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  icon: React.ComponentType<{ className?: string }>;
+  icon?: React.ComponentType<{ className?: string }>;
 }) {
   return (
     <Button
@@ -536,13 +686,13 @@ function WorkspaceHeaderStylePickerTrigger({
       variant="ghost"
       size="sm"
       className={cn(
-        "h-9 min-w-0 shrink-0 justify-between gap-1 rounded-md px-2.5 text-[12px] font-medium text-foreground/80 hover:bg-secondary/40 hover:text-foreground",
+        "h-8 min-w-0 shrink-0 justify-between gap-1 rounded-md px-2 text-[12px] font-medium text-foreground/80 hover:bg-secondary/35 hover:text-foreground",
         className,
       )}
       {...props}
     >
       <span className="min-w-0 flex items-center gap-1.5">
-        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+        {Icon ? <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" /> : null}
         <span className="truncate">{children}</span>
       </span>
       <ChevronDown className="h-3.5 w-3.5 shrink-0" />
@@ -552,6 +702,7 @@ function WorkspaceHeaderStylePickerTrigger({
 
 function AutomationInlinePicker({
   icon,
+  selectedIcon,
   ariaLabel,
   value,
   selectedLabel,
@@ -560,7 +711,8 @@ function AutomationInlinePicker({
   className,
   testId,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon?: React.ComponentType<{ className?: string }>;
+  selectedIcon?: React.ComponentType<{ className?: string }>;
   ariaLabel: string;
   value: string;
   selectedLabel: string;
@@ -575,7 +727,7 @@ function AutomationInlinePicker({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <WorkspaceHeaderStylePickerTrigger
-          icon={icon}
+          icon={selectedIcon ?? icon}
           aria-label={ariaLabel}
           className={cn("w-full", className)}
           data-testid={testId}
@@ -597,7 +749,7 @@ function AutomationInlinePicker({
                   key={option.value}
                   type="button"
                   className={cn(
-                    "flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-[11px] transition-colors",
+                    "flex w-full items-start justify-between rounded-md px-2 py-1.5 text-left text-[11px] transition-colors",
                     selected
                       ? "bg-secondary/70 text-foreground"
                       : "text-muted-foreground hover:bg-secondary/45 hover:text-foreground",
@@ -611,7 +763,18 @@ function AutomationInlinePicker({
                     setOpen(false);
                   }}
                 >
-                  <span className="truncate">{option.label}</span>
+                  <span className="min-w-0 flex items-start gap-2">
+                    {option.icon ? <option.icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                    <span className="min-w-0">
+                      <span className="block truncate text-foreground">{option.label}</span>
+                      {option.description ? (
+                        <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">
+                          {option.description}
+                        </span>
+                      ) : null}
+                    </span>
+                  </span>
+                  {selected ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-foreground" /> : null}
                 </button>
               );
             }) : (
@@ -634,219 +797,41 @@ function AutomationSessionPicker({
   opencodeModels,
   codexBuiltinModelOverride,
   onSelectionChange,
-  onPermissionModeChange,
   className,
+  popoverContainer,
   testId,
 }: {
-  value: Pick<AutomationFormState, "agent" | "model" | "modelProviderId" | "permissionMode">;
+  value: Pick<AutomationFormState, "agent" | "model" | "modelProviderId">;
   providers: ModelProvider[];
   codexModels: readonly CodexModelCatalogEntry[];
   cursorModels: readonly CursorModelCatalogEntry[];
   opencodeModels: readonly OpencodeModelCatalogEntry[];
   codexBuiltinModelOverride?: string | null;
   onSelectionChange: (selection: AgentModelSelection) => void;
-  onPermissionModeChange: (value: ChatThreadPermissionMode) => void;
   className?: string;
+  popoverContainer?: HTMLElement | null;
   testId?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const [previewAgent, setPreviewAgent] = useState<CliAgent>(value.agent);
-  const agentOptions = useMemo(() => buildAgentSelectionOptions({
-    providers,
-    codexModels,
-    cursorModels,
-    opencodeModels,
-    codexBuiltinModelOverride,
-  }), [codexBuiltinModelOverride, codexModels, cursorModels, opencodeModels, providers]);
-  const selection = useMemo<AgentModelSelection>(() => ({
-    agent: value.agent,
-    model: value.model,
-    modelProviderId: value.modelProviderId,
-  }), [value.agent, value.model, value.modelProviderId]);
-  const currentSelection = useMemo(
-    () => getCurrentAgentSelectionOption(agentOptions, selection),
-    [agentOptions, selection],
-  );
-  const modelOptions: AgentSelectionOption[] = agentOptions[previewAgent] ?? [];
-  const activePermissionOption = AUTOMATION_PERMISSION_OPTIONS.find((option) => option.value === value.permissionMode)
-    ?? AUTOMATION_PERMISSION_OPTIONS[0];
-  const sessionLabel = `${AGENT_LABELS[value.agent]} · ${currentSelection.label}`;
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    setPreviewAgent(value.agent);
-  }, [open, value.agent]);
-
   return (
-    <Popover
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (nextOpen) {
-          setPreviewAgent(value.agent);
-        }
-        setOpen(nextOpen);
+    <AgentModelSelector
+      selection={{
+        agent: value.agent,
+        model: value.model,
+        modelProviderId: value.modelProviderId,
       }}
-    >
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label="Select automation session"
-          title={`${sessionLabel} · ${activePermissionOption.label}`}
-          className={cn(
-            "flex h-9 min-w-0 w-full shrink-0 items-center justify-between gap-1 rounded-md px-2.5 text-[12px] font-medium text-foreground/80 transition-colors hover:bg-secondary/40 hover:text-foreground",
-            className,
-          )}
-          data-testid={testId}
-        >
-          <span className="min-w-0 flex items-center gap-1.5">
-            <AgentIcon agent={value.agent} aria-hidden="true" className="h-3.5 w-3.5" />
-            <span className="truncate">{sessionLabel}</span>
-          </span>
-          <span className="ml-2 flex shrink-0 items-center gap-1">
-            {value.permissionMode === "full_access" ? (
-              <ShieldCheck className="h-3.5 w-3.5 text-orange-500" />
-            ) : null}
-            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-          </span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        sideOffset={8}
-        className="w-[min(560px,calc(100vw-32px))] rounded-xl border-border/60 bg-popover p-0 shadow-[0_18px_48px_rgba(15,23,42,0.18)]"
-      >
-        <div className="grid gap-0 sm:grid-cols-[148px_minmax(0,1fr)] sm:items-start">
-          <div className="border-b border-border/50 p-1.5 sm:min-h-[240px] sm:border-b-0 sm:border-r sm:border-border/50">
-            <div className="space-y-0.5">
-              {CLI_AGENTS.map((entryAgent) => {
-                const selectedAgent = previewAgent === entryAgent;
-                const currentAgent = value.agent === entryAgent;
-
-                return (
-                  <button
-                    key={entryAgent}
-                    type="button"
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors",
-                      selectedAgent
-                        ? "bg-accent text-accent-foreground"
-                        : "text-foreground hover:bg-accent/50",
-                    )}
-                    aria-current={currentAgent ? "true" : undefined}
-                    onMouseEnter={() => {
-                      if (previewAgent !== entryAgent) {
-                        setPreviewAgent(entryAgent);
-                      }
-                    }}
-                    onFocus={() => {
-                      if (previewAgent !== entryAgent) {
-                        setPreviewAgent(entryAgent);
-                      }
-                    }}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      if (previewAgent !== entryAgent) {
-                        setPreviewAgent(entryAgent);
-                      }
-                    }}
-                  >
-                    <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
-                    <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
-                    {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="p-1.5">
-            <ScrollArea className="h-[240px]">
-              <div className="space-y-0.5 pr-0.5">
-                {modelOptions.length > 0 ? modelOptions.map((option, index) => {
-                  const selected = option.agent === value.agent
-                    && option.model === value.model
-                    && option.modelProviderId === value.modelProviderId;
-                  const showCustomSeparator = isFirstCustomModelOption(modelOptions, index);
-
-                  return (
-                    <div key={option.id}>
-                      {showCustomSeparator ? (
-                        <div className="mx-2.5 my-1 border-t border-border/60" />
-                      ) : null}
-                      <button
-                        type="button"
-                        title={option.model}
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
-                          selected
-                            ? "bg-accent text-accent-foreground"
-                            : "text-foreground hover:bg-accent/50",
-                        )}
-                        onClick={() => {
-                          onSelectionChange({
-                            agent: option.agent,
-                            model: option.model,
-                            modelProviderId: option.modelProviderId,
-                          });
-                        }}
-                      >
-                        <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
-                        <span className="max-w-[7rem] truncate text-[10px] text-muted-foreground">
-                          {option.detail}
-                        </span>
-                        {selected ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                      </button>
-                    </div>
-                  );
-                }) : (
-                  <div className="px-2 py-2 text-[11px] text-muted-foreground">
-                    No models available
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </div>
-        </div>
-
-        <div className="border-t border-border/50 px-3 py-3">
-          <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground/85">
-            Access
-          </div>
-          <div className="grid gap-1.5 sm:grid-cols-2">
-            {AUTOMATION_PERMISSION_OPTIONS.map((option) => {
-              const selected = option.value === value.permissionMode;
-
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={cn(
-                    "flex items-start gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
-                    selected
-                      ? "border-border/70 bg-secondary/70 text-foreground"
-                      : "border-transparent text-foreground hover:bg-secondary/45",
-                  )}
-                  aria-current={selected ? "true" : undefined}
-                  onClick={() => onPermissionModeChange(option.value)}
-                >
-                  <option.icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-xs font-medium text-foreground">{option.label}</span>
-                    <span className="block text-[10px] leading-relaxed text-muted-foreground">
-                      {option.description}
-                    </span>
-                  </span>
-                  {selected ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : null}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
+      providers={providers}
+      codexModels={codexModels}
+      cursorModels={cursorModels}
+      opencodeModels={opencodeModels}
+      codexBuiltinModelOverride={codexBuiltinModelOverride}
+      showAgentList
+      ariaLabel="Select automation session"
+      className={className}
+      popoverContainer={popoverContainer}
+      triggerVariant="picker"
+      triggerClassName="h-8 w-full px-2 hover:bg-secondary/35"
+      onSelectionChange={onSelectionChange}
+    />
   );
 }
 
@@ -885,12 +870,18 @@ function ComposerFooterField({
 function SidebarRow({
   label,
   children,
+  align = "start",
 }: {
   label: string;
   children: React.ReactNode;
+  align?: "start" | "center";
 }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-[100px_minmax(0,1fr)] sm:items-start">
+    <div className={cn(
+      "grid gap-2 sm:grid-cols-[100px_minmax(0,1fr)]",
+      align === "center" ? "sm:items-center" : "sm:items-start",
+    )}
+    >
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
       <div className="min-w-0 text-sm text-foreground">{children}</div>
     </div>
@@ -904,86 +895,86 @@ function AutomationScheduleEditor({
   form: AutomationFormState;
   onChange: (next: Partial<AutomationFormState>) => void;
 }) {
+  const preset = getAutomationSchedulePreset(form);
+  const normalizedDays = normalizeScheduleDays(form.daysOfWeek);
+
   return (
-    <div className="grid gap-4">
-      <FieldShell label="Frequency">
+    <div className="grid gap-3">
+      <FieldShell label="Pattern">
         <SelectField
-          value={form.frequency}
-          onChange={(event) => onChange({ frequency: event.target.value as AutomationScheduleDraft["frequency"] })}
-          className="shadow-none"
+          value={preset}
+          onChange={(event) => {
+            const nextPreset = event.target.value as AutomationSchedulePreset;
+            if (nextPreset === "hourly") {
+              onChange({ frequency: "hourly", daysOfWeek: [] });
+              return;
+            }
+            if (nextPreset === "daily") {
+              onChange({ frequency: "daily", daysOfWeek: [] });
+              return;
+            }
+            if (nextPreset === "weekdays") {
+              onChange({ frequency: "weekly", daysOfWeek: [...AUTOMATION_WORKWEEK_DAYS] });
+              return;
+            }
+            onChange({
+              frequency: "weekly",
+              daysOfWeek: normalizedDays.length > 0 && !isWeekdaysSchedule(normalizedDays) ? normalizedDays : ["MO"],
+            });
+          }}
+          className="h-10 rounded-xl px-4 text-sm shadow-none"
         >
-          <option value="daily">Daily</option>
-          <option value="weekly">Weekly</option>
-          <option value="hourly">Hourly</option>
+          {AUTOMATION_REPEAT_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
         </SelectField>
       </FieldShell>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FieldShell label={form.frequency === "hourly" ? "Minute" : "Hour"}>
-          <Input
-            type="number"
-            min={form.frequency === "hourly" ? 0 : 0}
-            max={form.frequency === "hourly" ? 59 : 23}
-            value={form.frequency === "hourly" ? form.minute : form.hour}
-            onChange={(event) => {
-              const nextValue = Number.parseInt(event.target.value, 10);
-              if (form.frequency === "hourly") {
-                onChange({ minute: Number.isNaN(nextValue) ? 0 : nextValue });
-                return;
-              }
-              onChange({ hour: Number.isNaN(nextValue) ? 0 : nextValue });
-            }}
-            className="shadow-none"
+      {preset === "hourly" ? (
+        <FieldShell label="Minute">
+          <ScheduleTimePicker
+            hour={form.hour}
+            minute={form.minute}
+            minuteOnly
+            onChange={(next) => onChange(next)}
           />
         </FieldShell>
+      ) : (
+        <div className="min-w-0">
+          <ScheduleTimePicker
+            hour={form.hour}
+            minute={form.minute}
+            onChange={(next) => onChange(next)}
+          />
+        </div>
+      )}
 
-        {form.frequency === "hourly" ? null : (
-          <FieldShell label="Minute">
-            <Input
-              type="number"
-              min={0}
-              max={59}
-              value={form.minute}
-              onChange={(event) => {
-                const nextValue = Number.parseInt(event.target.value, 10);
-                onChange({ minute: Number.isNaN(nextValue) ? 0 : nextValue });
-              }}
-              className="shadow-none"
-            />
-          </FieldShell>
-        )}
-      </div>
-
-      {form.frequency === "weekly" ? (
+      {preset === "weekly" ? (
         <FieldShell label="Days">
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             {AUTOMATION_WEEKDAYS.map((day) => {
-              const selected = form.daysOfWeek.includes(day);
+              const selected = normalizedDays.includes(day);
               return (
                 <button
                   key={day}
                   type="button"
                   className={cn(
-                    "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                    "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
                     selected
                       ? "border-primary/40 bg-primary/10 text-foreground"
                       : "border-border/60 bg-background text-muted-foreground hover:border-border hover:text-foreground",
                   )}
-                  onClick={() => onChange({ daysOfWeek: toggleScheduleDay(form.daysOfWeek, day) })}
+                  onClick={() => onChange({ daysOfWeek: toggleScheduleDay(normalizedDays, day) })}
                 >
-                  {day}
+                  {AUTOMATION_WEEKDAY_SHORT_LABELS[day]}
                 </button>
               );
             })}
           </div>
         </FieldShell>
-      ) : (
-        <FieldShell label="Summary">
-          <div className="rounded-lg border border-dashed border-border/60 bg-background/70 px-4 py-3 text-sm text-muted-foreground">
-            {summarizeScheduleDraft(form)}
-          </div>
-        </FieldShell>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -998,11 +989,11 @@ function AutomationRunList({
   return (
     <div className="space-y-3">
       {runs.length === 0 ? (
-        <div className="border-t border-dashed border-border/50 pt-4 text-sm text-muted-foreground">
+        <div className="pt-1 text-sm text-muted-foreground">
           No runs yet. Trigger a manual run to create the first thread.
         </div>
       ) : (
-        <div className="divide-y divide-border/40 border-t border-border/40">
+        <div className="divide-y divide-border/40">
           {runs.map((run) => (
             <div key={run.id} className="py-3">
             <div className="flex items-start justify-between gap-3">
@@ -1053,11 +1044,11 @@ function VersionHistoryList({
   return (
     <div className="space-y-3">
       {versions.length === 0 ? (
-        <div className="border-t border-dashed border-border/50 pt-4 text-sm text-muted-foreground">
+        <div className="pt-1 text-sm text-muted-foreground">
           Prompt versions will appear here after edits.
         </div>
       ) : (
-        <div className="divide-y divide-border/40 border-t border-border/40">
+        <div className="divide-y divide-border/40">
           {versions.map((version) => (
             <div key={version.id} className="py-3">
             <div className="flex items-start justify-between gap-3">
@@ -1131,6 +1122,8 @@ function AutomationListItem({
   const [moreOpen, setMoreOpen] = useState(false);
   const repository = findRepositoryById(repositories, automation.repositoryId);
   const scheduleSummary = summarizeScheduleCompact(automation);
+  const activeRun = isAutomationRunActive(automation.latestRun) ? automation.latestRun : null;
+  const runActionDisabled = runPending || activeRun !== null;
 
   const stopEvent = (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();
@@ -1164,12 +1157,23 @@ function AutomationListItem({
       <div className={cn("relative flex shrink-0 items-center justify-end", compactLayout ? "min-w-[130px]" : "min-w-[160px]")}>
         <span
           className={cn(
-            "whitespace-nowrap text-right text-sm text-muted-foreground transition-opacity",
+            "flex items-center justify-end gap-2 whitespace-nowrap text-right text-sm text-muted-foreground transition-opacity",
             moreOpen && "opacity-0",
             !moreOpen && "group-hover:opacity-0 group-focus-within:opacity-0",
           )}
         >
-          {scheduleSummary}
+          {activeRun ? (
+            <>
+              <Badge variant={getRunStatusVariant(activeRun.status)}>
+                {formatAutomationRunStatus(activeRun.status)}
+              </Badge>
+              <span className="text-xs text-muted-foreground">
+                {formatRelativeTime(activeRun.startedAt ?? activeRun.scheduledFor)}
+              </span>
+            </>
+          ) : (
+            scheduleSummary
+          )}
         </span>
 
         <div
@@ -1181,7 +1185,7 @@ function AutomationListItem({
         >
           <AutomationRowActionButton
             aria-label={`Run now ${automation.name}`}
-            disabled={runPending}
+            disabled={runActionDisabled}
             onClick={(event) => {
               stopEvent(event);
               setMoreOpen(false);
@@ -1276,11 +1280,18 @@ export function AutomationsListPage({
   const [enabledFilter, setEnabledFilter] = useState<"all" | "enabled" | "paused">(() => rememberedAutomationListState.enabledFilter);
   const [createDialogOpen, setCreateDialogOpen] = useState(prefills?.create ?? false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [createValidationErrors, setCreateValidationErrors] = useState<AutomationFormValidationErrors>({});
+  const [actionError, setActionError] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<AutomationFormState>(() => toFormState(repositories, providers, null, prefills));
+  const [createDialogPopoverHost, setCreateDialogPopoverHost] = useState<HTMLDivElement | null>(null);
   const compactLayout = layout === "panel";
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
     setCreateDialogOpen(open);
+    if (!open) {
+      setCreateError(null);
+      setCreateValidationErrors({});
+    }
     onCreateDialogOpenChange?.(open);
   }, [onCreateDialogOpenChange]);
 
@@ -1313,6 +1324,11 @@ export function AutomationsListPage({
     }),
     refetchInterval: 10_000,
   });
+  const automations = automationsQuery.data ?? [];
+  const automationById = useMemo(
+    () => new Map(automations.map((automation) => [automation.id, automation])),
+    [automations],
+  );
 
   const openAutomationDetail = useCallback((automationId: string) => {
     if (onOpenAutomation) {
@@ -1335,6 +1351,7 @@ export function AutomationsListPage({
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
       handleCreateDialogOpenChange(false);
       setCreateError(null);
+      setCreateValidationErrors({});
       setCreateForm(toFormState(repositories, providers, null, prefills));
       openAutomationDetail(automation.id);
     },
@@ -1345,10 +1362,39 @@ export function AutomationsListPage({
 
   const runMutation = useMutation({
     mutationFn: api.runAutomationNow,
+    onMutate: (automationId) => {
+      setActionError(null);
+      const automation = automationById.get(automationId);
+      if (!automation) {
+        return;
+      }
+
+      const now = new Date().toISOString();
+      applyAutomationLatestRunToCache(queryClient, automationId, {
+        id: `optimistic-${automationId}`,
+        automationId,
+        repositoryId: automation.repositoryId,
+        worktreeId: automation.targetWorktreeId,
+        threadId: automation.latestRun?.threadId ?? null,
+        status: "dispatching",
+        triggerKind: "manual",
+        scheduledFor: now,
+        startedAt: now,
+        finishedAt: null,
+        error: null,
+        summary: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    },
     onSuccess: (_run, automationId) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
+      applyAutomationLatestRunToCache(queryClient, automationId, _run);
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(automationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.runs(automationId) });
+    },
+    onError: (error, automationId) => {
+      setActionError(error instanceof Error ? error.message : "Unable to run automation");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(automationId) });
     },
   });
 
@@ -1356,6 +1402,7 @@ export function AutomationsListPage({
     mutationFn: ({ automationId, enabled }: { automationId: string; enabled: boolean }) =>
       api.updateAutomation(automationId, { enabled }),
     onSuccess: (_automation, variables) => {
+      setActionError(null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(variables.automationId) });
     },
@@ -1364,15 +1411,13 @@ export function AutomationsListPage({
   const deleteMutation = useMutation({
     mutationFn: api.deleteAutomation,
     onSuccess: (_result, automationId) => {
+      setActionError(null);
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
       void queryClient.removeQueries({ queryKey: queryKeys.automations.detail(automationId) });
       void queryClient.removeQueries({ queryKey: queryKeys.automations.runs(automationId) });
       void queryClient.removeQueries({ queryKey: queryKeys.automations.versions(automationId) });
     },
   });
-
-  const automations = automationsQuery.data ?? [];
-  const createWorktrees = getAvailableWorktrees(repositories, createForm.repositoryId);
   const createRepository = findRepositoryById(repositories, createForm.repositoryId);
   const codexModels = codexModelsQuery.data?.models ?? [];
   const cursorModels = cursorModelsQuery.data?.models ?? [];
@@ -1382,10 +1427,44 @@ export function AutomationsListPage({
     value: repository.id,
     label: repository.name,
   }));
-  const createTargetOptions = createWorktrees.map((worktree) => ({
-    value: worktree.id,
-    label: summarizeCreateTarget(createRepository, worktree.id),
+  const createTargetOptions = AUTOMATION_TARGET_OPTIONS.map((option) => ({
+    value: option.value,
+    label: option.label,
+    description: describeAutomationTarget(createRepository, option.value),
+    icon: getAutomationTargetIcon(option.value),
   }));
+  const updateCreateForm = useCallback((
+    next: Partial<AutomationFormState>,
+    clearedErrors: AutomationFormFieldError[] = [],
+  ) => {
+    setCreateForm((current) => ({ ...current, ...next }));
+    if (createError) {
+      setCreateError(null);
+    }
+    if (clearedErrors.length > 0) {
+      setCreateValidationErrors((current) => {
+        if (Object.keys(current).length === 0) {
+          return current;
+        }
+
+        const nextErrors = { ...current };
+        for (const key of clearedErrors) {
+          delete nextErrors[key];
+        }
+        return nextErrors;
+      });
+    }
+  }, [createError]);
+  const handleCreateSubmit = useCallback(() => {
+    const validationErrors = getAutomationFormValidationErrors(createForm, repositories);
+    if (Object.keys(validationErrors).length > 0) {
+      setCreateValidationErrors(validationErrors);
+      setCreateError(null);
+      return;
+    }
+
+    createMutation.mutate(formToPayload(createForm));
+  }, [createForm, createMutation, repositories]);
 
   return (
     <AutomationPageShell layout={layout}>
@@ -1442,6 +1521,11 @@ export function AutomationsListPage({
         </div>
 
         <section>
+          {actionError ? (
+            <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground">
+              {actionError}
+            </div>
+          ) : null}
           {automationsQuery.isLoading ? (
             <div className="border-b border-border/40 py-8 text-sm text-muted-foreground">
               Loading automations...
@@ -1467,155 +1551,186 @@ export function AutomationsListPage({
                   onRun={(automationId) => runMutation.mutate(automationId)}
                   onToggle={(automationId, enabled) => toggleMutation.mutate({ automationId, enabled })}
                   onDelete={(automationId) => deleteMutation.mutate(automationId)}
-                  runPending={runMutation.isPending}
-                  togglePending={toggleMutation.isPending}
-                  deletePending={deleteMutation.isPending}
+                  runPending={runMutation.isPending && runMutation.variables === automation.id}
+                  togglePending={toggleMutation.isPending && toggleMutation.variables?.automationId === automation.id}
+                  deletePending={deleteMutation.isPending && deleteMutation.variables === automation.id}
                 />
               ))}
             </div>
           )}
         </section>
 
-      <Dialog open={createDialogOpen} onOpenChange={handleCreateDialogOpenChange}>
-        <DialogContent className={cn(
-          "max-h-[92vh] gap-0 overflow-y-auto rounded-2xl border-border/60 bg-background p-0 text-foreground shadow-2xl",
-          compactLayout
-            ? "max-w-[min(920px,calc(100vw-32px))]"
-            : "max-w-[min(1100px,calc(100vw-32px))]",
-        )}
+      {createDialogOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Create automation"
+          className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/60 px-4 py-4 backdrop-blur-sm"
         >
-          <DialogHeader className="border-b border-border/50 px-6 py-5 sm:px-8">
-            <DialogTitle>Create automation</DialogTitle>
-            <DialogDescription className="sr-only">
-              Create a scheduled automation with a target, model, and prompt.
-            </DialogDescription>
-          </DialogHeader>
+          <div
+            className={cn(
+              "relative my-auto w-full overflow-visible rounded-xl border border-border/50 bg-background p-0 text-foreground shadow-xl",
+              compactLayout
+                ? "max-w-[min(920px,calc(100vw-32px))]"
+                : "max-w-[min(1100px,calc(100vw-32px))]",
+            )}
+          >
+            <div
+              ref={setCreateDialogPopoverHost}
+              className="pointer-events-none absolute inset-0 z-[60] overflow-visible"
+            />
+            <button
+              type="button"
+              className="absolute right-4 top-4 z-10 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+              onClick={() => handleCreateDialogOpenChange(false)}
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
 
-          <div className="flex flex-col gap-4 px-6 py-5 sm:px-8 sm:py-6">
-            <div className="flex flex-col gap-3 border-b border-border/40 pb-4">
-              <BareInputField
-                value={createForm.name}
-                onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))}
-                placeholder="Automation title"
-              />
-            </div>
+            <div className="max-h-[92vh] overflow-y-auto">
+              <div className="px-6 pb-0 pt-5 sm:px-8 sm:pt-5">
+                <h2 className="sr-only">Create automation</h2>
+                <p className="sr-only">Create a scheduled automation with a target, model, and prompt.</p>
+                <BareInputField
+                  value={createForm.name}
+                  onChange={(event) => updateCreateForm({ name: event.target.value }, ["name"])}
+                  placeholder="Automation title"
+                />
+                {createValidationErrors.name ? (
+                  <div className="mt-2 text-sm text-destructive">
+                    {createValidationErrors.name}
+                  </div>
+                ) : null}
+              </div>
 
-            <div className="space-y-4">
-              <AutomationPromptEditor
-                value={createForm.prompt}
-                onChange={(prompt) => setCreateForm((current) => ({ ...current, prompt }))}
-                worktreeId={createForm.targetWorktreeId || null}
-                agent={createForm.agent}
-                placeholder="Add prompt e.g. look for crashes in $sentry. Type / or $ for skills and @ to mention files."
-                className={cn(
-                  "rounded-xl border-border/50 bg-secondary/[0.03] shadow-none",
-                  compactLayout ? "min-h-[200px]" : "min-h-[240px]",
-                )}
-                testId="automation-create-prompt-editor"
-              />
-              {createError ? (
-                <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive-foreground">
-                  {createError}
+              <div className="flex flex-col gap-3 px-6 pb-5 pt-2 sm:px-8 sm:pb-6 sm:pt-2.5">
+                <div className="border-b border-border/35 pb-3">
+                  <AutomationPromptEditor
+                    value={createForm.prompt}
+                    onChange={(prompt) => updateCreateForm({ prompt }, ["prompt"])}
+                    worktreeId={createForm.targetWorktreeId || null}
+                    agent={createForm.agent}
+                    placeholder="Add prompt e.g. look for crashes in $sentry. Type / or $ for skills and @ to mention files."
+                    className={cn(
+                      "rounded-none border-0 bg-transparent px-0 py-1 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0",
+                      compactLayout ? "min-h-[220px]" : "min-h-[260px]",
+                    )}
+                    testId="automation-create-prompt-editor"
+                  />
+                  {createValidationErrors.prompt ? (
+                    <div className="mt-3 text-sm text-destructive">
+                      {createValidationErrors.prompt}
+                    </div>
+                  ) : null}
+                  {createError ? (
+                    <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground">
+                      {createError}
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
 
-            <div className="border-t border-border/40 pt-4">
-              <div
-                className="grid gap-2 md:grid-cols-[minmax(0,1.05fr)_minmax(0,0.9fr)_minmax(0,1.15fr)_minmax(0,0.95fr)_auto] md:items-center"
-                data-testid="automation-create-target-row"
-              >
-                <AutomationInlinePicker
-                  icon={FolderOpen}
-                  ariaLabel="Select project"
-                  value={createForm.repositoryId}
-                  selectedLabel={createRepository?.name ?? "Select project"}
-                  options={createProjectOptions}
-                  className="min-w-0 justify-between"
-                  onSelect={(nextRepositoryId) => {
-                    const nextWorktrees = getAvailableWorktrees(repositories, nextRepositoryId);
-                    setCreateForm((current) => ({
-                      ...current,
-                      repositoryId: nextRepositoryId,
-                      targetWorktreeId: nextWorktrees[0]?.id ?? "",
-                    }));
-                  }}
-                  testId="automation-create-project-trigger"
-                />
-
-                <AutomationInlinePicker
-                  icon={GitBranch}
-                  ariaLabel="Select local or worktree"
-                  value={createForm.targetWorktreeId}
-                  selectedLabel={summarizeCreateTarget(createRepository, createForm.targetWorktreeId)}
-                  options={createTargetOptions}
-                  className="min-w-0 justify-between"
-                  onSelect={(nextWorktreeId) => {
-                    setCreateForm((current) => ({ ...current, targetWorktreeId: nextWorktreeId }));
-                  }}
-                  testId="automation-create-target-trigger"
-                />
-
-                <AutomationSessionPicker
-                  value={{
-                    agent: createForm.agent,
-                    model: createForm.model,
-                    modelProviderId: createForm.modelProviderId,
-                    permissionMode: createForm.permissionMode,
-                  }}
-                  providers={providers}
-                  codexModels={codexModels}
-                  cursorModels={cursorModels}
-                  opencodeModels={opencodeModels}
-                  codexBuiltinModelOverride={codexBuiltinModelOverride}
-                  className="min-w-0"
-                  onSelectionChange={(selection) => {
-                    setCreateForm((current) => ({
-                      ...current,
-                      agent: selection.agent,
-                      model: selection.model,
-                      modelProviderId: selection.modelProviderId,
-                      chatMode: "default",
-                    }));
-                  }}
-                  onPermissionModeChange={(permissionMode) => {
-                    setCreateForm((current) => ({ ...current, permissionMode }));
-                  }}
-                  testId="automation-create-session-trigger"
-                />
-
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <WorkspaceHeaderStylePickerTrigger
-                      icon={CalendarClock}
-                      aria-label="Select schedule"
-                      className="min-w-0 w-full justify-between"
-                      data-testid="automation-create-schedule-trigger"
-                    >
-                      {summarizeScheduleDraft(createForm)}
-                    </WorkspaceHeaderStylePickerTrigger>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[360px] rounded-xl border-border/60 bg-popover p-4">
-                    <AutomationScheduleEditor
-                      form={createForm}
-                      onChange={(next) => setCreateForm((current) => ({ ...current, ...next }))}
+                <div className="pt-1">
+                  <div
+                    className="grid gap-1.5 md:grid-cols-[minmax(0,1.05fr)_minmax(0,0.9fr)_minmax(0,1.15fr)_minmax(0,0.95fr)_auto] md:items-center"
+                    data-testid="automation-create-target-row"
+                  >
+                    <AutomationInlinePicker
+                      icon={FolderOpen}
+                      ariaLabel="Select project"
+                      value={createForm.repositoryId}
+                      selectedLabel={createRepository?.name ?? "Select project"}
+                      options={createProjectOptions}
+                      className="min-w-0 justify-between"
+                      onSelect={(nextRepositoryId) => {
+                        const nextRepository = findRepositoryById(repositories, nextRepositoryId);
+                        updateCreateForm({
+                          repositoryId: nextRepositoryId,
+                          targetWorktreeId: getAutomationContextWorktreeId(nextRepository),
+                        }, ["repositoryId", "targetWorktreeId"]);
+                      }}
+                      testId="automation-create-project-trigger"
                     />
-                  </PopoverContent>
-                </Popover>
 
-                <Button
-                  type="button"
-                  className="px-6 md:min-w-[108px]"
-                  disabled={createMutation.isPending || repositories.length === 0}
-                  onClick={() => createMutation.mutate(formToPayload(createForm))}
-                >
-                  {createMutation.isPending ? "Creating..." : "Create"}
-                </Button>
+                    <AutomationInlinePicker
+                      icon={getAutomationTargetIcon(createForm.targetMode)}
+                      selectedIcon={getAutomationTargetIcon(createForm.targetMode)}
+                      ariaLabel="Select root or worktree"
+                      value={createForm.targetMode}
+                      selectedLabel={summarizeCreateTarget(createForm.targetMode)}
+                      options={createTargetOptions}
+                      className="min-w-0 justify-between"
+                      onSelect={(nextTargetMode) => {
+                        updateCreateForm({
+                          targetMode: nextTargetMode as AutomationTargetMode,
+                        }, ["targetWorktreeId"]);
+                      }}
+                      testId="automation-create-target-trigger"
+                    />
+
+                    <AutomationSessionPicker
+                      value={{
+                        agent: createForm.agent,
+                        model: createForm.model,
+                        modelProviderId: createForm.modelProviderId,
+                      }}
+                      providers={providers}
+                      codexModels={codexModels}
+                      cursorModels={cursorModels}
+                      opencodeModels={opencodeModels}
+                      codexBuiltinModelOverride={codexBuiltinModelOverride}
+                      className="min-w-0"
+                      popoverContainer={createDialogPopoverHost}
+                      onSelectionChange={(selection) => {
+                        updateCreateForm({
+                          agent: selection.agent,
+                          model: selection.model,
+                          modelProviderId: selection.modelProviderId,
+                          chatMode: "default",
+                        }, ["session"]);
+                      }}
+                      testId="automation-create-session-trigger"
+                    />
+
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <WorkspaceHeaderStylePickerTrigger
+                          icon={CalendarClock}
+                          aria-label="Select schedule"
+                          className="min-w-0 w-full justify-between"
+                          data-testid="automation-create-schedule-trigger"
+                        >
+                          {summarizeScheduleDraft(createForm)}
+                        </WorkspaceHeaderStylePickerTrigger>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-[min(256px,calc(100vw-32px))] rounded-xl border-border/60 bg-popover p-3.5">
+                        <AutomationScheduleEditor
+                          form={createForm}
+                          onChange={(next) => updateCreateForm(next)}
+                        />
+                      </PopoverContent>
+                    </Popover>
+
+                    <Button
+                      type="button"
+                      className="h-8 px-5 md:min-w-[104px]"
+                      disabled={createMutation.isPending || repositories.length === 0}
+                      onClick={handleCreateSubmit}
+                    >
+                      {createMutation.isPending ? "Creating..." : "Create"}
+                    </Button>
+                  </div>
+                  {createValidationErrors.repositoryId || createValidationErrors.targetWorktreeId || createValidationErrors.session ? (
+                    <div className="pt-2 text-sm text-destructive">
+                      {createValidationErrors.repositoryId ?? createValidationErrors.targetWorktreeId ?? createValidationErrors.session}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      ) : null}
       </div>
     </AutomationPageShell>
   );
@@ -1632,6 +1747,10 @@ export function AutomationDetailPage({
   const queryClient = useQueryClient();
   const repositoriesQuery = useRepositories();
   const { providers } = useModelProviders();
+  const runtimeInfo = useRuntimeInfo();
+  const codexModelsQuery = useCodexModels();
+  const cursorModelsQuery = useCursorModels();
+  const opencodeModelsQuery = useOpencodeModels();
   const repositories = repositoriesQuery.data;
   const detailQueryKey = queryKeys.automations.detail(automationId);
   const compactLayout = layout === "panel";
@@ -1663,6 +1782,7 @@ export function AutomationDetailPage({
   });
 
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [form, setForm] = useState<AutomationFormState | null>(null);
 
   useEffect(() => {
@@ -1696,10 +1816,38 @@ export function AutomationDetailPage({
 
   const runMutation = useMutation({
     mutationFn: () => api.runAutomationNow(automationId),
-    onSuccess: () => {
+    onMutate: () => {
+      setActionError(null);
+      if (!automationQuery.data) {
+        return;
+      }
+
+      const now = new Date().toISOString();
+      applyAutomationLatestRunToCache(queryClient, automationId, {
+        id: `optimistic-${automationId}`,
+        automationId,
+        repositoryId: automationQuery.data.repositoryId,
+        worktreeId: automationQuery.data.targetWorktreeId,
+        threadId: automationQuery.data.latestRun?.threadId ?? null,
+        status: "dispatching",
+        triggerKind: "manual",
+        scheduledFor: now,
+        startedAt: now,
+        finishedAt: null,
+        error: null,
+        summary: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    },
+    onSuccess: (run) => {
+      applyAutomationLatestRunToCache(queryClient, automationId, run);
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(automationId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
       void queryClient.invalidateQueries({ queryKey: queryKeys.automations.runs(automationId) });
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Unable to run automation");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(automationId) });
     },
   });
 
@@ -1746,14 +1894,22 @@ export function AutomationDetailPage({
   }
 
   const repository = findRepositoryById(repositories, automation.repositoryId);
-  const worktree = repository?.worktrees.find((entry) => entry.id === automation.targetWorktreeId) ?? null;
-  const availableWorktrees = getAvailableWorktrees(repositories, automation.repositoryId);
-  const providerOptions = getProvidersForAgent(providers, form.agent);
-  const builtinModels = BUILTIN_CHAT_MODELS_BY_AGENT[form.agent];
+  const detailTargetOptions = AUTOMATION_TARGET_OPTIONS.map((option) => ({
+    value: option.value,
+    label: option.label,
+    description: describeAutomationTarget(repository, option.value),
+    icon: getAutomationTargetIcon(option.value),
+  }));
+  const codexModels = codexModelsQuery.data?.models ?? [];
+  const cursorModels = cursorModelsQuery.data?.models ?? [];
+  const opencodeModels = opencodeModelsQuery.data?.models ?? [];
+  const codexBuiltinModelOverride = runtimeInfo.data?.codexCliProviderOverride?.model ?? null;
+  const activeRun = (runsQuery.data ?? []).find((run) => isAutomationRunActive(run))
+    ?? (isAutomationRunActive(automation.latestRun) ? automation.latestRun : null);
 
   return (
     <AutomationPageShell layout={layout}>
-      <div className={cn("flex flex-col gap-4", !compactLayout && "gap-6")}>
+      <div className={cn("flex flex-col gap-4", compactLayout && "h-full min-h-full flex-1", !compactLayout && "gap-6")}>
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           {onBack ? (
             <button
@@ -1801,61 +1957,65 @@ export function AutomationDetailPage({
             <Button
               type="button"
               className="px-5"
-              disabled={runMutation.isPending}
+              disabled={runMutation.isPending || activeRun !== null}
               onClick={() => runMutation.mutate()}
             >
               <Play className="mr-2 h-4 w-4" />
-              Run now
+              {activeRun ? `${formatAutomationRunStatus(activeRun.status)}...` : "Run now"}
             </Button>
           </div>
         </div>
 
+        {actionError ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground">
+            {actionError}
+          </div>
+        ) : null}
+
         <div className={cn(
-          "grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]",
+          "grid min-h-0 flex-1 items-stretch gap-4 xl:grid-cols-[minmax(0,1fr)_320px]",
           !compactLayout && "gap-6 xl:grid-cols-[minmax(0,1fr)_360px]",
         )}
         >
-          <section className="rounded-lg border border-border/40 bg-background/20 px-6 py-6 sm:px-8">
-            <div className="mb-6 space-y-1">
-              <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">Prompt</p>
-              <p className="text-sm text-muted-foreground">Keep the instruction focused. Future runs reuse this draft until you save another change.</p>
-            </div>
-
+          <section className="min-w-0 px-1 py-1 sm:px-2">
             <BareInputField
               value={form.name}
               onChange={(event) => setForm((current) => current ? { ...current, name: event.target.value } : current)}
               placeholder="Automation title"
             />
 
-            <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+            <div className="mt-2 flex flex-wrap items-center gap-2.5 text-sm text-muted-foreground">
               <span>{repository?.name ?? automation.repositoryId}</span>
               <span>•</span>
-              <span>{worktree?.branch ?? automation.targetWorktreeId}</span>
+              <span>{summarizeCreateTarget(automation.targetMode)}</span>
             </div>
 
-            <div className="mt-8">
+            <div className="mt-5 border-b border-border/35 pb-3">
               <AutomationPromptEditor
                 value={form.prompt}
                 onChange={(prompt) => setForm((current) => current ? { ...current, prompt } : current)}
                 worktreeId={form.targetWorktreeId || null}
                 agent={form.agent}
                 placeholder="Add prompt. Type / or $ for skills and @ to mention files."
-                className={cn(compactLayout ? "min-h-[320px]" : "min-h-[420px]")}
+                className={cn(
+                  "rounded-none border-0 bg-transparent px-0 py-1 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0",
+                  compactLayout ? "min-h-[320px]" : "min-h-[420px]",
+                )}
                 testId="automation-detail-prompt-editor"
               />
             </div>
 
             {saveError ? (
-              <div className="mt-6 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive-foreground">
+              <div className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-foreground">
                 {saveError}
               </div>
             ) : null}
 
-            <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
               <div className="text-sm text-muted-foreground">Edits apply to future runs.</div>
               <Button
                 type="button"
-                className="px-5"
+                className="h-8 px-5"
                 disabled={saveMutation.isPending}
                 onClick={() => saveMutation.mutate(formToUpdatePayload(form))}
               >
@@ -1865,8 +2025,9 @@ export function AutomationDetailPage({
             </div>
           </section>
 
-          <aside className="space-y-6 xl:border-l xl:border-border/40 xl:pl-6">
-            <section className="space-y-4">
+          <aside className="relative xl:self-stretch">
+            <div className="absolute inset-y-0 left-0 hidden border-l border-border/35 xl:block" aria-hidden="true" />
+            <section className="space-y-4 pb-5 xl:px-5">
               <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-foreground">Configuration</h2>
               <div className="space-y-4">
                 <SidebarRow label="Status">
@@ -1887,29 +2048,41 @@ export function AutomationDetailPage({
                     <div className="text-xs text-muted-foreground">{formatDateTime(automation.lastRunAt)}</div>
                   </div>
                 </SidebarRow>
-                <SidebarRow label="Project">
+                <SidebarRow label="Project" align="center">
                   <span>{repository?.name ?? automation.repositoryId}</span>
                 </SidebarRow>
-                <SidebarRow label="Worktree">
-                  <CompactSelectControl
-                    value={form.targetWorktreeId}
-                    onChange={(event) => setForm((current) => current ? { ...current, targetWorktreeId: event.target.value } : current)}
-                  >
-                    {availableWorktrees.map((entry) => (
-                      <option key={entry.id} value={entry.id}>
-                        {entry.branch}
-                      </option>
-                    ))}
-                  </CompactSelectControl>
+                <SidebarRow label="Target" align="center">
+                  <AutomationInlinePicker
+                    icon={getAutomationTargetIcon(form.targetMode)}
+                    selectedIcon={getAutomationTargetIcon(form.targetMode)}
+                    ariaLabel="Select root or worktree"
+                    value={form.targetMode}
+                    selectedLabel={summarizeCreateTarget(form.targetMode)}
+                    options={detailTargetOptions}
+                    className="justify-between"
+                    onSelect={(nextTargetMode) => {
+                      setForm((current) => current ? {
+                        ...current,
+                        targetMode: nextTargetMode as AutomationTargetMode,
+                        targetWorktreeId: getAutomationContextWorktreeId(repository),
+                      } : current);
+                    }}
+                    testId="automation-detail-target-trigger"
+                  />
                 </SidebarRow>
-                <SidebarRow label="Repeats">
+                <SidebarRow label="Repeats" align="center">
                   <Popover>
                     <PopoverTrigger asChild>
-                      <CompactPopoverButton>
-                        <CompactPopoverLabel>{summarizeScheduleDraft(form)}</CompactPopoverLabel>
-                      </CompactPopoverButton>
+                      <WorkspaceHeaderStylePickerTrigger
+                        icon={CalendarClock}
+                        aria-label="Select schedule"
+                        className="w-full justify-between"
+                        data-testid="automation-detail-schedule-trigger"
+                      >
+                        {summarizeScheduleDraft(form)}
+                      </WorkspaceHeaderStylePickerTrigger>
                     </PopoverTrigger>
-                    <PopoverContent className="w-[360px] rounded-xl border-border/60 bg-popover p-4">
+                    <PopoverContent className="w-[min(256px,calc(100vw-32px))] rounded-xl border-border/60 bg-popover p-3.5">
                       <AutomationScheduleEditor
                         form={form}
                         onChange={(next) => setForm((current) => current ? { ...current, ...next } : current)}
@@ -1917,104 +2090,42 @@ export function AutomationDetailPage({
                     </PopoverContent>
                   </Popover>
                 </SidebarRow>
-                <SidebarRow label="Agent">
-                  <CompactSelectControl
-                    value={form.agent}
-                    onChange={(event) => {
-                      const nextAgent = event.target.value as CliAgent;
+                <SidebarRow label="Session" align="center">
+                  <AutomationSessionPicker
+                    value={{
+                      agent: form.agent,
+                      model: form.model,
+                      modelProviderId: form.modelProviderId,
+                    }}
+                    providers={providers}
+                    codexModels={codexModels}
+                    cursorModels={cursorModels}
+                    opencodeModels={opencodeModels}
+                    codexBuiltinModelOverride={codexBuiltinModelOverride}
+                    className="min-w-0"
+                    onSelectionChange={(selection) => {
                       setForm((current) => current
                         ? {
                             ...current,
-                            agent: nextAgent,
-                            modelProviderId: null,
-                            model: defaultModelForAgent(nextAgent),
+                            agent: selection.agent,
+                            model: selection.model,
+                            modelProviderId: selection.modelProviderId,
+                            chatMode: "default",
                           }
                         : current);
                     }}
-                  >
-                    <option value="claude">Claude</option>
-                    <option value="codex">Codex</option>
-                    <option value="cursor">Cursor</option>
-                    <option value="opencode">Opencode</option>
-                  </CompactSelectControl>
-                </SidebarRow>
-                <SidebarRow label="Provider">
-                  <CompactSelectControl
-                    value={form.modelProviderId ?? "__builtin__"}
-                    onChange={(event) => {
-                      const nextValue = event.target.value;
-                      if (nextValue === "__builtin__") {
-                        setForm((current) => current
-                          ? { ...current, modelProviderId: null, model: defaultModelForAgent(current.agent) }
-                          : current);
-                        return;
-                      }
-
-                      const selectedProvider = providerOptions.find((provider) => provider.id === nextValue);
-                      if (!selectedProvider) {
-                        return;
-                      }
-
-                      setForm((current) => current
-                        ? {
-                            ...current,
-                            modelProviderId: selectedProvider.id,
-                            model: selectedProvider.modelId,
-                          }
-                        : current);
-                    }}
-                  >
-                    <option value="__builtin__">Built-in model</option>
-                    {providerOptions.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.name}
-                      </option>
-                    ))}
-                  </CompactSelectControl>
-                </SidebarRow>
-                <SidebarRow label="Model">
-                  <div className="border-b border-border/40 pb-1">
-                    <CompactInputField
-                      list="automation-detail-models"
-                      value={form.model}
-                      disabled={form.modelProviderId !== null}
-                      onChange={(event) => setForm((current) => current ? { ...current, model: event.target.value } : current)}
-                      className="w-full"
-                    />
-                    <datalist id="automation-detail-models">
-                      {builtinModels.map((modelId) => (
-                        <option key={modelId} value={modelId} />
-                      ))}
-                    </datalist>
-                  </div>
-                </SidebarRow>
-                <SidebarRow label="Access">
-                  <CompactSelectControl
-                    value={form.permissionMode}
-                    onChange={(event) => setForm((current) => current ? { ...current, permissionMode: event.target.value as ChatThreadPermissionMode } : current)}
-                  >
-                    <option value="default">Default approvals</option>
-                    <option value="full_access">Full access</option>
-                  </CompactSelectControl>
-                </SidebarRow>
-                <SidebarRow label="Mode">
-                  <CompactSelectControl
-                    value={form.chatMode}
-                    onChange={(event) => setForm((current) => current ? { ...current, chatMode: event.target.value as ChatMode } : current)}
-                  >
-                    <option value="default">Execute</option>
-                    <option value="plan">Plan</option>
-                  </CompactSelectControl>
+                    testId="automation-detail-session-trigger"
+                  />
                 </SidebarRow>
               </div>
             </section>
 
-            <section className="space-y-4 border-t border-border/40 pt-5">
+            <section className="space-y-4 border-t border-border/40 py-5 xl:px-5">
               <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-foreground">Runs</h2>
               <AutomationRunList automation={automation} runs={runsQuery.data ?? []} />
             </section>
 
-            <section className="space-y-4 border-t border-border/40 pt-5">
+            <section className="space-y-4 pt-5 xl:px-5">
               <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-foreground">Versions</h2>
               <VersionHistoryList
                 versions={versionsQuery.data ?? []}
