@@ -76,10 +76,19 @@ async function createRepositoryFixture() {
 function createAutomationHarness() {
   const eventHub = createEventHub(prisma);
   const workspaceEventHub = createWorkspaceEventHub();
+  const worktreeService = {
+    create: async () => {
+      throw new Error("worktreeService.create not mocked");
+    },
+    waitUntilReady: async () => {
+      throw new Error("worktreeService.waitUntilReady not mocked");
+    },
+  };
   const automationService = createAutomationService({
     prisma,
     eventHub,
     workspaceEventHub,
+    worktreeService: worktreeService as never,
     chatService: {
       async createThread(targetWorktreeId, input) {
         const thread = await prisma.chatThread.create({
@@ -142,7 +151,7 @@ function createAutomationHarness() {
     },
   });
 
-  return { eventHub, workspaceEventHub, automationService };
+  return { eventHub, workspaceEventHub, automationService, worktreeService };
 }
 
 describe("automationService", () => {
@@ -193,6 +202,121 @@ describe("automationService", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.threadId).toBe(dispatched.threadId);
     expect(runs[0]?.triggerKind).toBe("manual");
+  });
+
+  it("runs a worktree automation now by creating a fresh worktree from the repository default branch", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService, worktreeService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const freshWorktree = await prisma.worktree.create({
+      data: {
+        repositoryId: repository.id,
+        branch: "jakarta",
+        path: `/tmp/${repository.id}-jakarta`,
+        baseBranch: repository.defaultBranch,
+        status: "active",
+      },
+    });
+
+    worktreeService.create = async (repositoryId, input) => {
+      expect(repositoryId).toBe(repository.id);
+      expect(input).toEqual({});
+      return {
+        worktree: freshWorktree,
+        pending: true,
+      };
+    };
+    worktreeService.waitUntilReady = async (worktreeId) => {
+      expect(worktreeId).toBe(freshWorktree.id);
+      return freshWorktree;
+    };
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      targetMode: "worktree",
+      name: "Daily audit",
+      prompt: "Check the repo and summarize issues.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    const dispatched = await automationService.runAutomationNow(created.id);
+    const thread = await prisma.chatThread.findUnique({
+      where: { id: dispatched.threadId },
+    });
+    const runs = await automationService.listRuns(created.id);
+
+    expect(thread).toBeTruthy();
+    expect(thread?.worktreeId).toBe(freshWorktree.id);
+    expect(runs[0]?.worktreeId).toBe(freshWorktree.id);
+    expect(runs[0]?.triggerKind).toBe("manual");
+  });
+
+  it("rejects duplicate manual runs while an automation already has an active run", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      name: "Daily audit",
+      prompt: "Check the repo and summarize issues.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    const firstRun = await automationService.runAutomationNow(created.id);
+
+    await expect(automationService.runAutomationNow(created.id)).rejects.toThrow("Automation already has an active run");
+
+    const runs = await automationService.listRuns(created.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(firstRun.id);
+  });
+
+  it("forces full access for stored and dispatched automations", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      name: "Daily audit",
+      prompt: "Check the repo and summarize issues.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    const storedAutomation = await prisma.automation.findUnique({
+      where: { id: created.id },
+    });
+    const dispatched = await automationService.runAutomationNow(created.id);
+    const thread = await prisma.chatThread.findUnique({
+      where: { id: dispatched.threadId },
+    });
+
+    expect(created.permissionMode).toBe("full_access");
+    expect(storedAutomation?.permissionMode).toBe("full_access");
+    expect(thread?.permissionMode).toBe("full_access");
   });
 
   it("updates the prompt and keeps a version history", async () => {

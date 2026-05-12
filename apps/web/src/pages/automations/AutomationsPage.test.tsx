@@ -10,6 +10,8 @@ const apiMocks = vi.hoisted(() => ({
   listAutomations: vi.fn(),
   createAutomation: vi.fn(),
   getAutomation: vi.fn(),
+  getFileIndex: vi.fn(),
+  getSlashCommands: vi.fn(),
   listAutomationRuns: vi.fn(),
   listAutomationPromptVersions: vi.fn(),
   restoreAutomationPromptVersion: vi.fn(),
@@ -40,6 +42,8 @@ vi.mock("../../lib/api", () => ({
     listAutomations: apiMocks.listAutomations,
     createAutomation: apiMocks.createAutomation,
     getAutomation: apiMocks.getAutomation,
+    getFileIndex: apiMocks.getFileIndex,
+    getSlashCommands: apiMocks.getSlashCommands,
     listAutomationRuns: apiMocks.listAutomationRuns,
     listAutomationPromptVersions: apiMocks.listAutomationPromptVersions,
     restoreAutomationPromptVersion: apiMocks.restoreAutomationPromptVersion,
@@ -143,13 +147,14 @@ function makeAutomation(overrides: Partial<Automation> = {}): Automation {
     id: "automation-1",
     repositoryId: "repo-1",
     targetWorktreeId: "wt-1",
+    targetMode: "repo_root",
     name: "Nightly audit",
     prompt: "Audit the repository and summarize the next actions.",
     enabled: true,
     agent: "codex",
     model: "gpt-5.4",
     modelProviderId: null,
-    permissionMode: "default",
+    permissionMode: "full_access",
     chatMode: "default",
     rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
     timezone: "Asia/Jakarta",
@@ -221,6 +226,22 @@ async function setInputValue(input: HTMLInputElement | HTMLTextAreaElement, valu
   });
 }
 
+function getEditorText(editor: HTMLElement): string {
+  return editor instanceof HTMLTextAreaElement ? editor.value : (editor.textContent ?? "");
+}
+
+async function setEditorValue(editor: HTMLElement, value: string) {
+  if (editor instanceof HTMLTextAreaElement) {
+    await setInputValue(editor, value);
+    return;
+  }
+
+  await act(async () => {
+    editor.textContent = value;
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 function findButton(label: string): HTMLButtonElement {
   const button = Array.from(document.body.querySelectorAll("button")).find(
     (entry) => entry.textContent?.trim() === label,
@@ -253,6 +274,11 @@ beforeEach(() => {
   apiMocks.listAutomations.mockResolvedValue([]);
   apiMocks.createAutomation.mockResolvedValue(makeAutomation());
   apiMocks.getAutomation.mockResolvedValue(makeAutomation({ latestRun: makeRun() }));
+  apiMocks.getFileIndex.mockResolvedValue([]);
+  apiMocks.getSlashCommands.mockResolvedValue({
+    commands: [],
+    updatedAt: "2026-05-10T10:00:00.000Z",
+  });
   apiMocks.listAutomationRuns.mockResolvedValue([makeRun()]);
   apiMocks.listAutomationPromptVersions.mockResolvedValue([makeVersion()]);
   apiMocks.restoreAutomationPromptVersion.mockResolvedValue(makeAutomation());
@@ -409,13 +435,12 @@ describe("AutomationsListPage", () => {
     expect(document.body.textContent).not.toContain("Plan");
 
     expect(findButtonByAriaLabel("Select project").textContent).toContain("codesymphony");
-    expect(findButtonByAriaLabel("Select local or worktree").textContent).toContain("Local");
+    expect(findButtonByAriaLabel("Select root or worktree").textContent).toContain("Root");
     expect(findButtonByAriaLabel("Select schedule").textContent).toContain("Daily at 9:00 AM");
-    expect(findButtonByAriaLabel("Select automation agent and model").textContent).toContain("Claude");
-    expect(findButtonByAriaLabel("Select automation access").textContent).toContain("Default");
+    expect(findButtonByAriaLabel("Select automation session").textContent).toContain("Claude");
 
     const titleInput = Array.from(document.body.querySelectorAll("input")).find((entry) => entry.getAttribute("placeholder") === "Automation title");
-    const promptField = Array.from(document.body.querySelectorAll("textarea")).find((entry) => entry.getAttribute("placeholder")?.startsWith("Add prompt"));
+    const promptField = document.body.querySelector('[data-testid="automation-create-prompt-editor"]');
 
     expect(titleInput).toBeTruthy();
     expect(promptField).toBeTruthy();
@@ -434,17 +459,36 @@ describe("AutomationsListPage", () => {
 
     const triggerButtons = [
       findButtonByAriaLabel("Select project"),
-      findButtonByAriaLabel("Select local or worktree"),
+      findButtonByAriaLabel("Select root or worktree"),
       findButtonByAriaLabel("Select schedule"),
-      findButtonByAriaLabel("Select automation agent and model"),
-      findButtonByAriaLabel("Select automation access"),
+      findButtonByAriaLabel("Select automation session"),
     ];
 
     for (const trigger of triggerButtons) {
       expect(trigger.className).toContain("text-[12px]");
-      expect(trigger.className).toContain("hover:bg-secondary/40");
+      expect(trigger.className).toContain("hover:bg-secondary/35");
       expect(trigger.className).toContain("rounded-md");
     }
+  });
+
+  it("shows field-specific validation before attempting to create an invalid automation", async () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage prefills={{ create: true }} />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+
+    await act(async () => {
+      findButton("Create").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(apiMocks.createAutomation).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Add a title before creating the automation.");
+    expect(document.body.textContent).toContain("Add a prompt so the automation knows what to do.");
   });
 
   it("clears transient list search params when create succeeds and opens the detail route", async () => {
@@ -459,13 +503,13 @@ describe("AutomationsListPage", () => {
     await flushEffects();
 
     const textboxes = Array.from(document.body.querySelectorAll("input"));
-    const prompt = document.body.querySelector("textarea");
-    if (!(textboxes[0] instanceof HTMLInputElement) || !(prompt instanceof HTMLTextAreaElement)) {
+    const prompt = document.body.querySelector('[data-testid="automation-create-prompt-editor"]');
+    if (!(textboxes[0] instanceof HTMLInputElement) || !(prompt instanceof HTMLElement)) {
       throw new Error("Create form inputs not found");
     }
 
     await setInputValue(textboxes[0], "Automation smoke");
-    await setInputValue(prompt, "Audit the repository and summarize the next actions.");
+    await setEditorValue(prompt, "Audit the repository and summarize the next actions.");
 
     await act(async () => {
       findButton("Create").dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -499,13 +543,13 @@ describe("AutomationsListPage", () => {
     await flushEffects();
 
     const textboxes = Array.from(document.body.querySelectorAll("input"));
-    const prompt = document.body.querySelector("textarea");
-    if (!(textboxes[0] instanceof HTMLInputElement) || !(prompt instanceof HTMLTextAreaElement)) {
+    const prompt = document.body.querySelector('[data-testid="automation-create-prompt-editor"]');
+    if (!(textboxes[0] instanceof HTMLInputElement) || !(prompt instanceof HTMLElement)) {
       throw new Error("Create form inputs not found");
     }
 
     await setInputValue(textboxes[0], "Automation smoke");
-    await setInputValue(prompt, "Audit the repository and summarize the next actions.");
+    await setEditorValue(prompt, "Audit the repository and summarize the next actions.");
 
     await act(async () => {
       findButton("Create").dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -516,6 +560,67 @@ describe("AutomationsListPage", () => {
     expect(apiMocks.createAutomation).toHaveBeenCalledOnce();
     expect(onOpenAutomation).toHaveBeenCalledWith("automation-1");
     expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("shows active run status in the row and disables duplicate Run now actions", async () => {
+    apiMocks.listAutomations.mockResolvedValue([
+      makeAutomation({
+        latestRun: makeRun({
+          status: "running",
+          scheduledFor: "2026-05-10T02:00:00.000Z",
+          startedAt: "2026-05-10T02:00:10.000Z",
+          finishedAt: null,
+        }),
+      }),
+    ]);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Running");
+    expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
+  });
+
+  it("updates the list row immediately after a manual run starts", async () => {
+    apiMocks.listAutomations.mockResolvedValue([makeAutomation()]);
+    apiMocks.runAutomationNow.mockResolvedValue(
+      makeRun({
+        status: "running",
+        scheduledFor: "2026-05-10T02:00:00.000Z",
+        startedAt: "2026-05-10T02:00:10.000Z",
+        finishedAt: null,
+      }),
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationsListPage layout="panel" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    await act(async () => {
+      findButtonByAriaLabel("Run now Nightly audit").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await flushEffects();
+
+    expect(apiMocks.runAutomationNow).toHaveBeenCalled();
+    expect(apiMocks.runAutomationNow.mock.calls[0]?.[0]).toBe("automation-1");
+    expect(document.body.textContent).toContain("Running");
+    expect(findButtonByAriaLabel("Run now Nightly audit").disabled).toBe(true);
   });
 });
 
@@ -537,9 +642,62 @@ describe("AutomationDetailPage", () => {
     expect(document.body.textContent).toContain("Runs");
     expect(document.body.textContent).toContain("Versions");
     expect(document.body.textContent).toContain("Project");
-    expect(document.body.textContent).toContain("Worktree");
-    expect(document.body.textContent).toContain("Access");
-    expect(document.body.textContent).toContain("Mode");
+    expect(document.body.textContent).toContain("Target");
+    expect(document.body.textContent).toContain("Session");
+    expect(findButtonByAriaLabel("Select root or worktree").textContent).toContain("Root");
+    expect(findButtonByAriaLabel("Select schedule").textContent).toContain("Daily at 9:00 AM");
+    expect(findButtonByAriaLabel("Select automation session").textContent).toContain("Codex");
+    expect(document.body.textContent).not.toContain("Access");
+  });
+
+  it("saves the latest prompt text from the detail editor", async () => {
+    const currentAutomation = makeAutomation({
+      prompt: "Inspect the repository root and summarize the next action.",
+      latestRun: makeRun(),
+    });
+    const updatedAutomation = makeAutomation({
+      prompt: "List one obvious file and the branch name.",
+      latestRun: makeRun(),
+    });
+
+    apiMocks.getAutomation.mockResolvedValue(currentAutomation);
+    apiMocks.updateAutomation.mockResolvedValue(updatedAutomation);
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AutomationDetailPage automationId="automation-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    const promptField = document.body.querySelector('[data-testid="automation-detail-prompt-editor"]');
+
+    if (!(promptField instanceof HTMLElement)) {
+      throw new Error("Prompt field not found");
+    }
+
+    expect(getEditorText(promptField)).toContain(currentAutomation.prompt);
+
+    await setEditorValue(promptField, "Temporary prompt");
+    await setEditorValue(promptField, updatedAutomation.prompt);
+
+    await act(async () => {
+      findButton("Save changes").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await flushEffects();
+    await flushEffects();
+
+    expect(apiMocks.updateAutomation).toHaveBeenCalledWith("automation-1", expect.objectContaining({
+      prompt: updatedAutomation.prompt,
+    }));
+    expect(getEditorText(promptField)).toContain(updatedAutomation.prompt);
+    expect(getEditorText(promptField)).not.toContain(currentAutomation.prompt);
   });
 
   it("updates the prompt editor after restoring a previous prompt version", async () => {
@@ -576,15 +734,13 @@ describe("AutomationDetailPage", () => {
     await flushEffects();
     await flushEffects();
 
-    const promptField = Array.from(document.body.querySelectorAll("textarea")).find(
-      (entry) => entry.getAttribute("placeholder") === "Add prompt",
-    );
+    const promptField = document.body.querySelector('[data-testid="automation-detail-prompt-editor"]');
 
-    if (!(promptField instanceof HTMLTextAreaElement)) {
+    if (!(promptField instanceof HTMLElement)) {
       throw new Error("Prompt field not found");
     }
 
-    expect(promptField.value).toBe(currentAutomation.prompt);
+    expect(getEditorText(promptField)).toContain(currentAutomation.prompt);
 
     await act(async () => {
       findButton("Restore").dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -595,6 +751,6 @@ describe("AutomationDetailPage", () => {
     await flushEffects();
 
     expect(apiMocks.restoreAutomationPromptVersion).toHaveBeenCalledWith("automation-1", "version-restore");
-    expect(promptField.value).toBe(restoredAutomation.prompt);
+    expect(getEditorText(promptField)).toContain(restoredAutomation.prompt);
   });
 });

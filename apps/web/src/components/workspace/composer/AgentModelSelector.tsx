@@ -1,4 +1,5 @@
-import { type SVGProps, useEffect, useMemo, useRef, useState } from "react";
+import { type SVGProps, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
@@ -36,6 +37,7 @@ type AgentModelSelectorProps = {
   selectionLockedReason?: string | null;
   ariaLabel?: string;
   className?: string;
+  popoverContainer?: HTMLElement | null;
   triggerVariant?: "pill" | "picker";
   triggerClassName?: string;
   onSelectionChange: (selection: AgentModelSelection) => void;
@@ -350,7 +352,7 @@ export function isFirstCustomModelOption(
 const ClaudeAiIcon = (props: SVGProps<SVGSVGElement>) => (
   <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 256 257">
     <path
-      fill="currentColor"
+      fill="#ff7043"
       d="m50.228 170.321 50.357-28.257.843-2.463-.843-1.361h-2.462l-8.426-.518-28.775-.778-24.952-1.037-24.175-1.296-6.092-1.297L0 125.796l.583-3.759 5.12-3.434 7.324.648 16.202 1.101 24.304 1.685 17.629 1.037 26.118 2.722h4.148l.583-1.685-1.426-1.037-1.101-1.037-25.147-17.045-27.22-18.017-14.258-10.37-7.713-5.25-3.888-4.925-1.685-10.758 7-7.713 9.397.649 2.398.648 9.527 7.323 20.35 15.75L94.817 91.9l3.889 3.24 1.555-1.102.195-.777-1.75-2.917-14.453-26.118-15.425-26.572-6.87-11.018-1.814-6.61c-.648-2.723-1.102-4.991-1.102-7.778l7.972-10.823L71.42 0 82.05 1.426l4.472 3.888 6.61 15.101 10.694 23.786 16.591 32.34 4.861 9.592 2.592 8.879.973 2.722h1.685v-1.556l1.36-18.211 2.528-22.36 2.463-28.776.843-8.1 4.018-9.722 7.971-5.25 6.222 2.981 5.12 7.324-.713 4.73-3.046 19.768-5.962 30.98-3.889 20.739h2.268l2.593-2.593 10.499-13.934 17.628-22.036 7.778-8.749 9.073-9.657 5.833-4.601h11.018l8.1 12.055-3.628 12.443-11.342 14.388-9.398 12.184-13.48 18.147-8.426 14.518.778 1.166 2.01-.194 30.46-6.481 16.462-2.982 19.637-3.37 8.88 4.148.971 4.213-3.5 8.62-20.998 5.184-24.628 4.926-36.682 8.685-.454.324.519.648 16.526 1.555 7.065.389h17.304l32.21 2.398 8.426 5.574 5.055 6.805-.843 5.184-12.962 6.611-17.498-4.148-40.83-9.721-14-3.5h-1.944v1.167l11.666 11.406 21.387 19.314 26.767 24.887 1.36 6.157-3.434 4.86-3.63-.518-23.526-17.693-9.073-7.972-20.545-17.304h-1.36v1.814l4.73 6.935 25.017 37.59 1.296 11.536-1.814 3.76-6.481 2.268-7.13-1.297-14.647-20.544-15.1-23.138-12.185-20.739-1.49.843-7.194 77.448-3.37 3.953-7.778 2.981-6.48-4.925-3.436-7.972 3.435-15.749 4.148-20.544 3.37-16.333 3.046-20.285 1.815-6.74-.13-.454-1.49.194-15.295 20.999-23.267 31.433-18.406 19.702-4.407 1.75-7.648-3.954.713-7.064 4.277-6.286 25.47-32.405 15.36-20.092 9.917-11.6-.065-1.686h-.583L44.07 198.125l-12.055 1.555-5.185-4.86.648-7.972 2.463-2.593 20.35-13.999-.064.065Z"
     />
   </svg>
@@ -365,7 +367,7 @@ const OpenAiIcon = (props: SVGProps<SVGSVGElement>) => (
 const CursorCubeIcon = (props: SVGProps<SVGSVGElement>) => (
   <svg {...props} preserveAspectRatio="xMidYMid" viewBox="0 0 466.73 532.09">
     <path
-      fill="#edecec"
+      fill="#e0e0e0"
       d="M457.43 125.94 244.42 2.96a22.022 22.022 0 0 0-22.12 0L9.3 125.94A18.61 18.61 0 0 0 0 142.05v247.99a18.61 18.61 0 0 0 9.3 16.11l213.01 122.98a22.022 22.022 0 0 0 22.12 0l213.01-122.98a18.61 18.61 0 0 0 9.3-16.11V142.05a18.61 18.61 0 0 0-9.3-16.11h.01Zm-13.38 26.05L238.42 508.15c-1.39 2.4-5.06 1.42-5.06-1.36V273.58c0-4.66-2.49-8.97-6.53-11.31L24.87 145.67c-2.4-1.39-1.42-5.06 1.36-5.06h411.26c5.84 0 9.49 6.33 6.57 11.39h-.01Z"
     />
   </svg>
@@ -384,12 +386,21 @@ const AGENT_ICONS = {
   opencode: OpenCodeIcon,
 } as const;
 
-function agentIconClassName(agent: CliAgent): string {
-  if (agent === "claude") {
-    return "text-[#d97757]";
-  }
+const AGENT_LIST_PANEL_WIDTH = 210;
+const MODEL_LIST_PANEL_WIDTH = 250;
+const MODEL_PANEL_GAP = 8;
+const MODEL_POPOVER_GAP = 6;
+const MODEL_POPOVER_VIEWPORT_MARGIN = 16;
+const MODEL_POPOVER_ESTIMATED_HEIGHT = 320;
 
-  return "text-foreground/85";
+type PopoverPosition = {
+  top: number;
+  left: number;
+  placement: "above" | "below";
+};
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 export function AgentIcon({
@@ -403,7 +414,7 @@ export function AgentIcon({
     <Icon
       {...props}
       data-agent-icon={agent}
-      className={cn("shrink-0", agentIconClassName(agent), className)}
+      className={cn("shrink-0", className)}
     />
   );
 }
@@ -420,13 +431,19 @@ export function AgentModelSelector({
   selectionLockedReason = null,
   ariaLabel,
   className,
+  popoverContainer = null,
   triggerVariant = "pill",
   triggerClassName: customTriggerClassName,
   onSelectionChange,
 }: AgentModelSelectorProps) {
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const [modelPreviewAgent, setModelPreviewAgent] = useState<CliAgent>(selection.agent);
+  const [popoverPosition, setPopoverPosition] = useState<PopoverPosition | null>(null);
+  const modelSelectorRef = useRef<HTMLDivElement>(null);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
+  const popoverWidth = showAgentList
+    ? AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH
+    : MODEL_LIST_PANEL_WIDTH;
 
   useEffect(() => {
     if (!modelPopoverOpen) {
@@ -434,7 +451,11 @@ export function AgentModelSelector({
     }
 
     const handleClick = (event: MouseEvent) => {
-      if (modelPopoverRef.current && !modelPopoverRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const clickedInsideTrigger = modelSelectorRef.current?.contains(target) ?? false;
+      const clickedInsidePopover = modelPopoverRef.current?.contains(target) ?? false;
+
+      if (!clickedInsideTrigger && !clickedInsidePopover) {
         setModelPopoverOpen(false);
       }
     };
@@ -446,6 +467,49 @@ export function AgentModelSelector({
   useEffect(() => {
     setModelPreviewAgent(selection.agent);
   }, [selection.agent]);
+
+  useLayoutEffect(() => {
+    if (!modelPopoverOpen || !popoverContainer) {
+      setPopoverPosition(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const trigger = modelSelectorRef.current;
+      if (!trigger) {
+        setPopoverPosition(null);
+        return;
+      }
+
+      const triggerRect = trigger.getBoundingClientRect();
+      const containerRect = popoverContainer.getBoundingClientRect();
+      const minLeft = MODEL_POPOVER_VIEWPORT_MARGIN - containerRect.left;
+      const maxLeft = window.innerWidth - MODEL_POPOVER_VIEWPORT_MARGIN - popoverWidth - containerRect.left;
+      const left = clamp(triggerRect.left - containerRect.left, minLeft, Math.max(minLeft, maxLeft));
+      const availableAbove = triggerRect.top - MODEL_POPOVER_VIEWPORT_MARGIN;
+      const availableBelow = window.innerHeight - triggerRect.bottom - MODEL_POPOVER_VIEWPORT_MARGIN;
+      const placement = availableAbove >= MODEL_POPOVER_ESTIMATED_HEIGHT || availableAbove >= availableBelow
+        ? "above"
+        : "below";
+      const top = placement === "above"
+        ? triggerRect.top - containerRect.top - MODEL_POPOVER_GAP
+        : triggerRect.bottom - containerRect.top + MODEL_POPOVER_GAP;
+
+      setPopoverPosition({
+        top: Math.round(top),
+        left: Math.round(left),
+        placement,
+      });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [modelPopoverOpen, modelPreviewAgent, popoverContainer, popoverWidth, showAgentList]);
 
   const agentOptions = useMemo(() => buildAgentSelectionOptions({
     providers,
@@ -486,13 +550,13 @@ export function AgentModelSelector({
         : "hover:bg-secondary/70 hover:text-foreground"
     }`;
   const iconClassName = triggerVariant === "picker"
-    ? "h-3.5 w-3.5 text-muted-foreground/80"
+    ? "h-3.5 w-3.5"
     : "h-3.5 w-3.5";
-  const labelClassName = triggerVariant === "picker" ? "truncate" : "max-w-[160px] truncate";
+  const labelClassName = triggerVariant === "picker" ? "min-w-0 flex-1 truncate text-left" : "max-w-[160px] truncate";
   const triggerTextColorClassName = triggerVariant === "picker" ? "" : "text-muted-foreground";
 
   const renderModelOptionList = () => (
-    <div className="h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
+    <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
       {modelPreviewOptions.map((option, index) => {
         const selected = option.agent === selection.agent
           && option.model === selection.model
@@ -541,8 +605,79 @@ export function AgentModelSelector({
     </div>
   );
 
+  const popoverContent = showAgentList ? (
+    <div className="relative">
+      <div
+        className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+        style={{ width: `${AGENT_LIST_PANEL_WIDTH}px` }}
+      >
+        <div className="space-y-1" data-cli-agent-list="true">
+          {CLI_AGENTS.map((entryAgent) => {
+            const selectedAgent = modelPreviewAgent === entryAgent;
+            const currentAgent = selection.agent === entryAgent;
+
+            return (
+              <button
+                key={entryAgent}
+                type="button"
+                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
+                  selectedAgent
+                    ? "bg-accent text-accent-foreground"
+                    : "text-foreground hover:bg-accent/50"
+                }`}
+                aria-current={currentAgent ? "true" : undefined}
+                onMouseEnter={() => {
+                  if (modelPreviewAgent !== entryAgent) {
+                    setModelPreviewAgent(entryAgent);
+                  }
+                }}
+                onFocus={() => {
+                  if (modelPreviewAgent !== entryAgent) {
+                    setModelPreviewAgent(entryAgent);
+                  }
+                }}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  if (modelPreviewAgent !== entryAgent) {
+                    setModelPreviewAgent(entryAgent);
+                  }
+                }}
+              >
+                <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
+                <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
+                {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div
+        data-agent-model-panel="overlay"
+        className="absolute left-full top-0 z-10 rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+        style={{
+          width: `${MODEL_LIST_PANEL_WIDTH}px`,
+          marginLeft: `${MODEL_PANEL_GAP}px`,
+        }}
+      >
+        {renderModelOptionList()}
+      </div>
+    </div>
+  ) : (
+    <div
+      data-agent-model-panel="single"
+      className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+      style={{ width: `${MODEL_LIST_PANEL_WIDTH}px` }}
+    >
+      <div className="px-2.5 pb-1 pt-1 text-[11px] font-medium text-muted-foreground">
+        {`Models for ${AGENT_LABELS[selection.agent]}`}
+      </div>
+      {renderModelOptionList()}
+    </div>
+  );
+
   return (
-    <div className={cn("relative", className)} ref={modelPopoverRef}>
+    <div className={cn("relative", className)} ref={modelSelectorRef}>
       <button
         type="button"
         onClick={() => {
@@ -564,75 +699,33 @@ export function AgentModelSelector({
         )}
         aria-label={resolvedAriaLabel}
       >
-        <AgentIcon agent={selection.agent} aria-hidden="true" className={iconClassName} />
-        <span className={labelClassName}>{modelLabel}</span>
+        <span className={cn("min-w-0 flex items-center gap-1.5", triggerVariant === "picker" && "flex-1")}>
+          <AgentIcon agent={selection.agent} aria-hidden="true" className={iconClassName} />
+          <span className={labelClassName}>{modelLabel}</span>
+        </span>
         <ChevronDown className="h-3 w-3 shrink-0" />
       </button>
 
-      {modelPopoverOpen ? (
-        <div className="absolute bottom-full left-0 z-50 mb-1.5 w-[210px]">
-          {showAgentList ? (
-            <div className="relative">
-              <div className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg">
-                <div className="space-y-1" data-cli-agent-list="true">
-                  {CLI_AGENTS.map((entryAgent) => {
-                    const selectedAgent = modelPreviewAgent === entryAgent;
-                    const currentAgent = selection.agent === entryAgent;
-
-                    return (
-                      <button
-                        key={entryAgent}
-                        type="button"
-                        className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
-                          selectedAgent
-                            ? "bg-accent text-accent-foreground"
-                            : "text-foreground hover:bg-accent/50"
-                        }`}
-                        aria-current={currentAgent ? "true" : undefined}
-                        onMouseEnter={() => {
-                          if (modelPreviewAgent !== entryAgent) {
-                            setModelPreviewAgent(entryAgent);
-                          }
-                        }}
-                        onFocus={() => {
-                          if (modelPreviewAgent !== entryAgent) {
-                            setModelPreviewAgent(entryAgent);
-                          }
-                        }}
-                        onMouseDown={(event) => {
-                          event.preventDefault();
-                          if (modelPreviewAgent !== entryAgent) {
-                            setModelPreviewAgent(entryAgent);
-                          }
-                        }}
-                      >
-                        <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
-                        <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
-                        {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div
-                data-agent-model-panel="overlay"
-                className="absolute left-full top-0 z-10 ml-2 w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
-              >
-                {renderModelOptionList()}
-              </div>
-            </div>
-          ) : (
-            <div
-              data-agent-model-panel="single"
-              className="w-[250px] rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
-            >
-              <div className="px-2.5 pb-1 pt-1 text-[11px] font-medium text-muted-foreground">
-                {`Models for ${AGENT_LABELS[selection.agent]}`}
-              </div>
-              {renderModelOptionList()}
-            </div>
+      {modelPopoverOpen && popoverContainer && popoverPosition ? createPortal(
+        <div
+          ref={modelPopoverRef}
+          className={cn(
+            "pointer-events-auto absolute z-[80]",
+            popoverPosition.placement === "above" ? "-translate-y-full" : "",
           )}
+          style={{
+            top: popoverPosition.top,
+            left: popoverPosition.left,
+          }}
+        >
+          {popoverContent}
+        </div>,
+        popoverContainer,
+      ) : null}
+
+      {modelPopoverOpen && !popoverContainer ? (
+        <div className="absolute bottom-full left-0 z-50 mb-1.5" ref={modelPopoverRef}>
+          {popoverContent}
         </div>
       ) : null}
     </div>

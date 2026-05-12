@@ -58,6 +58,17 @@ type ChatServiceAdapter = {
   sendMessage: (threadId: string, input: Record<string, unknown>) => Promise<unknown>;
 };
 
+type WorktreeServiceAdapter = {
+  create: (repositoryId: string, input?: Record<string, unknown>) => Promise<{
+    worktree: {
+      id: string;
+    };
+  }>;
+  waitUntilReady: (worktreeId: string) => Promise<{
+    id: string;
+  }>;
+};
+
 type ThreadRunBinding = {
   runId: string;
   automationId: string;
@@ -66,6 +77,9 @@ type ThreadRunBinding = {
   threadId: string;
   unsubscribe: () => void;
 };
+
+const AUTOMATION_PERMISSION_MODE = "full_access" as const;
+const ACTIVE_AUTOMATION_RUN_STATUSES = ["queued", "dispatching", "running", "waiting_input"] as const;
 
 function ensureValidTimezone(timezone: string): string {
   try {
@@ -308,6 +322,7 @@ function mapAutomation(automation: {
   id: string;
   repositoryId: string;
   targetWorktreeId: string;
+  targetMode: "repo_root" | "worktree";
   name: string;
   prompt: string;
   agent: "claude" | "codex" | "cursor" | "opencode";
@@ -328,6 +343,7 @@ function mapAutomation(automation: {
 }) {
   return {
     ...automation,
+    permissionMode: AUTOMATION_PERMISSION_MODE,
     dtstart: automation.dtstart.toISOString(),
     nextRunAt: automation.nextRunAt.toISOString(),
     lastRunAt: automation.lastRunAt?.toISOString() ?? null,
@@ -376,6 +392,7 @@ export function createAutomationService(deps: {
   prisma: PrismaClient;
   eventHub: RuntimeEventHub;
   workspaceEventHub: WorkspaceSyncEventHub;
+  worktreeService: WorktreeServiceAdapter;
   chatService: ChatServiceAdapter;
 }) {
   const threadBindingsByRunId = new Map<string, ThreadRunBinding>();
@@ -558,12 +575,16 @@ export function createAutomationService(deps: {
     },
   ) {
     try {
-      const thread = await deps.chatService.createThread(automation.targetWorktreeId, {
+      if (automation.targetMode === "worktree") {
+        await deps.worktreeService.waitUntilReady(run.worktreeId);
+      }
+
+      const thread = await deps.chatService.createThread(run.worktreeId, {
         title: automation.name,
         agent: automation.agent,
         model: automation.model,
         modelProviderId: automation.modelProviderId,
-        permissionMode: automation.permissionMode,
+        permissionMode: AUTOMATION_PERMISSION_MODE,
         mode: automation.chatMode,
       });
 
@@ -578,7 +599,7 @@ export function createAutomationService(deps: {
         id: run.id,
         automationId: automation.id,
         repositoryId: automation.repositoryId,
-        worktreeId: automation.targetWorktreeId,
+        worktreeId: run.worktreeId,
         threadId: thread.id,
       });
 
@@ -627,11 +648,15 @@ export function createAutomationService(deps: {
       scheduledFor: Date;
     },
   ) {
+    const runWorktreeId = automation.targetMode === "worktree"
+      ? (await deps.worktreeService.create(automation.repositoryId, {})).worktree.id
+      : automation.targetWorktreeId;
+
     const createdRun = await deps.prisma.automationRun.create({
       data: {
         automationId: automation.id,
         repositoryId: automation.repositoryId,
-        worktreeId: automation.targetWorktreeId,
+        worktreeId: runWorktreeId,
         status: "dispatching",
         triggerKind: input.triggerKind,
         scheduledFor: input.scheduledFor,
@@ -641,6 +666,21 @@ export function createAutomationService(deps: {
 
     emitRepositoryRefresh(createdRun.repositoryId, createdRun.worktreeId, createdRun.threadId);
     return dispatchAutomationRun(automation, createdRun);
+  }
+
+  async function findActiveRun(automationId: string) {
+    return deps.prisma.automationRun.findFirst({
+      where: {
+        automationId,
+        status: {
+          in: [...ACTIVE_AUTOMATION_RUN_STATUSES],
+        },
+      },
+      orderBy: [
+        { createdAt: "desc" },
+        { scheduledFor: "desc" },
+      ],
+    });
   }
 
   async function claimNextScheduledRun(
@@ -675,12 +715,13 @@ export function createAutomationService(deps: {
         data: {
           repositoryId: input.repositoryId,
           targetWorktreeId: input.targetWorktreeId,
+          targetMode: input.targetMode,
           name: input.name,
           prompt: input.prompt,
           agent: input.agent,
           model: input.model,
           modelProviderId: input.modelProviderId ?? null,
-          permissionMode: input.permissionMode,
+          permissionMode: AUTOMATION_PERMISSION_MODE,
           chatMode: input.chatMode,
           rrule: input.rrule,
           timezone: input.timezone,
@@ -768,12 +809,13 @@ export function createAutomationService(deps: {
         where: { id: automationId },
         data: {
           ...(input.targetWorktreeId ? { targetWorktreeId: input.targetWorktreeId } : {}),
+          ...(input.targetMode ? { targetMode: input.targetMode } : {}),
           ...(input.name ? { name: input.name } : {}),
           ...(input.prompt ? { prompt: input.prompt } : {}),
           ...(input.agent ? { agent: input.agent } : {}),
           ...(input.model ? { model: input.model } : {}),
           ...(input.modelProviderId !== undefined ? { modelProviderId: input.modelProviderId } : {}),
-          ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+          permissionMode: AUTOMATION_PERMISSION_MODE,
           ...(input.chatMode ? { chatMode: input.chatMode } : {}),
           ...(input.rrule ? { rrule: input.rrule } : {}),
           ...(input.timezone ? { timezone: input.timezone } : {}),
@@ -842,6 +884,11 @@ export function createAutomationService(deps: {
       });
       if (!automation) {
         throw new Error("Automation not found");
+      }
+
+      const activeRun = await findActiveRun(automationId);
+      if (activeRun) {
+        throw new Error("Automation already has an active run");
       }
 
       return createRunAndDispatch(automation, {
