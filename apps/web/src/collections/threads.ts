@@ -17,6 +17,7 @@ export function toPlainChatThread(thread: ChatThread): ChatThread {
     worktreeId: thread.worktreeId,
     title: thread.title,
     kind: thread.kind,
+    isAutomation: thread.isAutomation ?? false,
     permissionProfile: thread.permissionProfile,
     permissionMode: thread.permissionMode,
     mode: thread.mode,

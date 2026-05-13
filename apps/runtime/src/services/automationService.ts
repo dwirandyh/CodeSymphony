@@ -1,11 +1,12 @@
 import { z } from "zod";
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   CreateAutomationInputSchema,
   UpdateAutomationInputSchema,
   type ChatEventType,
 } from "@codesymphony/shared-types";
 import type { RuntimeEventHub, WorkspaceSyncEventHub } from "../types.js";
+import { buildAutomationBranchName } from "./worktreeService.js";
 type AutomationCreateInput = z.infer<typeof CreateAutomationInputSchema>;
 type AutomationUpdateInput = z.infer<typeof UpdateAutomationInputSchema>;
 
@@ -17,24 +18,25 @@ type ParsedRrule = {
 };
 
 type AutomationRecord = Awaited<ReturnType<PrismaClient["automation"]["findUnique"]>>;
+type AutomationRunRecord = {
+  id: string;
+  automationId: string;
+  repositoryId: string;
+  worktreeId: string;
+  threadId: string | null;
+  status: string;
+  triggerKind: string;
+  scheduledFor: Date;
+  startedAt: Date | null;
+  finishedAt: Date | null;
+  error: string | null;
+  summary: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
 
 type AutomationWithLatestRun = NonNullable<Awaited<ReturnType<PrismaClient["automation"]["findMany"]>>[number]> & {
-  runs: Array<{
-    id: string;
-    automationId: string;
-    repositoryId: string;
-    worktreeId: string;
-    threadId: string | null;
-    status: string;
-    triggerKind: string;
-    scheduledFor: Date;
-    startedAt: Date | null;
-    finishedAt: Date | null;
-    error: string | null;
-    summary: string | null;
-    createdAt: Date;
-    updatedAt: Date;
-  }>;
+  runs: AutomationRunRecord[];
   _count: {
     promptVersions: number;
   };
@@ -80,6 +82,11 @@ type ThreadRunBinding = {
 
 const AUTOMATION_PERMISSION_MODE = "full_access" as const;
 const ACTIVE_AUTOMATION_RUN_STATUSES = ["queued", "dispatching", "running", "waiting_input"] as const;
+const AUTOMATION_BRANCH_CREATE_ATTEMPTS = 50;
+const AUTOMATION_CATCH_UP_GRACE_MS = 90_000;
+const AUTOMATION_DUE_OCCURRENCE_LIMIT = 100_000;
+const MISSED_DUE_TO_RUNTIME_SUMMARY = "Missed while the local automation runtime was unavailable. A newer slot will be replayed.";
+const MISSED_DUE_TO_ACTIVE_RUN_SUMMARY = "Missed because another automation run was still active at the scheduled time.";
 
 function ensureValidTimezone(timezone: string): string {
   try {
@@ -132,6 +139,15 @@ function parseRrule(input: string): ParsedRrule {
     byMinute,
     byDay: byDay && byDay.length > 0 ? byDay : null,
   };
+}
+
+function canRetryAutomationWorktreeCreate(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message === "Branch already has a worktree in this repository"
+    || error.message.startsWith("Worktree path already exists:");
 }
 
 function getZonedParts(date: Date, timezone: string): {
@@ -282,6 +298,48 @@ function computeNextRunAt(rrule: string, timezone: string, now: Date): Date {
     candidateLocal.setUTCDate(candidateLocal.getUTCDate() + 1);
     candidateLocal.setUTCHours(parsed.byHour, parsed.byMinute, 0, 0);
   }
+}
+
+function computeNextScheduledSlot(rrule: string, timezone: string, scheduledFor: Date): Date {
+  return computeNextRunAt(rrule, timezone, new Date(scheduledFor.getTime() + 1_000));
+}
+
+function collectDueOccurrences(input: {
+  rrule: string;
+  timezone: string;
+  nextRunAt: Date;
+}, now: Date): {
+  dueScheduledFor: Date[];
+  nextRunAt: Date;
+} {
+  const dueScheduledFor: Date[] = [];
+  let cursor = input.nextRunAt;
+
+  for (let count = 0; cursor <= now; count += 1) {
+    if (count >= AUTOMATION_DUE_OCCURRENCE_LIMIT) {
+      throw new Error("Automation schedule reconciliation exceeded the safety limit");
+    }
+
+    dueScheduledFor.push(cursor);
+    cursor = computeNextScheduledSlot(input.rrule, input.timezone, cursor);
+  }
+
+  return {
+    dueScheduledFor,
+    nextRunAt: cursor,
+  };
+}
+
+function shouldDispatchAsCatchUp(dueScheduledFor: Date[], now: Date): boolean {
+  if (dueScheduledFor.length === 0) {
+    return false;
+  }
+
+  if (dueScheduledFor.length > 1) {
+    return true;
+  }
+
+  return now.getTime() - dueScheduledFor[0].getTime() > AUTOMATION_CATCH_UP_GRACE_MS;
 }
 
 function mapRun(run: {
@@ -557,30 +615,66 @@ export function createAutomationService(deps: {
 
   async function dispatchAutomationRun(
     automation: NonNullable<AutomationRecord>,
-    run: {
-      id: string;
-      automationId: string;
-      repositoryId: string;
-      worktreeId: string;
-      threadId: string | null;
-      status: string;
-      triggerKind: string;
-      scheduledFor: Date;
-      startedAt: Date | null;
-      finishedAt: Date | null;
-      error: string | null;
-      summary: string | null;
-      createdAt: Date;
-      updatedAt: Date;
-    },
+    run: AutomationRunRecord,
   ) {
-    try {
-      if (automation.targetMode === "worktree") {
-        await deps.worktreeService.waitUntilReady(run.worktreeId);
+    async function ensureAutomationWorktree(currentRun: AutomationRunRecord): Promise<AutomationRunRecord> {
+      if (automation.targetMode !== "worktree" || currentRun.worktreeId !== automation.targetWorktreeId) {
+        return currentRun;
       }
 
-      const thread = await deps.chatService.createThread(run.worktreeId, {
+      const branchBase = buildAutomationBranchName(automation.name);
+
+      for (let attempt = 0; attempt < AUTOMATION_BRANCH_CREATE_ATTEMPTS; attempt += 1) {
+        const branch = attempt === 0 ? branchBase : `${branchBase}-${attempt + 1}`;
+
+        try {
+          const created = await deps.worktreeService.create(automation.repositoryId, {
+            branch,
+            ensureInitialThread: false,
+            isAutomation: true,
+          });
+
+          const updatedRun = await deps.prisma.automationRun.update({
+            where: { id: currentRun.id },
+            data: {
+              worktreeId: created.worktree.id,
+            },
+          });
+          emitRepositoryRefresh(updatedRun.repositoryId, updatedRun.worktreeId, updatedRun.threadId);
+          return updatedRun;
+        } catch (error) {
+          if (canRetryAutomationWorktreeCreate(error)) {
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      throw new Error("Unable to allocate an automation worktree branch name");
+    }
+
+    try {
+      let currentRun = run;
+      if (currentRun.status !== "dispatching" || currentRun.startedAt === null) {
+        currentRun = await deps.prisma.automationRun.update({
+          where: { id: currentRun.id },
+          data: {
+            status: "dispatching",
+            startedAt: currentRun.startedAt ?? new Date(),
+          },
+        });
+        emitRepositoryRefresh(currentRun.repositoryId, currentRun.worktreeId, currentRun.threadId);
+      }
+
+      currentRun = await ensureAutomationWorktree(currentRun);
+
+      if (automation.targetMode === "worktree") {
+        await deps.worktreeService.waitUntilReady(currentRun.worktreeId);
+      }
+
+      const thread = await deps.chatService.createThread(currentRun.worktreeId, {
         title: automation.name,
+        isAutomation: true,
         agent: automation.agent,
         model: automation.model,
         modelProviderId: automation.modelProviderId,
@@ -599,12 +693,12 @@ export function createAutomationService(deps: {
         id: run.id,
         automationId: automation.id,
         repositoryId: automation.repositoryId,
-        worktreeId: run.worktreeId,
+        worktreeId: currentRun.worktreeId,
         threadId: thread.id,
       });
 
       const updatedRun = await deps.prisma.automationRun.update({
-        where: { id: run.id },
+        where: { id: currentRun.id },
         data: {
           threadId: thread.id,
           status: "running",
@@ -641,31 +735,150 @@ export function createAutomationService(deps: {
     }
   }
 
-  async function createRunAndDispatch(
+  async function createAutomationRunRecord(
+    tx: Prisma.TransactionClient,
     automation: NonNullable<AutomationRecord>,
     input: {
-      triggerKind: "manual" | "schedule";
+      status: "queued" | "missed";
+      triggerKind: "manual" | "schedule" | "catch_up";
       scheduledFor: Date;
+      finishedAt?: Date | null;
+      error?: string | null;
+      summary?: string | null;
     },
-  ) {
-    const runWorktreeId = automation.targetMode === "worktree"
-      ? (await deps.worktreeService.create(automation.repositoryId, {})).worktree.id
-      : automation.targetWorktreeId;
-
-    const createdRun = await deps.prisma.automationRun.create({
+  ): Promise<AutomationRunRecord> {
+    return tx.automationRun.create({
       data: {
         automationId: automation.id,
         repositoryId: automation.repositoryId,
-        worktreeId: runWorktreeId,
-        status: "dispatching",
+        worktreeId: automation.targetWorktreeId,
+        status: input.status,
         triggerKind: input.triggerKind,
         scheduledFor: input.scheduledFor,
-        startedAt: input.scheduledFor,
+        startedAt: null,
+        finishedAt: input.finishedAt ?? null,
+        error: input.error ?? null,
+        summary: input.summary ?? null,
       },
     });
+  }
+
+  async function createRunAndDispatch(
+    automation: NonNullable<AutomationRecord>,
+    input: {
+      triggerKind: "manual" | "schedule" | "catch_up";
+      scheduledFor: Date;
+    },
+  ) {
+    const createdRun = await deps.prisma.$transaction((tx) => (
+      createAutomationRunRecord(tx, automation, {
+        status: "queued",
+        triggerKind: input.triggerKind,
+        scheduledFor: input.scheduledFor,
+      })
+    ));
 
     emitRepositoryRefresh(createdRun.repositoryId, createdRun.worktreeId, createdRun.threadId);
     return dispatchAutomationRun(automation, createdRun);
+  }
+
+  async function claimDueRunBatch(
+    automation: NonNullable<AutomationRecord>,
+    now: Date,
+  ): Promise<{
+    runToDispatch: AutomationRunRecord | null;
+    shouldRefresh: boolean;
+  }> {
+    const { dueScheduledFor, nextRunAt } = collectDueOccurrences({
+      rrule: automation.rrule,
+      timezone: automation.timezone,
+      nextRunAt: automation.nextRunAt,
+    }, now);
+
+    if (dueScheduledFor.length === 0) {
+      return {
+        runToDispatch: null,
+        shouldRefresh: false,
+      };
+    }
+
+    const result = await deps.prisma.$transaction(async (tx) => {
+      const claimed = await tx.automation.updateMany({
+        where: {
+          id: automation.id,
+          enabled: true,
+          nextRunAt: automation.nextRunAt,
+        },
+        data: {
+          nextRunAt,
+        },
+      });
+
+      if (claimed.count !== 1) {
+        return null;
+      }
+
+      const activeRun = await tx.automationRun.findFirst({
+        where: {
+          automationId: automation.id,
+          status: {
+            in: [...ACTIVE_AUTOMATION_RUN_STATUSES],
+          },
+        },
+        orderBy: [
+          { createdAt: "desc" },
+          { scheduledFor: "desc" },
+        ],
+      });
+
+      const catchUpRun = !activeRun && shouldDispatchAsCatchUp(dueScheduledFor, now);
+      const missedScheduledFor = activeRun
+        ? dueScheduledFor
+        : catchUpRun
+          ? dueScheduledFor.slice(0, -1)
+          : [];
+
+      for (const scheduledFor of missedScheduledFor) {
+        await createAutomationRunRecord(tx, automation, {
+          status: "missed",
+          triggerKind: "schedule",
+          scheduledFor,
+          finishedAt: now,
+          summary: activeRun ? MISSED_DUE_TO_ACTIVE_RUN_SUMMARY : MISSED_DUE_TO_RUNTIME_SUMMARY,
+        });
+      }
+
+      if (activeRun) {
+        return {
+          runToDispatch: null,
+          shouldRefresh: missedScheduledFor.length > 0,
+        };
+      }
+
+      const latestScheduledFor = dueScheduledFor[dueScheduledFor.length - 1];
+      if (!latestScheduledFor) {
+        return {
+          runToDispatch: null,
+          shouldRefresh: missedScheduledFor.length > 0,
+        };
+      }
+
+      const runToDispatch = await createAutomationRunRecord(tx, automation, {
+        status: "queued",
+        triggerKind: catchUpRun ? "catch_up" : "schedule",
+        scheduledFor: latestScheduledFor,
+      });
+
+      return {
+        runToDispatch,
+        shouldRefresh: true,
+      };
+    });
+
+    return result ?? {
+      runToDispatch: null,
+      shouldRefresh: false,
+    };
   }
 
   async function findActiveRun(automationId: string) {
@@ -681,26 +894,6 @@ export function createAutomationService(deps: {
         { scheduledFor: "desc" },
       ],
     });
-  }
-
-  async function claimNextScheduledRun(
-    automationId: string,
-    scheduledFor: Date,
-    nextRunAt: Date,
-  ) {
-    const result = await deps.prisma.automation.updateMany({
-      where: {
-        id: automationId,
-        enabled: true,
-        nextRunAt: scheduledFor,
-      },
-      data: {
-        nextRunAt,
-        lastRunAt: scheduledFor,
-      },
-    });
-
-    return result.count === 1;
   }
 
   return {
@@ -915,28 +1108,19 @@ export function createAutomationService(deps: {
           break;
         }
 
-        const scheduledFor = dueAutomation.nextRunAt;
-        const nextRunAt = computeNextRunAt(
-          dueAutomation.rrule,
-          dueAutomation.timezone,
-          new Date(scheduledFor.getTime() + 1_000),
-        );
-        const claimed = await claimNextScheduledRun(dueAutomation.id, scheduledFor, nextRunAt);
-        if (!claimed) {
+        const { runToDispatch, shouldRefresh } = await claimDueRunBatch(dueAutomation, now);
+        if (!runToDispatch && !shouldRefresh) {
+          continue;
+        }
+        if (shouldRefresh) {
+          emitRepositoryRefresh(dueAutomation.repositoryId, dueAutomation.targetWorktreeId);
+        }
+
+        if (!runToDispatch) {
           continue;
         }
 
-        const refreshedAutomation = await deps.prisma.automation.findUnique({
-          where: { id: dueAutomation.id },
-        });
-        if (!refreshedAutomation) {
-          continue;
-        }
-
-        await createRunAndDispatch(refreshedAutomation, {
-          triggerKind: "schedule",
-          scheduledFor,
-        });
+        await dispatchAutomationRun(dueAutomation, runToDispatch);
         dispatchedCount += 1;
       }
 
@@ -1010,27 +1194,33 @@ export function createAutomationService(deps: {
       const activeRuns = await deps.prisma.automationRun.findMany({
         where: {
           status: {
-            in: ["dispatching", "running", "waiting_input"],
-          },
-          threadId: {
-            not: null,
+            in: ["queued", "dispatching", "running", "waiting_input"],
           },
         },
       });
 
       let recovered = 0;
       for (const run of activeRuns) {
-        if (!run.threadId) {
+        if (run.threadId) {
+          subscribeToThreadLifecycle({
+            id: run.id,
+            automationId: run.automationId,
+            repositoryId: run.repositoryId,
+            worktreeId: run.worktreeId,
+            threadId: run.threadId,
+          });
+          recovered += 1;
           continue;
         }
 
-        subscribeToThreadLifecycle({
-          id: run.id,
-          automationId: run.automationId,
-          repositoryId: run.repositoryId,
-          worktreeId: run.worktreeId,
-          threadId: run.threadId,
+        const automation = await deps.prisma.automation.findUnique({
+          where: { id: run.automationId },
         });
+        if (!automation) {
+          continue;
+        }
+
+        await dispatchAutomationRun(automation, run);
         recovered += 1;
       }
 

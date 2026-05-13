@@ -226,6 +226,7 @@ describe("api", () => {
       const result = await api.createAutomation({
         repositoryId: "repo-1",
         targetWorktreeId: "worktree-1",
+        targetMode: "repo_root",
         name: "Daily audit",
         prompt: "Summarize repository issues.",
         agent: "claude",

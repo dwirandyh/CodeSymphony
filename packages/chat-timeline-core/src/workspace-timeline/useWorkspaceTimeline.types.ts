@@ -1,5 +1,5 @@
 import type { ChatEvent, ChatMessage, ChatTimelineItem } from "@codesymphony/shared-types";
-import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types.js";
+import type { AskUserQuestionGroup, BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types.js";
 
 export type TimelineRefs = {
   streamingMessageIds: Set<string>;
@@ -72,6 +72,14 @@ export type InlineInsert =
     anchorIdx: number;
     createdAt: string;
     group: ExploreActivityGroup;
+  }
+  | {
+    kind: "ask-user-question";
+    id: string;
+    startIdx: number;
+    anchorIdx: number;
+    createdAt: string;
+    group: AskUserQuestionGroup;
   }
   | {
     kind: "plan-file-output";

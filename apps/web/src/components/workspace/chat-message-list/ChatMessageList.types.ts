@@ -127,9 +127,17 @@ export type ChatMessageListProps = {
   items: ChatTimelineItem[];
   emptyState?: ChatMessageListEmptyState | null;
   showThinkingPlaceholder?: boolean;
+  workingStatus?: ChatWorkingStatus | null;
   onOpenReadFile?: (path: string) => void | Promise<void>;
   worktreePath?: string | null;
   footer?: ReactNode;
+};
+
+export type ChatWorkingStatus = {
+  label: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  state: "running" | "completed";
 };
 
 export type AnsiSegment = {

@@ -130,6 +130,7 @@ import {
 } from "./workspace/repositoryPanelPreferences";
 import { resolveVisibleRepositorySelection } from "./workspace/visibleRepositorySelection";
 import {
+  deriveWorkingStatus,
   FilledPauseIcon,
   FilledPlayIcon,
   shouldShowThinkingPlaceholder,
@@ -1309,10 +1310,19 @@ export function WorkspacePage() {
 
   const waitingAssistantThreadId = chat.waitingAssistant?.threadId ?? null;
 
+  const workingStatus = useMemo(
+    () => deriveWorkingStatus({
+      events: chat.events,
+      selectedThreadUiStatus: chat.selectedThreadUiStatus,
+      timelineItems: chat.timelineItems,
+    }),
+    [chat.events, chat.selectedThreadUiStatus, chat.timelineItems],
+  );
   const showThinkingPlaceholder = shouldShowThinkingPlaceholder({
     selectedThreadUiStatus: chat.selectedThreadUiStatus,
     isWaitingForUserGate: gates.isWaitingForUserGate,
     timelineItems: chat.timelineItems,
+    workingStatus,
   });
 
   useEffect(() => {
@@ -1331,6 +1341,7 @@ export function WorkspacePage() {
       messagesCount: chat.messages.length,
       eventsCount: chat.events.length,
       showThinkingPlaceholder,
+      workingStatus,
       isWaitingForUserGate: gates.isWaitingForUserGate,
       composerDisabled: chat.composerDisabled,
       lastTimelineItemKind: lastTimelineItem?.kind ?? null,
@@ -1353,6 +1364,7 @@ export function WorkspacePage() {
     gates.isWaitingForUserGate,
     repos.selectedWorktreeId,
     showThinkingPlaceholder,
+    workingStatus,
     waitingAssistantThreadId,
   ]);
 
@@ -2080,6 +2092,9 @@ export function WorkspacePage() {
                         automationCreate: undefined,
                       });
                     }}
+                    onOpenRun={(run, repositoryId) => {
+                      handleSelectWorktree(repositoryId, run.worktreeId, run.threadId);
+                    }}
                     onCreateDialogOpenChange={(open) => {
                       updateSearch({
                         view: "automations",
@@ -2108,6 +2123,7 @@ export function WorkspacePage() {
                       items={chat.timelineItems}
                       emptyState={chat.messageListEmptyState}
                       showThinkingPlaceholder={showThinkingPlaceholder}
+                      workingStatus={workingStatus}
                       onOpenReadFile={openReadFile}
                       worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
                       footer={gates.showPlanDecisionComposer ? (

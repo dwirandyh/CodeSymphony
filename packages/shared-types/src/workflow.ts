@@ -33,6 +33,7 @@ export const WorktreeSchema = z.object({
   branch: z.string().min(1),
   path: z.string().min(1),
   baseBranch: z.string().min(1),
+  isAutomation: z.boolean().optional(),
   status: WorktreeStatusSchema,
   lastCreateError: z.string().nullable().optional(),
   lastDeleteError: z.string().nullable().optional(),
@@ -79,12 +80,16 @@ export const AutomationRunStatusSchema = z.enum([
   "succeeded",
   "failed",
   "canceled",
+  "missed",
   "skipped",
 ]);
 export type AutomationRunStatus = z.infer<typeof AutomationRunStatusSchema>;
 
-export const AutomationTriggerKindSchema = z.enum(["manual", "schedule"]);
+export const AutomationTriggerKindSchema = z.enum(["manual", "schedule", "catch_up"]);
 export type AutomationTriggerKind = z.infer<typeof AutomationTriggerKindSchema>;
+
+export const AutomationTargetModeSchema = z.enum(["repo_root", "worktree"]);
+export type AutomationTargetMode = z.infer<typeof AutomationTargetModeSchema>;
 
 export const AutomationRunSchema = z.object({
   id: z.string(),
@@ -161,6 +166,7 @@ export const AutomationSchema = z.object({
   id: z.string(),
   repositoryId: z.string(),
   targetWorktreeId: z.string(),
+  targetMode: AutomationTargetModeSchema,
   name: z.string().min(1),
   prompt: z.string().min(1),
   agent: CliAgentSchema,
@@ -186,6 +192,7 @@ export const ChatThreadSchema = z.object({
   worktreeId: z.string(),
   title: z.string().min(1),
   kind: ChatThreadKindSchema,
+  isAutomation: z.boolean().optional(),
   permissionProfile: ChatThreadPermissionProfileSchema,
   permissionMode: ChatThreadPermissionModeSchema,
   mode: ChatModeSchema,
@@ -591,6 +598,7 @@ export const CreateChatThreadInputSchema = z.object({
 export const CreateAutomationInputSchema = z.object({
   repositoryId: z.string().trim().min(1),
   targetWorktreeId: z.string().trim().min(1),
+  targetMode: AutomationTargetModeSchema.default("repo_root"),
   name: z.string().trim().min(1),
   prompt: z.string().trim().min(1),
   agent: CliAgentSchema,
@@ -613,9 +621,18 @@ export const UpdateChatThreadModeInputSchema = z.object({
 });
 export type UpdateChatThreadModeInput = z.infer<typeof UpdateChatThreadModeInputSchema>;
 
-export const UpdateAutomationInputSchema = CreateAutomationInputSchema.omit({
-  repositoryId: true,
-}).partial().extend({
+export const UpdateAutomationInputSchema = z.object({
+  targetWorktreeId: z.string().trim().min(1).optional(),
+  targetMode: AutomationTargetModeSchema.optional(),
+  name: z.string().trim().min(1).optional(),
+  prompt: z.string().trim().min(1).optional(),
+  agent: CliAgentSchema.optional(),
+  model: z.string().trim().min(1).optional(),
+  modelProviderId: z.string().trim().min(1).nullable().optional(),
+  permissionMode: ChatThreadPermissionModeSchema.optional(),
+  chatMode: ChatModeSchema.optional(),
+  rrule: z.string().trim().min(1).optional(),
+  timezone: z.string().trim().min(1).optional(),
   enabled: z.boolean().optional(),
 }).refine((value) => Object.keys(value).length > 0, {
   message: "At least one automation field must be updated",

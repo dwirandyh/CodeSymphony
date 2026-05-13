@@ -95,6 +95,7 @@ function createAutomationHarness() {
           data: {
             worktreeId: targetWorktreeId,
             title: input?.title ?? "New Thread",
+            isAutomation: input?.isAutomation === true,
             agent: input?.agent ?? "claude",
             model: input?.model ?? "claude-sonnet-4-6",
             modelProviderId: input?.modelProviderId ?? null,
@@ -108,6 +109,7 @@ function createAutomationHarness() {
           worktreeId: thread.worktreeId,
           title: thread.title,
           kind: thread.kind,
+          isAutomation: thread.isAutomation,
           permissionProfile: thread.permissionProfile,
           permissionMode: thread.permissionMode,
           mode: thread.mode,
@@ -199,6 +201,7 @@ describe("automationService", () => {
 
     expect(thread).toBeTruthy();
     expect(thread?.worktreeId).toBe(worktree.id);
+    expect(thread?.isAutomation).toBe(true);
     expect(runs).toHaveLength(1);
     expect(runs[0]?.threadId).toBe(dispatched.threadId);
     expect(runs[0]?.triggerKind).toBe("manual");
@@ -215,13 +218,19 @@ describe("automationService", () => {
         branch: "jakarta",
         path: `/tmp/${repository.id}-jakarta`,
         baseBranch: repository.defaultBranch,
+        isAutomation: true,
         status: "active",
       },
     });
 
     worktreeService.create = async (repositoryId, input) => {
       expect(repositoryId).toBe(repository.id);
-      expect(input).toEqual({});
+      expect(input).toMatchObject({
+        ensureInitialThread: false,
+        isAutomation: true,
+      });
+      expect(typeof input?.branch).toBe("string");
+      expect(input?.branch).toMatch(/^[a-z0-9-]+\/automation\/daily-audit(?:-\d+)?$/);
       return {
         worktree: freshWorktree,
         pending: true,
@@ -255,6 +264,7 @@ describe("automationService", () => {
 
     expect(thread).toBeTruthy();
     expect(thread?.worktreeId).toBe(freshWorktree.id);
+    expect(thread?.isAutomation).toBe(true);
     expect(runs[0]?.worktreeId).toBe(freshWorktree.id);
     expect(runs[0]?.triggerKind).toBe("manual");
   });
@@ -414,6 +424,155 @@ describe("automationService", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.triggerKind).toBe("schedule");
     expect(runs[0]?.threadId).toBeTruthy();
+  });
+
+  it("reconciles backlog by marking older slots missed and replaying only the latest missed slot", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      name: "Hourly audit",
+      prompt: "Run the hourly audit.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=HOURLY;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    await prisma.automation.update({
+      where: { id: created.id },
+      data: {
+        nextRunAt: new Date("2026-05-10T00:00:00.000Z"),
+      },
+    });
+
+    const dispatchedCount = await automationService.dispatchDueAutomations(new Date("2026-05-10T03:05:00.000Z"));
+    const runs = await automationService.listRuns(created.id);
+
+    expect(dispatchedCount).toBe(1);
+    expect(runs).toHaveLength(4);
+    expect(runs[0]).toMatchObject({
+      status: "running",
+      triggerKind: "catch_up",
+      scheduledFor: "2026-05-10T03:00:00.000Z",
+    });
+    expect(runs[0]?.threadId).toBeTruthy();
+    expect(runs[0]?.startedAt).toBeTruthy();
+    expect(runs.slice(1).map((run) => ({
+      status: run.status,
+      triggerKind: run.triggerKind,
+      scheduledFor: run.scheduledFor,
+      threadId: run.threadId,
+    }))).toEqual([
+      {
+        status: "missed",
+        triggerKind: "schedule",
+        scheduledFor: "2026-05-10T02:00:00.000Z",
+        threadId: null,
+      },
+      {
+        status: "missed",
+        triggerKind: "schedule",
+        scheduledFor: "2026-05-10T01:00:00.000Z",
+        threadId: null,
+      },
+      {
+        status: "missed",
+        triggerKind: "schedule",
+        scheduledFor: "2026-05-10T00:00:00.000Z",
+        threadId: null,
+      },
+    ]);
+    expect(runs[1]?.summary).toContain("runtime was unavailable");
+  });
+
+  it("marks due slots as missed when a previous automation run is still active", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      name: "Hourly audit",
+      prompt: "Run the hourly audit.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=HOURLY;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    await automationService.runAutomationNow(created.id);
+    await prisma.automation.update({
+      where: { id: created.id },
+      data: {
+        nextRunAt: new Date("2026-05-10T12:00:00.000Z"),
+      },
+    });
+
+    const dispatchedCount = await automationService.dispatchDueAutomations(new Date("2026-05-10T12:01:00.000Z"));
+    const runs = await automationService.listRuns(created.id);
+    const missedRun = runs.find((run) => run.status === "missed");
+
+    expect(dispatchedCount).toBe(0);
+    expect(runs).toHaveLength(2);
+    expect(missedRun).toMatchObject({
+      triggerKind: "schedule",
+      scheduledFor: "2026-05-10T12:00:00.000Z",
+      threadId: null,
+    });
+    expect(missedRun?.summary).toContain("still active");
+  });
+
+  it("recovers queued runs that were created before the runtime restarted", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      name: "Daily audit",
+      prompt: "Check the repo and summarize issues.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    await prisma.automationRun.create({
+      data: {
+        automationId: created.id,
+        repositoryId: repository.id,
+        worktreeId: worktree.id,
+        status: "queued",
+        triggerKind: "manual",
+        scheduledFor: new Date("2026-05-10T02:00:00.000Z"),
+      },
+    });
+
+    const recoveredCount = await automationService.recoverInFlightRuns();
+    const runs = await automationService.listRuns(created.id);
+
+    expect(recoveredCount).toBe(1);
+    expect(runs[0]).toMatchObject({
+      status: "running",
+      triggerKind: "manual",
+    });
+    expect(runs[0]?.threadId).toBeTruthy();
+    expect(runs[0]?.startedAt).toBeTruthy();
   });
 
   it("maps linked thread events into run lifecycle state", async () => {

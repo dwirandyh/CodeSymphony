@@ -1,0 +1,3 @@
+ALTER TABLE "Worktree" ADD COLUMN "isAutomation" BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE "ChatThread" ADD COLUMN "isAutomation" BOOLEAN NOT NULL DEFAULT false;

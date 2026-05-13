@@ -18,6 +18,7 @@ import { extractBashRuns } from "../bashUtils.js";
 import { extractEditedRuns } from "../editUtils.js";
 import { pushRenderDebug } from "../debug.js";
 import { logTimelineWarning } from "../logger.js";
+import type { AskUserQuestionGroup } from "../types.js";
 import type { SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types.js";
 
 function explicitSkillNameFromEvents(events: ChatEvent[]): string | null {
@@ -50,6 +51,168 @@ function askUserQuestionRunId(event: ChatEvent): string | null {
   }
 
   return null;
+}
+
+type AskUserQuestionGroupBuilder = {
+  events: ChatEvent[];
+  toolUseIds: Set<string>;
+  requestIds: Set<string>;
+  hasToolStarted: boolean;
+  hasToolFinished: boolean;
+  hasQuestionRequested: boolean;
+  hasQuestionResolved: boolean;
+};
+
+function createAskUserQuestionGroupBuilder(): AskUserQuestionGroupBuilder {
+  return {
+    events: [],
+    toolUseIds: new Set<string>(),
+    requestIds: new Set<string>(),
+    hasToolStarted: false,
+    hasToolFinished: false,
+    hasQuestionRequested: false,
+    hasQuestionResolved: false,
+  };
+}
+
+function isQuestionLifecycleEvent(event: ChatEvent): boolean {
+  return event.type === "question.requested" || event.type === "question.answered" || event.type === "question.dismissed";
+}
+
+function shouldAttachQuestionEventHeuristically(
+  group: AskUserQuestionGroupBuilder,
+  event: ChatEvent,
+): boolean {
+  if (isQuestionLifecycleEvent(event)) {
+    return group.hasToolStarted && !group.hasQuestionRequested;
+  }
+
+  if (!isAskUserQuestionToolEvent(event)) {
+    return false;
+  }
+
+  if (event.type === "tool.started") {
+    return group.hasQuestionRequested && !group.hasToolStarted && !group.hasToolFinished;
+  }
+
+  if (event.type === "tool.output") {
+    return group.hasQuestionRequested && !group.hasToolFinished;
+  }
+
+  return group.hasQuestionRequested && !group.hasToolFinished;
+}
+
+function updateAskUserQuestionGroupBuilder(
+  group: AskUserQuestionGroupBuilder,
+  event: ChatEvent,
+): void {
+  group.events.push(event);
+
+  const runId = askUserQuestionRunId(event);
+  if (runId) {
+    if (isQuestionLifecycleEvent(event)) {
+      group.requestIds.add(runId);
+    } else {
+      group.toolUseIds.add(runId);
+    }
+  }
+
+  if (event.type === "question.requested") {
+    group.hasQuestionRequested = true;
+    return;
+  }
+
+  if (event.type === "question.answered" || event.type === "question.dismissed") {
+    group.hasQuestionResolved = true;
+    return;
+  }
+
+  if (event.type === "tool.started") {
+    group.hasToolStarted = true;
+    return;
+  }
+
+  if (event.type === "tool.finished") {
+    group.hasToolFinished = true;
+  }
+}
+
+function toAskUserQuestionGroup(
+  builder: AskUserQuestionGroupBuilder,
+): AskUserQuestionGroup | null {
+  const sortedEvents = [...builder.events].sort((a, b) => a.idx - b.idx);
+  const firstEvent = sortedEvents[0] ?? null;
+  const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
+    ?? [...sortedEvents].reverse().find((event) => event.type === "question.answered")
+    ?? [...sortedEvents].reverse().find((event) => event.type === "question.dismissed")
+    ?? sortedEvents.find((event) => event.type === "question.requested")
+    ?? sortedEvents.find((event) => event.type === "tool.started")
+    ?? sortedEvents[sortedEvents.length - 1]
+    ?? null;
+  if (!firstEvent || !primaryEvent) {
+    return null;
+  }
+
+  const questionRequestedEvent = [...sortedEvents].reverse().find((event) => event.type === "question.requested") ?? null;
+  const rawQuestions = Array.isArray(questionRequestedEvent?.payload.questions) ? questionRequestedEvent.payload.questions : [];
+  const questionCount = rawQuestions.length > 0
+    ? rawQuestions.length
+    : sortedEvents.some((event) => event.type === "question.answered")
+      ? Math.max(...sortedEvents
+        .filter((event) => event.type === "question.answered")
+        .map((event) => {
+          const answers = event.payload.answers;
+          return answers && typeof answers === "object" ? Object.keys(answers as Record<string, unknown>).length : 0;
+        }), 0)
+      : 0;
+  const hasError = sortedEvents.some((event) => typeof event.payload.error === "string" && event.payload.error.length > 0);
+  const isRunning = !sortedEvents.some((event) =>
+    event.type === "tool.finished" || event.type === "question.answered" || event.type === "question.dismissed",
+  );
+  const resolvedStatus = hasError ? "failed" : isRunning ? "running" : "success";
+  const toolUseId = [...builder.toolUseIds][0] ?? [...builder.requestIds][0] ?? `ask-user-question:${firstEvent.idx}`;
+
+  return {
+    id: toolUseId,
+    toolUseId,
+    status: resolvedStatus,
+    summary: `Asked ${questionCount} Question${questionCount === 1 ? "" : "s"}`,
+    startIdx: firstEvent.idx,
+    anchorIdx: firstEvent.idx,
+    createdAt: firstEvent.createdAt,
+    eventIds: new Set(sortedEvents.map((event) => event.id)),
+    sourceEvents: sortedEvents,
+  };
+}
+
+export function extractAskUserQuestionGroups(events: ChatEvent[]): AskUserQuestionGroup[] {
+  const askUserQuestionEvents = events
+    .filter((event) => askUserQuestionRunId(event) !== null)
+    .sort((a, b) => a.idx - b.idx);
+
+  if (askUserQuestionEvents.length === 0) {
+    return [];
+  }
+
+  const groups: AskUserQuestionGroupBuilder[] = [];
+  for (const event of askUserQuestionEvents) {
+    const runId = askUserQuestionRunId(event);
+    let targetGroup = [...groups].reverse().find((group) =>
+      (runId != null && (group.toolUseIds.has(runId) || group.requestIds.has(runId)))
+      || shouldAttachQuestionEventHeuristically(group, event),
+    ) ?? null;
+
+    if (!targetGroup) {
+      targetGroup = createAskUserQuestionGroupBuilder();
+      groups.push(targetGroup);
+    }
+
+    updateAskUserQuestionGroupBuilder(targetGroup, event);
+  }
+
+  return groups
+    .map(toAskUserQuestionGroup)
+    .filter((group): group is AskUserQuestionGroup => group != null);
 }
 
 function toolRunId(event: ChatEvent): string | null {
@@ -370,71 +533,28 @@ export function processOrphanToolEvents(
     });
   }
 
-  const askUserQuestionEvents = orphanToolEvents.filter((event) => askUserQuestionRunId(event) !== null);
-  const askUserQuestionEventsByRunId = new Map<string, ChatEvent[]>();
-  for (const event of askUserQuestionEvents) {
-    const runId = askUserQuestionRunId(event);
-    if (!runId) {
-      continue;
-    }
-    const existing = askUserQuestionEventsByRunId.get(runId) ?? [];
-    existing.push(event);
-    askUserQuestionEventsByRunId.set(runId, existing);
-  }
-
-  for (const [runId, events] of askUserQuestionEventsByRunId.entries()) {
-    const sortedEvents = [...events].sort((a, b) => a.idx - b.idx);
-    const firstEvent = sortedEvents[0] ?? null;
-    const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
-      ?? [...sortedEvents].reverse().find((event) => event.type === "question.answered")
-      ?? [...sortedEvents].reverse().find((event) => event.type === "question.dismissed")
-      ?? sortedEvents.find((event) => event.type === "question.requested")
-      ?? sortedEvents.find((event) => event.type === "tool.started")
-      ?? sortedEvents[sortedEvents.length - 1]
-      ?? null;
-    if (!primaryEvent || !firstEvent) {
-      continue;
-    }
-
-    const questionRequestedEvent = [...sortedEvents].reverse().find((event) => event.type === "question.requested") ?? null;
-    const rawQuestions = Array.isArray(questionRequestedEvent?.payload.questions) ? questionRequestedEvent.payload.questions : [];
-    const questionCount = rawQuestions.length > 0
-      ? rawQuestions.length
-      : sortedEvents.some((event) => event.type === "question.answered")
-        ? Math.max(...sortedEvents
-          .filter((event) => event.type === "question.answered")
-          .map((event) => {
-            const answers = event.payload.answers;
-            return answers && typeof answers === "object" ? Object.keys(answers as Record<string, unknown>).length : 0;
-          }), 0)
-        : 0;
-    const summary = `Asked ${questionCount} Question${questionCount === 1 ? "" : "s"}`;
-    const hasError = sortedEvents.some((event) => typeof event.payload.error === "string" && event.payload.error.length > 0);
-    const isRunning = !sortedEvents.some((event) =>
-      event.type === "tool.finished" || event.type === "question.answered" || event.type === "question.dismissed",
-    );
-    const resolvedStatus = hasError ? "failed" : isRunning ? "running" : "success";
-
-    sortedEvents.forEach((event) => assignedToolEventIds.add(event.id));
+  const askUserQuestionGroups = extractAskUserQuestionGroups(orphanToolEvents);
+  for (const group of askUserQuestionGroups) {
+    group.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
     sortable.push({
       item: {
         kind: "tool",
-        id: `orphan:ask-user-question:${runId}`,
-        event: primaryEvent,
-        sourceEvents: sortedEvents,
-        toolUseId: runId,
+        id: `orphan:ask-user-question:${group.id}`,
+        event: group.sourceEvents[group.sourceEvents.length - 1] ?? null,
+        sourceEvents: group.sourceEvents,
+        toolUseId: group.toolUseId,
         toolName: "AskUserQuestion",
-        summary,
+        summary: group.summary,
         output: null,
-        error: typeof primaryEvent.payload.error === "string" ? primaryEvent.payload.error : null,
+        error: null,
         truncated: false,
         durationSeconds: null,
-        status: resolvedStatus,
+        status: group.status,
       },
-      anchorIdx: firstEvent.idx,
-      timestamp: parseTimestamp(firstEvent.createdAt),
+      anchorIdx: group.anchorIdx,
+      timestamp: parseTimestamp(group.createdAt),
       rank: 0,
-      stableOrder: firstEvent.idx,
+      stableOrder: group.startIdx,
     });
   }
 

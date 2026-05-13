@@ -1700,6 +1700,7 @@ export function useChatSession(
     }
 
     const waitingAssistantMatchesSelectedThread = waitingAssistant?.threadId === selectedThreadId;
+    const remoteStatusSnapshotNewestIdx = queriedThreadStatusSnapshot?.newestIdx ?? null;
     const waitingAssistantHasClearSignal =
       waitingAssistantMatchesSelectedThread
       && events.some(
@@ -1707,8 +1708,17 @@ export function useChatSession(
           event.idx > (waitingAssistant?.afterIdx ?? -1)
           && shouldClearWaitingAssistantOnEvent(event),
       );
+    const waitingAssistantResolvedByRemoteStatus =
+      waitingAssistantMatchesSelectedThread
+      && !waitingAssistantHasClearSignal
+      && serverStatusSnapshotCoversLocalHead
+      && authoritativeStatusSnapshotUiStatus !== "running"
+      && remoteStatusSnapshotNewestIdx != null
+      && remoteStatusSnapshotNewestIdx > (waitingAssistant?.afterIdx ?? -1);
     const decision =
-      waitingAssistantMatchesSelectedThread && !waitingAssistantHasClearSignal
+      waitingAssistantResolvedByRemoteStatus
+        ? "reconcile-inactive-from-remote-status"
+        : waitingAssistantMatchesSelectedThread && !waitingAssistantHasClearSignal
         ? "skip-waiting-for-first-assistant-signal"
         : !serverStatusSnapshotCoversLocalHead
         ? "skip-status-snapshot-behind-local"
@@ -1724,8 +1734,9 @@ export function useChatSession(
       waitingAssistantMatchesSelectedThread,
       waitingAssistantAfterIdx: waitingAssistantMatchesSelectedThread ? waitingAssistant?.afterIdx ?? null : null,
       waitingAssistantHasClearSignal,
+      waitingAssistantResolvedByRemoteStatus,
       remoteStatusSnapshotStatus: authoritativeStatusSnapshotUiStatus,
-      remoteStatusSnapshotNewestIdx: queriedThreadStatusSnapshot?.newestIdx ?? null,
+      remoteStatusSnapshotNewestIdx,
       localNewestEventIdx: events[events.length - 1]?.idx ?? null,
       decision,
     }, {
@@ -1733,7 +1744,11 @@ export function useChatSession(
       worktreeId: selectedWorktreeId,
     });
 
-    if (waitingAssistantMatchesSelectedThread && !waitingAssistantHasClearSignal) {
+    if (
+      waitingAssistantMatchesSelectedThread
+      && !waitingAssistantHasClearSignal
+      && !waitingAssistantResolvedByRemoteStatus
+    ) {
       return;
     }
 

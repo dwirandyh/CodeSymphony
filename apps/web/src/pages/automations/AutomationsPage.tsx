@@ -102,6 +102,7 @@ type AutomationDetailPageProps = {
   automationId: string;
   layout?: AutomationPageLayout;
   onBack?: () => void;
+  onOpenRun?: (run: AutomationRun, repositoryId: string) => void;
 };
 
 type WorkspaceAutomationsPanelProps = {
@@ -110,6 +111,7 @@ type WorkspaceAutomationsPanelProps = {
   prefills?: Omit<NonNullable<AutomationListPageProps["prefills"]>, "create">;
   onOpenAutomation: (automationId: string) => void;
   onBack: () => void;
+  onOpenRun?: (run: AutomationRun, repositoryId: string) => void;
   onCreateDialogOpenChange?: (open: boolean) => void;
 };
 
@@ -276,6 +278,9 @@ function getRunStatusVariant(status: string | null | undefined) {
   if (status === "waiting_input") {
     return "secondary" as const;
   }
+  if (status === "missed") {
+    return "secondary" as const;
+  }
   if (status === "running" || status === "dispatching" || status === "queued") {
     return "default" as const;
   }
@@ -284,6 +289,13 @@ function getRunStatusVariant(status: string | null | undefined) {
 
 function formatAutomationRunStatus(status: AutomationRun["status"]) {
   return status
+    .split("_")
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function formatAutomationTriggerKind(triggerKind: AutomationRun["triggerKind"]) {
+  return triggerKind
     .split("_")
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
     .join(" ");
@@ -982,9 +994,11 @@ function AutomationScheduleEditor({
 function AutomationRunList({
   automation,
   runs,
+  onOpenRun,
 }: {
   automation: Automation;
   runs: AutomationRun[];
+  onOpenRun?: (run: AutomationRun, repositoryId: string) => void;
 }) {
   return (
     <div className="space-y-3">
@@ -1000,7 +1014,10 @@ function AutomationRunList({
               <div className="min-w-0 space-y-1.5">
                 <div className="flex items-center gap-2">
                   <Badge variant={getRunStatusVariant(run.status)}>
-                    {run.status.replaceAll("_", " ")}
+                    {formatAutomationRunStatus(run.status)}
+                  </Badge>
+                  <Badge variant="outline">
+                    {formatAutomationTriggerKind(run.triggerKind)}
                   </Badge>
                   <span className="text-xs text-muted-foreground">{formatRelativeTime(run.scheduledFor)}</span>
                 </div>
@@ -1009,14 +1026,25 @@ function AutomationRunList({
               </div>
 
               {run.threadId ? (
-                <Link
-                  to="/"
-                  search={buildWorkspaceSearch(run, automation.repositoryId)}
-                  className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/80"
-                >
-                  Open
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </Link>
+                onOpenRun ? (
+                  <button
+                    type="button"
+                    className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/80"
+                    onClick={() => onOpenRun(run, automation.repositoryId)}
+                  >
+                    Open
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </button>
+                ) : (
+                  <Link
+                    to="/"
+                    search={buildWorkspaceSearch(run, automation.repositoryId)}
+                    className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-primary transition-colors hover:text-primary/80"
+                  >
+                    Open
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Link>
+                )
               ) : null}
             </div>
             </div>
@@ -1740,6 +1768,7 @@ export function AutomationDetailPage({
   automationId,
   layout = "page",
   onBack,
+  onOpenRun,
 }: AutomationDetailPageProps) {
   useWorkspaceSyncStream();
 
@@ -2122,7 +2151,11 @@ export function AutomationDetailPage({
 
             <section className="space-y-4 border-t border-border/40 py-5 xl:px-5">
               <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-foreground">Runs</h2>
-              <AutomationRunList automation={automation} runs={runsQuery.data ?? []} />
+              <AutomationRunList
+                automation={automation}
+                runs={runsQuery.data ?? []}
+                onOpenRun={onOpenRun}
+              />
             </section>
 
             <section className="space-y-4 pt-5 xl:px-5">
@@ -2146,6 +2179,7 @@ export function WorkspaceAutomationsPanel({
   prefills,
   onOpenAutomation,
   onBack,
+  onOpenRun,
   onCreateDialogOpenChange,
 }: WorkspaceAutomationsPanelProps) {
   if (automationId) {
@@ -2154,6 +2188,7 @@ export function WorkspaceAutomationsPanel({
         automationId={automationId}
         layout="panel"
         onBack={onBack}
+        onOpenRun={onOpenRun}
       />
     );
   }

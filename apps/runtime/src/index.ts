@@ -97,6 +97,7 @@ function createApp() {
     prisma,
     eventHub,
     workspaceEventHub,
+    worktreeService,
     chatService,
   });
 

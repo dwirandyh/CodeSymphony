@@ -12,13 +12,14 @@ import {
 import { parseTimestamp } from "../eventUtils.js";
 import { pushRenderDebug } from "../debug.js";
 import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry } from "./useWorkspaceTimeline.types.js";
-import type { BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types.js";
+import type { AskUserQuestionGroup, BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types.js";
 
 export function buildInlineInserts(
   bashRuns: BashRun[],
   editedRuns: EditedRun[],
   subagentGroups: SubagentGroup[],
   exploreActivityGroups: ExploreActivityGroup[],
+  askUserQuestionGroups: AskUserQuestionGroup[],
   planFileOutput: PlanFileOutput | undefined,
 ): InlineInsert[] {
   const hasInlineSubagentRuns = subagentGroups.length > 0;
@@ -53,6 +54,14 @@ export function buildInlineInserts(
     ...exploreActivityGroups.map((group, index) => ({
       kind: "explore-activity" as const,
       id: `explore:${group.id}:${index}`,
+      startIdx: group.startIdx,
+      anchorIdx: group.anchorIdx,
+      createdAt: group.createdAt,
+      group,
+    })),
+    ...askUserQuestionGroups.map((group, index) => ({
+      kind: "ask-user-question" as const,
+      id: `ask-user-question:${group.id}:${index}`,
       startIdx: group.startIdx,
       anchorIdx: group.anchorIdx,
       createdAt: group.createdAt,
@@ -299,7 +308,9 @@ export function applySubagentContentCleaning(
         hasLeadingCarry: false,
       };
     }
-  } else if ((!hasSegmentContent || deltasSignificantlyIncomplete) && cleanedContent.length > 0) {
+  } else if (hasSegmentContent && deltasSignificantlyIncomplete && cleanedContent.length > 0) {
+    hydrateIncompleteSegmentBuckets(segmentBuckets, inlineInserts, cleanedContent, anchorIdx, timestamp);
+  } else if (!hasSegmentContent && cleanedContent.length > 0) {
     for (const bucket of segmentBuckets) {
       bucket.content = "";
       bucket.anchorIdx = null;
@@ -323,6 +334,60 @@ export function applySubagentContentCleaning(
       hasLeadingCarry: false,
     };
   }
+}
+
+function hydrateIncompleteSegmentBuckets(
+  segmentBuckets: SegmentBucket[],
+  inlineInserts: InlineInsert[],
+  cleanedContent: string,
+  anchorIdx: number,
+  timestamp: number | null,
+): void {
+  const originalBuckets = segmentBuckets
+    .map((bucket, index) => ({ index, content: bucket.content }))
+    .filter((bucket) => bucket.content.length > 0);
+
+  if (originalBuckets.length === 0) {
+    return;
+  }
+
+  let cursor = 0;
+  for (const bucket of originalBuckets) {
+    const matchIndex = cleanedContent.indexOf(bucket.content, cursor);
+    if (matchIndex < 0) {
+      return;
+    }
+
+    if (matchIndex > cursor) {
+      const prefix = cleanedContent.slice(cursor, matchIndex);
+      segmentBuckets[bucket.index].content = prefix + segmentBuckets[bucket.index].content;
+    }
+
+    cursor = matchIndex + bucket.content.length;
+  }
+
+  const suffix = cleanedContent.slice(cursor);
+  if (suffix.length === 0) {
+    return;
+  }
+
+  const trailingBucketIndex = segmentBuckets.length - 1;
+  const trailingBucket = segmentBuckets[trailingBucketIndex];
+  trailingBucket.content += suffix;
+
+  if (trailingBucket.anchorIdx != null) {
+    return;
+  }
+
+  const lastInlineInsert = inlineInserts[inlineInserts.length - 1] ?? null;
+  const trailingAnchorIdx = lastInlineInsert ? lastInlineInsert.startIdx + 1 : anchorIdx;
+  trailingBucket.anchorIdx = trailingAnchorIdx;
+  trailingBucket.firstIdx = trailingAnchorIdx;
+  trailingBucket.lastIdx = trailingAnchorIdx;
+  trailingBucket.timestamp = trailingBucket.timestamp
+    ?? parseTimestamp(lastInlineInsert?.createdAt ?? "")
+    ?? timestamp;
+  trailingBucket.hasLeadingCarry = false;
 }
 
 export function rebalanceSentenceAwareSegmentBuckets(
@@ -609,6 +674,32 @@ function pushInlineInsert(
     });
     stableOffset.value += 0.001;
     return;
+  }
+
+  if (insert.kind === "ask-user-question") {
+    const group = insert.group;
+    const resolvedStatus = group.status === "running" && isCompleted ? "success" : group.status;
+    sortable.push({
+      item: {
+        kind: "tool",
+        id: `${message.id}:${group.id}:${insert.id}`,
+        event: group.sourceEvents[group.sourceEvents.length - 1] ?? null,
+        sourceEvents: group.sourceEvents,
+        toolUseId: group.toolUseId,
+        toolName: "AskUserQuestion",
+        summary: group.summary,
+        output: null,
+        error: null,
+        truncated: false,
+        durationSeconds: null,
+        status: resolvedStatus,
+      },
+      anchorIdx: forcedAnchorIdx ?? bucketAnchorIdx ?? group.anchorIdx,
+      timestamp: bucketTimestamp ?? timestamp,
+      rank: 3,
+      stableOrder: message.seq + stableOffset.value,
+    });
+    stableOffset.value += 0.001;
   }
 }
 
