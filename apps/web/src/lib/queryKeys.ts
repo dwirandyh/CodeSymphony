@@ -6,6 +6,14 @@ export const queryKeys = {
     branches: (repositoryId: string) => ["repositories", repositoryId, "branches"] as const,
     reviews: (repositoryId: string) => ["repositories", repositoryId, "reviews"] as const,
   },
+  automations: {
+    lists: ["automations", "list"] as const,
+    list: (repositoryId?: string, enabled?: boolean) =>
+      ["automations", "list", repositoryId ?? "__all__", enabled === undefined ? "__all__" : enabled ? "enabled" : "paused"] as const,
+    detail: (automationId: string) => ["automations", automationId] as const,
+    runs: (automationId: string) => ["automations", automationId, "runs"] as const,
+    versions: (automationId: string) => ["automations", automationId, "versions"] as const,
+  },
   worktrees: {
     gitStatus: (worktreeId: string) => ["worktrees", worktreeId, "gitStatus"] as const,
     gitBranchDiffSummary: (worktreeId: string, baseBranch: string) =>

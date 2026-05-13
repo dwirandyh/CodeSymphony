@@ -43,6 +43,7 @@ import {
   processOrphanToolEvents,
   processUnassignedSemanticEvents,
   processFailedEvents,
+  extractAskUserQuestionGroups,
 } from "./workspace-timeline/timelineOrphans.js";
 import { sanitizeAssistantVisibleText } from "./textUtils.js";
 import { pushRenderDebug } from "./debug.js";
@@ -637,6 +638,15 @@ export function buildTimelineFromSeed(params: {
         return true;
       })
       : nonSubagentContext;
+    const askUserQuestionGroups = message.role === "assistant"
+      ? extractAskUserQuestionGroups(nonBashContext)
+      : [];
+    const askUserQuestionEventIds = new Set<string>();
+    if (message.role === "assistant") {
+      for (const group of askUserQuestionGroups) {
+        group.eventIds.forEach((eventId) => askUserQuestionEventIds.add(eventId));
+      }
+    }
 
     const exploreActivityGroups = subagentExploreExtraction?.exploreActivityGroups ?? [];
     const claimedContextEventIds = subagentExploreExtraction?.claimedContextEventIds ?? new Set<string>();
@@ -697,6 +707,7 @@ export function buildTimelineFromSeed(params: {
       ? context.filter((event) =>
         !claimedContextEventIds.has(event.id)
         && !failedReadEventIds.has(event.id)
+        && !askUserQuestionEventIds.has(event.id)
         && !isQuestionLifecycleEvent(event)
       )
       : context;
@@ -728,6 +739,7 @@ export function buildTimelineFromSeed(params: {
       }
       exploreLikeBashEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
       exploreLikePermissionEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+      askUserQuestionEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
     }
 
     const hasInlineActivityCards =
@@ -735,6 +747,7 @@ export function buildTimelineFromSeed(params: {
       || editedRuns.length > 0
       || subagentGroups.length > 0
       || exploreActivityGroups.length > 0
+      || askUserQuestionGroups.length > 0
       || !!planFileOutput;
 
     if (message.role === "assistant" && activityContext.length > 0 && !hasInlineActivityCards) {
@@ -769,9 +782,16 @@ export function buildTimelineFromSeed(params: {
       activityContext.forEach((event) => assignedToolEventIds.add(event.id));
     }
 
-    if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
+    if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || askUserQuestionGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
       const hasInlineSubagentRuns = subagentGroups.length > 0;
-      const inlineInserts = buildInlineInserts(bashRuns, editedRuns, subagentGroups, exploreActivityGroups, planFileOutput);
+      const inlineInserts = buildInlineInserts(
+        bashRuns,
+        editedRuns,
+        subagentGroups,
+        exploreActivityGroups,
+        askUserQuestionGroups,
+        planFileOutput,
+      );
       const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
       const hasDirectMessageAnchor = firstScopedEventIdxByMessageId.has(message.id) || completedEventIdxByMessageId.has(message.id);
       const forcedInlineAnchorIdx = hasDirectMessageAnchor ? undefined : anchorIdx;

@@ -10,7 +10,11 @@ type TriggerState = {
 
 export type MentionState = TriggerState;
 
-type SlashCommandState = TriggerState;
+type SlashCommandTrigger = "/" | "$";
+
+type SlashCommandState = TriggerState & {
+  trigger: SlashCommandTrigger;
+};
 
 export type MentionedFile = FileEntry & { id: string };
 
@@ -66,7 +70,8 @@ function getTextFromNode(node: Node, options?: { serializeMentions?: boolean }):
   }
 
   if (node.dataset.slashCommand) {
-    return `/${node.dataset.slashCommand}`;
+    const trigger = node.dataset.slashCommandTrigger === "$" ? "$" : "/";
+    return `${trigger}${node.dataset.slashCommand}`;
   }
 
   if (node.tagName === "BR") {
@@ -110,7 +115,11 @@ function inactiveTriggerState(): TriggerState {
   return { active: false, query: "", startOffset: -1, anchorNode: null };
 }
 
-function detectTriggerInEditor(el: HTMLElement, trigger: "@" | "/"): TriggerState {
+function inactiveSlashCommandState(): SlashCommandState {
+  return { ...inactiveTriggerState(), trigger: "/" };
+}
+
+function detectTriggerInEditor(el: HTMLElement, trigger: "@" | "/" | "$"): TriggerState {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) {
     return inactiveTriggerState();
@@ -147,7 +156,20 @@ export function detectMentionInEditor(el: HTMLElement): MentionState {
 }
 
 export function detectSlashCommandInEditor(el: HTMLElement): SlashCommandState {
-  return detectTriggerInEditor(el, "/");
+  const slashState = detectTriggerInEditor(el, "/");
+  const dollarState = detectTriggerInEditor(el, "$");
+  const activeStates = [
+    slashState.active ? { ...slashState, trigger: "/" as const } : null,
+    dollarState.active ? { ...dollarState, trigger: "$" as const } : null,
+  ].filter((state): state is SlashCommandState => state !== null);
+
+  if (activeStates.length === 0) {
+    return inactiveSlashCommandState();
+  }
+
+  return activeStates.reduce((latest, state) => (
+    state.startOffset > latest.startOffset ? state : latest
+  ));
 }
 
 export const FILE_ICON_SVG =

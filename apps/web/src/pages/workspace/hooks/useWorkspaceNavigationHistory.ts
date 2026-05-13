@@ -5,7 +5,15 @@ const MAX_HISTORY_ENTRIES = 100;
 
 type WorkspaceNavigationSnapshot = Pick<
   WorkspaceSearch,
-  "repoId" | "worktreeId" | "threadId" | "view" | "file" | "fileLine" | "fileColumn"
+  | "repoId"
+  | "worktreeId"
+  | "threadId"
+  | "view"
+  | "file"
+  | "fileLine"
+  | "fileColumn"
+  | "automationId"
+  | "automationCreate"
 >;
 
 type WorkspaceNavigationHistoryState = {
@@ -14,10 +22,14 @@ type WorkspaceNavigationHistoryState = {
 };
 
 function normalizeWorkspaceNavigationSnapshot(search: WorkspaceSearch): WorkspaceNavigationSnapshot {
-  const view = search.view === "file" || search.view === "review" ? search.view : undefined;
+  const view = search.view === "file" || search.view === "review" || search.view === "automations" ? search.view : undefined;
   const file = view === "file" || view === "review" ? search.file ?? undefined : undefined;
   const normalizedView = view === "file" && !file ? undefined : view;
   const fileLine = normalizedView === "file" && file ? search.fileLine ?? undefined : undefined;
+  const automationId = normalizedView === "automations" ? search.automationId ?? undefined : undefined;
+  const automationCreate = normalizedView === "automations" && !automationId
+    ? search.automationCreate || undefined
+    : undefined;
 
   return {
     repoId: search.repoId ?? undefined,
@@ -27,6 +39,8 @@ function normalizeWorkspaceNavigationSnapshot(search: WorkspaceSearch): Workspac
     file,
     fileLine,
     fileColumn: normalizedView === "file" && file && fileLine ? search.fileColumn ?? undefined : undefined,
+    automationId,
+    automationCreate,
   };
 }
 
@@ -42,6 +56,8 @@ function areWorkspaceNavigationSnapshotsEqual(
     && left.file === right.file
     && left.fileLine === right.fileLine
     && left.fileColumn === right.fileColumn
+    && left.automationId === right.automationId
+    && left.automationCreate === right.automationCreate
   );
 }
 
@@ -52,6 +68,8 @@ function isMeaningfulWorkspaceNavigationSnapshot(snapshot: WorkspaceNavigationSn
     || snapshot.threadId
     || snapshot.view
     || snapshot.file
+    || snapshot.automationId
+    || snapshot.automationCreate
   );
 }
 
@@ -101,7 +119,17 @@ export function useWorkspaceNavigationHistory({
 
   const snapshot = useMemo(
     () => normalizeWorkspaceNavigationSnapshot(search),
-    [search.file, search.fileColumn, search.fileLine, search.repoId, search.threadId, search.view, search.worktreeId],
+    [
+      search.automationCreate,
+      search.automationId,
+      search.file,
+      search.fileColumn,
+      search.fileLine,
+      search.repoId,
+      search.threadId,
+      search.view,
+      search.worktreeId,
+    ],
   );
 
   useEffect(() => {
@@ -153,6 +181,8 @@ export function useWorkspaceNavigationHistory({
       file: targetSnapshot.file,
       fileLine: targetSnapshot.fileLine,
       fileColumn: targetSnapshot.fileColumn,
+      automationId: targetSnapshot.automationId,
+      automationCreate: targetSnapshot.automationCreate,
     });
   }, [updateSearch]);
 

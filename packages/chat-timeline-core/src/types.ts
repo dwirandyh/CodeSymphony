@@ -1,4 +1,5 @@
 import type {
+  ChatEvent,
   ChatTimelineActivityStep as ActivityTraceStep,
   ChatTimelineExploreActivityEntry as ExploreActivityEntry,
 } from "@codesymphony/shared-types";
@@ -97,6 +98,18 @@ export type SubagentGroup = {
   anchorIdx: number;
   createdAt: string;
   eventIds: Set<string>;
+};
+
+export type AskUserQuestionGroup = {
+  id: string;
+  toolUseId: string;
+  status: "running" | "success" | "failed";
+  summary: string;
+  startIdx: number;
+  anchorIdx: number;
+  createdAt: string;
+  eventIds: Set<string>;
+  sourceEvents: ChatEvent[];
 };
 
 type PendingPermissionRequest = {

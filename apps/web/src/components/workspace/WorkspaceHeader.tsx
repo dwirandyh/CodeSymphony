@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
 import {
+  CalendarCog,
   ChevronDown,
   ChevronRight,
   Dot,
@@ -81,6 +82,21 @@ function FilledPauseIcon({ className }: { className?: string }) {
       <rect x="3.5" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
       <rect x="9" y="2.5" width="3.5" height="11" rx="0.8" fill="currentColor" />
     </svg>
+  );
+}
+
+function ThreadTabLabel({ thread }: { thread: ChatThread }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      {thread.isAutomation ? (
+        <CalendarCog
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          data-testid={`thread-${thread.id}-automation-icon`}
+          aria-hidden="true"
+        />
+      ) : null}
+      <span className="truncate">{thread.title}</span>
+    </span>
   );
 }
 
@@ -398,7 +414,7 @@ export function WorkspaceHeader({
                       aria-selected={isSelected}
                       title={thread.title}
                       className={cn(
-                        "max-w-[180px] truncate px-2 py-1.5 text-xs font-medium transition-colors",
+                        "flex max-w-[180px] min-w-0 items-center px-2 py-1.5 text-xs font-medium transition-colors",
                         isSelected && "text-foreground",
                       )}
                       onClick={() => onSelectThread(thread.id)}
@@ -407,7 +423,7 @@ export function WorkspaceHeader({
                       onFocus={() => onPrefetchThread?.(thread.id)}
                       disabled={disabled}
                     >
-                      {thread.title}
+                      <ThreadTabLabel thread={thread} />
                     </button>
                   )}
 

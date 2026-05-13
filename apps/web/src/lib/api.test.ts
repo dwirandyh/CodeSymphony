@@ -213,6 +213,68 @@ describe("api", () => {
     });
   });
 
+  describe("automation operations", () => {
+    it("lists automations with filters", async () => {
+      mockFetch.mockReturnValueOnce(mockOk([{ id: "automation-1" }]));
+      const result = await api.listAutomations({ repositoryId: "repo-1", enabled: true });
+      expect(result).toEqual([{ id: "automation-1" }]);
+      expect(mockFetch.mock.calls[0]?.[0]).toContain("/automations?repositoryId=repo-1&enabled=true");
+    });
+
+    it("creates an automation", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ id: "automation-1" }));
+      const result = await api.createAutomation({
+        repositoryId: "repo-1",
+        targetWorktreeId: "worktree-1",
+        targetMode: "repo_root",
+        name: "Daily audit",
+        prompt: "Summarize repository issues.",
+        agent: "claude",
+        model: "claude-sonnet-4-6",
+        modelProviderId: null,
+        permissionMode: "default",
+        chatMode: "default",
+        rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+        timezone: "UTC",
+      });
+      expect(result).toEqual({ id: "automation-1" });
+      expect(mockFetch.mock.calls[0]?.[0]).toContain("/automations");
+      expect(mockFetch.mock.calls[0]?.[1]?.method).toBe("POST");
+    });
+
+    it("updates an automation", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ id: "automation-1", enabled: false }));
+      const result = await api.updateAutomation("automation-1", { enabled: false });
+      expect(result).toEqual({ id: "automation-1", enabled: false });
+      expect(mockFetch.mock.calls[0]?.[0]).toContain("/automations/automation-1");
+      expect(mockFetch.mock.calls[0]?.[1]?.method).toBe("PATCH");
+      expect(mockFetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ enabled: false }));
+    });
+
+    it("runs an automation now", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ id: "run-1" }));
+      const result = await api.runAutomationNow("automation-1");
+      expect(result).toEqual({ id: "run-1" });
+      expect(mockFetch.mock.calls[0]?.[0]).toContain("/automations/automation-1/run");
+      expect(mockFetch.mock.calls[0]?.[1]?.method).toBe("POST");
+    });
+
+    it("lists automation runs and prompt versions", async () => {
+      mockFetch.mockReturnValueOnce(mockOk([{ id: "run-1" }]));
+      mockFetch.mockReturnValueOnce(mockOk([{ id: "version-1" }]));
+      expect(await api.listAutomationRuns("automation-1")).toEqual([{ id: "run-1" }]);
+      expect(await api.listAutomationPromptVersions("automation-1")).toEqual([{ id: "version-1" }]);
+    });
+
+    it("restores an automation prompt version", async () => {
+      mockFetch.mockReturnValueOnce(mockOk({ id: "automation-1" }));
+      const result = await api.restoreAutomationPromptVersion("automation-1", "version-1");
+      expect(result).toEqual({ id: "automation-1" });
+      expect(mockFetch.mock.calls[0]?.[0]).toContain("/automations/automation-1/versions/version-1/restore");
+      expect(mockFetch.mock.calls[0]?.[1]?.method).toBe("POST");
+    });
+  });
+
   describe("renameWorktreeBranch", () => {
     it("renames branch", async () => {
       mockFetch.mockReturnValueOnce(mockOk({ id: "w1", branch: "new-name" }));

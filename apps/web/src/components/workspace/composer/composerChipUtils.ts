@@ -64,3 +64,20 @@ export function createAttachmentChipElement(attachment: PendingAttachment): HTML
 
   return chip;
 }
+
+export function createSlashCommandChipElement(commandName: string, trigger: "/" | "$" = "/"): HTMLSpanElement {
+  const chip = document.createElement("span");
+  chip.contentEditable = "false";
+  chip.dataset.slashCommand = commandName;
+  chip.dataset.slashCommandTrigger = trigger;
+  chip.className =
+    "inline-flex items-center rounded-md border border-blue-500/30 bg-blue-500/15 px-1.5 py-0 text-xs text-blue-400 mx-0.5 align-baseline cursor-default select-none";
+  chip.setAttribute("title", `${trigger}${commandName}`);
+
+  const label = document.createElement("span");
+  label.className = "max-w-[140px] truncate";
+  label.textContent = `${trigger}${commandName}`;
+  chip.appendChild(label);
+
+  return chip;
+}

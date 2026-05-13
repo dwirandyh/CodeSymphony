@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   ApprovePlanInputSchema,
   ApprovePlanResultSchema,
+  AutomationSchema,
   BUILTIN_CHAT_MODELS_BY_AGENT,
   CliAgentSchema,
   CodexModelCatalogSchema,
+  CreateAutomationInputSchema,
   CreateChatThreadInputSchema,
   CreateModelProviderInputSchema,
   DEFAULT_CHAT_MODEL_BY_AGENT,
@@ -14,6 +16,7 @@ import {
   shouldHandoffApprovedPlanExecution,
   shouldPreserveThreadSelectionSessionIds,
   TestModelProviderInputSchema,
+  UpdateAutomationInputSchema,
   UpdateChatThreadAgentSelectionInputSchema,
   UpdateModelProviderInputSchema,
 } from "./workflow.js";
@@ -145,6 +148,65 @@ describe("Cursor shared workflow schemas", () => {
       executionKind: "same_thread_switch",
       sourceThreadId: "t1",
       executionThreadId: "t1",
+    });
+  });
+
+  it("accepts automation definitions and automation updates", () => {
+    expect(CreateAutomationInputSchema.parse({
+      repositoryId: "repo-1",
+      targetWorktreeId: "worktree-1",
+      targetMode: "worktree",
+      name: "Daily audit",
+      prompt: "Summarize repository issues.",
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "plan",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "Asia/Jakarta",
+    })).toMatchObject({
+      agent: "cursor",
+      chatMode: "plan",
+      targetMode: "worktree",
+      timezone: "Asia/Jakarta",
+    });
+
+    expect(UpdateAutomationInputSchema.parse({
+      prompt: "Summarize repository issues and propose fixes.",
+      enabled: false,
+    })).toMatchObject({
+      prompt: "Summarize repository issues and propose fixes.",
+      enabled: false,
+    });
+
+    expect(AutomationSchema.parse({
+      id: "automation-1",
+      repositoryId: "repo-1",
+      targetWorktreeId: "worktree-1",
+      targetMode: "repo_root",
+      name: "Daily audit",
+      prompt: "Summarize repository issues.",
+      agent: "cursor",
+      model: "default[]",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "plan",
+      enabled: true,
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "Asia/Jakarta",
+      dtstart: "2026-01-01T00:00:00.000Z",
+      nextRunAt: "2026-01-02T02:00:00.000Z",
+      lastRunAt: null,
+      latestRun: null,
+      promptVersionCount: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    })).toMatchObject({
+      agent: "cursor",
+      latestRun: null,
+      promptVersionCount: 1,
+      targetMode: "repo_root",
     });
   });
 

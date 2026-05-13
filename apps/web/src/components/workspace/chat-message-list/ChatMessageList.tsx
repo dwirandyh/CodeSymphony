@@ -237,6 +237,7 @@ export const ChatMessageList = memo(function ChatMessageList({
   items,
   emptyState = "existing-thread-empty",
   showThinkingPlaceholder = false,
+  workingStatus = null,
   onOpenReadFile,
   worktreePath = null,
   footer = null,
@@ -1271,7 +1272,12 @@ export const ChatMessageList = memo(function ChatMessageList({
             if (item === "thinking-placeholder") {
               return (
                 <div key="thinking-placeholder" className={`mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}pb-4`}>
-                  <ThinkingPlaceholder />
+                  <ThinkingPlaceholder
+                    label={workingStatus?.label}
+                    startedAt={workingStatus?.startedAt}
+                    finishedAt={workingStatus?.finishedAt}
+                    state={workingStatus?.state}
+                  />
                 </div>
               );
             }

@@ -1,4 +1,5 @@
 export type {
+  ChatWorkingStatus,
   ChatTimelineItem,
 } from "./ChatMessageList.types";
 

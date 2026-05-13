@@ -69,6 +69,32 @@ function slugify(value: string): string {
     .replace(/(^-|-$)/g, "") || "item";
 }
 
+function resolveAutomationOwnerSlug(): string {
+  const envUsername = process.env.USER?.trim() || process.env.LOGNAME?.trim();
+  if (envUsername) {
+    return slugify(envUsername);
+  }
+
+  try {
+    const username = os.userInfo().username?.trim();
+    if (username) {
+      return slugify(username);
+    }
+  } catch {
+    // Fall back to a deterministic final default below.
+  }
+
+  return "automation";
+}
+
+export function buildAutomationBranchName(
+  title: string,
+  options?: { username?: string | null },
+): string {
+  const ownerSlug = slugify(options?.username?.trim() || resolveAutomationOwnerSlug());
+  return `${ownerSlug}/automation/${slugify(title)}`;
+}
+
 function resolveWorktreeRoot(): string {
   const configured = process.env.WORKTREE_ROOT?.trim();
   if (configured && configured.length > 0) {
@@ -97,6 +123,24 @@ function buildProvinceBranchName(attempt: number): string {
   const cycle = Math.floor(attempt / INDONESIAN_PROVINCES.length);
   const provinceSlug = slugify(INDONESIAN_PROVINCES[provinceIndex]);
   return cycle === 0 ? provinceSlug : `${provinceSlug}-${cycle + 1}`;
+}
+
+function readInternalCreateWorktreeOptions(rawInput: unknown): {
+  ensureInitialThread: boolean;
+  isAutomation: boolean;
+} {
+  if (!rawInput || typeof rawInput !== "object") {
+    return {
+      ensureInitialThread: true,
+      isAutomation: false,
+    };
+  }
+
+  const record = rawInput as Record<string, unknown>;
+  return {
+    ensureInitialThread: record.ensureInitialThread === false ? false : true,
+    isAutomation: record.isAutomation === true,
+  };
 }
 
 const PROVINCE_SLUGS = new Set(INDONESIAN_PROVINCES.map((name) => slugify(name)));
@@ -148,6 +192,17 @@ export function createWorktreeService(
 ) {
   const activeProvisionJobs = new Map<string, Promise<void>>();
 
+  async function readWorktreeOrThrow(worktreeId: string): Promise<Worktree> {
+    const worktree = await prisma.worktree.findUnique({
+      where: { id: worktreeId },
+    });
+    if (!worktree) {
+      throw new Error("Worktree not found");
+    }
+
+    return mapWorktree(worktree);
+  }
+
   async function ensureInitialThread(worktreeId: string): Promise<string> {
     const existing = await prisma.chatThread.findFirst({
       where: { worktreeId },
@@ -191,6 +246,7 @@ export function createWorktreeService(
     worktreePath: string;
     branch: string;
     baseBranch: string;
+    ensureInitialThread: boolean;
   }): void {
     if (activeProvisionJobs.has(params.worktreeId)) {
       return;
@@ -208,7 +264,9 @@ export function createWorktreeService(
         });
         gitWorktreeCreated = true;
 
-        const threadId = await ensureInitialThread(params.worktreeId);
+        const threadId = params.ensureInitialThread
+          ? await ensureInitialThread(params.worktreeId)
+          : null;
         await prisma.worktree.update({
           where: { id: params.worktreeId },
           data: {
@@ -218,7 +276,9 @@ export function createWorktreeService(
         });
 
         emitWorktreeUpdate(params.repositoryId, params.worktreeId);
-        emitThreadCreated(params.repositoryId, params.worktreeId, threadId);
+        if (threadId) {
+          emitThreadCreated(params.repositoryId, params.worktreeId, threadId);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
 
@@ -278,6 +338,7 @@ export function createWorktreeService(
 
     async create(repositoryId: string, rawInput: unknown): Promise<CreateWorktreeResult> {
       const input: CreateWorktreeInput = CreateWorktreeInputSchema.parse(rawInput ?? {});
+      const internalOptions = readInternalCreateWorktreeOptions(rawInput);
 
       const repository = await prisma.repository.findUnique({ where: { id: repositoryId } });
       if (!repository) {
@@ -332,6 +393,7 @@ export function createWorktreeService(
               branch,
               path: worktreePath,
               baseBranch,
+              isAutomation: internalOptions.isAutomation,
               status: "creating",
               lastCreateError: null,
             },
@@ -344,6 +406,7 @@ export function createWorktreeService(
             worktreePath,
             branch,
             baseBranch,
+            ensureInitialThread: internalOptions.ensureInitialThread,
           });
 
           return {
@@ -368,6 +431,29 @@ export function createWorktreeService(
       }
 
       throw new Error("Unable to allocate an automatic worktree name. Try deleting unused worktrees first.");
+    },
+
+    async waitUntilReady(worktreeId: string): Promise<Worktree> {
+      const provisionJob = activeProvisionJobs.get(worktreeId);
+      if (provisionJob) {
+        await provisionJob;
+      }
+
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const worktree = await readWorktreeOrThrow(worktreeId);
+        if (worktree.status === "active") {
+          return worktree;
+        }
+        if (worktree.status !== "creating") {
+          throw new Error(getUnavailableWorktreeErrorMessage(worktree));
+        }
+
+        await new Promise((resolve) => {
+          setTimeout(resolve, 500);
+        });
+      }
+
+      throw new Error(WORKTREE_PREPARING_ERROR_MESSAGE);
     },
 
     async remove(id: string, options?: { force?: boolean }): Promise<void> {

@@ -231,4 +231,59 @@ describe("processOrphanToolEvents", () => {
       "tool.finished",
     ]);
   });
+
+  it("coalesces AskUserQuestion when requestId differs from toolUseId", () => {
+    const inlineToolEvents: ChatEvent[] = [
+      makeEvent(1, "tool.started", {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-call-1",
+      }),
+      makeEvent(2, "question.requested", {
+        requestId: "question-1",
+        questions: [
+          { question: "Only question?" },
+        ],
+      }),
+      makeEvent(3, "question.answered", {
+        requestId: "question-1",
+        answers: {
+          "Only question?": "Only answer",
+        },
+      }),
+      makeEvent(4, "tool.finished", {
+        toolName: "AskUserQuestion",
+        summary: "Completed AskUserQuestion",
+        precedingToolUseIds: ["ask-call-1"],
+      }),
+    ];
+
+    const sortable: Array<{ item: { kind: string; [key: string]: unknown } }> = [];
+    processOrphanToolEvents(
+      inlineToolEvents,
+      new Set<string>(),
+      false,
+      [],
+      sortable as never,
+      "t1",
+      {
+        streamingMessageIds: new Set<string>(),
+        stickyRawFallbackMessageIds: new Set<string>(),
+        renderDecisionByMessageId: new Map<string, string>(),
+        loggedOrphanEventIdsByThread: new Map<string, Set<string>>(),
+      },
+    );
+
+    const toolItems = sortable.filter((entry) => entry.item.kind === "tool");
+
+    expect(toolItems).toHaveLength(1);
+    expect(toolItems[0]?.item.toolName).toBe("AskUserQuestion");
+    expect(toolItems[0]?.item.summary).toBe("Asked 1 Question");
+    expect(toolItems[0]?.item.toolUseId).toBe("ask-call-1");
+    expect((toolItems[0]?.item.sourceEvents as ChatEvent[] | undefined)?.map((event) => event.type)).toEqual([
+      "tool.started",
+      "question.requested",
+      "question.answered",
+      "tool.finished",
+    ]);
+  });
 });
