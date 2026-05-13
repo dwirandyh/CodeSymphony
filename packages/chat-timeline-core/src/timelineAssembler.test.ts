@@ -339,6 +339,208 @@ describe("buildTimelineFromSeed", () => {
     expect(combinedMessageIndex).toBeLessThan(firstQuestionIndex);
   });
 
+  it("interleaves AskUserQuestion cards with assistant text even when requestId differs from toolUseId", () => {
+    const text1 = "Saya akan ground dulu ke repo dan cek pola nyata di feature/shopkeeper. ";
+    const text2 = "Saya sudah verifikasi screen legacy dan caller dari home. ";
+    const text3 = "Keputusan berikutnya menyentuh API publik core/ui. ";
+    const messages = [
+      makeMessage("m1", 0, "user", "rewrite"),
+      makeMessage("m2", 1, "assistant", `${text1}${text2}${text3}`),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: text1,
+      }),
+      makeEvent(2, "tool.started", {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-call-1",
+        messageId: "m2",
+      }),
+      makeEvent(3, "question.requested", {
+        requestId: "question-1",
+        questions: [{ question: "scope?" }],
+        messageId: "m2",
+      }),
+      makeEvent(4, "question.answered", {
+        requestId: "question-1",
+        answers: { "scope?": "Android implementation" },
+      }),
+      makeEvent(5, "tool.finished", {
+        toolName: "AskUserQuestion",
+        precedingToolUseIds: ["ask-call-1"],
+        summary: "Completed AskUserQuestion",
+        messageId: "m2",
+      }),
+      makeEvent(6, "tool.started", {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-call-2",
+        messageId: "m2",
+      }),
+      makeEvent(7, "question.requested", {
+        requestId: "question-2",
+        questions: [{ question: "button api?" }],
+        messageId: "m2",
+      }),
+      makeEvent(8, "question.answered", {
+        requestId: "question-2",
+        answers: { "button api?": "variant enum" },
+      }),
+      makeEvent(9, "tool.finished", {
+        toolName: "AskUserQuestion",
+        precedingToolUseIds: ["ask-call-2"],
+        summary: "Completed AskUserQuestion",
+        messageId: "m2",
+      }),
+      makeEvent(10, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: text2,
+      }),
+      makeEvent(11, "tool.started", {
+        toolName: "AskUserQuestion",
+        toolUseId: "ask-call-3",
+        messageId: "m2",
+      }),
+      makeEvent(12, "question.requested", {
+        requestId: "question-3",
+        questions: [{ question: "logout parity?" }],
+        messageId: "m2",
+      }),
+      makeEvent(13, "question.answered", {
+        requestId: "question-3",
+        answers: { "logout parity?": "KickUnauthorized" },
+      }),
+      makeEvent(14, "tool.finished", {
+        toolName: "AskUserQuestion",
+        precedingToolUseIds: ["ask-call-3"],
+        summary: "Completed AskUserQuestion",
+        messageId: "m2",
+      }),
+      makeEvent(15, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: text3,
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const signatures = result.items.map((item) => (
+      item.kind === "message"
+        ? `message:${item.message.content}`
+        : item.kind === "tool"
+          ? `tool:${item.summary}`
+          : item.kind
+    ));
+
+    expect(signatures).toEqual([
+      "message:rewrite",
+      `message:${text1}`,
+      "tool:Asked 1 Question",
+      "tool:Asked 1 Question",
+      `message:${text2}`,
+      "tool:Asked 1 Question",
+      `message:${text3}`,
+    ]);
+  });
+
+  it("preserves partial delta segmentation around bash cards when message content outruns the live deltas", () => {
+    const text1 = "Saya stage hanya file task ini. ";
+    const text2 = "Perubahan lain ";
+    const text3 = "saya biarkan lokal. Commit sudah masuk. Push berikutnya aman.";
+    const messages = [
+      makeMessage("m1", 0, "user", "commit ini"),
+      makeMessage("m2", 1, "assistant", `${text1}${text2}${text3}`),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: text1,
+      }),
+      makeEvent(2, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-add",
+        messageId: "m2",
+        command: "git add ...",
+        shell: "bash",
+        isBash: true,
+      }),
+      makeEvent(3, "tool.finished", {
+        toolName: "Bash",
+        precedingToolUseIds: ["bash-add"],
+        messageId: "m2",
+        summary: "Ran git add ...",
+        command: "git add ...",
+        shell: "bash",
+        isBash: true,
+      }),
+      makeEvent(4, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: text2,
+      }),
+      makeEvent(5, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-commit",
+        messageId: "m2",
+        command: "git commit ...",
+        shell: "bash",
+        isBash: true,
+      }),
+      makeEvent(6, "tool.finished", {
+        toolName: "Bash",
+        precedingToolUseIds: ["bash-commit"],
+        messageId: "m2",
+        summary: "Ran git commit ...",
+        command: "git commit ...",
+        shell: "bash",
+        isBash: true,
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const assistantMessages = result.items.filter(
+      (item): item is Extract<(typeof result.items)[number], { kind: "message" }> =>
+        item.kind === "message" && item.message.role === "assistant",
+    );
+    const firstToolIndex = result.items.findIndex(
+      (item) => item.kind === "tool" && item.summary === "Ran git add ...",
+    );
+    const secondToolIndex = result.items.findIndex(
+      (item) => item.kind === "tool" && item.summary === "Ran git commit ...",
+    );
+    const combinedMessageIndex = result.items.findIndex(
+      (item) => item.kind === "message" && item.message.role === "assistant" && item.message.content === `${text1}${text2}${text3}`,
+    );
+    const firstAssistantIndex = result.items.findIndex(
+      (item) => item.kind === "message" && item.message.role === "assistant" && item.message.content.startsWith(text1),
+    );
+    const trailingAssistantIndex = result.items.findIndex(
+      (item) => item.kind === "message" && item.message.role === "assistant" && item.message.content.includes("Commit sudah masuk."),
+    );
+
+    expect(assistantMessages.length).toBeGreaterThanOrEqual(3);
+    expect(firstAssistantIndex).toBeGreaterThan(-1);
+    expect(firstToolIndex).toBeGreaterThan(firstAssistantIndex);
+    expect(secondToolIndex).toBeGreaterThan(firstToolIndex);
+    expect(trailingAssistantIndex).toBeGreaterThan(secondToolIndex);
+    expect(combinedMessageIndex).toBe(-1);
+  });
+
   it("keeps a completed explanatory message intact before a later explore activity card", () => {
     const messages = [
       makeMessage("m1", 0, "user", "Investigate auth."),

@@ -155,6 +155,7 @@ describe("Cursor shared workflow schemas", () => {
     expect(CreateAutomationInputSchema.parse({
       repositoryId: "repo-1",
       targetWorktreeId: "worktree-1",
+      targetMode: "worktree",
       name: "Daily audit",
       prompt: "Summarize repository issues.",
       agent: "cursor",
@@ -167,6 +168,7 @@ describe("Cursor shared workflow schemas", () => {
     })).toMatchObject({
       agent: "cursor",
       chatMode: "plan",
+      targetMode: "worktree",
       timezone: "Asia/Jakarta",
     });
 
@@ -182,6 +184,7 @@ describe("Cursor shared workflow schemas", () => {
       id: "automation-1",
       repositoryId: "repo-1",
       targetWorktreeId: "worktree-1",
+      targetMode: "repo_root",
       name: "Daily audit",
       prompt: "Summarize repository issues.",
       agent: "cursor",
@@ -203,6 +206,7 @@ describe("Cursor shared workflow schemas", () => {
       agent: "cursor",
       latestRun: null,
       promptVersionCount: 1,
+      targetMode: "repo_root",
     });
   });
 

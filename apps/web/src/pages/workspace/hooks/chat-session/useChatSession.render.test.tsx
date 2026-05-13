@@ -2053,6 +2053,94 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).toBeNull();
   });
 
+  it("clears stale waitingAssistant from an authoritative idle remote snapshot even without a local completion event", async () => {
+    const serverTimelineItems: ChatTimelineItem[] = [
+      {
+        kind: "message",
+        message: {
+          id: "assistant-1",
+          threadId: "thread-a",
+          seq: 1,
+          role: "assistant",
+          content: "Canonical answer",
+          attachments: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        },
+        renderHint: "markdown",
+        isCompleted: true,
+        context: [],
+      },
+    ];
+
+    threadsState.data = [{ ...makeThread("thread-a", true), title: "New Thread" }];
+    statusSnapshotState.data = {
+      status: "running",
+      newestIdx: 0,
+    };
+    snapshotState.data = makeSnapshot({
+      newestSeq: 0,
+      newestIdx: 0,
+      messages: [],
+      events: [],
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      hookResult.startWaitingAssistant("thread-a");
+      await Promise.resolve();
+    });
+
+    expect(hookResult.waitingAssistant?.threadId).toBe("thread-a");
+    expect(hookResult.selectedThreadUiStatus).toBe("running");
+
+    statusSnapshotState.data = {
+      status: "idle",
+      newestIdx: 5,
+    };
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 5,
+      timelineItems: serverTimelineItems as ChatTimelineSnapshot["timelineItems"],
+      summary: {
+        oldestRenderableKey: "message:assistant-1",
+        oldestRenderableKind: "message",
+        oldestRenderableMessageId: "assistant-1",
+        oldestRenderableHydrationPending: false,
+        headIdentityStable: true,
+      },
+      messages: [{
+        id: "assistant-1",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical answer",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [{
+        id: "event-5",
+        threadId: "thread-a",
+        idx: 5,
+        type: "chat.completed",
+        payload: { messageId: "assistant-1" },
+        createdAt: "2026-01-01T00:00:01Z",
+      }],
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(hookResult.waitingAssistant).toBeNull();
+    expect(hookResult.selectedThreadUiStatus).toBe("idle");
+    expect(hookResult.timelineItems).toEqual(serverTimelineItems);
+    expect(hookResult.messageListEmptyState).toBeNull();
+  });
+
   it("prefers a fresh authoritative server timeline while idle even when derived local timeline drifts", async () => {
     const serverTimelineItems: ChatTimelineItem[] = [
       {

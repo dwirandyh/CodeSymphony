@@ -616,15 +616,29 @@ fn request_runtime_shutdown(app_handle: &tauri::AppHandle) {
     }
 }
 
+fn shutdown_requested(app_handle: &tauri::AppHandle) -> bool {
+    app_handle
+        .try_state::<AppShutdown>()
+        .map(|state| state.0.load(Ordering::Relaxed))
+        .unwrap_or(true)
+}
+
+fn show_main_window(app_handle: &tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+
+        #[cfg(target_os = "macos")]
+        schedule_macos_traffic_light_adjustment(app_handle, "main", "window.reopen");
+    }
+}
+
 fn monitor_managed_runtime(app_handle: tauri::AppHandle, port: u16, is_dev: bool) {
     loop {
         thread::sleep(Duration::from_secs(2));
 
-        let shutdown_requested = app_handle
-            .try_state::<AppShutdown>()
-            .map(|state| state.0.load(Ordering::Relaxed))
-            .unwrap_or(true);
-        if shutdown_requested {
+        if shutdown_requested(&app_handle) {
             break;
         }
 
@@ -1063,6 +1077,15 @@ fn main() {
                 }
             }
 
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" && !shutdown_requested(&window.app_handle()) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
+            }
+
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 request_runtime_shutdown(&window.app_handle());
                 stop_managed_runtime(&window.app_handle());
@@ -1070,14 +1093,16 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if matches!(
-                event,
-                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-            ) {
+        .run(|app_handle, event| match event {
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                show_main_window(app_handle);
+            }
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 request_runtime_shutdown(app_handle);
                 stop_managed_runtime(app_handle);
             }
+            _ => {}
         });
 }
 

@@ -1,4 +1,5 @@
-import type { ChatTimelineItem } from "@codesymphony/shared-types";
+import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
+import type { ChatWorkingStatus } from "../../components/workspace/chat-message-list";
 
 export function resolveChatMessageListKey(params: {
   previousKey: string;
@@ -22,17 +23,136 @@ export function shouldShowThinkingPlaceholder(params: {
   selectedThreadUiStatus: string;
   isWaitingForUserGate: boolean;
   timelineItems: ChatTimelineItem[];
+  workingStatus?: ChatWorkingStatus | null;
 }): boolean {
-  if (params.selectedThreadUiStatus !== "running" || params.isWaitingForUserGate) {
+  if (params.isWaitingForUserGate) {
     return false;
   }
 
-  const lastTimelineItem = params.timelineItems[params.timelineItems.length - 1] ?? null;
-  if (lastTimelineItem?.kind === "message" && lastTimelineItem.message.role === "assistant") {
-    return false;
+  return params.selectedThreadUiStatus === "running" || params.workingStatus?.state === "completed";
+}
+
+function getTimelineItemCreatedAt(item: ChatTimelineItem): string | null {
+  switch (item.kind) {
+    case "message":
+      return item.message.createdAt;
+    case "plan-file-output":
+      return item.createdAt;
+    case "edited-diff":
+      return item.createdAt;
+    case "tool":
+      return item.event?.createdAt ?? item.sourceEvents?.[0]?.createdAt ?? null;
+    case "error":
+      return item.createdAt;
+    default:
+      return null;
+  }
+}
+
+function findLatestUserMessageCreatedAt(items: ChatTimelineItem[]): string | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.kind === "message" && item.message.role === "user") {
+      return item.message.createdAt;
+    }
+  }
+  return null;
+}
+
+function findLatestRunningItem(items: ChatTimelineItem[]): ChatTimelineItem | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (!item || !("status" in item)) {
+      continue;
+    }
+    if (item.status === "running") {
+      return item;
+    }
+  }
+  return null;
+}
+
+function findLatestTerminalEventAfter(events: ChatEvent[], startedAt: string | null): ChatEvent | null {
+  const startedAtMs = startedAt ? Date.parse(startedAt) : NaN;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event || (event.type !== "chat.completed" && event.type !== "chat.failed")) {
+      continue;
+    }
+    const eventMs = Date.parse(event.createdAt);
+    if (!Number.isFinite(startedAtMs) || !Number.isFinite(eventMs) || eventMs >= startedAtMs) {
+      return event;
+    }
+  }
+  return null;
+}
+
+function workingLabelForItem(item: ChatTimelineItem | null): string {
+  if (!item) {
+    return "Thinking";
   }
 
-  return true;
+  switch (item.kind) {
+    case "edited-diff":
+      return "Editing";
+    case "explore-activity":
+      return "Exploring";
+    case "subagent-activity":
+      return "Delegating";
+    case "tool":
+      if (item.shell === "bash") {
+        return "Running command";
+      }
+      return item.toolName ? `Using ${item.toolName}` : "Using tool";
+    case "message":
+      return item.message.role === "assistant" ? "Working" : "Thinking";
+    default:
+      return "Working";
+  }
+}
+
+export function deriveWorkingStatus(params: {
+  events?: ChatEvent[];
+  selectedThreadUiStatus?: string;
+  timelineItems: ChatTimelineItem[];
+}): ChatWorkingStatus | null {
+  const runningItem = findLatestRunningItem(params.timelineItems);
+  const lastItem = params.timelineItems[params.timelineItems.length - 1] ?? null;
+  const startedAt =
+    findLatestUserMessageCreatedAt(params.timelineItems)
+    ?? (runningItem ? getTimelineItemCreatedAt(runningItem) : null)
+    ?? (lastItem ? getTimelineItemCreatedAt(lastItem) : null);
+
+  if (!startedAt) {
+    return null;
+  }
+
+  if (params.selectedThreadUiStatus === "running") {
+    const label =
+      !runningItem
+        && lastItem?.kind === "message"
+        && lastItem.message.role === "user"
+        ? "Waiting for response"
+        : workingLabelForItem(runningItem ?? lastItem);
+    return {
+      label,
+      startedAt,
+      finishedAt: null,
+      state: "running",
+    };
+  }
+
+  const terminalEvent = findLatestTerminalEventAfter(params.events ?? [], startedAt);
+  if (!terminalEvent) {
+    return null;
+  }
+
+  return {
+    label: "Worked",
+    startedAt,
+    finishedAt: terminalEvent.createdAt,
+    state: "completed",
+  };
 }
 
 

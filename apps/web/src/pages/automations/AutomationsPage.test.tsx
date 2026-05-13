@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Automation, AutomationPromptVersion, AutomationRun, Repository } from "@codesymphony/shared-types";
-import { AutomationDetailPage, AutomationsListPage } from "./AutomationsPage";
+import { AutomationDetailPage, AutomationsListPage, WorkspaceAutomationsPanel } from "./AutomationsPage";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const apiMocks = vi.hoisted(() => ({
@@ -752,5 +752,37 @@ describe("AutomationDetailPage", () => {
 
     expect(apiMocks.restoreAutomationPromptVersion).toHaveBeenCalledWith("automation-1", "version-restore");
     expect(getEditorText(promptField)).toContain(restoredAutomation.prompt);
+  });
+
+  it("opens a run through the workspace callback instead of router navigation in panel mode", async () => {
+    const onOpenRun = vi.fn();
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspaceAutomationsPanel
+            automationId="automation-1"
+            onOpenAutomation={vi.fn()}
+            onBack={vi.fn()}
+            onOpenRun={onOpenRun}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushEffects();
+    await flushEffects();
+    await flushEffects();
+
+    await act(async () => {
+      findButton("Open").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onOpenRun).toHaveBeenCalledWith(expect.objectContaining({
+      id: "run-1",
+      worktreeId: "wt-1",
+      threadId: "thread-1",
+    }), "repo-1");
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 });

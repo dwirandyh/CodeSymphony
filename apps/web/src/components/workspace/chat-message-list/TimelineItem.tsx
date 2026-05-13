@@ -1,4 +1,4 @@
-import { memo, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Bot, ChevronRight, Loader2, XCircle } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { isExploreLikeBashCommand } from "../../../pages/workspace/eventUtils";
@@ -20,6 +20,7 @@ import {
 } from "./toolEventUtils";
 import { AssistantContent, MarkdownBody } from "./AssistantContent";
 import { UserMessageContent, PlanInlineMessage } from "./UserMessageContent";
+import { BrailleSpinner } from "../BrailleSpinner";
 
 function parseAllowedToolsCount(text: string | null): number | null {
   const allowedToolsMatch = text?.match(/(\d+)\s+tool(?:s)?\s+allowed\b/i) ?? null;
@@ -166,11 +167,74 @@ function parseAskUserQuestionTool(item: Extract<ChatTimelineItem, { kind: "tool"
   };
 }
 
-export const ThinkingPlaceholder = memo(function ThinkingPlaceholder() {
+function formatWorkingDuration(startedAt: string | null, nowMs: number): string | null {
+  if (!startedAt) {
+    return null;
+  }
+  const startedAtMs = Date.parse(startedAt);
+  if (!Number.isFinite(startedAtMs) || nowMs < startedAtMs) {
+    return null;
+  }
+  const elapsedSeconds = Math.floor((nowMs - startedAtMs) / 1000);
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s`;
+  }
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  if (minutes < 60) {
+    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+}
+
+export const ThinkingPlaceholder = memo(function ThinkingPlaceholder({
+  label = "Thinking",
+  startedAt = null,
+  finishedAt = null,
+  state = "running",
+}: {
+  label?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  state?: "running" | "completed";
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!startedAt || state !== "running") {
+      return;
+    }
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [startedAt, state]);
+
+  const finishedAtMs = finishedAt ? Date.parse(finishedAt) : NaN;
+  const duration = formatWorkingDuration(
+    startedAt,
+    state === "completed" && Number.isFinite(finishedAtMs) ? finishedAtMs : nowMs,
+  );
+  const statusText = state === "completed"
+    ? duration ? `Worked for ${duration}` : "Worked"
+    : label === "Waiting for response"
+      ? "Waiting for response..."
+      : duration ? `${label} for ${duration}` : `${label}...`;
+
   return (
     <article className="flex w-full justify-start" data-testid="thinking-placeholder">
-      <div className="max-w-[85%] px-1 text-sm text-muted-foreground">
-        <span className="thinking-shimmer font-medium">Thinking...</span>
+      <div className="flex max-w-[85%] items-center gap-2 px-1 text-sm text-muted-foreground">
+        {state === "running" ? (
+          <BrailleSpinner />
+        ) : (
+          <span aria-hidden="true" className="inline-block w-[1ch] text-muted-foreground/70">
+            •
+          </span>
+        )}
+        <span className="font-medium">
+          {statusText}
+        </span>
       </div>
     </article>
   );

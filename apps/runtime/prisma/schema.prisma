@@ -84,12 +84,19 @@ enum AutomationRunStatus {
   succeeded
   failed
   canceled
+  missed
   skipped
 }
 
 enum AutomationTriggerKind {
   manual
   schedule
+  catch_up
+}
+
+enum AutomationTargetMode {
+  repo_root
+  worktree
 }
 
 model Repository {
@@ -114,6 +121,7 @@ model Worktree {
   branch         String
   path           String         @unique
   baseBranch     String
+  isAutomation   Boolean        @default(false)
   status         WorktreeStatus @default(active)
   lastCreateError String?
   lastDeleteError String?
@@ -135,6 +143,7 @@ model ChatThread {
   worktreeId          String
   title               String
   kind                ChatThreadKind              @default(default)
+  isAutomation        Boolean                     @default(false)
   permissionProfile   ChatThreadPermissionProfile @default(default)
   permissionMode      ChatThreadPermissionMode    @default(default)
   mode                ChatMode                    @default(default)
@@ -271,12 +280,13 @@ model Automation {
   id              String                   @id @default(cuid())
   repositoryId    String
   targetWorktreeId String
+  targetMode      AutomationTargetMode     @default(repo_root)
   name            String
   prompt          String
   agent           CliAgent                 @default(claude)
   model           String                   @default("claude-sonnet-4-6")
   modelProviderId String?
-  permissionMode  ChatThreadPermissionMode @default(default)
+  permissionMode  ChatThreadPermissionMode @default(full_access)
   chatMode        ChatMode                 @default(default)
   enabled         Boolean                  @default(true)
   rrule           String
