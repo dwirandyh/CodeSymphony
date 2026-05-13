@@ -16,6 +16,7 @@ function toPlainWorktree(worktree: Worktree): Worktree {
     branch: worktree.branch,
     path: worktree.path,
     baseBranch: worktree.baseBranch,
+    isAutomation: worktree.isAutomation,
     status: worktree.status,
     lastCreateError: worktree.lastCreateError ?? null,
     lastDeleteError: worktree.lastDeleteError ?? null,

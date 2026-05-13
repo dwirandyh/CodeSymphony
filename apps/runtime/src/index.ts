@@ -26,6 +26,7 @@ import { createModelProviderService } from "./services/modelProviderService.js";
 import { createReviewService } from "./services/reviewService.js";
 import { createDeviceService } from "./services/deviceService.js";
 import { createWorktreeDeletionService } from "./services/worktreeDeletionService.js";
+import { createAutomationService } from "./services/automationService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -36,6 +37,7 @@ import { registerDebugRoutes, resolveDatabaseInfo } from "./routes/debug.js";
 import { registerModelRoutes } from "./routes/models.js";
 import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
+import { registerAutomationRoutes } from "./routes/automations.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -55,6 +57,7 @@ declare module "fastify" {
     reviewService: ReturnType<typeof createReviewService>;
     deviceService: ReturnType<typeof createDeviceService>;
     worktreeDeletionService: ReturnType<typeof createWorktreeDeletionService>;
+    automationService: ReturnType<typeof createAutomationService>;
   }
 }
 
@@ -90,6 +93,13 @@ function createApp() {
     logService,
     modelProviderService,
   });
+  const automationService = createAutomationService({
+    prisma,
+    eventHub,
+    workspaceEventHub,
+    worktreeService,
+    chatService,
+  });
 
   app.decorate("prisma", prisma);
   app.decorate("eventHub", eventHub);
@@ -107,6 +117,7 @@ function createApp() {
   app.decorate("reviewService", reviewService);
   app.decorate("deviceService", deviceService);
   app.decorate("worktreeDeletionService", worktreeDeletionService);
+  app.decorate("automationService", automationService);
 
   app.register(cors, {
     origin: true,
@@ -149,8 +160,10 @@ function createApp() {
   app.register(registerModelRoutes, { prefix: "/api" });
   app.register(registerWorkspaceEventRoutes, { prefix: "/api" });
   app.register(registerDeviceRoutes, { prefix: "/api" });
+  app.register(registerAutomationRoutes, { prefix: "/api" });
 
   app.addHook("onClose", async () => {
+    automationService.dispose();
     await deviceService.stopAll();
   });
 
@@ -216,6 +229,9 @@ async function main() {
     const recoveredStuckThreadCount = await app.chatService.recoverStuckThreads();
     const recoveredPendingCreationCount = await app.worktreeService.recoverPendingCreations();
     const recoveredPendingDeletionCount = await app.worktreeDeletionService.recoverPendingDeletions();
+    const recoveredAutomationRunCount = await app.automationService.recoverInFlightRuns();
+    await app.automationService.dispatchDueAutomations();
+    app.automationService.startScheduler();
 
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
 
@@ -232,6 +248,9 @@ async function main() {
     }
     if (recoveredPendingDeletionCount > 0) {
       app.logService.log("info", "runtime", `Recovered ${recoveredPendingDeletionCount} interrupted worktree deletion(s)`);
+    }
+    if (recoveredAutomationRunCount > 0) {
+      app.logService.log("info", "runtime", `Rebound ${recoveredAutomationRunCount} in-flight automation run(s)`);
     }
   } catch (error) {
     if (error instanceof DatabaseNotReadyError) {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
-import { createWorktreeService, isDefaultBranchName, TeardownError } from "../src/services/worktreeService";
+import { buildAutomationBranchName, createWorktreeService, isDefaultBranchName, TeardownError } from "../src/services/worktreeService";
 
 let prisma: PrismaClient;
 let repoDir: string;
@@ -180,6 +180,25 @@ describe("worktreeService", () => {
       expect(result.worktree.status).toBe("creating");
       const readyWorktree = await waitForProvisionedWorktree(service, result.worktree.id);
       expect(readyWorktree.branch).toBe("feature-test-x");
+    });
+
+    it("creates an automation worktree without a placeholder thread", async () => {
+      const branch = buildAutomationBranchName("Nightly Audit", { username: "qa.user" });
+      const result = await service.create(repositoryId, {
+        branch,
+        ensureInitialThread: false,
+        isAutomation: true,
+      });
+      createdWorktreeIds.push(result.worktree.id);
+
+      expect(result.worktree.isAutomation).toBe(true);
+      expect(result.worktree.branch).toBe("qa-user/automation/nightly-audit");
+
+      const readyWorktree = await waitForProvisionedWorktree(service, result.worktree.id);
+      expect(readyWorktree.isAutomation).toBe(true);
+
+      const threads = await service.listThreads(result.worktree.id);
+      expect(threads).toHaveLength(0);
     });
 
     it("throws for non-existent repository", async () => {

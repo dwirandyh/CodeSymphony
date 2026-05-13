@@ -462,7 +462,7 @@ function ComposerContent({
   const cannotQueue = cannotSend || !onQueueDraft;
   const composerPlaceholder = isPlan
     ? "Describe what you want to plan..."
-    : "Message CodeSymphony... (type / for commands, @ to mention files)";
+    : "Message CodeSymphony... (type / or $ for commands, @ to mention files)";
   const selectedAttachmentPreview = useMemo(
     () => attachments.find((attachment) => attachment.id === attachmentPreviewId) ?? null,
     [attachmentPreviewId, attachments],
@@ -1248,9 +1248,12 @@ function ComposerContent({
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-1.5">
                         {entry.highlighted ? (
-                          <span className="font-medium" dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
+                          <span className="font-medium">
+                            {slashCommand.trigger}
+                            <span dangerouslySetInnerHTML={{ __html: entry.highlighted }} />
+                          </span>
                         ) : (
-                          <span className="font-medium">/{entry.name}</span>
+                          <span className="font-medium">{slashCommand.trigger}{entry.name}</span>
                         )}
                         {entry.argumentHint ? (
                           <span className="truncate text-xs text-muted-foreground">{entry.argumentHint}</span>

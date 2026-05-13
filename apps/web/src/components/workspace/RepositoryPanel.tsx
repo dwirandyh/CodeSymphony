@@ -11,6 +11,7 @@ import {
 import { useQueries } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  CalendarCog,
   ChevronDown,
   ChevronRight,
   Filter,
@@ -33,6 +34,7 @@ import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
 import { Badge } from "../ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
+import { BrailleSpinner } from "./BrailleSpinner";
 import { cn } from "../../lib/utils";
 import { isPendingWorktreeStatus, isRootWorktree, isSelectableWorktreeStatus } from "../../lib/worktree";
 import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBranchDiffSummary";
@@ -162,16 +164,7 @@ function WorktreeStatusBadge({
         aria-label="Running"
         title="Running"
       >
-        <span className="relative flex h-2 w-2">
-          <span
-            className="absolute inset-0 inline-flex animate-ping rounded-full bg-sky-500/75"
-            aria-hidden="true"
-          />
-          <span
-            className="relative inline-flex h-2 w-2 rounded-full bg-sky-500"
-            aria-hidden="true"
-          />
-        </span>
+        <BrailleSpinner className="text-[11px]" />
       </div>
     );
   }
@@ -339,37 +332,43 @@ function WorktreeRowContent({
   hideStatusOnHover?: boolean;
 }) {
   const metaIndentClass = review ? "pl-[20px]" : "pl-[14px]";
+  const hasMetaRow = detailBadge != null || review != null || insertions > 0 || deletions > 0;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex min-w-0 items-center justify-between gap-2">
+    <div className="flex min-w-0 flex-1 items-center justify-between gap-2" data-testid={`${testId}-content`}>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
           {icon}
           {branchContent}
         </div>
-        <WorktreeMetaSlot hiddenOnHover={hideStatusOnHover}>
-          <WorktreeStatusBadge status={status} />
-        </WorktreeMetaSlot>
+        {hasMetaRow ? (
+          <div
+            className={cn("flex min-w-0 items-center gap-1.5 pt-0.5", metaIndentClass)}
+            data-testid={`${testId}-meta`}
+          >
+            <WorktreeMetaSlot>
+              {detailBadge}
+            </WorktreeMetaSlot>
+            <WorktreeMetaSlot>
+              <WorktreeReviewBadge
+                review={review}
+                kind={reviewKind}
+                testId={testId}
+              />
+            </WorktreeMetaSlot>
+            <WorktreeMetaSlot>
+              <WorktreeDiffSummary
+                insertions={insertions}
+                deletions={deletions}
+                testId={testId}
+              />
+            </WorktreeMetaSlot>
+          </div>
+        ) : null}
       </div>
-      <div className={cn("flex min-w-0 items-center gap-1.5 pt-0.5", metaIndentClass)}>
-        <WorktreeMetaSlot>
-          {detailBadge}
-        </WorktreeMetaSlot>
-        <WorktreeMetaSlot>
-          <WorktreeReviewBadge
-            review={review}
-            kind={reviewKind}
-            testId={testId}
-          />
-        </WorktreeMetaSlot>
-        <WorktreeMetaSlot>
-          <WorktreeDiffSummary
-            insertions={insertions}
-            deletions={deletions}
-            testId={testId}
-          />
-        </WorktreeMetaSlot>
-      </div>
+      <WorktreeMetaSlot hiddenOnHover={hideStatusOnHover}>
+        <WorktreeStatusBadge status={status} />
+      </WorktreeMetaSlot>
     </div>
   );
 }
@@ -1310,7 +1309,13 @@ export const RepositoryPanel = memo(function RepositoryPanel({
                                 <WorktreeRowContent
                                   icon={
                                     <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-                                      {isPendingWorktreeStatus(worktree.status) ? (
+                                      {worktree.isAutomation ? (
+                                        <CalendarCog
+                                          className="h-3.5 w-3.5 text-muted-foreground"
+                                          data-testid={`worktree-${worktree.id}-automation-icon`}
+                                          aria-hidden="true"
+                                        />
+                                      ) : isPendingWorktreeStatus(worktree.status) ? (
                                         <Loader2
                                           className="h-3.5 w-3.5 animate-spin text-muted-foreground"
                                           aria-hidden="true"

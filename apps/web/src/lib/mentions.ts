@@ -8,12 +8,12 @@
 
 /** Regex that matches a single mention token such as `@file:src/index.ts` or `@dir:src/utils`. */
 export const MENTION_TOKEN_REGEX = /@(file|dir):([\w./_-][\w./_-]*[\w._-])/g;
-export const SLASH_COMMAND_TOKEN_REGEX = /(?<!\S)\/(\w[\w-]*)(?=$|[\s.,!?;:])/g;
+export const SLASH_COMMAND_TOKEN_REGEX = /(?<!\S)([/$])(\w[\w-]*)(?=$|[\s.,!?;:])/g;
 
 type MentionSegment =
   | { kind: "text"; value: string }
   | { kind: "mention"; path: string; name: string; isDirectory: boolean }
-  | { kind: "slash-command"; name: string };
+  | { kind: "slash-command"; name: string; trigger: "/" | "$" };
 
 /**
  * Parse a message string into an array of text and mention segments.
@@ -36,8 +36,9 @@ export function parseUserMentions(content: string): MentionSegment[] {
       const fullPath = match[2];
       const name = fullPath.split("/").pop() ?? fullPath;
       segments.push({ kind: "mention", path: fullPath, name, isDirectory: typeTag === "dir" });
-    } else if (match[3]) {
-      segments.push({ kind: "slash-command", name: match[3] });
+    } else if (match[3] && match[4]) {
+      const trigger = match[3] === "$" ? "$" : "/";
+      segments.push({ kind: "slash-command", name: match[4], trigger });
     }
 
     lastIndex = match.index + match[0].length;

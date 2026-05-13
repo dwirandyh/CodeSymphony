@@ -593,8 +593,49 @@ describe("ChatMessageList", () => {
     act(() => {
       root.render(<ChatMessageList {...baseProps} showThinkingPlaceholder={true} />);
     });
-    expect(container.querySelector("[data-testid='thinking-placeholder']")).toBeTruthy();
+    const placeholder = container.querySelector("[data-testid='thinking-placeholder']");
+    expect(placeholder).toBeTruthy();
     expect(container.textContent).toContain("Thinking...");
+    const spinner = placeholder?.querySelector("span[aria-hidden='true']");
+    expect(spinner?.className).toContain("text-primary");
+  });
+
+  it("renders a waiting label before assistant activity starts", () => {
+    act(() => {
+      root.render(
+        <ChatMessageList
+          {...baseProps}
+          showThinkingPlaceholder={true}
+          workingStatus={{
+            label: "Waiting for response",
+            startedAt: "2026-01-01T00:00:00Z",
+            finishedAt: null,
+            state: "running",
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Waiting for response...");
+  });
+
+  it("renders a completed past-tense placeholder label", () => {
+    act(() => {
+      root.render(
+        <ChatMessageList
+          {...baseProps}
+          showThinkingPlaceholder={true}
+          workingStatus={{
+            label: "Worked",
+            startedAt: "2026-01-01T00:00:00Z",
+            finishedAt: "2026-01-01T00:00:08Z",
+            state: "completed",
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Worked for 8s");
   });
 
   it("keeps post-plan activity visible when thinking placeholder is enabled", () => {

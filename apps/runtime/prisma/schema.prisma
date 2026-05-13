@@ -76,6 +76,29 @@ enum CliAgent {
   opencode
 }
 
+enum AutomationRunStatus {
+  queued
+  dispatching
+  running
+  waiting_input
+  succeeded
+  failed
+  canceled
+  missed
+  skipped
+}
+
+enum AutomationTriggerKind {
+  manual
+  schedule
+  catch_up
+}
+
+enum AutomationTargetMode {
+  repo_root
+  worktree
+}
+
 model Repository {
   id            String     @id @default(cuid())
   name          String
@@ -88,6 +111,8 @@ model Repository {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   worktrees     Worktree[]
+  automations   Automation[]
+  automationRuns AutomationRun[]
 }
 
 model Worktree {
@@ -96,6 +121,7 @@ model Worktree {
   branch         String
   path           String         @unique
   baseBranch     String
+  isAutomation   Boolean        @default(false)
   status         WorktreeStatus @default(active)
   lastCreateError String?
   lastDeleteError String?
@@ -105,6 +131,8 @@ model Worktree {
 
   repository Repository   @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   threads    ChatThread[]
+  automations Automation[]
+  automationRuns AutomationRun[]
 
   @@unique([repositoryId, branch])
   @@index([repositoryId])
@@ -115,6 +143,7 @@ model ChatThread {
   worktreeId          String
   title               String
   kind                ChatThreadKind              @default(default)
+  isAutomation        Boolean                     @default(false)
   permissionProfile   ChatThreadPermissionProfile @default(default)
   permissionMode      ChatThreadPermissionMode    @default(default)
   mode                ChatMode                    @default(default)
@@ -139,6 +168,7 @@ model ChatThread {
   messages      ChatMessage[]
   events        ChatEvent[]
   queuedMessages ChatQueuedMessage[]
+  automationRuns AutomationRun[]
 
   @@index([worktreeId])
   @@index([worktreeId, kind, createdAt])
@@ -235,6 +265,7 @@ model ModelProvider {
   updatedAt DateTime @updatedAt
 
   threads ChatThread[]
+  automations Automation[]
 
   @@index([agent, isActive])
 }
@@ -243,4 +274,79 @@ model AppSettings {
   id        String   @id @default("singleton")
   modelId   String   @default("")
   updatedAt DateTime @updatedAt
+}
+
+model Automation {
+  id              String                   @id @default(cuid())
+  repositoryId    String
+  targetWorktreeId String
+  targetMode      AutomationTargetMode     @default(repo_root)
+  name            String
+  prompt          String
+  agent           CliAgent                 @default(claude)
+  model           String                   @default("claude-sonnet-4-6")
+  modelProviderId String?
+  permissionMode  ChatThreadPermissionMode @default(full_access)
+  chatMode        ChatMode                 @default(default)
+  enabled         Boolean                  @default(true)
+  rrule           String
+  timezone        String
+  dtstart         DateTime
+  nextRunAt       DateTime
+  lastRunAt       DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  repository     Repository            @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  targetWorktree Worktree              @relation(fields: [targetWorktreeId], references: [id], onDelete: Cascade)
+  modelProvider  ModelProvider?        @relation(fields: [modelProviderId], references: [id], onDelete: SetNull)
+  runs           AutomationRun[]
+  promptVersions AutomationPromptVersion[]
+
+  @@index([repositoryId])
+  @@index([targetWorktreeId])
+  @@index([enabled, nextRunAt])
+}
+
+model AutomationRun {
+  id          String                @id @default(cuid())
+  automationId String
+  repositoryId String
+  worktreeId  String
+  threadId    String?
+  status      AutomationRunStatus
+  triggerKind AutomationTriggerKind
+  scheduledFor DateTime
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  error       String?
+  summary     String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  automation  Automation            @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  repository  Repository            @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  worktree    Worktree              @relation(fields: [worktreeId], references: [id], onDelete: Cascade)
+  thread      ChatThread?           @relation(fields: [threadId], references: [id], onDelete: SetNull)
+
+  @@unique([automationId, scheduledFor])
+  @@index([automationId, createdAt])
+  @@index([threadId])
+  @@index([status])
+}
+
+model AutomationPromptVersion {
+  id                   String      @id @default(cuid())
+  automationId         String
+  content              String
+  source               String
+  restoredFromVersionId String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+
+  automation          Automation                @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  restoredFromVersion AutomationPromptVersion?  @relation("AutomationPromptVersionRestore", fields: [restoredFromVersionId], references: [id], onDelete: SetNull)
+  restoredVersions    AutomationPromptVersion[] @relation("AutomationPromptVersionRestore")
+
+  @@index([automationId, updatedAt])
 }

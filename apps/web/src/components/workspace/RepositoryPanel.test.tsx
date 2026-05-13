@@ -81,6 +81,7 @@ function makeRepo(overrides: Partial<Repository> = {}): Repository {
         branch: "main",
         path: defaultRootPath,
         baseBranch: "main",
+        isAutomation: false,
         status: "active",
         branchRenamed: false,
         createdAt: "2026-01-01T00:00:00Z",
@@ -92,6 +93,7 @@ function makeRepo(overrides: Partial<Repository> = {}): Repository {
         branch: "feature-x",
         path: `/home/user/.cs/worktrees/${defaultName}/feature-x`,
         baseBranch: "main",
+        isAutomation: false,
         status: "active",
         branchRenamed: false,
         createdAt: "2026-01-01T00:00:00Z",
@@ -108,6 +110,7 @@ function makeThread(overrides: Partial<ChatThread> = {}): ChatThread {
     worktreeId: "r1-wt-feat",
     title: "Thread",
     kind: "default",
+    isAutomation: false,
     permissionProfile: "default",
     permissionMode: "default",
     mode: "default",
@@ -214,6 +217,44 @@ describe("RepositoryPanel", () => {
     });
     expect(container.textContent).toContain("main");
     expect(container.textContent).toContain("feature-x");
+  });
+
+  it("renders the automation icon for automation worktrees", () => {
+    renderPanel({
+      repositories: [
+        makeRepo({
+          worktrees: [
+            {
+              id: "r1-wt-root",
+              repositoryId: "r1",
+              branch: "main",
+              path: "/home/user/test-repo",
+              baseBranch: "main",
+              isAutomation: false,
+              status: "active",
+              branchRenamed: false,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+            {
+              id: "r1-wt-auto",
+              repositoryId: "r1",
+              branch: "qa-user/automation/nightly-audit",
+              path: "/home/user/.cs/worktrees/test-repo/nightly-audit",
+              baseBranch: "main",
+              isAutomation: true,
+              status: "active",
+              branchRenamed: false,
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+            },
+          ],
+        }),
+      ],
+      selectedRepositoryId: "r1",
+    });
+
+    expect(container.querySelector('[data-testid="worktree-r1-wt-auto-automation-icon"]')).not.toBeNull();
   });
 
   it("calls onCreateWorktree when add button clicked", () => {
@@ -1189,7 +1230,11 @@ describe("RepositoryPanel", () => {
     });
 
     expect(container.querySelector('[data-testid="worktree-status-waiting_approval"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="worktree-status-running"]')).toBeTruthy();
+    const runningStatus = container.querySelector('[data-testid="worktree-status-running"]');
+    expect(runningStatus).toBeTruthy();
+    expect(runningStatus?.querySelector("span[aria-hidden='true']")?.className).toContain("text-primary");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-content"]')?.className).toContain("items-center");
+    expect(container.querySelector('[data-testid="worktree-r1-wt-root-meta"]')).toBeNull();
     expect(container.textContent).not.toContain("Running");
     expect(container.textContent).not.toContain("Idle");
   });

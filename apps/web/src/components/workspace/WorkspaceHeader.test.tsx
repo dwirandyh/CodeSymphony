@@ -14,6 +14,7 @@ const threads: ChatThread[] = [
     worktreeId: "wt-1",
     title: "New Thread",
     kind: "default",
+    isAutomation: false,
     permissionProfile: "default",
     permissionMode: "default",
     mode: "default",
@@ -28,6 +29,7 @@ const threads: ChatThread[] = [
     worktreeId: "wt-1",
     title: "Secondary Thread",
     kind: "default",
+    isAutomation: false,
     permissionProfile: "default",
     permissionMode: "default",
     mode: "default",
@@ -227,6 +229,22 @@ describe("WorkspaceHeader", () => {
     });
 
     expect(onCreateThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders an automation icon on automation thread tabs", () => {
+    renderHeader({
+      threads: [
+        {
+          ...threads[0],
+          id: "thread-auto",
+          title: "Nightly Audit",
+          isAutomation: true,
+        },
+      ],
+      selectedThreadId: "thread-auto",
+    });
+
+    expect(container.querySelector('[data-testid="thread-thread-auto-automation-icon"]')).not.toBeNull();
   });
 
   it("prefetches a thread when its tab is hovered or focused", () => {

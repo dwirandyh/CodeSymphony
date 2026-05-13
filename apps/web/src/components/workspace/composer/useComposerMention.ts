@@ -17,12 +17,14 @@ export function useComposerMention({
   popoverRef,
   fileIndex,
   fileIndexLoading,
+  getEditorValue,
   onChange,
 }: {
   editorRef: React.RefObject<HTMLDivElement | null>;
   popoverRef: React.RefObject<HTMLDivElement | null>;
   fileIndex: FileEntry[];
   fileIndexLoading: boolean;
+  getEditorValue?: (editor: HTMLDivElement) => string;
   onChange: (nextValue: string) => void;
 }) {
   const [mention, setMention] = useState<MentionState>({ active: false, query: "", startOffset: -1, anchorNode: null });
@@ -56,10 +58,10 @@ export function useComposerMention({
   const syncValueFromEditor = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    const plainText = getPlainTextFromEditor(editor);
+    const nextValue = getEditorValue ? getEditorValue(editor) : getPlainTextFromEditor(editor);
     mentionedFilesRef.current = getMentionedFilesFromEditor(editor);
-    onChange(plainText);
-  }, [onChange]);
+    onChange(nextValue);
+  }, [editorRef, getEditorValue, onChange]);
 
   const selectSuggestion = useCallback(
     (entry: FileEntry) => {

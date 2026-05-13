@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Settings } from "lucide-react";
+import { Clock3, Settings } from "lucide-react";
 import type { Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "../../components/workspace/RepositoryPanel";
 import { cn } from "../../lib/utils";
@@ -16,8 +16,10 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   loadingRepos,
   submittingRepo,
   submittingWorktree,
+  automationActive = false,
   enableRepositoryMetadata = true,
   isVisible = true,
+  onOpenAutomations,
   onOpenSettings,
   onAttachRepository,
   onSelectRepository,
@@ -40,8 +42,10 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   loadingRepos: boolean;
   submittingRepo: boolean;
   submittingWorktree: boolean;
+  automationActive?: boolean;
   enableRepositoryMetadata?: boolean;
   isVisible?: boolean;
+  onOpenAutomations: () => void;
   onOpenSettings: () => void;
   onAttachRepository: () => void;
   onSelectRepository: (repositoryId: string) => void;
@@ -101,6 +105,19 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
         </div>
 
         <div className="shrink-0 border-t border-border/30 pt-2 pb-1 px-0">
+          <button
+            type="button"
+            className={cn(
+              "mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-secondary/60 hover:text-foreground",
+              automationActive
+                ? "bg-secondary/70 text-foreground"
+                : "text-muted-foreground",
+            )}
+            onClick={onOpenAutomations}
+          >
+            <Clock3 className="h-3.5 w-3.5" />
+            Automations
+          </button>
           <button
             type="button"
             className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"

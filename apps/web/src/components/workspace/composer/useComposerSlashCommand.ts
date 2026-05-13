@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import fuzzysort from "fuzzysort";
 import type { SlashCommand } from "@codesymphony/shared-types";
 import { detectSlashCommandInEditor } from "./composerEditorUtils";
+import { createSlashCommandChipElement } from "./composerChipUtils";
 
 type SlashCommandSuggestion = SlashCommand & { highlighted?: string; shortDescription?: string };
+type SlashCommandState = ReturnType<typeof detectSlashCommandInEditor>;
 
 function toShortDescription(description: string): string {
   const compact = description.replace(/\s+/g, " ").trim();
@@ -23,15 +25,23 @@ export function useComposerSlashCommand({
   popoverRef,
   slashCommands,
   slashCommandsLoading,
+  getEditorValue,
   onChange,
 }: {
   editorRef: React.RefObject<HTMLDivElement | null>;
   popoverRef: React.RefObject<HTMLDivElement | null>;
   slashCommands: SlashCommand[];
   slashCommandsLoading: boolean;
+  getEditorValue?: (editor: HTMLDivElement) => string;
   onChange: (nextValue: string) => void;
 }) {
-  const [slashCommand, setSlashCommand] = useState({ active: false, query: "", startOffset: -1, anchorNode: null as Node | null });
+  const [slashCommand, setSlashCommand] = useState<SlashCommandState>({
+    active: false,
+    query: "",
+    startOffset: -1,
+    anchorNode: null as Node | null,
+    trigger: "/",
+  });
   const [selectedIndex, setSelectedIndex] = useState(0);
   const lastSyncedValueRef = useRef<string | null>(null);
 
@@ -56,20 +66,20 @@ export function useComposerSlashCommand({
   }, [suggestions]);
 
   const closeSlashCommand = useCallback(() => {
-    setSlashCommand({ active: false, query: "", startOffset: -1, anchorNode: null });
+    setSlashCommand({ active: false, query: "", startOffset: -1, anchorNode: null, trigger: "/" });
     setSelectedIndex(0);
   }, []);
 
   const syncValueFromEditor = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    const nextValue = editor.textContent ?? "";
+    const nextValue = getEditorValue ? getEditorValue(editor) : (editor.textContent ?? "");
     if (lastSyncedValueRef.current === nextValue) {
       return;
     }
     lastSyncedValueRef.current = nextValue;
     onChange(nextValue);
-  }, [editorRef, onChange]);
+  }, [editorRef, getEditorValue, onChange]);
 
   const selectSuggestion = useCallback((entry: SlashCommand) => {
     const editor = editorRef.current;
@@ -82,16 +92,7 @@ export function useComposerSlashCommand({
     const beforeSlash = text.slice(0, slashCommand.startOffset);
     const afterQuery = text.slice(slashCommand.startOffset + 1 + slashCommand.query.length);
 
-    const chip = document.createElement("span");
-    chip.contentEditable = "false";
-    chip.dataset.slashCommand = entry.name;
-    chip.className = "inline-flex items-center rounded-md border border-blue-500/30 bg-blue-500/15 px-1.5 py-0 text-xs text-blue-400 mx-0.5 align-baseline cursor-default select-none";
-    chip.setAttribute("title", `/${entry.name}`);
-
-    const label = document.createElement("span");
-    label.className = "max-w-[140px] truncate";
-    label.textContent = `/${entry.name}`;
-    chip.appendChild(label);
+    const chip = createSlashCommandChipElement(entry.name, slashCommand.trigger);
 
     const beforeNode = document.createTextNode(beforeSlash);
     const afterNode = document.createTextNode(afterQuery.length > 0 ? afterQuery : "\u00A0");
@@ -116,9 +117,10 @@ export function useComposerSlashCommand({
     }
 
     closeSlashCommand();
-    lastSyncedValueRef.current = editor.textContent ?? null;
-    onChange(editor.textContent ?? `/${entry.name}`);
-  }, [closeSlashCommand, editorRef, onChange, slashCommand.anchorNode, slashCommand.query, slashCommand.startOffset]);
+    const nextValue = getEditorValue ? getEditorValue(editor) : (editor.textContent ?? `${slashCommand.trigger}${entry.name}`);
+    lastSyncedValueRef.current = nextValue;
+    onChange(nextValue);
+  }, [closeSlashCommand, editorRef, getEditorValue, onChange, slashCommand.anchorNode, slashCommand.query, slashCommand.startOffset, slashCommand.trigger]);
 
   const detectSlashCommand = useCallback(() => {
     const editor = editorRef.current;

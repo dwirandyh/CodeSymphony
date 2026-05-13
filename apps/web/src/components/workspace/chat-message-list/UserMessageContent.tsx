@@ -20,10 +20,10 @@ function renderMentionSegment(seg: ReturnType<typeof parseUserMentions>[number],
     return (
       <span
         key={key}
-        title={`/${seg.name}`}
+        title={`${seg.trigger}${seg.name}`}
         className="inline-flex items-center rounded-md border border-blue-500/30 bg-blue-500/15 px-1.5 py-0 text-xs align-baseline text-blue-400"
       >
-        <span className="max-w-[140px] truncate">/{seg.name}</span>
+        <span className="max-w-[140px] truncate">{seg.trigger}{seg.name}</span>
       </span>
     );
   }

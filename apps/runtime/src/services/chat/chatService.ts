@@ -140,6 +140,12 @@ function normalizeThreadKind(kind: ChatThreadKind | undefined): ChatThreadKind {
   return kind === "review" ? "review" : "default";
 }
 
+function isAutomationThreadInput(rawInput: unknown): boolean {
+  return typeof rawInput === "object"
+    && rawInput !== null
+    && (rawInput as Record<string, unknown>).isAutomation === true;
+}
+
 const REVIEW_THREAD_GITHUB_TITLE = "Create Pull Request";
 const REVIEW_THREAD_GITLAB_TITLE = "Create Merge Request";
 const QUEUE_DISPATCH_CANCELLATION_REASON = "queued_message_dispatch" as const;
@@ -1890,6 +1896,7 @@ export function createChatService(deps: RuntimeDeps) {
 
     async createThread(worktreeId: string, rawInput: unknown): Promise<ChatThread> {
       const input: CreateChatThreadInput = CreateChatThreadInputSchema.parse(rawInput ?? {});
+      const isAutomation = isAutomationThreadInput(rawInput);
 
       const worktree = await deps.prisma.worktree.findUnique({ where: { id: worktreeId } });
       if (!worktree) {
@@ -1944,6 +1951,7 @@ export function createChatService(deps: RuntimeDeps) {
             worktreeId,
             title: normalizedTitle,
             kind,
+            isAutomation,
             permissionProfile,
             permissionMode,
             mode: "default",
