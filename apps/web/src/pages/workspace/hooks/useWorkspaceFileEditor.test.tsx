@@ -24,6 +24,7 @@ let testFileEntries: Array<{ path: string; type: "file" }>;
 let testSaveAutomation: SaveAutomationConfig | null;
 let resolveSaveAutomationTargetSessionId: ReturnType<typeof vi.fn>;
 let onError: ReturnType<typeof vi.fn>;
+let updateSearch: ReturnType<typeof vi.fn>;
 
 function flushPromises() {
   return new Promise((resolve) => {
@@ -55,7 +56,7 @@ function TestComponent() {
     selectedThreadId: null,
     selectedWorktreeId: "worktree-1",
     selectedWorktreePath: "/repo",
-    updateSearch: vi.fn(),
+    updateSearch,
   });
 
   return null;
@@ -79,6 +80,7 @@ beforeEach(() => {
   testSaveAutomation = null;
   resolveSaveAutomationTargetSessionId = vi.fn().mockReturnValue(null);
   onError = vi.fn();
+  updateSearch = vi.fn();
 });
 
 afterEach(() => {
@@ -218,5 +220,39 @@ describe("useWorkspaceFileEditor", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("uses an explicit fallback thread id when the last active file closes", async () => {
+    vi.mocked(api.getWorktreeFileContent).mockResolvedValue({
+      path: "src/example.ts",
+      content: "export const value = 1;\n",
+      mimeType: "text/typescript",
+    });
+    const beforeFallback = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TestComponent />
+        </QueryClientProvider>,
+      );
+      await flushPromises();
+    });
+
+    act(() => {
+      hookResult.handleCloseFileTab("src/example.ts", {
+        fallbackThreadId: null,
+        onBeforeFallbackToChat: beforeFallback,
+      });
+    });
+
+    expect(beforeFallback).toHaveBeenCalledTimes(1);
+    expect(updateSearch).toHaveBeenCalledWith({
+      view: undefined,
+      file: undefined,
+      fileLine: undefined,
+      fileColumn: undefined,
+      threadId: undefined,
+    });
   });
 });

@@ -187,6 +187,7 @@ export function resolveWorktreeSwitchSeed(params: {
   requestedThreadId: string | null;
   optimisticCreatedThreadIds: Set<string>;
   locallyDeletedThreadIds: Set<string>;
+  allowUnselectedThread?: boolean;
 }): { threads: ChatThread[]; selectedThreadId: string | null } {
   const threads = mergeTrackedThreads({
     queriedThreads: params.cachedThreads,
@@ -197,7 +198,9 @@ export function resolveWorktreeSwitchSeed(params: {
 
   return {
     threads,
-    selectedThreadId: params.requestedThreadId ?? resolvePreferredThreadId(threads),
+    selectedThreadId:
+      params.requestedThreadId
+      ?? (params.allowUnselectedThread ? null : resolvePreferredThreadId(threads)),
   };
 }
 
@@ -727,10 +730,13 @@ export function useChatSession(
 
   const queryClient = useQueryClient();
   const repositoryId = options?.repositoryId ?? null;
+  const autoCreateInitialThread = options?.autoCreateInitialThread !== false;
+  const allowUnselectedThread = options?.allowUnselectedThread === true;
   const timelineEnabled = options?.timelineEnabled !== false;
   const selectedWorktreeStatus = options?.worktreeStatus ?? null;
   const selectedWorktreeProvisioning = selectedWorktreeStatus === "creating";
   const selectedWorktreeOperational = selectedWorktreeStatus === "active" || selectedWorktreeStatus === "delete_failed";
+  const shouldUseProvisioningPlaceholder = selectedWorktreeProvisioning && autoCreateInitialThread && !allowUnselectedThread;
   const requestedThreadSelectionDeferred =
     options?.desiredWorktreeId != null
     && options.desiredWorktreeId !== selectedWorktreeId;
@@ -871,7 +877,7 @@ export function useChatSession(
     }
 
     if (worktreeChanged) {
-      if (selectedWorktreeProvisioning) {
+      if (shouldUseProvisioningPlaceholder) {
         const placeholderSelection = lastThreadSelectionRef.current?.worktreeId === selectedWorktreeId
           ? lastThreadSelectionRef.current
           : buildPreferredSelectionInput("newChat");
@@ -891,11 +897,22 @@ export function useChatSession(
         return;
       }
 
+      if (selectedWorktreeProvisioning) {
+        prevWorktreeIdRef2.current = selectedWorktreeId;
+        setWaitingAssistant(null);
+        setThreads([]);
+        setSelectedThreadId(null);
+        pendingAgentSelectionUpdatesRef.current.clear();
+        setPendingComposerPermissionMode("default");
+        return;
+      }
+
       const worktreeSwitchSeed = resolveWorktreeSwitchSeed({
         cachedThreads: getCachedThreadsForWorktree(queryClient, selectedWorktreeId),
         requestedThreadId,
         optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
         locallyDeletedThreadIds: locallyDeletedThreadIdsRef.current,
+        allowUnselectedThread,
       });
 
       setWaitingAssistant(null);
@@ -905,7 +922,7 @@ export function useChatSession(
       setPendingComposerPermissionMode("default");
     }
 
-    if (selectedWorktreeProvisioning) {
+    if (shouldUseProvisioningPlaceholder) {
       const placeholderSelection = lastThreadSelectionRef.current?.worktreeId === selectedWorktreeId
         ? lastThreadSelectionRef.current
         : buildPreferredSelectionInput("newChat");
@@ -923,6 +940,17 @@ export function useChatSession(
       ));
       if (selectedThreadId !== placeholderThread.id) {
         setSelectedThreadId(placeholderThread.id);
+      }
+      return;
+    }
+
+    if (selectedWorktreeProvisioning) {
+      prevWorktreeIdRef2.current = selectedWorktreeId;
+      awaitingProvisionedThreadByWorktreeRef.current.delete(selectedWorktreeId);
+      setWaitingAssistant(null);
+      setThreads((current) => (current.length === 0 ? current : []));
+      if (selectedThreadId !== null) {
+        setSelectedThreadId(null);
       }
       return;
     }
@@ -998,7 +1026,8 @@ export function useChatSession(
     }
 
     const shouldAutoCreateInitialThread =
-      selectedWorktreeOperational
+      autoCreateInitialThread
+      && selectedWorktreeOperational
       && !queriedThreadsLoading
       && queriedThreads != null
       && queriedThreads.length === 0
@@ -1073,7 +1102,9 @@ export function useChatSession(
     if (requestedThreadIdChanged || requestedThreadReappeared) {
       const nextThreadId = requestedThreadExists
         ? requestedThreadId
-        : resolvePreferredThreadId(trackedThreads);
+        : allowUnselectedThread && requestedThreadId == null
+          ? null
+          : resolvePreferredThreadId(trackedThreads);
       if (selectedThreadId !== nextThreadId) {
         setSelectedThreadId(nextThreadId);
       }
@@ -1089,11 +1120,16 @@ export function useChatSession(
       return;
     }
 
-    const nextThreadId = resolvePreferredThreadId(trackedThreads);
+    const nextThreadId =
+      allowUnselectedThread && requestedThreadId == null
+        ? null
+        : resolvePreferredThreadId(trackedThreads);
     if (selectedThreadId !== nextThreadId) {
       setSelectedThreadId(nextThreadId);
     }
   }, [
+    autoCreateInitialThread,
+    allowUnselectedThread,
     closingThreadId,
     pendingComposerPermissionMode,
     queriedThreads,
@@ -1104,6 +1140,7 @@ export function useChatSession(
     selectedWorktreeOperational,
     selectedWorktreeId,
     selectedWorktreeProvisioning,
+    shouldUseProvisioningPlaceholder,
   ]);
 
   useEffect(() => {
@@ -2085,7 +2122,11 @@ export function useChatSession(
   }
 
   useEffect(() => {
-    const selectionBootstrapPending = selectedThreadId == null && requestedThreadId != null;
+    const selectionBootstrapPending =
+      selectedThreadId == null
+      && requestedThreadId != null
+      && autoCreateInitialThread
+      && !allowUnselectedThread;
     if (selectionBootstrapPending) {
       return;
     }
@@ -2096,7 +2137,13 @@ export function useChatSession(
       prevThreadIdRef.current = nextThreadIdForNavigation;
       options?.onThreadChange?.(nextThreadIdForNavigation);
     }
-  }, [requestedThreadId, selectedThreadIdForData]);
+  }, [
+    allowUnselectedThread,
+    autoCreateInitialThread,
+    requestedThreadId,
+    selectedThreadId,
+    selectedThreadIdForData,
+  ]);
 
   useThreadEventStream({
     selectedThreadId: remoteBootstrapThreadId,
@@ -3120,7 +3167,9 @@ export function useChatSession(
       ? null
       : selectedThreadId == null
         ? selectedWorktreeId && queriedThreads?.length === 0
-          ? "creating-thread"
+          ? autoCreateInitialThread
+            ? "creating-thread"
+            : "no-thread-selected"
           : requestedThreadBootstrapPending
             ? "loading-thread"
             : "no-thread-selected"

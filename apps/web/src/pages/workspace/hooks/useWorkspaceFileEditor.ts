@@ -37,6 +37,11 @@ type QuickFilePickerState = {
   selectedIndex: number;
 };
 
+type CloseFileTabOptions = {
+  fallbackThreadId?: string | null;
+  onBeforeFallbackToChat?: () => void;
+};
+
 function escapeRegExpCharacter(value: string): string {
   return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
 }
@@ -774,7 +779,7 @@ export function useWorkspaceFileEditor({
     pushRecentFile(selectedWorktreeId, filePath);
   }, [ensureFileTab, pushRecentFile, selectedWorktreeId, updateSearch]);
 
-  const handleCloseFileTab = useCallback((filePath: string) => {
+  const handleCloseFileTab = useCallback((filePath: string, options?: CloseFileTabOptions) => {
     const currentWorktreeId = selectedWorktreeId;
     if (!currentWorktreeId) {
       return;
@@ -826,12 +831,14 @@ export function useWorkspaceFileEditor({
       return;
     }
 
+    options?.onBeforeFallbackToChat?.();
+    const fallbackThreadId = options?.fallbackThreadId ?? selectedThreadId;
     updateSearch({
       view: undefined,
       file: undefined,
       fileLine: undefined,
       fileColumn: undefined,
-      threadId: selectedThreadId ?? undefined,
+      threadId: fallbackThreadId ?? undefined,
     });
   }, [activeFilePath, activeWorktreeFileTabs, closeFileTabState, confirmDiscardDirtyFile, selectedThreadId, selectedWorktreeId, updateSearch]);
 

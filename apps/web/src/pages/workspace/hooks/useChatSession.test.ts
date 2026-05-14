@@ -430,6 +430,21 @@ describe("resolveWorktreeSwitchSeed", () => {
 
     expect(seed.selectedThreadId).toBe("thread-b");
   });
+
+  it("preserves an unselected state when explicitly allowed", () => {
+    const seed = resolveWorktreeSwitchSeed({
+      cachedThreads: [
+        makeThread("Thread A", "thread-a"),
+        { ...makeThread("Thread B", "thread-b"), active: true },
+      ],
+      requestedThreadId: null,
+      optimisticCreatedThreadIds: new Set(),
+      locallyDeletedThreadIds: new Set(),
+      allowUnselectedThread: true,
+    });
+
+    expect(seed.selectedThreadId).toBe(null);
+  });
 });
 
 describe("deriveSelectedThreadUiState", () => {

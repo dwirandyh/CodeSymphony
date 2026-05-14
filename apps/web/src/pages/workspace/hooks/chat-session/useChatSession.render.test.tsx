@@ -182,18 +182,24 @@ function HookHarness({
   repositoryId = null,
   selectedWorktreeId = "wt-1",
   selectedWorktreeStatus = "active",
+  autoCreateInitialThread,
+  allowUnselectedThread,
 }: {
   desiredThreadId?: string;
   desiredWorktreeId?: string | null;
   repositoryId?: string | null;
   selectedWorktreeId?: string | null;
   selectedWorktreeStatus?: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" | null;
+  autoCreateInitialThread?: boolean;
+  allowUnselectedThread?: boolean;
 }) {
   hookResult = useChatSession(selectedWorktreeId, onErrorMock, undefined, {
     desiredThreadId,
     desiredWorktreeId,
     repositoryId,
     worktreeStatus: selectedWorktreeStatus,
+    autoCreateInitialThread,
+    allowUnselectedThread,
   });
   return null;
 }
@@ -204,6 +210,10 @@ function renderHook(
   selectedWorktreeId: string | null = "wt-1",
   desiredWorktreeId?: string | null,
   selectedWorktreeStatus: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" | null = "active",
+  hookOptions?: {
+    autoCreateInitialThread?: boolean;
+    allowUnselectedThread?: boolean;
+  },
 ) {
   act(() => {
     root.render(
@@ -214,6 +224,8 @@ function renderHook(
           repositoryId={repositoryId}
           selectedWorktreeId={selectedWorktreeId}
           selectedWorktreeStatus={selectedWorktreeStatus}
+          autoCreateInitialThread={hookOptions?.autoCreateInitialThread}
+          allowUnselectedThread={hookOptions?.allowUnselectedThread}
         />
       </QueryClientProvider>,
     );
@@ -1033,6 +1045,105 @@ describe("useChatSession", () => {
 
     expect(api.createThread).not.toHaveBeenCalled();
     expect(hookResult.selectedThreadId).toBe("thread-a");
+  });
+
+  it("does not auto-create an initial thread when disabled", async () => {
+    threadsState.data = [];
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+    });
+
+    renderHook(undefined, null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+  });
+
+  it("selects the preferred existing thread when unselected mode is not enabled", () => {
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
+
+    renderHook(undefined, null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-b");
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+  });
+
+  it("does not create a placeholder thread while the worktree is still provisioning when auto-create is disabled", async () => {
+    threadsState.data = [];
+
+    renderHook(undefined, null, "wt-1", undefined, "creating", {
+      autoCreateInitialThread: false,
+      allowUnselectedThread: true,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(hookResult.threads).toEqual([]);
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+  });
+
+  it("leaves the workspace unselected after closing the last thread when auto-create is disabled", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+
+    renderHook("thread-a", null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    await act(async () => {
+      await hookResult.closeThread("thread-a");
+    });
+
+    threadsState.data = [];
+    renderHook(undefined, null, "wt-1", undefined, "active", {
+      autoCreateInitialThread: false,
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+  });
+
+  it("preserves a null selection when unselected threads are allowed", () => {
+    renderHook(undefined, null, "wt-1", undefined, "active", {
+      allowUnselectedThread: true,
+      autoCreateInitialThread: false,
+    });
+
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
+  });
+
+  it("does not auto-select an existing thread when unselected threads are allowed", () => {
+    threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
+
+    renderHook(undefined, null, "wt-1", undefined, "active", {
+      allowUnselectedThread: true,
+      autoCreateInitialThread: false,
+    });
+
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(hookResult.messageListEmptyState).toBe("no-thread-selected");
   });
 
   it("syncs selection when desiredThreadId changes after mount", () => {
