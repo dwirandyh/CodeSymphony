@@ -35,12 +35,18 @@ interface TerminalSession {
     exitListeners: Set<(event: { exitCode: number; signal: number }) => void>;
     scrollback: string[];
     scrollbackSize: number;
+    active: boolean;
+    exitEvent: { exitCode: number; signal: number } | null;
 }
 
 interface SpawnOptions {
     mode?: "shell" | "exec";
     command?: string;
     replace?: boolean;
+}
+
+interface ListenerOptions {
+    replay?: boolean;
 }
 
 function buildShellArgs(shell: string | undefined, options?: SpawnOptions): string[] {
@@ -157,6 +163,8 @@ export function createTerminalService() {
             exitListeners: inheritedExitListeners,
             scrollback: [],
             scrollbackSize: 0,
+            active: true,
+            exitEvent: null,
         };
 
         ptyProcess.onData((data) => {
@@ -175,16 +183,18 @@ export function createTerminalService() {
 
         ptyProcess.onExit((event) => {
             const isCurrentSession = sessions.get(sessionId) === session;
-            if (isCurrentSession) {
-                sessions.delete(sessionId);
-            } else {
+            if (!isCurrentSession) {
                 return;
             }
+
+            session.active = false;
+            session.exitEvent = {
+                exitCode: event.exitCode,
+                signal: event.signal ?? 0,
+            };
+
             for (const listener of session.exitListeners) {
-                listener({
-                    exitCode: event.exitCode,
-                    signal: event.signal ?? 0,
-                });
+                listener(session.exitEvent);
             }
         });
 
@@ -194,14 +204,14 @@ export function createTerminalService() {
 
     function write(sessionId: string, data: string): void {
         const session = sessions.get(sessionId);
-        if (session) {
+        if (session?.active) {
             session.ptyProcess.write(data);
         }
     }
 
     function resize(sessionId: string, cols: number, rows: number): void {
         const session = sessions.get(sessionId);
-        if (session) {
+        if (session?.active) {
             session.ptyProcess.resize(cols, rows);
         }
     }
@@ -209,6 +219,7 @@ export function createTerminalService() {
     function addListener(
         sessionId: string,
         callback: (data: string) => void,
+        options?: ListenerOptions,
     ): () => void {
         const session = sessions.get(sessionId);
         if (!session) {
@@ -216,9 +227,13 @@ export function createTerminalService() {
         }
 
         // Replay buffered output so reconnected clients see the prompt
-        if (session.scrollback.length > 0) {
+        if (options?.replay !== false && session.scrollback.length > 0) {
             const replay = session.scrollback.join("");
             callback(replay);
+        }
+
+        if (!session.active) {
+            return () => { };
         }
 
         session.listeners.add(callback);
@@ -230,9 +245,15 @@ export function createTerminalService() {
     function addExitListener(
         sessionId: string,
         callback: (event: { exitCode: number; signal: number }) => void,
+        options?: ListenerOptions,
     ): () => void {
         const session = sessions.get(sessionId);
         if (!session) {
+            return () => { };
+        }
+
+        if (options?.replay !== false && session.exitEvent) {
+            callback(session.exitEvent);
             return () => { };
         }
 
@@ -245,7 +266,9 @@ export function createTerminalService() {
     function kill(sessionId: string): void {
         const session = sessions.get(sessionId);
         if (session) {
-            session.ptyProcess.kill();
+            if (session.active) {
+                session.ptyProcess.kill();
+            }
             sessions.delete(sessionId);
         }
     }
@@ -260,7 +283,9 @@ export function createTerminalService() {
         requestedCwd?: string;
         resolvedCwd: string;
     }> {
-        return [...sessions.values()].map((session) => ({
+        return [...sessions.values()]
+            .filter((session) => session.active)
+            .map((session) => ({
             sessionId: session.id,
             pid: session.ptyProcess.pid,
             requestedCwd: session.requestedCwd,
@@ -268,12 +293,45 @@ export function createTerminalService() {
         }));
     }
 
+    function listSessions(): Array<{
+        sessionId: string;
+        requestedCwd?: string;
+        resolvedCwd: string;
+        active: boolean;
+        exitCode: number | null;
+        signal: number | null;
+    }> {
+        return [...sessions.values()].map((session) => ({
+            sessionId: session.id,
+            requestedCwd: session.requestedCwd,
+            resolvedCwd: session.resolvedCwd,
+            active: session.active,
+            exitCode: session.exitEvent?.exitCode ?? null,
+            signal: session.exitEvent?.signal ?? null,
+        }));
+    }
+
+    function getScrollback(sessionId: string): string {
+        const session = sessions.get(sessionId);
+        if (!session || session.scrollback.length === 0) {
+            return "";
+        }
+
+        return session.scrollback.join("");
+    }
+
+    function getExitEvent(sessionId: string): { exitCode: number; signal: number } | null {
+        return sessions.get(sessionId)?.exitEvent ?? null;
+    }
+
     function killAll(): void {
         for (const session of sessions.values()) {
-            session.ptyProcess.kill();
+            if (session.active) {
+                session.ptyProcess.kill();
+            }
         }
         sessions.clear();
     }
 
-    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, killAll };
+    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, listSessions, getScrollback, getExitEvent, killAll };
 }

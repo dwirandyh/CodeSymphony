@@ -93,6 +93,38 @@ describe("api", () => {
     });
   });
 
+  describe("writeTerminalDropFiles", () => {
+    it("writes dropped browser files to temp runtime paths", async () => {
+      const writtenFiles = [{
+        path: "/tmp/cs-terminal-drop/test.png",
+        filename: "test.png",
+        mimeType: "image/png",
+        sizeBytes: 4,
+      }];
+
+      mockFetch.mockReturnValueOnce(mockOk({ files: writtenFiles }));
+
+      const result = await api.writeTerminalDropFiles("wt-1:terminal:abc", [{
+        filename: "test.png",
+        mimeType: "image/png",
+        contentBase64: "dGVzdA==",
+      }]);
+
+      expect(result).toEqual(writtenFiles);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toContain("/filesystem/terminal-drop/write");
+      expect(init.method).toBe("POST");
+      expect(init.body).toBe(JSON.stringify({
+        sessionId: "wt-1:terminal:abc",
+        files: [{
+          filename: "test.png",
+          mimeType: "image/png",
+          contentBase64: "dGVzdA==",
+        }],
+      }));
+    });
+  });
+
   describe("createRepository", () => {
     it("posts new repository", async () => {
       const newRepo = { id: "r1", name: "new-repo" };
@@ -737,6 +769,32 @@ describe("api", () => {
   });
 
   describe("terminal operations", () => {
+    it("lists terminal sessions", async () => {
+      mockFetch.mockReturnValueOnce(mockOk([
+        {
+          sessionId: "wt1:terminal:1",
+          requestedCwd: "/tmp/wt1",
+          resolvedCwd: "/tmp/wt1",
+          active: true,
+          exitCode: null,
+          signal: null,
+        },
+      ]));
+
+      const result = await api.listTerminalSessions();
+
+      expect(result).toEqual([
+        {
+          sessionId: "wt1:terminal:1",
+          requestedCwd: "/tmp/wt1",
+          resolvedCwd: "/tmp/wt1",
+          active: true,
+          exitCode: null,
+          signal: null,
+        },
+      ]);
+    });
+
     it("runs terminal command", async () => {
       mockFetch.mockReturnValueOnce(mock204());
       await api.runTerminalCommand({ sessionId: "s1", command: "ls" });

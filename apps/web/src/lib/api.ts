@@ -32,6 +32,8 @@ import type {
   FileEntry,
   FilesystemBrowseResponse,
   FilesystemReadAttachmentsResponse,
+  FilesystemWriteTerminalDropFile,
+  FilesystemWriteTerminalDropFilesResponse,
   GitBranchDiffSummary,
   GitCommitInput,
   GitDiff,
@@ -254,6 +256,15 @@ export type RuntimeInfo = {
   } | null;
 };
 
+export type TerminalSessionInfo = {
+  sessionId: string;
+  requestedCwd?: string;
+  resolvedCwd: string;
+  active: boolean;
+  exitCode: number | null;
+  signal: number | null;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
 
@@ -404,6 +415,7 @@ export const api = {
       method: "POST",
     });
   },
+  listTerminalSessions: () => request<TerminalSessionInfo[]>("/terminal/sessions"),
   runTerminalCommand: async (input: { sessionId: string; command: string; cwd?: string; mode?: "stdin" | "exec" }): Promise<void> => {
     const response = await runtimeFetch("/terminal/run", {
       method: "POST",
@@ -426,6 +438,18 @@ export const api = {
     if (!response.ok && response.status !== 204) {
       const payload = await response.json().catch(() => null);
       throw new Error(payload?.error ?? "Failed to stop terminal command");
+    }
+  },
+  killTerminalSession: async (sessionId: string): Promise<void> => {
+    const response = await runtimeFetch("/terminal/kill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+    });
+
+    if (!response.ok && response.status !== 204 && response.status !== 404) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload?.error ?? "Failed to close terminal session");
     }
   },
   listThreads: (worktreeId: string) => request<ChatThread[]>(`/worktrees/${worktreeId}/threads`),
@@ -720,6 +744,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ paths }),
     }).then((response) => response.attachments),
+  writeTerminalDropFiles: (sessionId: string, files: FilesystemWriteTerminalDropFile[]) =>
+    request<FilesystemWriteTerminalDropFilesResponse>("/filesystem/terminal-drop/write", {
+      method: "POST",
+      body: JSON.stringify({ sessionId, files }),
+    }).then((response) => response.files),
   getInstalledApps: () =>
     request<{ apps: ExternalApp[] }>("/system/installed-apps").then((r) => r.apps),
   readHostClipboard: () =>

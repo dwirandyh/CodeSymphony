@@ -226,6 +226,16 @@ describe("terminalService", () => {
       expect(listener).toHaveBeenCalledWith("line1line2");
     });
 
+    it("can skip scrollback replay when requested", () => {
+      service.spawn("s1", "/tmp");
+      currentMockPty._emit("data", "line1");
+
+      const listener = vi.fn();
+      service.addListener("s1", listener, { replay: false });
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+
     it("removes listener on unsub call", () => {
       service.spawn("s1", "/tmp");
       const listener = vi.fn();
@@ -260,6 +270,66 @@ describe("terminalService", () => {
       unsub();
       currentMockPty._emit("exit", { exitCode: 1 });
       expect(listener).not.toHaveBeenCalled();
+    });
+
+    it("replays the exit event for an already exited session", () => {
+      service.spawn("s1", "/tmp");
+      currentMockPty._emit("exit", { exitCode: 0, signal: 9 });
+
+      const listener = vi.fn();
+      service.addExitListener("s1", listener);
+
+      expect(listener).toHaveBeenCalledWith({ exitCode: 0, signal: 9 });
+    });
+
+    it("can skip immediate exit replay when requested", () => {
+      service.spawn("s1", "/tmp");
+      currentMockPty._emit("exit", { exitCode: 0, signal: 9 });
+
+      const listener = vi.fn();
+      service.addExitListener("s1", listener, { replay: false });
+
+      expect(listener).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("session persistence", () => {
+    it("retains exited sessions for reconnect and excludes them from resource sessions", () => {
+      const session = service.spawn("s1", "/tmp");
+      const spawnCountBeforeExit = vi.mocked(pty.spawn).mock.calls.length;
+
+      currentMockPty._emit("data", "done\n");
+      currentMockPty._emit("exit", { exitCode: 0, signal: 0 });
+
+      expect(service.has("s1")).toBe(true);
+      expect(service.listResourceSessions()).toEqual([]);
+      expect(service.listSessions()).toEqual([
+        {
+          sessionId: "s1",
+          requestedCwd: "/tmp",
+          resolvedCwd: "/tmp",
+          active: false,
+          exitCode: 0,
+          signal: 0,
+        },
+      ]);
+
+      const replayListener = vi.fn();
+      service.addListener("s1", replayListener);
+      expect(replayListener).toHaveBeenCalledWith("done\n");
+
+      const reconnectedSession = service.spawn("s1", "/tmp");
+      expect(reconnectedSession).toBe(session);
+      expect(vi.mocked(pty.spawn).mock.calls).toHaveLength(spawnCountBeforeExit);
+    });
+
+    it("returns stored scrollback and exit metadata", () => {
+      service.spawn("s1", "/tmp");
+      currentMockPty._emit("data", "done\n");
+      currentMockPty._emit("exit", { exitCode: 7, signal: 0 });
+
+      expect(service.getScrollback("s1")).toBe("done\n");
+      expect(service.getExitEvent("s1")).toEqual({ exitCode: 7, signal: 0 });
     });
   });
 

@@ -39,6 +39,8 @@ export interface UseChatSessionOptions {
   desiredWorktreeId?: string | null;
   repositoryId?: string | null;
   worktreeStatus?: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" | null;
+  autoCreateInitialThread?: boolean;
+  allowUnselectedThread?: boolean;
   onThreadChange?: (threadId: string | null) => void;
   timelineEnabled?: boolean;
 }

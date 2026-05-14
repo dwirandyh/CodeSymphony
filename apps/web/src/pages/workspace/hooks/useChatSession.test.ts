@@ -430,6 +430,35 @@ describe("resolveWorktreeSwitchSeed", () => {
 
     expect(seed.selectedThreadId).toBe("thread-b");
   });
+
+  it("uses the backend-preferred cached thread when every thread is idle", () => {
+    const seed = resolveWorktreeSwitchSeed({
+      cachedThreads: [
+        { ...makeThread("Thread A", "thread-a"), preferred: true } as ChatThread & { preferred?: boolean },
+        makeThread("Thread B", "thread-b"),
+      ],
+      requestedThreadId: null,
+      optimisticCreatedThreadIds: new Set(),
+      locallyDeletedThreadIds: new Set(),
+    });
+
+    expect(seed.selectedThreadId).toBe("thread-a");
+  });
+
+  it("preserves an unselected state when explicitly allowed", () => {
+    const seed = resolveWorktreeSwitchSeed({
+      cachedThreads: [
+        makeThread("Thread A", "thread-a"),
+        { ...makeThread("Thread B", "thread-b"), active: true },
+      ],
+      requestedThreadId: null,
+      optimisticCreatedThreadIds: new Set(),
+      locallyDeletedThreadIds: new Set(),
+      allowUnselectedThread: true,
+    });
+
+    expect(seed.selectedThreadId).toBe(null);
+  });
 });
 
 describe("deriveSelectedThreadUiState", () => {

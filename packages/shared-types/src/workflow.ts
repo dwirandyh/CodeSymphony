@@ -257,6 +257,7 @@ export const ChatThreadSchema = z.object({
   cursorSessionId: z.string().nullable().optional(),
   opencodeSessionId: z.string().nullable().optional(),
   active: z.boolean(),
+  preferred: z.boolean().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -1076,6 +1077,32 @@ export const FilesystemReadAttachmentsResponseSchema = z.object({
   attachments: z.array(FilesystemReadAttachmentSchema),
 });
 export type FilesystemReadAttachmentsResponse = z.infer<typeof FilesystemReadAttachmentsResponseSchema>;
+
+export const FilesystemWriteTerminalDropFileSchema = z.object({
+  filename: z.string().trim().min(1),
+  mimeType: z.string().trim().min(1),
+  contentBase64: z.string(),
+});
+export type FilesystemWriteTerminalDropFile = z.infer<typeof FilesystemWriteTerminalDropFileSchema>;
+
+export const FilesystemWriteTerminalDropFilesInputSchema = z.object({
+  sessionId: z.string().trim().min(1),
+  files: z.array(FilesystemWriteTerminalDropFileSchema).min(1).max(32),
+});
+export type FilesystemWriteTerminalDropFilesInput = z.infer<typeof FilesystemWriteTerminalDropFilesInputSchema>;
+
+export const FilesystemWriteTerminalDropResultSchema = z.object({
+  path: z.string(),
+  filename: z.string(),
+  mimeType: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+});
+export type FilesystemWriteTerminalDropResult = z.infer<typeof FilesystemWriteTerminalDropResultSchema>;
+
+export const FilesystemWriteTerminalDropFilesResponseSchema = z.object({
+  files: z.array(FilesystemWriteTerminalDropResultSchema),
+});
+export type FilesystemWriteTerminalDropFilesResponse = z.infer<typeof FilesystemWriteTerminalDropFilesResponseSchema>;
 
 // ── Script Execution Types ──
 

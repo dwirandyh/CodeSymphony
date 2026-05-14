@@ -10,6 +10,9 @@ const runTerminalInputSchema = z.object({
 const interruptTerminalInputSchema = z.object({
     sessionId: z.string().min(1),
 });
+const killTerminalInputSchema = z.object({
+    sessionId: z.string().min(1),
+});
 
 export function handleTerminalWebSocket(
     app: FastifyInstance,
@@ -49,6 +52,38 @@ export function handleTerminalWebSocket(
         worktreeId ? { worktreeId } : undefined,
     );
 
+    let initialPayloadSent = false;
+    const sendInitialPayload = () => {
+        if (initialPayloadSent) {
+            return;
+        }
+
+        initialPayloadSent = true;
+
+        try {
+            if (socket.readyState !== 1) {
+                return;
+            }
+
+            const replay = app.terminalService.getScrollback(sessionId);
+            if (replay.length > 0) {
+                socket.send(replay);
+            }
+
+            const exitEvent = app.terminalService.getExitEvent(sessionId);
+            if (exitEvent) {
+                socket.send(JSON.stringify({
+                    kind: "cs-terminal-event",
+                    type: "exit",
+                    exitCode: exitEvent.exitCode,
+                    signal: exitEvent.signal,
+                }));
+            }
+        } catch {
+            // ignore initial payload send errors
+        }
+    };
+
     const removeListener = app.terminalService.addListener(
         sessionId,
         (data: string) => {
@@ -60,6 +95,7 @@ export function handleTerminalWebSocket(
                 // ignore send errors
             }
         },
+        { replay: false },
     );
     const removeExitListener = app.terminalService.addExitListener(
         sessionId,
@@ -77,6 +113,7 @@ export function handleTerminalWebSocket(
                 // ignore send errors
             }
         },
+        { replay: false },
     );
 
     socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
@@ -88,12 +125,14 @@ export function handleTerminalWebSocket(
                 const cols = Number(parsed.cols) || 80;
                 const rows = Number(parsed.rows) || 24;
                 app.terminalService.resize(sessionId, cols, rows);
+                sendInitialPayload();
                 return;
             }
         } catch {
             // Not JSON — treat as raw terminal input
         }
 
+        sendInitialPayload();
         app.terminalService.write(sessionId, message);
     });
 
@@ -111,6 +150,12 @@ export function handleTerminalWebSocket(
 }
 
 export async function registerTerminalRoutes(app: FastifyInstance) {
+    app.get("/terminal/sessions", async (_request, reply) => {
+        return reply.send({
+            data: app.terminalService.listSessions(),
+        });
+    });
+
     app.post("/terminal/run", async (request, reply) => {
         try {
             const input = runTerminalInputSchema.parse(request.body ?? {});
@@ -141,6 +186,21 @@ export async function registerTerminalRoutes(app: FastifyInstance) {
             return reply.code(204).send();
         } catch (error) {
             const message = error instanceof Error ? error.message : "Failed to interrupt terminal command";
+            return reply.code(400).send({ error: message });
+        }
+    });
+
+    app.post("/terminal/kill", async (request, reply) => {
+        try {
+            const input = killTerminalInputSchema.parse(request.body ?? {});
+            if (!app.terminalService.has(input.sessionId)) {
+                return reply.code(404).send({ error: "Terminal session not found" });
+            }
+            app.terminalService.kill(input.sessionId);
+            await app.filesystemService.cleanupTerminalDropFiles(input.sessionId);
+            return reply.code(204).send();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to close terminal session";
             return reply.code(400).send({ error: message });
         }
     });

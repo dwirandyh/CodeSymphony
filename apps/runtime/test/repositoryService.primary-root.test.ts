@@ -220,14 +220,6 @@ describe("repositoryService primary root workspace", () => {
     expect(listedRepository!.worktrees.length).toBe(1);
     expect(listedRepository!.worktrees[0].path).toBe(canonicalRepositoryPath);
     expect(listedRepository!.worktrees[0].status).toBe("active");
-
-    const thread = await prisma.chatThread.findFirst({
-      where: {
-        worktreeId: listedRepository!.worktrees[0].id,
-        title: "New Thread",
-      },
-    });
-    expect(thread).toBeTruthy();
   });
 
   it("recovers primary root worktree when non-root worktrees already exist", async () => {
@@ -262,7 +254,7 @@ describe("repositoryService primary root workspace", () => {
     expect(nonRoot).toBeDefined();
   });
 
-  it("does not create a duplicate main thread when the root thread was renamed", async () => {
+  it("does not recreate a missing root thread while hydrating repositories", async () => {
     const repositoryPath = createGitRepository();
     const canonicalRepositoryPath = realpathSync(repositoryPath);
     const repositoryService = createRepositoryService(prisma);
@@ -271,18 +263,17 @@ describe("repositoryService primary root workspace", () => {
     const rootWorktree = created.worktrees.find((worktree) => worktree.path === canonicalRepositoryPath);
     expect(rootWorktree).toBeDefined();
 
-    await prisma.chatThread.updateMany({
-      where: { worktreeId: rootWorktree!.id, title: "New Thread" },
-      data: { title: "Renamed Root Thread", titleEditedManually: true },
+    await prisma.chatThread.deleteMany({
+      where: { worktreeId: rootWorktree!.id },
     });
 
     await repositoryService.list();
+    await repositoryService.getById(created.id);
 
     const threads = await prisma.chatThread.findMany({
       where: { worktreeId: rootWorktree!.id },
       orderBy: { createdAt: "asc" },
     });
-    expect(threads).toHaveLength(1);
-    expect(threads[0]?.title).toBe("Renamed Root Thread");
+    expect(threads).toHaveLength(0);
   });
 });

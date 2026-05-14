@@ -48,6 +48,7 @@ describe("WorkspaceHeader", () => {
   let root: Root;
 
   beforeEach(() => {
+    localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -57,6 +58,7 @@ describe("WorkspaceHeader", () => {
     flushSync(() => {
       root.unmount();
     });
+    localStorage.clear();
     container.remove();
     vi.clearAllMocks();
   });
@@ -223,12 +225,49 @@ describe("WorkspaceHeader", () => {
     }
 
     expect(scrollRegion.contains(addSessionButton)).toBe(false);
+    expect(container.querySelector('[data-testid="create-session-button"]')?.className).not.toContain("border");
+    expect(container.querySelector('[data-testid="create-session-button"]')?.className).toContain("bg-secondary");
 
     flushSync(() => {
       addSessionButton.click();
     });
 
     expect(onCreateThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("remembers the last selected create action for the main add session button", () => {
+    const onCreateThread = vi.fn();
+    const onCreateTerminal = vi.fn();
+    renderHeader({ onCreateThread, onCreateTerminal, worktreePath: "/tmp/repo" });
+
+    const menuButton = container.querySelector<HTMLButtonElement>('button[aria-label="Choose session type"]');
+    const addSessionButton = container.querySelector<HTMLButtonElement>('button[aria-label="Add session"]');
+    if (!menuButton || !addSessionButton) {
+      throw new Error("Create session controls not found");
+    }
+
+    flushSync(() => {
+      menuButton.click();
+    });
+
+    const terminalOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent?.trim() === "Terminal");
+    if (!terminalOption) {
+      throw new Error("Terminal create option not found");
+    }
+
+    flushSync(() => {
+      terminalOption.click();
+    });
+
+    expect(addSessionButton.textContent?.trim()).toBe("");
+
+    flushSync(() => {
+      addSessionButton.click();
+    });
+
+    expect(onCreateThread).not.toHaveBeenCalled();
+    expect(onCreateTerminal).toHaveBeenCalledTimes(2);
   });
 
   it("renders an automation icon on automation thread tabs", () => {
@@ -363,6 +402,32 @@ describe("WorkspaceHeader", () => {
     expect(onSelectFileTab).toHaveBeenCalledWith("src/editor.tsx");
     expect(onPinFileTab).toHaveBeenCalledWith("src/editor.tsx");
     expect(onCloseFileTab).toHaveBeenCalledWith("src/editor.tsx");
+  });
+
+  it("renders terminal tabs and routes select/close actions", () => {
+    const onSelectTerminalTab = vi.fn();
+    const onCloseTerminalTab = vi.fn();
+    renderHeader({
+      terminalTabs: [{ id: "terminal-1", title: "Terminal 2", sessionId: "wt-1:terminal:terminal-1" }],
+      activeTerminalTabId: "terminal-1",
+      terminalTabActive: true,
+      onSelectTerminalTab,
+      onCloseTerminalTab,
+    });
+
+    const terminalTab = container.querySelector<HTMLButtonElement>('button[role="tab"][title="Terminal 2"]');
+    const closeButton = container.querySelector<HTMLButtonElement>('button[aria-label="Close terminal Terminal 2"]');
+    if (!terminalTab || !closeButton) {
+      throw new Error("Terminal tab controls not found");
+    }
+
+    flushSync(() => {
+      terminalTab.click();
+      closeButton.click();
+    });
+
+    expect(onSelectTerminalTab).toHaveBeenCalledWith("terminal-1");
+    expect(onCloseTerminalTab).toHaveBeenCalledWith("terminal-1");
   });
 
   it("uses the same simple active-tab styling for the review tab", () => {

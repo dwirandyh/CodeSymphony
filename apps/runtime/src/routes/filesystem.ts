@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import {
   FilesystemBrowseQuerySchema,
   FilesystemReadAttachmentsInputSchema,
+  FilesystemWriteTerminalDropFilesInputSchema,
 } from "@codesymphony/shared-types";
 
 export async function registerFilesystemRoutes(app: FastifyInstance) {
@@ -23,6 +24,17 @@ export async function registerFilesystemRoutes(app: FastifyInstance) {
       return { data: { attachments } };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to read dropped files";
+      return reply.code(400).send({ error: message });
+    }
+  });
+
+  app.post("/filesystem/terminal-drop/write", { bodyLimit: 30 * 1024 * 1024 }, async (request, reply) => {
+    try {
+      const input = FilesystemWriteTerminalDropFilesInputSchema.parse(request.body);
+      const files = await app.filesystemService.writeTerminalDropFiles(input.sessionId, input.files);
+      return { data: { files } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to write dropped terminal files";
       return reply.code(400).send({ error: message });
     }
   });

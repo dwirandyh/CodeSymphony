@@ -6,11 +6,12 @@ export type ThreadCloseShortcutMessageListEmptyState =
   | "existing-thread-empty"
   | null;
 
-export type MacCloseShortcutTarget = "thread" | "file" | "review" | "automations" | null;
+export type MacCloseShortcutTarget = "thread" | "terminal" | "file" | "review" | "automations" | null;
 
 interface ResolveMacCloseShortcutTargetParams {
   activeView: "chat" | "file" | "review" | "automations";
   selectedThreadId: string | null;
+  activeTerminalTabId: string | null;
   activeFilePath: string | null;
   threadCount: number;
   messageListEmptyState: ThreadCloseShortcutMessageListEmptyState;
@@ -19,6 +20,7 @@ interface ResolveMacCloseShortcutTargetParams {
 export function resolveMacCloseShortcutTarget({
   activeView,
   selectedThreadId,
+  activeTerminalTabId,
   activeFilePath,
   threadCount,
   messageListEmptyState,
@@ -33,6 +35,10 @@ export function resolveMacCloseShortcutTarget({
 
   if (activeView === "automations") {
     return "automations";
+  }
+
+  if (activeTerminalTabId) {
+    return "terminal";
   }
 
   if (!selectedThreadId || threadCount === 0) {

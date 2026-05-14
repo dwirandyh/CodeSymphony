@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
-import { deriveWorkingStatus, shouldShowThinkingPlaceholder } from "./workspacePageUtils";
+import {
+  deriveWorkingStatus,
+  shouldReturnToWorkspaceLandingAfterClosingContent,
+  shouldShowThinkingPlaceholder,
+  shouldShowWorkspaceEmptyState,
+} from "./workspacePageUtils";
 
 function makeMessageTimelineItem(role: "user" | "assistant", id: string): ChatTimelineItem {
   return {
@@ -133,5 +138,71 @@ describe("deriveWorkingStatus", () => {
       finishedAt: "2026-01-01T00:00:08Z",
       state: "completed",
     });
+  });
+});
+
+describe("shouldShowWorkspaceEmptyState", () => {
+  it("shows the workspace landing when chat has no selected thread", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      terminalViewActive: false,
+      messageListEmptyState: "no-thread-selected",
+    })).toBe(true);
+  });
+
+  it("shows the workspace landing while the first thread is still being prepared", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      terminalViewActive: false,
+      messageListEmptyState: "creating-thread",
+    })).toBe(true);
+  });
+
+  it("keeps thread-specific empty states in the regular chat surface", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      terminalViewActive: false,
+      messageListEmptyState: "new-thread-empty",
+    })).toBe(false);
+
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      terminalViewActive: false,
+      messageListEmptyState: "existing-thread-empty",
+    })).toBe(false);
+  });
+
+  it("never shows the workspace landing over file, review, or terminal views", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "file",
+      terminalViewActive: false,
+      messageListEmptyState: "no-thread-selected",
+    })).toBe(false);
+
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "review",
+      terminalViewActive: false,
+      messageListEmptyState: "no-thread-selected",
+    })).toBe(false);
+
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      terminalViewActive: true,
+      messageListEmptyState: "no-thread-selected",
+    })).toBe(false);
+  });
+});
+
+describe("shouldReturnToWorkspaceLandingAfterClosingContent", () => {
+  it("returns to the landing for threadless and empty-thread chat states", () => {
+    expect(shouldReturnToWorkspaceLandingAfterClosingContent("no-thread-selected")).toBe(true);
+    expect(shouldReturnToWorkspaceLandingAfterClosingContent("creating-thread")).toBe(true);
+    expect(shouldReturnToWorkspaceLandingAfterClosingContent("new-thread-empty")).toBe(true);
+    expect(shouldReturnToWorkspaceLandingAfterClosingContent("existing-thread-empty")).toBe(true);
+  });
+
+  it("keeps populated or loading threads on the chat surface", () => {
+    expect(shouldReturnToWorkspaceLandingAfterClosingContent("loading-thread")).toBe(false);
+    expect(shouldReturnToWorkspaceLandingAfterClosingContent(null)).toBe(false);
   });
 });

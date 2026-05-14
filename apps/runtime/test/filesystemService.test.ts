@@ -1,10 +1,11 @@
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFilesystemService } from "../src/services/filesystemService";
 
 let tempDir: string;
+const terminalDropTempDirs = new Set<string>();
 const service = createFilesystemService();
 
 beforeAll(async () => {
@@ -19,6 +20,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await rm(tempDir, { recursive: true, force: true });
+  await Promise.all(Array.from(terminalDropTempDirs, (dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe("filesystemService", () => {
@@ -84,6 +86,47 @@ describe("filesystemService", () => {
         join(tempDir, "big.bin"),
       ]);
       expect(attachments).toEqual([]);
+    });
+  });
+
+  describe("writeTerminalDropFiles", () => {
+    it("writes dropped browser files to temp paths", async () => {
+      const [written] = await service.writeTerminalDropFiles("wt-1:terminal:abc", [{
+        filename: "nested/my image.png",
+        mimeType: "image/png",
+        contentBase64: Buffer.from("png-data").toString("base64"),
+      }]);
+
+      terminalDropTempDirs.add(dirname(written.path));
+
+      expect(written.filename).toBe("my image.png");
+      expect(written.mimeType).toBe("image/png");
+      expect(written.sizeBytes).toBe(8);
+      await expect(readFile(written.path, "utf8")).resolves.toBe("png-data");
+    });
+
+    it("rejects dropped files above the size limit", async () => {
+      await expect(service.writeTerminalDropFiles("wt-1:terminal:abc", [{
+        filename: "big.bin",
+        mimeType: "application/octet-stream",
+        contentBase64: Buffer.from(new Uint8Array(11 * 1024 * 1024)).toString("base64"),
+      }])).rejects.toThrow("exceeds the 10 MB terminal drop limit");
+    });
+
+    it("cleans up tracked temp files for a terminal session", async () => {
+      const [written] = await service.writeTerminalDropFiles("wt-2:terminal:def", [{
+        filename: "note.txt",
+        mimeType: "text/plain",
+        contentBase64: Buffer.from("cleanup-me").toString("base64"),
+      }]);
+
+      const dropDir = dirname(written.path);
+      terminalDropTempDirs.add(dropDir);
+
+      await service.cleanupTerminalDropFiles("wt-2:terminal:def");
+
+      await expect(readFile(written.path, "utf8")).rejects.toThrow();
+      terminalDropTempDirs.delete(dropDir);
     });
   });
 });

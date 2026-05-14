@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { __testing } from "../src/opencode/sessionRunner";
 import { DEFAULT_CHAT_MODEL_BY_AGENT } from "@codesymphony/shared-types";
@@ -6,6 +8,27 @@ import {
   fakeCursorSessions,
   resetFakeCursorAcpState,
 } from "./support/fakeCursorAcp";
+
+class MockOpencodeServerProcess extends EventEmitter {
+  stdout = new PassThrough();
+  stderr = new PassThrough();
+  stdin = null;
+  pid = 43210;
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+
+  kill = vi.fn(() => {
+    this.exitCode = 0;
+    queueMicrotask(() => {
+      this.emit("exit", 0, null);
+    });
+    return true;
+  });
+
+  announce(url: string) {
+    this.stdout.write(`opencode server listening on ${url}\n`);
+  }
+}
 
 describe("opencode session runner config", () => {
   afterEach(() => {
@@ -440,17 +463,22 @@ describe("opencode session runner config", () => {
 
   it("falls back to SDK transport for plan-mode threads with custom provider overrides", async () => {
     const spawnMock = vi.fn(() => {
-      throw new Error("ACP transport should not run with provider overrides");
+      const child = new MockOpencodeServerProcess();
+      queueMicrotask(() => {
+        child.announce("http://127.0.0.1:9999");
+      });
+      return child;
     });
     const createOpencodeServer = vi.fn(async () => ({
       url: "http://127.0.0.1:9999",
       close: vi.fn(),
     }));
+    const promptAsync = vi.fn(async () => ({}));
     const createOpencodeClient = vi.fn(() => ({
       session: {
         create: vi.fn(async () => ({ data: { id: "sdk-session-1" } })),
         messages: vi.fn(async () => ({ data: [] })),
-        promptAsync: vi.fn(async () => ({})),
+        promptAsync,
         abort: vi.fn(async () => ({})),
       },
       event: {
@@ -507,6 +535,19 @@ describe("opencode session runner config", () => {
 
     const result = await runOpencodeWithStreaming({
       prompt: "Need deterministic plan handling with custom provider.",
+      promptWithAttachments: [
+        "Need deterministic plan handling with custom provider.",
+        "",
+        '<attachment filename="screen.png" type="image/png" path="/tmp/screen.png">[Image saved at path. Use Read tool to view.]</attachment>',
+      ].join("\n"),
+      attachments: [
+        {
+          filename: "screen.png",
+          mimeType: "image/png",
+          content: "",
+          storagePath: "/tmp/screen.png",
+        },
+      ],
       sessionId: null,
       cwd: "/tmp/project",
       permissionMode: "plan",
@@ -528,8 +569,24 @@ describe("opencode session runner config", () => {
       output: "SDK fallback.",
       sessionId: "sdk-session-1",
     });
-    expect(spawnMock).not.toHaveBeenCalled();
-    expect(createOpencodeServer).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(createOpencodeServer).not.toHaveBeenCalled();
     expect(createOpencodeClient).toHaveBeenCalledTimes(1);
+    expect(promptAsync).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        parts: [
+          {
+            type: "file",
+            mime: "image/png",
+            filename: "screen.png",
+            url: "file:///tmp/screen.png",
+          },
+          {
+            type: "text",
+            text: "Need deterministic plan handling with custom provider.",
+          },
+        ],
+      }),
+    }));
   });
 });
