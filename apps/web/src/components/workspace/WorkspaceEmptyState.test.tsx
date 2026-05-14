@@ -95,6 +95,9 @@ describe("WorkspaceEmptyState", () => {
     renderState();
 
     expect(container.querySelector("[data-testid='workspace-empty-state']")).not.toBeNull();
+    const logo = container.querySelector<HTMLImageElement>("[data-testid='workspace-empty-state-logo']");
+    expect(logo).not.toBeNull();
+    expect(logo?.getAttribute("src")).toBe("/brand/codesymphony-logo.png");
     expect(container.textContent).toContain("New Terminal");
     expect(container.textContent).toContain("New Thread");
     expect(container.textContent).toContain("Search Files");

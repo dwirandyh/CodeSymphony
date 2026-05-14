@@ -257,6 +257,7 @@ export const ChatThreadSchema = z.object({
   cursorSessionId: z.string().nullable().optional(),
   opencodeSessionId: z.string().nullable().optional(),
   active: z.boolean(),
+  preferred: z.boolean().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

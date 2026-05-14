@@ -284,9 +284,61 @@ function resolvePreferredThreadIdFromThreads(
   threads: ChatThread[],
   preferredThreadId?: string | null,
 ): string | null {
-  return preferredThreadId && threads.some((thread) => thread.id === preferredThreadId)
-    ? preferredThreadId
-    : null;
+  type PreferredChatThread = ChatThread & { preferred?: boolean };
+
+  function isPreferredThread(thread: ChatThread): thread is PreferredChatThread {
+    return (thread as PreferredChatThread).preferred === true;
+  }
+
+  if (preferredThreadId && threads.some((thread) => thread.id === preferredThreadId)) {
+    return preferredThreadId;
+  }
+
+  function pickMostRecentThread(candidates: ChatThread[]): ChatThread | null {
+    let preferredThread: ChatThread | null = null;
+
+    for (const thread of candidates) {
+      if (!preferredThread) {
+        preferredThread = thread;
+        continue;
+      }
+
+      const threadUpdatedAt = Date.parse(thread.updatedAt);
+      const preferredUpdatedAt = Date.parse(preferredThread.updatedAt);
+      if (threadUpdatedAt > preferredUpdatedAt) {
+        preferredThread = thread;
+        continue;
+      }
+
+      if (threadUpdatedAt === preferredUpdatedAt) {
+        const threadCreatedAt = Date.parse(thread.createdAt);
+        const preferredCreatedAt = Date.parse(preferredThread.createdAt);
+        if (threadCreatedAt > preferredCreatedAt) {
+          preferredThread = thread;
+        }
+      }
+    }
+
+    return preferredThread;
+  }
+
+  const activeThreads = threads.filter((thread) => thread.active);
+  const preferredActiveThread = pickMostRecentThread(activeThreads.filter(isPreferredThread));
+  if (preferredActiveThread) {
+    return preferredActiveThread.id;
+  }
+
+  const activeThread = pickMostRecentThread(activeThreads);
+  if (activeThread) {
+    return activeThread.id;
+  }
+
+  const preferredThread = pickMostRecentThread(threads.filter(isPreferredThread));
+  if (preferredThread) {
+    return preferredThread.id;
+  }
+
+  return pickMostRecentThread(threads)?.id ?? null;
 }
 
 function isDesktopViewportNow(): boolean {

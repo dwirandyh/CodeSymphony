@@ -459,6 +459,39 @@ export function createChatService(deps: RuntimeDeps) {
     return threadRuns.has(threadId);
   }
 
+  function pickMostRecentThread<T extends { id: string; createdAt: Date; updatedAt: Date }>(
+    threads: T[],
+  ): T | null {
+    let preferred: T | null = null;
+
+    for (const thread of threads) {
+      if (!preferred) {
+        preferred = thread;
+        continue;
+      }
+
+      if (thread.updatedAt.getTime() > preferred.updatedAt.getTime()) {
+        preferred = thread;
+        continue;
+      }
+
+      if (
+        thread.updatedAt.getTime() === preferred.updatedAt.getTime()
+        && thread.createdAt.getTime() > preferred.createdAt.getTime()
+      ) {
+        preferred = thread;
+      }
+    }
+
+    return preferred;
+  }
+
+  function resolvePreferredThreadId(threads: Array<{ id: string; createdAt: Date; updatedAt: Date }>): string | null {
+    const activeThreads = threads.filter((thread) => isThreadActive(thread.id));
+    const preferredThread = pickMostRecentThread(activeThreads) ?? pickMostRecentThread(threads);
+    return preferredThread?.id ?? null;
+  }
+
   function setThreadRunState(
     threadId: string,
     nextState: Omit<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason">
@@ -1832,8 +1865,14 @@ export function createChatService(deps: RuntimeDeps) {
         where: { worktreeId },
         orderBy: { createdAt: "asc" },
       });
+      const preferredThreadId = resolvePreferredThreadId(threads);
 
-      return threads.map((t) => mapChatThread(t, isThreadActive(t.id)));
+      return threads.map((thread) => {
+        const mapped = mapChatThread(thread, isThreadActive(thread.id));
+        return thread.id === preferredThreadId
+          ? { ...mapped, preferred: true }
+          : mapped;
+      });
     },
 
     async getLatestPrMrThread(worktreeId: string): Promise<ChatThread | null> {

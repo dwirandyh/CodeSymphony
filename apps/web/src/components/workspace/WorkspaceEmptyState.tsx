@@ -25,69 +25,14 @@ function isMacPlatform(): boolean {
 
 function CodesymphonyEmptyStateIcon({ className }: { className?: string }) {
   return (
-    <svg
-      viewBox="0 0 96 96"
+    <img
+      src="/brand/codesymphony-logo.png"
+      alt=""
+      data-testid="workspace-empty-state-logo"
       aria-hidden="true"
-      className={className}
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        d="M48 6L78.3 23.5V72.5L48 90L17.7 72.5V23.5L48 6Z"
-        stroke="currentColor"
-        strokeWidth="3.5"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M48 15L70.5 28V68L48 81L25.5 68V28L48 15Z"
-        stroke="currentColor"
-        strokeWidth="2.25"
-        strokeLinejoin="round"
-        opacity="0.8"
-      />
-      <path
-        d="M28.5 37.5C24.2 37.5 22 39.7 22 44V47.5C22 49.8 20.9 51.4 18.8 52.2C20.9 53 22 54.6 22 56.9V60.4C22 64.7 24.2 66.9 28.5 66.9"
-        stroke="currentColor"
-        strokeWidth="2.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M67.5 37.5C71.8 37.5 74 39.7 74 44V47.5C74 49.8 75.1 51.4 77.2 52.2C75.1 53 74 54.6 74 56.9V60.4C74 64.7 71.8 66.9 67.5 66.9"
-        stroke="currentColor"
-        strokeWidth="2.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M36 68.5H31V78H36"
-        stroke="currentColor"
-        strokeWidth="2.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M60 68.5H65V78H60"
-        stroke="currentColor"
-        strokeWidth="2.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M50 16.5V69.5"
-        stroke="currentColor"
-        strokeWidth="3.75"
-        strokeLinecap="round"
-      />
-      <path
-        d="M50 18C42.7 19.1 37.5 25.6 37.5 33.1C37.5 41.2 43.6 47.5 51 47.5C57.5 47.5 62.5 42.3 62.5 35.7C62.5 27.3 56.1 20.5 48.1 20.5C38.2 20.5 30.5 28.9 30.5 39.4C30.5 52.2 39.5 61.9 50.6 61.9C59.2 61.9 66.1 55.2 66.1 46.8"
-        stroke="currentColor"
-        strokeWidth="3.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="39" cy="77" r="5" fill="currentColor" />
-    </svg>
+      draggable={false}
+      className={cn("pointer-events-none object-contain", className)}
+    />
   );
 }
 
@@ -219,26 +164,26 @@ export function WorkspaceEmptyState({
 
   return (
     <section className="flex h-full min-h-0 flex-1 items-center justify-center px-6 py-10">
-      <div className="w-full max-w-xl" data-testid="workspace-empty-state">
+      <div className="w-full max-w-xl -translate-y-4" data-testid="workspace-empty-state">
         <div className="mb-6 flex items-center justify-center py-1">
-          <CodesymphonyEmptyStateIcon className="h-14 w-14 select-none text-foreground/72" />
+          <CodesymphonyEmptyStateIcon className="h-20 w-20 select-none" />
         </div>
 
         <div className="mx-auto grid w-full max-w-md gap-0.5">
-          <EmptyStateActionButton
-            label="New Terminal"
-            display={["TERM"]}
-            icon={SquareTerminal}
-            onClick={onCreateTerminal}
-            disabled={!workspaceReady || !canCreateTerminal}
-          />
-
           <EmptyStateActionButton
             label="New Thread"
             display={["THREAD"]}
             icon={MessageSquarePlus}
             onClick={onCreateThread}
             disabled={!workspaceReady || !canCreateThread}
+          />
+
+          <EmptyStateActionButton
+            label="New Terminal"
+            display={["TERM"]}
+            icon={SquareTerminal}
+            onClick={onCreateTerminal}
+            disabled={!workspaceReady || !canCreateTerminal}
           />
 
           <EmptyStateActionButton
