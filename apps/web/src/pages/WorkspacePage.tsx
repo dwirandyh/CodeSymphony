@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Menu, Settings, X } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
@@ -11,6 +11,10 @@ import { Composer } from "../components/workspace/composer";
 import { ChatMessageList } from "../components/workspace/chat-message-list";
 import { BottomPanel } from "../components/workspace/BottomPanel";
 import { RepositoryPanel } from "../components/workspace/RepositoryPanel";
+import { disposeTerminalRuntime } from "../components/workspace/terminalRuntimeRegistry";
+const WorkspaceTerminalSurface = lazy(() =>
+  import("../components/workspace/TerminalTab").then(m => ({ default: m.TerminalTab }))
+);
 const CodeEditorPanel = lazy(() =>
   import("../components/workspace/CodeEditorPanel").then(m => ({ default: m.CodeEditorPanel }))
 );
@@ -18,7 +22,7 @@ import { PermissionPromptCard } from "../components/workspace/PermissionPromptCa
 import { PlanDecisionComposer } from "../components/workspace/PlanDecisionComposer";
 import { QuestionCard } from "../components/workspace/QuestionCard";
 import { MacDesktopTitleBar } from "../components/workspace/MacDesktopTitleBar";
-import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
+import { WorkspaceHeader, type WorkspaceTerminalTab } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
 import { QuickFilePicker } from "../components/workspace/QuickFilePicker";
@@ -50,6 +54,19 @@ const WorkspaceAutomationsPanel = lazy(() =>
 import type { ScriptOutputEntry } from "../components/workspace/ScriptOutputTab";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Button } from "../components/ui/button";
+import {
+  getWorkspaceHeaderContainerClassName,
+  getWorkspaceMainClassName,
+} from "./workspace/workspaceMainClass";
+import {
+  getBottomPanelState,
+  getTerminalTabsState,
+  readPersistedWorkspaceTerminalUiState,
+  restoreWorkspaceTerminalUiState,
+  type BottomPanelWorktreeState,
+  type WorkspaceTerminalTabsState,
+  writePersistedWorkspaceTerminalUiState,
+} from "./workspace/workspaceTerminalPersistence";
 
 const DiffReviewPanel = lazy(() =>
   import("../components/workspace/DiffReviewPanel").then(m => ({ default: m.DiffReviewPanel }))
@@ -205,17 +222,8 @@ function isMacDesktopShell(): boolean {
 
 const REPOSITORY_PANEL_EXPANDED_STORAGE_KEY = "codesymphony:workspace:repository-panel-expanded";
 const LEFT_SIDEBAR_VISIBLE_STORAGE_KEY = "codesymphony:workspace:left-sidebar-visible";
-const DEFAULT_BOTTOM_PANEL_TAB = "terminal";
 const MOBILE_KEYBOARD_OFFSET_CSS_VAR = "--cs-mobile-keyboard-offset";
 const rememberedThreadIdsByWorktree = new Map<string, string>();
-
-type BottomPanelWorktreeState = {
-  activeTab: string;
-  openSignal: number;
-  runScriptActive: boolean;
-  runScriptSessionId: string | null;
-  collapsed: boolean;
-};
 
 type MobileInlinePanel = "files" | "git" | "more" | "utilities" | "device";
 type MobilePanelState = "repos" | MobileInlinePanel | null;
@@ -253,26 +261,21 @@ function resolveMobileWorktreeTarget(origin: MobileReposOrigin | null): MobileIn
   return null;
 }
 
-function getBottomPanelState(
-  state: Record<string, BottomPanelWorktreeState>,
-  worktreeId: string | null | undefined,
-): BottomPanelWorktreeState {
-  if (!worktreeId) {
-    return {
-      activeTab: DEFAULT_BOTTOM_PANEL_TAB,
-      openSignal: 0,
-      runScriptActive: false,
-      runScriptSessionId: null,
-      collapsed: true,
-    };
+function createTerminalTabId(): string {
+  if (typeof globalThis.crypto !== "undefined" && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
   }
 
-  return state[worktreeId] ?? {
-    activeTab: DEFAULT_BOTTOM_PANEL_TAB,
-    openSignal: 0,
-    runScriptActive: false,
-    runScriptSessionId: null,
-    collapsed: true,
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function createWorkspaceTerminalTab(worktreeId: string, ordinal: number): WorkspaceTerminalTab {
+  const id = createTerminalTabId();
+
+  return {
+    id,
+    sessionId: `${worktreeId}:terminal:${id}`,
+    title: ordinal === 1 ? "Terminal" : `Terminal ${ordinal}`,
   };
 }
 
@@ -466,6 +469,38 @@ export function WorkspacePage() {
       ...prev,
       [worktreeId]: updater(getBottomPanelState(prev, worktreeId)),
     }));
+  }, []);
+
+  const updateTerminalTabsState = useCallback((worktreeId: string | null | undefined, updater: (current: WorkspaceTerminalTabsState) => WorkspaceTerminalTabsState) => {
+    if (!worktreeId) {
+      return;
+    }
+
+    setTerminalTabsByWorktreeId((prev) => ({
+      ...prev,
+      [worktreeId]: updater(getTerminalTabsState(prev, worktreeId)),
+    }));
+  }, []);
+
+  const hideTerminalView = useCallback((worktreeId: string | null | undefined) => {
+    if (!worktreeId) {
+      return;
+    }
+
+    setTerminalTabsByWorktreeId((prev) => {
+      const current = prev[worktreeId];
+      if (!current || !current.visible) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [worktreeId]: {
+          ...current,
+          visible: false,
+        },
+      };
+    });
   }, []);
 
   const resolveSaveAutomationTargetSessionId = useCallback((worktreeId: string) => {
@@ -714,9 +749,14 @@ export function WorkspacePage() {
   const selectedDiffFilePath = search.file ?? null;
   const reviewTabOpen = activeView === "review";
   const showWorkspaceHeader = activeView !== "automations";
+  const [terminalTabsByWorktreeId, setTerminalTabsByWorktreeId] = useState<Record<string, WorkspaceTerminalTabsState>>({});
+  const [terminalUiPersistenceRuntimePid, setTerminalUiPersistenceRuntimePid] = useState<number | null>(null);
+  const selectedTerminalTabsState = getTerminalTabsState(terminalTabsByWorktreeId, repos.selectedWorktreeId);
+  const activeTerminalTab = selectedTerminalTabsState.tabs.find((tab) => tab.id === selectedTerminalTabsState.activeTabId) ?? null;
+  const terminalViewActive = activeView === "chat" && selectedTerminalTabsState.visible && activeTerminalTab !== null;
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
-  const prioritizeConversationBootstrap = activeView === "chat" && !!(search.worktreeId ?? repos.selectedWorktreeId);
+  const prioritizeConversationBootstrap = activeView === "chat" && !terminalViewActive && !!(search.worktreeId ?? repos.selectedWorktreeId);
   const [enableNonCriticalWorkspaceData, setEnableNonCriticalWorkspaceData] = useState(() => !prioritizeConversationBootstrap);
   const backgroundStatusRepositories = enableNonCriticalWorkspaceData
     ? metadataScopedRepositories
@@ -737,6 +777,7 @@ export function WorkspacePage() {
       : null,
   );
   const runtimeInfo = useRuntimeInfo();
+  const runtimePid = runtimeInfo.data?.pid ?? null;
   const selectedReviewBranch = resolveReviewBranch(gitChanges.branch, repos.selectedWorktree?.branch ?? null);
   const selectedReviewBaseBranch = resolveReviewBaseBranch(
     repos.selectedWorktree?.baseBranch ?? null,
@@ -783,6 +824,88 @@ export function WorkspacePage() {
   );
   const runtimeLabel = formatRuntimeLabel(runtimeInfo.data);
   const runtimeTitle = formatRuntimeTitle(runtimeInfo.data);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || runtimePid == null || terminalUiPersistenceRuntimePid === runtimePid) {
+      return;
+    }
+
+    let cancelled = false;
+    const runtimeChanged = terminalUiPersistenceRuntimePid != null && terminalUiPersistenceRuntimePid !== runtimePid;
+    const markReady = () => {
+      if (!cancelled) {
+        setTerminalUiPersistenceRuntimePid(runtimePid);
+      }
+    };
+    const resetTerminalUiState = () => {
+      startTransition(() => {
+        setBottomPanelStateByWorktreeId({});
+        setTerminalTabsByWorktreeId({});
+      });
+    };
+    const persistedState = readPersistedWorkspaceTerminalUiState(window.sessionStorage);
+
+    if (!persistedState || persistedState.runtimePid !== runtimePid) {
+      if (runtimeChanged) {
+        resetTerminalUiState();
+      }
+      markReady();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void api.listTerminalSessions()
+      .then((terminalSessions) => {
+        if (cancelled) {
+          return;
+        }
+
+        const restoredState = restoreWorkspaceTerminalUiState({
+          persistedState,
+          runtimePid,
+          terminalSessions,
+        });
+
+        startTransition(() => {
+          setBottomPanelStateByWorktreeId(restoredState?.bottomPanelStateByWorktreeId ?? {});
+          setTerminalTabsByWorktreeId(restoredState?.terminalTabsByWorktreeId ?? {});
+        });
+        markReady();
+      })
+      .catch(() => {
+        if (runtimeChanged) {
+          resetTerminalUiState();
+        }
+        markReady();
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [runtimePid, terminalUiPersistenceRuntimePid]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || runtimePid == null || terminalUiPersistenceRuntimePid !== runtimePid) {
+      return;
+    }
+
+    try {
+      writePersistedWorkspaceTerminalUiState(window.sessionStorage, {
+        runtimePid,
+        bottomPanelStateByWorktreeId,
+        terminalTabsByWorktreeId,
+      });
+    } catch {
+      // Ignore sessionStorage write failures and keep the live UI responsive.
+    }
+  }, [
+    bottomPanelStateByWorktreeId,
+    runtimePid,
+    terminalTabsByWorktreeId,
+    terminalUiPersistenceRuntimePid,
+  ]);
+
   const conversationReady = !prioritizeConversationBootstrap || (
     chat.selectedThreadId != null
     && !chat.composerDisabled
@@ -954,6 +1077,8 @@ export function WorkspacePage() {
           ? "Utilities"
           : mobilePanelOpen === "device"
             ? "Devices"
+            : terminalViewActive
+              ? activeTerminalTab?.title ?? "Terminal"
             : activeView === "file"
               ? labelFromPath(activeFilePath)
             : activeView === "review"
@@ -1383,6 +1508,93 @@ export function WorkspacePage() {
     waitingAssistantThreadId,
   ]);
 
+  const handleCreateTerminalTab = useCallback(() => {
+    const worktreeId = repos.selectedWorktreeId;
+    if (!worktreeId || !selectedWorktreeOperational) {
+      return;
+    }
+
+    if (!confirmSwitchAwayFromActiveFile()) {
+      return;
+    }
+
+    setError(null);
+    updateSearch({ view: undefined, file: undefined });
+    updateTerminalTabsState(worktreeId, (current) => {
+      const terminalTab = createWorkspaceTerminalTab(worktreeId, current.nextOrdinal);
+
+      return {
+        tabs: [...current.tabs, terminalTab],
+        activeTabId: terminalTab.id,
+        visible: true,
+        nextOrdinal: current.nextOrdinal + 1,
+      };
+    });
+  }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, selectedWorktreeOperational, setError, updateSearch, updateTerminalTabsState]);
+
+  const handleSelectTerminalTab = useCallback((terminalTabId: string) => {
+    const worktreeId = repos.selectedWorktreeId;
+    if (!worktreeId) {
+      return;
+    }
+
+    if (!confirmSwitchAwayFromActiveFile()) {
+      return;
+    }
+
+    updateSearch({ view: undefined, file: undefined });
+    updateTerminalTabsState(worktreeId, (current) => ({
+      ...current,
+      activeTabId: terminalTabId,
+      visible: true,
+    }));
+  }, [confirmSwitchAwayFromActiveFile, repos.selectedWorktreeId, updateSearch, updateTerminalTabsState]);
+
+  const handleCloseTerminalTab = useCallback((terminalTabId: string) => {
+    const worktreeId = repos.selectedWorktreeId;
+    if (!worktreeId) {
+      return;
+    }
+
+    let sessionIdToKill: string | null = null;
+
+    updateTerminalTabsState(worktreeId, (current) => {
+      const terminalIndex = current.tabs.findIndex((tab) => tab.id === terminalTabId);
+      if (terminalIndex < 0) {
+        return current;
+      }
+
+      const targetTab = current.tabs[terminalIndex]!;
+      sessionIdToKill = targetTab.sessionId;
+
+      const nextTabs = current.tabs.filter((tab) => tab.id !== terminalTabId);
+      const nextActiveTabId = current.activeTabId === terminalTabId
+        ? (nextTabs[terminalIndex] ?? nextTabs[terminalIndex - 1] ?? null)?.id ?? null
+        : current.activeTabId;
+
+      return {
+        ...current,
+        tabs: nextTabs,
+        activeTabId: nextActiveTabId,
+        visible: current.visible && nextActiveTabId !== null,
+      };
+    });
+
+    if (sessionIdToKill) {
+      disposeTerminalRuntime(sessionIdToKill);
+      void api.killTerminalSession(sessionIdToKill).catch(() => {});
+    }
+  }, [repos.selectedWorktreeId, updateTerminalTabsState]);
+
+  const handleCreateThreadFromHeader = useCallback(() => {
+    if (!confirmSwitchAwayFromActiveFile()) {
+      return;
+    }
+
+    hideTerminalView(repos.selectedWorktreeId);
+    void chat.createAdditionalThread();
+  }, [chat.createAdditionalThread, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId]);
+
   const handleOpenReview = useCallback(() => {
     if (!confirmSwitchAwayFromActiveFile()) {
       return;
@@ -1395,9 +1607,10 @@ export function WorkspacePage() {
       return;
     }
 
+    hideTerminalView(repos.selectedWorktreeId);
     setMobilePanelOpen(null);
     updateSearch({ view: undefined, file: undefined, threadId: chat.selectedThreadId ?? undefined });
-  }, [chat.selectedThreadId, confirmSwitchAwayFromActiveFile, updateSearch]);
+  }, [chat.selectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, updateSearch]);
 
   const handleOpenMobileFiles = useCallback(() => {
     if (!repos.selectedWorktreeId) {
@@ -1615,10 +1828,11 @@ export function WorkspacePage() {
       if (!confirmSwitchAwayFromActiveFile()) {
         return;
       }
+      hideTerminalView(repos.selectedWorktreeId);
       chat.setSelectedThreadId(threadId);
       updateSearch({ view: undefined, file: undefined, threadId: threadId ?? undefined });
     },
-    [chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, updateSearch],
+    [chat.setSelectedThreadId, confirmSwitchAwayFromActiveFile, hideTerminalView, repos.selectedWorktreeId, updateSearch],
   );
 
   const handleRequestCloseThread = useCallback((threadId: string) => {
@@ -1651,6 +1865,7 @@ export function WorkspacePage() {
       const closeTarget = resolveMacCloseShortcutTarget({
         activeView,
         selectedThreadId: chat.selectedThreadId,
+        activeTerminalTabId: terminalViewActive ? activeTerminalTab?.id ?? null : null,
         activeFilePath,
         threadCount: chat.threads.length,
         messageListEmptyState: chat.messageListEmptyState,
@@ -1675,6 +1890,13 @@ export function WorkspacePage() {
         return;
       }
 
+      if (closeTarget === "terminal") {
+        if (activeTerminalTab) {
+          handleCloseTerminalTab(activeTerminalTab.id);
+        }
+        return;
+      }
+
       if (closeTarget === "automations") {
         updateSearch({ view: undefined });
         return;
@@ -1693,15 +1915,18 @@ export function WorkspacePage() {
     };
   }, [
     activeFilePath,
+    activeTerminalTab,
     activeView,
     chat.closingThreadId,
     chat.messageListEmptyState,
     chat.selectedThreadId,
     chat.threads.length,
     handleCloseFileTab,
+    handleCloseTerminalTab,
     handleCloseReview,
     handleRequestCloseThread,
     repos.selectedWorktreeId,
+    terminalViewActive,
     updateSearch,
   ]);
 
@@ -1801,11 +2026,10 @@ export function WorkspacePage() {
 
           {/* ── Main content area (chat + bottom panel) ── */}
           <main
-            className={cn(
-              "workspace-main flex min-h-0 min-w-0 flex-1 flex-col px-0 pb-0 pt-0",
-              activeView !== "file" && "lg:px-3 lg:pb-0 lg:pt-3",
-              mobileReposOverlayOpen && "pointer-events-none select-none",
-            )}
+            className={getWorkspaceMainClassName({
+              activeView,
+              mobileReposOverlayOpen,
+            })}
             aria-hidden={mobileReposOverlayOpen ? "true" : undefined}
           >
           {/* ── Mobile top bar ── */}
@@ -1853,9 +2077,10 @@ export function WorkspacePage() {
             {showWorkspaceHeader ? (
               <div
                 className={cn(
-                  "px-1.5 pt-1.5 sm:px-2.5 sm:pt-2.5",
+                  getWorkspaceHeaderContainerClassName({
+                    activeView,
+                  }),
                   mobileInlinePanel && !desktopApp && "hidden lg:block",
-                  activeView === "file" ? "lg:px-3 lg:pt-3" : "lg:px-0 lg:pt-0",
                 )}
               >
                 <WorkspaceHeader
@@ -1880,29 +2105,31 @@ export function WorkspacePage() {
                   }
                   worktreePath={selectedWorktreeOperational ? (repos.selectedWorktree?.path ?? null) : null}
                   threads={chat.threads}
+                  terminalTabs={selectedTerminalTabsState.tabs}
+                  activeTerminalTabId={activeTerminalTab?.id ?? null}
+                  terminalTabActive={terminalViewActive}
                   selectedThreadId={chat.selectedThreadId}
                   fileTabs={workspaceFileTabs}
                   activeFilePath={activeFilePath}
                   disabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
                   createThreadDisabled={!repos.selectedWorktreeId || !selectedWorktreeOperational || chat.sendingMessage}
+                  createTerminalDisabled={!repos.selectedWorktreeId || !selectedWorktreeOperational}
                   closingThreadId={chat.closingThreadId}
                   protectedThreadId={chat.showStopAction ? chat.selectedThreadId : null}
                   showReviewTab={reviewTabOpen}
                   reviewTabActive={activeView === "review"}
                   onSelectThread={handleSelectThread}
+                  onSelectTerminalTab={handleSelectTerminalTab}
                   onPrefetchThread={(threadId) => {
                     void prefetchDisplayThreadSnapshot(threadId);
                   }}
                   onSelectFileTab={handleSelectFileTab}
                   onPinFileTab={handlePinFileTab}
                   onCloseFileTab={handleCloseFileTab}
-                  onCreateThread={() => {
-                    if (!confirmSwitchAwayFromActiveFile()) {
-                      return;
-                    }
-                    void chat.createAdditionalThread();
-                  }}
+                  onCreateThread={handleCreateThreadFromHeader}
+                  onCreateTerminal={handleCreateTerminalTab}
                   onCloseThread={handleRequestCloseThread}
+                  onCloseTerminalTab={handleCloseTerminalTab}
                   onRenameThread={(threadId, title) => chat.renameThreadTitle(threadId, title)}
                   onSelectTargetBranch={(branch) => {
                     if (!repos.selectedWorktreeId) {
@@ -2056,6 +2283,19 @@ export function WorkspacePage() {
                     bottomOffset={mobileKeyboardOffset}
                   />
                 </Suspense>
+              </section>
+            ) : terminalViewActive && activeTerminalTab && repos.selectedWorktreeId && selectedWorktreeOperational ? (
+              <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="flex min-h-0 flex-1 overflow-hidden bg-[#0f1218]">
+                  <Suspense fallback={<div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
+                    <WorkspaceTerminalSurface
+                      key={activeTerminalTab.id}
+                      sessionId={activeTerminalTab.sessionId}
+                      cwd={repos.selectedWorktree?.path ?? null}
+                      onOpenFile={(path) => void openReadFile(path)}
+                    />
+                  </Suspense>
+                </div>
               </section>
             ) : activeView === "review" && reviewTabOpen && repos.selectedWorktreeId && selectedWorktreeOperational ? (
               <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -2329,6 +2569,7 @@ export function WorkspacePage() {
               scriptOutputs={scriptOutputs}
               activeTab={selectedBottomPanelState.activeTab}
               collapsed={selectedBottomPanelState.collapsed}
+              hidden={terminalViewActive}
               onTabChange={(tab) => updateBottomPanelState(repos.selectedWorktreeId, (current) => ({
                 ...current,
                 activeTab: tab,
@@ -2341,6 +2582,7 @@ export function WorkspacePage() {
               runScriptActive={selectedBottomPanelState.runScriptActive}
               runScriptSessionId={selectedBottomPanelState.runScriptSessionId}
               onRunScriptExit={(event) => handleRunScriptTerminalExit(event, repos.selectedWorktreeId)}
+              onOpenReadFile={(path) => void openReadFile(path)}
               openSignal={selectedBottomPanelState.openSignal}
             />
           </div>

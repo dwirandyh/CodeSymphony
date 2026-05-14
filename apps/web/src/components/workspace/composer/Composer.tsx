@@ -7,7 +7,7 @@ import {
   FileText,
   Folder,
   Lightbulb,
-  Paperclip,
+  Plus,
   SlidersHorizontal,
   ShieldCheck,
   Square,
@@ -1330,7 +1330,7 @@ function ComposerContent({
               className="flex items-center justify-center rounded-full bg-secondary/60 p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-secondary-foreground disabled:opacity-50"
               aria-label="Attach files"
             >
-              <Paperclip className="h-3 w-3" />
+              <Plus className="h-3.5 w-3.5" />
             </button>
             <button
               type="button"

@@ -29,6 +29,7 @@ function attachJsonRpcServer(
     modelListResult?: unknown;
     completeTurn?: boolean;
     onTurnStart?: () => void;
+    turnStartRequests?: unknown[];
   },
 ) {
   let buffer = "";
@@ -87,6 +88,7 @@ function attachJsonRpcServer(
       }
 
       if (message.method === "turn/start") {
+        options?.turnStartRequests?.push((message as { params?: unknown }).params ?? null);
         child.stdout.write(`${JSON.stringify({ id: message.id, result: {} })}\n`);
         options?.onTurnStart?.();
         if (options?.completeTurn) {
@@ -368,6 +370,67 @@ describe("codex session runner skill integration", () => {
     expect(onText).toHaveBeenCalledTimes(1);
     expect(onText).toHaveBeenCalledWith("`svg tetap zoom/pan`");
     expect(result.output).toBe("`svg tetap zoom/pan`");
+  });
+
+  it("sends native image inputs to Codex turns", async () => {
+    const child = new MockCodexChildProcess();
+    const turnStartRequests: unknown[] = [];
+    attachJsonRpcServer(child, {
+      turnStartRequests,
+      completeTurn: true,
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCodexWithStreaming } = await import("../src/codex/sessionRunner");
+    await runCodexWithStreaming({
+      prompt: "Describe this image.",
+      promptWithAttachments: [
+        "Describe this image.",
+        "",
+        '<attachment filename="screen.png" type="image/png" path="/tmp/screen.png">[Image saved at path. Use Read tool to view.]</attachment>',
+      ].join("\n"),
+      attachments: [
+        {
+          filename: "screen.png",
+          mimeType: "image/png",
+          content: "",
+          storagePath: "/tmp/screen.png",
+        },
+      ],
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(turnStartRequests).toHaveLength(1);
+    expect(turnStartRequests[0]).toMatchObject({
+      input: [
+        {
+          type: "localImage",
+          path: "/tmp/screen.png",
+        },
+        {
+          type: "text",
+          text: "Describe this image.",
+          text_elements: [],
+        },
+      ],
+    });
   });
 
   it("surfaces commentary text for chat threads and suppresses redundant short final answers", async () => {

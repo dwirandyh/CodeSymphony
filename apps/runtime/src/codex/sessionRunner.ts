@@ -32,6 +32,7 @@ import {
   toOwnership,
   type ToolContext,
 } from "./toolContext.js";
+import { buildAttachmentDataUrl, isImageAttachment } from "../agentAttachments.js";
 
 export {
   buildCollaborationMode,
@@ -46,6 +47,51 @@ export {
   resolveCodexPlanContent,
 } from "./plan.js";
 export { selectPrimaryCodexFileChange } from "./toolContext.js";
+
+async function buildCodexTurnInput(params: {
+  prompt: string;
+  promptWithAttachments?: string;
+  attachments?: Parameters<ChatAgentRunner>[0]["attachments"];
+}): Promise<Array<Record<string, unknown>>> {
+  const imageInputs = await Promise.all(
+    (params.attachments ?? [])
+      .filter(isImageAttachment)
+      .map(async (attachment) => {
+        if (attachment.storagePath) {
+          return {
+            type: "localImage",
+            path: attachment.storagePath,
+          };
+        }
+
+        const url = await buildAttachmentDataUrl(attachment);
+        if (!url) {
+          return null;
+        }
+
+        return {
+          type: "image",
+          url,
+        };
+      }),
+  );
+
+  const input: Array<Record<string, unknown>> = imageInputs.filter(
+    (entry): entry is NonNullable<typeof entry> => entry !== null,
+  );
+  const textPrompt = params.prompt;
+  const fallbackTextPrompt = params.promptWithAttachments ?? textPrompt;
+
+  if (textPrompt.length > 0 || input.length === 0) {
+    input.push({
+      type: "text",
+      text: textPrompt.length > 0 ? textPrompt : fallbackTextPrompt,
+      text_elements: [],
+    });
+  }
+
+  return input;
+}
 
 type JsonRpcRequest = {
   id: string | number;
@@ -563,6 +609,8 @@ function prefixAgentMessageSegment(currentOutput: string, nextText: string): str
 
 export const runCodexWithStreaming: ChatAgentRunner = async ({
   prompt,
+  promptWithAttachments,
+  attachments,
   sessionId,
   listSlashCommandsOnly,
   includeCommentaryInText = false,
@@ -1288,13 +1336,11 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
 
     await sendRequest("turn/start", {
       threadId: openedThreadId,
-      input: [
-        {
-          type: "text",
-          text: prompt,
-          text_elements: [],
-        },
-      ],
+      input: await buildCodexTurnInput({
+        prompt,
+        promptWithAttachments,
+        attachments,
+      }),
       model: resolvedModel,
       collaborationMode: buildCollaborationMode(resolvedModel, permissionMode),
     });

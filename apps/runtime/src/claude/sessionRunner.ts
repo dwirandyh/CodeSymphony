@@ -3,6 +3,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Query,
   SDKMessage,
+  SDKUserMessage,
   SlashCommand as SdkSlashCommand,
   SpawnOptions as ClaudeSpawnOptions,
   SpawnedProcess as ClaudeSpawnedProcess,
@@ -40,6 +41,7 @@ import {
   runSyntheticToolFinish,
   runAnomalyDetection,
 } from "./sessionStreamProcessor.js";
+import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
 
 // Re-export for backward-compatible __testing API used by existing tests
 export const __testing = {
@@ -245,6 +247,57 @@ function normalizeSlashCommands(commands: SdkSlashCommand[] | undefined | null):
     .filter((command) => command.name.length > 0);
 }
 
+async function buildClaudePromptInput(params: {
+  prompt: string;
+  promptWithAttachments?: string;
+  attachments?: Parameters<ClaudeRunner>[0]["attachments"];
+}): Promise<string | AsyncIterable<SDKUserMessage>> {
+  if (!(params.attachments?.some(isImageAttachment))) {
+    return params.promptWithAttachments ?? params.prompt;
+  }
+
+  const contentBlocks: Array<Record<string, unknown>> = [];
+  for (const attachment of params.attachments ?? []) {
+    if (!isImageAttachment(attachment)) {
+      continue;
+    }
+
+    const data = await readAttachmentBase64(attachment);
+    if (!data) {
+      continue;
+    }
+
+    contentBlocks.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: attachment.mimeType,
+        data,
+      },
+    });
+  }
+
+  const textPrompt = params.prompt;
+  if (textPrompt.trim().length > 0 || contentBlocks.length === 0) {
+    contentBlocks.push({
+      type: "text",
+      text: textPrompt.trim().length > 0 ? textPrompt : (params.promptWithAttachments ?? params.prompt),
+    });
+  }
+
+  return (async function* () {
+    yield {
+      type: "user",
+      message: {
+        role: "user",
+        content: contentBlocks,
+      } as SDKUserMessage["message"],
+      parent_tool_use_id: null,
+      session_id: "",
+    } satisfies SDKUserMessage;
+  })();
+}
+
 function resolveSdkPermissionMode(
   runPermissionMode: ChatMode | undefined,
   threadPermissionMode: ChatThreadPermissionMode | undefined,
@@ -274,6 +327,8 @@ function resolveSdkPermissionMode(
 
 export const runClaudeWithStreaming: ClaudeRunner = async ({
   prompt,
+  promptWithAttachments,
+  attachments,
   sessionId,
   listSlashCommandsOnly,
   cwd,
@@ -427,8 +482,15 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     });
 
     try {
+      const promptInput = listSlashCommandsOnly
+        ? "List currently available slash commands."
+        : await buildClaudePromptInput({
+          prompt,
+          promptWithAttachments,
+          attachments,
+        });
       stream = query({
-        prompt: listSlashCommandsOnly ? "List currently available slash commands." : prompt,
+        prompt: promptInput,
         options: {
           model: effectiveModel,
           abortController,
