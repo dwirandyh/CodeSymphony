@@ -1648,6 +1648,17 @@ describe("chatService permission flow", () => {
     expect(attachment?.storagePath?.includes("/.codesymphony/attachments/")).toBe(true);
     expect(existsSync(attachment!.storagePath!)).toBe(true);
     expect(existsSync(join(worktreePath, ".codesymphony"))).toBe(false);
+    expect(claudeRunner).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: "",
+      promptWithAttachments: expect.stringContaining('<attachment filename="Home.png" type="image/png"'),
+      attachments: [
+        expect.objectContaining({
+          filename: "Home.png",
+          mimeType: "image/png",
+          storagePath: attachment?.storagePath,
+        }),
+      ],
+    }));
   });
 
 });

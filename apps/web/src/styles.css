@@ -109,3 +109,23 @@ mark {
   z-index: 2;
   contain: layout paint;
 }
+
+.terminal-scrollbars-thin .xterm-scrollable-element > .scrollbar.vertical {
+  width: 8px !important;
+}
+
+.terminal-scrollbars-thin .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  left: 1px !important;
+  width: 6px !important;
+  border-radius: 9999px;
+}
+
+.terminal-scrollbars-thin .xterm-scrollable-element > .scrollbar.horizontal {
+  height: 8px !important;
+}
+
+.terminal-scrollbars-thin .xterm-scrollable-element > .scrollbar.horizontal > .slider {
+  top: 1px !important;
+  height: 6px !important;
+  border-radius: 9999px;
+}

@@ -10,6 +10,10 @@ const mockTerminalService = {
   write: vi.fn(),
   has: vi.fn(),
   resize: vi.fn(),
+  kill: vi.fn(),
+  listSessions: vi.fn(),
+  getScrollback: vi.fn(),
+  getExitEvent: vi.fn(),
   addListener: vi.fn(() => vi.fn()),
   addExitListener: vi.fn(() => vi.fn()),
 };
@@ -18,11 +22,16 @@ const mockLogService = {
   log: vi.fn(),
 };
 
+const mockFilesystemService = {
+  cleanupTerminalDropFiles: vi.fn(),
+};
+
 beforeAll(async () => {
   app = Fastify();
   await app.register(websocket);
   app.decorate("terminalService", mockTerminalService);
   app.decorate("logService", mockLogService);
+  app.decorate("filesystemService", mockFilesystemService);
   await registerTerminalRoutes(app);
   await app.ready();
 });
@@ -30,8 +39,12 @@ beforeAll(async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   mockTerminalService.spawn.mockReturnValue({ resolvedCwd: "/tmp" });
+  mockTerminalService.listSessions.mockReturnValue([]);
+  mockTerminalService.getScrollback.mockReturnValue("");
+  mockTerminalService.getExitEvent.mockReturnValue(null);
   mockTerminalService.addListener.mockReturnValue(vi.fn());
   mockTerminalService.addExitListener.mockReturnValue(vi.fn());
+  mockFilesystemService.cleanupTerminalDropFiles.mockResolvedValue(undefined);
 });
 
 afterAll(async () => {
@@ -39,6 +52,40 @@ afterAll(async () => {
 });
 
 describe("terminal routes", () => {
+  describe("GET /terminal/sessions", () => {
+    it("lists live and exited terminal sessions", async () => {
+      mockTerminalService.listSessions.mockReturnValue([
+        {
+          sessionId: "wt1:terminal:1",
+          requestedCwd: "/tmp/wt1",
+          resolvedCwd: "/tmp/wt1",
+          active: true,
+          exitCode: null,
+          signal: null,
+        },
+      ]);
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/terminal/sessions",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: [
+          {
+            sessionId: "wt1:terminal:1",
+            requestedCwd: "/tmp/wt1",
+            resolvedCwd: "/tmp/wt1",
+            active: true,
+            exitCode: null,
+            signal: null,
+          },
+        ],
+      });
+    });
+  });
+
   describe("POST /terminal/run", () => {
     it("runs command in stdin mode by default", async () => {
       mockTerminalService.spawn.mockReturnValue(undefined);
@@ -155,6 +202,22 @@ describe("terminal routes", () => {
     });
   });
 
+  describe("POST /terminal/kill", () => {
+    it("kills the terminal session and cleans up dropped files", async () => {
+      mockTerminalService.has.mockReturnValue(true);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/terminal/kill",
+        payload: { sessionId: "s1" },
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(mockTerminalService.kill).toHaveBeenCalledWith("s1");
+      expect(mockFilesystemService.cleanupTerminalDropFiles).toHaveBeenCalledWith("s1");
+    });
+  });
+
   describe("GET /terminal/ws", () => {
     it("forwards cwd to terminal spawn", () => {
       const socket = {
@@ -206,6 +269,52 @@ describe("terminal routes", () => {
         "Failed to spawn PTY: ENOENT: missing cwd",
         { cwd: "/missing", sessionId: "wt1:terminal" },
       );
+    });
+
+    it("waits for the first resize before replaying scrollback and exit state", () => {
+      let messageHandler: ((raw: Buffer | ArrayBuffer | Buffer[]) => void) | null = null;
+      mockTerminalService.getScrollback.mockReturnValue("ready\n");
+      mockTerminalService.getExitEvent.mockReturnValue({ exitCode: 0, signal: 0 });
+
+      const socket = {
+        close: vi.fn(),
+        on: vi.fn((event: string, listener: (...args: any[]) => void) => {
+          if (event === "message") {
+            messageHandler = listener as (raw: Buffer | ArrayBuffer | Buffer[]) => void;
+          }
+        }),
+        send: vi.fn(),
+        readyState: 1,
+      };
+
+      handleTerminalWebSocket(app, socket, {
+        query: { sessionId: "wt1:script-runner:1", cwd: "/tmp/wt1" },
+      });
+
+      expect(socket.send).not.toHaveBeenCalled();
+
+      messageHandler?.(Buffer.from(JSON.stringify({
+        type: "resize",
+        cols: 120,
+        rows: 32,
+      })));
+
+      expect(mockTerminalService.resize).toHaveBeenCalledWith("wt1:script-runner:1", 120, 32);
+      expect(socket.send).toHaveBeenNthCalledWith(1, "ready\n");
+      expect(socket.send).toHaveBeenNthCalledWith(2, JSON.stringify({
+        kind: "cs-terminal-event",
+        type: "exit",
+        exitCode: 0,
+        signal: 0,
+      }));
+
+      messageHandler?.(Buffer.from(JSON.stringify({
+        type: "resize",
+        cols: 121,
+        rows: 33,
+      })));
+
+      expect(socket.send).toHaveBeenCalledTimes(2);
     });
   });
 });

@@ -1,5 +1,6 @@
 import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import type { ChatWorkingStatus } from "../../components/workspace/chat-message-list";
+import type { ChatMessageListEmptyState } from "../../components/workspace/chat-message-list/ChatMessageList.types";
 
 export function resolveChatMessageListKey(params: {
   previousKey: string;
@@ -30,6 +31,29 @@ export function shouldShowThinkingPlaceholder(params: {
   }
 
   return params.selectedThreadUiStatus === "running" || params.workingStatus?.state === "completed";
+}
+
+export function shouldShowWorkspaceEmptyState(params: {
+  activeView: "chat" | "file" | "review" | "automations";
+  terminalViewActive: boolean;
+  messageListEmptyState: ChatMessageListEmptyState | null;
+}): boolean {
+  if (params.activeView !== "chat" || params.terminalViewActive) {
+    return false;
+  }
+
+  return params.messageListEmptyState === "no-thread-selected" || params.messageListEmptyState === "creating-thread";
+}
+
+export function shouldReturnToWorkspaceLandingAfterClosingContent(
+  messageListEmptyState: ChatMessageListEmptyState | null,
+): boolean {
+  return (
+    messageListEmptyState === "no-thread-selected"
+    || messageListEmptyState === "creating-thread"
+    || messageListEmptyState === "new-thread-empty"
+    || messageListEmptyState === "existing-thread-empty"
+  );
 }
 
 function getTimelineItemCreatedAt(item: ChatTimelineItem): string | null {

@@ -72,6 +72,13 @@ export type ClaudeRunnerResult = {
 
 export type ChatAgentRunnerResult = ClaudeRunnerResult;
 
+export type ChatAgentAttachment = {
+  filename: string;
+  mimeType: string;
+  content: string;
+  storagePath: string | null;
+};
+
 export type ResourceMonitorTrackedSession = {
   sessionId: string;
   worktreeId: string;
@@ -154,6 +161,8 @@ export type ClaudeToolInstrumentationEvent = {
 
 export type ClaudeRunner = (args: {
   prompt: string;
+  promptWithAttachments?: string;
+  attachments?: ChatAgentAttachment[];
   sessionId: string | null;
   listSlashCommandsOnly?: boolean;
   includeCommentaryInText?: boolean;

@@ -6,11 +6,13 @@ describe("filesystem routes", () => {
   let app: FastifyInstance;
   const browse = vi.fn();
   const readAttachments = vi.fn();
+  const writeTerminalDropFiles = vi.fn();
+  const cleanupTerminalDropFiles = vi.fn();
 
   beforeEach(async () => {
     vi.resetAllMocks();
     app = Fastify({ logger: false });
-    app.decorate("filesystemService", { browse, readAttachments } as never);
+    app.decorate("filesystemService", { browse, readAttachments, writeTerminalDropFiles, cleanupTerminalDropFiles } as never);
     await app.register(registerFilesystemRoutes, { prefix: "/api" });
     await app.ready();
   });
@@ -63,6 +65,60 @@ describe("filesystem routes", () => {
       url: "/api/filesystem/attachments/read",
       payload: { paths: ["/tmp/blocked.txt"] },
     });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /api/filesystem/terminal-drop/write returns temp file paths", async () => {
+    writeTerminalDropFiles.mockResolvedValue([{
+      path: "/tmp/cs-terminal-drop/test.png",
+      filename: "test.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    }]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/filesystem/terminal-drop/write",
+      headers: {
+        "content-type": "application/json",
+      },
+      payload: {
+        sessionId: "wt-1:terminal:abc",
+        files: [{
+          filename: "test.png",
+          mimeType: "image/png",
+          contentBase64: "dGVzdA==",
+        }],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.files).toHaveLength(1);
+    expect(writeTerminalDropFiles).toHaveBeenCalledWith("wt-1:terminal:abc", [{
+      filename: "test.png",
+      mimeType: "image/png",
+      contentBase64: "dGVzdA==",
+    }]);
+  });
+
+  it("returns 400 on terminal drop write error", async () => {
+    writeTerminalDropFiles.mockRejectedValue(new Error("too large"));
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/filesystem/terminal-drop/write",
+      headers: {
+        "content-type": "application/json",
+      },
+      payload: {
+        sessionId: "wt-1:terminal:abc",
+        files: [{
+          filename: "big.png",
+          mimeType: "image/png",
+          contentBase64: "Zm9v",
+        }],
+      },
+    });
+
     expect(res.statusCode).toBe(400);
   });
 });

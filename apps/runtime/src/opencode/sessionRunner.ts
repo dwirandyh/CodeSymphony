@@ -2,6 +2,7 @@ import {
   createOpencodeClient,
   type Config as OpencodeConfig,
   type Event as OpencodeEvent,
+  type FilePartInput,
   type Part as OpencodePart,
   type Permission as OpencodePermission,
   type ToolPart as OpencodeToolPart,
@@ -21,6 +22,7 @@ import {
 import { resolveHeuristicPlanContent } from "../codex/plan.js";
 import { runOpencodePlanModeViaAcp } from "./acpRunner.js";
 import { ensureConfiguredOpencodeBinaryOnPath, resolveOpencodeBinaryPath } from "./binary.js";
+import { buildAttachmentDataUrl, buildAttachmentFileUrl, isImageAttachment } from "../agentAttachments.js";
 
 const OPENCODE_CUSTOM_PROVIDER_ID = "codesymphony_custom";
 const OPENCODE_SERVER_HOST = "127.0.0.1";
@@ -584,8 +586,48 @@ function summarizeStalledOpencodeSession(params: {
   return "OpenCode session stalled before producing any output. The upstream provider did not stream any events or completion signal.";
 }
 
+async function buildOpencodePromptParts(params: {
+  prompt: string;
+  promptWithAttachments?: string;
+  attachments?: Parameters<ChatAgentRunner>[0]["attachments"];
+}): Promise<Array<{ type: "text"; text: string } | FilePartInput>> {
+  const parts: Array<{ type: "text"; text: string } | FilePartInput> = [];
+
+  for (const attachment of params.attachments ?? []) {
+    if (!isImageAttachment(attachment)) {
+      continue;
+    }
+
+    const url = buildAttachmentFileUrl(attachment) ?? await buildAttachmentDataUrl(attachment);
+    if (!url) {
+      continue;
+    }
+
+    parts.push({
+      type: "file",
+      mime: attachment.mimeType,
+      filename: attachment.filename,
+      url,
+    });
+  }
+
+  const textPrompt = params.prompt;
+  const fallbackTextPrompt = params.promptWithAttachments ?? textPrompt;
+
+  if (textPrompt.trim().length > 0 || parts.length === 0) {
+    parts.push({
+      type: "text",
+      text: parts.length > 0 ? textPrompt : fallbackTextPrompt,
+    });
+  }
+
+  return parts;
+}
+
 export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   prompt,
+  promptWithAttachments,
+  attachments,
   sessionId,
   listSlashCommandsOnly,
   cwd,
@@ -1199,12 +1241,11 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
       body: {
         agent,
         model: resolvedModel,
-        parts: [
-          {
-            type: "text",
-            text: prompt,
-          },
-        ],
+        parts: await buildOpencodePromptParts({
+          prompt,
+          promptWithAttachments,
+          attachments,
+        }),
       },
       throwOnError: true,
       signal: combinedSignal,

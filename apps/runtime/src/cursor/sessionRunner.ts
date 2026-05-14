@@ -8,6 +8,7 @@ import {
   ClientSideConnection,
   ndJsonStream,
   type AvailableCommand,
+  type ContentBlock,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
   type ElicitationPropertySchema,
@@ -27,6 +28,7 @@ import {
   type SlashCommand,
 } from "@codesymphony/shared-types";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
+import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
 
 const CURSOR_BINARY = process.env.CURSOR_AGENT_BINARY_PATH ?? "cursor-agent";
 const CURSOR_CATALOG_TIMEOUT_MS = 2_500;
@@ -631,6 +633,7 @@ async function createCursorConnection(params: {
 }): Promise<{
   child: ChildProcessWithoutNullStreams;
   connection: ClientSideConnection;
+  initializeResponse: Awaited<ReturnType<ClientSideConnection["initialize"]>>;
   stderrChunks: string[];
 }> {
   const { child, stderrChunks } = spawnCursorProcess(params.cwd);
@@ -645,7 +648,7 @@ async function createCursorConnection(params: {
     extMethod: params.client.extMethod,
   }), stream);
 
-  await connection.initialize({
+  const initializeResponse = await connection.initialize({
     protocolVersion: 1,
     clientCapabilities: {
       elicitation: {
@@ -661,8 +664,65 @@ async function createCursorConnection(params: {
   return {
     child,
     connection,
+    initializeResponse,
     stderrChunks,
   };
+}
+
+async function buildCursorPromptBlocks(params: {
+  prompt: string;
+  promptWithAttachments?: string;
+  attachments?: Parameters<ChatAgentRunner>[0]["attachments"];
+  acpMode: CursorAcpMode;
+  threadPermissionMode: "default" | "full_access" | undefined;
+  supportsImages: boolean;
+}): Promise<ContentBlock[]> {
+  const textPrompt = buildCursorPrompt({
+    prompt: params.prompt,
+    acpMode: params.acpMode,
+    threadPermissionMode: params.threadPermissionMode,
+  });
+  const fallbackTextPrompt = buildCursorPrompt({
+    prompt: params.promptWithAttachments ?? params.prompt,
+    acpMode: params.acpMode,
+    threadPermissionMode: params.threadPermissionMode,
+  });
+
+  if (!params.supportsImages || !(params.attachments?.some(isImageAttachment))) {
+    return [
+      {
+        type: "text",
+        text: fallbackTextPrompt,
+      },
+    ];
+  }
+
+  const imageBlocks = await Promise.all(
+    (params.attachments ?? [])
+      .filter(isImageAttachment)
+      .map(async (attachment) => {
+        const data = await readAttachmentBase64(attachment);
+        if (!data) {
+          return null;
+        }
+
+        return {
+          type: "image",
+          data,
+          mimeType: attachment.mimeType,
+          uri: attachment.storagePath ?? undefined,
+        } satisfies ContentBlock;
+      }),
+  );
+
+  const blocks: ContentBlock[] = imageBlocks.filter(
+    (entry): entry is NonNullable<typeof entry> => entry !== null,
+  );
+  blocks.push({
+    type: "text",
+    text: textPrompt,
+  });
+  return blocks;
 }
 
 async function listCursorCatalog(cwd: string): Promise<CursorCatalogSnapshot> {
@@ -736,6 +796,8 @@ export async function listCursorModels(params: {
 
 export const runCursorWithStreaming: ChatAgentRunner = async ({
   prompt,
+  promptWithAttachments,
+  attachments,
   sessionId,
   cwd,
   abortController,
@@ -969,6 +1031,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     });
     child = created.child;
     connection = created.connection;
+    const supportsPromptImages = created.initializeResponse.agentCapabilities?.promptCapabilities?.image === true;
     const childPid = child.pid;
     if (typeof childPid === "number" && childPid > 0) {
       await onProcessSpawned?.(childPid);
@@ -1018,16 +1081,14 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
 
     const result = await connection.prompt({
       sessionId: currentSessionId,
-      prompt: [
-        {
-          type: "text",
-          text: buildCursorPrompt({
-            prompt,
-            acpMode,
-            threadPermissionMode,
-          }),
-        },
-      ],
+      prompt: await buildCursorPromptBlocks({
+        prompt,
+        promptWithAttachments,
+        attachments,
+        acpMode,
+        threadPermissionMode,
+        supportsImages: supportsPromptImages,
+      }),
     });
 
     await emitPlanIfReady();

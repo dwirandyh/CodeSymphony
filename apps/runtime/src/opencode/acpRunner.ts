@@ -4,6 +4,7 @@ import { Readable, Writable } from "node:stream";
 import {
   ClientSideConnection,
   ndJsonStream,
+  type ContentBlock,
   type CreateElicitationRequest,
   type CreateElicitationResponse,
   type ElicitationPropertySchema,
@@ -20,6 +21,7 @@ import {
 import type { PermissionDecision } from "@codesymphony/shared-types";
 import { resolveHeuristicPlanContent } from "../codex/plan.js";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
+import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
 import { resolveOpencodeBinaryPath } from "./binary.js";
 
 const OPENCODE_PLAN_FILE_PATH = ".opencode/plans/opencode-plan.md";
@@ -495,6 +497,7 @@ async function createOpencodeConnection(params: {
 }): Promise<{
   child: ChildProcessWithoutNullStreams;
   connection: ClientSideConnection;
+  initializeResponse: Awaited<ReturnType<ClientSideConnection["initialize"]>>;
   stderrChunks: string[];
 }> {
   const { child, stderrChunks } = spawnOpencodeProcess(params.cwd);
@@ -509,7 +512,7 @@ async function createOpencodeConnection(params: {
     extMethod: params.client.extMethod,
   }), stream);
 
-  await connection.initialize({
+  const initializeResponse = await connection.initialize({
     protocolVersion: 1,
     clientCapabilities: {
       elicitation: {
@@ -525,13 +528,62 @@ async function createOpencodeConnection(params: {
   return {
     child,
     connection,
+    initializeResponse,
     stderrChunks,
   };
+}
+
+async function buildOpencodeAcpPromptBlocks(params: {
+  prompt: string;
+  promptWithAttachments?: string;
+  attachments?: Parameters<ChatAgentRunner>[0]["attachments"];
+  supportsImages: boolean;
+}): Promise<ContentBlock[]> {
+  if (!params.supportsImages || !(params.attachments?.some(isImageAttachment))) {
+    return [
+      {
+        type: "text",
+        text: params.promptWithAttachments ?? params.prompt,
+      },
+    ];
+  }
+
+  const imageBlocks = await Promise.all(
+    (params.attachments ?? [])
+      .filter(isImageAttachment)
+      .map(async (attachment) => {
+        const data = await readAttachmentBase64(attachment);
+        if (!data) {
+          return null;
+        }
+
+        return {
+          type: "image",
+          data,
+          mimeType: attachment.mimeType,
+          uri: attachment.storagePath ?? undefined,
+        } satisfies ContentBlock;
+      }),
+  );
+
+  const blocks: ContentBlock[] = imageBlocks.filter(
+    (entry): entry is NonNullable<typeof entry> => entry !== null,
+  );
+  const textPrompt = params.prompt;
+  if (textPrompt.trim().length > 0 || blocks.length === 0) {
+    blocks.push({
+      type: "text",
+      text: textPrompt.trim().length > 0 ? textPrompt : (params.promptWithAttachments ?? params.prompt),
+    });
+  }
+  return blocks;
 }
 
 export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunner>[0]): Promise<ChatAgentRunnerResult> {
   const {
     prompt,
+    promptWithAttachments,
+    attachments,
     sessionId,
     cwd,
     abortController,
@@ -776,6 +828,7 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
     });
     child = created.child;
     connection = created.connection;
+    const supportsPromptImages = created.initializeResponse.agentCapabilities?.promptCapabilities?.image === true;
     const childPid = child.pid;
     if (typeof childPid === "number" && childPid > 0) {
       await onProcessSpawned?.(childPid);
@@ -826,12 +879,12 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
 
     const result = await connection.prompt({
       sessionId: currentSessionId,
-      prompt: [
-        {
-          type: "text",
-          text: prompt,
-        },
-      ],
+      prompt: await buildOpencodeAcpPromptBlocks({
+        prompt,
+        promptWithAttachments,
+        attachments,
+        supportsImages: supportsPromptImages,
+      }),
     });
 
     await emitPlanIfReady();

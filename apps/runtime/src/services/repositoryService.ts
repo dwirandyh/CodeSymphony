@@ -71,20 +71,6 @@ export function createRepositoryService(prisma: PrismaClient) {
     return `${preferredBranch}-root-${Date.now()}`;
   }
 
-  async function ensureMainThread(worktreeId: string): Promise<void> {
-    const existing = await prisma.chatThread.findFirst({
-      where: { worktreeId },
-      select: { id: true },
-    });
-    if (existing) return;
-    await prisma.chatThread.create({
-      data: {
-        worktreeId,
-        title: "New Thread",
-      },
-    });
-  }
-
   async function ensurePrimaryWorktreeExists(
     repository: RepositoryWithWorktrees,
   ): Promise<void> {
@@ -93,7 +79,6 @@ export function createRepositoryService(prisma: PrismaClient) {
     ) ?? null;
 
     if (rootWorkspace?.status === "active") {
-      await ensureMainThread(rootWorkspace.id);
       return;
     }
 
@@ -102,7 +87,6 @@ export function createRepositoryService(prisma: PrismaClient) {
         where: { id: rootWorkspace.id },
         data: { status: "active" },
       });
-      await ensureMainThread(reactivated.id);
 
       const idx = repository.worktrees.findIndex((worktree) => worktree.id === reactivated.id);
       if (idx >= 0) {
@@ -134,7 +118,6 @@ export function createRepositoryService(prisma: PrismaClient) {
       },
     });
 
-    await ensureMainThread(createdWorktree.id);
     repository.worktrees.unshift(createdWorktree);
     console.warn("[repositoryService] recovered-missing-primary-worktree", {
       repositoryId: repository.id,

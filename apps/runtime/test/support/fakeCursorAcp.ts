@@ -23,6 +23,7 @@ type FakeCursorSessionState = {
   currentModeId: string;
   currentModelId: string;
   prompts: string[];
+  promptBlocks: unknown[];
   abortController: AbortController | null;
 };
 
@@ -30,6 +31,9 @@ export type FakeCursorScenario = {
   availableCommands?: AvailableCommand[];
   availableModels?: FakeCursorModel[];
   availableModes?: FakeCursorMode[];
+  promptCapabilities?: {
+    image?: boolean;
+  };
   onPrompt?: (params: {
     agent: FakeCursorAgent;
     sessionId: string;
@@ -138,6 +142,7 @@ export class FakeCursorAgent {
       protocolVersion: 1,
       agentCapabilities: {
         loadSession: true,
+        ...(this.scenario.promptCapabilities ? { promptCapabilities: this.scenario.promptCapabilities } : {}),
       },
     };
   }
@@ -157,6 +162,7 @@ export class FakeCursorAgent {
       currentModeId,
       currentModelId,
       prompts: [],
+      promptBlocks: [],
       abortController: null,
     });
 
@@ -210,6 +216,7 @@ export class FakeCursorAgent {
     const abortController = new AbortController();
     state.abortController = abortController;
     state.prompts.push(readPromptText(params.prompt));
+    state.promptBlocks.push(params.prompt);
 
     try {
       const result = await this.scenario.onPrompt?.({
