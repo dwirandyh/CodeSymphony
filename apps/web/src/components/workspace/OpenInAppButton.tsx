@@ -6,27 +6,7 @@ import { cn } from "../../lib/utils";
 import { getAppIcon } from "../../lib/appIcons";
 import { api } from "../../lib/api";
 import { useInstalledApps } from "../../hooks/queries/useInstalledApps";
-
-const PREFERRED_APP_KEY_PREFIX = "codesymphony:preferred-editor";
-
-function getPreferredAppId(targetPath: string): string | null {
-  try {
-    const specific = localStorage.getItem(`${PREFERRED_APP_KEY_PREFIX}:${targetPath}`);
-    if (specific) return specific;
-    return localStorage.getItem(PREFERRED_APP_KEY_PREFIX);
-  } catch {
-    return null;
-  }
-}
-
-function setPreferredAppId(targetPath: string, appId: string) {
-  try {
-    localStorage.setItem(`${PREFERRED_APP_KEY_PREFIX}:${targetPath}`, appId);
-    localStorage.setItem(PREFERRED_APP_KEY_PREFIX, appId);
-  } catch {
-    // localStorage not available
-  }
-}
+import { getPreferredAppId, resolvePreferredApp, setPreferredAppId } from "./openInAppPreferences";
 
 function resolveAppIconSrc(iconUrl?: string): string | null {
   if (!iconUrl) {
@@ -72,7 +52,7 @@ export function OpenInAppButton({ targetPath, className }: OpenInAppButtonProps)
   const [preferredId, setPreferredId] = useState<string | null>(() => getPreferredAppId(targetPath));
 
   // Determine selected app: preferred if it exists in the list, else first available
-  const selectedApp = apps.find((a) => a.id === preferredId) ?? apps[0] ?? null;
+  const selectedApp = apps.find((app) => app.id === preferredId) ?? resolvePreferredApp(apps, targetPath);
 
   async function handleSelectApp(app: ExternalApp) {
     setPreferredId(app.id);
