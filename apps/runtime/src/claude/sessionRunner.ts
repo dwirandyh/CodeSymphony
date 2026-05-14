@@ -1,5 +1,12 @@
+import { spawn as spawnChildProcess } from "node:child_process";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { Query, SDKMessage, SlashCommand as SdkSlashCommand } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Query,
+  SDKMessage,
+  SlashCommand as SdkSlashCommand,
+  SpawnOptions as ClaudeSpawnOptions,
+  SpawnedProcess as ClaudeSpawnedProcess,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { ChatMode, ChatThreadPermissionMode, SlashCommand } from "@codesymphony/shared-types";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -167,6 +174,67 @@ function shouldResumeSession(sessionId: string | null, sessionWorktreePath: stri
   return areLikelySameFsPath(sessionWorktreePath, cwd);
 }
 
+function resolveClaudeQueryProcessPid(stream: Query | null): number | null {
+  const pid = (stream as {
+    transport?: {
+      process?: {
+        pid?: unknown;
+      };
+    };
+  } | null)?.transport?.process?.pid;
+
+  return Number.isInteger(pid) && Number(pid) > 0 ? Number(pid) : null;
+}
+
+function createClaudeProcessSpawner(params: {
+  onProcessSpawned?: (pid: number) => void;
+  onStderr: (data: string) => void;
+}): (options: ClaudeSpawnOptions) => ClaudeSpawnedProcess {
+  return ({ command, args, cwd, env, signal }: ClaudeSpawnOptions) => {
+    const child = spawnChildProcess(command, args, {
+      cwd,
+      env,
+      signal,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      params.onStderr(chunk.toString());
+    });
+
+    if (Number.isInteger(child.pid) && Number(child.pid) > 0) {
+      params.onProcessSpawned?.(Number(child.pid));
+    }
+
+    const wrappedProcess: ClaudeSpawnedProcess & { pid: number } = {
+      pid: child.pid ?? -1,
+      stdin: child.stdin,
+      stdout: child.stdout,
+      get killed() {
+        return child.killed;
+      },
+      get exitCode() {
+        return child.exitCode;
+      },
+      kill(signal: NodeJS.Signals) {
+        return child.kill(signal);
+      },
+      on(event, listener) {
+        child.on(event, listener);
+      },
+      once(event, listener) {
+        child.once(event, listener);
+      },
+      off(event, listener) {
+        child.off(event, listener);
+      },
+    };
+
+    return wrappedProcess;
+  };
+}
+
 function normalizeSlashCommands(commands: SdkSlashCommand[] | undefined | null): SlashCommand[] {
   return (commands ?? [])
     .map((command) => ({
@@ -219,6 +287,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   model,
   providerApiKey,
   providerBaseUrl,
+  onProcessSpawned,
   onText,
   onToolStarted,
   onToolOutput,
@@ -276,6 +345,8 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
 
   async function runAttempt(requestedModel: string | undefined, allowModelFallback: boolean) {
     const recentStderr: string[] = [];
+    const processSpawnTasks: Array<Promise<void>> = [];
+    let processSpawned = false;
     const maps: SessionMaps = {
       startedToolUseIds: new Set<string>(),
       finishedToolUseIds: new Set<string>(),
@@ -337,6 +408,23 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     }
 
     let stream: Query | null = null;
+    const notifyProcessSpawned = (pid: number | null | undefined) => {
+      if (processSpawned || !Number.isInteger(pid) || Number(pid) <= 0) {
+        return;
+      }
+
+      processSpawned = true;
+
+      if (onProcessSpawned) {
+        processSpawnTasks.push(Promise.resolve(onProcessSpawned(Number(pid))));
+      }
+    };
+    const spawnClaudeCodeProcess = createClaudeProcessSpawner({
+      onProcessSpawned: notifyProcessSpawned,
+      onStderr: (data) => {
+        captureStderrLine(recentStderr, data);
+      },
+    });
 
     try {
       stream = query({
@@ -382,6 +470,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
             ],
           },
           pathToClaudeCodeExecutable: claudeExecutable,
+          spawnClaudeCodeProcess,
           settingSources: ["local", "project", "user"],
           cwd,
           env: runtimeEnv,
@@ -390,6 +479,9 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           },
         },
       });
+
+      notifyProcessSpawned(resolveClaudeQueryProcessPid(stream));
+      await Promise.all(processSpawnTasks);
 
       if (listSlashCommandsOnly) {
         const slashCommands = normalizeSlashCommands(await stream.supportedCommands());

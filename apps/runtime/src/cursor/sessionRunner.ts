@@ -745,6 +745,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
   model,
   providerApiKey,
   providerBaseUrl,
+  onProcessSpawned,
   onText,
   onToolStarted,
   onToolOutput,
@@ -968,6 +969,10 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     });
     child = created.child;
     connection = created.connection;
+    const childPid = child.pid;
+    if (typeof childPid === "number" && childPid > 0) {
+      await onProcessSpawned?.(childPid);
+    }
 
     const session = sessionId
       ? await connection.loadSession({

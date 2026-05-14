@@ -72,6 +72,56 @@ export const RepositorySchema = z.object({
   worktrees: z.array(WorktreeSchema),
 });
 
+export const ResourceMonitorUsageSchema = z.object({
+  cpu: z.number().finite().nonnegative(),
+  memory: z.number().finite().nonnegative(),
+});
+export type ResourceMonitorUsage = z.infer<typeof ResourceMonitorUsageSchema>;
+
+export const ResourceMonitorSessionKindSchema = z.enum(["terminal", "run", "other"]);
+export type ResourceMonitorSessionKind = z.infer<typeof ResourceMonitorSessionKindSchema>;
+
+export const ResourceMonitorSessionSchema = ResourceMonitorUsageSchema.extend({
+  sessionId: z.string().min(1),
+  worktreeId: z.string().min(1),
+  pid: z.number().int().nonnegative(),
+  label: z.string().min(1),
+  kind: ResourceMonitorSessionKindSchema,
+});
+export type ResourceMonitorSession = z.infer<typeof ResourceMonitorSessionSchema>;
+
+export const ResourceMonitorWorktreeSchema = ResourceMonitorUsageSchema.extend({
+  worktreeId: z.string().min(1),
+  repositoryId: z.string().min(1),
+  repositoryName: z.string().min(1),
+  worktreeName: z.string().min(1),
+  sessions: z.array(ResourceMonitorSessionSchema),
+});
+export type ResourceMonitorWorktree = z.infer<typeof ResourceMonitorWorktreeSchema>;
+
+export const ResourceMonitorRuntimeSliceSchema = ResourceMonitorUsageSchema.extend({
+  pid: z.number().int().nonnegative(),
+});
+export type ResourceMonitorRuntimeSlice = z.infer<typeof ResourceMonitorRuntimeSliceSchema>;
+
+export const ResourceMonitorHostSchema = z.object({
+  totalMemory: z.number().finite().nonnegative(),
+  freeMemory: z.number().finite().nonnegative(),
+  usedMemory: z.number().finite().nonnegative(),
+  memoryUsagePercent: z.number().finite().nonnegative(),
+  cpuCoreCount: z.number().int().positive(),
+  loadAverage1m: z.number().finite().nonnegative(),
+});
+export type ResourceMonitorHost = z.infer<typeof ResourceMonitorHostSchema>;
+
+export const ResourceMonitorRuntimeSnapshotSchema = z.object({
+  runtime: ResourceMonitorRuntimeSliceSchema,
+  worktrees: z.array(ResourceMonitorWorktreeSchema),
+  host: ResourceMonitorHostSchema,
+  collectedAt: z.number().finite().nonnegative(),
+});
+export type ResourceMonitorRuntimeSnapshot = z.infer<typeof ResourceMonitorRuntimeSnapshotSchema>;
+
 export const AutomationRunStatusSchema = z.enum([
   "queued",
   "dispatching",

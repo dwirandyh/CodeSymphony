@@ -186,6 +186,61 @@ describe("tool instrumentation", () => {
     expect(result.slashCommands).toEqual([{ name: "commit", description: "Create a commit", argumentHint: "" }]);
   });
 
+  it("reports the spawned Claude process pid even when the SDK stream does not expose it", async () => {
+    const onProcessSpawned = vi.fn(async () => { });
+
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      const spawnClaudeCodeProcess = options.spawnClaudeCodeProcess as (spawnOptions: {
+        command: string;
+        args: string[];
+        cwd?: string;
+        env: NodeJS.ProcessEnv;
+        signal: AbortSignal;
+      }) => {
+        kill(signal: NodeJS.Signals): boolean;
+      };
+
+      spawnClaudeCodeProcess({
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => process.exit(0), 10)"],
+        cwd: process.cwd(),
+        env: { ...process.env },
+        signal: new AbortController().signal,
+      });
+
+      return attachQueryControls((async function* () {
+        yield { type: "system", subtype: "init", session_id: "session-process-1" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })());
+    });
+
+    await runClaudeWithStreaming({
+      prompt: "track process",
+      sessionId: null,
+      cwd: process.cwd(),
+      onProcessSpawned,
+      onText: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onSubagentStarted: () => { },
+      onSubagentStopped: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    expect(onProcessSpawned).toHaveBeenCalledTimes(1);
+    expect(onProcessSpawned).toHaveBeenCalledWith(expect.any(Number));
+    expect(onProcessSpawned.mock.calls[0]?.[0]).toBeGreaterThan(0);
+  });
+
   it("sanitizes sensitive keys and truncates long nested strings", () => {
     const sanitized = __testing.sanitizeForLog({
       apiKey: "top-secret",

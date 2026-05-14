@@ -27,6 +27,8 @@ import { createReviewService } from "./services/reviewService.js";
 import { createDeviceService } from "./services/deviceService.js";
 import { createWorktreeDeletionService } from "./services/worktreeDeletionService.js";
 import { createAutomationService } from "./services/automationService.js";
+import { createResourceMonitorService } from "./services/resourceMonitorService.js";
+import { createResourceMonitorSessionTracker } from "./services/resourceMonitorSessionTracker.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -38,6 +40,7 @@ import { registerModelRoutes } from "./routes/models.js";
 import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerAutomationRoutes } from "./routes/automations.js";
+import { registerResourceMonitorRoutes } from "./routes/resourceMonitor.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -58,6 +61,7 @@ declare module "fastify" {
     deviceService: ReturnType<typeof createDeviceService>;
     worktreeDeletionService: ReturnType<typeof createWorktreeDeletionService>;
     automationService: ReturnType<typeof createAutomationService>;
+    resourceMonitorService: ReturnType<typeof createResourceMonitorService>;
   }
 }
 
@@ -76,6 +80,12 @@ function createApp() {
   const modelProviderService = createModelProviderService(prisma);
   const reviewService = createReviewService(prisma);
   const deviceService = createDeviceService(logService);
+  const resourceMonitorSessionTracker = createResourceMonitorSessionTracker();
+  const resourceMonitorService = createResourceMonitorService(
+    prisma,
+    terminalService,
+    resourceMonitorSessionTracker,
+  );
   const worktreeDeletionService = createWorktreeDeletionService({
     prisma,
     workspaceEventHub,
@@ -91,6 +101,7 @@ function createApp() {
     cursorRunner: runCursorWithStreaming,
     opencodeRunner: runOpencodeWithStreaming,
     logService,
+    resourceMonitorSessionTracker,
     modelProviderService,
   });
   const automationService = createAutomationService({
@@ -118,6 +129,7 @@ function createApp() {
   app.decorate("deviceService", deviceService);
   app.decorate("worktreeDeletionService", worktreeDeletionService);
   app.decorate("automationService", automationService);
+  app.decorate("resourceMonitorService", resourceMonitorService);
 
   app.register(cors, {
     origin: true,
@@ -161,6 +173,7 @@ function createApp() {
   app.register(registerWorkspaceEventRoutes, { prefix: "/api" });
   app.register(registerDeviceRoutes, { prefix: "/api" });
   app.register(registerAutomationRoutes, { prefix: "/api" });
+  app.register(registerResourceMonitorRoutes, { prefix: "/api" });
 
   app.addHook("onClose", async () => {
     automationService.dispose();
