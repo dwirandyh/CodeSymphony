@@ -574,6 +574,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   model,
   providerApiKey,
   providerBaseUrl,
+  onProcessSpawned,
   onText,
   onToolStarted,
   onToolOutput,
@@ -608,6 +609,10 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
     stdio: ["pipe", "pipe", "pipe"],
     shell: process.platform === "win32",
   });
+  const childPid = child.pid;
+  if (typeof childPid === "number" && childPid > 0) {
+    await onProcessSpawned?.(childPid);
+  }
   const output = readline.createInterface({ input: child.stdout });
 
   const pending = new Map<string, PendingRequest>();

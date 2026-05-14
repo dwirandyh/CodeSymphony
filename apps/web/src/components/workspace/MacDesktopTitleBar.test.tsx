@@ -211,6 +211,20 @@ describe("MacDesktopTitleBar", () => {
     expect(onGoForward).toHaveBeenCalledTimes(1);
   });
 
+  it("renders custom titlebar controls beside the navigation buttons", () => {
+    renderTitleBar({
+      resourceMonitor: <button type="button" data-testid="resource-monitor-trigger">Resource</button>,
+    });
+
+    const controls = container.querySelector<HTMLElement>('[data-testid="mac-titlebar-controls"]');
+    const trigger = container.querySelector<HTMLElement>('[data-testid="resource-monitor-trigger"]');
+    if (!controls || !trigger) {
+      throw new Error("Titlebar controls not found");
+    }
+
+    expect(controls.contains(trigger)).toBe(true);
+  });
+
   it("disables unavailable navigation actions", () => {
     const onGoBack = vi.fn();
     const onGoForward = vi.fn();

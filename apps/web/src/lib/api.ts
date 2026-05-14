@@ -37,6 +37,7 @@ import type {
   GitDiff,
   GitStatus,
   RepositoryReviewState,
+  ResourceMonitorRuntimeSnapshot,
   ModelProvider,
   OpenInAppInput,
   OpencodeModelCatalog,
@@ -709,6 +710,7 @@ export const api = {
     return (activeApiBase ?? getCandidateApiBases()[0] ?? DEFAULT_API_BASE).replace(/\/api$/, "");
   },
   getRuntimeInfo: () => request<RuntimeInfo>("/debug/runtime-info"),
+  getResourceMonitorSnapshot: () => request<ResourceMonitorRuntimeSnapshot>("/resource-monitor/snapshot"),
   browseFilesystem: (path?: string) => {
     const params = path ? `?path=${encodeURIComponent(path)}` : "";
     return request<FilesystemBrowseResponse>(`/filesystem/browse${params}`);
