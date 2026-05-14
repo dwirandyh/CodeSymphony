@@ -36,12 +36,14 @@ interface BottomPanelProps {
     scriptOutputs: ScriptOutputEntry[];
     activeTab: string;
     collapsed: boolean;
+    hidden?: boolean;
     onTabChange: (tab: string) => void;
     onCollapsedChange: (collapsed: boolean) => void;
     onRerunSetup?: () => void;
     runScriptActive: boolean;
     runScriptSessionId: string | null;
     onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
+    onOpenReadFile?: (path: string) => void | Promise<void>;
     openSignal?: number;
 }
 
@@ -57,6 +59,7 @@ type BottomPanelBodyProps = {
     runScriptActive: boolean;
     runScriptSessionId: string | null;
     onRunScriptExit?: (event: { exitCode: number; signal: number }) => void;
+    onOpenReadFile?: (path: string) => void | Promise<void>;
     worktreeId: string | null;
     worktreePath: string | null;
     selectedThreadId: string | null;
@@ -68,6 +71,7 @@ const BottomPanelContent = memo(function BottomPanelContent({
     runScriptActive,
     runScriptSessionId,
     onRunScriptExit,
+    onOpenReadFile,
     worktreeId,
     worktreePath,
     selectedThreadId,
@@ -84,7 +88,11 @@ const BottomPanelContent = memo(function BottomPanelContent({
 
             <TabsContent value="terminal" className={`mt-0 flex h-full min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden ${TERMINAL_SURFACE_CLASS}`}>
                 <Suspense fallback={<div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading terminal...</div>}>
-                    <TerminalTab sessionId={worktreeId ? `${worktreeId}:terminal` : "default"} cwd={worktreePath} />
+                    <TerminalTab
+                        sessionId={worktreeId ? `${worktreeId}:terminal` : "default"}
+                        cwd={worktreePath}
+                        onOpenFile={onOpenReadFile}
+                    />
                 </Suspense>
             </TabsContent>
 
@@ -94,6 +102,7 @@ const BottomPanelContent = memo(function BottomPanelContent({
                         <TerminalTab
                             sessionId={runScriptSessionId}
                             cwd={worktreePath}
+                            onOpenFile={onOpenReadFile}
                             onSessionExit={onRunScriptExit}
                         />
                     </Suspense>
@@ -141,12 +150,14 @@ export const BottomPanel = memo(function BottomPanel({
     scriptOutputs,
     activeTab,
     collapsed,
+    hidden = false,
     onTabChange,
     onCollapsedChange,
     onRerunSetup,
     runScriptActive,
     runScriptSessionId,
     onRunScriptExit,
+    onOpenReadFile,
     openSignal,
 }: BottomPanelProps) {
     const [height, setHeight] = useState(DEFAULT_HEIGHT);
@@ -260,6 +271,7 @@ export const BottomPanel = memo(function BottomPanel({
         runScriptActive,
         runScriptSessionId,
         onRunScriptExit,
+        onOpenReadFile,
         worktreeId,
         worktreePath,
         selectedThreadId,
@@ -283,7 +295,8 @@ export const BottomPanel = memo(function BottomPanel({
 
     return (
         <div
-            className={`-mx-1.5 flex flex-col border-t border-border/30 safe-bottom sm:-mx-2.5 lg:-mx-3 ${
+            aria-hidden={hidden ? "true" : undefined}
+            className={`${hidden ? "hidden " : ""}-mx-1.5 flex flex-col border-t border-border/30 safe-bottom sm:-mx-2.5 lg:-mx-3 ${
                 activeTab === "terminal" || activeTab === "run"
                     ? TERMINAL_SURFACE_CLASS
                     : "bg-[hsl(220,18%,10%)]"

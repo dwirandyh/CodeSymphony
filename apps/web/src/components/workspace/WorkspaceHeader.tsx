@@ -10,7 +10,7 @@ import {
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
-  Plus,
+  SquareTerminal,
   X,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -19,11 +19,18 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { cn } from "../../lib/utils";
 import { OpenInAppButton } from "./OpenInAppButton";
+import { CreateSessionButton } from "./CreateSessionButton";
 
 export type WorkspaceFileTab = {
   path: string;
   dirty: boolean;
   pinned: boolean;
+};
+
+export type WorkspaceTerminalTab = {
+  id: string;
+  title: string;
+  sessionId: string;
 };
 
 function fileTabLabel(filePath: string): string {
@@ -41,22 +48,29 @@ type WorkspaceHeaderProps = {
   targetBranchDisabled?: boolean;
   worktreePath: string | null;
   threads: ChatThread[];
+  terminalTabs?: WorkspaceTerminalTab[];
+  activeTerminalTabId?: string | null;
+  terminalTabActive?: boolean;
   selectedThreadId: string | null;
   fileTabs: WorkspaceFileTab[];
   activeFilePath: string | null;
   disabled: boolean;
   createThreadDisabled?: boolean;
+  createTerminalDisabled?: boolean;
   closingThreadId: string | null;
   protectedThreadId?: string | null;
   showReviewTab?: boolean;
   reviewTabActive?: boolean;
   onSelectThread: (threadId: string | null) => void;
+  onSelectTerminalTab?: (terminalTabId: string) => void;
   onPrefetchThread?: (threadId: string) => void;
   onSelectFileTab: (path: string) => void;
   onPinFileTab: (path: string) => void;
   onCloseFileTab: (path: string) => void;
   onCreateThread: () => void;
+  onCreateTerminal?: () => void;
   onCloseThread: (threadId: string) => void;
+  onCloseTerminalTab?: (terminalTabId: string) => void;
   onRenameThread: (threadId: string, title: string) => Promise<void> | void;
   onSelectTargetBranch?: (branch: string) => void;
   onSelectReviewTab?: () => void;
@@ -111,22 +125,29 @@ export function WorkspaceHeader({
   targetBranchDisabled = false,
   worktreePath,
   threads,
+  terminalTabs = [],
+  activeTerminalTabId = null,
+  terminalTabActive = false,
   selectedThreadId,
   fileTabs,
   activeFilePath,
   disabled,
   createThreadDisabled,
+  createTerminalDisabled,
   closingThreadId,
   protectedThreadId,
   showReviewTab,
   reviewTabActive,
   onSelectThread,
+  onSelectTerminalTab,
   onPrefetchThread,
   onSelectFileTab,
   onPinFileTab,
   onCloseFileTab,
   onCreateThread,
+  onCreateTerminal,
   onCloseThread,
+  onCloseTerminalTab,
   onRenameThread,
   onSelectTargetBranch,
   onSelectReviewTab,
@@ -378,7 +399,7 @@ export function WorkspaceHeader({
         >
           <div className="flex w-max min-w-full items-center gap-0.5 whitespace-nowrap">
             {threads.map((thread) => {
-              const isSelected = thread.id === selectedThreadId && !reviewTabActive && !activeFilePath;
+              const isSelected = thread.id === selectedThreadId && !reviewTabActive && !activeFilePath && !terminalTabActive;
               const isAnyThreadClosing = closingThreadId !== null;
               const isProtected = protectedThreadId === thread.id;
               const isEditing = editingThreadId === thread.id;
@@ -441,6 +462,50 @@ export function WorkspaceHeader({
                     )}
                     onClick={() => onCloseThread(thread.id)}
                     disabled={disabled || isAnyThreadClosing || isEditing || isProtected}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              );
+            })}
+
+            {terminalTabs.map((terminalTab) => {
+              const isSelected = terminalTabActive && activeTerminalTabId === terminalTab.id;
+
+              return (
+                <div
+                  key={terminalTab.id}
+                  className={cn(
+                    "group flex shrink-0 items-center border-b-2 border-b-transparent text-muted-foreground",
+                    isSelected && "border-b-primary text-foreground",
+                  )}
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isSelected}
+                    title={terminalTab.title}
+                    className={cn(
+                      "flex max-w-[180px] min-w-0 items-center gap-1.5 px-2 py-1.5 text-xs font-medium transition-colors",
+                      isSelected && "text-foreground",
+                    )}
+                    onClick={() => onSelectTerminalTab?.(terminalTab.id)}
+                    disabled={disabled}
+                  >
+                    <SquareTerminal className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{terminalTab.title}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label={`Close terminal ${terminalTab.title}`}
+                    title={`Close ${terminalTab.title}`}
+                    className={cn(
+                      "rounded-sm p-1 text-muted-foreground transition-opacity hover:text-destructive",
+                      isSelected ? "opacity-100" : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100",
+                    )}
+                    onClick={() => onCloseTerminalTab?.(terminalTab.id)}
+                    disabled={disabled}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -533,18 +598,13 @@ export function WorkspaceHeader({
           </div>
         </div>
 
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Add session"
-          title="Add session"
-          disabled={createThreadDisabled ?? disabled}
-          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={onCreateThread}
-        >
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
+        <CreateSessionButton
+          preferenceScopeKey={worktreePath}
+          threadDisabled={createThreadDisabled ?? disabled}
+          terminalDisabled={createTerminalDisabled ?? disabled}
+          onCreateThread={onCreateThread}
+          onCreateTerminal={onCreateTerminal ?? onCreateThread}
+        />
       </div>
     </section>
   );

@@ -626,4 +626,64 @@ describe("cursor session runner", () => {
     expect(__testing.cursorAcpSupportsQuestionElicitation).toBe(true);
     expect(__testing.cursorAcpSupportsSubagentLifecycle).toBe(false);
   });
+
+  it("sends native image prompt blocks when Cursor advertises image prompt support", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      promptCapabilities: {
+        image: true,
+      },
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitText(sessionId, "Image received.");
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    await runCursorWithStreaming({
+      prompt: "Inspect the dropped image.",
+      promptWithAttachments: [
+        "Inspect the dropped image.",
+        "",
+        '<attachment filename="screen.png" type="image/png" path="/tmp/screen.png">[Image saved at path. Use Read tool to view.]</attachment>',
+      ].join("\n"),
+      attachments: [
+        {
+          filename: "screen.png",
+          mimeType: "image/png",
+          content: Buffer.from("image-bytes").toString("base64"),
+          storagePath: "/tmp/screen.png",
+        },
+      ],
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    const promptBlocks = fakeCursorSessions.get("cursor-session-1")?.promptBlocks[0] as Array<Record<string, unknown>> | undefined;
+    expect(promptBlocks).toBeDefined();
+    expect(promptBlocks).toMatchObject([
+      {
+        type: "image",
+        data: Buffer.from("image-bytes").toString("base64"),
+        mimeType: "image/png",
+        uri: "/tmp/screen.png",
+      },
+      {
+        type: "text",
+      },
+    ]);
+    expect((promptBlocks?.[1]?.text as string) ?? "").toContain("User request:\nInspect the dropped image.");
+  });
 });

@@ -50,7 +50,7 @@ import {
   type UpdateChatThreadPermissionModeInput,
   type Worktree,
 } from "@codesymphony/shared-types";
-import type { RuntimeDeps } from "../../types.js";
+import type { ChatAgentAttachment, RuntimeDeps } from "../../types.js";
 import { mapChatMessage, mapChatQueuedMessage, mapChatThread } from "../mappers.js";
 import { resolveReviewRemote } from "../git.js";
 import type {
@@ -175,6 +175,12 @@ type ThreadSnapshotTimingEntry = {
   phase: string;
   durationMs: number;
   data?: Record<string, unknown>;
+};
+
+type ScheduledAssistantInput = {
+  prompt: string;
+  promptWithAttachments?: string;
+  attachments?: ChatAgentAttachment[];
 };
 
 function getPerfNow(): number {
@@ -936,10 +942,22 @@ export function createChatService(deps: RuntimeDeps) {
     const normalizedContent = thread.agent === "codex" || thread.agent === "cursor"
       ? normalizeCodexSkillSlashCommandsForPrompt(params.content, listCodexSkills(thread.worktree.path))
       : params.content;
-    const prompt = buildPromptWithAttachments(normalizedContent, attachmentRecords, {
+    const imageAttachments = attachmentRecords.filter((attachment) => isImageMimeType(attachment.mimeType));
+    const promptWithAttachments = buildPromptWithAttachments(normalizedContent, attachmentRecords, {
       workspaceRoot: thread.worktree.path,
     });
-    scheduleAssistant(params.threadId, prompt, params.mode);
+    const prompt = buildPromptWithAttachments(
+      normalizedContent,
+      attachmentRecords.filter((attachment) => !isImageMimeType(attachment.mimeType)),
+      {
+        workspaceRoot: thread.worktree.path,
+      },
+    );
+    scheduleAssistant(params.threadId, {
+      prompt,
+      promptWithAttachments,
+      attachments: imageAttachments,
+    }, params.mode);
 
     const messageWithAttachments = await deps.prisma.chatMessage.findUnique({
       where: { id: message.id },
@@ -1157,11 +1175,18 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  async function runAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): Promise<void> {
+  async function runAssistant(
+    threadId: string,
+    input: ScheduledAssistantInput,
+    mode: ChatMode = "default",
+    options?: { autoAcceptTools?: boolean },
+  ): Promise<void> {
     deps.logService?.log("debug", "chat.lifecycle", "runAssistant started", {
       threadId,
       mode,
-      promptLength: prompt.length,
+      promptLength: input.prompt.length,
+      promptWithAttachmentsLength: input.promptWithAttachments?.length ?? input.prompt.length,
+      attachmentCount: input.attachments?.length ?? 0,
       autoAcceptTools: options?.autoAcceptTools ?? false,
     });
     let assistantMessageId: string | null = null;
@@ -1327,7 +1352,9 @@ export function createChatService(deps: RuntimeDeps) {
       }
 
       const result = await runner({
-        prompt,
+        prompt: input.prompt,
+        promptWithAttachments: input.promptWithAttachments,
+        attachments: input.attachments,
         sessionId: currentSessionId,
         includeCommentaryInText: true,
         sessionWorktreePath: currentSessionId ? worktreePath : null,
@@ -1768,12 +1795,19 @@ export function createChatService(deps: RuntimeDeps) {
     }
   }
 
-  function scheduleAssistant(threadId: string, prompt: string, mode: ChatMode = "default", options?: { autoAcceptTools?: boolean }): void {
+  function scheduleAssistant(
+    threadId: string,
+    input: ScheduledAssistantInput,
+    mode: ChatMode = "default",
+    options?: { autoAcceptTools?: boolean },
+  ): void {
     clearScheduledAssistantRun(threadId);
     deps.logService?.log("debug", "chat.lifecycle", "scheduling assistant run", {
       threadId,
       mode,
       delayMs: AUTO_EXECUTE_DELAY_MS,
+      promptLength: input.prompt.length,
+      attachmentCount: input.attachments?.length ?? 0,
     });
     const scheduledAt = Date.now();
     const timer = setTimeout(() => {
@@ -1783,7 +1817,7 @@ export function createChatService(deps: RuntimeDeps) {
         mode,
         waitedMs,
       });
-      void runAssistant(threadId, prompt, mode, options);
+      void runAssistant(threadId, input, mode, options);
     }, AUTO_EXECUTE_DELAY_MS);
     setThreadRunState(threadId, {
       status: "scheduled",
@@ -2553,7 +2587,7 @@ export function createChatService(deps: RuntimeDeps) {
         emitThreadWorkspaceUpdate,
         seedHandoffThreadWithApprovedPlan,
         scheduleAssistant: (executionThreadId, prompt, autoAcceptTools) => {
-          scheduleAssistant(executionThreadId, prompt, "default", {
+          scheduleAssistant(executionThreadId, { prompt }, "default", {
             autoAcceptTools,
           });
         },
@@ -2638,7 +2672,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       const revisePrompt = `The user wants to revise the plan. Here is their feedback:\n\n${input.feedback}\n\nPlease update the plan accordingly.`;
-      scheduleAssistant(threadId, revisePrompt, "plan");
+      scheduleAssistant(threadId, { prompt: revisePrompt }, "plan");
     },
 
     async sendMessage(threadId: string, rawInput: unknown): Promise<ChatMessage> {

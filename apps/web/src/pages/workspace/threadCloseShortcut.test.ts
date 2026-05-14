@@ -7,6 +7,7 @@ describe("resolveMacCloseShortcutTarget", () => {
       resolveMacCloseShortcutTarget({
         activeView: "file",
         selectedThreadId: "thread-1",
+        activeTerminalTabId: null,
         activeFilePath: "src/app.tsx",
         threadCount: 2,
         messageListEmptyState: "new-thread-empty",
@@ -19,6 +20,7 @@ describe("resolveMacCloseShortcutTarget", () => {
       resolveMacCloseShortcutTarget({
         activeView: "review",
         selectedThreadId: "thread-1",
+        activeTerminalTabId: null,
         activeFilePath: null,
         threadCount: 1,
         messageListEmptyState: null,
@@ -31,6 +33,7 @@ describe("resolveMacCloseShortcutTarget", () => {
       resolveMacCloseShortcutTarget({
         activeView: "automations",
         selectedThreadId: "thread-1",
+        activeTerminalTabId: null,
         activeFilePath: null,
         threadCount: 1,
         messageListEmptyState: null,
@@ -38,11 +41,25 @@ describe("resolveMacCloseShortcutTarget", () => {
     ).toBe("automations");
   });
 
+  it("closes the active terminal tab before the selected thread", () => {
+    expect(
+      resolveMacCloseShortcutTarget({
+        activeView: "chat",
+        selectedThreadId: "thread-1",
+        activeTerminalTabId: "terminal-1",
+        activeFilePath: null,
+        threadCount: 2,
+        messageListEmptyState: null,
+      }),
+    ).toBe("terminal");
+  });
+
   it("closes the selected thread when multiple thread tabs exist", () => {
     expect(
       resolveMacCloseShortcutTarget({
         activeView: "chat",
         selectedThreadId: "thread-1",
+        activeTerminalTabId: null,
         activeFilePath: null,
         threadCount: 2,
         messageListEmptyState: "new-thread-empty",
@@ -55,6 +72,7 @@ describe("resolveMacCloseShortcutTarget", () => {
       resolveMacCloseShortcutTarget({
         activeView: "chat",
         selectedThreadId: "thread-1",
+        activeTerminalTabId: null,
         activeFilePath: null,
         threadCount: 1,
         messageListEmptyState: "existing-thread-empty",
@@ -67,6 +85,7 @@ describe("resolveMacCloseShortcutTarget", () => {
       resolveMacCloseShortcutTarget({
         activeView: "chat",
         selectedThreadId: "thread-1",
+        activeTerminalTabId: null,
         activeFilePath: null,
         threadCount: 1,
         messageListEmptyState: null,
@@ -79,6 +98,7 @@ describe("resolveMacCloseShortcutTarget", () => {
       resolveMacCloseShortcutTarget({
         activeView: "file",
         selectedThreadId: null,
+        activeTerminalTabId: null,
         activeFilePath: null,
         threadCount: 1,
         messageListEmptyState: null,
