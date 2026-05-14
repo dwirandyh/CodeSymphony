@@ -22,6 +22,7 @@ import { WorkspaceHeader } from "../components/workspace/WorkspaceHeader";
 import { FileBrowserModal } from "../components/workspace/FileBrowserModal";
 import { SettingsDialog } from "../components/workspace/SettingsDialog";
 import { QuickFilePicker } from "../components/workspace/QuickFilePicker";
+import { ResourceMonitor } from "../components/workspace/ResourceMonitor";
 const MobileActionBar = lazy(() =>
   import("../components/workspace/MobileWorkspaceNavigation").then(m => ({ default: m.MobileActionBar }))
 );
@@ -1173,6 +1174,20 @@ export function WorkspacePage() {
     }
   }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, prefetchWorktreeNavigationTarget, prioritizeConversationBootstrap, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
 
+  const handleResourceMonitorSelectWorktree = useCallback((repositoryId: string, worktreeId: string) => {
+    handleSelectWorktree(repositoryId, worktreeId);
+  }, [handleSelectWorktree]);
+
+  const handleResourceMonitorSelectSession = useCallback((repositoryId: string, worktreeId: string, tab: "terminal" | "run") => {
+    handleSelectWorktree(repositoryId, worktreeId);
+    updateBottomPanelState(worktreeId, (current) => ({
+      ...current,
+      activeTab: tab,
+      collapsed: false,
+      openSignal: current.openSignal + 1,
+    }));
+  }, [handleSelectWorktree, updateBottomPanelState]);
+
   // Close mobile drawer on Escape key
   useEffect(() => {
     if (!mobilePanelOpen) return;
@@ -1716,6 +1731,17 @@ export function WorkspacePage() {
       || chat.threads.some((thread) => thread.id === confirmCloseThreadId && thread.active)
     );
   const shouldRenderMobileRepositories = !desktopApp && (!desktopLayout || mobileReposDrawerOpen);
+  const resourceMonitorControl = desktopApp ? (
+    <ResourceMonitor
+      desktopApp={desktopApp}
+      runtimePid={runtimeInfo.data?.pid ?? null}
+      repositories={orderedRepositories}
+      popoverAlign={showMacDesktopTitleBar ? "start" : "end"}
+      triggerVariant={showMacDesktopTitleBar ? "titlebar" : "default"}
+      onSelectWorktree={handleResourceMonitorSelectWorktree}
+      onSelectSession={handleResourceMonitorSelectSession}
+    />
+  ) : null;
 
   return (
     <div
@@ -1728,6 +1754,7 @@ export function WorkspacePage() {
         {showMacDesktopTitleBar ? (
           <MacDesktopTitleBar
             desktopApp={desktopApp}
+            resourceMonitor={resourceMonitorControl}
             canGoBack={workspaceNavigation.canGoBack}
             canGoForward={workspaceNavigation.canGoForward}
             leftPanelVisible={leftSidebarVisible}
@@ -1895,6 +1922,7 @@ export function WorkspacePage() {
                   leftPanelVisible={leftSidebarVisible}
                   onToggleLeftPanel={showMacDesktopTitleBar ? undefined : handleToggleLeftSidebar}
                   mergeWithContent={activeView === "file"}
+                  resourceMonitor={!showMacDesktopTitleBar ? resourceMonitorControl : null}
                 />
 
                 {uiError ? (

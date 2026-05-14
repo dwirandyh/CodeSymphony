@@ -96,6 +96,7 @@ import {
   maybeAutoRenameThreadAfterFirstAssistantReply,
   maybeAutoRenameBranchAfterFirstAssistantReply,
 } from "./chatNamingService.js";
+import { formatResourceMonitorAgentLabel } from "./resourceMonitorLabels.js";
 import { approvePlanExecution } from "./planExecution.js";
 import {
   buildPendingPlanUpdate,
@@ -1231,6 +1232,7 @@ export function createChatService(deps: RuntimeDeps) {
       });
       const runner = getRunnerForAgent(deps, selection.agent);
       const currentSessionId = getThreadSessionId(thread, selection.agent);
+      const trackedAgentSessionId = `thread:${threadId}:agent:${selection.agent}`;
 
       function scheduleFlush() {
         if (flushTimer !== null) return;
@@ -1367,6 +1369,15 @@ export function createChatService(deps: RuntimeDeps) {
         model: selection.model,
         providerApiKey: toRunnerOptional(selection.provider?.apiKey),
         providerBaseUrl: toRunnerOptional(selection.provider?.baseUrl),
+        onProcessSpawned: async (pid) => {
+          deps.resourceMonitorSessionTracker?.upsertSession({
+            sessionId: trackedAgentSessionId,
+            worktreeId: threadWorktreeId,
+            pid,
+            label: formatResourceMonitorAgentLabel(selection.agent, thread.title),
+            kind: "other",
+          });
+        },
         onText: async (chunk) => {
           fullOutput += chunk;
           scheduleFlush();
@@ -1593,6 +1604,7 @@ export function createChatService(deps: RuntimeDeps) {
         clearTimeout(flushTimer);
         flushTimer = null;
       }
+      deps.resourceMonitorSessionTracker?.removeSession(trackedAgentSessionId);
 
       const persistedAssistantContent = fullOutput.trim().length > 0
         ? fullOutput.trim()
@@ -1732,6 +1744,7 @@ export function createChatService(deps: RuntimeDeps) {
         });
       }
     } finally {
+      deps.resourceMonitorSessionTracker?.removeSession(`thread:${threadId}:agent:${selection.agent}`);
       deps.logService?.log("debug", "chat.lifecycle", "runAssistant entering finally", {
         threadId,
       });

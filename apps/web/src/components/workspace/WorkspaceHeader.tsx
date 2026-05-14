@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { ChatThread } from "@codesymphony/shared-types";
 import {
   CalendarCog,
@@ -66,6 +66,7 @@ type WorkspaceHeaderProps = {
   leftPanelVisible?: boolean;
   onToggleLeftPanel?: () => void;
   mergeWithContent?: boolean;
+  resourceMonitor?: ReactNode;
 };
 
 function FilledPlayIcon({ className }: { className?: string }) {
@@ -134,6 +135,7 @@ export function WorkspaceHeader({
   onToggleRunScript,
   leftPanelVisible = true,
   onToggleLeftPanel,
+  resourceMonitor,
 }: WorkspaceHeaderProps) {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [targetBranchSelectorOpen, setTargetBranchSelectorOpen] = useState(false);
@@ -338,6 +340,8 @@ export function WorkspaceHeader({
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          {resourceMonitor}
+
           {worktreePath && (
             <OpenInAppButton key={worktreePath} targetPath={worktreePath} />
           )}

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 #[cfg(target_os = "macos")]
 use std::fs::OpenOptions;
@@ -16,6 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde::Serialize;
 use tauri::{Manager, Url};
 
 #[cfg(target_os = "macos")]
@@ -27,6 +28,36 @@ use std::os::unix::process::CommandExt;
 
 struct RuntimeProcess(Mutex<Option<Child>>);
 struct AppShutdown(AtomicBool);
+
+#[derive(Clone)]
+struct DesktopProcessInfo {
+    pid: u32,
+    ppid: u32,
+    cpu: f64,
+    memory: u64,
+    command: String,
+}
+
+struct DesktopProcessSnapshot {
+    by_pid: HashMap<u32, DesktopProcessInfo>,
+    children_of: HashMap<u32, Vec<u32>>,
+}
+
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopResourceUsage {
+    cpu: f64,
+    memory: u64,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopResourceMonitorSnapshot {
+    shell: DesktopResourceUsage,
+    webview: DesktopResourceUsage,
+    runtime: DesktopResourceUsage,
+    other: DesktopResourceUsage,
+}
 
 const WEB_RUNTIME_PORT: u16 = 4331;
 const DESKTOP_DEV_RUNTIME_PORT: u16 = 4321;
@@ -650,6 +681,188 @@ fn monitor_managed_runtime(app_handle: tauri::AppHandle, port: u16, is_dev: bool
     }
 }
 
+fn normalize_f64(value: f64) -> f64 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn normalize_u64(value: u64) -> u64 {
+    value
+}
+
+fn list_desktop_processes() -> Vec<DesktopProcessInfo> {
+    #[cfg(unix)]
+    {
+        let output = Command::new("ps")
+            .args(["-eo", "pid=,ppid=,pcpu=,rss=,comm="])
+            .output();
+
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut processes = Vec::new();
+
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let mut parts = trimmed.split_whitespace();
+            let Some(pid_raw) = parts.next() else {
+                continue;
+            };
+            let Some(ppid_raw) = parts.next() else {
+                continue;
+            };
+            let Some(cpu_raw) = parts.next() else {
+                continue;
+            };
+            let Some(rss_raw) = parts.next() else {
+                continue;
+            };
+
+            let pid = pid_raw.parse::<u32>().ok();
+            let ppid = ppid_raw.parse::<u32>().ok();
+            let cpu = cpu_raw.parse::<f64>().ok();
+            let rss_kb = rss_raw.parse::<u64>().ok();
+
+            let (Some(pid), Some(ppid), Some(cpu), Some(rss_kb)) = (pid, ppid, cpu, rss_kb) else {
+                continue;
+            };
+
+            processes.push(DesktopProcessInfo {
+                pid,
+                ppid,
+                cpu: normalize_f64(cpu),
+                memory: normalize_u64(rss_kb.saturating_mul(1024)),
+                command: parts.collect::<Vec<_>>().join(" "),
+            });
+        }
+
+        return processes;
+    }
+
+    #[cfg(not(unix))]
+    {
+        Vec::new()
+    }
+}
+
+fn capture_desktop_process_snapshot() -> DesktopProcessSnapshot {
+    let mut by_pid = HashMap::new();
+    let mut children_of = HashMap::new();
+
+    for process in list_desktop_processes() {
+        children_of
+            .entry(process.ppid)
+            .or_insert_with(Vec::new)
+            .push(process.pid);
+        by_pid.insert(process.pid, process);
+    }
+
+    DesktopProcessSnapshot { by_pid, children_of }
+}
+
+fn get_subtree_pids(snapshot: &DesktopProcessSnapshot, root_pid: u32) -> HashSet<u32> {
+    let mut result = HashSet::new();
+    let mut stack = vec![root_pid];
+
+    while let Some(pid) = stack.pop() {
+        if !result.insert(pid) {
+            continue;
+        }
+
+        if let Some(children) = snapshot.children_of.get(&pid) {
+            for child in children {
+                stack.push(*child);
+            }
+        }
+    }
+
+    result.retain(|pid| snapshot.by_pid.contains_key(pid));
+    result
+}
+
+fn sum_desktop_resources(snapshot: &DesktopProcessSnapshot, pids: &HashSet<u32>) -> DesktopResourceUsage {
+    let mut cpu = 0.0;
+    let mut memory = 0_u64;
+
+    for pid in pids {
+        if let Some(process) = snapshot.by_pid.get(pid) {
+            cpu += process.cpu;
+            memory = memory.saturating_add(process.memory);
+        }
+    }
+
+    DesktopResourceUsage {
+        cpu: normalize_f64(cpu),
+        memory,
+    }
+}
+
+fn is_webview_process(command: &str) -> bool {
+    let normalized = command.to_ascii_lowercase();
+    normalized.contains("webkit")
+        || normalized.contains("webcontent")
+        || normalized.contains("networkprocess")
+        || normalized.contains("gpuprocess")
+}
+
+#[tauri::command]
+fn collect_resource_monitor_desktop_metrics(
+    runtime_pid: Option<u32>,
+) -> Result<DesktopResourceMonitorSnapshot, String> {
+    let snapshot = capture_desktop_process_snapshot();
+    let app_pid = std::process::id();
+    let app_subtree = get_subtree_pids(&snapshot, app_pid);
+    let runtime_subtree = runtime_pid
+        .map(|pid| get_subtree_pids(&snapshot, pid))
+        .unwrap_or_default();
+
+    let mut shell_pids = HashSet::new();
+    if snapshot.by_pid.contains_key(&app_pid) {
+        shell_pids.insert(app_pid);
+    }
+
+    let mut webview_pids = HashSet::new();
+    let mut other_pids = HashSet::new();
+    let mut union_pids = app_subtree.clone();
+    union_pids.extend(runtime_subtree.iter().copied());
+
+    for pid in union_pids {
+        if pid == app_pid || runtime_subtree.contains(&pid) {
+            continue;
+        }
+
+        let Some(process) = snapshot.by_pid.get(&pid) else {
+            continue;
+        };
+
+        if is_webview_process(&process.command) {
+            webview_pids.insert(pid);
+        } else {
+            other_pids.insert(pid);
+        }
+    }
+
+    Ok(DesktopResourceMonitorSnapshot {
+        shell: sum_desktop_resources(&snapshot, &shell_pids),
+        webview: sum_desktop_resources(&snapshot, &webview_pids),
+        runtime: sum_desktop_resources(&snapshot, &runtime_subtree),
+        other: sum_desktop_resources(&snapshot, &other_pids),
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn macos_traffic_light_timestamp_ms() -> u128 {
     SystemTime::now()
@@ -998,6 +1211,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(true).build())
         .append_invoke_initialization_script(desktop_runtime_init_script(runtime_port))
+        .invoke_handler(tauri::generate_handler![collect_resource_monitor_desktop_metrics])
         .setup(move |app| {
             app.manage(RuntimeProcess(Mutex::new(None)));
             app.manage(AppShutdown(AtomicBool::new(false)));
