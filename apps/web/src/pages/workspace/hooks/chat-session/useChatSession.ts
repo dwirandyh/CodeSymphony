@@ -311,13 +311,57 @@ function replaceThreadIdentity(
 }
 
 function resolvePreferredThreadId(threads: ChatThread[]): string | null {
-  for (let index = threads.length - 1; index >= 0; index -= 1) {
-    if (threads[index]?.active) {
-      return threads[index].id;
-    }
+  type PreferredChatThread = ChatThread & { preferred?: boolean };
+
+  function isPreferredThread(thread: ChatThread): thread is PreferredChatThread {
+    return (thread as PreferredChatThread).preferred === true;
   }
 
-  return threads[threads.length - 1]?.id ?? null;
+  function pickMostRecentThread(candidates: ChatThread[]): ChatThread | null {
+    let preferredThread: ChatThread | null = null;
+
+    for (const thread of candidates) {
+      if (!preferredThread) {
+        preferredThread = thread;
+        continue;
+      }
+
+      const threadUpdatedAt = Date.parse(thread.updatedAt);
+      const preferredUpdatedAt = Date.parse(preferredThread.updatedAt);
+      if (threadUpdatedAt > preferredUpdatedAt) {
+        preferredThread = thread;
+        continue;
+      }
+
+      if (threadUpdatedAt === preferredUpdatedAt) {
+        const threadCreatedAt = Date.parse(thread.createdAt);
+        const preferredCreatedAt = Date.parse(preferredThread.createdAt);
+        if (threadCreatedAt > preferredCreatedAt) {
+          preferredThread = thread;
+        }
+      }
+    }
+
+    return preferredThread;
+  }
+
+  const activeThreads = threads.filter((thread) => thread.active);
+  const preferredActiveThread = pickMostRecentThread(activeThreads.filter(isPreferredThread));
+  if (preferredActiveThread) {
+    return preferredActiveThread.id;
+  }
+
+  const activeThread = pickMostRecentThread(activeThreads);
+  if (activeThread) {
+    return activeThread.id;
+  }
+
+  const preferredThread = pickMostRecentThread(threads.filter(isPreferredThread));
+  if (preferredThread) {
+    return preferredThread.id;
+  }
+
+  return pickMostRecentThread(threads)?.id ?? null;
 }
 
 function findThreadForWorktree(
@@ -730,7 +774,7 @@ export function useChatSession(
 
   const queryClient = useQueryClient();
   const repositoryId = options?.repositoryId ?? null;
-  const autoCreateInitialThread = options?.autoCreateInitialThread !== false;
+  const autoCreateInitialThread = options?.autoCreateInitialThread === true;
   const allowUnselectedThread = options?.allowUnselectedThread === true;
   const timelineEnabled = options?.timelineEnabled !== false;
   const selectedWorktreeStatus = options?.worktreeStatus ?? null;
@@ -1154,10 +1198,18 @@ export function useChatSession(
     }
   }, [selectedThreadId, threads]);
 
+  const selectedThreadForData =
+    selectedThreadId != null
+      ? threadByIdRef.current.get(selectedThreadId) ?? null
+      : null;
   const selectedThreadIdForData =
     selectedThreadId != null
     && !isPendingWorktreePlaceholderThreadId(selectedThreadId)
     && !locallyDeletedThreadIdsRef.current.has(selectedThreadId)
+    && (
+      (selectedThreadForData != null && selectedThreadForData.worktreeId === selectedWorktreeId)
+      || (!requestedThreadSelectionDeferred && requestedThreadId != null && requestedThreadId === selectedThreadId)
+    )
       ? selectedThreadId
       : null;
   const { data: liveMessages } = useLiveQuery(
@@ -1350,9 +1402,9 @@ export function useChatSession(
   const {
     data: queuedMessages = [],
   } = useQuery({
-    queryKey: selectedThreadId ? queryKeys.threads.queue(selectedThreadId) : ["threads", "__no_thread__", "queue"],
-    queryFn: () => api.listQueuedMessages(selectedThreadId!),
-    enabled: selectedThreadId != null && !shouldDelaySelectedThreadRemoteBootstrap,
+    queryKey: selectedThreadIdForData ? queryKeys.threads.queue(selectedThreadIdForData) : ["threads", "__no_thread__", "queue"],
+    queryFn: () => api.listQueuedMessages(selectedThreadIdForData!),
+    enabled: selectedThreadIdForData != null && !shouldDelaySelectedThreadRemoteBootstrap,
   });
 
   useEffect(() => {
