@@ -254,6 +254,20 @@ export function createTerminalService() {
         return sessions.has(sessionId);
     }
 
+    function listResourceSessions(): Array<{
+        sessionId: string;
+        pid: number;
+        requestedCwd?: string;
+        resolvedCwd: string;
+    }> {
+        return [...sessions.values()].map((session) => ({
+            sessionId: session.id,
+            pid: session.ptyProcess.pid,
+            requestedCwd: session.requestedCwd,
+            resolvedCwd: session.resolvedCwd,
+        }));
+    }
+
     function killAll(): void {
         for (const session of sessions.values()) {
             session.ptyProcess.kill();
@@ -261,5 +275,5 @@ export function createTerminalService() {
         sessions.clear();
     }
 
-    return { spawn, write, resize, addListener, addExitListener, kill, has, killAll };
+    return { spawn, write, resize, addListener, addExitListener, kill, has, listResourceSessions, killAll };
 }

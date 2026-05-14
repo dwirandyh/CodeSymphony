@@ -5,6 +5,7 @@ import type {
   ChatEventType,
   CliAgent,
   ChatMode,
+  ResourceMonitorSessionKind,
   ChatThreadPermissionMode,
   ChatThreadPermissionProfile,
   PermissionDecision,
@@ -13,6 +14,7 @@ import type {
   WorkspaceSyncEventType,
 } from "@codesymphony/shared-types";
 import type { LogLevel } from "./services/logService.js";
+import type { ResourceMonitorSessionTracker } from "./services/resourceMonitorSessionTracker.js";
 
 export type RuntimeEventPayload = Record<string, unknown>;
 
@@ -69,6 +71,14 @@ export type ClaudeRunnerResult = {
 };
 
 export type ChatAgentRunnerResult = ClaudeRunnerResult;
+
+export type ResourceMonitorTrackedSession = {
+  sessionId: string;
+  worktreeId: string;
+  pid: number;
+  label: string;
+  kind: ResourceMonitorSessionKind;
+};
 
 export type PlanDetectionSource = "claude_plan_file" | "codex_plan_item" | "streaming_fallback";
 export type ClaudeSessionPermissionMode = ClaudeSdkPermissionMode;
@@ -158,6 +168,7 @@ export type ClaudeRunner = (args: {
   model?: string;
   providerApiKey?: string;
   providerBaseUrl?: string;
+  onProcessSpawned?: (pid: number) => Promise<void> | void;
   onText: (chunk: string) => Promise<void> | void;
   onToolStarted: (payload: {
     toolName: string;
@@ -270,6 +281,7 @@ export type RuntimeDeps = {
     ) => void;
   };
   workspaceEventHub?: WorkspaceSyncEventHub;
+  resourceMonitorSessionTracker?: ResourceMonitorSessionTracker;
   modelProviderService: {
     getActiveProvider: (agent?: CliAgent) => Promise<{
       id: string;

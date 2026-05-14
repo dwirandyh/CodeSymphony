@@ -1,6 +1,5 @@
 import {
   createOpencodeClient,
-  createOpencodeServer,
   type Config as OpencodeConfig,
   type Event as OpencodeEvent,
   type Part as OpencodePart,
@@ -8,7 +7,9 @@ import {
   type ToolPart as OpencodeToolPart,
 } from "@opencode-ai/sdk";
 import { DEFAULT_CHAT_MODEL_BY_AGENT, type PermissionDecision } from "@codesymphony/shared-types";
+import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import { createServer } from "node:net";
+import type { Readable } from "node:stream";
 import type { ChatAgentRunner } from "../types.js";
 import {
   commandFromUnknownToolInput,
@@ -19,7 +20,7 @@ import {
 } from "../claude/toolClassification.js";
 import { resolveHeuristicPlanContent } from "../codex/plan.js";
 import { runOpencodePlanModeViaAcp } from "./acpRunner.js";
-import { ensureConfiguredOpencodeBinaryOnPath } from "./binary.js";
+import { ensureConfiguredOpencodeBinaryOnPath, resolveOpencodeBinaryPath } from "./binary.js";
 
 const OPENCODE_CUSTOM_PROVIDER_ID = "codesymphony_custom";
 const OPENCODE_SERVER_HOST = "127.0.0.1";
@@ -27,6 +28,8 @@ const OPENCODE_SERVER_START_TIMEOUT_MS = 20_000;
 const OPENCODE_INITIAL_ACTIVITY_TIMEOUT_MS = 30_000;
 const OPENCODE_PROGRESS_STALL_TIMEOUT_MS = 45_000;
 const OPENCODE_PLAN_FILE_PATH = ".opencode/plans/opencode-plan.md";
+
+type OpencodeServerProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 type ToolLifecycleEntry = {
   status: "pending" | "running" | "completed" | "error" | null;
@@ -123,6 +126,162 @@ function withOpencodeSetupHint(error: unknown): unknown {
     "If the binary is installed outside the default PATH, set `OPENCODE_BINARY_PATH`.",
   ].join("\n");
   return new Error(message);
+}
+
+function stopOpencodeServerProcess(child: OpencodeServerProcess): void {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  if (process.platform === "win32" && child.pid) {
+    const result = spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+    });
+    if (!result.error && result.status === 0) {
+      return;
+    }
+  }
+
+  child.kill();
+}
+
+function bindOpencodeServerAbort(
+  child: OpencodeServerProcess,
+  signal: AbortSignal | undefined,
+  onAbort?: () => void,
+): () => void {
+  if (!signal) {
+    return () => {};
+  }
+
+  const abort = () => {
+    clear();
+    stopOpencodeServerProcess(child);
+    onAbort?.();
+  };
+
+  const clear = () => {
+    signal.removeEventListener("abort", abort);
+    child.off("exit", clear);
+    child.off("error", clear);
+  };
+
+  signal.addEventListener("abort", abort, { once: true });
+  child.on("exit", clear);
+  child.on("error", clear);
+
+  if (signal.aborted) {
+    abort();
+  }
+
+  return clear;
+}
+
+async function createTrackedOpencodeServer(options: {
+  hostname: string;
+  port: number;
+  timeout: number;
+  config: OpencodeConfig;
+  signal?: AbortSignal;
+}): Promise<{
+  url: string;
+  pid: number | null;
+  close: () => void;
+}> {
+  const child = spawn(resolveOpencodeBinaryPath(), [
+    "serve",
+    `--hostname=${options.hostname}`,
+    `--port=${options.port}`,
+    ...(options.config.logLevel ? [`--log-level=${options.config.logLevel}`] : []),
+  ], {
+    env: {
+      ...process.env,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(options.config),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: process.platform === "win32",
+  });
+
+  let clearAbortBinding = () => {};
+  const url = await new Promise<string>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      clearAbortBinding();
+      stopOpencodeServerProcess(child);
+      reject(new Error(`Timeout waiting for server to start after ${options.timeout}ms`));
+    }, options.timeout);
+
+    let output = "";
+    let resolved = false;
+
+    const rejectWithOutput = (message: string) => {
+      clearTimeout(timeoutId);
+      const suffix = output.trim().length > 0 ? `\nServer output: ${output}` : "";
+      reject(new Error(`${message}${suffix}`));
+    };
+
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      if (resolved) {
+        return;
+      }
+
+      output += chunk.toString();
+      for (const line of output.split("\n")) {
+        if (!line.startsWith("opencode server listening")) {
+          continue;
+        }
+
+        const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
+        if (!match?.[1]) {
+          clearAbortBinding();
+          stopOpencodeServerProcess(child);
+          clearTimeout(timeoutId);
+          rejectWithOutput(`Failed to parse server url from output: ${line}`);
+          return;
+        }
+
+        resolved = true;
+        clearTimeout(timeoutId);
+        resolve(match[1]);
+        return;
+      }
+    });
+
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      output += chunk.toString();
+    });
+
+    child.once("exit", (code) => {
+      if (resolved) {
+        return;
+      }
+
+      clearTimeout(timeoutId);
+      rejectWithOutput(`Server exited with code ${code ?? "null"}`);
+    });
+
+    child.once("error", (error) => {
+      if (resolved) {
+        return;
+      }
+
+      clearTimeout(timeoutId);
+      reject(error);
+    });
+
+    clearAbortBinding = bindOpencodeServerAbort(child, options.signal, () => {
+      clearTimeout(timeoutId);
+      reject(options.signal?.reason);
+    });
+  });
+
+  return {
+    url,
+    pid: typeof child.pid === "number" && child.pid > 0 ? child.pid : null,
+    close() {
+      clearAbortBinding();
+      stopOpencodeServerProcess(child);
+    },
+  };
 }
 
 async function findAvailablePort(): Promise<number> {
@@ -432,6 +591,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   cwd,
   abortController,
   onSessionId,
+  onProcessSpawned,
   permissionMode,
   threadPermissionMode,
   autoAcceptTools,
@@ -465,6 +625,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
       cwd,
       abortController,
       onSessionId,
+      onProcessSpawned,
       permissionMode,
       threadPermissionMode,
       autoAcceptTools,
@@ -494,14 +655,18 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   });
 
   const port = await findAvailablePort();
-  const server = await createOpencodeServer({
+  const server = await createTrackedOpencodeServer({
     hostname: OPENCODE_SERVER_HOST,
     port,
     timeout: OPENCODE_SERVER_START_TIMEOUT_MS,
     config,
+    signal: abortController?.signal,
   }).catch((error) => {
     throw withOpencodeSetupHint(error);
   });
+  if (server.pid !== null) {
+    await onProcessSpawned?.(server.pid);
+  }
 
   const streamAbortController = new AbortController();
   const externalAbortSignal = abortController?.signal;

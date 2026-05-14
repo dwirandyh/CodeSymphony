@@ -1,4 +1,4 @@
-import { type MouseEvent as ReactMouseEvent, useEffect, useRef, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Button } from "../ui/button";
 import { debugLog } from "../../lib/debugLog";
@@ -8,6 +8,7 @@ import { cn } from "../../lib/utils";
 type MacDesktopTitleBarProps = {
   desktopApp?: boolean;
   appTitle?: string;
+  resourceMonitor?: ReactNode;
   canGoBack: boolean;
   canGoForward: boolean;
   leftPanelVisible: boolean;
@@ -200,6 +201,7 @@ function useMacDesktopFullscreenState() {
 export function MacDesktopTitleBar({
   desktopApp = false,
   appTitle = "CodeSymphony",
+  resourceMonitor,
   canGoBack,
   canGoForward,
   leftPanelVisible,
@@ -302,6 +304,8 @@ export function MacDesktopTitleBar({
           >
             <ChevronRight className="h-3.5 w-3.5" />
           </Button>
+
+          {resourceMonitor}
         </div>
 
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-[10rem]">

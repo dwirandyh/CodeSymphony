@@ -536,6 +536,7 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
     cwd,
     abortController,
     onSessionId,
+    onProcessSpawned,
     model,
     onText,
     onToolStarted,
@@ -775,6 +776,10 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
     });
     child = created.child;
     connection = created.connection;
+    const childPid = child.pid;
+    if (typeof childPid === "number" && childPid > 0) {
+      await onProcessSpawned?.(childPid);
+    }
 
     const session = sessionId
       ? await connection.loadSession({
