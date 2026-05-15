@@ -1,6 +1,7 @@
 import type { AssistantRenderHint, ChatEvent, ChatMessage, ChatTimelineItem, ChatTimelineSummary } from "@codesymphony/shared-types";
 import { INLINE_TOOL_EVENT_TYPES, MAX_ORDER_INDEX } from "./constants.js";
 import { extractBashRuns } from "./bashUtils.js";
+import type { BashRun } from "./types.js";
 import { extractEditedRuns } from "./editUtils.js";
 import { extractSubagentExploreGroups } from "./workspace-timeline/subagentExploreExtraction.js";
 import {
@@ -55,6 +56,49 @@ const MAIN_SUMMARY_END_MARKER = /###main(?:\s+agent)? summary end\n?/g;
 const MULTI_FILE_EDIT_ANNOUNCEMENT_PATTERN = /\b(both files|two files|2 files?|kedua file|dua file)\b/i;
 const SINGLE_EDIT_ANNOUNCEMENT_PATTERN = /\b(mari saya|let me|i'?ll|saya akan|now let me)\b/i;
 const COMPLETION_MESSAGE_PATTERN = /^(sip|selesai|done|fixed|beres|sudah)/i;
+const CURSOR_TERMINAL_COMMAND_PATTERN = /\*\*`([^`\n]+)`(?::)?\*\*/g;
+
+function extractCursorTerminalCommands(content: string): string[] {
+  const commands: string[] = [];
+  for (const match of content.matchAll(CURSOR_TERMINAL_COMMAND_PATTERN)) {
+    const command = match[1]?.trim();
+    if (command) {
+      commands.push(command);
+    }
+  }
+  return commands;
+}
+
+function enrichCursorTerminalRuns(
+  runs: BashRun[],
+  assistantContent: string,
+): BashRun[] {
+  if (runs.length !== 1) {
+    return runs;
+  }
+
+  const [run] = runs;
+  if (
+    !run
+    || run.command
+    || !run.summary
+    || !/^ran terminal command$/i.test(run.summary.trim())
+  ) {
+    return runs;
+  }
+
+  const commands = extractCursorTerminalCommands(assistantContent);
+  if (commands.length === 0) {
+    return runs;
+  }
+
+  return [
+    {
+      ...run,
+      command: commands.join(" && "),
+    },
+  ];
+}
 
 function isQuestionLifecycleEvent(event: ChatEvent): boolean {
   return event.type === "question.requested" || event.type === "question.answered" || event.type === "question.dismissed";
@@ -562,12 +606,12 @@ export function buildTimelineFromSeed(params: {
       }
     }
 
-    const bashRuns = allBashRuns.filter((run) => {
+    const bashRuns = enrichCursorTerminalRuns(allBashRuns.filter((run) => {
       for (const id of run.eventIds) {
         if (exploreLikeBashEventIds.has(id)) return false;
       }
       return true;
-    });
+    }), cleanedContent);
 
     const bashRunEventIds = new Set<string>();
     const permissionToolNameByRequestId = new Map<string, string>();

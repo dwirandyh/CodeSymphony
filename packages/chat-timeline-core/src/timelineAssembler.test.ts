@@ -1291,4 +1291,78 @@ describe("buildTimelineFromSeed", () => {
     expect(assistantItemIndex).toBeGreaterThanOrEqual(0);
     expect(skillItemIndex).toBeLessThan(assistantItemIndex);
   });
+
+  it("infers Cursor terminal commands from assistant markdown when raw tool input is missing", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Run commands."),
+      makeMessage(
+        "m2",
+        1,
+        "assistant",
+        [
+          "Running those commands now.",
+          "",
+          "**`pwd`:** `/repo`",
+          "",
+          "**`echo hello-after-fix`:** `hello-after-fix`",
+        ].join("\n"),
+      ),
+    ];
+    const events = [
+      makeEvent(0, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Running those commands now.\n\n",
+      }),
+      makeEvent(1, "tool.started", {
+        messageId: "m2",
+        toolName: "Bash",
+        toolUseId: "bash-1",
+        shell: "bash",
+        isBash: true,
+      }),
+      makeEvent(2, "tool.output", {
+        messageId: "m2",
+        toolName: "Bash",
+        toolUseId: "bash-1",
+      }),
+      makeEvent(3, "tool.finished", {
+        messageId: "m2",
+        toolName: "Bash",
+        precedingToolUseIds: ["bash-1"],
+        summary: "Ran terminal command",
+        output: "/repo\nhello-after-fix\n",
+        shell: "bash",
+        isBash: true,
+      }),
+      makeEvent(4, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "**`pwd`:** `/repo`\n\n**`echo hello-after-fix`:** `hello-after-fix`",
+      }),
+      makeEvent(5, "chat.completed", {
+        messageId: "m2",
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    const toolItem = result.items.find(
+      (item): item is Extract<ChatTimelineItem, { kind: "tool" }> =>
+        item.kind === "tool" && item.toolName === "Bash",
+    );
+
+    expect(toolItem).toMatchObject({
+      kind: "tool",
+      toolName: "Bash",
+      command: "pwd && echo hello-after-fix",
+      summary: "Ran terminal command",
+      output: "/repo\nhello-after-fix\n",
+    });
+  });
 });

@@ -29,10 +29,12 @@ import {
 } from "@codesymphony/shared-types";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
+import { appendRuntimeDebugLog } from "../routes/debug.js";
 
 const CURSOR_BINARY = process.env.CURSOR_AGENT_BINARY_PATH ?? "cursor-agent";
 const CURSOR_CATALOG_TIMEOUT_MS = 2_500;
 const CURSOR_SHUTDOWN_TIMEOUT_MS = 1_000;
+const CURSOR_CONNECTION_IDLE_TIMEOUT_MS = 2 * 60_000;
 
 type CursorAcpMode = "agent" | "ask" | "plan";
 
@@ -66,6 +68,31 @@ type CursorQuestionDefinition = {
   };
   optionsByLabel: Map<string, string>;
 };
+
+type CursorClientHandlers = {
+  sessionUpdate: (params: { sessionId: string; update: SessionUpdate }) => Promise<void>;
+  requestPermission: (params: RequestPermissionRequest) => Promise<RequestPermissionResponse>;
+  unstable_createElicitation: (params: CreateElicitationRequest) => Promise<CreateElicitationResponse>;
+  extMethod: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>;
+};
+
+type PooledCursorConnection = {
+  child: ChildProcessWithoutNullStreams;
+  connection: ClientSideConnection;
+  initializeResponse: Awaited<ReturnType<ClientSideConnection["initialize"]>>;
+  stderrChunks: string[];
+  cwd: string;
+  sessionId: string | null;
+  currentModeId: string | null;
+  currentModelId: string | null;
+  availableModelIds: Set<string> | null;
+  busy: boolean;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+  lastUsedAtMs: number;
+  handlers: CursorClientHandlers;
+};
+
+const pooledCursorConnectionsBySessionId = new Map<string, PooledCursorConnection>();
 
 function createAbortError(): Error {
   const error = new Error("Aborted");
@@ -107,6 +134,10 @@ function withCursorSetupHint(error: unknown): unknown {
 
 function normalizeCursorToolCallId(toolCallId: string): string {
   return toolCallId.replace(/\s+/g, "");
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function stripCursorModelVariant(modelId: string): string {
@@ -448,6 +479,10 @@ function toSlashCommands(commands: AvailableCommand[]): SlashCommand[] {
 }
 
 function toolNameFromCursorKind(kind: ToolKind | null, title: string): string {
+  if (title.trim().toLowerCase() === "terminal") {
+    return "Bash";
+  }
+
   switch (kind) {
     case "read":
       return "Read";
@@ -485,6 +520,44 @@ function extractToolTextContent(content: ToolCallContent[]): string {
     .trim();
 }
 
+function isGenericTerminalTitle(title: string): boolean {
+  return title.trim().toLowerCase() === "terminal";
+}
+
+function isExecuteLikeTool(params: {
+  kind: ToolKind | null;
+  title: string;
+}): boolean {
+  return params.kind === "execute" || isGenericTerminalTitle(params.title);
+}
+
+function extractTerminalRawOutput(rawOutput: unknown): {
+  stdout: string | null;
+  stderr: string | null;
+  exitCode: number | null;
+} {
+  const output = coerceObject(rawOutput);
+  const exitCodeValue = output?.exitCode;
+
+  return {
+    stdout: nonEmptyString(output?.stdout),
+    stderr: nonEmptyString(output?.stderr),
+    exitCode: typeof exitCodeValue === "number" && Number.isFinite(exitCodeValue) ? exitCodeValue : null,
+  };
+}
+
+function mergeTerminalOutput(stdout: string | null, stderr: string | null): string | null {
+  if (!stdout && !stderr) {
+    return null;
+  }
+
+  if (stdout && stderr) {
+    return stdout.endsWith("\n") ? `${stdout}${stderr}` : `${stdout}\n${stderr}`;
+  }
+
+  return stdout ?? stderr;
+}
+
 function extractToolPath(state: CursorToolState): string | null {
   const diffPath = state.content.find((item) => item.type === "diff")?.path;
   if (typeof diffPath === "string" && diffPath.trim().length > 0) {
@@ -508,6 +581,21 @@ function coerceObject(value: unknown): Record<string, unknown> | null {
 
 function extractCommand(rawInput: unknown): string | null {
   const input = coerceObject(rawInput);
+  const baseCommand = nonEmptyString(input?.command);
+  const args = Array.isArray(input?.args) && input.args.every((value) => typeof value === "string")
+    ? input.args
+    : null;
+  if (baseCommand) {
+    return args && args.length > 0 ? [baseCommand, ...args].join(" ") : baseCommand;
+  }
+
+  const argv = Array.isArray(input?.argv) && input.argv.every((value) => typeof value === "string")
+    ? input.argv
+    : null;
+  if (argv && argv.length > 0) {
+    return argv.join(" ");
+  }
+
   const candidateKeys = ["command", "cmd", "shellCommand"];
   for (const key of candidateKeys) {
     const value = input?.[key];
@@ -522,8 +610,14 @@ function buildToolSummary(state: CursorToolState): string {
   const title = state.title.trim() || "Tool";
   const path = extractToolPath(state);
   const failed = state.status === "failed";
+  const isExecuteTool = isExecuteLikeTool(state);
+  const { exitCode } = extractTerminalRawOutput(state.rawOutput);
+  const command = extractCommand(state.rawInput);
 
   if (failed) {
+    if (isExecuteTool) {
+      return exitCode != null ? `Terminal exited with code ${exitCode}` : "Terminal command failed";
+    }
     return `${title} failed`;
   }
 
@@ -539,12 +633,50 @@ function buildToolSummary(state: CursorToolState): string {
     case "search":
       return path ? `Searched ${path}` : title;
     case "execute": {
-      const command = extractCommand(state.rawInput);
-      return command ? `Executed ${command}` : title;
+      return command ? `Ran ${command}` : "Ran terminal command";
     }
     default:
+      if (isExecuteTool) {
+        return command ? `Ran ${command}` : "Ran terminal command";
+      }
       return title;
   }
+}
+
+function extractToolOutput(state: CursorToolState): string | null {
+  const textOutput = extractToolTextContent(state.content);
+  if (textOutput) {
+    return textOutput;
+  }
+
+  if (!isExecuteLikeTool(state)) {
+    return null;
+  }
+
+  const { stdout, stderr } = extractTerminalRawOutput(state.rawOutput);
+  return mergeTerminalOutput(stdout, stderr);
+}
+
+function extractToolError(state: CursorToolState, toolOutput: string | null): string | null {
+  if (state.status !== "failed") {
+    return null;
+  }
+
+  if (toolOutput) {
+    return toolOutput;
+  }
+
+  if (isExecuteLikeTool(state)) {
+    const { stderr, exitCode } = extractTerminalRawOutput(state.rawOutput);
+    if (stderr) {
+      return stderr;
+    }
+    if (exitCode != null) {
+      return `Command exited with code ${exitCode}`;
+    }
+  }
+
+  return "Tool failed";
 }
 
 function shouldRefreshPlanFromToolState(state: CursorToolState): boolean {
@@ -624,12 +756,7 @@ async function terminateCursorChild(child: ChildProcessWithoutNullStreams): Prom
 
 async function createCursorConnection(params: {
   cwd: string;
-  client: {
-    sessionUpdate: (params: { sessionId: string; update: SessionUpdate }) => Promise<void>;
-    requestPermission: (params: RequestPermissionRequest) => Promise<RequestPermissionResponse>;
-    unstable_createElicitation: (params: CreateElicitationRequest) => Promise<CreateElicitationResponse>;
-    extMethod: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  };
+  client: CursorClientHandlers;
 }): Promise<{
   child: ChildProcessWithoutNullStreams;
   connection: ClientSideConnection;
@@ -667,6 +794,142 @@ async function createCursorConnection(params: {
     initializeResponse,
     stderrChunks,
   };
+}
+
+function clearCursorConnectionIdleTimer(entry: PooledCursorConnection): void {
+  if (!entry.idleTimer) {
+    return;
+  }
+
+  clearTimeout(entry.idleTimer);
+  entry.idleTimer = null;
+}
+
+function unregisterPooledCursorConnection(entry: PooledCursorConnection): void {
+  if (!entry.sessionId) {
+    return;
+  }
+
+  const current = pooledCursorConnectionsBySessionId.get(entry.sessionId);
+  if (current === entry) {
+    pooledCursorConnectionsBySessionId.delete(entry.sessionId);
+  }
+}
+
+async function destroyPooledCursorConnection(entry: PooledCursorConnection): Promise<void> {
+  clearCursorConnectionIdleTimer(entry);
+  unregisterPooledCursorConnection(entry);
+  await terminateCursorChild(entry.child);
+}
+
+function schedulePooledCursorConnectionIdleClose(entry: PooledCursorConnection): void {
+  clearCursorConnectionIdleTimer(entry);
+  entry.idleTimer = setTimeout(() => {
+    void destroyPooledCursorConnection(entry).catch(() => {});
+  }, CURSOR_CONNECTION_IDLE_TIMEOUT_MS);
+  entry.idleTimer.unref?.();
+}
+
+async function acquirePooledCursorConnection(params: {
+  cwd: string;
+  sessionId: string | null;
+  handlers: CursorClientHandlers;
+}): Promise<{
+  entry: PooledCursorConnection;
+  reused: boolean;
+}> {
+  const candidate = params.sessionId ? pooledCursorConnectionsBySessionId.get(params.sessionId) ?? null : null;
+  if (
+    candidate
+    && !candidate.busy
+    && candidate.cwd === params.cwd
+    && candidate.child.exitCode === null
+    && !candidate.child.killed
+  ) {
+    clearCursorConnectionIdleTimer(candidate);
+    candidate.busy = true;
+    candidate.lastUsedAtMs = Date.now();
+    candidate.handlers = params.handlers;
+    return {
+      entry: candidate,
+      reused: true,
+    };
+  }
+
+  if (candidate) {
+    await destroyPooledCursorConnection(candidate);
+  }
+
+  const handlerBridge: CursorClientHandlers = {
+    sessionUpdate: async (payload) => params.handlers.sessionUpdate(payload),
+    requestPermission: async (payload) => params.handlers.requestPermission(payload),
+    unstable_createElicitation: async (payload) => params.handlers.unstable_createElicitation(payload),
+    extMethod: async (method, payload) => params.handlers.extMethod(method, payload),
+  };
+
+  const created = await createCursorConnection({
+    cwd: params.cwd,
+    client: handlerBridge,
+  });
+
+  const entry: PooledCursorConnection = {
+    ...created,
+    cwd: params.cwd,
+    sessionId: params.sessionId,
+    currentModeId: null,
+    currentModelId: null,
+    availableModelIds: null,
+    busy: true,
+    idleTimer: null,
+    lastUsedAtMs: Date.now(),
+    handlers: params.handlers,
+  };
+
+  handlerBridge.sessionUpdate = async (payload) => entry.handlers.sessionUpdate(payload);
+  handlerBridge.requestPermission = async (payload) => entry.handlers.requestPermission(payload);
+  handlerBridge.unstable_createElicitation = async (payload) => entry.handlers.unstable_createElicitation(payload);
+  handlerBridge.extMethod = async (method, payload) => entry.handlers.extMethod(method, payload);
+
+  return {
+    entry,
+    reused: false,
+  };
+}
+
+function rememberPooledCursorConnectionSession(entry: PooledCursorConnection, sessionId: string | null): void {
+  if (!sessionId) {
+    return;
+  }
+
+  if (entry.sessionId === sessionId) {
+    pooledCursorConnectionsBySessionId.set(sessionId, entry);
+    return;
+  }
+
+  unregisterPooledCursorConnection(entry);
+  entry.sessionId = sessionId;
+  pooledCursorConnectionsBySessionId.set(sessionId, entry);
+}
+
+async function releasePooledCursorConnection(params: {
+  entry: PooledCursorConnection | null;
+  keepAlive: boolean;
+  sessionId: string | null;
+}): Promise<void> {
+  const entry = params.entry;
+  if (!entry) {
+    return;
+  }
+
+  if (!params.keepAlive || !params.sessionId || entry.child.exitCode !== null || entry.child.killed) {
+    await destroyPooledCursorConnection(entry);
+    return;
+  }
+
+  rememberPooledCursorConnectionSession(entry, params.sessionId);
+  entry.busy = false;
+  entry.lastUsedAtMs = Date.now();
+  schedulePooledCursorConnectionIdleClose(entry);
 }
 
 async function buildCursorPromptBlocks(params: {
@@ -832,6 +1095,27 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
   let planFallbackPath: string | null = null;
   let planEmitted = false;
   let currentSessionId = sessionId;
+  const runnerStartedAtMs = Date.now();
+  let firstSessionUpdateType: SessionUpdate["sessionUpdate"] | null = null;
+  const seenNonTextChunkTypes = new Set<string>();
+
+  const logCursorDebug = (message: string, data?: Record<string, unknown>) => {
+    appendRuntimeDebugLog({
+      source: "runtime.cursor",
+      message,
+      data: {
+        sessionId: currentSessionId,
+        resumedSession: sessionId != null,
+        model: resolvedModel,
+        elapsedMs: Date.now() - runnerStartedAtMs,
+        ...(data ?? {}),
+      },
+    });
+  };
+
+  logCursorDebug("runner.started", {
+    permissionMode: acpMode,
+  });
 
   const emitPlanIfReady = async () => {
     if (planEmitted || !planMarkdown) {
@@ -873,6 +1157,9 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     const toolName = toolNameFromCursorKind(current.kind, current.title);
     const editTarget = extractToolPath(current);
 
+    const isExecuteTool = isExecuteLikeTool(current);
+    const command = extractCommand(current.rawInput);
+
     if (!current.startedEmitted) {
       current.startedEmitted = true;
       current.startedAtMs = Date.now();
@@ -881,7 +1168,13 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
         toolUseId,
         parentToolUseId: null,
         ...(editTarget ? { editTarget } : {}),
-        ...(current.kind === "execute" ? { command: extractCommand(current.rawInput) ?? current.title, shell: "bash" as const, isBash: true as const } : {}),
+        ...(isExecuteTool
+          ? {
+              ...(command ? { command } : {}),
+              shell: "bash" as const,
+              isBash: true as const,
+            }
+          : {}),
       });
     }
 
@@ -914,28 +1207,31 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       current.finishedEmitted = true;
       await emitPlanIfReady();
 
-      const textOutput = extractToolTextContent(current.content);
+      const toolOutput = extractToolOutput(current);
+      const toolError = extractToolError(current, toolOutput);
       await onToolFinished({
         toolName,
         summary: buildToolSummary(current),
         precedingToolUseIds: [toolUseId],
         ...(editTarget ? { editTarget } : {}),
         ...(coerceObject(current.rawInput) ? { toolInput: coerceObject(current.rawInput)! } : {}),
-        ...(current.kind === "execute"
+        ...(isExecuteTool
           ? {
-              command: extractCommand(current.rawInput) ?? current.title,
+              ...(command ? { command } : {}),
               shell: "bash" as const,
               isBash: true as const,
             }
           : {}),
-        ...(textOutput ? { output: textOutput } : {}),
-        ...(current.status === "failed" ? { error: textOutput || "Tool failed" } : {}),
+        ...(toolOutput ? { output: toolOutput } : {}),
+        ...(toolError ? { error: toolError } : {}),
       });
     }
   };
 
   let child: ChildProcessWithoutNullStreams | null = null;
   let connection: ClientSideConnection | null = null;
+  let pooledConnection: PooledCursorConnection | null = null;
+  let keepConnectionAlive = false;
   let shutdownTimer: ReturnType<typeof setTimeout> | null = null;
   const abortSignal = abortController?.signal;
 
@@ -959,119 +1255,205 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
   abortSignal?.addEventListener("abort", handleAbort);
 
   try {
-    const created = await createCursorConnection({
-      cwd,
-      client: {
-        sessionUpdate: async ({ update }) => {
-          switch (update.sessionUpdate) {
-            case "agent_message_chunk": {
-              if (update.content.type !== "text") {
-                return;
+    const handlers: CursorClientHandlers = {
+      sessionUpdate: async ({ update }) => {
+        if (!firstSessionUpdateType) {
+          firstSessionUpdateType = update.sessionUpdate;
+          logCursorDebug("session.firstUpdate", {
+            updateType: update.sessionUpdate,
+            contentType: "content" in update && update.content && typeof update.content === "object" && "type" in update.content
+              ? update.content.type
+              : null,
+          });
+        }
+
+        switch (update.sessionUpdate) {
+          case "agent_message_chunk": {
+            if (update.content.type !== "text") {
+              if (!seenNonTextChunkTypes.has(update.content.type)) {
+                seenNonTextChunkTypes.add(update.content.type);
+                logCursorDebug("session.nonTextChunk", {
+                  contentType: update.content.type,
+                });
               }
-              output += update.content.text;
-              await onText(update.content.text);
               return;
             }
-            case "tool_call":
-            case "tool_call_update":
-              await handleToolState(update);
-              return;
-            case "plan": {
-              planMarkdown = buildCursorPlanMarkdown(update.entries);
-              return;
-            }
-            default:
-              return;
+            output += update.content.text;
+            await onText(update.content.text);
+            return;
           }
-        },
-        requestPermission: async (request) => {
-          const toolUseId = normalizeCursorToolCallId(request.toolCall.toolCallId);
-          const toolName = toolNameFromCursorKind(request.toolCall.kind ?? null, request.toolCall.title ?? "Tool");
-          const toolInput = coerceObject(request.toolCall.rawInput) ?? {};
-          const blockedPath = request.toolCall.locations?.[0]?.path?.trim() || null;
-          const syntheticRequestId = `${toolUseId || "cursor-tool"}:${randomUUID()}`;
-
-          const result = await onPermissionRequest({
-            requestId: syntheticRequestId,
-            toolName,
-            toolInput,
-            blockedPath,
-            decisionReason: null,
-            suggestions: null,
-            subagentOwnerToolUseId: null,
-            launcherToolUseId: null,
-          });
-
-          return normalizePermissionDecision({
-            decision: result.decision,
-            request,
-          });
-        },
-        unstable_createElicitation: async (request) =>
-          await normalizeCursorElicitationRequest({
-            request,
-            onQuestionRequest,
-            abortSignal,
-          }),
-        extMethod: async (method, params) => {
-          if (method === "cursor/create_plan") {
-            const candidatePlan = typeof params.plan === "string" ? params.plan.trim() : "";
-            if (candidatePlan.length > 0) {
-              planMarkdown = candidatePlan;
-            }
-
-            const candidateName = typeof params.name === "string" ? params.name.trim() : "";
-            planFallbackPath = buildCursorPlanFallbackPath(candidateName || null);
-            return {};
+          case "available_commands_update":
+            logCursorDebug("session.availableCommandsUpdated", {
+              commandCount: Array.isArray(update.availableCommands) ? update.availableCommands.length : 0,
+            });
+            return;
+          case "tool_call":
+          case "tool_call_update":
+            await handleToolState(update);
+            return;
+          case "plan": {
+            planMarkdown = buildCursorPlanMarkdown(update.entries);
+            return;
           }
-
-          return {};
-        },
+          default:
+            return;
+        }
       },
+      requestPermission: async (request) => {
+        const toolUseId = normalizeCursorToolCallId(request.toolCall.toolCallId);
+        const toolName = toolNameFromCursorKind(request.toolCall.kind ?? null, request.toolCall.title ?? "Tool");
+        const toolInput = coerceObject(request.toolCall.rawInput) ?? {};
+        const blockedPath = request.toolCall.locations?.[0]?.path?.trim() || null;
+        const syntheticRequestId = `${toolUseId || "cursor-tool"}:${randomUUID()}`;
+
+        const result = await onPermissionRequest({
+          requestId: syntheticRequestId,
+          toolName,
+          toolInput,
+          blockedPath,
+          decisionReason: null,
+          suggestions: null,
+          subagentOwnerToolUseId: null,
+          launcherToolUseId: null,
+        });
+
+        return normalizePermissionDecision({
+          decision: result.decision,
+          request,
+        });
+      },
+      unstable_createElicitation: async (request) =>
+        await normalizeCursorElicitationRequest({
+          request,
+          onQuestionRequest,
+          abortSignal,
+        }),
+      extMethod: async (method, params) => {
+        if (method === "cursor/create_plan") {
+          const candidatePlan = typeof params.plan === "string" ? params.plan.trim() : "";
+          if (candidatePlan.length > 0) {
+            planMarkdown = candidatePlan;
+          }
+
+          const candidateName = typeof params.name === "string" ? params.name.trim() : "";
+          planFallbackPath = buildCursorPlanFallbackPath(candidateName || null);
+          return {};
+        }
+
+        return {};
+      },
+    };
+
+    const acquired = await acquirePooledCursorConnection({
+      cwd,
+      sessionId,
+      handlers,
     });
-    child = created.child;
-    connection = created.connection;
-    const supportsPromptImages = created.initializeResponse.agentCapabilities?.promptCapabilities?.image === true;
+    pooledConnection = acquired.entry;
+    child = pooledConnection.child;
+    connection = pooledConnection.connection;
+    const supportsPromptImages = pooledConnection.initializeResponse.agentCapabilities?.promptCapabilities?.image === true;
     const childPid = child.pid;
     if (typeof childPid === "number" && childPid > 0) {
       await onProcessSpawned?.(childPid);
     }
 
-    const session = sessionId
-      ? await connection.loadSession({
-          sessionId,
-          cwd,
-          mcpServers: [],
-        })
-      : await connection.newSession({
-          cwd,
-          mcpServers: [],
-        });
+    let currentModeId = pooledConnection.currentModeId;
+    let currentModelId = pooledConnection.currentModelId;
+    let availableModelIds = pooledConnection.availableModelIds;
 
-    currentSessionId = sessionId ?? ("sessionId" in session && typeof session.sessionId === "string" ? session.sessionId : null);
+    if (acquired.reused && sessionId && availableModelIds) {
+      currentSessionId = sessionId;
+      logCursorDebug("connection.reused", {
+        currentModeId,
+        currentModelId,
+        availableModelCount: availableModelIds.size,
+      });
+      logCursorDebug("session.load.skipped", {
+        reason: "pooled_connection",
+      });
+    } else {
+      logCursorDebug("connection.created", {
+        reusedSession: sessionId != null,
+      });
+      logCursorDebug("session.load.started", {
+        hasExistingSessionId: sessionId != null,
+        requestedMode: acpMode,
+        requestedModel: resolvedModel,
+      });
+      const session = sessionId
+        ? await connection.loadSession({
+            sessionId,
+            cwd,
+            mcpServers: [],
+          })
+        : await connection.newSession({
+            cwd,
+            mcpServers: [],
+          });
+      logCursorDebug("session.load.completed", {
+        hasExistingSessionId: sessionId != null,
+        currentModeId: session.modes?.currentModeId ?? null,
+        currentModelId: session.models?.currentModelId ?? null,
+        availableModelCount: session.models?.availableModels?.length ?? 0,
+      });
+
+      currentSessionId = sessionId ?? ("sessionId" in session && typeof session.sessionId === "string" ? session.sessionId : null);
+      currentModeId = session.modes?.currentModeId ?? null;
+      currentModelId = session.models?.currentModelId ?? null;
+      availableModelIds = new Set((session.models?.availableModels ?? []).map((entry) => entry.modelId));
+      pooledConnection.currentModeId = currentModeId;
+      pooledConnection.currentModelId = currentModelId;
+      pooledConnection.availableModelIds = availableModelIds;
+    }
+
     if (!currentSessionId) {
       throw new Error("Cursor ACP did not return a session ID.");
     }
 
     await onSessionId?.(currentSessionId);
 
-    const currentModeId = session.modes?.currentModeId;
     if (currentModeId !== acpMode) {
+      logCursorDebug("session.mode.started", {
+        currentModeId: currentModeId ?? null,
+        requestedMode: acpMode,
+      });
       await connection.setSessionMode({
         sessionId: currentSessionId,
         modeId: acpMode,
       });
+      currentModeId = acpMode;
+      pooledConnection.currentModeId = acpMode;
+      logCursorDebug("session.mode.completed", {
+        currentModeId: acpMode,
+      });
+    } else {
+      logCursorDebug("session.mode.skipped", {
+        currentModeId: currentModeId ?? null,
+      });
     }
 
-    const availableModelIds = new Set((session.models?.availableModels ?? []).map((entry) => entry.modelId));
-    if (availableModelIds.size > 0 && !availableModelIds.has(resolvedModel)) {
+    if (availableModelIds && availableModelIds.size > 0 && !availableModelIds.has(resolvedModel)) {
       throw new Error(`Cursor model "${resolvedModel}" is not available in the current Cursor account.`);
     }
 
-    if ((session.models?.currentModelId ?? null) !== resolvedModel) {
+    if (currentModelId !== resolvedModel) {
+      logCursorDebug("session.model.started", {
+        currentModelId: currentModelId ?? null,
+        requestedModel: resolvedModel,
+      });
       await connection.unstable_setSessionModel({
         sessionId: currentSessionId,
         modelId: resolvedModel,
+      });
+      currentModelId = resolvedModel;
+      pooledConnection.currentModelId = resolvedModel;
+      logCursorDebug("session.model.completed", {
+        currentModelId: resolvedModel,
+      });
+    } else {
+      logCursorDebug("session.model.skipped", {
+        currentModelId: currentModelId ?? null,
       });
     }
 
@@ -1079,6 +1461,9 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       throw createAbortError();
     }
 
+    logCursorDebug("prompt.started", {
+      supportsPromptImages,
+    });
     const result = await connection.prompt({
       sessionId: currentSessionId,
       prompt: await buildCursorPromptBlocks({
@@ -1097,11 +1482,22 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       throw createAbortError();
     }
 
+    logCursorDebug("prompt.completed", {
+      stopReason: result.stopReason,
+      outputLength: output.length,
+      firstSessionUpdateType,
+    });
+    keepConnectionAlive = true;
+
     return {
       output: output.trim(),
       sessionId: currentSessionId,
     } satisfies ChatAgentRunnerResult;
   } catch (error) {
+    logCursorDebug("prompt.failed", {
+      firstSessionUpdateType,
+      error: error instanceof Error ? error.message : String(error),
+    });
     if (isAbortError(error)) {
       throw createAbortError();
     }
@@ -1111,9 +1507,11 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     if (shutdownTimer) {
       clearTimeout(shutdownTimer);
     }
-    if (child) {
-      await terminateCursorChild(child);
-    }
+    await releasePooledCursorConnection({
+      entry: pooledConnection,
+      keepAlive: keepConnectionAlive,
+      sessionId: currentSessionId,
+    });
   }
 };
 
