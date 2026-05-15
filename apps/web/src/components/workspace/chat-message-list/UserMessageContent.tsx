@@ -10,6 +10,132 @@ import { MarkdownBody } from "./AssistantContent";
 import { downloadTextFile } from "./toolEventUtils";
 
 const ATTACHMENT_MARKER_RE = /\{\{attachment:([^}]+)\}\}/g;
+const CURSOR_PLAN_FRONTMATTER_RE = /^(?:<!--[\s\S]*?-->\s*)?---\n([\s\S]*?)\n---\n*/;
+
+type CursorPlanTodo = {
+  content: string;
+  status: string;
+};
+
+function isCursorPlanFilePath(filePath: string): boolean {
+  return /(?:^|\/)\.cursor\/plans\/.+\.md$/i.test(filePath);
+}
+
+function parseYamlScalar(rawValue: string): string {
+  const trimmed = rawValue.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\""))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed
+      .slice(1, -1)
+      .replace(/\\"/g, "\"")
+      .replace(/\\'/g, "'")
+      .replace(/\\n/g, "\n");
+  }
+
+  return trimmed;
+}
+
+function extractCursorPlanTodos(frontmatter: string): CursorPlanTodo[] {
+  const todos: CursorPlanTodo[] = [];
+  const lines = frontmatter.split("\n");
+  let inTodos = false;
+  let current: Partial<CursorPlanTodo> | null = null;
+
+  const flushCurrent = () => {
+    if (!current?.content) {
+      current = null;
+      return;
+    }
+
+    todos.push({
+      content: current.content.trim(),
+      status: (current.status ?? "pending").trim(),
+    });
+    current = null;
+  };
+
+  for (const line of lines) {
+    if (!inTodos) {
+      if (line.trim() === "todos:") {
+        inTodos = true;
+      }
+      continue;
+    }
+
+    if (/^\S/.test(line)) {
+      break;
+    }
+
+    if (/^\s*-\s+id:\s*/.test(line)) {
+      flushCurrent();
+      current = {};
+      continue;
+    }
+
+    const contentMatch = /^\s+content:\s+(.+)\s*$/.exec(line);
+    if (contentMatch) {
+      current = current ?? {};
+      current.content = parseYamlScalar(contentMatch[1]);
+      continue;
+    }
+
+    const statusMatch = /^\s+status:\s+(.+)\s*$/.exec(line);
+    if (statusMatch) {
+      current = current ?? {};
+      current.status = parseYamlScalar(statusMatch[1]);
+    }
+  }
+
+  flushCurrent();
+  return todos.filter((todo) => todo.content.length > 0);
+}
+
+function renderCursorPlanTodoMarkdown(todos: CursorPlanTodo[]): string {
+  if (todos.length === 0) {
+    return "";
+  }
+
+  return [
+    "## Todo",
+    ...todos.map((todo) => {
+      const checked = todo.status.toLowerCase() === "completed" ? "x" : " ";
+      const suffix = todo.status.toLowerCase() === "in_progress"
+        ? " (in progress)"
+        : todo.status.toLowerCase() === "cancelled"
+          ? " (cancelled)"
+          : "";
+      return `- [${checked}] ${todo.content}${suffix}`;
+    }),
+  ].join("\n");
+}
+
+function normalizePlanInlineContent(filePath: string, content: string): string {
+  if (!isCursorPlanFilePath(filePath)) {
+    return content;
+  }
+
+  const frontmatterMatch = CURSOR_PLAN_FRONTMATTER_RE.exec(content);
+  if (!frontmatterMatch) {
+    return content;
+  }
+
+  const frontmatter = frontmatterMatch[1] ?? "";
+  const body = content.slice(frontmatterMatch[0].length).trim();
+  const todos = extractCursorPlanTodos(frontmatter);
+  const todoMarkdown = renderCursorPlanTodoMarkdown(todos);
+
+  if (!todoMarkdown) {
+    return body || content;
+  }
+
+  if (!body) {
+    return todoMarkdown;
+  }
+
+  return `${body}\n\n${todoMarkdown}`;
+}
 
 function renderMentionSegment(seg: ReturnType<typeof parseUserMentions>[number], key: number) {
   if (seg.kind === "text") {
@@ -185,16 +311,17 @@ export const PlanInlineMessage = memo(function PlanInlineMessage({
   content: string;
   filePath: string;
   copied: boolean;
-  onCopy: () => void;
+  onCopy: (content: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [canExpand, setCanExpand] = useState(content.length > 900);
+  const displayContent = useMemo(() => normalizePlanInlineContent(filePath, content), [content, filePath]);
+  const [canExpand, setCanExpand] = useState(displayContent.length > 900);
   const contentRef = useRef<HTMLDivElement>(null);
   const evaluateRafRef = useRef<number | null>(null);
 
   useEffect(() => {
     const contentEl = contentRef.current;
-    const fallbackCanExpand = content.length > 900;
+    const fallbackCanExpand = displayContent.length > 900;
     if (!contentEl) {
       setCanExpand((current) => (current === fallbackCanExpand ? current : fallbackCanExpand));
       return;
@@ -242,7 +369,7 @@ export const PlanInlineMessage = memo(function PlanInlineMessage({
       }
       observer.disconnect();
     };
-  }, [content, expanded]);
+  }, [displayContent, expanded]);
 
   const showToggle = canExpand || expanded;
 
@@ -258,7 +385,7 @@ export const PlanInlineMessage = memo(function PlanInlineMessage({
           <button
             type="button"
             className="rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:text-foreground"
-            onClick={() => downloadTextFile(filePath.split("/").pop() ?? `plan-${id}.md`, content)}
+            onClick={() => downloadTextFile(filePath.split("/").pop() ?? `plan-${id}.md`, displayContent)}
             aria-label="Download plan message"
           >
             <Download className="h-3.5 w-3.5" />
@@ -266,7 +393,7 @@ export const PlanInlineMessage = memo(function PlanInlineMessage({
           <button
             type="button"
             className="rounded-md p-1.5 text-muted-foreground/70 transition-colors hover:text-foreground"
-            onClick={onCopy}
+            onClick={() => onCopy(displayContent)}
             aria-label="Copy plan message"
           >
             {copied ? "Copied" : <Copy className="h-3.5 w-3.5" />}
@@ -290,7 +417,7 @@ export const PlanInlineMessage = memo(function PlanInlineMessage({
           className={cn("relative text-sm text-foreground/95", !expanded && "max-h-[45vh] overflow-hidden sm:max-h-[60vh]")}
           data-testid="plan-inline-content"
         >
-          <MarkdownBody content={content} testId="assistant-render-plan-markdown" />
+          <MarkdownBody content={displayContent} testId="assistant-render-plan-markdown" />
           {!expanded && canExpand ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-card/95 via-card/70 to-transparent" />
           ) : null}

@@ -15,6 +15,15 @@ const MULTI_BLOCK_PLAN = `1. Ubah sumber tanggal UI di daftar kupon scratch.
 3. Tambahkan normalisasi kecil di layer presentasi/UI bila perlu.
 - Jika setelah inspeksi payload ternyata format \`scratch_at\` tidak selalu \`yyyy-MM-dd HH:mm:ss\`, jangan langsung pass ke \`DateHelper\`.`;
 
+const CURSOR_PLAN_WITH_TODO = `# Cursor Plan
+
+1. Audit current plan card rendering.
+2. Improve final checklist rendering.
+
+## Todo
+- [x] Normalize Cursor terminal card
+- [ ] Render final plan todo cleanly`;
+
 describe("MarkdownBody ordered lists", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -40,5 +49,25 @@ describe("MarkdownBody ordered lists", () => {
     expect(orderedLists[0]?.getAttribute("start")).toBeNull();
     expect(orderedLists[1]?.getAttribute("start")).toBe("2");
     expect(orderedLists[2]?.getAttribute("start")).toBe("3");
+  });
+
+  it("renders gfm task lists with visible checkboxes and task-list layout", () => {
+    act(() => {
+      root.render(<MarkdownBody content={CURSOR_PLAN_WITH_TODO} />);
+    });
+
+    const checkboxes = Array.from(container.querySelectorAll("input[type='checkbox']")) as HTMLInputElement[];
+    expect(checkboxes).toHaveLength(2);
+    expect(checkboxes[0]?.checked).toBe(true);
+    expect(checkboxes[0]?.disabled).toBe(true);
+    expect(checkboxes[1]?.checked).toBe(false);
+    expect(checkboxes[1]?.disabled).toBe(true);
+
+    const taskList = container.querySelector("ul");
+    expect(taskList?.className).toContain("space-y-2");
+    expect(taskList?.className).not.toContain("list-disc");
+
+    const taskItems = Array.from(container.querySelectorAll("li.task-list-item"));
+    expect(taskItems).toHaveLength(2);
   });
 });

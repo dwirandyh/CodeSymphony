@@ -256,7 +256,7 @@ export const TimelineItem = memo(function TimelineItem({
             content={item.content}
             filePath={item.filePath}
             copied={ctx.copiedMessageId === item.id}
-            onCopy={() => ctx.copyOutput(item.id, item.content)}
+            onCopy={(content) => ctx.copyOutput(item.id, content)}
           />
         </div>
       </article>

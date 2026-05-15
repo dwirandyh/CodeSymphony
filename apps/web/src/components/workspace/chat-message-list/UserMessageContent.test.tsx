@@ -150,6 +150,45 @@ describe("PlanInlineMessage", () => {
 
     root = createRoot(container);
   });
+
+  it("converts Cursor frontmatter todos into a markdown checklist at the end of the plan", () => {
+    const cursorPlan = [
+      "<!-- abc123 -->",
+      "---",
+      "todos:",
+      "  - id: \"align-status-semantics\"",
+      "    content: \"Audit server/client status mapping\"",
+      "    status: pending",
+      "  - id: \"web-test-suite\"",
+      "    content: \"Run web verification\"",
+      "    status: completed",
+      "isProject: false",
+      "---",
+      "# Land workspace reliability work",
+      "",
+      "Body paragraph.",
+    ].join("\n");
+
+    act(() => {
+      root.render(
+        <PlanInlineMessage
+          id="plan-3"
+          content={cursorPlan}
+          filePath="/Users/test/.cursor/plans/ship.plan.md"
+          copied={false}
+          onCopy={() => {}}
+        />,
+      );
+    });
+
+    const rendered = container.querySelector("[data-testid='assistant-render-plan-markdown']");
+    expect(rendered?.textContent).toContain("# Land workspace reliability work");
+    expect(rendered?.textContent).toContain("## Todo");
+    expect(rendered?.textContent).toContain("- [ ] Audit server/client status mapping");
+    expect(rendered?.textContent).toContain("- [x] Run web verification");
+    expect(rendered?.textContent).not.toContain("todos:");
+    expect(rendered?.textContent).not.toContain("isProject: false");
+  });
 });
 
 describe("UserMessageContent", () => {
@@ -263,7 +302,7 @@ describe("UserMessageContent", () => {
     });
 
     expect(document.body.textContent).toContain("Pinch or scroll to zoom");
-    const image = document.body.querySelector("img[alt='diagram.png']") as HTMLImageElement | null;
+    const image = document.body.querySelector("[data-testid='zoomable-image']") as HTMLImageElement | null;
     expect(image).toBeTruthy();
     expect(image?.style.transform).toContain("scale(1)");
 

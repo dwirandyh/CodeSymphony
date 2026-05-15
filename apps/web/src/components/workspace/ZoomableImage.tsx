@@ -230,6 +230,7 @@ export const ZoomableImage = memo(function ZoomableImage({
         <img
           src={src}
           alt={alt}
+          data-testid="zoomable-image"
           draggable={false}
           className={cn("max-h-full max-w-full select-none object-contain will-change-transform", imageClassName)}
           style={{
