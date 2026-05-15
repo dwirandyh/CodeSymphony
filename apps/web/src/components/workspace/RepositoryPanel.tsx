@@ -40,6 +40,7 @@ import { isPendingWorktreeStatus, isRootWorktree, isSelectableWorktreeStatus } f
 import { gitBranchDiffSummaryQueryOptions } from "../../hooks/queries/useGitBranchDiffSummary";
 import { repositoryReviewsQueryOptions } from "../../hooks/queries/useRepositoryReviews";
 import { useWorktreeStatuses } from "../../hooks/queries/useWorktreeStatuses";
+import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
 import { isTauriDesktop } from "../../lib/openExternalUrl";
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
 import type {
@@ -53,6 +54,7 @@ type RepositoryPanelProps = {
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
   enableMetadataQueries?: boolean;
+  threadSnapshot?: ThreadsByWorktreeSnapshot;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
   loadingRepos: boolean;
@@ -378,6 +380,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
   selectedRepositoryId,
   selectedWorktreeId,
   enableMetadataQueries = true,
+  threadSnapshot,
   hiddenRepositoryIds,
   expandedByRepo,
   loadingRepos,
@@ -480,7 +483,7 @@ export const RepositoryPanel = memo(function RepositoryPanel({
     }),
     [repositoryWorktreeIndex],
   );
-  const worktreeStatuses = useWorktreeStatuses(metadataRepositories, enableMetadataQueries);
+  const worktreeStatuses = useWorktreeStatuses(metadataRepositories, enableMetadataQueries, threadSnapshot);
   const gitBranchDiffQueries = useQueries({
     queries: activeWorktreeSummaries.map(({ worktreeId, baseBranch }) => ({
       ...gitBranchDiffSummaryQueryOptions(worktreeId, baseBranch),

@@ -1394,6 +1394,63 @@ describe("useChatSession", () => {
     expect(hookResult.messageListEmptyState).toBe("new-thread-empty");
   });
 
+  it("re-enters loading bootstrap after a created thread sends its first message and loses local state", async () => {
+    threadsState.data = [makeThread("thread-a", true)];
+    vi.mocked(api.createThread).mockResolvedValue({
+      ...makeThread("thread-new"),
+      title: "New Thread",
+    });
+    vi.mocked(api.sendMessage).mockResolvedValue({
+      id: "user-1",
+      threadId: "thread-new",
+      seq: 0,
+      role: "user",
+      content: "Hello",
+      attachments: [],
+      createdAt: "2026-01-01T00:00:02Z",
+    });
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await hookResult.createAdditionalThread();
+    });
+
+    await act(async () => {
+      const submitted = await hookResult.submitMessage("Hello", "default", []);
+      expect(submitted).toBe(true);
+    });
+
+    act(() => {
+      disposeThreadCollections("thread-new");
+      setThreadLastAppliedSnapshotKey("thread-new", null);
+      setThreadLastMessageSeq("thread-new", null);
+      setThreadLastEventIdx("thread-new", null);
+    });
+
+    act(() => {
+      hookResult.setSelectedThreadId("thread-a");
+    });
+    renderHook("thread-a");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      hookResult.setSelectedThreadId("thread-new");
+    });
+    renderHook("thread-new");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(useThreadSnapshot)).toHaveBeenLastCalledWith(
+      "thread-new",
+      expect.any(Object),
+    );
+    expect(hookResult.messageListEmptyState).toBe("loading-thread");
+  });
+
   it("preserves a newer manual thread selection when optimistic thread creation resolves", async () => {
     threadsState.data = [makeThread("thread-a", true), makeThread("thread-b")];
     const createDeferredThread = createDeferred<ChatThread>();

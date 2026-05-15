@@ -206,6 +206,82 @@ describe("chatService queue flow", () => {
     expect(prompts).toHaveLength(1);
   });
 
+  it("does not block later assistant chunks on slow delta event persistence", async () => {
+    let markFirstAssistantDeltaEntered: (() => void) | null = null;
+    const firstAssistantDeltaEntered = new Promise<void>((resolve) => {
+      markFirstAssistantDeltaEntered = resolve;
+    });
+    let releaseFirstAssistantDelta: (() => void) | null = null;
+    const firstAssistantDeltaRelease = new Promise<void>((resolve) => {
+      releaseFirstAssistantDelta = resolve;
+    });
+    let blockFirstAssistantDelta = true;
+
+    const realEventHub = createEventHub(prisma);
+    const eventHub = {
+      emit: vi.fn(async (threadId: string, type: ChatEvent["type"], payload: Record<string, unknown>) => {
+        if (
+          blockFirstAssistantDelta
+          && type === "message.delta"
+          && payload.role === "assistant"
+          && payload.delta === "First chunk."
+        ) {
+          blockFirstAssistantDelta = false;
+          markFirstAssistantDeltaEntered?.();
+          await firstAssistantDeltaRelease;
+        }
+
+        return realEventHub.emit(threadId, type, payload);
+      }),
+      list: realEventHub.list,
+      subscribe: realEventHub.subscribe,
+    };
+
+    let markRunnerStarted: (() => void) | null = null;
+    const runnerStarted = new Promise<void>((resolve) => {
+      markRunnerStarted = resolve;
+    });
+    let reachedSecondChunk = false;
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onText }) => {
+      markRunnerStarted?.();
+      await onText("First chunk.");
+      reachedSecondChunk = true;
+      await onText(" Second chunk.");
+      return {
+        output: "First chunk. Second chunk.",
+        sessionId: "stream-no-backpressure-session",
+      };
+    });
+
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread("Streaming without delta backpressure");
+
+    await chatService.sendMessage(threadId, {
+      content: "stream this response",
+      mode: "default",
+    });
+
+    await runnerStarted;
+    await firstAssistantDeltaEntered;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(reachedSecondChunk).toBe(true);
+
+    releaseFirstAssistantDelta?.();
+    await waitForTerminalEvent(chatService, threadId);
+
+    const assistantDeltas = (await chatService.listEvents(threadId))
+      .filter((event) => event.type === "message.delta" && event.payload.role === "assistant")
+      .map((event) => event.payload.delta);
+    expect(assistantDeltas).toContain("First chunk.");
+    expect(assistantDeltas).toContain(" Second chunk.");
+  });
+
   it("updates queued draft content while another run is active", async () => {
     let releaseInitialRun: (() => void) | null = null;
 

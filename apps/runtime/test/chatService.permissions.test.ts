@@ -169,7 +169,9 @@ describe("chatService permission flow", () => {
     const assistantMessage = messages.find((message) => message.role === "assistant");
     expect(assistantMessage?.content).toContain("Siap, saya jalankan flutter analyze sekarang.");
     expect(assistantMessage?.content).not.toContain("runtime-integrity-warning");
-    expect(claudeRunner).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      expect(claudeRunner).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("passes autoAcceptTools for full access threads", async () => {

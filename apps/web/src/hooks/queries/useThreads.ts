@@ -4,6 +4,22 @@ import { useLiveQuery } from "@tanstack/react-db";
 import type { ChatThread } from "@codesymphony/shared-types";
 import { getThreadsCollection, toPlainChatThread } from "../../collections/threads";
 
+export type ThreadsByWorktreeSnapshot = {
+  threadsByWorktreeId: Record<string, ChatThread[]>;
+  threadIds: string[];
+  isLoading: boolean;
+};
+
+const EMPTY_THREADS_BY_WORKTREE_SNAPSHOT: ThreadsByWorktreeSnapshot = {
+  threadsByWorktreeId: {},
+  threadIds: [],
+  isLoading: false,
+};
+
+function sameIds(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export function useThreads(worktreeId: string | null) {
   const queryClient = useQueryClient();
   const collection = useMemo(
@@ -28,7 +44,7 @@ export function useThreads(worktreeId: string | null) {
 
 function buildThreadsByWorktreeSnapshot(
   entries: Array<{ worktreeId: string; collection: ReturnType<typeof getThreadsCollection> }>,
-) {
+): ThreadsByWorktreeSnapshot {
   const threadsByWorktreeId: Record<string, ChatThread[]> = {};
   const threadIds: string[] = [];
   let isLoading = false;
@@ -50,16 +66,30 @@ function buildThreadsByWorktreeSnapshot(
   };
 }
 
-export function useThreadsByWorktreeIds(worktreeIds: string[]) {
+export function useThreadsByWorktreeIds(
+  worktreeIds: string[],
+  options?: {
+    enabled?: boolean;
+  },
+) {
   const queryClient = useQueryClient();
+  const enabled = options?.enabled ?? true;
+  const [stableWorktreeIds, setStableWorktreeIds] = useState(worktreeIds);
+
+  useEffect(() => {
+    setStableWorktreeIds((current) => sameIds(current, worktreeIds) ? current : worktreeIds);
+  }, [worktreeIds]);
+
   const collections = useMemo(
-    () => worktreeIds.map((worktreeId) => ({ worktreeId, collection: getThreadsCollection(queryClient, worktreeId) })),
-    [queryClient, worktreeIds],
+    () => enabled
+      ? stableWorktreeIds.map((worktreeId) => ({ worktreeId, collection: getThreadsCollection(queryClient, worktreeId) }))
+      : [],
+    [enabled, queryClient, stableWorktreeIds],
   );
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
-    if (collections.length === 0) {
+    if (!enabled || collections.length === 0) {
       return;
     }
 
@@ -84,10 +114,10 @@ export function useThreadsByWorktreeIds(worktreeIds: string[]) {
     return () => {
       subscriptions.forEach((subscription) => subscription.unsubscribe());
     };
-  }, [collections]);
+  }, [collections, enabled]);
 
   return useMemo(
-    () => buildThreadsByWorktreeSnapshot(collections),
-    [collections, version],
+    () => enabled ? buildThreadsByWorktreeSnapshot(collections) : EMPTY_THREADS_BY_WORKTREE_SNAPSHOT,
+    [collections, enabled, version],
   );
 }

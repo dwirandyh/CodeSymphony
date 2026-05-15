@@ -111,9 +111,11 @@ import { useRuntimeInfo } from "../hooks/queries/useRuntimeInfo";
 import { useCursorModels } from "../hooks/queries/useCursorModels";
 import { useOpencodeModels } from "../hooks/queries/useOpencodeModels";
 import { THREAD_TIMELINE_SNAPSHOT_STALE_TIME_MS } from "../hooks/queries/useThreadSnapshot";
+import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../hooks/queries/useThreads";
 import { queryKeys } from "../lib/queryKeys";
 import { refetchGitStatusCollection } from "../collections/gitStatus";
 import { getThreadsCollection, replaceThreadsCollection } from "../collections/threads";
+import { buildRepositoryWorktreeIndex } from "../collections/worktrees";
 import { WorkspaceSidebar } from "./workspace/WorkspaceSidebar";
 import { WorkspaceRightPanel } from "./workspace/WorkspaceRightPanel";
 import { isBaseBranchSelected, resolveReviewBaseBranch, resolveReviewBranch } from "./workspace/reviewBranch";
@@ -399,12 +401,14 @@ function BackgroundWorktreeStatusStreamBridge({
   repositories,
   selectedWorktreeId,
   selectedThreadId,
+  threadSnapshot,
 }: {
   repositories: ReturnType<typeof useRepositoryManager>["repositories"];
   selectedWorktreeId: string | null;
   selectedThreadId: string | null;
+  threadSnapshot: ThreadsByWorktreeSnapshot;
 }) {
-  useBackgroundWorktreeStatusStream(repositories, selectedWorktreeId, selectedThreadId);
+  useBackgroundWorktreeStatusStream(repositories, selectedWorktreeId, selectedThreadId, threadSnapshot);
   return null;
 }
 
@@ -836,11 +840,18 @@ export function WorkspacePage() {
   const terminalViewActive = activeView === "chat" && selectedTerminalTabsState.visible && activeTerminalTab !== null;
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
-  const prioritizeConversationBootstrap = activeView === "chat" && !terminalViewActive && !!(search.worktreeId ?? repos.selectedWorktreeId);
+  const prioritizeConversationBootstrap = activeView === "chat" && !terminalViewActive;
   const [enableNonCriticalWorkspaceData, setEnableNonCriticalWorkspaceData] = useState(() => !prioritizeConversationBootstrap);
   const backgroundStatusRepositories = enableNonCriticalWorkspaceData
     ? metadataScopedRepositories
     : [];
+  const backgroundStatusWorktreeIds = useMemo(
+    () => buildRepositoryWorktreeIndex(backgroundStatusRepositories).activeWorktreeIds,
+    [backgroundStatusRepositories],
+  );
+  const backgroundStatusThreadSnapshot = useThreadsByWorktreeIds(backgroundStatusWorktreeIds, {
+    enabled: enableNonCriticalWorkspaceData,
+  });
   const selectedWorktreeStatus = repos.selectedWorktree?.status ?? null;
   const selectedWorktreeOperational = selectedWorktreeStatus != null && isOperationalWorktreeStatus(selectedWorktreeStatus);
   const selectedWorktreePending = selectedWorktreeStatus != null && isPendingWorktreeStatus(selectedWorktreeStatus);
@@ -2154,6 +2165,7 @@ export function WorkspacePage() {
             repositories={orderedRepositories}
             selectedRepositoryId={repos.selectedRepositoryId}
             selectedWorktreeId={repos.selectedWorktreeId}
+            threadSnapshot={backgroundStatusThreadSnapshot}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
             loadingRepos={repos.loadingRepos}
@@ -2858,6 +2870,7 @@ export function WorkspacePage() {
                 selectedRepositoryId={repos.selectedRepositoryId}
                 selectedWorktreeId={repos.selectedWorktreeId}
                 enableMetadataQueries={enableNonCriticalWorkspaceData}
+                threadSnapshot={backgroundStatusThreadSnapshot}
                 hiddenRepositoryIds={hiddenRepositoryIds}
                 expandedByRepo={expandedByRepo}
                 loadingRepos={repos.loadingRepos}
@@ -2917,6 +2930,7 @@ export function WorkspacePage() {
           repositories={backgroundStatusRepositories}
           selectedWorktreeId={repos.selectedWorktreeId}
           selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
+          threadSnapshot={backgroundStatusThreadSnapshot}
         />
       ) : null}
 

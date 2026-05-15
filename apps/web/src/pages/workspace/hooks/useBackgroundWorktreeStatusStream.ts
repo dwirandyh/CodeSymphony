@@ -8,10 +8,11 @@ import { EVENT_TYPES } from "../constants";
 import { GIT_STATUS_INVALIDATION_EVENT_TYPES, isMetadataToolEvent, payloadStringOrNull } from "../eventUtils";
 import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./chat-session/snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "./snapshotInvalidationEventTypes";
+import { reduceStatusSnapshotWithEvent } from "./threadStatusSnapshotCache";
 import { buildRepositoryWorktreeIndex } from "../../../collections/worktrees";
 import { patchThreadInCollection, refetchThreadsCollection } from "../../../collections/threads";
 import { refetchGitStatusCollection } from "../../../collections/gitStatus";
-import { useThreadsByWorktreeIds } from "../../../hooks/queries/useThreads";
+import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../../../hooks/queries/useThreads";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
@@ -114,6 +115,7 @@ export function useBackgroundWorktreeStatusStream(
   repositories: Repository[],
   _selectedWorktreeId: string | null,
   selectedThreadId: string | null,
+  threadSnapshot?: ThreadsByWorktreeSnapshot,
 ) {
   const queryClient = useQueryClient();
   const streamsRef = useRef<Map<string, ThreadStreamState>>(new Map());
@@ -126,7 +128,10 @@ export function useBackgroundWorktreeStatusStream(
     [repositories],
   );
   const activeWorktreeIds = repositoryWorktreeIndex.activeWorktreeIds;
-  const { threadsByWorktreeId } = useThreadsByWorktreeIds(activeWorktreeIds);
+  const ownedThreadSnapshot = useThreadsByWorktreeIds(activeWorktreeIds, {
+    enabled: threadSnapshot == null,
+  });
+  const { threadsByWorktreeId } = threadSnapshot ?? ownedThreadSnapshot;
   const threadEntries = useMemo(
     () => activeWorktreeIds.flatMap((worktreeId) =>
       (threadsByWorktreeId[worktreeId] ?? []).map((thread) => ({ thread, worktreeId }))),
@@ -198,6 +203,13 @@ export function useBackgroundWorktreeStatusStream(
           updateLastEventIdx(lastEventIdxByThreadRef, thread.id, payload.idx);
           recentlyRelevantThreadIdsRef.current.add(thread.id);
 
+          if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
+            queryClient.setQueryData<ChatThreadStatusSnapshot | undefined>(
+              queryKeys.threads.statusSnapshot(thread.id),
+              (current) => reduceStatusSnapshotWithEvent(current, payload),
+            );
+          }
+
           const nextTitle = payload.type === "chat.completed"
             ? payloadStringOrNull(payload.payload.threadTitle)
             : payload.type === "tool.finished" && payloadStringOrNull(payload.payload.source) === "chat.thread.metadata"
@@ -246,13 +258,8 @@ export function useBackgroundWorktreeStatusStream(
               }
             }
             recentlyRelevantThreadIdsRef.current.delete(thread.id);
-            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(thread.id) });
             stopThreadStream(streamsRef, thread.id);
             return;
-          }
-
-          if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
-            void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(thread.id) });
           }
         };
 

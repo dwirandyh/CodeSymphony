@@ -73,13 +73,94 @@ import { debugLog } from "./debugLog";
 
 const DEFAULT_API_BASE = "http://127.0.0.1:4331/api";
 const RETRY_DELAYS_MS = [150, 400];
+const API_REQUEST_SLOW_THRESHOLD_MS = 250;
+const API_REQUEST_START_PATTERNS = [
+  /^\/threads\/[^/]+\/messages$/,
+  /^\/threads\/[^/]+\/status-snapshot$/,
+  /^\/threads\/[^/]+\/timeline$/,
+];
+const API_REQUEST_SETTLE_PATTERNS = [
+  ...API_REQUEST_START_PATTERNS,
+  /^\/repositories\/[^/]+\/reviews$/,
+  /^\/worktrees\/[^/]+\/git\/branch-diff-summary$/,
+  /^\/worktrees\/[^/]+\/threads$/,
+];
 
 let activeApiBase: string | null = null;
+let apiRequestSeq = 0;
+let inflightApiRequestCount = 0;
+
+type ApiRequestDebugContext = {
+  label: string;
+  repositoryId: string | null;
+  threadId: string | null;
+  worktreeId: string | null;
+};
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function getRequestNowMs(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function roundRequestMs(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function matchesApiRequestPattern(path: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(path));
+}
+
+function createApiRequestDebugContext(path: string): ApiRequestDebugContext {
+  const threadId = path.match(/^\/threads\/([^/?]+)/)?.[1] ?? null;
+  const repositoryId = path.match(/^\/repositories\/([^/?]+)/)?.[1] ?? null;
+  const worktreeId = path.match(/^\/worktrees\/([^/?]+)/)?.[1] ?? null;
+
+  let label = "runtime.request";
+  if (/^\/threads\/[^/]+\/messages$/.test(path)) {
+    label = "thread.sendMessage";
+  } else if (/^\/threads\/[^/]+\/status-snapshot$/.test(path)) {
+    label = "thread.statusSnapshot";
+  } else if (/^\/threads\/[^/]+\/timeline$/.test(path)) {
+    label = "thread.timeline";
+  } else if (/^\/repositories\/[^/]+\/reviews$/.test(path)) {
+    label = "repository.reviews";
+  } else if (/^\/worktrees\/[^/]+\/git\/branch-diff-summary$/.test(path)) {
+    label = "worktree.branchDiffSummary";
+  } else if (/^\/worktrees\/[^/]+\/threads$/.test(path)) {
+    label = "worktree.threads";
+  }
+
+  return {
+    label,
+    repositoryId,
+    threadId,
+    worktreeId,
+  };
+}
+
+function shouldLogApiRequestStart(path: string, method: string): boolean {
+  return method !== "GET" || matchesApiRequestPattern(path, API_REQUEST_START_PATTERNS);
+}
+
+function shouldLogApiRequestSettle(params: {
+  durationMs: number;
+  inflightAtStart: number;
+  method: string;
+  path: string;
+}): boolean {
+  return (
+    params.method !== "GET"
+    || params.durationMs >= API_REQUEST_SLOW_THRESHOLD_MS
+    || params.inflightAtStart >= 6
+    || matchesApiRequestPattern(params.path, API_REQUEST_SETTLE_PATTERNS)
+  );
 }
 
 function getConfiguredApiBases(): string[] {
@@ -267,28 +348,90 @@ export type TerminalSessionInfo = {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
+  const method = init?.method ?? "GET";
+  const requestSeq = ++apiRequestSeq;
+  const startedAtMs = getRequestNowMs();
+  const debugContext = createApiRequestDebugContext(path);
 
   if (init?.body != null && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await runtimeFetch(path, {
-    headers,
-    ...init,
-  });
-
-  const payload = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    throw new Error(payload?.error ?? "Request failed");
+  inflightApiRequestCount += 1;
+  const inflightAtStart = inflightApiRequestCount;
+  if (shouldLogApiRequestStart(path, method)) {
+    debugLog("runtime.api", "request.started", {
+      requestSeq,
+      path,
+      method,
+      inflightAtStart,
+      ...debugContext,
+    }, {
+      threadId: debugContext.threadId,
+      worktreeId: debugContext.worktreeId,
+    });
   }
 
-  if (payload && typeof payload === "object" && "data" in payload) {
-    return extractDataEnvelope<T>(payload);
-  }
+  let response: Response | null = null;
 
-  const debug = await readResponseDebugInfo(response);
-  return extractDataEnvelope<T>(payload, debug);
+  try {
+    response = await runtimeFetch(path, {
+      headers,
+      ...init,
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(payload?.error ?? "Request failed");
+    }
+
+    let extracted: T;
+    if (payload && typeof payload === "object" && "data" in payload) {
+      extracted = extractDataEnvelope<T>(payload);
+    } else {
+      const debug = await readResponseDebugInfo(response);
+      extracted = extractDataEnvelope<T>(payload, debug);
+    }
+
+    const durationMs = roundRequestMs(getRequestNowMs() - startedAtMs);
+    if (shouldLogApiRequestSettle({ path, method, durationMs, inflightAtStart })) {
+      debugLog("runtime.api", "request.succeeded", {
+        requestSeq,
+        path,
+        method,
+        status: response.status,
+        durationMs,
+        inflightAtStart,
+        inflightAfter: Math.max(0, inflightApiRequestCount - 1),
+        ...debugContext,
+      }, {
+        threadId: debugContext.threadId,
+        worktreeId: debugContext.worktreeId,
+      });
+    }
+
+    return extracted;
+  } catch (error) {
+    const durationMs = roundRequestMs(getRequestNowMs() - startedAtMs);
+    debugLog("runtime.api", "request.failed", {
+      requestSeq,
+      path,
+      method,
+      status: response?.status ?? null,
+      durationMs,
+      inflightAtStart,
+      inflightAfter: Math.max(0, inflightApiRequestCount - 1),
+      error: error instanceof Error ? error.message : String(error),
+      ...debugContext,
+    }, {
+      threadId: debugContext.threadId,
+      worktreeId: debugContext.worktreeId,
+    });
+    throw error;
+  } finally {
+    inflightApiRequestCount = Math.max(0, inflightApiRequestCount - 1);
+  }
 }
 
 

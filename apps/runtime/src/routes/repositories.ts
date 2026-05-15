@@ -18,11 +18,16 @@ import {
   isOperationalWorktreeStatus,
   isUnavailableWorktreeErrorMessage,
 } from "../services/worktreeService.js";
+import { appendRuntimeDebugLog } from "./debug.js";
 
 const repositoryParams = z.object({ id: z.string().min(1) });
 const worktreeParams = z.object({ id: z.string().min(1) });
 const GIT_STATUS_CACHE_TTL_MS = 2_000;
-const REPOSITORY_REVIEW_CACHE_TTL_MS = 10_000;
+// These sidebar metadata requests are non-critical and expensive enough that
+// recomputing them on every page refresh can stall other thread bootstrap
+// requests behind the browser's per-origin connection limits.
+const GIT_BRANCH_DIFF_CACHE_TTL_MS = 30_000;
+const REPOSITORY_REVIEW_CACHE_TTL_MS = 60_000;
 
 type GitStatusResult = Awaited<ReturnType<typeof getGitStatus>>;
 type GitBranchDiffSummaryResult = Awaited<ReturnType<typeof getGitBranchDiffSummary>>;
@@ -189,7 +194,7 @@ async function getCachedGitBranchDiffSummary(worktreeId: string, worktreePath: s
     .then((summary) => {
       cachedBranchDiffByWorktreeKey.set(cacheKey, {
         value: summary,
-        expiresAt: Date.now() + GIT_STATUS_CACHE_TTL_MS,
+        expiresAt: Date.now() + GIT_BRANCH_DIFF_CACHE_TTL_MS,
       });
       return summary;
     })
@@ -308,9 +313,24 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.get("/repositories/:id/reviews", async (request, reply) => {
     const params = repositoryParams.parse(request.params);
+    const startedAt = Date.now();
 
     try {
       const reviews = await getCachedRepositoryReviews(app, params.id);
+      const durationMs = Date.now() - startedAt;
+      if (durationMs >= 500) {
+        appendRuntimeDebugLog({
+          source: "runtime.repositories",
+          message: "repository.reviews.slow",
+          data: {
+            repositoryId: params.id,
+            durationMs,
+            provider: reviews.provider,
+            available: reviews.available,
+            reviewBranchCount: Object.keys(reviews.reviewsByBranch).length,
+          },
+        });
+      }
       return { data: reviews };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to list reviews";
@@ -677,6 +697,7 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
   app.get("/worktrees/:id/git/branch-diff-summary", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
+    const startedAt = Date.now();
     let worktree;
     try {
       worktree = await getOperationalWorktree(app, params.id);
@@ -688,6 +709,20 @@ export async function registerRepositoryRoutes(app: FastifyInstance) {
 
     try {
       const summary = await getCachedGitBranchDiffSummary(worktree.id, worktree.path, worktree.baseBranch);
+      const durationMs = Date.now() - startedAt;
+      if (durationMs >= 500) {
+        appendRuntimeDebugLog({
+          source: "runtime.repositories",
+          message: "worktree.branchDiffSummary.slow",
+          data: {
+            worktreeId: worktree.id,
+            baseBranch: worktree.baseBranch,
+            durationMs,
+            available: summary.available,
+            filesChanged: summary.available ? summary.filesChanged : null,
+          },
+        });
+      }
       return { data: summary };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to get branch diff summary";

@@ -52,6 +52,7 @@ import type { PendingMessageMutation } from "./useChatSession.types";
 import { computeAssistantDeltaSuffix } from "./messageEventMerge";
 import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
+import { reduceStatusSnapshotWithEvent } from "../threadStatusSnapshotCache";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
@@ -323,6 +324,8 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
   const pendingEventsRef = useRef<ChatEvent[]>([]);
   const pendingMessageMutationsRef = useRef<PendingMessageMutation[]>([]);
   const rafIdRef = useRef<number | null>(null);
+  const flushScheduledAtMsRef = useRef<number | null>(null);
+  const flushSequenceRef = useRef(0);
 
   useEffect(() => {
     repositoryIdRef.current = repositoryId;
@@ -332,6 +335,8 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
   function clearPendingStreamBuffers() {
     pendingEventsRef.current = [];
     pendingMessageMutationsRef.current = [];
+    flushScheduledAtMsRef.current = null;
+    flushSequenceRef.current = 0;
     if (rafIdRef.current !== null) {
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
@@ -592,7 +597,15 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
         }
       }
 
+      if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
+        queryClient.setQueryData<ChatThreadStatusSnapshot | undefined>(
+          queryKeys.threads.statusSnapshot(selectedThreadId),
+          (current) => reduceStatusSnapshotWithEvent(current, payload),
+        );
+      }
+
       if (rafIdRef.current === null) {
+        flushScheduledAtMsRef.current = getNowMs();
         rafIdRef.current = requestAnimationFrame(() => {
           rafIdRef.current = null;
           if (disposed) {
@@ -603,9 +616,43 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
           const pendingMutations = pendingMessageMutationsRef.current;
           pendingEventsRef.current = [];
           pendingMessageMutationsRef.current = [];
+          const scheduledAtMs = flushScheduledAtMsRef.current;
+          flushScheduledAtMsRef.current = null;
 
           if (pendingEvents.length === 0 && pendingMutations.length === 0) {
             return;
+          }
+
+          const assistantDeltaMutationCount = pendingMutations.reduce((count, mutation) => {
+            if (
+              mutation.kind === "message-delta"
+              && mutation.role === "assistant"
+              && mutation.delta.length > 0
+            ) {
+              return count + 1;
+            }
+            return count;
+          }, 0);
+          const flushSequence = ++flushSequenceRef.current;
+          const flushDelayMs = scheduledAtMs == null ? null : getNowMs() - scheduledAtMs;
+
+          if (
+            assistantDeltaMutationCount > 0
+            && (
+              flushSequence === 1
+              || assistantDeltaMutationCount >= 8
+              || (flushDelayMs != null && flushDelayMs >= 48)
+            )
+          ) {
+            debugLog("thread.stream.performance", "flush.applied", {
+              threadId: selectedThreadId,
+              flushSequence,
+              flushDelayMs,
+              pendingEventsCount: pendingEvents.length,
+              pendingMutationsCount: pendingMutations.length,
+              assistantDeltaMutationCount,
+              newestPendingEventIdx: pendingEvents[pendingEvents.length - 1]?.idx ?? null,
+            }, { threadId: selectedThreadId, force: true });
           }
 
           startTransition(() => {
@@ -613,10 +660,6 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
             flushPendingMessageMutationsToCollection(selectedThreadId, pendingMutations);
           });
         });
-      }
-
-      if (SNAPSHOT_INVALIDATION_EVENT_TYPES.has(payload.type)) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.threads.statusSnapshot(selectedThreadId) });
       }
 
       if (selectedWorktreeId && GIT_STATUS_INVALIDATION_EVENT_TYPES.has(payload.type)) {

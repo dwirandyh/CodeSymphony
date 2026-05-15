@@ -43,6 +43,13 @@ import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponent
 import { QueuedMessageList } from "../QueuedMessageList";
 import { createAttachmentChipElement } from "./composerChipUtils";
 import { getSerializedTextFromEditor } from "./composerEditorUtils";
+import {
+  buildComposerDraftFragment,
+  clearPersistedComposerDraft,
+  readPersistedComposerDraft,
+  resolveComposerDraftStorageId,
+  writePersistedComposerDraft,
+} from "./composerDraftPersistence";
 import { useComposerMention } from "./useComposerMention";
 import { useComposerAttachments } from "./useComposerAttachments";
 import { useComposerSlashCommand } from "./useComposerSlashCommand";
@@ -189,6 +196,31 @@ function AttachmentPreviewDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function getComposerDraftStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function moveComposerCaretToEnd(editor: HTMLDivElement): void {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function ComposerContent({
@@ -372,6 +404,39 @@ function ComposerContent({
   const fileIndexState = useFileIndex(shouldLoadInternalFileIndex ? worktreeId : null);
   const mentionFileIndex = fileIndex ?? fileIndexState.entries;
   const mentionFileIndexLoading = fileIndexLoading ?? fileIndexState.loading;
+  const draftStorageId = useMemo(
+    () => resolveComposerDraftStorageId({ threadId, worktreeId }),
+    [threadId, worktreeId],
+  );
+  const persistDraftContent = useCallback((content: string) => {
+    const storage = getComposerDraftStorage();
+    if (!storage) {
+      return;
+    }
+
+    writePersistedComposerDraft(storage, {
+      draftId: draftStorageId,
+      content,
+    });
+  }, [draftStorageId]);
+  const clearStoredDraft = useCallback(() => {
+    const storage = getComposerDraftStorage();
+    if (!storage) {
+      return;
+    }
+
+    clearPersistedComposerDraft(storage, draftStorageId);
+  }, [draftStorageId]);
+  const handleDraftChange = useCallback((nextDraftText: string) => {
+    setDraftText(nextDraftText);
+
+    const editor = editorRef.current;
+    const nextPersistedContent = editor
+      ? getSerializedTextFromEditor(editor).replace(/\u00A0/g, " ")
+      : nextDraftText;
+
+    persistDraftContent(nextPersistedContent);
+  }, [persistDraftContent]);
 
   const {
     mention,
@@ -388,7 +453,7 @@ function ComposerContent({
     popoverRef,
     fileIndex: mentionFileIndex,
     fileIndexLoading: mentionFileIndexLoading,
-    onChange: setDraftText,
+    onChange: handleDraftChange,
   });
 
   useEffect(() => {
@@ -431,7 +496,7 @@ function ComposerContent({
     popoverRef,
     slashCommands,
     slashCommandsLoading,
-    onChange: setDraftText,
+    onChange: handleDraftChange,
   });
 
   useEffect(() => {
@@ -561,7 +626,7 @@ function ComposerContent({
     return getSerializedTextFromEditor(editor).replace(/\u00A0/g, " ").trim();
   }, [draftText]);
 
-  const resetDraft = useCallback(() => {
+  const clearComposerState = useCallback(() => {
     const editor = editorRef.current;
     if (editor) {
       editor.innerHTML = "";
@@ -576,6 +641,12 @@ function ComposerContent({
     prevContentLenRef.current = 0;
     afterChipHTMLRef.current = null;
   }, [applyAttachmentsChange, closeMention, closeSlashCommand]);
+  const resetDraft = useCallback((options?: { clearPersisted?: boolean }) => {
+    clearComposerState();
+    if (options?.clearPersisted) {
+      clearStoredDraft();
+    }
+  }, [clearComposerState, clearStoredDraft]);
 
   const buildSubmissionPayload = useCallback((): {
     content: string;
@@ -628,7 +699,7 @@ function ComposerContent({
 
     const didSubmit = await onSubmitMessage({ content: payload.content, mode, attachments: payload.attachments });
     if (didSubmit) {
-      resetDraft();
+      resetDraft({ clearPersisted: true });
     }
   }, [buildSubmissionPayload, cannotSend, onSubmitMessage, mode, resetDraft]);
 
@@ -644,7 +715,7 @@ function ComposerContent({
 
     const didQueue = await onQueueDraft({ content: payload.content, mode, attachments: payload.attachments });
     if (didQueue) {
-      resetDraft();
+      resetDraft({ clearPersisted: true });
     }
   }, [buildSubmissionPayload, cannotQueue, mode, onQueueDraft, resetDraft]);
 
@@ -973,8 +1044,27 @@ function ComposerContent({
   );
 
   useEffect(() => {
-    resetDraft();
-  }, [threadId, worktreeId, resetDraft]);
+    clearComposerState();
+
+    const editor = editorRef.current;
+    const storage = getComposerDraftStorage();
+    const persistedDraft = storage
+      ? readPersistedComposerDraft(storage, draftStorageId)
+      : null;
+
+    if (!editor || !persistedDraft) {
+      if (storage && draftStorageId && !persistedDraft) {
+        clearPersistedComposerDraft(storage, draftStorageId);
+      }
+      return;
+    }
+
+    editor.replaceChildren(buildComposerDraftFragment(persistedDraft));
+    moveComposerCaretToEnd(editor);
+    syncValueFromEditor();
+    prevContentLenRef.current = (editor.textContent ?? "").length;
+    lastStableHTMLRef.current = editor.innerHTML;
+  }, [clearComposerState, draftStorageId, syncValueFromEditor]);
 
   const renderModelOptionList = (mobile: boolean) => (
     <div className={cn("max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto", mobile && "pt-1")}>

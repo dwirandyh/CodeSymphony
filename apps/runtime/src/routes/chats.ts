@@ -126,9 +126,22 @@ async function emitThreadWorkspaceEvent(
 export async function registerChatRoutes(app: FastifyInstance) {
   app.get("/worktrees/:id/threads", async (request, reply) => {
     const params = worktreeParams.parse(request.params);
+    const startedAt = Date.now();
 
     try {
       const threads = await app.chatService.listThreads(params.id);
+      const durationMs = Date.now() - startedAt;
+      if (durationMs >= 250) {
+        appendRuntimeDebugLog({
+          source: "runtime.chats",
+          message: "chat.backend.threads.slow",
+          data: {
+            worktreeId: params.id,
+            durationMs,
+            threadCount: threads.length,
+          },
+        });
+      }
       return { data: threads };
     } catch (error) {
       return respondForChatRouteError(reply, error, "Unable to list threads");
@@ -314,6 +327,7 @@ export async function registerChatRoutes(app: FastifyInstance) {
       const params = threadParams.parse(request.params);
       const snapshotKey = params.id;
       const existingRequest = inFlightStatusSnapshotRequests.get(snapshotKey);
+      const startedAt = Date.now();
 
       const snapshotPromise = existingRequest ?? app.chatService.listThreadStatusSnapshot(params.id);
 
@@ -323,6 +337,20 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
       try {
         const snapshot = await snapshotPromise;
+        const durationMs = Date.now() - startedAt;
+        if (durationMs >= 250) {
+          appendRuntimeDebugLog({
+            source: "runtime.chats",
+            message: "chat.backend.statusSnapshot.slow",
+            data: {
+              threadId: params.id,
+              reusedInFlightRequest: existingRequest != null,
+              durationMs,
+              status: snapshot.status,
+              newestIdx: snapshot.newestIdx,
+            },
+          });
+        }
         return { data: snapshot };
       } finally {
         if (!existingRequest) {
@@ -391,11 +419,49 @@ export async function registerChatRoutes(app: FastifyInstance) {
 
   app.post("/threads/:id/messages", { bodyLimit: 15 * 1024 * 1024 }, async (request, reply) => {
     const params = threadParams.parse(request.params);
+    const startedAt = Date.now();
+    const body = request.body as Partial<{
+      content: string;
+      mode: string;
+      attachments: unknown[];
+      expectedWorktreeId: string;
+    }> | null;
+
+    appendRuntimeDebugLog({
+      source: "runtime.chats",
+      message: "chat.backend.send.request",
+      data: {
+        threadId: params.id,
+        mode: typeof body?.mode === "string" ? body.mode : null,
+        contentLength: typeof body?.content === "string" ? body.content.length : 0,
+        attachmentCount: Array.isArray(body?.attachments) ? body.attachments.length : 0,
+        expectedWorktreeId: typeof body?.expectedWorktreeId === "string" ? body.expectedWorktreeId : null,
+      },
+    });
 
     try {
       const message = await app.chatService.sendMessage(params.id, request.body);
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.send.response",
+        data: {
+          threadId: params.id,
+          durationMs: Date.now() - startedAt,
+          messageId: message.id,
+          seq: message.seq,
+        },
+      });
       return reply.code(201).send({ data: message });
     } catch (error) {
+      appendRuntimeDebugLog({
+        source: "runtime.chats",
+        message: "chat.backend.send.failed",
+        data: {
+          threadId: params.id,
+          durationMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
       return respondForChatRouteError(reply, error, "Unable to send message");
     }
   });

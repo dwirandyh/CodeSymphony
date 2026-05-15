@@ -22,7 +22,14 @@ try {
   if (!existsSync(LOG_DIR)) {
     mkdirSync(LOG_DIR, { recursive: true });
   }
-  writeFileSync(LOG_PATH, "", "utf-8");
+  if (!existsSync(LOG_PATH)) {
+    writeFileSync(LOG_PATH, "", "utf-8");
+  }
+  appendFileSync(
+    LOG_PATH,
+    `\n=== runtime session started ${new Date().toISOString()} pid=${process.pid} cwd=${process.cwd()} execPath=${process.execPath} ===\n`,
+    "utf-8",
+  );
 } catch (error) {
   console.error(`Failed to initialize debug log at ${LOG_PATH}:`, error);
 }

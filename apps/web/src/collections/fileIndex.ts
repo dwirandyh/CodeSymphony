@@ -62,12 +62,14 @@ export function refetchFileIndexCollection(queryClient: QueryClient, worktreeId:
   return getFileIndexCollection(queryClient, worktreeId).utils.refetch();
 }
 
-export function resetFileIndexCollectionRegistryForTest() {
+export async function resetFileIndexCollectionRegistryForTest() {
+  const cleanupTasks: Promise<unknown>[] = [];
   for (const collections of fileIndexCollectionRegistry.values()) {
     for (const collection of collections.values()) {
-      void collection.cleanup();
+      cleanupTasks.push(Promise.resolve(collection.cleanup()));
     }
     collections.clear();
   }
   fileIndexCollectionRegistry.clear();
+  await Promise.allSettled(cleanupTasks);
 }
