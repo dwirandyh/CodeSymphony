@@ -13,11 +13,11 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
-use tauri::{Manager, Url};
+use tauri::Manager;
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSWindow, NSWindowButton};
@@ -59,7 +59,6 @@ struct DesktopResourceMonitorSnapshot {
     other: DesktopResourceUsage,
 }
 
-const WEB_RUNTIME_PORT: u16 = 4331;
 const DESKTOP_DEV_RUNTIME_PORT: u16 = 4321;
 const DESKTOP_PROD_RUNTIME_PORT: u16 = 4322;
 const LOCALHOST_RUNTIME_HOST: &str = "127.0.0.1";
@@ -130,7 +129,29 @@ fn prisma_schema_engine_name() -> String {
     format!("schema-engine-{}", prisma_engine_suffix())
 }
 
-fn copy_prisma_engine(src: &Path, dst: &Path) -> std::io::Result<()> {
+fn should_copy_prisma_engine(src: &Path, dst: &Path) -> std::io::Result<bool> {
+    let src_metadata = std::fs::metadata(src)?;
+    let dst_metadata = match std::fs::metadata(dst) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error),
+    };
+
+    if src_metadata.len() != dst_metadata.len() {
+        return Ok(true);
+    }
+
+    match (src_metadata.modified(), dst_metadata.modified()) {
+        (Ok(src_modified), Ok(dst_modified)) => Ok(dst_modified < src_modified),
+        _ => Ok(false),
+    }
+}
+
+fn sync_prisma_engine(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !should_copy_prisma_engine(src, dst)? {
+        return Ok(());
+    }
+
     std::fs::copy(src, dst)?;
 
     #[cfg(unix)]
@@ -179,9 +200,9 @@ fn prepare_prisma_engines(
             return None;
         }
 
-        if let Err(error) = copy_prisma_engine(src, dst) {
+        if let Err(error) = sync_prisma_engine(src, dst) {
             eprintln!(
-                "Failed to copy Prisma engine from {} to {}: {error}",
+                "Failed to sync Prisma engine from {} to {}: {error}",
                 src.display(),
                 dst.display()
             );
@@ -464,6 +485,7 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
     let prisma_dir = resource_dir.join("runtime-bundle").join("prisma");
     let db_path = app_data_dir.join("codesymphony.db");
     let debug_log_path = app_data_dir.join("debug.log");
+    let prisma_migration_marker_path = app_data_dir.join("prisma-migrations.sha1");
 
     if !runtime_entry.is_file() {
         eprintln!(
@@ -486,6 +508,7 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         .env("DATABASE_URL", format!("file:{}", db_path.display()))
         .env("PRISMA_SCHEMA_PATH", prisma_dir.join("schema.prisma"))
         .env("PRISMA_MIGRATIONS_DIR", prisma_dir.join("migrations"))
+        .env("PRISMA_MIGRATION_MARKER_PATH", &prisma_migration_marker_path)
         .env("PRISMA_ENGINES_DIR", &prisma_engines_dir)
         .env("PRISMA_QUERY_ENGINE_LIBRARY", &prisma_query_engine_library)
         .env("PRISMA_SCHEMA_ENGINE_BINARY", &prisma_schema_engine_binary)
@@ -541,17 +564,6 @@ fn spawn_managed_runtime(app_handle: &tauri::AppHandle, port: u16, is_dev: bool)
     }
 }
 
-fn wait_for_runtime(timeout: Duration, port: u16) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(200));
-    }
-    false
-}
-
 fn ensure_managed_runtime(app_handle: &tauri::AppHandle, port: u16, is_dev: bool) -> bool {
     let Some(state) = app_handle.try_state::<RuntimeProcess>() else {
         eprintln!("Managed runtime state is unavailable.");
@@ -587,24 +599,6 @@ fn ensure_managed_runtime(app_handle: &tauri::AppHandle, port: u16, is_dev: bool
     *guard = child;
 
     guard.is_some()
-}
-
-fn wait_for_managed_runtime(
-    app_handle: &tauri::AppHandle,
-    port: u16,
-    is_dev: bool,
-    timeout: Duration,
-) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if wait_for_runtime(Duration::from_millis(200), port) {
-            return true;
-        }
-
-        let _ = ensure_managed_runtime(app_handle, port, is_dev);
-    }
-
-    false
 }
 
 fn kill_runtime(child: &mut Child) {
@@ -1220,55 +1214,9 @@ fn main() {
             #[cfg(target_os = "macos")]
             schedule_macos_traffic_light_adjustment(app.handle(), "main", "app.setup");
 
-            // Wait for the runtime to be ready, then show the window
-            let app_handle = app.handle().clone();
-            thread::spawn(move || {
-                let ready = wait_for_managed_runtime(
-                    &app_handle,
-                    runtime_port,
-                    is_dev,
-                    Duration::from_secs(30),
-                );
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    if ready {
-                        if !is_dev {
-                            let runtime_url = format!("http://127.0.0.1:{runtime_port}");
-                            match Url::parse(&runtime_url) {
-                                Ok(url) => {
-                                    if let Err(error) = window.navigate(url) {
-                                        eprintln!(
-                                            "Failed to navigate desktop webview to runtime origin {}: {error}",
-                                            runtime_url
-                                        );
-                                    }
-                                }
-                                Err(error) => {
-                                    eprintln!(
-                                        "Failed to parse desktop runtime origin {}: {error}",
-                                        runtime_url
-                                    );
-                                }
-                            }
-                        }
-
-                        #[cfg(target_os = "macos")]
-                        schedule_macos_traffic_light_adjustment(
-                            &app_handle,
-                            "main",
-                            "runtime.ready",
-                        );
-
-                        let _ = window.show();
-                    } else {
-                        eprintln!(
-                            "Runtime failed to start within 30s on port {} (web runtime dev port remains {})",
-                            runtime_port,
-                            WEB_RUNTIME_PORT
-                        );
-                        let _ = window.show();
-                    }
-                }
-            });
+            if let Some(window) = app.handle().get_webview_window("main") {
+                let _ = window.show();
+            }
 
             if !is_dev {
                 let app_handle = app.handle().clone();

@@ -41,6 +41,7 @@ import { registerWorkspaceEventRoutes } from "./routes/workspaceEvents.js";
 import { registerDeviceRoutes } from "./routes/devices.js";
 import { registerAutomationRoutes } from "./routes/automations.js";
 import { registerResourceMonitorRoutes } from "./routes/resourceMonitor.js";
+import type { PrismaMigrationExecutionPlan } from "./migrate.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -225,27 +226,106 @@ function createApp() {
   return app;
 }
 
+async function runPostListenStartupTasks(app: ReturnType<typeof createApp>) {
+  let recoveredStuckThreadCount = 0;
+  let recoveredPendingCreationCount = 0;
+  let recoveredPendingDeletionCount = 0;
+  let recoveredAutomationRunCount = 0;
+
+  try {
+    recoveredStuckThreadCount = await app.chatService.recoverStuckThreads();
+  } catch (error) {
+    app.logService.log("error", "runtime.startup", "Failed to recover interrupted chat threads", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    recoveredPendingCreationCount = await app.worktreeService.recoverPendingCreations();
+  } catch (error) {
+    app.logService.log("error", "runtime.startup", "Failed to recover interrupted worktree creations", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    recoveredPendingDeletionCount = await app.worktreeDeletionService.recoverPendingDeletions();
+  } catch (error) {
+    app.logService.log("error", "runtime.startup", "Failed to recover interrupted worktree deletions", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    recoveredAutomationRunCount = await app.automationService.recoverInFlightRuns();
+  } catch (error) {
+    app.logService.log("error", "runtime.startup", "Failed to recover in-flight automations", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
+    await app.automationService.dispatchDueAutomations();
+  } catch (error) {
+    app.logService.log("error", "runtime.startup", "Failed to dispatch due automations during startup", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    app.automationService.startScheduler();
+  }
+
+  if (recoveredStuckThreadCount > 0) {
+    app.logService.log("info", "runtime", `Recovered ${recoveredStuckThreadCount} stuck thread(s)`);
+  }
+  if (recoveredPendingCreationCount > 0) {
+    app.logService.log("info", "runtime", `Recovered ${recoveredPendingCreationCount} interrupted worktree creation(s)`);
+  }
+  if (recoveredPendingDeletionCount > 0) {
+    app.logService.log("info", "runtime", `Recovered ${recoveredPendingDeletionCount} interrupted worktree deletion(s)`);
+  }
+  if (recoveredAutomationRunCount > 0) {
+    app.logService.log("info", "runtime", `Rebound ${recoveredAutomationRunCount} in-flight automation run(s)`);
+  }
+}
+
 async function main() {
   try {
     // Run Prisma migrations in production before starting the server
+    let startupMigrationPlan: PrismaMigrationExecutionPlan | null = null;
+    let startupMigrationResult: { executed: boolean } = { executed: false };
     if (process.env.NODE_ENV === "production") {
-      const { runPrismaMigrations } = await import("./migrate.js");
-      runPrismaMigrations();
+      const { createPrismaMigrationExecutionPlan, runPrismaMigrations } = await import("./migrate.js");
+      startupMigrationPlan = createPrismaMigrationExecutionPlan();
+      startupMigrationResult = await runPrismaMigrations({ plan: startupMigrationPlan });
     }
 
-    await assertDatabaseReady(prisma);
+    try {
+      await assertDatabaseReady(prisma);
+    } catch (error) {
+      if (
+        error instanceof DatabaseNotReadyError &&
+        process.env.NODE_ENV === "production" &&
+        !startupMigrationResult.executed
+      ) {
+        const { runPrismaMigrations } = await import("./migrate.js");
+        const forcedMigrationResult = await runPrismaMigrations({
+          force: true,
+          plan: startupMigrationPlan ?? undefined,
+        });
+        if (forcedMigrationResult.executed) {
+          await assertDatabaseReady(prisma);
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
 
     const host = process.env.RUNTIME_HOST ?? "0.0.0.0";
     const port = Number(process.env.RUNTIME_PORT ?? "4331");
 
     const app = createApp();
-    const recoveredStuckThreadCount = await app.chatService.recoverStuckThreads();
-    const recoveredPendingCreationCount = await app.worktreeService.recoverPendingCreations();
-    const recoveredPendingDeletionCount = await app.worktreeDeletionService.recoverPendingDeletions();
-    const recoveredAutomationRunCount = await app.automationService.recoverInFlightRuns();
-    await app.automationService.dispatchDueAutomations();
-    app.automationService.startScheduler();
-
     const database = resolveDatabaseInfo(process.env.DATABASE_URL);
 
     await app.listen({ host, port });
@@ -253,18 +333,7 @@ async function main() {
       databaseUrl: database.urlPreview,
       databasePath: database.resolvedPath,
     }, `Runtime listening on http://${host}:${port}`);
-    if (recoveredStuckThreadCount > 0) {
-      app.logService.log("info", "runtime", `Recovered ${recoveredStuckThreadCount} stuck thread(s)`);
-    }
-    if (recoveredPendingCreationCount > 0) {
-      app.logService.log("info", "runtime", `Recovered ${recoveredPendingCreationCount} interrupted worktree creation(s)`);
-    }
-    if (recoveredPendingDeletionCount > 0) {
-      app.logService.log("info", "runtime", `Recovered ${recoveredPendingDeletionCount} interrupted worktree deletion(s)`);
-    }
-    if (recoveredAutomationRunCount > 0) {
-      app.logService.log("info", "runtime", `Rebound ${recoveredAutomationRunCount} in-flight automation run(s)`);
-    }
+    void runPostListenStartupTasks(app);
   } catch (error) {
     if (error instanceof DatabaseNotReadyError) {
       console.error(error.message);
