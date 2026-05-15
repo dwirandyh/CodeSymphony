@@ -1,6 +1,6 @@
 import { memo, useMemo, type ComponentProps, type ComponentType } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openExternalUrl, shouldOpenInExternalApp } from "../../../lib/openExternalUrl";
 import { parseFileLocation, serializeFileLocation, toWorktreeRelativePath } from "../../../lib/worktree";
@@ -123,6 +123,27 @@ function createMarkdownRenderer<Tag extends keyof Components>(
   return renderer;
 }
 
+const MARKDOWN_SANITIZE_SCHEMA = {
+  ...defaultSchema,
+  tagNames: [...(defaultSchema.tagNames ?? []), "input"],
+  attributes: {
+    ...defaultSchema.attributes,
+    ul: [
+      ...((defaultSchema.attributes?.ul as Array<string | [string, ...string[]]>) ?? []),
+      ["className", "contains-task-list"],
+    ],
+    li: [
+      ...((defaultSchema.attributes?.li as Array<string | [string, ...string[]]>) ?? []),
+      ["className", "task-list-item"],
+    ],
+    input: [
+      "disabled",
+      "checked",
+      ["type", "checkbox"],
+    ],
+  },
+};
+
 function MarkdownLink({
   children,
   href,
@@ -170,13 +191,27 @@ function MarkdownLink({
 
 const BASE_MARKDOWN_COMPONENTS = {
   p: createMarkdownRenderer<"p">(({ children }) => <p className="leading-6 [&:not(:first-child)]:mt-4 whitespace-pre-wrap break-words">{children}</p>),
-  ul: createMarkdownRenderer<"ul">(({ children }) => <ul className="my-4 ml-6 list-disc [&>li]:mt-1.5">{children}</ul>),
+  ul: createMarkdownRenderer<"ul">(({ children, className }) => (
+    <ul className={className?.includes("contains-task-list") ? "my-4 space-y-2" : "my-4 ml-6 list-disc [&>li]:mt-1.5"}>
+      {children}
+    </ul>
+  )),
   ol: createMarkdownRenderer<"ol">(({ children, start }) => (
     <ol start={start} className="my-4 ml-6 list-decimal [&>li]:mt-1.5">
       {children}
     </ol>
   )),
-  li: createMarkdownRenderer<"li">(({ children }) => <li>{children}</li>),
+  li: createMarkdownRenderer<"li">(({ children, className }) => {
+    if (!className?.includes("task-list-item")) {
+      return <li>{children}</li>;
+    }
+
+    return (
+      <li className="-ml-6 list-none pl-6 task-list-item [&>p:first-child]:mt-0 [&>p:last-child]:mb-0 [&>p]:flex [&>p]:items-start [&>p]:gap-2">
+        {children}
+      </li>
+    );
+  }),
   h1: createMarkdownRenderer<"h1">(({ children }) => <h1 className="scroll-m-16 text-xl font-bold tracking-tight mb-3">{children}</h1>),
   h2: createMarkdownRenderer<"h2">(({ children }) => <h2 className="scroll-m-16 border-b pb-1.5 text-lg font-semibold tracking-tight mt-5 mb-3 first:mt-0">{children}</h2>),
   h3: createMarkdownRenderer<"h3">(({ children }) => <h3 className="scroll-m-16 text-base font-semibold tracking-tight mt-4 mb-2">{children}</h3>),
@@ -195,6 +230,23 @@ const BASE_MARKDOWN_COMPONENTS = {
   th: createMarkdownRenderer<"th">(({ children }) => <th className="border px-3 py-1.5 text-left font-bold [&[align=center]]:text-center [&[align=right]]:text-right">{children}</th>),
   td: createMarkdownRenderer<"td">(({ children }) => <td className="border px-3 py-1.5 text-left [&[align=center]]:text-center [&[align=right]]:text-right">{children}</td>),
   strong: createMarkdownRenderer<"strong">(({ children }) => <strong className="font-semibold">{children}</strong>),
+  input: createMarkdownRenderer<"input">(({ type, checked, disabled }) => {
+    if (type !== "checkbox") {
+      return <input type={type} checked={checked} disabled={disabled} readOnly />;
+    }
+
+    return (
+      <input
+        type="checkbox"
+        checked={checked === true}
+        disabled={disabled === true}
+        readOnly
+        tabIndex={-1}
+        aria-hidden="true"
+        className="mt-1 size-4 shrink-0 rounded border-border bg-background accent-emerald-500 opacity-100 disabled:cursor-default disabled:opacity-100"
+      />
+    );
+  }),
   code: createMarkdownRenderer<"code">(({ className, children }) => {
     const language = className?.replace("language-", "").trim();
     const text = String(children).replace(/\n$/, "");
@@ -263,7 +315,7 @@ export const MarkdownBody = memo(function MarkdownBody({
     <div data-testid={testId}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeSanitize]}
+        rehypePlugins={[[rehypeSanitize, MARKDOWN_SANITIZE_SCHEMA]]}
         components={markdownComponents}
       >
         {content}

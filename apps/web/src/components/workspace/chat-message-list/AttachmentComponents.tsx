@@ -4,7 +4,7 @@ import type { ChatAttachment } from "@codesymphony/shared-types";
 import { Check, Copy, FileText, Paperclip } from "lucide-react";
 import { getAttachmentDisplayLabel } from "../../../lib/attachments";
 import { Popover, PopoverTrigger, PopoverContent } from "../../ui/popover";
-import { Dialog, DialogContent, DialogTrigger } from "../../ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "../../ui/dialog";
 import { ZoomableImage } from "../ZoomableImage";
 import { formatFileSize } from "./toolEventUtils";
 
@@ -35,6 +35,10 @@ const ImageAttachmentDialog = memo(function ImageAttachmentDialog({ attachment, 
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent className="h-[100dvh] w-[100vw] max-w-none gap-0 border-none bg-black/95 p-0 shadow-none sm:rounded-none">
+        <DialogTitle className="sr-only">{attachment.filename}</DialogTitle>
+        <DialogDescription className="sr-only">
+          Zoomable preview for {attachment.filename}
+        </DialogDescription>
         {imageSource ? <ZoomableImage src={imageSource} alt={attachment.filename} /> : null}
       </DialogContent>
     </Dialog>
