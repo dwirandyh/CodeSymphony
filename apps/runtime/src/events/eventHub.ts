@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import prismaClientPkg from "@prisma/client";
 import type {
   ChatEvent as DbChatEvent,
@@ -68,54 +69,130 @@ function mapDbEvent(event: DbChatEvent): ChatEvent | null {
 
 
 type ListenerMap = Map<string, Set<(event: ChatEvent) => void>>;
+type ThreadState = {
+  nextIdx: number | null;
+  nextIdxPromise: Promise<number> | null;
+  volatileEvents: Map<number, ChatEvent>;
+};
 
 export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
   const listeners: ListenerMap = new Map();
+  const threadStates = new Map<string, ThreadState>();
 
-  // Per-thread serial queue to prevent concurrent nextIdx collisions (P2002)
-  const threadQueues = new Map<string, Promise<unknown>>();
+  // Per-thread serial queue for idx allocation + listener delivery.
+  const dispatchQueues = new Map<string, Promise<unknown>>();
+  // Per-thread serial queue for DB persistence ordering.
+  const persistenceQueues = new Map<string, Promise<unknown>>();
 
   function enqueueForThread<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
-    const prev = threadQueues.get(threadId) ?? Promise.resolve();
+    const prev = dispatchQueues.get(threadId) ?? Promise.resolve();
     const next = prev.then(fn, fn);
-    threadQueues.set(threadId, next);
+    dispatchQueues.set(threadId, next);
     next.then(
-      () => { if (threadQueues.get(threadId) === next) threadQueues.delete(threadId); },
-      () => { if (threadQueues.get(threadId) === next) threadQueues.delete(threadId); },
+      () => { if (dispatchQueues.get(threadId) === next) dispatchQueues.delete(threadId); },
+      () => { if (dispatchQueues.get(threadId) === next) dispatchQueues.delete(threadId); },
     );
     return next;
   }
 
-  async function nextIdx(tx: PrismaNamespace.TransactionClient, threadId: string): Promise<number> {
-    const result = await tx.chatEvent.aggregate({
+  function getThreadState(threadId: string): ThreadState {
+    let state = threadStates.get(threadId);
+    if (!state) {
+      state = {
+        nextIdx: null,
+        nextIdxPromise: null,
+        volatileEvents: new Map<number, ChatEvent>(),
+      };
+      threadStates.set(threadId, state);
+    }
+    return state;
+  }
+
+  async function resolveInitialNextIdx(threadId: string): Promise<number> {
+    const result = await prisma.chatEvent.aggregate({
       where: { threadId },
       _max: { idx: true },
     });
-
     return (result._max.idx ?? -1) + 1;
+  }
+
+  async function allocateNextIdx(threadId: string): Promise<number> {
+    const state = getThreadState(threadId);
+    if (state.nextIdx === null) {
+      state.nextIdxPromise ??= resolveInitialNextIdx(threadId).then((nextIdx) => {
+        state.nextIdx = nextIdx;
+        return nextIdx;
+      }).finally(() => {
+        state.nextIdxPromise = null;
+      });
+      await state.nextIdxPromise;
+    }
+
+    const idx = state.nextIdx ?? 0;
+    state.nextIdx = idx + 1;
+    return idx;
+  }
+
+  function schedulePersistence(threadId: string, event: ChatEvent): Promise<void> {
+    const state = getThreadState(threadId);
+    const previous = persistenceQueues.get(threadId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      await prisma.chatEvent.create({
+        data: {
+          id: event.id,
+          threadId,
+          idx: event.idx,
+          type: typeToDb[event.type],
+          payload: event.payload as PrismaNamespace.InputJsonValue,
+          createdAt: new Date(event.createdAt),
+        },
+      });
+      state.volatileEvents.delete(event.idx);
+      if (state.volatileEvents.size === 0 && state.nextIdx === null) {
+        threadStates.delete(threadId);
+      }
+    });
+    persistenceQueues.set(threadId, next);
+    next.then(
+      () => {
+        if (persistenceQueues.get(threadId) === next) {
+          persistenceQueues.delete(threadId);
+        }
+      },
+      () => {
+        if (persistenceQueues.get(threadId) === next) {
+          persistenceQueues.delete(threadId);
+        }
+      },
+    );
+    return next;
   }
 
   async function emit(threadId: string, type: ChatEventType, payload: Record<string, unknown>): Promise<ChatEvent> {
     return enqueueForThread(threadId, async () => {
-      const dbEvent = await prisma.$transaction(async (tx) => {
-        const idx = await nextIdx(tx, threadId);
-        return tx.chatEvent.create({
-          data: {
-            threadId,
-            idx,
-            type: typeToDb[type],
-            payload: payload as PrismaNamespace.InputJsonValue,
-          },
-        });
-      });
+      const idx = await allocateNextIdx(threadId);
+      const event: ChatEvent = {
+        id: randomUUID(),
+        threadId,
+        idx,
+        type,
+        payload,
+        createdAt: new Date().toISOString(),
+      };
 
-      const event = mapDbEvent(dbEvent);
-      if (!event) {
-        throw new Error(`Failed to map chat event type: ${dbEvent.type}`);
-      }
+      const state = getThreadState(threadId);
+      state.volatileEvents.set(event.idx, event);
+
       const threadListeners = listeners.get(threadId);
       threadListeners?.forEach((listener) => listener(event));
 
+      const persistence = schedulePersistence(threadId, event);
+      if (type === "message.delta") {
+        void persistence.catch(() => {});
+        return event;
+      }
+
+      await persistence;
       return event;
     });
   }
@@ -130,10 +207,27 @@ export function createEventHub(prisma: PrismaClient): RuntimeEventHub {
         orderBy: { idx: "asc" },
       });
 
-      return dbEvents.flatMap((event) => {
+      const mappedDbEvents = dbEvents.flatMap((event) => {
         const mapped = mapDbEvent(event);
         return mapped ? [mapped] : [];
       });
+
+      const state = threadStates.get(threadId);
+      if (!state || state.volatileEvents.size === 0) {
+        return mappedDbEvents;
+      }
+
+      const seenIdx = new Set(mappedDbEvents.map((event) => event.idx));
+      const volatileEvents = Array.from(state.volatileEvents.values())
+        .filter((event) => (typeof afterIdx === "number" ? event.idx > afterIdx : true))
+        .filter((event) => !seenIdx.has(event.idx))
+        .sort((left, right) => left.idx - right.idx);
+
+      if (volatileEvents.length === 0) {
+        return mappedDbEvents;
+      }
+
+      return [...mappedDbEvents, ...volatileEvents].sort((left, right) => left.idx - right.idx);
     } catch (error) {
       if (error instanceof Prisma.PrismaClientUnknownRequestError) {
         return [];

@@ -84,12 +84,14 @@ export function refetchGitStatusCollection(queryClient: QueryClient, worktreeId:
   return getGitStatusCollection(queryClient, worktreeId).utils.refetch();
 }
 
-export function resetGitStatusCollectionRegistryForTest() {
+export async function resetGitStatusCollectionRegistryForTest() {
+  const cleanupTasks: Promise<unknown>[] = [];
   for (const collections of gitStatusCollectionRegistry.values()) {
     for (const collection of collections.values()) {
-      void collection.cleanup();
+      cleanupTasks.push(Promise.resolve(collection.cleanup()));
     }
     collections.clear();
   }
   gitStatusCollectionRegistry.clear();
+  await Promise.allSettled(cleanupTasks);
 }

@@ -158,12 +158,14 @@ describe("Composer", () => {
     Element.prototype.scrollIntoView = vi.fn();
     setMobileViewport(false);
     tauriDragDropState.handler = null;
+    window.localStorage.clear();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    window.localStorage.clear();
     act(() => root.unmount());
     document.body.removeChild(container);
   });
@@ -1563,6 +1565,62 @@ describe("Composer", () => {
     await flushMicrotasks();
 
     expect(editor.textContent).toBe("");
+  });
+
+  it("restores the persisted draft after remounting the same thread", async () => {
+    renderComposer({ threadId: "thread-1", worktreeId: "wt-1" });
+
+    typeInEditor(getEditor(), "persist me");
+    await flushMicrotasks();
+
+    act(() => root.unmount());
+    root = createRoot(container);
+
+    renderComposer({ threadId: "thread-1", worktreeId: "wt-1" });
+    await flushMicrotasks();
+
+    expect(getEditor().textContent).toBe("persist me");
+  });
+
+  it("keeps drafts isolated between threads", async () => {
+    renderComposer({ threadId: "thread-1", worktreeId: "wt-1" });
+    typeInEditor(getEditor(), "draft thread 1");
+    await flushMicrotasks();
+
+    renderComposer({ threadId: "thread-2", worktreeId: "wt-1" });
+    await flushMicrotasks();
+    expect(getEditor().textContent).toBe("");
+
+    typeInEditor(getEditor(), "draft thread 2");
+    await flushMicrotasks();
+
+    renderComposer({ threadId: "thread-1", worktreeId: "wt-1" });
+    await flushMicrotasks();
+    expect(getEditor().textContent).toBe("draft thread 1");
+
+    renderComposer({ threadId: "thread-2", worktreeId: "wt-1" });
+    await flushMicrotasks();
+    expect(getEditor().textContent).toBe("draft thread 2");
+  });
+
+  it("clears the persisted draft after a successful submit", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage, threadId: "thread-1", worktreeId: "wt-1" });
+
+    typeInEditor(getEditor(), "submit and clear");
+    await flushMicrotasks();
+
+    await act(async () => {
+      getEditor().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    act(() => root.unmount());
+    root = createRoot(container);
+
+    renderComposer({ onSubmitMessage, threadId: "thread-1", worktreeId: "wt-1" });
+    await flushMicrotasks();
+
+    expect(getEditor().textContent).toBe("");
   });
 
   it("keeps draft when submit fails", async () => {

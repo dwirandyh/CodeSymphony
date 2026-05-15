@@ -118,10 +118,12 @@ import { editTargetFromUnknownToolInput, isBashTool, isEditTool } from "../../cl
 import { buildCodexCliProviderHint } from "../../codex/config.js";
 import { listCodexSlashCommands as listCodexSlashCommandsFromAppServer } from "../../codex/sessionRunner.js";
 import { listCursorSlashCommands } from "../../cursor/sessionRunner.js";
+import { appendRuntimeDebugLog } from "../../routes/debug.js";
 import { shouldAutoApproveWorkspaceEdit } from "./workspaceEditPermissions.js";
 import { getUnavailableWorktreeErrorMessage, isOperationalWorktreeStatus } from "../worktreeService.js";
 
 const AUTO_EXECUTE_DELAY_MS = 10;
+const STATUS_SNAPSHOT_RECENT_EVENT_LIMIT = 48;
 const MAX_DIFF_PREVIEW_CHARS = 20000;
 const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_DIR_NAME = ".codesymphony/attachments";
@@ -1222,14 +1224,47 @@ export function createChatService(deps: RuntimeDeps) {
       attachmentCount: input.attachments?.length ?? 0,
       autoAcceptTools: options?.autoAcceptTools ?? false,
     });
-    let assistantMessageId: string | null = null;
-    let fullOutput = "";
+    const runStartedAtMs = Date.now();
+    let firstRunnerSignal: string | null = null;
     let selection: ResolvedThreadSelection = {
       agent: "claude",
       model: DEFAULT_CHAT_MODEL_BY_AGENT.claude,
       modelProviderId: null,
       provider: null,
     };
+    const logRunDebug = (message: string, data?: Record<string, unknown>) => {
+      appendRuntimeDebugLog({
+        source: "runtime.chat.run",
+        message,
+        data: {
+          threadId,
+          mode,
+          elapsedMs: Date.now() - runStartedAtMs,
+          agent: selection.agent,
+          model: selection.model,
+          ...(data ?? {}),
+        },
+      });
+    };
+    const recordFirstRunnerSignal = (signal: string, data?: Record<string, unknown>) => {
+      if (firstRunnerSignal) {
+        return;
+      }
+
+      firstRunnerSignal = signal;
+      logRunDebug("runner.firstSignal", {
+        signal,
+        ...(data ?? {}),
+      });
+    };
+    logRunDebug("runAssistant.started", {
+      promptLength: input.prompt.length,
+      promptWithAttachmentsLength: input.promptWithAttachments?.length ?? input.prompt.length,
+      attachmentCount: input.attachments?.length ?? 0,
+      autoAcceptTools: options?.autoAcceptTools ?? false,
+    });
+    let assistantMessageId: string | null = null;
+    let fullOutput = "";
     let threadWorktreePath: string | null = null;
     let completionEmitted = false;
     const abortController = new AbortController();
@@ -1259,6 +1294,11 @@ export function createChatService(deps: RuntimeDeps) {
       const threadWorktreeId = thread.worktreeId;
       threadWorktreePath = worktreePath;
       const autoAcceptTools = options?.autoAcceptTools ?? thread.permissionMode === "full_access";
+      logRunDebug("runAssistant.threadLoaded", {
+        worktreeId: threadWorktreeId,
+        permissionMode: thread.permissionMode,
+        permissionProfile: thread.permissionProfile,
+      });
       if (!existsSync(worktreePath)) {
         throw new Error(`Worktree path not found: ${worktreePath}. Create a new worktree from Repository panel.`);
       }
@@ -1282,15 +1322,25 @@ export function createChatService(deps: RuntimeDeps) {
       });
 
       assistantMessageId = assistantMessage.id;
+      logRunDebug("runAssistant.assistantMessageCreated", {
+        assistantMessageId,
+        assistantSeq,
+      });
 
       selection = await resolveThreadSelection(deps, {
         agent: thread.agent,
         model: thread.model,
         modelProviderId: thread.modelProviderId,
       });
+      logRunDebug("runAssistant.selectionResolved", {
+        modelProviderId: selection.modelProviderId,
+        providerName: selection.provider?.name ?? null,
+      });
       const runner = getRunnerForAgent(deps, selection.agent);
       const currentSessionId = getThreadSessionId(thread, selection.agent);
       const trackedAgentSessionId = `thread:${threadId}:agent:${selection.agent}`;
+      let assistantDeltaSequence = 0;
+      let pendingAssistantDeltaEmitCount = 0;
 
       function scheduleFlush() {
         if (flushTimer !== null) return;
@@ -1308,6 +1358,80 @@ export function createChatService(deps: RuntimeDeps) {
             }
           }
         }, FLUSH_INTERVAL_MS);
+      }
+
+      function emitAssistantDeltaChunk(chunk: string) {
+        const sequence = ++assistantDeltaSequence;
+        const enqueuedAtMs = Date.now();
+        const outputLengthAtEnqueue = fullOutput.length;
+        pendingAssistantDeltaEmitCount += 1;
+
+        if (
+          pendingAssistantDeltaEmitCount === 5
+          || pendingAssistantDeltaEmitCount === 20
+          || pendingAssistantDeltaEmitCount === 50
+        ) {
+          appendRuntimeDebugLog({
+            source: "runtime.chat.delta",
+            message: "assistantDelta.backlog",
+            data: {
+              threadId,
+              assistantMessageId: assistantMessage.id,
+              sequence,
+              pendingAssistantDeltaEmitCount,
+              chunkLength: chunk.length,
+              outputLengthAtEnqueue,
+            },
+          });
+        }
+
+        void deps.eventHub.emit(threadId, "message.delta", {
+          messageId: assistantMessage.id,
+          role: "assistant",
+          delta: chunk,
+          ...(mode === "plan" ? { mode: "plan" } : {}),
+        }).then(() => {
+          pendingAssistantDeltaEmitCount = Math.max(0, pendingAssistantDeltaEmitCount - 1);
+          const durationMs = Date.now() - enqueuedAtMs;
+
+          if (sequence === 1 || sequence % 50 === 0 || durationMs >= 100) {
+            appendRuntimeDebugLog({
+              source: "runtime.chat.delta",
+              message: "assistantDelta.settled",
+              data: {
+                threadId,
+                assistantMessageId: assistantMessage.id,
+                sequence,
+                durationMs,
+                pendingAssistantDeltaEmitCount,
+                chunkLength: chunk.length,
+                outputLengthAtEnqueue,
+              },
+            });
+          }
+        }).catch((error) => {
+          pendingAssistantDeltaEmitCount = Math.max(0, pendingAssistantDeltaEmitCount - 1);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          appendRuntimeDebugLog({
+            source: "runtime.chat.delta",
+            message: "assistantDelta.emitFailed",
+            data: {
+              threadId,
+              assistantMessageId: assistantMessage.id,
+              sequence,
+              pendingAssistantDeltaEmitCount,
+              chunkLength: chunk.length,
+              outputLengthAtEnqueue,
+              error: errorMessage,
+            },
+          });
+          deps.logService?.log("warn", "chat.stream", "Assistant delta event emit failed", {
+            threadId,
+            assistantMessageId: assistantMessage.id,
+            sequence,
+            error: errorMessage,
+          });
+        });
       }
 
       async function emitWorktreeDiffEvent(
@@ -1384,6 +1508,10 @@ export function createChatService(deps: RuntimeDeps) {
         }
       }
 
+      logRunDebug("runner.start", {
+        sessionIdPresent: currentSessionId != null,
+        worktreeId: threadWorktreeId,
+      });
       const result = await runner({
         prompt: input.prompt,
         promptWithAttachments: input.promptWithAttachments,
@@ -1398,6 +1526,10 @@ export function createChatService(deps: RuntimeDeps) {
           if (!nextSessionId || nextSessionId === previousSessionId) {
             return;
           }
+
+          logRunDebug("runner.sessionIdUpdated", {
+            hadPreviousSessionId: previousSessionId != null,
+          });
 
           try {
             await deps.prisma.chatThread.update({
@@ -1430,6 +1562,7 @@ export function createChatService(deps: RuntimeDeps) {
         providerApiKey: toRunnerOptional(selection.provider?.apiKey),
         providerBaseUrl: toRunnerOptional(selection.provider?.baseUrl),
         onProcessSpawned: async (pid) => {
+          logRunDebug("runner.processSpawned", { pid });
           deps.resourceMonitorSessionTracker?.upsertSession({
             sessionId: trackedAgentSessionId,
             worktreeId: threadWorktreeId,
@@ -1438,17 +1571,21 @@ export function createChatService(deps: RuntimeDeps) {
             kind: "other",
           });
         },
-        onText: async (chunk) => {
+        onText: (chunk) => {
+          recordFirstRunnerSignal("text", {
+            assistantMessageId: assistantMessage.id,
+            chunkLength: chunk.length,
+          });
           fullOutput += chunk;
           scheduleFlush();
-          await deps.eventHub.emit(threadId, "message.delta", {
-            messageId: assistantMessage.id,
-            role: "assistant",
-            delta: chunk,
-            ...(mode === "plan" ? { mode: "plan" } : {}),
-          });
+          emitAssistantDeltaChunk(chunk);
         },
         onToolStarted: async (payload) => {
+          recordFirstRunnerSignal("tool.started", {
+            assistantMessageId: assistantMessage.id,
+            toolName: payload.toolName,
+            toolUseId: payload.toolUseId,
+          });
           const currentRun = getThreadRun(threadId);
           currentRun?.activeToolUseIds.add(payload.toolUseId);
           trackWorktreeMutation(worktreeMutationTracker, worktreePath, {
@@ -1462,6 +1599,11 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onToolOutput: async (payload) => {
+          recordFirstRunnerSignal("tool.output", {
+            assistantMessageId: assistantMessage.id,
+            toolName: payload.toolName,
+            toolUseId: payload.toolUseId,
+          });
           trackWorktreeMutation(worktreeMutationTracker, worktreePath, {
             toolName: payload.toolName,
           });
@@ -1471,6 +1613,10 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onToolFinished: async (payload) => {
+          recordFirstRunnerSignal("tool.finished", {
+            assistantMessageId: assistantMessage.id,
+            toolName: "toolName" in payload && typeof payload.toolName === "string" ? payload.toolName : null,
+          });
           const currentRun = getThreadRun(threadId);
           for (const toolUseId of payload.precedingToolUseIds) {
             currentRun?.activeToolUseIds.delete(toolUseId);
@@ -1490,6 +1636,11 @@ export function createChatService(deps: RuntimeDeps) {
           await maybeRequestQueuedHandoff(threadId);
         },
         onSubagentStarted: async (payload) => {
+          recordFirstRunnerSignal("subagent.started", {
+            assistantMessageId: assistantMessage.id,
+            toolUseId: payload.toolUseId,
+            agentId: payload.agentId,
+          });
           const currentRun = getThreadRun(threadId);
           currentRun?.activeSubagentToolUseIds.add(payload.toolUseId);
           await deps.eventHub.emit(threadId, "subagent.started", {
@@ -1528,6 +1679,10 @@ export function createChatService(deps: RuntimeDeps) {
           );
         },
         onQuestionRequest: async (payload) => {
+          recordFirstRunnerSignal("question.requested", {
+            assistantMessageId: assistantMessage.id,
+            requestId: payload.requestId,
+          });
           markThreadWaiting(threadId, "waiting_question");
           const pendingMap = ensureThreadQuestionMap(pendingQuestionsByThread, threadId);
           const existing = pendingMap.get(payload.requestId);
@@ -1561,6 +1716,11 @@ export function createChatService(deps: RuntimeDeps) {
           return entry.promise;
         },
         onPlanFileDetected: async (payload) => {
+          recordFirstRunnerSignal("plan.created", {
+            assistantMessageId: assistantMessage.id,
+            filePath: payload.filePath,
+            source: payload.source ?? null,
+          });
           markThreadWaiting(threadId, "waiting_plan");
           const source = inferPlanDetectionSource(payload.filePath, payload.source);
           const planEvent = await deps.eventHub.emit(threadId, "plan.created", {
@@ -1580,6 +1740,11 @@ export function createChatService(deps: RuntimeDeps) {
           });
         },
         onPermissionRequest: async (payload) => {
+          recordFirstRunnerSignal("permission.requested", {
+            assistantMessageId: assistantMessage.id,
+            requestId: payload.requestId,
+            toolName: payload.toolName,
+          });
           if (autoAcceptTools) {
             deps.logService?.log("debug", "chat.permission", "Auto-approved permission request for full access thread", {
               threadId,
@@ -1658,6 +1823,12 @@ export function createChatService(deps: RuntimeDeps) {
           }
           return entry.promise;
         },
+      });
+      logRunDebug("runner.completed", {
+        assistantMessageId: assistantMessage.id,
+        firstRunnerSignal,
+        outputLength: fullOutput.length,
+        persistedOutputLength: result.output.length,
       });
 
       if (flushTimer !== null) {
@@ -1753,6 +1924,12 @@ export function createChatService(deps: RuntimeDeps) {
         });
       });
     } catch (error) {
+      logRunDebug("runner.failed", {
+        assistantMessageId,
+        firstRunnerSignal,
+        aborted: abortController.signal.aborted || isAbortError(error),
+        error: error instanceof Error ? error.message : String(error),
+      });
       deps.logService?.log("error", "chat.lifecycle", "runAssistant failed", {
         threadId,
         error: error instanceof Error ? error.message : String(error),
@@ -1804,6 +1981,10 @@ export function createChatService(deps: RuntimeDeps) {
         });
       }
     } finally {
+      logRunDebug("runAssistant.finally", {
+        assistantMessageId,
+        firstRunnerSignal,
+      });
       deps.resourceMonitorSessionTracker?.removeSession(`thread:${threadId}:agent:${selection.agent}`);
       deps.logService?.log("debug", "chat.lifecycle", "runAssistant entering finally", {
         threadId,
@@ -1835,6 +2016,18 @@ export function createChatService(deps: RuntimeDeps) {
     options?: { autoAcceptTools?: boolean },
   ): void {
     clearScheduledAssistantRun(threadId);
+    appendRuntimeDebugLog({
+      source: "runtime.chat.send",
+      message: "assistant.scheduled",
+      data: {
+        threadId,
+        mode,
+        delayMs: AUTO_EXECUTE_DELAY_MS,
+        promptLength: input.prompt.length,
+        attachmentCount: input.attachments?.length ?? 0,
+        autoAcceptTools: options?.autoAcceptTools ?? false,
+      },
+    });
     deps.logService?.log("debug", "chat.lifecycle", "scheduling assistant run", {
       threadId,
       mode,
@@ -1845,6 +2038,16 @@ export function createChatService(deps: RuntimeDeps) {
     const scheduledAt = Date.now();
     const timer = setTimeout(() => {
       const waitedMs = Date.now() - scheduledAt;
+      appendRuntimeDebugLog({
+        source: "runtime.chat.run",
+        message: "assistant.triggered",
+        data: {
+          threadId,
+          mode,
+          waitedMs,
+          autoAcceptTools: options?.autoAcceptTools ?? false,
+        },
+      });
       deps.logService?.log("debug", "chat.lifecycle", "scheduled assistant run started", {
         threadId,
         mode,
@@ -2405,12 +2608,70 @@ export function createChatService(deps: RuntimeDeps) {
 
     async listThreadStatusSnapshot(threadId: string): Promise<ChatThreadStatusSnapshot> {
       await maybeDispatchQueuedMessages(threadId);
-      await requireThreadExists(deps, threadId);
-      const events = await deps.eventHub.list(threadId);
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+        select: {
+          id: true,
+          pendingPlanEventId: true,
+          pendingPlanFilePath: true,
+          pendingPlanContent: true,
+        },
+      });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      const newestIdx = (
+        await deps.prisma.chatEvent.aggregate({
+          where: { threadId },
+          _max: { idx: true },
+        })
+      )._max.idx ?? null;
+      const currentRun = getThreadRun(threadId);
+
+      if (currentRun?.status === "waiting_permission" || currentRun?.status === "waiting_question") {
+        return {
+          status: "waiting_approval",
+          newestIdx,
+        };
+      }
+
+      if (currentRun?.status === "waiting_plan") {
+        return {
+          status: "review_plan",
+          newestIdx,
+        };
+      }
+
+      if (currentRun) {
+        return {
+          status: "running",
+          newestIdx,
+        };
+      }
+
+      if (thread.pendingPlanEventId && thread.pendingPlanFilePath && thread.pendingPlanContent) {
+        return {
+          status: "review_plan",
+          newestIdx,
+        };
+      }
+
+      if (newestIdx == null) {
+        return {
+          status: "idle",
+          newestIdx: null,
+        };
+      }
+
+      const events = await deps.eventHub.list(
+        threadId,
+        Math.max(-1, newestIdx - STATUS_SNAPSHOT_RECENT_EVENT_LIMIT),
+      );
 
       return {
-        status: deriveThreadStatusFromEvents(events, isThreadActive(threadId)),
-        newestIdx: events.length > 0 ? events[events.length - 1]?.idx ?? null : null,
+        status: deriveThreadStatusFromEvents(events, false),
+        newestIdx,
       };
     },
 
@@ -2716,6 +2977,7 @@ export function createChatService(deps: RuntimeDeps) {
 
     async sendMessage(threadId: string, rawInput: unknown): Promise<ChatMessage> {
       const input: SendChatMessageInput = SendChatMessageInputSchema.parse(rawInput);
+      const startedAtMs = Date.now();
 
       const thread = await deps.prisma.chatThread.findUnique({
         where: { id: threadId },
@@ -2738,12 +3000,22 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Assistant is still processing the previous message");
       }
       setThreadRunState(threadId, { status: "scheduled", mode: input.mode });
+      appendRuntimeDebugLog({
+        source: "runtime.chat.send",
+        message: "sendMessage.accepted",
+        data: {
+          threadId,
+          mode: input.mode,
+          contentLength: input.content.length,
+          attachmentCount: input.attachments?.length ?? 0,
+        },
+      });
       deps.logService?.log("debug", "chat.lifecycle", "sendMessage marked thread active", {
         threadId,
       });
 
       try {
-        return await commitUserMessageAndScheduleAssistant({
+        const message = await commitUserMessageAndScheduleAssistant({
           threadId,
           content: input.content,
           mode: input.mode,
@@ -2756,8 +3028,28 @@ export function createChatService(deps: RuntimeDeps) {
             source: attachment.source,
           })),
         });
+        appendRuntimeDebugLog({
+          source: "runtime.chat.send",
+          message: "sendMessage.committed",
+          data: {
+            threadId,
+            durationMs: Date.now() - startedAtMs,
+            messageId: message.id,
+            seq: message.seq,
+          },
+        });
+        return message;
       } catch (error) {
         clearThreadRunState(threadId);
+        appendRuntimeDebugLog({
+          source: "runtime.chat.send",
+          message: "sendMessage.failed",
+          data: {
+            threadId,
+            durationMs: Date.now() - startedAtMs,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
         throw error;
       }
     },

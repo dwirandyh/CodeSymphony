@@ -1239,6 +1239,36 @@ describe("RepositoryPanel", () => {
     expect(container.textContent).not.toContain("Idle");
   });
 
+  it("limits status snapshot fan-out to active and most recent inactive threads per worktree", async () => {
+    listThreadsMock.mockImplementation(async (worktreeId: string) => {
+      if (worktreeId === "r1-wt-feat") {
+        return [
+          makeThread({ id: "t-oldest", updatedAt: "2026-01-01T00:00:00Z" }),
+          makeThread({ id: "t-recent-2", updatedAt: "2026-01-03T00:00:00Z" }),
+          makeThread({ id: "t-active", active: true, updatedAt: "2026-01-04T00:00:00Z" }),
+          makeThread({ id: "t-middle", updatedAt: "2026-01-02T00:00:00Z" }),
+          makeThread({ id: "t-recent-1", updatedAt: "2026-01-05T00:00:00Z" }),
+        ];
+      }
+      return [];
+    });
+
+    renderPanel({
+      repositories: [makeRepo()],
+      selectedRepositoryId: "r1",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const fetchedThreadIds = getThreadStatusSnapshotMock.mock.calls.map((call) => call[0]);
+    expect(new Set(fetchedThreadIds)).toEqual(new Set(["t-active", "t-recent-1", "t-recent-2"]));
+    expect(fetchedThreadIds).toHaveLength(3);
+  });
+
   it("does not render an idle status chip", async () => {
     renderPanel({
       repositories: [makeRepo()],

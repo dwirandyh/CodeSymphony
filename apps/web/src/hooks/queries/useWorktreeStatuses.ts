@@ -9,14 +9,53 @@ import {
   type WorktreeThreadUiStatus,
 } from "../../pages/workspace/hooks/worktreeThreadStatus";
 import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
-import { useThreadsByWorktreeIds } from "./useThreads";
+import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "./useThreads";
 
-export function useWorktreeStatuses(repositories: Repository[], enabled = true) {
+// Repository sidebar only needs a small set of candidate threads per worktree
+// to render a useful status chip. Fetching every historical thread snapshot
+// creates a large request fan-out on refresh.
+const MAX_INACTIVE_STATUS_SNAPSHOTS_PER_WORKTREE = 2;
+
+function compareThreadRecency(left: ChatThread, right: ChatThread) {
+  return (
+    right.updatedAt.localeCompare(left.updatedAt)
+    || right.createdAt.localeCompare(left.createdAt)
+    || right.id.localeCompare(left.id)
+  );
+}
+
+function pickStatusSnapshotCandidateIds(threadsByWorktreeId: Record<string, ChatThread[]>): string[] {
+  const candidateIds: string[] = [];
+
+  for (const threads of Object.values(threadsByWorktreeId)) {
+    const activeThreadIds = threads
+      .filter((thread) => thread.active)
+      .map((thread) => thread.id);
+    const inactiveThreadIds = threads
+      .filter((thread) => !thread.active)
+      .sort(compareThreadRecency)
+      .slice(0, MAX_INACTIVE_STATUS_SNAPSHOTS_PER_WORKTREE)
+      .map((thread) => thread.id);
+
+    candidateIds.push(...activeThreadIds, ...inactiveThreadIds);
+  }
+
+  return [...new Set(candidateIds)];
+}
+
+export function useWorktreeStatuses(
+  repositories: Repository[],
+  enabled = true,
+  threadSnapshot?: ThreadsByWorktreeSnapshot,
+) {
   const activeWorktreeIds = useMemo(
     () => buildRepositoryWorktreeIndex(repositories).activeWorktreeIds,
     [repositories],
   );
-  const { threadsByWorktreeId, threadIds } = useThreadsByWorktreeIds(activeWorktreeIds);
+  const ownedThreadSnapshot = useThreadsByWorktreeIds(activeWorktreeIds, {
+    enabled: enabled && threadSnapshot == null,
+  });
+  const { threadsByWorktreeId, threadIds } = threadSnapshot ?? ownedThreadSnapshot;
 
   const prevThreadIdsRef = useRef<string[]>([]);
   const stableThreadIds = useMemo(() => {
@@ -28,8 +67,27 @@ export function useWorktreeStatuses(repositories: Repository[], enabled = true) 
     return threadIds;
   }, [threadIds]);
 
+  const statusSnapshotCandidateIds = useMemo(
+    () => pickStatusSnapshotCandidateIds(threadsByWorktreeId),
+    [threadsByWorktreeId],
+  );
+
+  const prevStatusSnapshotCandidateIdsRef = useRef<string[]>([]);
+  const stableStatusSnapshotCandidateIds = useMemo(() => {
+    const prev = prevStatusSnapshotCandidateIdsRef.current;
+    if (
+      prev.length === statusSnapshotCandidateIds.length
+      && prev.every((id, index) => id === statusSnapshotCandidateIds[index])
+    ) {
+      return prev;
+    }
+
+    prevStatusSnapshotCandidateIdsRef.current = statusSnapshotCandidateIds;
+    return statusSnapshotCandidateIds;
+  }, [statusSnapshotCandidateIds]);
+
   const snapshotResult = useQueries({
-    queries: stableThreadIds.map((threadId) => ({
+    queries: stableStatusSnapshotCandidateIds.map((threadId) => ({
       queryKey: queryKeys.threads.statusSnapshot(threadId),
       queryFn: () => api.getThreadStatusSnapshot(threadId),
       enabled: enabled && threadId.length > 0,
@@ -37,8 +95,13 @@ export function useWorktreeStatuses(repositories: Repository[], enabled = true) 
     })),
     combine: (results) => {
       const snapshotsByThreadId: Record<string, ChatThreadStatusSnapshot | null> = {};
-      for (let i = 0; i < stableThreadIds.length; i++) {
-        snapshotsByThreadId[stableThreadIds[i]] = (results[i]?.data ?? null) as ChatThreadStatusSnapshot | null;
+      for (let i = 0; i < stableStatusSnapshotCandidateIds.length; i++) {
+        snapshotsByThreadId[stableStatusSnapshotCandidateIds[i]] = (results[i]?.data ?? null) as ChatThreadStatusSnapshot | null;
+      }
+      for (const threadId of stableThreadIds) {
+        if (!(threadId in snapshotsByThreadId)) {
+          snapshotsByThreadId[threadId] = null;
+        }
       }
       return snapshotsByThreadId;
     },

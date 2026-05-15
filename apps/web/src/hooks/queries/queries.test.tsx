@@ -1,10 +1,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { Repository } from "@codesymphony/shared-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../../lib/api";
 
 import { useRepositories } from "./useRepositories";
 import { useThreads } from "./useThreads";
+import { useThreadsByWorktreeIds } from "./useThreads";
 import { useThreadEvents } from "./useThreadEvents";
 import { useThreadMessages } from "./useThreadMessages";
 import { useThreadSnapshot } from "./useThreadSnapshot";
@@ -18,6 +21,12 @@ import { useFileIndexQuery } from "./useFileIndexQuery";
 import { useWorktreeStatuses } from "./useWorktreeStatuses";
 import { useRepositoryReviews } from "./useRepositoryReviews";
 import { useSlashCommandsQuery } from "./useSlashCommandsQuery";
+import { useBackgroundWorktreeStatusStream } from "../../pages/workspace/hooks/useBackgroundWorktreeStatusStream";
+import { buildRepositoryWorktreeIndex } from "../../collections/worktrees";
+import { resetFileIndexCollectionRegistryForTest } from "../../collections/fileIndex";
+import { resetGitStatusCollectionRegistryForTest } from "../../collections/gitStatus";
+import { resetRepositoriesCollectionRegistryForTest } from "../../collections/repositories";
+import { resetThreadsCollectionRegistryForTest } from "../../collections/threads";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -39,7 +48,7 @@ vi.mock("../../lib/api", () => ({
   },
 }));
 
-const repoFixture = [{
+const repoFixture: Repository[] = [{
   id: "r1",
   name: "repo",
   rootPath: "/repo",
@@ -67,6 +76,7 @@ let root: Root;
 let queryClient: QueryClient;
 
 beforeEach(() => {
+  vi.clearAllMocks();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -75,9 +85,16 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   act(() => root.unmount());
+  queryClient.clear();
   container.remove();
+  await Promise.all([
+    resetRepositoriesCollectionRegistryForTest(),
+    resetGitStatusCollectionRegistryForTest(),
+    resetFileIndexCollectionRegistryForTest(),
+    resetThreadsCollectionRegistryForTest(),
+  ]);
 });
 
 function HookRenderer({ hook, args = [] }: { hook: (...a: unknown[]) => unknown; args?: unknown[] }) {
@@ -93,6 +110,14 @@ function renderHook(hook: (...a: unknown[]) => unknown, args: unknown[] = []) {
       </QueryClientProvider>
     );
   });
+}
+
+function SharedThreadSnapshotHarness({ enabled = true }: { enabled?: boolean }) {
+  const activeWorktreeIds = buildRepositoryWorktreeIndex(repoFixture).activeWorktreeIds;
+  const threadSnapshot = useThreadsByWorktreeIds(activeWorktreeIds, { enabled });
+  useWorktreeStatuses(repoFixture, enabled, threadSnapshot);
+  useBackgroundWorktreeStatusStream(repoFixture, null, null, threadSnapshot);
+  return <div data-testid="result">ok</div>;
 }
 
 describe("query hooks", () => {
@@ -169,6 +194,38 @@ describe("query hooks", () => {
   it("useWorktreeStatuses renders", () => {
     renderHook(useWorktreeStatuses as (...a: unknown[]) => unknown, [repoFixture]);
     expect(container.textContent).toBe("ok");
+  });
+
+  it("useThreadsByWorktreeIds skips thread list fetches while disabled", async () => {
+    renderHook(useThreadsByWorktreeIds as (...a: unknown[]) => unknown, [["wt-1"], { enabled: false }]);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toBe("ok");
+    expect(vi.mocked(api.listThreads)).not.toHaveBeenCalled();
+  });
+
+  it("reuses one thread snapshot fetch across status and background consumers", async () => {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SharedThreadSnapshotHarness />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toBe("ok");
+    expect(api.listThreads).toHaveBeenCalledTimes(1);
+    expect(api.listThreads).toHaveBeenCalledWith("wt-1");
   });
 
   it("useRepositoryReviews renders", () => {

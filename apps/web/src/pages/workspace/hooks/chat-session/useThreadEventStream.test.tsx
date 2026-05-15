@@ -323,7 +323,7 @@ describe("useThreadEventStream", () => {
     expect(latestWaitingAssistant).toEqual({ threadId, afterIdx: 12 });
   });
 
-  it("invalidates only the selected thread status snapshot on active-thread permission requests", async () => {
+  it("patches the selected thread status snapshot to waiting_approval on active-thread permission requests", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -347,11 +347,14 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot(threadId))).toEqual({
+      status: "waiting_approval",
+      newestIdx: 1,
+    });
     expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
-  it("invalidates only the selected thread status snapshot on active-thread plan.created events", async () => {
+  it("patches the selected thread status snapshot to review_plan on active-thread plan.created events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -375,11 +378,14 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot(threadId))).toEqual({
+      status: "review_plan",
+      newestIdx: 2,
+    });
     expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
-  it("invalidates both selected thread snapshots on active-thread chat.completed events", async () => {
+  it("patches the selected thread status snapshot to idle and refreshes the timeline on chat.completed", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -403,12 +409,15 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot(threadId))).toEqual({
+      status: "idle",
+      newestIdx: 4,
+    });
     expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 
   it.each(["tool.started", "tool.finished", "subagent.started", "subagent.finished"] as const)(
-    "invalidates only the selected thread status snapshot on active-thread %s events",
+    "patches the selected thread status snapshot to running on active-thread %s events",
     async (type) => {
       const threadId = "selected-thread";
       queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
@@ -435,7 +444,10 @@ describe("useThreadEventStream", () => {
         );
       });
 
-      expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
+      expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot(threadId))).toEqual({
+        status: "running",
+        newestIdx: 5,
+      });
       expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
     },
   );
@@ -821,7 +833,7 @@ describe("useThreadEventStream", () => {
     expect(latestWaitingAssistant).toBeNull();
   });
 
-  it("still invalidates the selected thread status snapshot on gate resolution events", async () => {
+  it("patches the selected thread status snapshot back to running on gate resolution events", async () => {
     const threadId = "selected-thread";
     queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
 
@@ -845,7 +857,10 @@ describe("useThreadEventStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(threadId) });
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot(threadId))).toEqual({
+      status: "running",
+      newestIdx: 3,
+    });
     expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
   });
 

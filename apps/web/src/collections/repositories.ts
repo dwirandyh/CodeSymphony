@@ -74,9 +74,11 @@ export function refetchRepositoriesCollection(queryClient: QueryClient) {
   return getRepositoriesCollection(queryClient).utils.refetch();
 }
 
-export function resetRepositoriesCollectionRegistryForTest() {
+export async function resetRepositoriesCollectionRegistryForTest() {
+  const cleanupTasks: Promise<unknown>[] = [];
   for (const collection of repositoriesCollectionRegistry.values()) {
-    void collection.cleanup();
+    cleanupTasks.push(Promise.resolve(collection.cleanup()));
   }
   repositoriesCollectionRegistry.clear();
+  await Promise.allSettled(cleanupTasks);
 }

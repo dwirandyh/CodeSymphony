@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Clock3, Settings } from "lucide-react";
 import type { Repository } from "@codesymphony/shared-types";
 import { RepositoryPanel } from "../../components/workspace/RepositoryPanel";
+import type { ThreadsByWorktreeSnapshot } from "../../hooks/queries/useThreads";
 import { cn } from "../../lib/utils";
 import { useSidebarResize } from "./hooks/useSidebarResize";
 import type { RepositoryPanelDropPosition } from "./repositoryPanelPreferences";
@@ -11,6 +12,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   repositories,
   selectedRepositoryId,
   selectedWorktreeId,
+  threadSnapshot,
   hiddenRepositoryIds,
   expandedByRepo,
   loadingRepos,
@@ -37,6 +39,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
   repositories: Repository[];
   selectedRepositoryId: string | null;
   selectedWorktreeId: string | null;
+  threadSnapshot?: ThreadsByWorktreeSnapshot;
   hiddenRepositoryIds: string[];
   expandedByRepo: Record<string, boolean>;
   loadingRepos: boolean;
@@ -85,6 +88,7 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebar({
             selectedRepositoryId={selectedRepositoryId}
             selectedWorktreeId={selectedWorktreeId}
             enableMetadataQueries={enableRepositoryMetadata}
+            threadSnapshot={threadSnapshot}
             hiddenRepositoryIds={hiddenRepositoryIds}
             expandedByRepo={expandedByRepo}
             loadingRepos={loadingRepos}

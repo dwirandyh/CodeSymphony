@@ -358,7 +358,7 @@ describe("useBackgroundWorktreeStatusStream", () => {
     },
   );
 
-  it("invalidates snapshot queries on gate and plan events", async () => {
+  it("patches background thread status snapshots on gate and plan events", async () => {
     const thread = makeThread({ id: "background-thread", active: true });
     queryClient.setQueryData(queryKeys.threads.list("wt-1"), [thread]);
     queryClient.setQueryData(queryKeys.threads.statusSnapshot(thread.id), makeStatusSnapshot());
@@ -394,8 +394,10 @@ describe("useBackgroundWorktreeStatusStream", () => {
       );
     });
 
-    expect(invalidateQueriesMock).toHaveBeenCalledWith({ queryKey: queryKeys.threads.statusSnapshot(thread.id) });
-    expect(invalidateQueriesMock).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot(thread.id))).toEqual({
+      status: "review_plan",
+      newestIdx: 4,
+    });
   });
 
   it("reconnects with afterIdx and dedupes repeated events", async () => {

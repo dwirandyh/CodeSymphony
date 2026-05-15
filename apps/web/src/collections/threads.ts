@@ -134,12 +134,14 @@ export function replaceThreadsCollection(queryClient: QueryClient, worktreeId: s
   });
 }
 
-export function resetThreadsCollectionRegistryForTest() {
+export async function resetThreadsCollectionRegistryForTest() {
+  const cleanupTasks: Promise<unknown>[] = [];
   for (const collections of threadsCollectionRegistry.values()) {
     for (const collection of collections.values()) {
-      void collection.cleanup();
+      cleanupTasks.push(Promise.resolve(collection.cleanup()));
     }
     collections.clear();
   }
   threadsCollectionRegistry.clear();
+  await Promise.allSettled(cleanupTasks);
 }

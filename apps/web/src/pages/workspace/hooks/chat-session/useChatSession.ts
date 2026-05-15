@@ -513,10 +513,20 @@ function getCachedThreadsForWorktree(
 function shouldDelayRemoteBootstrapForLocalThread(params: {
   selectedThreadId: string | null;
   optimisticCreatedThreadIds: Set<string>;
+  serverBackedThreadIds: Set<string>;
   waitingAssistant: { threadId: string; afterIdx: number } | null;
 }): boolean {
-  const { selectedThreadId, optimisticCreatedThreadIds, waitingAssistant } = params;
-  if (!selectedThreadId || !optimisticCreatedThreadIds.has(selectedThreadId)) {
+  const {
+    selectedThreadId,
+    optimisticCreatedThreadIds,
+    serverBackedThreadIds,
+    waitingAssistant,
+  } = params;
+  if (
+    !selectedThreadId
+    || !optimisticCreatedThreadIds.has(selectedThreadId)
+    || serverBackedThreadIds.has(selectedThreadId)
+  ) {
     return false;
   }
 
@@ -805,12 +815,15 @@ export function useChatSession(
   const claimedContextEventIdsByThreadMessageRef = useRef<Map<string, Set<string>>>(new Map());
   const activeThreadIdRef = useRef<string | null>(null);
   const waitingAssistantRef = useRef<{ threadId: string; afterIdx: number } | null>(null);
+  const bootstrapStateDebugSignatureRef = useRef<string | null>(null);
+  const suspiciousBootstrapDebugSignatureRef = useRef<string | null>(null);
   const selectedThreadIdOverrideRef = useRef<string | null>(null);
   const pendingSelectedThreadIdRef = useRef<string | null>(null);
   const threadsRef = useRef<ChatThread[]>([]);
   const threadByIdRef = useRef<Map<string, ChatThread>>(new Map());
   const creatingThreadRef = useRef(false);
   const optimisticCreatedThreadIdsRef = useRef<Set<string>>(new Set());
+  const serverBackedThreadIdsRef = useRef<Set<string>>(new Set());
   const locallyDeletedThreadIdsRef = useRef<Set<string>>(new Set());
   const prevThreadIdRef = useRef<string | null>(null);
   const prevSeedThreadRef = useRef<string | null>(null);
@@ -1000,6 +1013,23 @@ export function useChatSession(
     }
 
     if (!queriedThreads) return;
+
+    const reconciledOptimisticThreadIds: string[] = [];
+    for (const thread of queriedThreads) {
+      if (optimisticCreatedThreadIdsRef.current.delete(thread.id)) {
+        reconciledOptimisticThreadIds.push(thread.id);
+      }
+    }
+
+    if (reconciledOptimisticThreadIds.length > 0) {
+      debugLog("thread.bootstrap", "queriedThreads.reconciledOptimisticFlags", {
+        worktreeId: selectedWorktreeId,
+        reconciledOptimisticThreadIds,
+        queriedThreadIds: queriedThreads.map((thread) => thread.id),
+      }, {
+        worktreeId: selectedWorktreeId,
+      });
+    }
 
     prevWorktreeIdRef2.current = selectedWorktreeId;
 
@@ -1337,10 +1367,13 @@ export function useChatSession(
     || (selectedThreadUiStatus !== "idle" && selectedThreadUiStatus !== "running");
   const selectedThreadIsRunning = selectedThreadUiStatus === "running";
   const selectedThreadCreatedLocally =
-    selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
+    selectedThreadId != null
+    && optimisticCreatedThreadIdsRef.current.has(selectedThreadId)
+    && !serverBackedThreadIdsRef.current.has(selectedThreadId);
   const shouldDelaySelectedThreadRemoteBootstrap = shouldDelayRemoteBootstrapForLocalThread({
     selectedThreadId,
     optimisticCreatedThreadIds: optimisticCreatedThreadIdsRef.current,
+    serverBackedThreadIds: serverBackedThreadIdsRef.current,
     waitingAssistant,
   });
   const selectedThreadCollectionCounts = selectedThreadId != null
@@ -1873,6 +1906,8 @@ export function useChatSession(
   }, [closingThreadId, selectedThreadIdForData]);
 
   function clearThreadTrackingState(threadId: string) {
+    optimisticCreatedThreadIdsRef.current.delete(threadId);
+    serverBackedThreadIdsRef.current.delete(threadId);
     loggedOrphanEventIdsByThreadRef.current.delete(threadId);
     const claimedKeyPrefix = `${threadId}:`;
     for (const key of claimedContextEventIdsByThreadMessageRef.current.keys()) {
@@ -1882,6 +1917,25 @@ export function useChatSession(
     }
     clearThreadStreamState(threadId);
     disposeThreadCollections(threadId);
+  }
+
+  function markThreadServerBacked(threadId: string, reason: string) {
+    if (serverBackedThreadIdsRef.current.has(threadId)) {
+      return;
+    }
+
+    serverBackedThreadIdsRef.current.add(threadId);
+    debugLog("thread.bootstrap", "thread.markedServerBacked", {
+      threadId,
+      worktreeId: selectedWorktreeId,
+      reason,
+      optimisticTracked: optimisticCreatedThreadIdsRef.current.has(threadId),
+      waitingAssistantThreadId: waitingAssistantRef.current?.threadId ?? null,
+      localCollectionCounts: getThreadCollectionCounts(threadId),
+    }, {
+      threadId,
+      worktreeId: selectedWorktreeId,
+    });
   }
 
   function startWaitingAssistant(threadId: string, options?: { restored?: boolean }) {
@@ -2406,7 +2460,7 @@ export function useChatSession(
           force: true,
           optimisticMessageId: optimisticMessage.id,
         });
-        optimisticCreatedThreadIdsRef.current.delete(sendThreadId);
+        markThreadServerBacked(sendThreadId, "createThreadAndSendMessage.sendMessage.resolved");
       } catch (e) {
         removeOptimisticMessage(messageThreadId, optimisticMessage.id, { force: true });
         setWaitingAssistant(null);
@@ -2490,6 +2544,7 @@ export function useChatSession(
         force: true,
         optimisticMessageId: optimisticMessage.id,
       });
+      markThreadServerBacked(created.id, "createOrSelectPrMrThreadAndSendMessage.sendMessage.resolved");
       invalidateRepositoryReviews();
       return created;
     } catch (e) {
@@ -2837,6 +2892,7 @@ export function useChatSession(
       mergeReturnedMessageIntoVisibleState(activeThread.id, sentMessage, {
         optimisticMessageId: optimisticMessage.id,
       });
+      markThreadServerBacked(activeThread.id, "submitMessage.sendMessage.resolved");
       if (shouldInvalidateSnapshot) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(activeThread.id) });
       }
@@ -3239,6 +3295,187 @@ export function useChatSession(
     ? [...messages].reverse().find((message) => message.threadId === selectedThreadId) ?? null
     : null;
   const lastSelectedTimelineItem = timelineItems[timelineItems.length - 1] ?? null;
+
+  useEffect(() => {
+    const selectedThreadExistsInQuery =
+      selectedThreadId != null && (queriedThreads?.some((thread) => thread.id === selectedThreadId) ?? false);
+    const selectedThreadServerBacked =
+      selectedThreadId != null && serverBackedThreadIdsRef.current.has(selectedThreadId);
+    const selectedThreadOptimisticTracked =
+      selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
+    const signature = JSON.stringify({
+      requestedThreadId,
+      selectedThreadId,
+      selectedThreadIdForData,
+      selectedWorktreeId,
+      selectedThreadExistsInQuery,
+      selectedThreadCreatedLocally,
+      selectedThreadOptimisticTracked,
+      selectedThreadServerBacked,
+      shouldDelaySelectedThreadRemoteBootstrap,
+      snapshotBootstrapThreadId,
+      remoteBootstrapThreadId,
+      selectedThreadHasLocalState,
+      threadSnapshotLoading,
+      threadSnapshotFetching,
+      queriedThreadSnapshotPresent: queriedThreadSnapshot != null,
+      queriedThreadStatusSnapshotStatus: queriedThreadStatusSnapshot?.status ?? null,
+      waitingAssistantThreadId: waitingAssistant?.threadId ?? null,
+      messageListEmptyState,
+      timelineItemsCount: timelineItems.length,
+      messagesCount: messages.length,
+      eventsCount: events.length,
+    });
+
+    if (bootstrapStateDebugSignatureRef.current === signature) {
+      return;
+    }
+
+    bootstrapStateDebugSignatureRef.current = signature;
+    debugLog("thread.bootstrap", "selection.state", {
+      requestedThreadId,
+      selectedThreadId,
+      selectedThreadIdForData,
+      selectedWorktreeId,
+      selectedThreadExistsInQuery,
+      selectedThreadCreatedLocally,
+      selectedThreadOptimisticTracked,
+      selectedThreadServerBacked,
+      shouldDelaySelectedThreadRemoteBootstrap,
+      snapshotBootstrapThreadId,
+      remoteBootstrapThreadId,
+      selectedThreadHasLocalState,
+      threadSnapshotLoading,
+      threadSnapshotFetching,
+      queriedThreadSnapshotPresent: queriedThreadSnapshot != null,
+      queriedThreadStatusSnapshotStatus: queriedThreadStatusSnapshot?.status ?? null,
+      waitingAssistantThreadId: waitingAssistant?.threadId ?? null,
+      messageListEmptyState,
+      timelineItemsCount: timelineItems.length,
+      messagesCount: messages.length,
+      eventsCount: events.length,
+    }, {
+      threadId: selectedThreadIdForData ?? selectedThreadId ?? requestedThreadId ?? null,
+      worktreeId: selectedWorktreeId,
+    });
+  }, [
+    events.length,
+    messageListEmptyState,
+    messages.length,
+    queriedThreadSnapshot,
+    queriedThreadStatusSnapshot?.status,
+    queriedThreads,
+    remoteBootstrapThreadId,
+    requestedThreadId,
+    selectedThreadCreatedLocally,
+    selectedThreadHasLocalState,
+    selectedThreadId,
+    selectedThreadIdForData,
+    selectedWorktreeId,
+    shouldDelaySelectedThreadRemoteBootstrap,
+    snapshotBootstrapThreadId,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+    timelineItems.length,
+    waitingAssistant,
+  ]);
+
+  useEffect(() => {
+    const selectedThreadExistsInQuery =
+      selectedThreadId != null && (queriedThreads?.some((thread) => thread.id === selectedThreadId) ?? false);
+    const selectedThreadServerBacked =
+      selectedThreadId != null && serverBackedThreadIdsRef.current.has(selectedThreadId);
+    const selectedThreadOptimisticTracked =
+      selectedThreadId != null && optimisticCreatedThreadIdsRef.current.has(selectedThreadId);
+
+    let suspiciousReason: string | null = null;
+
+    if (selectedThreadId && selectedThreadExistsInQuery && !selectedThreadHasLocalState) {
+      if (selectedThreadOptimisticTracked && !selectedThreadServerBacked) {
+        suspiciousReason = "queried-thread-still-marked-local-only";
+      } else if (selectedThreadServerBacked && shouldDelaySelectedThreadRemoteBootstrap) {
+        suspiciousReason = "server-backed-thread-still-delayed";
+      } else if (selectedThreadServerBacked && messageListEmptyState === "new-thread-empty") {
+        suspiciousReason = "server-backed-thread-rendered-as-new";
+      } else if (
+        selectedThreadServerBacked
+        && messageListEmptyState === "existing-thread-empty"
+        && queriedThreadSnapshot == null
+      ) {
+        suspiciousReason = "server-backed-thread-empty-without-snapshot";
+      }
+    }
+
+    if (!suspiciousReason) {
+      suspiciousBootstrapDebugSignatureRef.current = null;
+      return;
+    }
+
+    const suspiciousSignature = JSON.stringify({
+      suspiciousReason,
+      selectedThreadId,
+      selectedWorktreeId,
+      selectedThreadIdForData,
+      messageListEmptyState,
+      shouldDelaySelectedThreadRemoteBootstrap,
+      snapshotBootstrapThreadId,
+      remoteBootstrapThreadId,
+    });
+
+    if (suspiciousBootstrapDebugSignatureRef.current === suspiciousSignature) {
+      return;
+    }
+
+    suspiciousBootstrapDebugSignatureRef.current = suspiciousSignature;
+    debugLog("thread.bootstrap", "selection.suspicious", {
+      suspiciousReason,
+      requestedThreadId,
+      selectedThreadId,
+      selectedThreadIdForData,
+      selectedWorktreeId,
+      selectedThreadExistsInQuery,
+      selectedThreadCreatedLocally,
+      selectedThreadOptimisticTracked,
+      selectedThreadServerBacked,
+      shouldDelaySelectedThreadRemoteBootstrap,
+      snapshotBootstrapThreadId,
+      remoteBootstrapThreadId,
+      selectedThreadHasLocalState,
+      threadSnapshotLoading,
+      threadSnapshotFetching,
+      queriedThreadSnapshotPresent: queriedThreadSnapshot != null,
+      queriedThreadStatusSnapshotStatus: queriedThreadStatusSnapshot?.status ?? null,
+      waitingAssistantThreadId: waitingAssistant?.threadId ?? null,
+      messageListEmptyState,
+      timelineItemsCount: timelineItems.length,
+      messagesCount: messages.length,
+      eventsCount: events.length,
+    }, {
+      threadId: selectedThreadId,
+      worktreeId: selectedWorktreeId,
+      force: true,
+    });
+  }, [
+    events.length,
+    messageListEmptyState,
+    messages.length,
+    queriedThreadSnapshot,
+    queriedThreadStatusSnapshot?.status,
+    queriedThreads,
+    remoteBootstrapThreadId,
+    requestedThreadId,
+    selectedThreadCreatedLocally,
+    selectedThreadHasLocalState,
+    selectedThreadId,
+    selectedThreadIdForData,
+    selectedWorktreeId,
+    shouldDelaySelectedThreadRemoteBootstrap,
+    snapshotBootstrapThreadId,
+    threadSnapshotFetching,
+    threadSnapshotLoading,
+    timelineItems.length,
+    waitingAssistant,
+  ]);
 
   useEffect(() => {
     logNewThreadSendDebug("session.renderState", {
