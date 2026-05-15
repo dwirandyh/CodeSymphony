@@ -245,6 +245,82 @@ describe("cursor session runner", () => {
     expect(fakeCursorSessions.get("cursor-session-1")?.prompts[0]).toContain("User request:\nInspect this repo and propose a plan.");
   });
 
+  it("enriches Cursor terminal tool calls from rawOutput instead of the generic Terminal placeholder", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "terminal_1",
+          title: "Terminal",
+          kind: "execute",
+          status: "pending",
+          rawInput: {},
+          content: [],
+        });
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "terminal_1",
+          status: "completed",
+          rawOutput: {
+            exitCode: 0,
+            stdout: "/tmp/project\nhello-from-cursor\n",
+            stderr: "",
+          },
+          content: [],
+        });
+        await agent.emitText(sessionId, "Done.");
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const toolStarts: Array<Record<string, unknown>> = [];
+    const toolFinishes: Array<Record<string, unknown>> = [];
+
+    const result = await runCursorWithStreaming({
+      prompt: "Run a quick terminal command.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "full_access",
+      onText: () => {},
+      onToolStarted: (event) => {
+        toolStarts.push(event as unknown as Record<string, unknown>);
+      },
+      onToolOutput: () => {},
+      onToolFinished: (event) => {
+        toolFinishes.push(event as unknown as Record<string, unknown>);
+      },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(result.output).toBe("Done.");
+    expect(toolStarts).toMatchObject([
+      {
+        toolName: "Bash",
+        shell: "bash",
+        isBash: true,
+      },
+    ]);
+    expect(toolStarts[0]?.command).toBeUndefined();
+    expect(toolFinishes).toMatchObject([
+      {
+        toolName: "Bash",
+        summary: "Ran terminal command",
+        output: "/tmp/project\nhello-from-cursor\n",
+        shell: "bash",
+        isBash: true,
+      },
+    ]);
+    expect(toolFinishes[0]?.command).toBeUndefined();
+  });
+
   it("normalizes Cursor ACP elicitation requests into runtime question callbacks", async () => {
     const spawnMock = vi.fn(() => createMockCursorChild({
       onPrompt: async ({ agent, sessionId }) => {
@@ -440,7 +516,7 @@ describe("cursor session runner", () => {
     expect(fakeCursorSessions.get(first.sessionId!)?.currentModeId).toBe("agent");
     expect(fakeCursorSessions.get(first.sessionId!)?.currentModelId).toBe("gpt-5.4[context=272k,reasoning=medium,fast=false]");
     expect(fakeCursorSessions.get(first.sessionId!)?.prompts.at(-1)).toBe("Ship it.");
-    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unsupported provider overrides with an actionable Cursor-specific error", async () => {
@@ -617,6 +693,7 @@ describe("cursor session runner", () => {
       acpMode: "agent",
       threadPermissionMode: "default",
     })).toContain("This thread uses on-request approvals.");
+    expect(__testing.toolNameFromCursorKind(null, "Terminal")).toBe("Bash");
     expect(__testing.buildCursorPrompt({
       prompt: "Create a file",
       acpMode: "agent",
