@@ -16,6 +16,7 @@ import {
   commandFromUnknownToolInput,
   editTargetFromUnknownToolInput,
   isBashTool,
+  resolveToolPresentationContext,
   searchParamsFromUnknownToolInput,
   skillNameFromUnknownToolInput,
 } from "../claude/toolClassification.js";
@@ -571,6 +572,7 @@ function mapPermissionDecision(decision: PermissionDecision): "once" | "always" 
 
 function buildToolMetadata(part: OpencodeToolPart): {
   toolName: string;
+  toolKind?: "mcp" | "web_search";
   toolInput: Record<string, unknown>;
   command?: string;
   searchParams?: string;
@@ -578,16 +580,23 @@ function buildToolMetadata(part: OpencodeToolPart): {
   skillName?: string;
   isBash: boolean;
 } {
-  const toolName = part.tool.trim();
+  const presentation = resolveToolPresentationContext({
+    toolName: part.tool.trim(),
+    title: ("title" in part.state && typeof part.state.title === "string") ? part.state.title : part.tool,
+    kind: null,
+    input: part.state.input,
+  });
+  const toolName = presentation.toolName;
   const toolInput = toRecord(part.state.input);
   const command = commandFromUnknownToolInput(toolInput);
   const editTarget = editTargetFromUnknownToolInput(toolName, toolInput);
-  const searchParams = searchParamsFromUnknownToolInput(toolName, toolInput);
+  const searchParams = presentation.searchParams ?? searchParamsFromUnknownToolInput(toolName, toolInput);
   const skillName = skillNameFromUnknownToolInput(toolName, toolInput);
   const isBash = isBashTool(toolName) || toolName.trim().toLowerCase() === "shell";
 
   return {
     toolName,
+    ...(presentation.toolKind ? { toolKind: presentation.toolKind } : {}),
     toolInput,
     ...(command ? { command } : {}),
     ...(searchParams ? { searchParams } : {}),
@@ -966,6 +975,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
     if (!lifecycle.startedEmitted) {
       await onToolStarted({
         toolName: metadata.toolName,
+        ...(metadata.toolKind ? { toolKind: metadata.toolKind } : {}),
         toolUseId: part.callID,
         parentToolUseId: null,
         ...(metadata.command ? { command: metadata.command } : {}),
@@ -985,6 +995,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
       lifecycle.lastElapsedTimeSeconds = elapsedTimeSeconds;
       await onToolOutput({
         toolName: metadata.toolName,
+        ...(metadata.toolKind ? { toolKind: metadata.toolKind } : {}),
         toolUseId: part.callID,
         parentToolUseId: null,
         elapsedTimeSeconds,
@@ -993,10 +1004,21 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
 
     if ((nextStatus === "completed" || nextStatus === "error") && !lifecycle.finishedEmitted) {
       const summary = nextStatus === "completed"
-        ? part.state.title?.trim() || `${metadata.toolName} completed`
-        : part.state.error?.trim() || `${metadata.toolName} failed`;
+        ? metadata.toolKind === "web_search"
+          ? metadata.searchParams
+            ? `Searched ${metadata.searchParams}`
+            : "Searched the web"
+          : metadata.toolKind === "mcp"
+            ? `Ran ${metadata.toolName}`
+            : part.state.title?.trim() || `${metadata.toolName} completed`
+        : metadata.toolKind === "web_search"
+          ? "Web search failed"
+          : metadata.toolKind === "mcp"
+            ? `Failed ${metadata.toolName}`
+            : part.state.error?.trim() || `${metadata.toolName} failed`;
       await onToolFinished({
         toolName: metadata.toolName,
+        ...(metadata.toolKind ? { toolKind: metadata.toolKind } : {}),
         summary,
         precedingToolUseIds: [part.callID],
         ...(metadata.command ? { command: metadata.command } : {}),

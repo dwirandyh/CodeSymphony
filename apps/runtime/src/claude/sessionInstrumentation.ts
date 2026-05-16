@@ -14,6 +14,7 @@ import {
   editTargetFromUnknownToolInput,
   skillNameFromUnknownToolInput,
   isBashTool,
+  resolveToolPresentationContext,
   type ToolMetadata,
 } from "./toolClassification.js";
 import type { BashToolResult } from "./bashResult.js";
@@ -132,6 +133,11 @@ export function createMarkStarted(
       subagentOwnerToolUseId: ownership.subagentOwnerToolUseId,
       launcherToolUseId: ownership.launcherToolUseId,
       ownershipReason: ownership.ownershipReason,
+      ...(metadata?.toolKind
+        ? {
+          toolKind: metadata.toolKind,
+        }
+        : {}),
       ...(ownership.ownershipCandidates && ownership.ownershipCandidates.length > 0
         ? { ownershipCandidates: ownership.ownershipCandidates }
         : {}),
@@ -183,20 +189,29 @@ export function buildMetadataFromHookInput(
   toolMetadataByUseId: Map<string, ToolMetadata>,
 ): ToolMetadata {
   const existing = toolMetadataByUseId.get(hookToolUseId);
-  const metadata: ToolMetadata = existing ?? {
+  const presentation = resolveToolPresentationContext({
     toolName: hookInput.tool_name as string,
+    title: hookInput.tool_name as string,
+    kind: null,
+    input: hookInput.tool_input,
+  });
+  const metadata: ToolMetadata = existing ?? {
+    toolName: presentation.toolName,
+    ...(presentation.toolKind ? { toolKind: presentation.toolKind } : {}),
     command: commandFromUnknownToolInput(hookInput.tool_input),
-    readTarget: readTargetFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
-    searchParams: searchParamsFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
-    editTarget: editTargetFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
-    skillName: skillNameFromUnknownToolInput(hookInput.tool_name as string, hookInput.tool_input),
-    isBash: isBashTool(hookInput.tool_name as string),
+    readTarget: readTargetFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
+    searchParams: presentation.searchParams ?? searchParamsFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
+    editTarget: editTargetFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
+    skillName: skillNameFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
+    isBash: isBashTool(presentation.toolName),
   };
+  metadata.toolName = presentation.toolName;
+  metadata.toolKind = presentation.toolKind ?? metadata.toolKind;
   if (!metadata.readTarget) {
     metadata.readTarget = readTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
   }
   if (!metadata.searchParams) {
-    metadata.searchParams = searchParamsFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
+    metadata.searchParams = presentation.searchParams ?? searchParamsFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
   }
   if (!metadata.editTarget) {
     metadata.editTarget = editTargetFromUnknownToolInput(metadata.toolName, hookInput.tool_input);
@@ -264,6 +279,7 @@ export function buildToolFinishedPayload(
     summary,
     precedingToolUseIds: toolUseIds,
     toolName: metadata.toolName,
+    ...(metadata.toolKind ? { toolKind: metadata.toolKind } : {}),
     ...(subagentResponse ? { subagentResponse } : {}),
     ...(metadata.skillName ? { skillName: metadata.skillName } : {}),
     ...(metadata.editTarget

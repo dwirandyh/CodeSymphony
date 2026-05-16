@@ -836,6 +836,117 @@ describe("ChatMessageList", () => {
     expect(container.querySelector("svg.lucide-circle-x")).toBeTruthy();
   });
 
+  it("renders Codex MCP tool items like command cards even with human-readable tool names", () => {
+    const event: ChatEvent = {
+      id: "ev-codex-mcp",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.finished",
+      payload: {
+        toolName: "filesystem.read_file",
+        toolKind: "mcp",
+        toolUseId: "codex-mcp-1",
+        summary: "Completed filesystem.read_file",
+        output: "# README",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "tool",
+        id: "tool-codex-mcp-1",
+        event,
+        sourceEvents: [event],
+        toolUseId: "codex-mcp-1",
+        toolName: "filesystem.read_file",
+        output: "# README",
+        truncated: false,
+        durationSeconds: 0.4,
+        status: "success",
+      },
+    ];
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+    expect(container.textContent).toContain("Ran filesystem.read_file");
+    expect(container.textContent).not.toContain("Completed filesystem.read_file");
+    expect(container.querySelector("summary")).toBeTruthy();
+
+    clickFirstSummary();
+    expect(container.textContent).toContain("# README");
+  });
+
+  it("renders completed Codex web searches as one-line tool items without expansion", () => {
+    const event: ChatEvent = {
+      id: "ev-web-search",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.finished",
+      payload: {
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        toolUseId: "web-search-1",
+        searchParams: "site:openai.com Codex CLI slash commands /help /model /approval-mode /status",
+        summary: "Completed WebSearch",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "tool",
+        id: "tool-web-search-1",
+        event,
+        sourceEvents: [event],
+        toolUseId: "web-search-1",
+        toolName: "WebSearch",
+        truncated: false,
+        durationSeconds: 0.3,
+        status: "success",
+      },
+    ];
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+    expect(container.textContent).toContain("Searched site:openai.com Codex CLI slash commands /help /model /approval-mode /status");
+    expect(container.textContent).not.toContain("Completed WebSearch");
+    expect(container.querySelector("summary")).toBeNull();
+    expect(container.querySelector("details")).toBeNull();
+  });
+
+  it("renders running Codex web searches with Codex-style wording", () => {
+    const event: ChatEvent = {
+      id: "ev-web-search-running",
+      threadId: "t1",
+      idx: 1,
+      type: "tool.started",
+      payload: {
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        toolUseId: "web-search-run-1",
+        searchParams: "latest OpenAI Codex app server docs",
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+    };
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "tool",
+        id: "tool-web-search-run-1",
+        event,
+        sourceEvents: [event],
+        toolUseId: "web-search-run-1",
+        toolName: "WebSearch",
+        durationSeconds: 0.1,
+        status: "running",
+      },
+    ];
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+    expect(container.textContent).toContain("Searching the web");
+    expect(container.textContent).not.toContain("latest OpenAI Codex app server docs");
+    expect(container.querySelector("summary")).toBeNull();
+  });
+
   it("renders edited-diff item", () => {
     const items: ChatTimelineItem[] = [
       {

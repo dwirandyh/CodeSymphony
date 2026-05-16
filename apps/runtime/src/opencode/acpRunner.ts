@@ -22,6 +22,7 @@ import type { AgentTodoItem, PermissionDecision } from "@codesymphony/shared-typ
 import { resolveHeuristicPlanContent } from "../codex/plan.js";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
+import { resolveToolPresentationContext } from "../claude/toolClassification.js";
 import { resolveOpencodeBinaryPath } from "./binary.js";
 
 const OPENCODE_PLAN_FILE_PATH = ".opencode/plans/opencode-plan.md";
@@ -322,6 +323,23 @@ function toolNameFromKind(kind: ToolKind | null, title: string): string {
   }
 }
 
+function resolveOpencodeAcpToolPresentation(params: {
+  kind: ToolKind | null;
+  title: string;
+  rawInput: unknown;
+}): {
+  toolName: string;
+  toolKind?: "mcp" | "web_search";
+  searchParams?: string;
+} {
+  return resolveToolPresentationContext({
+    toolName: toolNameFromKind(params.kind, params.title),
+    title: params.title,
+    kind: params.kind,
+    input: params.rawInput,
+  });
+}
+
 function extractToolTextContent(content: ToolCallContent[]): string {
   return content
     .flatMap((item) => {
@@ -406,9 +424,28 @@ function buildToolSummary(state: OpencodeToolState): string {
   const title = state.title.trim() || "Tool";
   const path = extractToolPath(state);
   const failed = state.status === "failed";
+  const toolPresentation = resolveOpencodeAcpToolPresentation({
+    kind: state.kind,
+    title: state.title,
+    rawInput: state.rawInput,
+  });
 
   if (failed) {
+    if (toolPresentation.toolKind === "web_search") {
+      return "Web search failed";
+    }
+    if (toolPresentation.toolKind === "mcp") {
+      return `Failed ${toolPresentation.toolName}`;
+    }
     return `${title} failed`;
+  }
+
+  if (toolPresentation.toolKind === "web_search") {
+    return toolPresentation.searchParams ? `Searched ${toolPresentation.searchParams}` : "Searched the web";
+  }
+
+  if (toolPresentation.toolKind === "mcp") {
+    return `Ran ${toolPresentation.toolName}`;
   }
 
   switch (state.kind) {
@@ -715,7 +752,12 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
       planExitCompleted = true;
     }
 
-    const toolName = toolNameFromKind(current.kind, current.title);
+    const toolPresentation = resolveOpencodeAcpToolPresentation({
+      kind: current.kind,
+      title: current.title,
+      rawInput: current.rawInput,
+    });
+    const toolName = toolPresentation.toolName;
     const editTarget = extractToolPath(current);
 
     if (!current.startedEmitted) {
@@ -723,9 +765,11 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
       current.startedAtMs = Date.now();
       await onToolStarted({
         toolName,
+        ...(toolPresentation.toolKind ? { toolKind: toolPresentation.toolKind } : {}),
         toolUseId,
         parentToolUseId: null,
         ...(editTarget ? { editTarget } : {}),
+        ...(toolPresentation.searchParams ? { searchParams: toolPresentation.searchParams } : {}),
         ...(current.kind === "execute" ? { command: extractCommand(current.rawInput) ?? current.title, shell: "bash" as const, isBash: true as const } : {}),
       });
     }
@@ -733,6 +777,7 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
     if (current.status === "in_progress") {
       await onToolOutput({
         toolName,
+        ...(toolPresentation.toolKind ? { toolKind: toolPresentation.toolKind } : {}),
         toolUseId,
         parentToolUseId: null,
         elapsedTimeSeconds: Math.max(0, ((Date.now() - (current.startedAtMs ?? Date.now())) / 1000)),
@@ -745,10 +790,12 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
       const textOutput = extractToolTextContent(current.content);
       await onToolFinished({
         toolName,
+        ...(toolPresentation.toolKind ? { toolKind: toolPresentation.toolKind } : {}),
         summary: buildToolSummary(current),
         precedingToolUseIds: [toolUseId],
         ...(editTarget ? { editTarget } : {}),
         ...(coerceObject(current.rawInput) ? { toolInput: coerceObject(current.rawInput)! } : {}),
+        ...(toolPresentation.searchParams ? { searchParams: toolPresentation.searchParams } : {}),
         ...(current.kind === "execute"
           ? {
               command: extractCommand(current.rawInput) ?? current.title,
@@ -827,14 +874,18 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
         },
         requestPermission: async (request) => {
           const toolUseId = normalizeToolUseId(request.toolCall.toolCallId);
-          const toolName = toolNameFromKind(request.toolCall.kind ?? null, request.toolCall.title ?? "Tool");
           const toolInput = coerceObject(request.toolCall.rawInput) ?? {};
+          const toolPresentation = resolveOpencodeAcpToolPresentation({
+            kind: request.toolCall.kind ?? null,
+            title: request.toolCall.title ?? "Tool",
+            rawInput: toolInput,
+          });
           const blockedPath = request.toolCall.locations?.[0]?.path?.trim() || null;
           const syntheticRequestId = `${toolUseId || "opencode-tool"}:${randomUUID()}`;
 
           const result = await onPermissionRequest({
             requestId: syntheticRequestId,
-            toolName,
+            toolName: toolPresentation.toolName,
             toolInput,
             blockedPath,
             decisionReason: null,
