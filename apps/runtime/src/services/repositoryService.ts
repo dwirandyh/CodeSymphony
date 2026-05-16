@@ -1,7 +1,14 @@
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import prismaClientPkg, { type PrismaClient } from "@prisma/client";
-import { CreateRepositoryInputSchema, UpdateRepositoryScriptsInputSchema, type CreateRepositoryInput, type Repository, type UpdateRepositoryScriptsInput } from "@codesymphony/shared-types";
+import {
+  CreateRepositoryInputSchema,
+  DEFAULT_CHAT_MODEL_BY_AGENT,
+  UpdateRepositoryScriptsInputSchema,
+  type CreateRepositoryInput,
+  type Repository,
+  type UpdateRepositoryScriptsInput,
+} from "@codesymphony/shared-types";
 import { ensureGitRepository, detectDefaultBranch, getCurrentBranch, listBranches } from "./git.js";
 import { mapRepository } from "./mappers.js";
 
@@ -248,6 +255,8 @@ export function createRepositoryService(prisma: PrismaClient) {
             data: {
               worktreeId: primaryWorktree.id,
               title: "New Thread",
+              agent: "claude",
+              model: DEFAULT_CHAT_MODEL_BY_AGENT.claude,
             },
           });
 

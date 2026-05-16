@@ -2,6 +2,14 @@ import type { ToolMetadata } from "./toolClassification.js";
 import { readTargetFromUnknownToolInput, editTargetFromUnknownToolInput } from "./toolClassification.js";
 
 export function completionSummaryFromMetadata(metadata: ToolMetadata, toolInput?: unknown): string {
+    if (metadata.toolKind === "web_search") {
+        return metadata.searchParams ? `Searched ${metadata.searchParams}` : "Searched the web";
+    }
+
+    if (metadata.toolKind === "mcp") {
+        return `Ran ${metadata.toolName}`;
+    }
+
     if (metadata.command) {
         return `Ran ${metadata.command}`;
     }
@@ -24,6 +32,14 @@ export function completionSummaryFromMetadata(metadata: ToolMetadata, toolInput?
 }
 
 export function failureSummaryFromMetadata(metadata: ToolMetadata, toolInput: unknown, command?: string): string {
+    if (metadata.toolKind === "web_search") {
+        return "Web search failed";
+    }
+
+    if (metadata.toolKind === "mcp") {
+        return `Failed ${metadata.toolName}`;
+    }
+
     if (command) {
         return `Failed ${command}`;
     }

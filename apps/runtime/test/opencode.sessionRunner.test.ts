@@ -258,6 +258,253 @@ describe("opencode session runner config", () => {
     });
   });
 
+  it("normalizes OpenCode SDK MCP and web-search tool parts for the timeline", async () => {
+    const spawnMock = vi.fn(() => {
+      const child = new MockOpencodeServerProcess();
+      queueMicrotask(() => {
+        child.announce("http://127.0.0.1:9999");
+      });
+      return child;
+    });
+    const promptAsync = vi.fn(async () => ({}));
+    const createOpencodeClient = vi.fn(() => ({
+      session: {
+        create: vi.fn(async () => ({ data: { id: "sdk-session-1" } })),
+        messages: vi.fn(async () => ({ data: [] })),
+        promptAsync,
+        abort: vi.fn(async () => ({})),
+      },
+      event: {
+        subscribe: vi.fn(async () => ({
+          stream: (async function* () {
+            yield {
+              type: "message.updated",
+              properties: {
+                info: {
+                  id: "msg_1",
+                  sessionID: "sdk-session-1",
+                  role: "assistant",
+                },
+              },
+            };
+            yield {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "tool-part-web",
+                  sessionID: "sdk-session-1",
+                  messageID: "msg_1",
+                  type: "tool",
+                  callID: "call_web_1",
+                  tool: "websearch",
+                  state: {
+                    status: "pending",
+                    input: {
+                      query: "OpenAI Codex CLI official GitHub npm",
+                    },
+                    title: "Web search",
+                    time: {
+                      start: 1,
+                    },
+                  },
+                },
+              },
+            };
+            yield {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "tool-part-web",
+                  sessionID: "sdk-session-1",
+                  messageID: "msg_1",
+                  type: "tool",
+                  callID: "call_web_1",
+                  tool: "websearch",
+                  state: {
+                    status: "running",
+                    input: {
+                      query: "OpenAI Codex CLI official GitHub npm",
+                    },
+                    title: "Web search",
+                    time: {
+                      start: 1,
+                    },
+                  },
+                },
+              },
+            };
+            yield {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "tool-part-web",
+                  sessionID: "sdk-session-1",
+                  messageID: "msg_1",
+                  type: "tool",
+                  callID: "call_web_1",
+                  tool: "websearch",
+                  state: {
+                    status: "completed",
+                    input: {
+                      query: "OpenAI Codex CLI official GitHub npm",
+                    },
+                    output: "Search complete.",
+                    title: "Web search",
+                    metadata: {},
+                    time: {
+                      start: 1,
+                      end: 2,
+                    },
+                  },
+                },
+              },
+            };
+            yield {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "tool-part-mcp",
+                  sessionID: "sdk-session-1",
+                  messageID: "msg_1",
+                  type: "tool",
+                  callID: "call_mcp_1",
+                  tool: "tool",
+                  state: {
+                    status: "pending",
+                    input: {
+                      server: "context7",
+                      tool: "resolve-library-id",
+                      query: "react",
+                    },
+                    title: "MCP",
+                    time: {
+                      start: 3,
+                    },
+                  },
+                },
+              },
+            };
+            yield {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "tool-part-mcp",
+                  sessionID: "sdk-session-1",
+                  messageID: "msg_1",
+                  type: "tool",
+                  callID: "call_mcp_1",
+                  tool: "tool",
+                  state: {
+                    status: "completed",
+                    input: {
+                      server: "context7",
+                      tool: "resolve-library-id",
+                      query: "react",
+                    },
+                    output: "Resolved library id.",
+                    title: "MCP",
+                    metadata: {},
+                    time: {
+                      start: 3,
+                      end: 4,
+                    },
+                  },
+                },
+              },
+            };
+            yield {
+              type: "session.idle",
+              properties: {
+                sessionID: "sdk-session-1",
+              },
+            };
+          })(),
+        })),
+      },
+      postSessionIdPermissionsPermissionId: vi.fn(async () => ({})),
+    }));
+
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+    vi.doMock("@opencode-ai/sdk", async () => {
+      const actual = await vi.importActual<typeof import("@opencode-ai/sdk")>("@opencode-ai/sdk");
+      return {
+        ...actual,
+        createOpencodeClient,
+      };
+    });
+
+    const { runOpencodeWithStreaming } = await import("../src/opencode/sessionRunner");
+    const toolStarts: Array<Record<string, unknown>> = [];
+    const toolOutputs: Array<Record<string, unknown>> = [];
+    const toolFinishes: Array<Record<string, unknown>> = [];
+
+    const result = await runOpencodeWithStreaming({
+      prompt: "Use MCP and web search.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: (payload) => {
+        toolStarts.push(payload as unknown as Record<string, unknown>);
+      },
+      onToolOutput: (payload) => {
+        toolOutputs.push(payload as unknown as Record<string, unknown>);
+      },
+      onToolFinished: (payload) => {
+        toolFinishes.push(payload as unknown as Record<string, unknown>);
+      },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(result).toEqual({
+      output: "",
+      sessionId: "sdk-session-1",
+    });
+    expect(toolStarts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolUseId: "call_web_1",
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+      }),
+      expect.objectContaining({
+        toolUseId: "call_mcp_1",
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+      }),
+    ]));
+    expect(toolOutputs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolUseId: "call_web_1",
+        toolName: "WebSearch",
+        toolKind: "web_search",
+      }),
+    ]));
+    expect(toolFinishes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        precedingToolUseIds: ["call_web_1"],
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+        summary: "Searched OpenAI Codex CLI official GitHub npm",
+      }),
+      expect.objectContaining({
+        precedingToolUseIds: ["call_mcp_1"],
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+        summary: "Ran context7.resolve-library-id",
+        output: "Resolved library id.",
+      }),
+    ]));
+  });
+
   it("uses ACP plan updates for plan-mode OpenCode threads", async () => {
     const plans: Array<Record<string, unknown>> = [];
     const todoUpdates: Array<Record<string, unknown>> = [];
@@ -416,6 +663,150 @@ describe("opencode session runner config", () => {
         ],
       },
     ]);
+  });
+
+  it("normalizes OpenCode ACP MCP and web-search tool calls for the timeline", async () => {
+    vi.doMock("node:child_process", () => ({
+      spawn: vi.fn(() => createMockCursorChild({
+        availableModes: [
+          { id: "build", name: "Build" },
+          { id: "plan", name: "Plan" },
+        ],
+        availableModels: [
+          { modelId: "opencode/minimax-m2.5-free", name: "OpenCode/Minimax M2.5 Free" },
+        ],
+        onPrompt: async ({ agent, sessionId }) => {
+          await agent.emitToolCall(sessionId, {
+            sessionUpdate: "tool_call",
+            toolCallId: "web_1",
+            title: "Web",
+            kind: "search",
+            status: "pending",
+            rawInput: {
+              query: "OpenAI Codex CLI official GitHub npm",
+            },
+            content: [],
+          });
+          await agent.emitToolCallUpdate(sessionId, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "web_1",
+            status: "completed",
+            rawInput: {
+              query: "OpenAI Codex CLI official GitHub npm",
+            },
+            content: [
+              {
+                type: "content",
+                content: {
+                  type: "text",
+                  text: "Search complete.",
+                },
+              },
+            ],
+          });
+
+          await agent.emitToolCall(sessionId, {
+            sessionUpdate: "tool_call",
+            toolCallId: "mcp_1",
+            title: "MCP",
+            kind: "other",
+            status: "pending",
+            rawInput: {
+              server: "context7",
+              tool: "resolve-library-id",
+            },
+            content: [],
+          });
+          await agent.emitToolCallUpdate(sessionId, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "mcp_1",
+            status: "completed",
+            rawInput: {
+              server: "context7",
+              tool: "resolve-library-id",
+            },
+            content: [
+              {
+                type: "content",
+                content: {
+                  type: "text",
+                  text: "Resolved library id.",
+                },
+              },
+            ],
+          });
+
+          await agent.emitText(sessionId, "Done.");
+        },
+      })),
+    }));
+    vi.doMock("@opencode-ai/sdk", async () => {
+      const actual = await vi.importActual<typeof import("@opencode-ai/sdk")>("@opencode-ai/sdk");
+      return {
+        ...actual,
+        createOpencodeServer: vi.fn(async () => {
+          throw new Error("SDK transport should not run in ACP plan mode");
+        }),
+      };
+    });
+
+    const { runOpencodeWithStreaming } = await import("../src/opencode/sessionRunner");
+    const toolStarts: Array<Record<string, unknown>> = [];
+    const toolFinishes: Array<Record<string, unknown>> = [];
+
+    const result = await runOpencodeWithStreaming({
+      prompt: "Use MCP and web search.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "plan",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: (payload) => {
+        toolStarts.push(payload as unknown as Record<string, unknown>);
+      },
+      onToolOutput: () => {},
+      onToolFinished: (payload) => {
+        toolFinishes.push(payload as unknown as Record<string, unknown>);
+      },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(result).toEqual({
+      output: "Done.",
+      sessionId: "cursor-session-1",
+    });
+    expect(toolStarts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolUseId: "web_1",
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+      }),
+      expect.objectContaining({
+        toolUseId: "mcp_1",
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+      }),
+    ]));
+    expect(toolFinishes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        precedingToolUseIds: ["web_1"],
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+        summary: "Searched OpenAI Codex CLI official GitHub npm",
+      }),
+      expect.objectContaining({
+        precedingToolUseIds: ["mcp_1"],
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+        summary: "Ran context7.resolve-library-id",
+      }),
+    ]));
   });
 
   it("does not emit a plan card for draft OpenCode plan files without plan_exit", async () => {

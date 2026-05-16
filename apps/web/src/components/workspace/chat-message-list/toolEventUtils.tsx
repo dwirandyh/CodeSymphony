@@ -6,17 +6,122 @@ const MCP_TOOL_PREFIX = "mcp__";
 const SHELL_WRAPPER_FLAGS = new Set(["-c", "-lc"]);
 const SHELL_WRAPPER_NAMES = new Set(["bash", "sh", "zsh", "fish"]);
 
+export type TimelineToolKind = "mcp" | "web_search";
+
 function isMcpToolName(value: unknown): value is string {
   return typeof value === "string" && value.toLowerCase().startsWith(MCP_TOOL_PREFIX);
 }
 
-function mcpToolNameFromEvent(event: ChatEvent): string | null {
+function isWebSearchToolName(value: unknown): value is string {
+  return typeof value === "string" && value.trim().toLowerCase() === "websearch";
+}
+
+function normalizeTimelineToolKind(value: unknown): TimelineToolKind | null {
+  if (value === "mcp" || value === "web_search") {
+    return value;
+  }
+  return null;
+}
+
+function toolNameFromEvent(event: ChatEvent): string | null {
   const toolName = event.payload.toolName;
-  return isMcpToolName(toolName) ? toolName : null;
+  return typeof toolName === "string" && toolName.trim().length > 0 ? toolName.trim() : null;
+}
+
+function toolKindFromEvent(event: ChatEvent): TimelineToolKind | null {
+  const explicitKind = normalizeTimelineToolKind(event.payload.toolKind);
+  if (explicitKind) {
+    return explicitKind;
+  }
+
+  if (isMcpToolName(event.payload.toolName)) {
+    return "mcp";
+  }
+
+  if (isWebSearchToolName(event.payload.toolName)) {
+    return "web_search";
+  }
+
+  return null;
+}
+
+function mcpToolNameFromEvent(event: ChatEvent): string | null {
+  return toolKindFromEvent(event) === "mcp" ? toolNameFromEvent(event) : null;
+}
+
+function searchParamsFromEvent(event: ChatEvent): string | null {
+  const searchParams = event.payload.searchParams;
+  return typeof searchParams === "string" && searchParams.trim().length > 0 ? searchParams.trim() : null;
 }
 
 function eventPayloadText(event: ChatEvent): string {
   return JSON.stringify(event.payload ?? {}).toLowerCase();
+}
+
+export function getToolKind(item: Extract<ChatTimelineItem, { kind: "tool" }>): TimelineToolKind | null {
+  const events = [item.event, ...(item.sourceEvents ?? [])].filter((event): event is ChatEvent => event !== null);
+  for (const event of events) {
+    const toolKind = toolKindFromEvent(event);
+    if (toolKind) {
+      return toolKind;
+    }
+  }
+
+  if (isMcpToolName(item.toolName)) {
+    return "mcp";
+  }
+
+  if (isWebSearchToolName(item.toolName)) {
+    return "web_search";
+  }
+
+  return null;
+}
+
+export function getToolSearchParams(item: Extract<ChatTimelineItem, { kind: "tool" }>): string | null {
+  const events = [item.event, ...(item.sourceEvents ?? [])].filter((event): event is ChatEvent => event !== null);
+  for (const event of events) {
+    const searchParams = searchParamsFromEvent(event);
+    if (searchParams) {
+      return searchParams;
+    }
+  }
+  return null;
+}
+
+export function buildWebSearchSummaryLabel(params: {
+  searchParams: string | null;
+  status: "running" | "success" | "failed";
+}): string {
+  if (params.status === "running") {
+    return "Searching the web";
+  }
+
+  if (params.status === "failed") {
+    return "Web search failed";
+  }
+
+  if (params.searchParams) {
+    return `Searched ${truncateSummaryText(params.searchParams, 120)}`;
+  }
+
+  return "Searched the web";
+}
+
+export function buildMcpSummaryLabel(params: {
+  toolName: string | null;
+  status: "running" | "success" | "failed";
+}): string {
+  const toolName = params.toolName?.trim() || "Tool";
+  if (params.status === "running") {
+    return `Running ${toolName}`;
+  }
+
+  if (params.status === "failed") {
+    return `Failed ${toolName}`;
+  }
+
+  return `Ran ${toolName}`;
 }
 
 export function toolTitle(event: ChatEvent): string {
@@ -24,16 +129,28 @@ export function toolTitle(event: ChatEvent): string {
     return "Worktree changed";
   }
 
+  const toolKind = toolKindFromEvent(event);
   const mcpToolName = mcpToolNameFromEvent(event);
-  if (mcpToolName) {
-    const hasError = typeof event.payload.error === "string" && event.payload.error.length > 0;
-    if (event.type === "tool.started") {
-      return `Running ${mcpToolName}`;
-    }
-    if (hasError) {
-      return `Failed ${mcpToolName}`;
-    }
-    return `Ran ${mcpToolName}`;
+  if (toolKind === "mcp" && mcpToolName) {
+    return buildMcpSummaryLabel({
+      toolName: mcpToolName,
+      status: typeof event.payload.error === "string" && event.payload.error.length > 0
+        ? "failed"
+        : event.type === "tool.started" || event.type === "tool.output"
+          ? "running"
+          : "success",
+    });
+  }
+
+  if (toolKind === "web_search") {
+    return buildWebSearchSummaryLabel({
+      searchParams: searchParamsFromEvent(event),
+      status: typeof event.payload.error === "string" && event.payload.error.length > 0
+        ? "failed"
+        : event.type === "tool.started" || event.type === "tool.output"
+          ? "running"
+          : "success",
+    });
   }
 
   const payload = eventPayloadText(event);
@@ -77,12 +194,17 @@ export function toolSubtitle(event: ChatEvent): string {
     return typeof summary === "string" && summary.length > 0 ? summary : "Detected worktree changes";
   }
 
+  const toolKind = toolKindFromEvent(event);
   const mcpToolName = mcpToolNameFromEvent(event);
-  if (mcpToolName) {
+  if (toolKind === "mcp" && mcpToolName) {
     if (event.type === "tool.finished") {
       return String(event.payload.summary ?? mcpToolName);
     }
     return mcpToolName;
+  }
+
+  if (toolKind === "web_search") {
+    return searchParamsFromEvent(event) ?? "Web search";
   }
 
   if (event.type === "permission.requested") {

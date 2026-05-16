@@ -502,6 +502,188 @@ describe("codex session runner skill integration", () => {
     });
   });
 
+  it("captures completed web search queries from Codex app-server items", async () => {
+    const child = new MockCodexChildProcess();
+    attachJsonRpcServer(child, {
+      onTurnStart: () => {
+        child.stdout.write(`${JSON.stringify({
+          method: "item/started",
+          params: {
+            item: {
+              id: "web-search-1",
+              type: "webSearch",
+              query: "",
+              action: {
+                type: "other",
+              },
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "web-search-1",
+              type: "webSearch",
+              query: "OpenAI Codex CLI",
+              action: {
+                type: "search",
+                query: "OpenAI Codex CLI",
+                queries: ["OpenAI Codex CLI"],
+              },
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "turn/completed",
+          params: {
+            turn: {
+              status: "completed",
+            },
+          },
+        })}\n`);
+      },
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+    const { runCodexWithStreaming } = await import("../src/codex/sessionRunner");
+    await runCodexWithStreaming({
+      prompt: "Search the web.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted,
+      onToolOutput: () => {},
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(onToolStarted).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "WebSearch",
+      toolKind: "web_search",
+      toolUseId: "web-search-1",
+    }));
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "WebSearch",
+      toolKind: "web_search",
+      precedingToolUseIds: ["web-search-1"],
+      searchParams: "OpenAI Codex CLI",
+    }));
+  });
+
+  it("maps Codex MCP items to server-qualified tool names and output text", async () => {
+    const child = new MockCodexChildProcess();
+    attachJsonRpcServer(child, {
+      onTurnStart: () => {
+        child.stdout.write(`${JSON.stringify({
+          method: "item/started",
+          params: {
+            item: {
+              id: "mcp-tool-1",
+              type: "mcpToolCall",
+              server: "context7",
+              tool: "resolve-library-id",
+              status: "inProgress",
+              arguments: {
+                libraryName: "React",
+              },
+              result: null,
+              error: null,
+              durationMs: null,
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "item/completed",
+          params: {
+            item: {
+              id: "mcp-tool-1",
+              type: "mcpToolCall",
+              server: "context7",
+              tool: "resolve-library-id",
+              status: "completed",
+              arguments: {
+                libraryName: "React",
+              },
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text: "/reactjs/react.dev",
+                  },
+                ],
+                structuredContent: null,
+                _meta: null,
+              },
+              error: null,
+              durationMs: 1808,
+            },
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "turn/completed",
+          params: {
+            turn: {
+              status: "completed",
+            },
+          },
+        })}\n`);
+      },
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+    const { runCodexWithStreaming } = await import("../src/codex/sessionRunner");
+    await runCodexWithStreaming({
+      prompt: "Use context7.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted,
+      onToolOutput: () => {},
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(onToolStarted).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "context7.resolve-library-id",
+      toolKind: "mcp",
+      toolUseId: "mcp-tool-1",
+    }));
+    expect(onToolFinished).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: "context7.resolve-library-id",
+      toolKind: "mcp",
+      precedingToolUseIds: ["mcp-tool-1"],
+      output: "/reactjs/react.dev",
+      summary: "Completed context7.resolve-library-id",
+    }));
+  });
+
   it("surfaces commentary text for chat threads and suppresses redundant short final answers", async () => {
     const child = new MockCodexChildProcess();
     attachJsonRpcServer(child, {

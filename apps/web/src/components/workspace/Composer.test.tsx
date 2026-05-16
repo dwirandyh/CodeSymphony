@@ -1066,7 +1066,7 @@ describe("Composer", () => {
     });
 
     expect(container.textContent).toContain("Sonnet 4.6");
-    expect(container.textContent).toContain("GLM-4.7");
+    expect(container.textContent).toContain("GLM 4.7");
     expect(container.textContent).not.toContain("GPT-5.4 Custom");
 
     const codexButton = getButtonByExactText("Codex");
@@ -1076,7 +1076,7 @@ describe("Composer", () => {
 
     expect(container.textContent).toContain("GPT-5.4");
     expect(container.textContent).toContain("GPT-5.4 Custom");
-    expect(container.textContent).not.toContain("GLM-4.7");
+    expect(container.textContent).not.toContain("GLM 4.7");
 
     const cursorButton = getButtonByExactText("Cursor");
     act(() => {

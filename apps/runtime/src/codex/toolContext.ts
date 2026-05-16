@@ -3,6 +3,7 @@ import { asArray, asNumber, asObject, asString } from "./protocolUtils.js";
 
 export type ToolContext = {
   toolName: string;
+  toolKind?: "mcp" | "web_search";
   command?: string;
   searchParams?: string;
   editTarget?: string;
@@ -34,6 +35,28 @@ export function toOwnership(toolUseId: string | null): NonNullable<ToolContext["
   };
 }
 
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const normalized = asString(value)?.trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return undefined;
+}
+
+function firstNonEmptyStringFromArray(value: unknown): string | undefined {
+  for (const entry of asArray(value)) {
+    const normalized = asString(entry)?.trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return undefined;
+}
+
 function buildSearchParams(action: Record<string, unknown>, command: string | undefined): string | undefined {
   const parts: string[] = [];
   const query = asString(action.query)?.trim();
@@ -50,6 +73,83 @@ function buildSearchParams(action: Record<string, unknown>, command: string | un
   }
 
   return command?.trim() || undefined;
+}
+
+function extractWebSearchParams(item: Record<string, unknown>): string | undefined {
+  const action = asObject(item.action);
+  const actionType = asString(action?.type)?.trim().toLowerCase();
+
+  if (actionType === "search") {
+    return firstNonEmptyString(
+      item.query,
+      action?.query,
+      firstNonEmptyStringFromArray(action?.queries),
+    );
+  }
+
+  if (actionType === "find_in_page") {
+    return firstNonEmptyString(
+      action?.pattern,
+      item.query,
+    );
+  }
+
+  if (actionType === "open_page") {
+    return firstNonEmptyString(
+      action?.url,
+      item.query,
+    );
+  }
+
+  return firstNonEmptyString(
+    item.query,
+    action?.query,
+    firstNonEmptyStringFromArray(action?.queries),
+    action?.pattern,
+    action?.url,
+    item.title,
+  );
+}
+
+function isGenericToolLabel(value: string | undefined): boolean {
+  return (value?.trim().toLowerCase() ?? "") === "tool";
+}
+
+function buildMcpToolDisplayName(server: string | undefined, tool: string | undefined): string | undefined {
+  if (server && tool) {
+    return `${server}.${tool}`;
+  }
+
+  return tool ?? server;
+}
+
+function extractMcpToolName(item: Record<string, unknown>): string | undefined {
+  const invocation = asObject(item.invocation);
+  const explicitLabel = firstNonEmptyString(
+    item.toolTitle,
+    invocation?.toolTitle,
+    item.title,
+    invocation?.title,
+    item.name,
+    invocation?.name,
+  );
+
+  if (explicitLabel && !isGenericToolLabel(explicitLabel)) {
+    return explicitLabel;
+  }
+
+  const server = firstNonEmptyString(
+    item.server,
+    invocation?.server,
+  );
+  const tool = firstNonEmptyString(
+    item.tool,
+    invocation?.tool,
+    item.toolName,
+    invocation?.toolName,
+  );
+
+  return buildMcpToolDisplayName(server, tool) ?? explicitLabel;
 }
 
 export function buildSummaryFromCommandExecution(item: Record<string, unknown>, toolName: string): string {
@@ -261,6 +361,7 @@ function classifyGenericTool(item: Record<string, unknown>, ownerToolUseId: stri
           : "Search";
     return {
       toolName,
+      toolKind: normalizedType === "websearch" ? "web_search" : undefined,
       searchParams: asString(item.query) ?? asString(item.pattern) ?? asString(item.path) ?? asString(item.title),
       ownership: toOwnership(ownerToolUseId),
     };
@@ -278,14 +379,16 @@ function classifyGenericTool(item: Record<string, unknown>, ownerToolUseId: stri
   if (type === "webSearch") {
     return {
       toolName: "WebSearch",
-      searchParams: asString(item.query) ?? asString(item.title),
+      toolKind: "web_search",
+      searchParams: extractWebSearchParams(item),
       ownership: toOwnership(ownerToolUseId),
     };
   }
 
   if (type === "mcpToolCall" || type === "dynamicToolCall") {
     return {
-      toolName: asString(item.title) ?? asString(item.name) ?? "Tool",
+      toolName: extractMcpToolName(item) ?? "Tool",
+      toolKind: "mcp",
       ownership: toOwnership(ownerToolUseId),
     };
   }
