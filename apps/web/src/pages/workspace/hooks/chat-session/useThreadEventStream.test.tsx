@@ -452,6 +452,67 @@ describe("useThreadEventStream", () => {
     },
   );
 
+  it("accepts todo.updated events from the selected thread stream immediately", async () => {
+    const threadId = "selected-thread";
+    queryClient.setQueryData(queryKeys.threads.timelineSnapshot(threadId), makeSnapshot());
+    queryClient.setQueryData(queryKeys.threads.list("wt-1"), [
+      {
+        id: threadId,
+        worktreeId: "wt-1",
+        title: "Thread",
+        kind: "default",
+        permissionProfile: "default",
+        permissionMode: "default",
+        mode: "default",
+        titleEditedManually: false,
+        claudeSessionId: null,
+        active: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      } satisfies ChatThread,
+    ]);
+
+    renderHook(threadId);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const stream = MockEventSource.instances[0]!;
+    act(() => {
+      stream.emit(
+        "todo.updated",
+        makeEvent({
+          id: "event-todo-updated",
+          threadId,
+          idx: 7,
+          type: "todo.updated",
+          payload: {
+            messageId: "assistant-msg",
+            agent: "codex",
+            groupId: "todo-1",
+            items: [
+              { id: "1", content: "Inspect current timeline", status: "in_progress" },
+            ],
+          },
+        }),
+      );
+    });
+
+    expect(queryClient.getQueryData(queryKeys.threads.statusSnapshot(threadId))).toEqual({
+      status: "running",
+      newestIdx: 7,
+    });
+    expect(queryClient.getQueryData<ChatThread[]>(queryKeys.threads.list("wt-1"))?.[0]?.active).toBe(true);
+    expect(
+      (getThreadEventsCollection(threadId).toArray as ChatEvent[]).some((event) => event.id === "event-todo-updated"),
+    ).toBe(true);
+    expect(
+      (getThreadMessagesCollection(threadId).toArray as Array<{ id: string }>).some((message) => message.id === "assistant-msg"),
+    ).toBe(true);
+    expect(invalidateQueriesMock).not.toHaveBeenCalledWith({ queryKey: queryKeys.threads.timelineSnapshot(threadId) });
+  });
+
   it.each(["tool.started", "tool.output", "tool.finished"] as const)(
     "patches selected thread as active on %s",
     async (type) => {

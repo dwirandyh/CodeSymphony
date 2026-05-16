@@ -48,6 +48,7 @@ import {
 } from "./workspace-timeline/timelineOrphans.js";
 import { sanitizeAssistantVisibleText } from "./textUtils.js";
 import { pushRenderDebug } from "./debug.js";
+import { extractTodoListGroups, extractTodoProgressGroups } from "./todoUtils.js";
 
 const SUBAGENT_SUMMARY_REGEX = /###subagent summary(?:\s+start)?\n?([\s\S]*?)###subagent summary end\n?/g;
 const MAIN_SUMMARY_REGEX = /###main(?:\s+agent)? summary(?:\s+start)?\n?[\s\S]*?###main(?:\s+agent)? summary end\n?/g;
@@ -57,6 +58,46 @@ const MULTI_FILE_EDIT_ANNOUNCEMENT_PATTERN = /\b(both files|two files|2 files?|k
 const SINGLE_EDIT_ANNOUNCEMENT_PATTERN = /\b(mari saya|let me|i'?ll|saya akan|now let me)\b/i;
 const COMPLETION_MESSAGE_PATTERN = /^(sip|selesai|done|fixed|beres|sudah)/i;
 const CURSOR_TERMINAL_COMMAND_PATTERN = /\*\*`([^`\n]+)`(?::)?\*\*/g;
+
+function todoListContentKey(item: Extract<ChatTimelineItem, { kind: "todo-list" }>): string {
+  return `${item.agent}:${item.items.map((todo) => todo.content.trim()).join("\u001f")}`;
+}
+
+function collapseDuplicateTodoLists(items: ChatTimelineItem[]): ChatTimelineItem[] {
+  const collapsed: ChatTimelineItem[] = [];
+  const canonicalIndexByKey = new Map<string, number>();
+
+  for (const item of items) {
+    if (item.kind !== "todo-list") {
+      collapsed.push(item);
+      continue;
+    }
+
+    const key = todoListContentKey(item);
+    const canonicalIndex = canonicalIndexByKey.get(key);
+    if (canonicalIndex == null) {
+      canonicalIndexByKey.set(key, collapsed.length);
+      collapsed.push(item);
+      continue;
+    }
+
+    const canonicalItem = collapsed[canonicalIndex];
+    if (canonicalItem?.kind !== "todo-list") {
+      canonicalIndexByKey.set(key, collapsed.length);
+      collapsed.push(item);
+      continue;
+    }
+
+    collapsed[canonicalIndex] = {
+      ...canonicalItem,
+      explanation: item.explanation ?? canonicalItem.explanation,
+      status: item.status,
+      items: item.items,
+    };
+  }
+
+  return collapsed;
+}
 
 function extractCursorTerminalCommands(content: string): string[] {
   const commands: string[] = [];
@@ -390,6 +431,21 @@ export function buildTimelineFromSeed(params: {
   const inlineToolEvents = orderedEventsByIdx.filter((event) =>
     INLINE_TOOL_EVENT_TYPES.has(event.type) && !isTodoWriteToolEvent(event),
   );
+  const todoEventsByMessageId = new Map<string, ChatEvent[]>();
+  for (const event of orderedEventsByIdx) {
+    if (event.type !== "todo.updated") {
+      continue;
+    }
+
+    const messageId = getScopedMessageId(event);
+    if (!messageId) {
+      continue;
+    }
+
+    const existing = todoEventsByMessageId.get(messageId) ?? [];
+    existing.push(event);
+    todoEventsByMessageId.set(messageId, existing);
+  }
   const explicitInlineEventsByMessageId = new Map<string, ChatEvent[]>();
   const fallbackInlineToolEvents: ChatEvent[] = [];
   for (const event of inlineToolEvents) {
@@ -411,6 +467,7 @@ export function buildTimelineFromSeed(params: {
     || event.type === "subagent.started"
     || event.type === "subagent.finished"
     || event.type === "plan.created"
+    || event.type === "todo.updated"
     || event.type === "plan.approved"
     || event.type === "plan.dismissed"
     || event.type === "plan.revision_requested"
@@ -469,7 +526,10 @@ export function buildTimelineFromSeed(params: {
           ? nextAssistantStartIdx - 1
           : Number.POSITIVE_INFINITY;
     const heuristicContext = fallbackInlineToolEvents.filter((event) => event.idx > lowerBoundaryIdx && event.idx <= upperBoundaryIdx);
-    const explicitContext = explicitInlineEventsByMessageId.get(message.id) ?? [];
+    const explicitContext = [
+      ...(explicitInlineEventsByMessageId.get(message.id) ?? []),
+      ...(todoEventsByMessageId.get(message.id) ?? []),
+    ];
     const context = [...explicitContext, ...heuristicContext].sort((a, b) => a.idx - b.idx);
     assistantContextById.set(message.id, context);
     if (Number.isFinite(upperBoundaryIdx)) {
@@ -691,6 +751,21 @@ export function buildTimelineFromSeed(params: {
         group.eventIds.forEach((eventId) => askUserQuestionEventIds.add(eventId));
       }
     }
+    const todoListGroups = message.role === "assistant"
+      ? extractTodoListGroups(nonBashContext)
+      : [];
+    const todoProgressGroups = message.role === "assistant"
+      ? extractTodoProgressGroups(nonBashContext)
+      : [];
+    const todoEventIds = new Set<string>();
+    if (message.role === "assistant") {
+      for (const group of todoListGroups) {
+        group.eventIds.forEach((eventId) => todoEventIds.add(eventId));
+      }
+      for (const group of todoProgressGroups) {
+        group.eventIds.forEach((eventId) => todoEventIds.add(eventId));
+      }
+    }
 
     const exploreActivityGroups = subagentExploreExtraction?.exploreActivityGroups ?? [];
     const claimedContextEventIds = subagentExploreExtraction?.claimedContextEventIds ?? new Set<string>();
@@ -752,6 +827,7 @@ export function buildTimelineFromSeed(params: {
         !claimedContextEventIds.has(event.id)
         && !failedReadEventIds.has(event.id)
         && !askUserQuestionEventIds.has(event.id)
+        && !todoEventIds.has(event.id)
         && !isQuestionLifecycleEvent(event)
       )
       : context;
@@ -784,6 +860,7 @@ export function buildTimelineFromSeed(params: {
       exploreLikeBashEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
       exploreLikePermissionEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
       askUserQuestionEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+      todoEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
     }
 
     const hasInlineActivityCards =
@@ -792,6 +869,8 @@ export function buildTimelineFromSeed(params: {
       || subagentGroups.length > 0
       || exploreActivityGroups.length > 0
       || askUserQuestionGroups.length > 0
+      || todoListGroups.length > 0
+      || todoProgressGroups.length > 0
       || !!planFileOutput;
 
     if (message.role === "assistant" && activityContext.length > 0 && !hasInlineActivityCards) {
@@ -826,7 +905,7 @@ export function buildTimelineFromSeed(params: {
       activityContext.forEach((event) => assignedToolEventIds.add(event.id));
     }
 
-    if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || askUserQuestionGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
+    if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || askUserQuestionGroups.length > 0 || todoListGroups.length > 0 || todoProgressGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
       const hasInlineSubagentRuns = subagentGroups.length > 0;
       const inlineInserts = buildInlineInserts(
         bashRuns,
@@ -834,6 +913,8 @@ export function buildTimelineFromSeed(params: {
         subagentGroups,
         exploreActivityGroups,
         askUserQuestionGroups,
+        todoListGroups,
+        todoProgressGroups,
         planFileOutput,
       );
       const messageDeltaEvents = assistantDeltaEventsByMessageId.get(message.id) ?? [];
@@ -960,7 +1041,7 @@ export function buildTimelineFromSeed(params: {
   rebalanceMultiFileEditAnnouncements(sortable);
   rebalanceTrailingSingleEditAnnouncements(sortable);
 
-  const items = normalizeTrailingEditAnnouncementOrder(sortable
+  const items = collapseDuplicateTodoLists(normalizeTrailingEditAnnouncementOrder(sortable
     .sort((a, b) => {
       if (a.anchorIdx !== b.anchorIdx) {
         return a.anchorIdx - b.anchorIdx;
@@ -975,14 +1056,14 @@ export function buildTimelineFromSeed(params: {
       const bTime = b.timestamp ?? MAX_ORDER_INDEX;
       return aTime - bTime;
     })
-    .map((entry) => entry.item));
+    .map((entry) => entry.item)));
 
   const oldestRenderable = items[0] ?? null;
   const oldestRenderableKey = oldestRenderable ? getTimelineItemKey(oldestRenderable) : null;
   const oldestRenderableKind = oldestRenderable?.kind ?? null;
   const oldestRenderableMessageId = oldestRenderable?.kind === "message"
     ? oldestRenderable.message.id
-    : oldestRenderable?.kind === "plan-file-output"
+    : oldestRenderable?.kind === "plan-file-output" || oldestRenderable?.kind === "todo-list" || oldestRenderable?.kind === "todo-progress"
       ? oldestRenderable.messageId
       : null;
   const oldestRenderableHydrationPending = semanticHydrationInProgress
@@ -1010,6 +1091,8 @@ function getTimelineItemKey(item: ChatTimelineItem): string {
     case "message":
       return `message:${item.message.id}`;
     case "plan-file-output":
+    case "todo-list":
+    case "todo-progress":
     case "edited-diff":
     case "explore-activity":
     case "subagent-activity":

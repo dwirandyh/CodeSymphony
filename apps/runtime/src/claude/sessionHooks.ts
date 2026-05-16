@@ -19,6 +19,7 @@ import {
   searchParamsFromUnknownToolInput,
   editTargetFromUnknownToolInput,
   skillNameFromUnknownToolInput,
+  todoItemsFromUnknownToolInput,
   type ToolMetadata,
 } from "./toolClassification.js";
 import { completionSummaryFromMetadata, failureSummaryFromMetadata } from "./toolSummary.js";
@@ -621,6 +622,12 @@ export type HookCallbacks = {
     content: string;
     source?: "claude_plan_file" | "streaming_fallback";
   }) => Promise<void> | void;
+  onTodoUpdate?: (payload: {
+    agent: "claude";
+    groupId: string;
+    explanation: string | null;
+    items: import("@codesymphony/shared-types").AgentTodoItem[];
+  }) => Promise<void> | void;
   onSubagentStarted: (payload: {
     agentId: string;
     agentType: string;
@@ -640,6 +647,8 @@ export type HookCallbacks = {
 export type SessionState = {
   finalOutput: string;
   planFileDetected: boolean;
+  todoGroupId: string | null;
+  emittedTodoToolUseIds: Set<string>;
   queryStartTimestamp: number;
   promptSuggestions: string[];
   recentDiagnostics: string[];
@@ -754,6 +763,37 @@ function isReviewGitCommand(command: string | null | undefined): boolean {
   }
 
   return segments.every((segment) => REVIEW_GIT_COMMAND_PATTERN.test(segment));
+}
+
+async function maybeEmitTodoUpdate(
+  callbacks: HookCallbacks,
+  state: SessionState,
+  toolName: string,
+  input: unknown,
+  toolUseId: string,
+): Promise<void> {
+  if (state.emittedTodoToolUseIds.has(toolUseId)) {
+    return;
+  }
+
+  const items = todoItemsFromUnknownToolInput(toolName, input);
+  if (!items || items.length === 0) {
+    return;
+  }
+
+  state.emittedTodoToolUseIds.add(toolUseId);
+  state.todoGroupId ??= toolUseId;
+  try {
+    await callbacks.onTodoUpdate?.({
+      agent: "claude",
+      groupId: `claude:${state.queryStartTimestamp}:${state.todoGroupId}`,
+      explanation: null,
+      items,
+    });
+  } catch (error) {
+    state.emittedTodoToolUseIds.delete(toolUseId);
+    throw error;
+  }
 }
 
 export function createCanUseTool(
@@ -913,6 +953,7 @@ export function createCanUseTool(
         decisionReason: options.decisionReason ?? null,
         suggestionsCount: options.suggestions?.length ?? 0,
       });
+      await maybeEmitTodoUpdate(callbacks, state, toolName, input, toolUseId);
       return {
         behavior: "allow" as const,
         updatedInput: input,
@@ -924,6 +965,7 @@ export function createCanUseTool(
         ...(command ? { command } : {}),
         input: sanitizeForLog(input),
       });
+      await maybeEmitTodoUpdate(callbacks, state, toolName, input, toolUseId);
       return {
         behavior: "allow" as const,
         updatedInput: input,
@@ -938,6 +980,7 @@ export function createCanUseTool(
         decisionReason: options.decisionReason ?? null,
         suggestionsCount: options.suggestions?.length ?? 0,
       });
+      await maybeEmitTodoUpdate(callbacks, state, toolName, input, toolUseId);
       return {
         behavior: "allow" as const,
         updatedInput: input,
@@ -952,6 +995,7 @@ export function createCanUseTool(
         decisionReason: options.decisionReason ?? null,
         suggestionsCount: options.suggestions?.length ?? 0,
       });
+      await maybeEmitTodoUpdate(callbacks, state, toolName, input, toolUseId);
       return {
         behavior: "allow" as const,
         updatedInput: input,
@@ -1006,6 +1050,7 @@ export function createCanUseTool(
         decisionReason: options.decisionReason ?? null,
         suggestionsCount: options.suggestions?.length ?? 0,
       });
+      await maybeEmitTodoUpdate(callbacks, state, toolName, input, toolUseId);
       return {
         behavior: "allow" as const,
         updatedInput: input,
@@ -1028,6 +1073,8 @@ export function createCanUseTool(
 }
 
 export function createPreToolUseHook(
+  callbacks: HookCallbacks,
+  state: SessionState,
   markStarted: (
     toolUseId: string,
     toolName: string,
@@ -1097,6 +1144,13 @@ export function createPreToolUseHook(
       ownership,
       "sdk.hook.pre_tool_use",
       maps.toolMetadataByUseId.get(hookToolUseId),
+    );
+    await maybeEmitTodoUpdate(
+      callbacks,
+      state,
+      hookToolName,
+      hookInput.tool_input,
+      hookToolUseId,
     );
 
     return { continue: true };

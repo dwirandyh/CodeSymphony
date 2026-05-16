@@ -372,6 +372,75 @@ describe("codex session runner skill integration", () => {
     expect(result.output).toBe("`svg tetap zoom/pan`");
   });
 
+  it("emits normalized todo snapshots from turn/plan/updated", async () => {
+    const child = new MockCodexChildProcess();
+    attachJsonRpcServer(child, {
+      onTurnStart: () => {
+        child.stdout.write(`${JSON.stringify({
+          method: "turn/plan/updated",
+          params: {
+            turnId: "turn-1",
+            explanation: "Implement todo timeline",
+            plan: [
+              {
+                step: "Inspect current timeline",
+                status: "completed",
+              },
+              {
+                step: "Render todo row",
+                status: "inProgress",
+              },
+            ],
+          },
+        })}\n`);
+        child.stdout.write(`${JSON.stringify({
+          method: "turn/completed",
+          params: {
+            turn: {
+              status: "completed",
+            },
+          },
+        })}\n`);
+      },
+    });
+
+    const spawnMock = vi.fn(() => child);
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const onTodoUpdate = vi.fn();
+    const { runCodexWithStreaming } = await import("../src/codex/sessionRunner");
+    await runCodexWithStreaming({
+      prompt: "Implement todo timeline.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate,
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(onTodoUpdate).toHaveBeenCalledWith({
+      agent: "codex",
+      groupId: "turn-1",
+      explanation: "Implement todo timeline",
+      items: [
+        { id: "turn-1:0", content: "Inspect current timeline", status: "completed" },
+        { id: "turn-1:1", content: "Render todo row", status: "in_progress" },
+      ],
+    });
+  });
+
   it("sends native image inputs to Codex turns", async () => {
     const child = new MockCodexChildProcess();
     const turnStartRequests: unknown[] = [];

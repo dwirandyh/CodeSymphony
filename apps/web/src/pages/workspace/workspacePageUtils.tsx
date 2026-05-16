@@ -61,6 +61,8 @@ function getTimelineItemCreatedAt(item: ChatTimelineItem): string | null {
     case "message":
       return item.message.createdAt;
     case "plan-file-output":
+    case "todo-list":
+    case "todo-progress":
       return item.createdAt;
     case "edited-diff":
       return item.createdAt;
@@ -123,6 +125,10 @@ function workingLabelForItem(item: ChatTimelineItem | null): string {
       return "Exploring";
     case "subagent-activity":
       return "Delegating";
+    case "todo-list":
+      return "Working";
+    case "todo-progress":
+      return "Working";
     case "tool":
       if (item.shell === "bash") {
         return "Running command";

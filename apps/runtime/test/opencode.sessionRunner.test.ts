@@ -147,8 +147,120 @@ describe("opencode session runner config", () => {
     });
   });
 
+  it("emits stable todo updates from OpenCode SDK todo events", async () => {
+    const spawnMock = vi.fn(() => {
+      const child = new MockOpencodeServerProcess();
+      queueMicrotask(() => {
+        child.announce("http://127.0.0.1:9999");
+      });
+      return child;
+    });
+    const promptAsync = vi.fn(async () => ({}));
+    const createOpencodeClient = vi.fn(() => ({
+      session: {
+        create: vi.fn(async () => ({ data: { id: "sdk-session-1" } })),
+        messages: vi.fn(async () => ({ data: [] })),
+        promptAsync,
+        abort: vi.fn(async () => ({})),
+      },
+      event: {
+        subscribe: vi.fn(async () => ({
+          stream: (async function* () {
+            yield {
+              type: "todo.updated",
+              properties: {
+                sessionID: "sdk-session-1",
+                todos: [
+                  { content: "Inspect current timeline", status: "in_progress", priority: "medium" },
+                  { content: "Render todo row", status: "pending", priority: "medium" },
+                ],
+              },
+            };
+            yield {
+              type: "todo.updated",
+              properties: {
+                sessionID: "sdk-session-1",
+                todos: [
+                  { content: "Inspect current timeline", status: "completed", priority: "medium" },
+                  { content: "Render todo row", status: "cancelled", priority: "medium" },
+                ],
+              },
+            };
+            yield {
+              type: "session.idle",
+              properties: {
+                sessionID: "sdk-session-1",
+              },
+            };
+          })(),
+        })),
+      },
+      postSessionIdPermissionsPermissionId: vi.fn(async () => ({})),
+    }));
+
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+    vi.doMock("@opencode-ai/sdk", async () => {
+      const actual = await vi.importActual<typeof import("@opencode-ai/sdk")>("@opencode-ai/sdk");
+      return {
+        ...actual,
+        createOpencodeClient,
+      };
+    });
+
+    const { runOpencodeWithStreaming } = await import("../src/opencode/sessionRunner");
+    const todoUpdates: Array<Record<string, unknown>> = [];
+
+    const result = await runOpencodeWithStreaming({
+      prompt: "Implement todo timeline.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate: (event) => {
+        todoUpdates.push(event as unknown as Record<string, unknown>);
+      },
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(result).toEqual({
+      output: "",
+      sessionId: "sdk-session-1",
+    });
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(promptAsync).toHaveBeenCalledTimes(1);
+    expect(todoUpdates).toHaveLength(2);
+    expect(todoUpdates[0]?.groupId).toBe(todoUpdates[1]?.groupId);
+    expect(todoUpdates[0]).toMatchObject({
+      agent: "opencode",
+      explanation: null,
+      items: [
+        { content: "Inspect current timeline", status: "in_progress" },
+        { content: "Render todo row", status: "pending" },
+      ],
+    });
+    expect(todoUpdates[1]).toMatchObject({
+      agent: "opencode",
+      explanation: null,
+      items: [
+        { content: "Inspect current timeline", status: "completed" },
+        { content: "Render todo row", status: "cancelled" },
+      ],
+    });
+  });
+
   it("uses ACP plan updates for plan-mode OpenCode threads", async () => {
     const plans: Array<Record<string, unknown>> = [];
+    const todoUpdates: Array<Record<string, unknown>> = [];
     const planPath = "/tmp/project/.opencode/plans/171-run-plan.md";
     const planContent = [
       "# Final Plan",
@@ -273,6 +385,9 @@ describe("opencode session runner config", () => {
       onPlanFileDetected: (payload) => {
         plans.push(payload as unknown as Record<string, unknown>);
       },
+      onTodoUpdate: (payload) => {
+        todoUpdates.push(payload as unknown as Record<string, unknown>);
+      },
       onSubagentStarted: () => {},
       onSubagentStopped: () => {},
     });
@@ -288,6 +403,17 @@ describe("opencode session runner config", () => {
         filePath: planPath,
         content: planContent,
         source: "claude_plan_file",
+      },
+    ]);
+    expect(todoUpdates).toEqual([
+      {
+        agent: "opencode",
+        groupId: expect.any(String),
+        explanation: null,
+        items: [
+          { id: expect.any(String), content: "Inspect event pipeline", status: "completed" },
+          { id: expect.any(String), content: "Draft plan card fix", status: "in_progress" },
+        ],
       },
     ]);
   });
@@ -459,6 +585,71 @@ describe("opencode session runner config", () => {
         source: "streaming_fallback",
       },
     ]);
+  });
+
+  it("keeps a stable todo group across repeated OpenCode ACP plan snapshots", async () => {
+    vi.doMock("node:child_process", () => ({
+      spawn: vi.fn(() => createMockCursorChild({
+        onPrompt: async ({ agent, sessionId }) => {
+          await agent.emitPlan(sessionId, [
+            { content: "Inspect the workspace", status: "in_progress" },
+            { content: "Render todo row", status: "pending" },
+          ]);
+          await agent.emitPlan(sessionId, [
+            { content: "Inspect the workspace", status: "completed" },
+            { content: "Render todo row", status: "in_progress" },
+          ]);
+          await agent.emitText(sessionId, "Done.");
+        },
+      })),
+    }));
+    vi.doMock("@opencode-ai/sdk", async () => {
+      const actual = await vi.importActual<typeof import("@opencode-ai/sdk")>("@opencode-ai/sdk");
+      return {
+        ...actual,
+        createOpencodeServer: vi.fn(async () => {
+          throw new Error("SDK transport should not run in ACP plan mode");
+        }),
+      };
+    });
+
+    const { runOpencodeWithStreaming } = await import("../src/opencode/sessionRunner");
+    const todoUpdates: Array<Record<string, unknown>> = [];
+
+    const result = await runOpencodeWithStreaming({
+      prompt: "Inspect this repo and propose a plan.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "plan",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate: (payload) => {
+        todoUpdates.push(payload as unknown as Record<string, unknown>);
+      },
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(result).toEqual({
+      output: "Done.",
+      sessionId: "cursor-session-1",
+    });
+    expect(todoUpdates).toHaveLength(2);
+    expect(todoUpdates[0]?.groupId).toBe(todoUpdates[1]?.groupId);
+    expect(todoUpdates[1]).toMatchObject({
+      agent: "opencode",
+      explanation: null,
+      items: [
+        { content: "Inspect the workspace", status: "completed" },
+        { content: "Render todo row", status: "in_progress" },
+      ],
+    });
   });
 
   it("falls back to SDK transport for plan-mode threads with custom provider overrides", async () => {

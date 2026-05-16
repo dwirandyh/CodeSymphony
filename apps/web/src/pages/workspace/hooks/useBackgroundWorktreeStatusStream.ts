@@ -19,6 +19,7 @@ const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "tool.started",
   "tool.output",
   "tool.finished",
+  "todo.updated",
   "permission.requested",
   "question.requested",
   "plan.created",

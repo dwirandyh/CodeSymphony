@@ -8,6 +8,7 @@ Local-first, conductor.build-style workspace: onboard Git repositories, manage w
 - Git worktrees per repository; agent runs with the selected worktree as `cwd`
 - Threaded chat per **CLI agent** (`claude`, `codex`, `cursor`, `opencode`): streaming deltas, tool lifecycle, plan/execute gates, and permission prompts; optional **custom model providers** in the UI for agents that support them (Claude, Codex, OpenCode — not Cursor)
 - Integrated editor-style affordances (files, git status/diff, device streaming sidecars)
+- Local SQLite persistence for chat threads, events, and repository metadata
 - Workspace-wide event stream for cross-panel updates
 
 ## CLI coding agents
@@ -34,7 +35,7 @@ Thread model selection and **Model providers** in the app call `GET/POST /api/mo
 | `packages/chat-timeline-core` | Timeline assembly from chat events (used by the web app; built in parallel during `pnpm dev`) |
 | `packages/orchestrator-core` | Standalone run state machine (not required by the runtime) |
 
-Implementations live under `apps/runtime/src/routes/` (grouped by domain: `chats`, `repositories`, `devices`, `models`, etc.).
+Implementations live under `apps/runtime/src/routes/` (grouped by domain: `chats`, `repositories`, `devices`, `models`, etc.). Keep new API routes grouped by the same domain boundary.
 
 ### Default ports
 
@@ -117,6 +118,7 @@ make dev
 
 - Web: `http://127.0.0.1:5173` (Vite proxies `/api` to the runtime)
 - Runtime: JSON API under `http://127.0.0.1:4331/api`; liveness at `http://127.0.0.1:4331/health` (not under `/api`)
+- Quick smoke check: open `http://127.0.0.1:4331/health` before debugging API or UI issues.
 
 **Runtime only** — `pnpm dev:runtime`  
 **Web only** — `pnpm dev:web` (expects a running runtime for API calls)
@@ -226,11 +228,14 @@ make dev-desktop
 make setup-android-streaming
 make start-android-streaming
 make db-init
+make setup-worktree PORT=<runtime-port>
 make lint
 make test
 make build
 make run
 ```
+
+Use `make help` to see the current shortcut list and any workflow-specific options.
 
 The packaged desktop bundle can include the Android `ws-scrcpy` sidecar under the runtime bundle so macOS builds are not tied to this repo’s `scripts/` directory on disk.
 

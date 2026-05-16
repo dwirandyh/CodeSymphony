@@ -3,6 +3,7 @@ import type { ChatEvent } from "@codesymphony/shared-types";
 export const SNAPSHOT_INVALIDATION_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "tool.started",
   "tool.finished",
+  "todo.updated",
   "permission.requested",
   "permission.resolved",
   "question.requested",

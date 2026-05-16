@@ -1,8 +1,16 @@
 import type {
+  AgentTodoItem,
   ChatEvent,
   ChatTimelineActivityStep as ActivityTraceStep,
+  CliAgent,
   ChatTimelineExploreActivityEntry as ExploreActivityEntry,
 } from "@codesymphony/shared-types";
+
+export type TimelineTodoStatus = AgentTodoItem["status"] | "cancelled";
+
+export type TimelineTodoItem = Omit<AgentTodoItem, "status"> & {
+  status: TimelineTodoStatus;
+};
 
 export type StepCandidate = {
   key: string | null;
@@ -110,6 +118,31 @@ export type AskUserQuestionGroup = {
   createdAt: string;
   eventIds: Set<string>;
   sourceEvents: ChatEvent[];
+};
+
+export type TodoListGroup = {
+  id: string;
+  groupId: string;
+  agent: CliAgent;
+  explanation: string | null;
+  status: "running" | "completed";
+  items: TimelineTodoItem[];
+  startIdx: number;
+  anchorIdx: number;
+  createdAt: string;
+  eventIds: Set<string>;
+};
+
+export type TodoProgressGroup = {
+  id: string;
+  groupId: string;
+  agent: CliAgent;
+  todoId: string | null;
+  content: string;
+  startIdx: number;
+  anchorIdx: number;
+  createdAt: string;
+  eventIds: Set<string>;
 };
 
 type PendingPermissionRequest = {

@@ -1,5 +1,5 @@
 import type { ChatEvent, ChatMessage, ChatTimelineItem } from "@codesymphony/shared-types";
-import type { AskUserQuestionGroup, BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types.js";
+import type { AskUserQuestionGroup, BashRun, EditedRun, ExploreActivityGroup, SubagentGroup, TodoListGroup, TodoProgressGroup } from "../types.js";
 
 export type TimelineRefs = {
   streamingMessageIds: Set<string>;
@@ -80,6 +80,22 @@ export type InlineInsert =
     anchorIdx: number;
     createdAt: string;
     group: AskUserQuestionGroup;
+  }
+  | {
+    kind: "todo-list";
+    id: string;
+    startIdx: number;
+    anchorIdx: number;
+    createdAt: string;
+    group: TodoListGroup;
+  }
+  | {
+    kind: "todo-progress";
+    id: string;
+    startIdx: number;
+    anchorIdx: number;
+    createdAt: string;
+    group: TodoProgressGroup;
   }
   | {
     kind: "plan-file-output";

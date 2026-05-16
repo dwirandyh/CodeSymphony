@@ -124,6 +124,37 @@ describe("deriveWorkingStatus", () => {
     });
   });
 
+  it("uses a generic Working label when the latest running item is a todo list", () => {
+    expect(deriveWorkingStatus({
+      selectedThreadUiStatus: "running",
+      timelineItems: [
+        makeMessageTimelineItem("user", "user-1"),
+        {
+          kind: "todo-list",
+          id: "todo-list-1",
+          messageId: "assistant-1",
+          agent: "claude",
+          groupId: "group-1",
+          explanation: null,
+          status: "running",
+          items: [
+            {
+              id: "todo-1",
+              content: "Cek status repo dan struktur file utama",
+              status: "in_progress",
+            },
+          ],
+          createdAt: "2026-01-01T00:00:03Z",
+        },
+      ],
+    })).toEqual({
+      label: "Working",
+      startedAt: "2026-01-01T00:00:00Z",
+      finishedAt: null,
+      state: "running",
+    });
+  });
+
   it("uses a completed Worked status with terminal duration", () => {
     expect(deriveWorkingStatus({
       events: [makeTerminalEvent("chat.completed", "2026-01-01T00:00:08Z")],

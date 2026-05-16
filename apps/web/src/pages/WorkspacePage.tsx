@@ -79,7 +79,6 @@ const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewP
 import { api, type RuntimeInfo } from "../lib/api";
 import { FALLBACK_CODEX_MODELS } from "../lib/agentModelDefaults";
 import { debugLog } from "../lib/debugLog";
-import { scheduleWindowIdleTask } from "../lib/idleTask";
 import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
 import {
@@ -840,8 +839,8 @@ export function WorkspacePage() {
   const terminalViewActive = activeView === "chat" && selectedTerminalTabsState.visible && activeTerminalTab !== null;
   const workspaceNavigation = useWorkspaceNavigationHistory({ search, updateSearch });
   const queryClient = useQueryClient();
-  const prioritizeConversationBootstrap = activeView === "chat" && !terminalViewActive;
-  const [enableNonCriticalWorkspaceData, setEnableNonCriticalWorkspaceData] = useState(() => !prioritizeConversationBootstrap);
+  // Keep non-critical workspace data eager. Delayed chat bootstrap caused a real browser render loop.
+  const enableNonCriticalWorkspaceData = true;
   const backgroundStatusRepositories = enableNonCriticalWorkspaceData
     ? metadataScopedRepositories
     : [];
@@ -1012,16 +1011,6 @@ export function WorkspacePage() {
     terminalUiPersistenceRuntimePid,
   ]);
 
-  const workspaceLandingDataReady =
-    chat.messageListEmptyState === "creating-thread"
-    || chat.messageListEmptyState === "no-thread-selected";
-  const conversationReady = !prioritizeConversationBootstrap || workspaceLandingDataReady || (
-    chat.selectedThreadId != null
-    && !chat.composerDisabled
-    && chat.messageListEmptyState !== "loading-thread"
-    && chat.messageListEmptyState !== "creating-thread"
-    && chat.messageListEmptyState !== "no-thread-selected"
-  );
   const isThreadHistoryLocallyComplete = chat.isThreadHistoryLocallyComplete;
   const prefetchDisplayThreadSnapshot = useCallback((threadId: string) => {
     if (isThreadHistoryLocallyComplete(threadId)) {
@@ -1083,24 +1072,6 @@ export function WorkspacePage() {
     navigationPrefetchRef.current.set(worktreeId, prefetchTask);
     return prefetchTask;
   }, [prefetchDisplayThreadSnapshot, queryClient]);
-  useEffect(() => {
-    if (!prioritizeConversationBootstrap) {
-      setEnableNonCriticalWorkspaceData(true);
-      return;
-    }
-
-    if (!conversationReady) {
-      setEnableNonCriticalWorkspaceData(false);
-      return;
-    }
-
-    return scheduleWindowIdleTask(() => {
-      setEnableNonCriticalWorkspaceData(true);
-    }, {
-      timeout: 2000,
-      fallbackDelayMs: 1200,
-    });
-  }, [conversationReady, prioritizeConversationBootstrap, repos.selectedWorktreeId, search.worktreeId]);
   const repositoryBranches = useRepositoryBranches(nonCriticalRepositoryId);
 
   const gates = usePendingGates(chat.selectedThreadIdForData ?? chat.selectedThreadId, {
@@ -1350,10 +1321,6 @@ export function WorkspacePage() {
       return;
     }
 
-    if (prioritizeConversationBootstrap && repositoryId !== repos.selectedRepositoryId) {
-      setEnableNonCriticalWorkspaceData(false);
-    }
-
     repos.setSelectedRepositoryId(repositoryId);
     const repository = repos.repositories.find((entry) => entry.id === repositoryId);
     if (!repository) {
@@ -1366,18 +1333,11 @@ export function WorkspacePage() {
       void prefetchWorktreeNavigationTarget(primaryWorktree.id);
     }
     repos.setSelectedWorktreeId(primaryWorktree?.id ?? null);
-  }, [canDiscardDirtyWorktreeFiles, prefetchWorktreeNavigationTarget, prioritizeConversationBootstrap, repos.repositories, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
+  }, [canDiscardDirtyWorktreeFiles, prefetchWorktreeNavigationTarget, repos.repositories, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId]);
 
   const handleSelectWorktree = useCallback((repositoryId: string, worktreeId: string, preferredThreadId?: string | null) => {
     if (!canDiscardDirtyWorktreeFiles(repos.selectedWorktreeId)) {
       return;
-    }
-
-    if (
-      prioritizeConversationBootstrap
-      && (repositoryId !== repos.selectedRepositoryId || worktreeId !== repos.selectedWorktreeId)
-    ) {
-      setEnableNonCriticalWorkspaceData(false);
     }
 
     if (mobilePanelOpen === "repos" && repositoryId === repos.selectedRepositoryId && worktreeId === repos.selectedWorktreeId) {
@@ -1410,7 +1370,7 @@ export function WorkspacePage() {
       setMobilePanelOpen(nextMobilePanel);
       setMobileReposOrigin(null);
     }
-  }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, prefetchWorktreeNavigationTarget, prioritizeConversationBootstrap, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
+  }, [canDiscardDirtyWorktreeFiles, handleCloseMobileRepositories, mobilePanelOpen, mobileReposOrigin, prefetchWorktreeNavigationTarget, repos.selectedRepositoryId, repos.selectedWorktreeId, repos.setSelectedRepositoryId, repos.setSelectedWorktreeId, updateSearch]);
 
   const handleResourceMonitorSelectWorktree = useCallback((repositoryId: string, worktreeId: string) => {
     handleSelectWorktree(repositoryId, worktreeId);
