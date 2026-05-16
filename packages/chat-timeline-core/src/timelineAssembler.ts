@@ -45,6 +45,7 @@ import {
   processUnassignedSemanticEvents,
   processFailedEvents,
   extractAskUserQuestionGroups,
+  extractGenericToolRuns,
 } from "./workspace-timeline/timelineOrphans.js";
 import { sanitizeAssistantVisibleText } from "./textUtils.js";
 import { pushRenderDebug } from "./debug.js";
@@ -863,8 +864,21 @@ export function buildTimelineFromSeed(params: {
       todoEventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
     }
 
+    const genericToolRuns = message.role === "assistant"
+      ? extractGenericToolRuns(
+        activityContext.filter((event) => !assignedToolEventIds.has(event.id)),
+      )
+      : [];
+
+    if (message.role === "assistant") {
+      for (const run of genericToolRuns) {
+        run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
+      }
+    }
+
     const hasInlineActivityCards =
       bashRuns.length > 0
+      || genericToolRuns.length > 0
       || editedRuns.length > 0
       || subagentGroups.length > 0
       || exploreActivityGroups.length > 0
@@ -905,10 +919,11 @@ export function buildTimelineFromSeed(params: {
       activityContext.forEach((event) => assignedToolEventIds.add(event.id));
     }
 
-    if (message.role === "assistant" && (bashRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || askUserQuestionGroups.length > 0 || todoListGroups.length > 0 || todoProgressGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
+    if (message.role === "assistant" && (bashRuns.length > 0 || genericToolRuns.length > 0 || editedRuns.length > 0 || exploreActivityGroups.length > 0 || askUserQuestionGroups.length > 0 || todoListGroups.length > 0 || todoProgressGroups.length > 0 || subagentGroups.length > 0 || !!planFileOutput)) {
       const hasInlineSubagentRuns = subagentGroups.length > 0;
       const inlineInserts = buildInlineInserts(
         bashRuns,
+        genericToolRuns,
         editedRuns,
         subagentGroups,
         exploreActivityGroups,

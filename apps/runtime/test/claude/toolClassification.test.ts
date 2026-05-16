@@ -10,6 +10,7 @@ import {
     editTargetFromUnknownToolInput,
     searchParamsFromUnknownToolInput,
     formatSearchParamValue,
+    resolveToolPresentationContext,
 } from "../../src/claude/toolClassification";
 import { normalizeMentionTokensForPrompt } from "../../src/services/chat/chatAttachmentUtils";
 
@@ -228,5 +229,57 @@ describe("searchParamsFromUnknownToolInput", () => {
 
     it("returns undefined for non-search tools", () => {
         expect(searchParamsFromUnknownToolInput("Read", { pattern: "x" })).toBeUndefined();
+    });
+});
+
+describe("resolveToolPresentationContext", () => {
+    it("normalizes generic MCP titles using raw server/tool input", () => {
+        expect(resolveToolPresentationContext({
+            toolName: "MCP: tool",
+            title: "MCP: tool",
+            kind: "other",
+            input: {
+                server: "context7",
+                tool: "resolve-library-id",
+            },
+        })).toEqual({
+            toolName: "context7.resolve-library-id",
+            toolKind: "mcp",
+        });
+    });
+
+    it("normalizes compound MCP tool names from other-kind tool titles", () => {
+        expect(resolveToolPresentationContext({
+            toolName: "context7_resolve-library-id",
+            title: "context7_resolve-library-id",
+            kind: "other",
+            input: {},
+        })).toEqual({
+            toolName: "context7.resolve-library-id",
+            toolKind: "mcp",
+        });
+    });
+
+    it("normalizes Claude-style encoded MCP tool names", () => {
+        expect(resolveToolPresentationContext({
+            toolName: "mcp__context7__resolve-library-id",
+            title: "mcp__context7__resolve-library-id",
+            input: {},
+        })).toEqual({
+            toolName: "context7.resolve-library-id",
+            toolKind: "mcp",
+        });
+    });
+
+    it("keeps generic MCP titles on the MCP presentation path", () => {
+        expect(resolveToolPresentationContext({
+            toolName: "MCP: tool",
+            title: "MCP: tool",
+            kind: "other",
+            input: {},
+        })).toEqual({
+            toolName: "MCP tool",
+            toolKind: "mcp",
+        });
     });
 });
