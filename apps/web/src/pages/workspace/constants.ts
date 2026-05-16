@@ -5,6 +5,7 @@ export const EVENT_TYPES = [
   "tool.started",
   "tool.output",
   "tool.finished",
+  "todo.updated",
   "permission.requested",
   "permission.resolved",
   "question.requested",

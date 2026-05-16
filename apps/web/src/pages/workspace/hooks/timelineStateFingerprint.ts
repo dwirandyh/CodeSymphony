@@ -135,6 +135,27 @@ function buildTimelineItemFingerprint(item: ChatTimelineItem): string {
         item.filePath,
         windowedSignature(item.content),
       ].join(":");
+    case "todo-list":
+      return [
+        "todo-list",
+        item.id,
+        item.messageId,
+        item.agent,
+        item.groupId,
+        item.status,
+        windowedSignature(item.explanation ?? ""),
+        item.items.map((todo) => `${todo.id ?? ""}:${todo.status}:${windowedSignature(todo.content)}`).join("|"),
+      ].join(":");
+    case "todo-progress":
+      return [
+        "todo-progress",
+        item.id,
+        item.messageId,
+        item.agent,
+        item.groupId,
+        item.todoId ?? "",
+        windowedSignature(item.content),
+      ].join(":");
     case "error":
       return `error:${item.id}:${windowedSignature(item.message)}`;
   }

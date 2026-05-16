@@ -1,3 +1,4 @@
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig, loadEnv, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
@@ -36,6 +37,16 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins,
+    resolve: {
+      alias: {
+        "@codesymphony/chat-timeline-core": fileURLToPath(
+          new URL("../../packages/chat-timeline-core/src/index.ts", import.meta.url),
+        ),
+        "@codesymphony/shared-types": fileURLToPath(
+          new URL("../../packages/shared-types/src/index.ts", import.meta.url),
+        ),
+      },
+    },
     server: {
       port: parseInt(getConfiguredWebDevPort(runtimeConfigEnv), 10),
       host: true,

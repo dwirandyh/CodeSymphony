@@ -17,6 +17,7 @@ export const ChatEventTypeSchema = z.enum([
   "question.answered",
   "question.dismissed",
   "plan.created",
+  "todo.updated",
   "plan.approved",
   "plan.dismissed",
   "plan.revision_requested",
@@ -444,6 +445,16 @@ export type UpdateAndroidClipboardInput = z.infer<typeof UpdateAndroidClipboardI
 export const AssistantRenderHintSchema = z.enum(["markdown", "raw-file", "raw-fallback", "diff"]);
 export type AssistantRenderHint = z.infer<typeof AssistantRenderHintSchema>;
 
+export const AgentTodoStatusSchema = z.enum(["pending", "in_progress", "completed", "cancelled"]);
+export type AgentTodoStatus = z.infer<typeof AgentTodoStatusSchema>;
+
+export const AgentTodoItemSchema = z.object({
+  id: z.string().nullable().optional(),
+  content: z.string().min(1),
+  status: AgentTodoStatusSchema,
+});
+export type AgentTodoItem = z.infer<typeof AgentTodoItemSchema>;
+
 export const ChatTimelineMessageItemSchema = z.object({
   kind: z.literal("message"),
   message: ChatMessageSchema,
@@ -459,6 +470,29 @@ export const ChatTimelinePlanFileOutputItemSchema = z.object({
   messageId: z.string(),
   content: z.string(),
   filePath: z.string(),
+  createdAt: z.string().datetime(),
+});
+
+export const ChatTimelineTodoListItemSchema = z.object({
+  kind: z.literal("todo-list"),
+  id: z.string(),
+  messageId: z.string(),
+  agent: CliAgentSchema,
+  groupId: z.string(),
+  explanation: z.string().nullable(),
+  status: z.enum(["running", "completed"]),
+  items: z.array(AgentTodoItemSchema),
+  createdAt: z.string().datetime(),
+});
+
+export const ChatTimelineTodoProgressItemSchema = z.object({
+  kind: z.literal("todo-progress"),
+  id: z.string(),
+  messageId: z.string(),
+  agent: CliAgentSchema,
+  groupId: z.string(),
+  todoId: z.string().nullable(),
+  content: z.string().min(1),
   createdAt: z.string().datetime(),
 });
 
@@ -564,6 +598,8 @@ export const ChatTimelineErrorItemSchema = z.object({
 export const ChatTimelineItemSchema = z.discriminatedUnion("kind", [
   ChatTimelineMessageItemSchema,
   ChatTimelinePlanFileOutputItemSchema,
+  ChatTimelineTodoListItemSchema,
+  ChatTimelineTodoProgressItemSchema,
   ChatTimelineActivityItemSchema,
   ChatTimelineToolItemSchema,
   ChatTimelineEditedDiffItemSchema,
@@ -575,6 +611,8 @@ export const ChatTimelineItemSchema = z.discriminatedUnion("kind", [
 export const ChatTimelineItemKindSchema = z.enum([
   "message",
   "plan-file-output",
+  "todo-list",
+  "todo-progress",
   "activity",
   "tool",
   "edited-diff",

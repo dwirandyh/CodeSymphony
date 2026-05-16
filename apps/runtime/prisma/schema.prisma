@@ -34,6 +34,7 @@ enum ChatEventType {
   question_answered
   question_dismissed
   plan_created
+  todo_updated
   plan_approved
   plan_dismissed
   plan_revision_requested

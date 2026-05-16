@@ -503,6 +503,220 @@ describe("tool instrumentation", () => {
     }));
   });
 
+  it("emits stable todo updates from real TodoWrite inputs", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return attachQueryControls((async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+
+        await canUseTool("TodoWrite", {
+          todos: [
+            { content: "Inspect current timeline", status: "in_progress", activeForm: "Inspecting current timeline" },
+            { content: "Render todo row", status: "pending", activeForm: "Rendering todo row" },
+          ],
+        }, {
+          toolUseID: "tool-todo-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        await canUseTool("TodoWrite", {
+          todos: [
+            { content: "Inspect current timeline", status: "completed", activeForm: "Inspected current timeline" },
+            { content: "Render todo row", status: "in_progress", activeForm: "Rendering todo row" },
+          ],
+        }, {
+          toolUseID: "tool-todo-2",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        yield { type: "system", subtype: "init", session_id: "session-todo-1" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })());
+    });
+
+    const onTodoUpdate = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "implement todo timeline",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onTodoUpdate,
+      onToolInstrumentation: () => { },
+    });
+
+    const payloads = onTodoUpdate.mock.calls.map(([payload]) => payload as {
+      agent: string;
+      groupId: string;
+      explanation: string | null;
+      items: Array<{ content: string; status: string }>;
+    });
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]?.groupId).toBe(payloads[1]?.groupId);
+    expect(payloads[0]).toMatchObject({
+      agent: "claude",
+      explanation: null,
+      items: [
+        { content: "Inspect current timeline", status: "in_progress" },
+        { content: "Render todo row", status: "pending" },
+      ],
+    });
+    expect(payloads[1]).toMatchObject({
+      agent: "claude",
+      explanation: null,
+      items: [
+        { content: "Inspect current timeline", status: "completed" },
+        { content: "Render todo row", status: "in_progress" },
+      ],
+    });
+  });
+
+  it("emits TodoWrite updates from PreToolUse fallback without duplicating canUseTool events", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return attachQueryControls((async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string }>;
+        const hooks = options.hooks as {
+          PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+        };
+        const preToolUseHook = hooks.PreToolUse[0]?.hooks[0];
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+
+        const firstTodoInput = {
+          todos: [
+            { content: "Inspect current timeline", status: "in_progress", activeForm: "Inspecting current timeline" },
+            { content: "Render todo row", status: "pending", activeForm: "Rendering todo row" },
+          ],
+        };
+        await canUseTool("TodoWrite", firstTodoInput, {
+          toolUseID: "tool-todo-hook-1",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-todo-hook-1",
+            tool_name: "TodoWrite",
+            tool_input: firstTodoInput,
+          },
+          "tool-todo-hook-1",
+        );
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-todo-hook-1",
+            tool_name: "TodoWrite",
+            tool_input: firstTodoInput,
+            tool_response: "Todo state updated as requested.",
+          },
+          "tool-todo-hook-1",
+        );
+
+        const secondTodoInput = {
+          todos: [
+            { content: "Inspect current timeline", status: "completed", activeForm: "Inspected current timeline" },
+            { content: "Render todo row", status: "in_progress", activeForm: "Rendering todo row" },
+          ],
+        };
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-todo-hook-2",
+            tool_name: "TodoWrite",
+            tool_input: secondTodoInput,
+          },
+          "tool-todo-hook-2",
+        );
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-todo-hook-2",
+            tool_name: "TodoWrite",
+            tool_input: secondTodoInput,
+            tool_response: "Todo state updated as requested.",
+          },
+          "tool-todo-hook-2",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-todo-hook-1" };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done" }],
+          },
+        };
+      })());
+    });
+
+    const onTodoUpdate = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "implement todo timeline",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted: () => { },
+      onToolOutput: () => { },
+      onToolFinished: () => { },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onTodoUpdate,
+      onToolInstrumentation: () => { },
+    });
+
+    const payloads = onTodoUpdate.mock.calls.map(([payload]) => payload as {
+      agent: string;
+      groupId: string;
+      explanation: string | null;
+      items: Array<{ content: string; status: string }>;
+    });
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]?.groupId).toBe(payloads[1]?.groupId);
+    expect(payloads[0]).toMatchObject({
+      agent: "claude",
+      explanation: null,
+      items: [
+        { content: "Inspect current timeline", status: "in_progress" },
+        { content: "Render todo row", status: "pending" },
+      ],
+    });
+    expect(payloads[1]).toMatchObject({
+      agent: "claude",
+      explanation: null,
+      items: [
+        { content: "Inspect current timeline", status: "completed" },
+        { content: "Render todo row", status: "in_progress" },
+      ],
+    });
+  });
+
   it("includes edit target metadata for edit lifecycle events", async () => {
     mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       return attachQueryControls((async function* () {

@@ -350,6 +350,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   onQuestionRequest,
   onPermissionRequest,
   onPlanFileDetected,
+  onTodoUpdate,
   onSubagentStarted,
   onSubagentStopped,
   onToolInstrumentation,
@@ -374,6 +375,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     onQuestionRequest,
     onPermissionRequest,
     onPlanFileDetected,
+    onTodoUpdate,
     onSubagentStarted,
     onSubagentStopped,
   };
@@ -426,6 +428,8 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
     const state: SessionState = {
       finalOutput: "",
       planFileDetected: false,
+      todoGroupId: null,
+      emittedTodoToolUseIds: new Set<string>(),
       queryStartTimestamp,
       promptSuggestions: [],
       recentDiagnostics: [],
@@ -507,7 +511,7 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
           hooks: {
             PreToolUse: [
               {
-                hooks: [createPreToolUseHook(markStarted, maps)],
+                hooks: [createPreToolUseHook(callbacks, state, markStarted, maps)],
               },
             ],
             PostToolUse: [

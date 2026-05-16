@@ -26,6 +26,7 @@ function nextStatusFromEvent(
     case "tool.started":
     case "tool.output":
     case "tool.finished":
+    case "todo.updated":
     case "subagent.started":
     case "subagent.finished":
       return "running";

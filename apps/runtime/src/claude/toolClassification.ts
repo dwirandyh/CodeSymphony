@@ -1,3 +1,4 @@
+import type { AgentTodoItem } from "@codesymphony/shared-types";
 import { truncateForPreview } from "./sanitize.js";
 
 const SENSITIVE_KEY_PATTERN = /(token|secret|password|api[_-]?key|authorization|cookie)/i;
@@ -16,6 +17,10 @@ export type ToolMetadata = {
     outputBytes?: number;
 };
 
+function isTodoStatus(value: unknown): value is AgentTodoItem["status"] {
+    return value === "pending" || value === "in_progress" || value === "completed" || value === "cancelled";
+}
+
 export function isBashTool(toolName: string): boolean {
     return toolName.trim().toLowerCase() === "bash";
 }
@@ -26,6 +31,10 @@ export function isSearchTool(toolName: string): boolean {
 
 export function isEditTool(toolName: string): boolean {
     return /^(edit|multiedit|write)$/i.test(toolName.trim());
+}
+
+export function isTodoWriteTool(toolName: string): boolean {
+    return toolName.trim().toLowerCase() === "todowrite";
 }
 
 export function commandFromToolInput(input: Record<string, unknown>): string | undefined {
@@ -222,4 +231,40 @@ export function searchParamsFromUnknownToolInput(toolName: string, input: unknow
     }
 
     return truncateForPreview(parts.join(", "));
+}
+
+export function todoItemsFromUnknownToolInput(toolName: string, input: unknown): AgentTodoItem[] | undefined {
+    if (!isTodoWriteTool(toolName)) {
+        return undefined;
+    }
+
+    if (typeof input !== "object" || input == null || Array.isArray(input)) {
+        return undefined;
+    }
+
+    const todos = (input as Record<string, unknown>).todos;
+    if (!Array.isArray(todos)) {
+        return undefined;
+    }
+
+    const items = todos.flatMap((entry, index) => {
+        if (typeof entry !== "object" || entry == null || Array.isArray(entry)) {
+            return [];
+        }
+
+        const record = entry as Record<string, unknown>;
+        const content = typeof record.content === "string" ? record.content.trim() : "";
+        const status = record.status;
+        if (content.length === 0 || !isTodoStatus(status)) {
+            return [];
+        }
+
+        return [{
+            id: `claude-todo:${index}`,
+            content,
+            status,
+        } satisfies AgentTodoItem];
+    });
+
+    return items.length > 0 ? items : undefined;
 }
