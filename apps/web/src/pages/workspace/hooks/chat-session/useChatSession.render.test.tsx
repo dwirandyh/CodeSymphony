@@ -602,7 +602,7 @@ describe("useChatSession", () => {
     expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1", {
       permissionMode: "default",
       agent: "claude",
-      model: "claude-sonnet-4-6",
+      model: "glm-4.7",
       modelProviderId: null,
     });
     expect(api.sendMessage).toHaveBeenCalledWith(prMrThread.id, {

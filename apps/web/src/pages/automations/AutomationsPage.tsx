@@ -235,7 +235,7 @@ function defaultModelForAgent(agent: CliAgent): string {
   if (agent === "codex") {
     return "gpt-5.4";
   }
-  return "claude-sonnet-4-6";
+  return "glm-4.7";
 }
 
 function formatDateTime(input: string | null) {

@@ -18,6 +18,7 @@ import {
   readTargetFromUnknownToolInput,
   searchParamsFromUnknownToolInput,
   editTargetFromUnknownToolInput,
+  resolveToolPresentationContext,
   skillNameFromUnknownToolInput,
   todoItemsFromUnknownToolInput,
   type ToolMetadata,
@@ -826,16 +827,24 @@ export function createCanUseTool(
   ) => {
     const toolUseId = options.toolUseID;
     const command = commandFromToolInput(input);
-    const isBash = isBashTool(toolName);
+    const presentation = resolveToolPresentationContext({
+      toolName,
+      title: toolName,
+      kind: null,
+      input,
+    });
+    const displayToolName = presentation.toolName;
+    const isBash = isBashTool(displayToolName);
     const nowMs = Date.now();
 
     maps.toolMetadataByUseId.set(toolUseId, {
-      toolName,
+      toolName: displayToolName,
+      ...(presentation.toolKind ? { toolKind: presentation.toolKind } : {}),
       command,
-      readTarget: readTargetFromUnknownToolInput(toolName, input),
-      searchParams: searchParamsFromUnknownToolInput(toolName, input),
-      editTarget: editTargetFromUnknownToolInput(toolName, input),
-      skillName: skillNameFromUnknownToolInput(toolName, input),
+      readTarget: readTargetFromUnknownToolInput(displayToolName, input),
+      searchParams: presentation.searchParams ?? searchParamsFromUnknownToolInput(displayToolName, input),
+      editTarget: editTargetFromUnknownToolInput(displayToolName, input),
+      skillName: skillNameFromUnknownToolInput(displayToolName, input),
       isBash,
     });
     maps.subagentToolInputByUseId.set(toolUseId, input);
@@ -866,14 +875,14 @@ export function createCanUseTool(
 
     const permissionParentToolUseId = canonicalRequestOwner.subagentOwnerToolUseId ?? null;
     maps.requestedToolByUseId.set(toolUseId, {
-      toolName,
+      toolName: displayToolName,
       parentToolUseId: permissionParentToolUseId,
       requestedAtMs: nowMs,
     });
     await emitInstrumentation({
       stage: "requested",
       toolUseId,
-      toolName,
+      toolName: displayToolName,
       parentToolUseId: permissionParentToolUseId,
       threadContext: instrumentContext,
       timing: {
@@ -1026,7 +1035,7 @@ export function createCanUseTool(
 
     const decision = await callbacks.onPermissionRequest({
       requestId: toolUseId,
-      toolName,
+      toolName: displayToolName,
       toolInput: input,
       blockedPath: options.blockedPath ?? null,
       decisionReason: options.decisionReason ?? null,
@@ -1097,14 +1106,21 @@ export function createPreToolUseHook(
 
     const command = commandFromUnknownToolInput(hookInput.tool_input);
     const hookToolName = hookInput.tool_name as string;
-    maps.toolMetadataByUseId.set(hookToolUseId, {
+    const presentation = resolveToolPresentationContext({
       toolName: hookToolName,
+      title: hookToolName,
+      kind: null,
+      input: hookInput.tool_input,
+    });
+    maps.toolMetadataByUseId.set(hookToolUseId, {
+      toolName: presentation.toolName,
+      ...(presentation.toolKind ? { toolKind: presentation.toolKind } : {}),
       command,
-      readTarget: readTargetFromUnknownToolInput(hookToolName, hookInput.tool_input),
-      searchParams: searchParamsFromUnknownToolInput(hookToolName, hookInput.tool_input),
-      editTarget: editTargetFromUnknownToolInput(hookToolName, hookInput.tool_input),
-      skillName: skillNameFromUnknownToolInput(hookToolName, hookInput.tool_input),
-      isBash: isBashTool(hookToolName),
+      readTarget: readTargetFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
+      searchParams: presentation.searchParams ?? searchParamsFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
+      editTarget: editTargetFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
+      skillName: skillNameFromUnknownToolInput(presentation.toolName, hookInput.tool_input),
+      isBash: isBashTool(presentation.toolName),
     });
 
     const ownership = resolveCanonicalSubagentOwner(
@@ -1122,7 +1138,7 @@ export function createPreToolUseHook(
       rememberSubagentOwner(maps, hookToolUseId, ownership.subagentOwnerToolUseId);
     }
     maps.requestedToolByUseId.set(hookToolUseId, {
-      toolName: hookToolName,
+      toolName: presentation.toolName,
       parentToolUseId: inferredParentToolUseId,
       requestedAtMs: Date.now(),
     });
@@ -1139,7 +1155,7 @@ export function createPreToolUseHook(
 
     await markStarted(
       hookToolUseId,
-      hookToolName,
+      presentation.toolName,
       inferredParentToolUseId,
       ownership,
       "sdk.hook.pre_tool_use",
@@ -1148,7 +1164,7 @@ export function createPreToolUseHook(
     await maybeEmitTodoUpdate(
       callbacks,
       state,
-      hookToolName,
+      presentation.toolName,
       hookInput.tool_input,
       hookToolUseId,
     );
@@ -1354,6 +1370,7 @@ export function createPostToolUseFailureHook(
     await callbacks.onToolFinished({
       summary: failureSummary,
       precedingToolUseIds: [hookToolUseId],
+      ...(metadata.toolKind ? { toolKind: metadata.toolKind } : {}),
       subagentOwnerToolUseId: owner.subagentOwnerToolUseId,
       launcherToolUseId: owner.launcherToolUseId,
       ownershipReason: owner.ownershipReason,

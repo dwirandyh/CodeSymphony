@@ -5,7 +5,7 @@ import type { ClaudeOwnershipDiagnostics, ClaudeToolInstrumentationEvent } from 
 import { appendRuntimeDebugLog } from "../routes/debug.js";
 
 import { captureDiagnosticLine } from "./executableResolver.js";
-import { isBashTool, skillNameFromUnknownToolInput } from "./toolClassification.js";
+import { isBashTool, resolveToolPresentationContext, skillNameFromUnknownToolInput } from "./toolClassification.js";
 import type { ToolMetadata } from "./toolClassification.js";
 import { completionSummaryFromMetadata } from "./toolSummary.js";
 import { findDetectedPlanFile } from "./planFile.js";
@@ -413,15 +413,22 @@ export async function processStreamMessages(
       const msg = message;
       const metadata = maps.toolMetadataByUseId.get(msg.tool_use_id);
       maps.requestedToolByUseId.set(msg.tool_use_id, {
-        toolName: msg.tool_name,
+        toolName: maps.toolMetadataByUseId.get(msg.tool_use_id)?.toolName ?? msg.tool_name,
         parentToolUseId: msg.parent_tool_use_id,
         requestedAtMs: Date.now(),
       });
       if (!metadata) {
-        maps.toolMetadataByUseId.set(msg.tool_use_id, {
+        const presentation = resolveToolPresentationContext({
           toolName: msg.tool_name,
-          skillName: skillNameFromUnknownToolInput(msg.tool_name, null),
-          isBash: isBashTool(msg.tool_name),
+          title: msg.tool_name,
+          kind: null,
+          input: null,
+        });
+        maps.toolMetadataByUseId.set(msg.tool_use_id, {
+          toolName: presentation.toolName,
+          ...(presentation.toolKind ? { toolKind: presentation.toolKind } : {}),
+          skillName: skillNameFromUnknownToolInput(presentation.toolName, null),
+          isBash: isBashTool(presentation.toolName),
         });
       }
 
@@ -460,7 +467,10 @@ export async function processStreamMessages(
       );
 
       await onToolOutput({
-        toolName: msg.tool_name,
+        toolName: maps.toolMetadataByUseId.get(msg.tool_use_id)?.toolName ?? msg.tool_name,
+        ...(maps.toolMetadataByUseId.get(msg.tool_use_id)?.toolKind
+          ? { toolKind: maps.toolMetadataByUseId.get(msg.tool_use_id)?.toolKind }
+          : {}),
         toolUseId: msg.tool_use_id,
         parentToolUseId: resolvedParentToolUseId,
         subagentOwnerToolUseId: ownership.subagentOwnerToolUseId,

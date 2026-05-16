@@ -380,6 +380,141 @@ describe("cursor session runner", () => {
     expect(toolFinishes[0]?.command).toBeUndefined();
   });
 
+  it("normalizes Cursor MCP and web-search tool calls for the timeline", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "web_1",
+          title: "Web",
+          kind: "search",
+          status: "pending",
+          rawInput: {
+            query: "OpenAI Codex CLI official GitHub npm",
+          },
+          content: [],
+        });
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "web_1",
+          status: "completed",
+          rawInput: {
+            query: "OpenAI Codex CLI official GitHub npm",
+          },
+          rawOutput: {
+            content: "Search complete.",
+          },
+          content: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Search complete.",
+              },
+            },
+          ],
+        });
+
+        await agent.emitToolCall(sessionId, {
+          sessionUpdate: "tool_call",
+          toolCallId: "mcp_1",
+          title: "MCP",
+          kind: "other",
+          status: "pending",
+          rawInput: {
+            server: "context7",
+            tool: "resolve-library-id",
+            query: "react",
+          },
+          content: [],
+        });
+        await agent.emitToolCallUpdate(sessionId, {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "mcp_1",
+          status: "completed",
+          rawInput: {
+            server: "context7",
+            tool: "resolve-library-id",
+            query: "react",
+          },
+          rawOutput: {
+            content: "Resolved library id.",
+          },
+          content: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Resolved library id.",
+              },
+            },
+          ],
+        });
+
+        await agent.emitText(sessionId, "Done.");
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const toolStarts: Array<Record<string, unknown>> = [];
+    const toolFinishes: Array<Record<string, unknown>> = [];
+
+    const result = await runCursorWithStreaming({
+      prompt: "Use MCP and web search.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: (event) => {
+        toolStarts.push(event as unknown as Record<string, unknown>);
+      },
+      onToolOutput: () => {},
+      onToolFinished: (event) => {
+        toolFinishes.push(event as unknown as Record<string, unknown>);
+      },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(result.output).toBe("Done.");
+    expect(toolStarts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolUseId: "web_1",
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+      }),
+      expect.objectContaining({
+        toolUseId: "mcp_1",
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+      }),
+    ]));
+    expect(toolFinishes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        precedingToolUseIds: ["web_1"],
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+        summary: "Searched OpenAI Codex CLI official GitHub npm",
+      }),
+      expect.objectContaining({
+        precedingToolUseIds: ["mcp_1"],
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+        summary: "Ran context7.resolve-library-id",
+        output: "Resolved library id.",
+      }),
+    ]));
+  });
+
   it("normalizes Cursor ACP elicitation requests into runtime question callbacks", async () => {
     const spawnMock = vi.fn(() => createMockCursorChild({
       onPrompt: async ({ agent, sessionId }) => {

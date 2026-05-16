@@ -12,6 +12,10 @@ import { setBooleanMapEntry } from "./toggleMapState";
 import {
   toolTitle,
   toolSubtitle,
+  getToolKind,
+  getToolSearchParams,
+  buildWebSearchSummaryLabel,
+  buildMcpSummaryLabel,
   formatCompactDurationSeconds,
   shortenCommandForSummary,
   getChangedFiles,
@@ -367,12 +371,22 @@ export const TimelineItem = memo(function TimelineItem({
           : "Success";
     const skillTool = parseSkillTool(item);
     const isSkillTool = !isAskUserQuestionTool && skillTool !== null;
+    const toolKind = !isSkillTool ? getToolKind(item) : null;
     const isBashTool = !isSkillTool && (item.shell === "bash" || item.toolName?.toLowerCase() === "bash");
-    const isMcpTool = !isSkillTool && !isBashTool && (item.toolName?.toLowerCase().startsWith("mcp__") ?? false);
+    const isMcpTool = !isSkillTool && !isBashTool && toolKind === "mcp";
+    const isWebSearchTool = !isSkillTool && !isBashTool && toolKind === "web_search";
+    const searchParams = isWebSearchTool ? getToolSearchParams(item) : null;
+    const mcpToolName = isMcpTool
+      ? item.toolName?.trim() || (typeof primaryEvent?.payload.toolName === "string" ? primaryEvent.payload.toolName : null)
+      : null;
     const title = isAskUserQuestionTool
       ? `Asked ${askUserQuestionTool.questionCount} Question${askUserQuestionTool.questionCount === 1 ? "" : "s"}`
       : isSkillTool
       ? (skillTool.skillName ? `Skill(${skillTool.skillName})` : "Skill")
+      : isMcpTool
+        ? buildMcpSummaryLabel({ toolName: mcpToolName, status })
+      : isWebSearchTool
+        ? buildWebSearchSummaryLabel({ searchParams, status })
       : isBashTool
         ? "Bash"
         : primaryEvent
@@ -384,6 +398,8 @@ export const TimelineItem = memo(function TimelineItem({
       ? status === "running"
         ? "Loading skill"
         : "Successfully loaded skill"
+      : isWebSearchTool
+        ? searchParams ?? "Web search"
       : isBashTool
         ? item.summary
           ?? shortCommandLabel
@@ -405,10 +421,29 @@ export const TimelineItem = memo(function TimelineItem({
           : shortCommandLabel
             ? `Ran ${shortCommandLabel}`
             : "Ran command"
+        : isWebSearchTool
+          ? title
         : isMcpTool
           ? title
           : `${title} · ${subtitle}`;
     const summaryLabel = !isSkillTool && item.command && durationLabel ? `${summaryPrefix} for ${durationLabel}` : summaryPrefix;
+    const canExpand = !isWebSearchTool;
+
+    if (!canExpand) {
+      return (
+        <article className="px-1 text-xs" data-testid="timeline-tool">
+          <div
+            className={cn(
+              "inline-flex items-center gap-1 rounded-md text-[12px]",
+              isFailed ? "text-destructive" : "text-muted-foreground",
+            )}
+          >
+            {isFailed ? <XCircle className="h-3.5 w-3.5 shrink-0" /> : null}
+            <span className="font-medium">{summaryLabel}</span>
+          </div>
+        </article>
+      );
+    }
 
     return (
       <article className="px-1 text-xs" data-testid="timeline-tool">

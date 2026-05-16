@@ -553,6 +553,49 @@ function buildQuestionPayload(params: Record<string, unknown> | undefined) {
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 }
 
+function extractCodexTextContent(entries: unknown): string | undefined {
+  const parts = asArray(entries)
+    .map(asObject)
+    .filter((entry): entry is Record<string, unknown> => entry !== undefined)
+    .map((entry) =>
+      asString(entry.text)
+      ?? asString(entry.outputText)
+      ?? asString(entry.content)
+      ?? asString(entry.value),
+    )
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+function extractCodexToolOutputText(item: Record<string, unknown>): string | undefined {
+  return asString(item.aggregatedOutput)
+    ?? extractCodexTextContent(asObject(item.result)?.content)
+    ?? extractCodexTextContent(item.contentItems)
+    ?? extractCodexTextContent(asObject(item.response)?.content);
+}
+
+function mergeToolContexts(
+  cachedToolContext: ToolContext | undefined,
+  completedToolContext: ToolContext,
+): ToolContext {
+  if (!cachedToolContext) {
+    return completedToolContext;
+  }
+
+  return {
+    toolName: completedToolContext.toolName || cachedToolContext.toolName,
+    toolKind: completedToolContext.toolKind ?? cachedToolContext.toolKind,
+    command: completedToolContext.command ?? cachedToolContext.command,
+    searchParams: completedToolContext.searchParams ?? cachedToolContext.searchParams,
+    editTarget: completedToolContext.editTarget ?? cachedToolContext.editTarget,
+    toolInput: completedToolContext.toolInput ?? cachedToolContext.toolInput,
+    isBash: completedToolContext.isBash ?? cachedToolContext.isBash,
+    shell: completedToolContext.shell ?? cachedToolContext.shell,
+    ownership: completedToolContext.ownership ?? cachedToolContext.ownership,
+  };
+}
+
 function toCodexAnswers(answers: Record<string, string>): Record<string, { answers: string[] }> {
   return Object.fromEntries(
     Object.entries(answers).map(([questionId, answer]) => [
@@ -1100,6 +1143,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
           toolContextById.set(itemId, toolContext);
           await onToolStarted({
             toolName: toolContext.toolName,
+            toolKind: toolContext.toolKind,
             toolUseId: itemId,
             parentToolUseId: toolContext.ownership?.parentToolUseId ?? null,
             subagentOwnerToolUseId: toolContext.ownership?.subagentOwnerToolUseId ?? null,
@@ -1211,12 +1255,13 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
           if (!toolContext) {
             return;
           }
-          const resolvedToolContext = cachedToolContext ?? toolContext;
+          const resolvedToolContext = mergeToolContexts(cachedToolContext, toolContext);
 
           const startedAt = toolStartedAt.get(itemId) ?? Date.now();
           const elapsedTimeSeconds = Math.max(0, (Date.now() - startedAt) / 1000);
           await onToolOutput({
             toolName: resolvedToolContext.toolName,
+            toolKind: resolvedToolContext.toolKind,
             toolUseId: itemId,
             parentToolUseId: resolvedToolContext.ownership?.parentToolUseId ?? null,
             subagentOwnerToolUseId: resolvedToolContext.ownership?.subagentOwnerToolUseId ?? null,
@@ -1228,12 +1273,13 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
           const summary = itemType === "fileChange"
             ? buildSummaryFromFileChange(item, resolvedToolContext.toolName)
             : buildSummaryFromCommandExecution(item, resolvedToolContext.toolName);
-          const outputText = asString(item.aggregatedOutput) ?? undefined;
+          const outputText = extractCodexToolOutputText(item);
           const exitCode = asNumber(item.exitCode);
           const error = exitCode != null && exitCode !== 0 ? outputText ?? `Exit code ${exitCode}` : undefined;
 
           await onToolFinished({
             toolName: resolvedToolContext.toolName,
+            toolKind: resolvedToolContext.toolKind,
             summary,
             precedingToolUseIds: [itemId],
             subagentOwnerToolUseId: resolvedToolContext.ownership?.subagentOwnerToolUseId ?? null,
