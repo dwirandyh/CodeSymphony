@@ -270,6 +270,35 @@ describe("WorkspaceHeader", () => {
     expect(onCreateTerminal).toHaveBeenCalledTimes(2);
   });
 
+  it("portals the create session menu outside the header tab strip", () => {
+    renderHeader({ worktreePath: "/tmp/repo" });
+
+    const menuButton = container.querySelector<HTMLButtonElement>('button[aria-label="Choose session type"]');
+    if (!menuButton) {
+      throw new Error("Create session menu button not found");
+    }
+
+    flushSync(() => {
+      menuButton.click();
+    });
+
+    const menu = document.body.querySelector<HTMLElement>('[data-testid="create-session-menu"]');
+    const terminalOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
+      .find((button) => button.textContent?.trim() === "Terminal");
+    if (!menu || !terminalOption) {
+      throw new Error("Create session menu content not found");
+    }
+
+    const createSessionButton = container.querySelector<HTMLElement>('[data-testid="create-session-button"]');
+    if (!createSessionButton) {
+      throw new Error("Create session button container not found");
+    }
+
+    expect(document.body.contains(menu)).toBe(true);
+    expect(createSessionButton.contains(menu)).toBe(false);
+    expect(createSessionButton.contains(terminalOption)).toBe(false);
+  });
+
   it("renders an automation icon on automation thread tabs", () => {
     renderHeader({
       threads: [
