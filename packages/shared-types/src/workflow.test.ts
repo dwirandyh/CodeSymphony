@@ -32,9 +32,10 @@ describe("Cursor shared workflow schemas", () => {
     expect(builtins).toContain(DEFAULT_CHAT_MODEL_BY_AGENT.cursor);
   });
 
-  it("defaults Claude to glm-4.7 and keeps it in the built-in catalog", () => {
-    expect(DEFAULT_CHAT_MODEL_BY_AGENT.claude).toBe("glm-4.7");
-    expect(BUILTIN_CHAT_MODELS_BY_AGENT.claude).toContain("glm-4.7");
+  it("defaults Claude to Sonnet 4.6 and keeps it in the built-in catalog", () => {
+    expect(DEFAULT_CHAT_MODEL_BY_AGENT.claude).toBe("claude-sonnet-4-6");
+    expect(BUILTIN_CHAT_MODELS_BY_AGENT.claude).toContain("claude-sonnet-4-6");
+    expect(BUILTIN_CHAT_MODELS_BY_AGENT.claude).not.toContain("glm-4.7");
   });
 
   it("keeps Codex built-in models out of shared-types", () => {

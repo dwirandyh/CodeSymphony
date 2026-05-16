@@ -161,6 +161,7 @@ type QueuedMessageWithAttachments = Prisma.ChatQueuedMessageGetPayload<{
 type ThreadRunState = {
   status: ThreadRunStatus;
   mode: ChatMode;
+  startedAtMs: number;
   scheduledTimer?: ReturnType<typeof setTimeout>;
   abortController?: AbortController;
   activeToolUseIds: Set<string>;
@@ -461,6 +462,44 @@ export function createChatService(deps: RuntimeDeps) {
     return threadRuns.has(threadId);
   }
 
+  function hasPendingPermissionRequests(threadId: string): boolean {
+    const pendingMap = pendingPermissionsByThread.get(threadId);
+    if (!pendingMap) {
+      return false;
+    }
+
+    for (const entry of pendingMap.values()) {
+      if (entry.status === "pending") {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function hasPendingQuestionRequests(threadId: string): boolean {
+    const pendingMap = pendingQuestionsByThread.get(threadId);
+    if (!pendingMap) {
+      return false;
+    }
+
+    for (const entry of pendingMap.values()) {
+      if (entry.status === "pending") {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function hasPersistedPendingPlan(thread: {
+    pendingPlanEventId: string | null;
+    pendingPlanFilePath: string | null;
+    pendingPlanContent: string | null;
+  }): boolean {
+    return Boolean(thread.pendingPlanEventId && thread.pendingPlanFilePath && thread.pendingPlanContent);
+  }
+
   function pickMostRecentThread<T extends { id: string; createdAt: Date; updatedAt: Date }>(
     threads: T[],
   ): T | null {
@@ -488,20 +527,24 @@ export function createChatService(deps: RuntimeDeps) {
     return preferred;
   }
 
-  function resolvePreferredThreadId(threads: Array<{ id: string; createdAt: Date; updatedAt: Date }>): string | null {
-    const activeThreads = threads.filter((thread) => isThreadActive(thread.id));
+  function resolvePreferredThreadId(
+    threads: Array<{ id: string; createdAt: Date; updatedAt: Date }>,
+    activeThreadIds?: ReadonlySet<string>,
+  ): string | null {
+    const activeThreads = threads.filter((thread) => activeThreadIds?.has(thread.id) ?? isThreadActive(thread.id));
     const preferredThread = pickMostRecentThread(activeThreads) ?? pickMostRecentThread(threads);
     return preferredThread?.id ?? null;
   }
 
   function setThreadRunState(
     threadId: string,
-    nextState: Omit<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason">
-    & Partial<Pick<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason">>,
+    nextState: Omit<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason" | "startedAtMs">
+    & Partial<Pick<ThreadRunState, "activeToolUseIds" | "activeSubagentToolUseIds" | "queueHandoffPending" | "cancellationReason" | "startedAtMs">>,
   ): void {
     const existing = threadRuns.get(threadId);
     threadRuns.set(threadId, {
       ...nextState,
+      startedAtMs: nextState.startedAtMs ?? existing?.startedAtMs ?? Date.now(),
       activeToolUseIds: nextState.activeToolUseIds ?? existing?.activeToolUseIds ?? new Set<string>(),
       activeSubagentToolUseIds: nextState.activeSubagentToolUseIds ?? existing?.activeSubagentToolUseIds ?? new Set<string>(),
       queueHandoffPending: nextState.queueHandoffPending ?? existing?.queueHandoffPending ?? false,
@@ -516,6 +559,18 @@ export function createChatService(deps: RuntimeDeps) {
     }
     threadRuns.delete(threadId);
     return existing;
+  }
+
+  function markThreadRunning(threadId: string): void {
+    const current = getThreadRun(threadId);
+    if (!current || current.status === "running") {
+      return;
+    }
+
+    setThreadRunState(threadId, {
+      ...current,
+      status: "running",
+    });
   }
 
   function markThreadWaiting(threadId: string, status: Extract<ThreadRunStatus, "waiting_permission" | "waiting_question" | "waiting_plan">): void {
@@ -547,7 +602,84 @@ export function createChatService(deps: RuntimeDeps) {
 
   function isThreadWaitingOnGate(threadId: string): boolean {
     const status = getThreadRun(threadId)?.status;
-    return status === "waiting_permission" || status === "waiting_question" || status === "waiting_plan";
+    if (status === "waiting_permission") {
+      return hasPendingPermissionRequests(threadId);
+    }
+
+    if (status === "waiting_question") {
+      return hasPendingQuestionRequests(threadId);
+    }
+
+    return status === "waiting_plan";
+  }
+
+  async function reconcileStaleTerminalThreadRun(thread: {
+    id: string;
+    pendingPlanEventId: string | null;
+    pendingPlanFilePath: string | null;
+    pendingPlanContent: string | null;
+  }): Promise<ThreadRunState | null> {
+    const current = getThreadRun(thread.id);
+    if (!current) {
+      return null;
+    }
+
+    const hasPendingPermissionRequest = hasPendingPermissionRequests(thread.id);
+    const hasPendingQuestionRequest = hasPendingQuestionRequests(thread.id);
+    const hasPendingPlanState = hasPersistedPendingPlan(thread);
+    const missingGateBackingState = (
+      (current.status === "waiting_permission" && !hasPendingPermissionRequest)
+      || (current.status === "waiting_question" && !hasPendingQuestionRequest)
+      || (current.status === "waiting_plan" && !hasPendingPlanState)
+    );
+    const lacksLiveSignals = (
+      current.activeToolUseIds.size === 0
+      && current.activeSubagentToolUseIds.size === 0
+      && !hasPendingPermissionRequest
+      && !hasPendingQuestionRequest
+      && !hasPendingPlanState
+    );
+
+    if (!missingGateBackingState && !lacksLiveSignals && !current.abortController?.signal.aborted) {
+      return current;
+    }
+
+    const lastEvent = await deps.prisma.chatEvent.findFirst({
+      where: { threadId: thread.id },
+      orderBy: { idx: "desc" },
+      select: {
+        idx: true,
+        type: true,
+        createdAt: true,
+      },
+    });
+    const lastEventType = lastEvent?.type ?? null;
+    const isTerminalLastEvent = lastEventType === "chat_completed" || lastEventType === "chat_failed";
+    const terminalEventClosedThisRun = isTerminalLastEvent && (lastEvent?.createdAt.getTime() ?? -1) >= current.startedAtMs;
+
+    if (current.abortController?.signal.aborted || terminalEventClosedThisRun) {
+      const previousRun = clearThreadRunState(thread.id);
+      clearPendingGateRequestsBecauseRunEnded(
+        pendingPermissionsByThread,
+        pendingQuestionsByThread,
+        thread.id,
+      );
+      deps.logService?.log("debug", "chat.lifecycle", "Cleared stale terminal thread run state", {
+        threadId: thread.id,
+        previousStatus: previousRun?.status ?? null,
+        lastEventType,
+        lastEventIdx: lastEvent?.idx ?? null,
+        runStartedAtMs: current.startedAtMs,
+      });
+      return null;
+    }
+
+    if (missingGateBackingState) {
+      markThreadRunning(thread.id);
+      return getThreadRun(thread.id);
+    }
+
+    return current;
   }
 
   function hasActiveQueueBoundary(run: ThreadRunState | null): boolean {
@@ -2083,10 +2215,16 @@ export function createChatService(deps: RuntimeDeps) {
         where: { worktreeId },
         orderBy: { createdAt: "asc" },
       });
-      const preferredThreadId = resolvePreferredThreadId(threads);
+      const activeThreadIds = new Set<string>();
+      for (const thread of threads) {
+        if (await reconcileStaleTerminalThreadRun(thread)) {
+          activeThreadIds.add(thread.id);
+        }
+      }
+      const preferredThreadId = resolvePreferredThreadId(threads, activeThreadIds);
 
       return threads.map((thread) => {
-        const mapped = mapChatThread(thread, isThreadActive(thread.id));
+        const mapped = mapChatThread(thread, activeThreadIds.has(thread.id));
         return thread.id === preferredThreadId
           ? { ...mapped, preferred: true }
           : mapped;
@@ -2105,7 +2243,11 @@ export function createChatService(deps: RuntimeDeps) {
         ],
       });
 
-      return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
+      if (!thread) {
+        return null;
+      }
+
+      return mapChatThread(thread, (await reconcileStaleTerminalThreadRun(thread)) != null);
     },
 
     async getOrCreatePrMrThread(worktreeId: string, rawInput?: unknown): Promise<ChatThread> {
@@ -2288,7 +2430,11 @@ export function createChatService(deps: RuntimeDeps) {
     async getThreadById(threadId: string): Promise<ChatThread | null> {
       await maybeDispatchQueuedMessages(threadId);
       const thread = await deps.prisma.chatThread.findUnique({ where: { id: threadId } });
-      return thread ? mapChatThread(thread, isThreadActive(thread.id)) : null;
+      if (!thread) {
+        return null;
+      }
+
+      return mapChatThread(thread, (await reconcileStaleTerminalThreadRun(thread)) != null);
     },
 
     async listSlashCommands(worktreeId: string, agent: CliAgent = "claude"): Promise<SlashCommandCatalog> {
@@ -2447,6 +2593,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
+      await reconcileStaleTerminalThreadRun(thread);
       if (isThreadActive(threadId)) {
         throw new Error("Cannot change agent or model while assistant is processing");
       }
@@ -2481,6 +2628,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
+      await reconcileStaleTerminalThreadRun(thread);
       if (isThreadActive(threadId)) {
         throw new Error("Cannot delete a thread while assistant is processing");
       }
@@ -2533,7 +2681,14 @@ export function createChatService(deps: RuntimeDeps) {
     },
 
     async requestQueuedMessageDispatch(threadId: string, queueMessageId: string): Promise<ChatQueuedMessage> {
-      await requireThreadExists(deps, threadId);
+      const thread = await deps.prisma.chatThread.findUnique({
+        where: { id: threadId },
+      });
+      if (!thread) {
+        throw new Error("Chat thread not found");
+      }
+
+      await reconcileStaleTerminalThreadRun(thread);
       if (isThreadWaitingOnGate(threadId)) {
         throw new Error("Cannot dispatch queued messages while the assistant is waiting for approval or review");
       }
@@ -2642,7 +2797,7 @@ export function createChatService(deps: RuntimeDeps) {
           _max: { idx: true },
         })
       )._max.idx ?? null;
-      const currentRun = getThreadRun(threadId);
+      const currentRun = await reconcileStaleTerminalThreadRun(thread);
 
       if (currentRun?.status === "waiting_permission" || currentRun?.status === "waiting_question") {
         return {
@@ -2698,6 +2853,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Chat thread not found");
       }
 
+      await reconcileStaleTerminalThreadRun(thread);
       if (!isThreadActive(threadId)) {
         throw new Error("No active assistant run for this thread");
       }
@@ -2814,6 +2970,9 @@ export function createChatService(deps: RuntimeDeps) {
         entry.result = result;
         entry.resolve = undefined;
         entry.reject = undefined;
+        if (!hasPendingPermissionRequests(threadId)) {
+          markThreadRunning(threadId);
+        }
         resolve?.(result);
       }
     },
@@ -2849,6 +3008,9 @@ export function createChatService(deps: RuntimeDeps) {
         entry.status = "resolved";
         entry.resolve = undefined;
         entry.reject = undefined;
+        if (!hasPendingQuestionRequests(threadId)) {
+          markThreadRunning(threadId);
+        }
         resolve?.({ answers: input.answers });
       }
     },
@@ -2925,6 +3087,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("No pending plan to dismiss for this thread");
       }
 
+      await reconcileStaleTerminalThreadRun(thread);
       if (isThreadActive(threadId)) {
         throw new Error("Assistant is still processing");
       }
@@ -2957,6 +3120,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("No pending plan to revise for this thread");
       }
 
+      await reconcileStaleTerminalThreadRun(thread);
       if (isThreadActive(threadId)) {
         throw new Error("Assistant is still processing");
       }
@@ -3008,6 +3172,7 @@ export function createChatService(deps: RuntimeDeps) {
         throw new Error("Selected worktree no longer matches this thread. Please retry from the active worktree.");
       }
 
+      await reconcileStaleTerminalThreadRun(thread);
       if (isThreadActive(threadId)) {
         deps.logService?.log("debug", "chat.lifecycle", "sendMessage rejected because thread still active", {
           threadId,

@@ -3501,6 +3501,88 @@ describe("thinking_delta", () => {
     }
   });
 
+  it("fails fast for providerless built-in Claude models that require a custom provider", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "codesymphony-claude-providerless-"));
+    const tempHome = join(tempRoot, "home");
+    mkdirSync(tempHome, { recursive: true });
+
+    const previousHome = process.env.HOME;
+    const previousAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    process.env.HOME = tempHome;
+    delete process.env.ANTHROPIC_BASE_URL;
+
+    try {
+      await expect(runClaudeWithStreaming({
+        prompt: "say done",
+        sessionId: null,
+        cwd: tempRoot,
+        model: "glm-4.7",
+        onText: () => { },
+        onThinking: () => { },
+        onToolStarted: () => { },
+        onToolOutput: () => { },
+        onToolFinished: () => { },
+        onQuestionRequest: async () => ({ answers: {} }),
+        onPermissionRequest: async () => ({ decision: "allow" }),
+        onPlanFileDetected: () => { },
+        onToolInstrumentation: () => { },
+      })).rejects.toThrow('Selected Claude model "glm-4.7" requires an explicit model provider in CodeSymphony.');
+
+      expect(mockQuery).not.toHaveBeenCalled();
+    } finally {
+      process.env.HOME = previousHome;
+      if (previousAnthropicBaseUrl === undefined) {
+        delete process.env.ANTHROPIC_BASE_URL;
+      } else {
+        process.env.ANTHROPIC_BASE_URL = previousAnthropicBaseUrl;
+      }
+    }
+  });
+
+  it("fails fast for providerless built-in Claude models even when Claude settings point to a proxy", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "codesymphony-claude-settings-proxy-"));
+    const tempHome = join(tempRoot, "home");
+    const tempClaudeDir = join(tempHome, ".claude");
+    mkdirSync(tempClaudeDir, { recursive: true });
+    writeFileSync(join(tempClaudeDir, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: "http://127.0.0.1:8317",
+      },
+    }));
+
+    const previousHome = process.env.HOME;
+    const previousAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    process.env.HOME = tempHome;
+    delete process.env.ANTHROPIC_BASE_URL;
+
+    try {
+      await expect(runClaudeWithStreaming({
+        prompt: "say done",
+        sessionId: null,
+        cwd: tempRoot,
+        model: "glm-4.7",
+        onText: () => { },
+        onThinking: () => { },
+        onToolStarted: () => { },
+        onToolOutput: () => { },
+        onToolFinished: () => { },
+        onQuestionRequest: async () => ({ answers: {} }),
+        onPermissionRequest: async () => ({ decision: "allow" }),
+        onPlanFileDetected: () => { },
+        onToolInstrumentation: () => { },
+      })).rejects.toThrow('Selected Claude model "glm-4.7" requires an explicit model provider in CodeSymphony.');
+
+      expect(mockQuery).not.toHaveBeenCalled();
+    } finally {
+      process.env.HOME = previousHome;
+      if (previousAnthropicBaseUrl === undefined) {
+        delete process.env.ANTHROPIC_BASE_URL;
+      } else {
+        process.env.ANTHROPIC_BASE_URL = previousAnthropicBaseUrl;
+      }
+    }
+  });
+
   it("exposes proxy model routing failures instead of generic login hints", async () => {
     mockQuery.mockImplementation(() => {
       return attachQueryControls((async function* () {

@@ -2,6 +2,12 @@ import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import type { ChatWorkingStatus } from "../../components/workspace/chat-message-list";
 import type { ChatMessageListEmptyState } from "../../components/workspace/chat-message-list/ChatMessageList.types";
 
+export type WorkspaceThreadlessFallbackSurface =
+  | { kind: "empty" }
+  | { kind: "file"; filePath: string }
+  | { kind: "terminal"; terminalTabId: string }
+  | { kind: "review" };
+
 export function resolveChatMessageListKey(params: {
   previousKey: string;
   previousThreadId: string | null;
@@ -35,6 +41,7 @@ export function shouldShowThinkingPlaceholder(params: {
 
 export function shouldShowWorkspaceEmptyState(params: {
   activeView: "chat" | "file" | "review" | "automations";
+  hasOpenContentTabs: boolean;
   terminalViewActive: boolean;
   messageListEmptyState: ChatMessageListEmptyState | null;
 }): boolean {
@@ -42,7 +49,58 @@ export function shouldShowWorkspaceEmptyState(params: {
     return false;
   }
 
+  if (params.hasOpenContentTabs) {
+    return false;
+  }
+
   return params.messageListEmptyState === "no-thread-selected" || params.messageListEmptyState === "creating-thread";
+}
+
+export function resolveWorkspaceThreadlessFallbackSurface(params: {
+  activeTerminalTabId: string | null;
+  openFilePaths: string[];
+  openTerminalTabIds: string[];
+  recentFilePaths: string[];
+  reviewOpen: boolean;
+}): WorkspaceThreadlessFallbackSurface {
+  const openFilePathSet = new Set(params.openFilePaths);
+  const recentOpenFilePath = params.recentFilePaths.find((filePath) => openFilePathSet.has(filePath));
+  if (recentOpenFilePath) {
+    return {
+      kind: "file",
+      filePath: recentOpenFilePath,
+    };
+  }
+
+  const fallbackOpenFilePath = params.openFilePaths[params.openFilePaths.length - 1] ?? null;
+  if (fallbackOpenFilePath) {
+    return {
+      kind: "file",
+      filePath: fallbackOpenFilePath,
+    };
+  }
+
+  const activeTerminalTabId = params.activeTerminalTabId;
+  if (activeTerminalTabId && params.openTerminalTabIds.includes(activeTerminalTabId)) {
+    return {
+      kind: "terminal",
+      terminalTabId: activeTerminalTabId,
+    };
+  }
+
+  const fallbackTerminalTabId = params.openTerminalTabIds[0] ?? null;
+  if (fallbackTerminalTabId) {
+    return {
+      kind: "terminal",
+      terminalTabId: fallbackTerminalTabId,
+    };
+  }
+
+  if (params.reviewOpen) {
+    return { kind: "review" };
+  }
+
+  return { kind: "empty" };
 }
 
 export function shouldReturnToWorkspaceLandingAfterClosingContent(

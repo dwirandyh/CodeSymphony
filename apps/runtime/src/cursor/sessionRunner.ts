@@ -565,7 +565,7 @@ function isGenericToolTitle(title: string): boolean {
     || normalized === "mcp: tool";
 }
 
-function mergeToolTitle(currentTitle: string, incomingTitle: string | undefined): string {
+function mergeToolTitle(currentTitle: string, incomingTitle: string | null | undefined): string {
   const normalizedIncomingTitle = incomingTitle?.trim() ?? "";
   if (normalizedIncomingTitle.length === 0) {
     return currentTitle;

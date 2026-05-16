@@ -71,33 +71,37 @@ export function loadCursorAcpMcpServers(): McpServer[] {
     return [];
   }
 
-  return Object.entries(rawServers).flatMap(([name, rawServer]) => {
+  const servers: McpServer[] = [];
+  for (const [name, rawServer] of Object.entries(rawServers)) {
     if (!isRecord(rawServer) || rawServer.disabled === true) {
-      return [];
+      continue;
     }
 
     const url = typeof rawServer.url === "string" ? rawServer.url.trim() : "";
     if (url.length > 0) {
-      return [{
+      servers.push({
         type: "http" as const,
         name,
         url,
         headers: toHeaders(toStringRecord(rawServer.headers)),
-      }];
+      });
+      continue;
     }
 
     const command = typeof rawServer.command === "string" ? rawServer.command.trim() : "";
     if (command.length === 0) {
-      return [];
+      continue;
     }
 
-    return [{
+    servers.push({
       name,
       command,
       args: toStringArray(rawServer.args),
       env: toEnvVariables(toStringRecord(rawServer.env)),
-    }];
-  });
+    });
+  }
+
+  return servers;
 }
 
 function loadOpencodeConfigFile(): JsonRecord | null {
@@ -177,30 +181,34 @@ export function loadOpencodeAcpMcpServers(): McpServer[] {
     return [];
   }
 
-  return Object.entries(mcpConfig).flatMap(([name, server]) => {
+  const servers: McpServer[] = [];
+  for (const [name, server] of Object.entries(mcpConfig)) {
     if (server.enabled === false) {
-      return [];
+      continue;
     }
 
     if (server.type === "remote") {
-      return [{
+      servers.push({
         type: "http" as const,
         name,
         url: server.url,
         headers: toHeaders(server.headers ?? {}),
-      }];
+      });
+      continue;
     }
 
     const [command, ...args] = server.command;
     if (!command) {
-      return [];
+      continue;
     }
 
-    return [{
+    servers.push({
       name,
       command,
       args,
       env: toEnvVariables(server.environment ?? {}),
-    }];
-  });
+    });
+  }
+
+  return servers;
 }

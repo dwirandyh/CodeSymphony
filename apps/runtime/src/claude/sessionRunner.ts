@@ -8,7 +8,12 @@ import type {
   SpawnOptions as ClaudeSpawnOptions,
   SpawnedProcess as ClaudeSpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { ChatMode, ChatThreadPermissionMode, SlashCommand } from "@codesymphony/shared-types";
+import {
+  BUILTIN_CHAT_MODELS_BY_AGENT,
+  type ChatMode,
+  type ChatThreadPermissionMode,
+  type SlashCommand,
+} from "@codesymphony/shared-types";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeRunner, ClaudeSessionPermissionMode } from "../types.js";
@@ -49,6 +54,7 @@ export const __testing = {
   sanitizeForLog,
   buildClaudeRuntimeEnv,
   resolveNativeClaudeCliModel,
+  assertSupportedBuiltinClaudeModelWithoutProvider,
   shouldUseNativeClaudeCliAlias,
   resolveRequestedNativeClaudeCliModel,
   shouldRetryWithNativeClaudeCliModel,
@@ -67,6 +73,11 @@ function resolveNativeClaudeCliModel(model: string | undefined): string | undefi
 
   return NATIVE_CLAUDE_CLI_MODEL_ALIASES[model] ?? model;
 }
+
+const NATIVE_PROVIDERLESS_CLAUDE_MODELS = new Set<string>([
+  ...Object.keys(NATIVE_CLAUDE_CLI_MODEL_ALIASES),
+  ...Object.values(NATIVE_CLAUDE_CLI_MODEL_ALIASES),
+]);
 
 function isFirstPartyAnthropicBaseUrl(baseUrl: string): boolean {
   try {
@@ -142,6 +153,39 @@ function resolveRequestedNativeClaudeCliModel(
   }
 
   return resolveNativeClaudeCliModel(model);
+}
+
+function isUnsupportedBuiltinClaudeModelWithoutProvider(params: {
+  model: string | undefined;
+  providerBaseUrl?: string;
+}): boolean {
+  const normalizedModel = params.model?.trim();
+  if (!normalizedModel) {
+    return false;
+  }
+
+  if (params.providerBaseUrl?.trim()) {
+    return false;
+  }
+
+  const builtinClaudeModels = BUILTIN_CHAT_MODELS_BY_AGENT.claude as readonly string[];
+  return builtinClaudeModels.includes(normalizedModel) && !NATIVE_PROVIDERLESS_CLAUDE_MODELS.has(normalizedModel);
+}
+
+function assertSupportedBuiltinClaudeModelWithoutProvider(params: {
+  model: string | undefined;
+  providerBaseUrl?: string;
+}): void {
+  const normalizedModel = params.model?.trim();
+  if (!normalizedModel || !isUnsupportedBuiltinClaudeModelWithoutProvider(params)) {
+    return;
+  }
+
+  throw new Error([
+    `Selected Claude model "${normalizedModel}" requires an explicit model provider in CodeSymphony.`,
+    "Built-in Claude runs only support native Claude model ids unless the thread is bound to a configured provider.",
+    "Switch the thread to claude-sonnet-4-6, claude-opus-4-6, or claude-haiku-4-5, or activate a provider for this model in Settings -> Models.",
+  ].join("\n"));
 }
 
 function shouldRetryWithNativeClaudeCliModel(params: {
@@ -385,6 +429,10 @@ export const runClaudeWithStreaming: ClaudeRunner = async ({
   const resolvedClaudeRuntimeEnv = buildClaudeRuntimeEnv({
     ...process.env,
   } as NodeJS.ProcessEnv);
+  assertSupportedBuiltinClaudeModelWithoutProvider({
+    model,
+    providerBaseUrl,
+  });
   const initialRequestedModel = providerApiKey || providerBaseUrl
     ? (model || undefined)
     : resolveRequestedNativeClaudeCliModel(model || undefined, cwd, resolvedClaudeRuntimeEnv);

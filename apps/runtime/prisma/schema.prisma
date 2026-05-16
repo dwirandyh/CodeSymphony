@@ -150,7 +150,7 @@ model ChatThread {
   mode                ChatMode                    @default(default)
   titleEditedManually Boolean                     @default(false)
   agent               CliAgent                    @default(claude)
-  model               String                      @default("glm-4.7")
+  model               String                      @default("claude-sonnet-4-6")
   modelProviderId     String?
   pendingPlanEventId  String?
   pendingPlanFilePath String?
@@ -285,7 +285,7 @@ model Automation {
   name            String
   prompt          String
   agent           CliAgent                 @default(claude)
-  model           String                   @default("glm-4.7")
+  model           String                   @default("claude-sonnet-4-6")
   modelProviderId String?
   permissionMode  ChatThreadPermissionMode @default(full_access)
   chatMode        ChatMode                 @default(default)

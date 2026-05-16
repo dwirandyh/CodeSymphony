@@ -685,6 +685,150 @@ describe("chatService permission flow", () => {
     expect(assistantMessage?.content).toContain("Perintah berhasil dijalankan.");
   });
 
+  it("reports running after a permission gate is resolved while the run is still active", async () => {
+    let releaseRun: (() => void) | null = null;
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Permission running");
+        return {
+          output: "Permission running",
+          sessionId: null,
+        };
+      }
+
+      const decision = await onPermissionRequest({
+        requestId: "perm-running-1",
+        toolName: "Bash",
+        toolInput: { command: "cat /etc/hosts" },
+        blockedPath: "/etc/hosts",
+        decisionReason: "Path outside project directory",
+        suggestions: [],
+      });
+
+      await new Promise<void>((resolve) => {
+        releaseRun = resolve;
+      });
+
+      await onText(`Decision: ${decision.decision}`);
+      return {
+        output: `Decision: ${decision.decision}`,
+        sessionId: "session-running-after-permission",
+      };
+    });
+
+    const eventHub = createEventHub(prisma);
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "minta approval dulu lalu lanjut",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-running-1",
+    );
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-running-1",
+      decision: "allow",
+    });
+
+    await vi.waitFor(async () => {
+      const snapshot = await chatService.listThreadStatusSnapshot(threadId);
+      expect(snapshot.status).toBe("running");
+    });
+
+    releaseRun?.();
+    const events = await waitForTerminalEvent(chatService, threadId);
+    expect(events.some((event) => event.type === "chat.completed")).toBe(true);
+  });
+
+  it("clears stale active and waiting-approval state after a terminal event wins", async () => {
+    let releaseRun: (() => void) | null = null;
+    const claudeRunner: ClaudeRunner = vi.fn(async ({ onPermissionRequest, onText, prompt }) => {
+      if (prompt.includes("You generate concise chat thread titles.")) {
+        await onText("Recovered permission run");
+        return {
+          output: "Recovered permission run",
+          sessionId: null,
+        };
+      }
+
+      const decision = await onPermissionRequest({
+        requestId: "perm-stale-1",
+        toolName: "Bash",
+        toolInput: { command: "cat /etc/hosts" },
+        blockedPath: "/etc/hosts",
+        decisionReason: "Path outside project directory",
+        suggestions: [],
+      });
+
+      await new Promise<void>((resolve) => {
+        releaseRun = resolve;
+      });
+
+      await onText(`Decision: ${decision.decision}`);
+      return {
+        output: `Decision: ${decision.decision}`,
+        sessionId: "session-stale-terminal",
+      };
+    });
+
+    const eventHub = createEventHub(prisma);
+    const chatService = createChatService({
+      prisma,
+      eventHub,
+      claudeRunner,
+      modelProviderService: stubModelProviderService,
+    });
+    const { threadId } = await seedThread();
+
+    await chatService.sendMessage(threadId, {
+      content: "minta approval lalu simulasi runtime restart",
+    });
+
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "permission.requested" && event.payload.requestId === "perm-stale-1",
+    );
+
+    await chatService.resolvePermission(threadId, {
+      requestId: "perm-stale-1",
+      decision: "allow",
+    });
+
+    const failedEvent = await eventHub.emit(threadId, "chat.failed", {
+      message: "Chat run interrupted by a runtime restart. You can send a new message to continue.",
+      threadMode: "default",
+    });
+
+    await vi.waitFor(async () => {
+      const snapshot = await chatService.listThreadStatusSnapshot(threadId);
+      expect(snapshot.status).toBe("idle");
+    });
+
+    const thread = await chatService.getThreadById(threadId);
+    expect(thread?.active).toBe(false);
+
+    const worktreeThreads = await chatService.listThreads(thread!.worktreeId);
+    expect(worktreeThreads.find((candidate) => candidate.id === threadId)?.active).toBe(false);
+
+    releaseRun?.();
+    await waitForEvent(
+      chatService,
+      threadId,
+      (event) => event.type === "chat.completed" && event.idx > failedEvent.idx,
+    );
+  });
+
   it("persists bash command output metadata in tool events", async () => {
     const claudeRunner: ClaudeRunner = vi.fn(async ({ onToolStarted, onToolFinished, onText }) => {
       await onToolStarted({

@@ -235,7 +235,7 @@ function defaultModelForAgent(agent: CliAgent): string {
   if (agent === "codex") {
     return "gpt-5.4";
   }
-  return "glm-4.7";
+  return DEFAULT_CHAT_MODEL_BY_AGENT.claude;
 }
 
 function formatDateTime(input: string | null) {
