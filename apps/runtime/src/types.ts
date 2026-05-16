@@ -182,6 +182,7 @@ export type ClaudeRunner = (args: {
   onText: (chunk: string) => Promise<void> | void;
   onToolStarted: (payload: {
     toolName: string;
+    toolKind?: "mcp" | "web_search";
     toolUseId: string;
     parentToolUseId: string | null;
     subagentOwnerToolUseId?: string | null;
@@ -198,6 +199,7 @@ export type ClaudeRunner = (args: {
   }) => Promise<void> | void;
   onToolOutput: (payload: {
     toolName: string;
+    toolKind?: "mcp" | "web_search";
     toolUseId: string;
     parentToolUseId: string | null;
     subagentOwnerToolUseId?: string | null;
@@ -209,6 +211,7 @@ export type ClaudeRunner = (args: {
   }) => Promise<void> | void;
   onToolFinished: (payload: {
     toolName?: string;
+    toolKind?: "mcp" | "web_search";
     summary: string;
     precedingToolUseIds: string[];
     subagentOwnerToolUseId?: string | null;

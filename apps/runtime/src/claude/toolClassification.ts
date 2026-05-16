@@ -2,9 +2,22 @@ import type { AgentTodoItem } from "@codesymphony/shared-types";
 import { truncateForPreview } from "./sanitize.js";
 
 const SENSITIVE_KEY_PATTERN = /(token|secret|password|api[_-]?key|authorization|cookie)/i;
+const WEB_SEARCH_TOOL_NAME_PATTERN = /^(websearch|web_search|web-search|search_web)$/i;
+const WEB_SEARCH_TITLE_PATTERN = /\bweb\s*search\b|\bsearch(?:ing)?\s+the\s+web\b/i;
+const MCP_TOOL_NAME_PATTERN = /^mcp(?:(?:__|[_:-]).+)?$/i;
+const MCP_TITLE_PREFIX_PATTERN = /^\s*mcp(?:\s+tool)?\s*[:\-]\s*/i;
+const NESTED_TOOL_INPUT_KEYS = ["action", "args", "arguments", "params", "input", "request", "payload", "state", "tool"];
+const GENERIC_MCP_LABELS = new Set([
+    "mcp",
+    "mcp tool",
+    "dynamic tool",
+    "tool",
+    "other",
+]);
 
 export type ToolMetadata = {
     toolName: string;
+    toolKind?: "mcp" | "web_search";
     command?: string;
     readTarget?: string;
     searchParams?: string;
@@ -66,6 +79,268 @@ export function stringFromUnknown(input: unknown): string | undefined {
     }
 
     return truncateForPreview(normalized);
+}
+
+function normalizeLabel(value: string | undefined | null): string {
+    return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function coerceRecord(input: unknown): Record<string, unknown> | undefined {
+    if (typeof input !== "object" || input == null || Array.isArray(input)) {
+        return undefined;
+    }
+
+    return input as Record<string, unknown>;
+}
+
+function collectFirstTextValue(input: unknown, depth = 0): string | undefined {
+    if (depth > 2) {
+        return undefined;
+    }
+
+    const direct = stringFromUnknown(input);
+    if (direct) {
+        return direct;
+    }
+
+    if (Array.isArray(input)) {
+        for (const entry of input) {
+            const candidate = collectFirstTextValue(entry, depth + 1);
+            if (candidate) {
+                return candidate;
+            }
+        }
+        return undefined;
+    }
+
+    const record = coerceRecord(input);
+    if (!record) {
+        return undefined;
+    }
+
+    const fallbackKeys = ["name", "title", "id", "text", "query", "tool", "server"];
+    for (const key of fallbackKeys) {
+        const candidate = collectFirstTextValue(record[key], depth + 1);
+        if (candidate) {
+            return candidate;
+        }
+    }
+
+    return undefined;
+}
+
+function collectQueryValues(input: unknown, depth = 0): string[] {
+    if (depth > 2) {
+        return [];
+    }
+
+    const direct = formatSearchParamValue(input);
+    if (direct) {
+        return [direct];
+    }
+
+    if (Array.isArray(input)) {
+        const collected: string[] = [];
+        for (const entry of input) {
+            collected.push(...collectQueryValues(entry, depth + 1));
+            if (collected.length >= 3) {
+                break;
+            }
+        }
+        return collected;
+    }
+
+    const record = coerceRecord(input);
+    if (!record) {
+        return [];
+    }
+
+    const queryKeys = ["query", "queries", "q", "searchQuery", "searchTerm", "searchTerms", "term", "terms", "keyword", "keywords"];
+    const collected: string[] = [];
+    for (const key of queryKeys) {
+        if (!(key in record)) {
+            continue;
+        }
+        collected.push(...collectQueryValues(record[key], depth + 1));
+        if (collected.length >= 3) {
+            break;
+        }
+    }
+
+    return collected;
+}
+
+function firstValueFromKeys(record: Record<string, unknown>, keys: string[]): string | undefined {
+    for (const key of keys) {
+        if (!(key in record)) {
+            continue;
+        }
+        const candidate = collectFirstTextValue(record[key]);
+        if (candidate) {
+            return candidate;
+        }
+    }
+
+    return undefined;
+}
+
+function firstQueryFromRecord(record: Record<string, unknown>): string | undefined {
+    const directValues = collectQueryValues(record);
+    if (directValues.length > 0) {
+        return truncateForPreview(Array.from(new Set(directValues)).slice(0, 3).join(" | "));
+    }
+
+    for (const key of NESTED_TOOL_INPUT_KEYS) {
+        const nestedValues = collectQueryValues(record[key]);
+        if (nestedValues.length === 0) {
+            continue;
+        }
+        return truncateForPreview(Array.from(new Set(nestedValues)).slice(0, 3).join(" | "));
+    }
+
+    return undefined;
+}
+
+function resolveMcpToolName(toolName: string, title: string, input: unknown): string | undefined {
+    const normalizedToolName = normalizeLabel(toolName);
+    if (normalizedToolName && normalizedToolName.toLowerCase().startsWith("mcp__")) {
+        return normalizedToolName;
+    }
+
+    if (
+        MCP_TOOL_NAME_PATTERN.test(normalizedToolName)
+        && normalizedToolName.length > 0
+        && !GENERIC_MCP_LABELS.has(normalizedToolName.toLowerCase())
+    ) {
+        return normalizedToolName;
+    }
+
+    const record = coerceRecord(input);
+    if (record) {
+        const directServer = firstValueFromKeys(record, ["server", "serverName", "mcpServer", "mcp_server", "namespace"]);
+        const directTool = firstValueFromKeys(record, ["tool", "toolName", "mcpTool", "mcp_tool", "name"]);
+        if (directServer && directTool) {
+            const normalizedServer = normalizeLabel(directServer);
+            const normalizedTool = normalizeLabel(directTool);
+            if (normalizedTool.toLowerCase().startsWith(`${normalizedServer.toLowerCase()}.`)) {
+                return normalizedTool;
+            }
+            return `${normalizedServer}.${normalizedTool}`;
+        }
+        if (directTool && /\bmcp\b/i.test(normalizeLabel(title))) {
+            return normalizeLabel(directTool);
+        }
+
+        for (const key of NESTED_TOOL_INPUT_KEYS) {
+            const nested = coerceRecord(record[key]);
+            if (!nested) {
+                continue;
+            }
+            const nestedServer = firstValueFromKeys(nested, ["server", "serverName", "mcpServer", "mcp_server", "namespace"]);
+            const nestedTool = firstValueFromKeys(nested, ["tool", "toolName", "mcpTool", "mcp_tool", "name"]);
+            if (nestedServer && nestedTool) {
+                const normalizedServer = normalizeLabel(nestedServer);
+                const normalizedTool = normalizeLabel(nestedTool);
+                if (normalizedTool.toLowerCase().startsWith(`${normalizedServer.toLowerCase()}.`)) {
+                    return normalizedTool;
+                }
+                return `${normalizedServer}.${normalizedTool}`;
+            }
+        }
+    }
+
+    const normalizedTitle = normalizeLabel(title);
+    if (normalizedTitle && /\bmcp\b/i.test(normalizedTitle)) {
+        const strippedTitle = normalizeLabel(normalizedTitle.replace(MCP_TITLE_PREFIX_PATTERN, ""));
+        if (strippedTitle && !GENERIC_MCP_LABELS.has(strippedTitle.toLowerCase())) {
+            return strippedTitle;
+        }
+
+        if (!GENERIC_MCP_LABELS.has(normalizedTitle.toLowerCase())) {
+            return normalizedTitle;
+        }
+    }
+
+    return undefined;
+}
+
+function isWebSearchTool(params: {
+    toolName: string;
+    title?: string;
+    kind?: string | null;
+    input?: unknown;
+}): boolean {
+    const normalizedToolName = normalizeLabel(params.toolName).toLowerCase();
+    const normalizedTitle = normalizeLabel(params.title).toLowerCase();
+    if (WEB_SEARCH_TOOL_NAME_PATTERN.test(normalizedToolName)) {
+        return true;
+    }
+
+    if (WEB_SEARCH_TITLE_PATTERN.test(normalizedTitle)) {
+        return true;
+    }
+
+    if (params.kind === "search" && (normalizedToolName === "web" || normalizedTitle === "web")) {
+        return true;
+    }
+
+    const record = coerceRecord(params.input);
+    return Boolean(
+        record
+        && (normalizedToolName.includes("web") || normalizedTitle.includes("web"))
+        && firstQueryFromRecord(record),
+    );
+}
+
+function resolveWebSearchQuery(params: {
+    toolName: string;
+    title?: string;
+    kind?: string | null;
+    input?: unknown;
+}): string | undefined {
+    if (!isWebSearchTool(params)) {
+        return undefined;
+    }
+
+    const record = coerceRecord(params.input);
+    if (!record) {
+        return undefined;
+    }
+
+    return firstQueryFromRecord(record);
+}
+
+export function resolveToolPresentationContext(params: {
+    toolName: string;
+    input?: unknown;
+    title?: string;
+    kind?: string | null;
+}): {
+    toolName: string;
+    toolKind?: "mcp" | "web_search";
+    searchParams?: string;
+} {
+    const fallbackToolName = normalizeLabel(params.toolName) || normalizeLabel(params.title) || "Tool";
+    const mcpToolName = resolveMcpToolName(fallbackToolName, params.title ?? "", params.input);
+    if (mcpToolName) {
+        return {
+            toolName: mcpToolName,
+            toolKind: "mcp",
+        };
+    }
+
+    const webSearchQuery = resolveWebSearchQuery(params);
+    if (webSearchQuery || isWebSearchTool(params)) {
+        return {
+            toolName: "WebSearch",
+            toolKind: "web_search",
+            ...(webSearchQuery ? { searchParams: webSearchQuery } : {}),
+        };
+    }
+
+    return {
+        toolName: fallbackToolName,
+    };
 }
 
 export function readTargetFromUnknownToolInput(toolName: string, input: unknown): string | undefined {

@@ -3573,9 +3573,21 @@ describe("thinking_delta", () => {
         });
 
         const hooks = options.hooks as {
+          PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
           PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
         };
+        const preToolUseHook = hooks.PreToolUse[0]?.hooks[0];
         const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-mcp-finished",
+            tool_name: "mcp__filesystem__read_file",
+            tool_input: { path: "README.md" },
+          },
+          "tool-mcp-finished",
+        );
 
         await postToolUseHook?.(
           {
@@ -3592,6 +3604,7 @@ describe("thinking_delta", () => {
       })());
     });
 
+    const onToolStarted = vi.fn();
     const onToolFinished = vi.fn();
     await runClaudeWithStreaming({
       prompt: "use mcp",
@@ -3599,7 +3612,7 @@ describe("thinking_delta", () => {
       cwd: process.cwd(),
       onText: () => { },
       onThinking: () => { },
-      onToolStarted: () => { },
+      onToolStarted,
       onToolOutput: () => { },
       onToolFinished,
       onQuestionRequest: async () => ({ answers: {} }),
@@ -3608,9 +3621,17 @@ describe("thinking_delta", () => {
       onToolInstrumentation: () => { },
     });
 
+    const startedPayload = onToolStarted.mock.calls
+      .map(([payload]) => payload as {
+        toolName?: string;
+        toolKind?: string;
+        toolUseId: string;
+      })
+      .find((payload) => payload.toolUseId === "tool-mcp-finished");
     const finishedPayload = onToolFinished.mock.calls
       .map(([payload]) => payload as {
         toolName?: string;
+        toolKind?: string;
         precedingToolUseIds: string[];
         summary: string;
         output?: string;
@@ -3618,9 +3639,109 @@ describe("thinking_delta", () => {
       })
       .find((payload) => payload.precedingToolUseIds.includes("tool-mcp-finished"));
 
+    expect(startedPayload).toBeDefined();
+    expect(startedPayload?.toolName).toBe("mcp__filesystem__read_file");
+    expect(startedPayload?.toolKind).toBe("mcp");
     expect(finishedPayload).toBeDefined();
     expect(finishedPayload?.toolName).toBe("mcp__filesystem__read_file");
+    expect(finishedPayload?.toolKind).toBe("mcp");
     expect(finishedPayload?.output).toBe("# README");
     expect(finishedPayload?.truncated).toBe(false);
+  });
+
+  it("includes web-search metadata on Claude tool payloads", async () => {
+    mockQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      return attachQueryControls((async function* () {
+        const canUseTool = options.canUseTool as (
+          toolName: string,
+          input: Record<string, unknown>,
+          runtimeOptions: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: unknown }>;
+
+        await canUseTool("WebSearch", { query: "OpenAI Codex CLI official GitHub npm" }, {
+          toolUseID: "tool-websearch-finished",
+          blockedPath: null,
+          decisionReason: null,
+          suggestions: [],
+        });
+
+        const hooks = options.hooks as {
+          PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+          PostToolUse: Array<{ hooks: Array<(input: Record<string, unknown>, toolUseId: string) => Promise<{ continue: boolean }>> }>;
+        };
+        const preToolUseHook = hooks.PreToolUse[0]?.hooks[0];
+        const postToolUseHook = hooks.PostToolUse[0]?.hooks[0];
+
+        await preToolUseHook?.(
+          {
+            hook_event_name: "PreToolUse",
+            tool_use_id: "tool-websearch-finished",
+            tool_name: "WebSearch",
+            tool_input: { query: "OpenAI Codex CLI official GitHub npm" },
+          },
+          "tool-websearch-finished",
+        );
+
+        await postToolUseHook?.(
+          {
+            hook_event_name: "PostToolUse",
+            tool_use_id: "tool-websearch-finished",
+            tool_name: "WebSearch",
+            tool_input: { query: "OpenAI Codex CLI official GitHub npm" },
+            tool_response: "Search complete",
+          },
+          "tool-websearch-finished",
+        );
+
+        yield { type: "system", subtype: "init", session_id: "session-websearch-finished" };
+      })());
+    });
+
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+    await runClaudeWithStreaming({
+      prompt: "search the web",
+      sessionId: null,
+      cwd: process.cwd(),
+      onText: () => { },
+      onThinking: () => { },
+      onToolStarted,
+      onToolOutput: () => { },
+      onToolFinished,
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => { },
+      onToolInstrumentation: () => { },
+    });
+
+    const startedPayload = onToolStarted.mock.calls
+      .map(([payload]) => payload as {
+        toolName?: string;
+        toolKind?: string;
+        searchParams?: string;
+        toolUseId: string;
+      })
+      .find((payload) => payload.toolUseId === "tool-websearch-finished");
+    const finishedPayload = onToolFinished.mock.calls
+      .map(([payload]) => payload as {
+        toolName?: string;
+        toolKind?: string;
+        searchParams?: string;
+        summary: string;
+        precedingToolUseIds: string[];
+      })
+      .find((payload) => payload.precedingToolUseIds.includes("tool-websearch-finished"));
+
+    expect(startedPayload).toMatchObject({
+      toolName: "WebSearch",
+      toolKind: "web_search",
+      searchParams: "OpenAI Codex CLI official GitHub npm",
+    });
+    expect(finishedPayload).toMatchObject({
+      toolName: "WebSearch",
+      toolKind: "web_search",
+      searchParams: "OpenAI Codex CLI official GitHub npm",
+      summary: "Searched OpenAI Codex CLI official GitHub npm",
+    });
   });
 });

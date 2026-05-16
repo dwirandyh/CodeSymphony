@@ -2,7 +2,14 @@ import { mkdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import prismaClientPkg, { type PrismaClient } from "@prisma/client";
-import { CreateWorktreeInputSchema, type CreateWorktreeInput, type CreateWorktreeResult, type ScriptResult, type Worktree } from "@codesymphony/shared-types";
+import {
+  CreateWorktreeInputSchema,
+  DEFAULT_CHAT_MODEL_BY_AGENT,
+  type CreateWorktreeInput,
+  type CreateWorktreeResult,
+  type ScriptResult,
+  type Worktree,
+} from "@codesymphony/shared-types";
 import { createGitWorktree, getCurrentBranch, listLocalBranches, removeGitWorktree, renameBranch as renameBranchGit } from "./git.js";
 import { mapWorktree } from "./mappers.js";
 import { areLikelySameFsPath } from "./repositoryService.js";
@@ -218,6 +225,8 @@ export function createWorktreeService(
       data: {
         worktreeId,
         title: "New Thread",
+        agent: "claude",
+        model: DEFAULT_CHAT_MODEL_BY_AGENT.claude,
       },
     });
 

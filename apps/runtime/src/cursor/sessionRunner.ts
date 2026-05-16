@@ -30,6 +30,7 @@ import {
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
+import { resolveToolPresentationContext } from "../claude/toolClassification.js";
 
 const CURSOR_BINARY = process.env.CURSOR_AGENT_BINARY_PATH ?? "cursor-agent";
 const CURSOR_CATALOG_TIMEOUT_MS = 2_500;
@@ -520,6 +521,23 @@ function toolNameFromCursorKind(kind: ToolKind | null, title: string): string {
   }
 }
 
+function resolveCursorToolPresentation(params: {
+  kind: ToolKind | null;
+  title: string;
+  rawInput: unknown;
+}): {
+  toolName: string;
+  toolKind?: "mcp" | "web_search";
+  searchParams?: string;
+} {
+  return resolveToolPresentationContext({
+    toolName: toolNameFromCursorKind(params.kind, params.title),
+    title: params.title,
+    kind: params.kind,
+    input: params.rawInput,
+  });
+}
+
 function extractToolTextContent(content: ToolCallContent[]): string {
   return content
     .flatMap((item) => {
@@ -626,12 +644,31 @@ function buildToolSummary(state: CursorToolState): string {
   const isExecuteTool = isExecuteLikeTool(state);
   const { exitCode } = extractTerminalRawOutput(state.rawOutput);
   const command = extractCommand(state.rawInput);
+  const toolPresentation = resolveCursorToolPresentation({
+    kind: state.kind,
+    title: state.title,
+    rawInput: state.rawInput,
+  });
 
   if (failed) {
     if (isExecuteTool) {
       return exitCode != null ? `Terminal exited with code ${exitCode}` : "Terminal command failed";
     }
+    if (toolPresentation.toolKind === "web_search") {
+      return "Web search failed";
+    }
+    if (toolPresentation.toolKind === "mcp") {
+      return `Failed ${toolPresentation.toolName}`;
+    }
     return `${title} failed`;
+  }
+
+  if (toolPresentation.toolKind === "web_search") {
+    return toolPresentation.searchParams ? `Searched ${toolPresentation.searchParams}` : "Searched the web";
+  }
+
+  if (toolPresentation.toolKind === "mcp") {
+    return `Ran ${toolPresentation.toolName}`;
   }
 
   switch (state.kind) {
@@ -1169,7 +1206,12 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     current.content = incoming.content ?? current.content;
     toolStates.set(toolUseId, current);
 
-    const toolName = toolNameFromCursorKind(current.kind, current.title);
+    const toolPresentation = resolveCursorToolPresentation({
+      kind: current.kind,
+      title: current.title,
+      rawInput: current.rawInput,
+    });
+    const toolName = toolPresentation.toolName;
     const editTarget = extractToolPath(current);
 
     const isExecuteTool = isExecuteLikeTool(current);
@@ -1180,9 +1222,11 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       current.startedAtMs = Date.now();
       await onToolStarted({
         toolName,
+        ...(toolPresentation.toolKind ? { toolKind: toolPresentation.toolKind } : {}),
         toolUseId,
         parentToolUseId: null,
         ...(editTarget ? { editTarget } : {}),
+        ...(toolPresentation.searchParams ? { searchParams: toolPresentation.searchParams } : {}),
         ...(isExecuteTool
           ? {
               ...(command ? { command } : {}),
@@ -1196,6 +1240,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     if (current.status === "in_progress") {
       await onToolOutput({
         toolName,
+        ...(toolPresentation.toolKind ? { toolKind: toolPresentation.toolKind } : {}),
         toolUseId,
         parentToolUseId: null,
         elapsedTimeSeconds: Math.max(0, ((Date.now() - (current.startedAtMs ?? Date.now())) / 1000)),
@@ -1226,10 +1271,12 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       const toolError = extractToolError(current, toolOutput);
       await onToolFinished({
         toolName,
+        ...(toolPresentation.toolKind ? { toolKind: toolPresentation.toolKind } : {}),
         summary: buildToolSummary(current),
         precedingToolUseIds: [toolUseId],
         ...(editTarget ? { editTarget } : {}),
         ...(coerceObject(current.rawInput) ? { toolInput: coerceObject(current.rawInput)! } : {}),
+        ...(toolPresentation.searchParams ? { searchParams: toolPresentation.searchParams } : {}),
         ...(isExecuteTool
           ? {
               ...(command ? { command } : {}),
@@ -1329,14 +1376,18 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       },
       requestPermission: async (request) => {
         const toolUseId = normalizeCursorToolCallId(request.toolCall.toolCallId);
-        const toolName = toolNameFromCursorKind(request.toolCall.kind ?? null, request.toolCall.title ?? "Tool");
         const toolInput = coerceObject(request.toolCall.rawInput) ?? {};
+        const toolPresentation = resolveCursorToolPresentation({
+          kind: request.toolCall.kind ?? null,
+          title: request.toolCall.title ?? "Tool",
+          rawInput: toolInput,
+        });
         const blockedPath = request.toolCall.locations?.[0]?.path?.trim() || null;
         const syntheticRequestId = `${toolUseId || "cursor-tool"}:${randomUUID()}`;
 
         const result = await onPermissionRequest({
           requestId: syntheticRequestId,
-          toolName,
+          toolName: toolPresentation.toolName,
           toolInput,
           blockedPath,
           decisionReason: null,
