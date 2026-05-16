@@ -201,18 +201,65 @@ function firstQueryFromRecord(record: Record<string, unknown>): string | undefin
     return undefined;
 }
 
-function resolveMcpToolName(toolName: string, title: string, input: unknown): string | undefined {
+function isGenericMcpLabel(value: string): boolean {
+    const normalized = normalizeLabel(value).toLowerCase();
+    return (
+        GENERIC_MCP_LABELS.has(normalized)
+        || /^mcp(?:\s+tool)?\s*[:_-]\s*(tool|other)$/i.test(normalized)
+    );
+}
+
+function normalizeMcpCompoundToolName(value: string): string | undefined {
+    const normalized = normalizeLabel(value);
+    if (!normalized || normalized.includes(" ")) {
+        return undefined;
+    }
+
+    if (normalized.toLowerCase().startsWith("mcp__")) {
+        const [prefix, server, ...toolParts] = normalized.split("__").filter((part) => part.length > 0);
+        if (prefix?.toLowerCase() !== "mcp" || !server || toolParts.length === 0) {
+            return normalized;
+        }
+
+        const tool = toolParts.join(".");
+        if (isGenericMcpLabel(tool)) {
+            return normalized;
+        }
+
+        return `${server}.${tool}`;
+    }
+
+    const match = /^([a-z0-9][a-z0-9-]*)[_.:](.+)$/i.exec(normalized);
+    if (!match) {
+        return undefined;
+    }
+
+    const server = normalizeLabel(match[1]);
+    const tool = normalizeLabel(match[2]);
+    if (!server || !tool || isGenericMcpLabel(tool)) {
+        return undefined;
+    }
+
+    return `${server}.${tool}`;
+}
+
+function resolveMcpToolName(toolName: string, title: string, input: unknown, kind?: string | null): string | undefined {
     const normalizedToolName = normalizeLabel(toolName);
     if (normalizedToolName && normalizedToolName.toLowerCase().startsWith("mcp__")) {
-        return normalizedToolName;
+        return normalizeMcpCompoundToolName(normalizedToolName) ?? normalizedToolName;
     }
 
     if (
         MCP_TOOL_NAME_PATTERN.test(normalizedToolName)
         && normalizedToolName.length > 0
-        && !GENERIC_MCP_LABELS.has(normalizedToolName.toLowerCase())
+        && !isGenericMcpLabel(normalizedToolName)
     ) {
         return normalizedToolName;
+    }
+
+    const compoundToolName = normalizeMcpCompoundToolName(normalizedToolName);
+    if (compoundToolName && kind === "other") {
+        return compoundToolName;
     }
 
     const record = coerceRecord(input);
@@ -228,7 +275,7 @@ function resolveMcpToolName(toolName: string, title: string, input: unknown): st
             return `${normalizedServer}.${normalizedTool}`;
         }
         if (directTool && /\bmcp\b/i.test(normalizeLabel(title))) {
-            return normalizeLabel(directTool);
+            return normalizeMcpCompoundToolName(directTool) ?? normalizeLabel(directTool);
         }
 
         for (const key of NESTED_TOOL_INPUT_KEYS) {
@@ -252,13 +299,15 @@ function resolveMcpToolName(toolName: string, title: string, input: unknown): st
     const normalizedTitle = normalizeLabel(title);
     if (normalizedTitle && /\bmcp\b/i.test(normalizedTitle)) {
         const strippedTitle = normalizeLabel(normalizedTitle.replace(MCP_TITLE_PREFIX_PATTERN, ""));
-        if (strippedTitle && !GENERIC_MCP_LABELS.has(strippedTitle.toLowerCase())) {
-            return strippedTitle;
+        if (strippedTitle && !isGenericMcpLabel(strippedTitle)) {
+            return normalizeMcpCompoundToolName(strippedTitle) ?? strippedTitle;
         }
 
-        if (!GENERIC_MCP_LABELS.has(normalizedTitle.toLowerCase())) {
-            return normalizedTitle;
+        if (!isGenericMcpLabel(normalizedTitle)) {
+            return normalizeMcpCompoundToolName(normalizedTitle) ?? normalizedTitle;
         }
+
+        return "MCP tool";
     }
 
     return undefined;
@@ -321,7 +370,7 @@ export function resolveToolPresentationContext(params: {
     searchParams?: string;
 } {
     const fallbackToolName = normalizeLabel(params.toolName) || normalizeLabel(params.title) || "Tool";
-    const mcpToolName = resolveMcpToolName(fallbackToolName, params.title ?? "", params.input);
+    const mcpToolName = resolveMcpToolName(fallbackToolName, params.title ?? "", params.input, params.kind);
     if (mcpToolName) {
         return {
             toolName: mcpToolName,

@@ -55,6 +55,8 @@ const DEFAULT_MODELS: FakeCursorModel[] = [
 let sessionCounter = 0;
 
 export const fakeCursorSessions = new Map<string, FakeCursorSessionState>();
+export const fakeCursorNewSessionRequests: Array<Record<string, unknown>> = [];
+export const fakeCursorLoadSessionRequests: Array<Record<string, unknown>> = [];
 
 function nextSessionId(): string {
   sessionCounter += 1;
@@ -151,7 +153,8 @@ export class FakeCursorAgent {
     return {};
   }
 
-  async newSession() {
+  async newSession(params: Record<string, unknown> = {}) {
+    fakeCursorNewSessionRequests.push(params);
     const sessionId = nextSessionId();
     const models = this.scenario.availableModels ?? DEFAULT_MODELS;
     const modes = this.scenario.availableModes ?? DEFAULT_MODES;
@@ -175,7 +178,8 @@ export class FakeCursorAgent {
     };
   }
 
-  async loadSession(params: { sessionId: string }) {
+  async loadSession(params: { sessionId: string } & Record<string, unknown>) {
+    fakeCursorLoadSessionRequests.push(params);
     const state = fakeCursorSessions.get(params.sessionId);
     if (!state) {
       throw new Error(`Unknown fake Cursor session ${params.sessionId}`);
@@ -372,4 +376,6 @@ export function createMockCursorChild(scenario: FakeCursorScenario = {}): MockCu
 export function resetFakeCursorAcpState(): void {
   sessionCounter = 0;
   fakeCursorSessions.clear();
+  fakeCursorNewSessionRequests.length = 0;
+  fakeCursorLoadSessionRequests.length = 0;
 }

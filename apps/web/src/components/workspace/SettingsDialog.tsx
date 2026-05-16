@@ -248,10 +248,22 @@ function inferSaveAutomationTemplate(state: {
   return "custom_generic";
 }
 
+function resolveInitialRepositoryId(
+  repositories: Repository[],
+  selectedRepositoryId?: string | null,
+): string | null {
+  if (selectedRepositoryId && repositories.some((repository) => repository.id === selectedRepositoryId)) {
+    return selectedRepositoryId;
+  }
+
+  return repositories[0]?.id ?? null;
+}
+
 interface SettingsDialogProps {
   open: boolean;
   onClose: () => void;
   repositories: Repository[];
+  selectedRepositoryId?: string | null;
   codexModels: readonly CodexModelCatalogEntry[];
   runtimeLabel?: string | null;
   runtimeTitle?: string | null;
@@ -278,6 +290,7 @@ export function SettingsDialog({
   open,
   onClose,
   repositories,
+  selectedRepositoryId,
   codexModels,
   runtimeLabel,
   runtimeTitle,
@@ -305,6 +318,7 @@ export function SettingsDialog({
   const savedScriptsRef = useRef<Record<string, RepositoryFormState>>({});
   const savePromiseRef = useRef<Promise<void> | null>(null);
   const hydratedRepoIdRef = useRef<string | null>(null);
+  const wasOpenRef = useRef(false);
   const {
     providers,
     loading: loadingModels,
@@ -406,11 +420,21 @@ export function SettingsDialog({
   // ── Workspace: Select first repo ──
   useEffect(() => {
     if (!open) {
+      wasOpenRef.current = false;
+      hydratedRepoIdRef.current = null;
       return;
     }
 
+    if (wasOpenRef.current) {
+      return;
+    }
+
+    wasOpenRef.current = true;
     hydratedRepoIdRef.current = null;
-  }, [open]);
+    setActiveTab("workspace");
+    setShowRemoveDialog(false);
+    setSelectedRepoId(resolveInitialRepositoryId(repositories, selectedRepositoryId));
+  }, [open, repositories, selectedRepositoryId]);
 
   useEffect(() => {
     if (!open) {
@@ -428,8 +452,8 @@ export function SettingsDialog({
       return;
     }
 
-    setSelectedRepoId(repositories[0]?.id ?? null);
-  }, [open, repositories, selectedRepoId]);
+    setSelectedRepoId(resolveInitialRepositoryId(repositories, selectedRepositoryId));
+  }, [open, repositories, selectedRepoId, selectedRepositoryId]);
 
   // ── Workspace: Load scripts ──
   useEffect(() => {
@@ -724,6 +748,7 @@ export function SettingsDialog({
           <button
             type="button"
             className="mb-4 flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
+            aria-label="Close settings"
             onClick={() => { void handleCloseSettings(); }}
           >
             <ArrowLeft className="h-4 w-4" />

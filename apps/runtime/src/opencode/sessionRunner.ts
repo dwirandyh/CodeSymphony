@@ -24,6 +24,7 @@ import { resolveHeuristicPlanContent } from "../codex/plan.js";
 import { runOpencodePlanModeViaAcp } from "./acpRunner.js";
 import { ensureConfiguredOpencodeBinaryOnPath, resolveOpencodeBinaryPath } from "./binary.js";
 import { buildAttachmentDataUrl, buildAttachmentFileUrl, isImageAttachment } from "../agentAttachments.js";
+import { loadOpencodeRuntimeMcpConfig } from "../acp/mcpServers.js";
 
 const OPENCODE_CUSTOM_PROVIDER_ID = "codesymphony_custom";
 const OPENCODE_SERVER_HOST = "127.0.0.1";
@@ -409,6 +410,10 @@ function buildOpencodeRuntimeConfig(params: {
       },
     },
   };
+  const configuredMcp = loadOpencodeRuntimeMcpConfig();
+  if (configuredMcp) {
+    config.mcp = configuredMcp;
+  }
 
   if (trimmedBaseUrl) {
     config.provider = {
@@ -1069,6 +1074,20 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   async function processMessagePartEvent(event: OpencodeMessagePartUpdatedEvent) {
     const part = event.properties.part;
     partTypeByPartId.set(part.id, part.type);
+    if (!assistantMessageIds.has(part.messageID)) {
+      const canInferAssistantMessage = !existingMessageIds.has(part.messageID)
+        && (
+          part.type === "tool"
+          || part.type === "subtask"
+          || (part.type === "text"
+            && typeof event.properties.delta === "string"
+            && event.properties.delta.length > 0)
+        );
+      if (canInferAssistantMessage) {
+        assistantMessageIds.add(part.messageID);
+      }
+    }
+
     if (!assistantMessageIds.has(part.messageID)) {
       const buffered = pendingPartsByMessageId.get(part.messageID) ?? [];
       buffered.push(event);

@@ -1284,7 +1284,7 @@ describe("buildTimelineFromSeed", () => {
       item.kind === "tool" && item.toolName === "Skill" && item.toolUseId === "call-skill-1",
     );
     const assistantItemIndex = result.items.findIndex((item) =>
-      item.kind === "message" && item.message.id === "m2",
+      item.kind === "message" && item.message.id.startsWith("m2"),
     );
 
     expect(skillItemIndex).toBeGreaterThanOrEqual(0);
@@ -1529,5 +1529,128 @@ describe("buildTimelineFromSeed", () => {
     });
     expect(todoProgressIndex).toBeGreaterThan(-1);
     expect(bashItemIndex).toBeGreaterThan(todoProgressIndex);
+  });
+
+  it("renders generic MCP and web-search tools inline between assistant message segments", () => {
+    const messages = [
+      makeMessage("m1", 0, "user", "Check the docs with MCP and web search."),
+      makeMessage(
+        "m2",
+        1,
+        "assistant",
+        "Saya cek dulu. React: facebook/react. Codex CLI: github.com/openai/codex.",
+      ),
+    ];
+    const events = [
+      makeEvent(1, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: "Saya cek dulu.",
+      }),
+      makeEvent(2, "tool.started", {
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+        toolUseId: "mcp_1",
+        messageId: "m2",
+      }),
+      makeEvent(3, "tool.output", {
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+        toolUseId: "mcp_1",
+        messageId: "m2",
+      }),
+      makeEvent(4, "tool.finished", {
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+        precedingToolUseIds: ["mcp_1"],
+        summary: "Ran context7.resolve-library-id",
+        output: "Resolved library id.",
+        messageId: "m2",
+      }),
+      makeEvent(5, "tool.started", {
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        toolUseId: "web_1",
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+        messageId: "m2",
+      }),
+      makeEvent(6, "tool.output", {
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        toolUseId: "web_1",
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+        messageId: "m2",
+      }),
+      makeEvent(7, "tool.finished", {
+        toolName: "WebSearch",
+        toolKind: "web_search",
+        precedingToolUseIds: ["web_1"],
+        searchParams: "OpenAI Codex CLI official GitHub npm",
+        summary: "Searched OpenAI Codex CLI official GitHub npm",
+        messageId: "m2",
+      }),
+      makeEvent(8, "message.delta", {
+        role: "assistant",
+        messageId: "m2",
+        delta: " React: facebook/react. Codex CLI: github.com/openai/codex.",
+      }),
+      makeEvent(9, "chat.completed", {
+        messageId: "m2",
+      }),
+    ];
+
+    const result = buildTimelineFromSeed({
+      messages,
+      events,
+      selectedThreadId: "t1",
+      semanticHydrationInProgress: false,
+    });
+
+    expect(result.items.map((item) => item.kind)).toEqual([
+      "message",
+      "message",
+      "tool",
+      "tool",
+      "message",
+      "message",
+    ]);
+
+    const introMessage = result.items[1];
+    expect(introMessage?.kind).toBe("message");
+    if (introMessage?.kind === "message") {
+      expect(introMessage.message.content).toBe("Saya cek dulu.");
+    }
+
+    const mcpTool = result.items[2];
+    expect(mcpTool?.kind).toBe("tool");
+    if (mcpTool?.kind === "tool") {
+      expect(mcpTool.id.startsWith("orphan:")).toBe(false);
+      expect(mcpTool.toolName).toBe("context7.resolve-library-id");
+      expect(mcpTool.sourceEvents?.map((event) => event.type)).toEqual([
+        "tool.started",
+        "tool.output",
+        "tool.finished",
+      ]);
+    }
+
+    const webSearchTool = result.items[3];
+    expect(webSearchTool?.kind).toBe("tool");
+    if (webSearchTool?.kind === "tool") {
+      expect(webSearchTool.id.startsWith("orphan:")).toBe(false);
+      expect(webSearchTool.toolName).toBe("WebSearch");
+      expect(webSearchTool.sourceEvents?.map((event) => event.type)).toEqual([
+        "tool.started",
+        "tool.output",
+        "tool.finished",
+      ]);
+    }
+
+    const trailingMessages = result.items.slice(4).filter(
+      (item): item is Extract<ChatTimelineItem, { kind: "message" }> => item.kind === "message",
+    );
+    expect(trailingMessages.map((item) => item.message.content)).toEqual([
+      " React: facebook/react. ",
+      "Codex CLI: github.com/openai/codex.",
+    ]);
   });
 });

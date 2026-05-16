@@ -20,6 +20,7 @@ import { pushRenderDebug } from "../debug.js";
 import { logTimelineWarning } from "../logger.js";
 import type { AskUserQuestionGroup } from "../types.js";
 import type { SortableEntry, TimelineRefs } from "./useWorkspaceTimeline.types.js";
+import type { GenericToolRun } from "../types.js";
 
 function explicitSkillNameFromEvents(events: ChatEvent[]): string | null {
   for (const event of events) {
@@ -220,6 +221,68 @@ function toolRunId(event: ChatEvent): string | null {
     ? finishedToolUseIds(event)
     : [payloadStringOrNull(event.payload.toolUseId)].filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
   return runIds[0] ?? null;
+}
+
+export function extractGenericToolRuns(events: ChatEvent[]): GenericToolRun[] {
+  const genericToolEventsByRunId = new Map<string, ChatEvent[]>();
+  for (const event of events) {
+    if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
+      continue;
+    }
+
+    const runId = toolRunId(event);
+    if (!runId) {
+      continue;
+    }
+
+    const existing = genericToolEventsByRunId.get(runId) ?? [];
+    existing.push(event);
+    genericToolEventsByRunId.set(runId, existing);
+  }
+
+  const runs: GenericToolRun[] = [];
+  for (const [runId, groupedEvents] of genericToolEventsByRunId.entries()) {
+    const sortedEvents = [...groupedEvents].sort((a, b) => a.idx - b.idx);
+    const firstEvent = sortedEvents[0] ?? null;
+    const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
+      ?? sortedEvents.find((event) => event.type === "tool.output")
+      ?? sortedEvents[sortedEvents.length - 1]
+      ?? null;
+    if (!firstEvent || !primaryEvent) {
+      continue;
+    }
+
+    const outputEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.output === "string") ?? null;
+    const errorEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.error === "string") ?? null;
+    const durationEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.elapsedTimeSeconds === "number") ?? null;
+    const hasFinishedEvent = sortedEvents.some((event) => event.type === "tool.finished");
+    const resolvedError = errorEvent && typeof errorEvent.payload.error === "string" ? errorEvent.payload.error : null;
+    const resolvedStatus = resolvedError
+      ? "failed"
+      : hasFinishedEvent
+        ? "success"
+        : "running";
+
+    runs.push({
+      id: runId,
+      toolUseId: runId,
+      startIdx: firstEvent.idx,
+      anchorIdx: firstEvent.idx,
+      toolName: payloadStringOrNull(primaryEvent.payload.toolName),
+      summary: payloadStringOrNull(primaryEvent.payload.summary),
+      output: outputEvent && typeof outputEvent.payload.output === "string" ? outputEvent.payload.output : null,
+      error: resolvedError,
+      truncated: (outputEvent?.payload.truncated === true) || (errorEvent?.payload.truncated === true),
+      durationSeconds: durationEvent && typeof durationEvent.payload.elapsedTimeSeconds === "number" ? durationEvent.payload.elapsedTimeSeconds : null,
+      status: resolvedStatus,
+      createdAt: firstEvent.createdAt,
+      eventIds: new Set(sortedEvents.map((event) => event.id)),
+      sourceEvents: sortedEvents,
+      event: primaryEvent,
+    });
+  }
+
+  return runs.sort((left, right) => left.startIdx - right.startIdx);
 }
 
 function skillToolRunId(event: ChatEvent): string | null {
@@ -656,68 +719,31 @@ export function processOrphanToolEvents(
     });
   }
 
-  const genericToolEventsByRunId = new Map<string, ChatEvent[]>();
-  for (const event of orphanToolEvents) {
-    if (assignedToolEventIds.has(event.id)) {
-      continue;
-    }
-    if (isWorktreeDiffEvent(event)) {
-      continue;
-    }
-    if (event.type !== "tool.started" && event.type !== "tool.output" && event.type !== "tool.finished") {
-      continue;
-    }
-    const runId = toolRunId(event);
-    if (!runId) {
-      continue;
-    }
-    const existing = genericToolEventsByRunId.get(runId) ?? [];
-    existing.push(event);
-    genericToolEventsByRunId.set(runId, existing);
-  }
+  const genericToolRuns = extractGenericToolRuns(
+    orphanToolEvents.filter((event) => !assignedToolEventIds.has(event.id) && !isWorktreeDiffEvent(event)),
+  );
 
-  for (const [runId, events] of genericToolEventsByRunId.entries()) {
-    const sortedEvents = [...events].sort((a, b) => a.idx - b.idx);
-    const firstEvent = sortedEvents[0] ?? null;
-    const primaryEvent = sortedEvents.find((event) => event.type === "tool.finished")
-      ?? sortedEvents.find((event) => event.type === "tool.output")
-      ?? sortedEvents[sortedEvents.length - 1]
-      ?? null;
-    if (!primaryEvent || !firstEvent) {
-      continue;
-    }
-
-    const outputEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.output === "string") ?? null;
-    const errorEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.error === "string") ?? null;
-    const durationEvent = [...sortedEvents].reverse().find((event) => typeof event.payload.elapsedTimeSeconds === "number") ?? null;
-    const hasFinishedEvent = sortedEvents.some((event) => event.type === "tool.finished");
-    const resolvedError = errorEvent && typeof errorEvent.payload.error === "string" ? errorEvent.payload.error : null;
-    const resolvedStatus = resolvedError
-      ? "failed"
-      : hasFinishedEvent
-        ? "success"
-        : "running";
-
-    sortedEvents.forEach((event) => assignedToolEventIds.add(event.id));
+  for (const run of genericToolRuns) {
+    run.eventIds.forEach((eventId) => assignedToolEventIds.add(eventId));
     sortable.push({
       item: {
         kind: "tool",
-        id: `orphan:tool:${runId}`,
-        event: primaryEvent,
-        sourceEvents: sortedEvents,
-        toolUseId: runId,
-        toolName: payloadStringOrNull(primaryEvent.payload.toolName),
-        summary: payloadStringOrNull(primaryEvent.payload.summary),
-        output: outputEvent && typeof outputEvent.payload.output === "string" ? outputEvent.payload.output : null,
-        error: resolvedError,
-        truncated: (outputEvent?.payload.truncated === true) || (errorEvent?.payload.truncated === true),
-        durationSeconds: durationEvent && typeof durationEvent.payload.elapsedTimeSeconds === "number" ? durationEvent.payload.elapsedTimeSeconds : null,
-        status: resolvedStatus,
+        id: `orphan:tool:${run.id}`,
+        event: run.event,
+        sourceEvents: run.sourceEvents,
+        toolUseId: run.toolUseId,
+        toolName: run.toolName,
+        summary: run.summary,
+        output: run.output,
+        error: run.error,
+        truncated: run.truncated,
+        durationSeconds: run.durationSeconds,
+        status: run.status,
       },
-      anchorIdx: firstEvent.idx,
-      timestamp: parseTimestamp(firstEvent.createdAt),
+      anchorIdx: run.anchorIdx,
+      timestamp: parseTimestamp(run.createdAt),
       rank: 0,
-      stableOrder: firstEvent.idx,
+      stableOrder: run.startIdx,
     });
   }
 

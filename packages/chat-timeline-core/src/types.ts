@@ -36,6 +36,24 @@ export type BashRun = {
   eventIds: Set<string>;
 };
 
+export type GenericToolRun = {
+  id: string;
+  toolUseId: string;
+  startIdx: number;
+  anchorIdx: number;
+  toolName: string | null;
+  summary: string | null;
+  output: string | null;
+  error: string | null;
+  truncated: boolean;
+  durationSeconds: number | null;
+  status: "running" | "success" | "failed";
+  createdAt: string;
+  eventIds: Set<string>;
+  sourceEvents: ChatEvent[];
+  event: ChatEvent | null;
+};
+
 export type EditedRun = {
   id: string;
   eventId: string;
