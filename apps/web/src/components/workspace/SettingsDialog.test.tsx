@@ -135,6 +135,7 @@ function renderDialog(
   options?: {
     runtimeLabel?: string | null;
     runtimeTitle?: string | null;
+    selectedRepositoryId?: string | null;
   },
 ) {
   act(() => {
@@ -144,6 +145,7 @@ function renderDialog(
           open={true}
           onClose={onClose}
           repositories={repositories}
+          selectedRepositoryId={options?.selectedRepositoryId}
           codexModels={codexModels}
           runtimeLabel={options?.runtimeLabel}
           runtimeTitle={options?.runtimeTitle}
@@ -344,6 +346,26 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("test-repo");
   });
 
+  it("prefers the active repository when the dialog opens", async () => {
+    renderDialog(
+      [
+        makeRepo(),
+        makeRepo({
+          id: "r2",
+          name: "codesymphony",
+          defaultBranch: "feat/chat/mcp-webseawrch",
+        }),
+      ],
+      vi.fn(),
+      undefined,
+      { selectedRepositoryId: "r2" },
+    );
+    await flushEffects();
+
+    const repoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement | undefined;
+    expect(repoSelect?.value).toBe("r2");
+  });
+
   it("shows script configuration fields in workspace settings", async () => {
     renderDialog([makeRepo()]);
     await flushEffects();
@@ -481,19 +503,19 @@ describe("SettingsDialog", () => {
 
   it("calls onClose when close triggered", async () => {
     const onClose = vi.fn();
+    renderDialog([], onClose);
+    await flushEffects();
+
+    const closeButton = document.body.querySelector('button[aria-label="Close settings"]') as HTMLButtonElement | null;
+    if (!closeButton) {
+      throw new Error("Close settings button not found");
+    }
+
     await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <SettingsDialog
-            open={true}
-            onClose={onClose}
-            repositories={[]}
-            codexModels={codexModels}
-            onRemoveRepository={vi.fn()}
-          />
-        </QueryClientProvider>
-      );
+      closeButton.click();
     });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("keeps dirty workspace form values when repositories refresh", async () => {

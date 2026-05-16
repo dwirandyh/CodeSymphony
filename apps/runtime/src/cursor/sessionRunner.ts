@@ -27,6 +27,7 @@ import {
   type PermissionDecision,
   type SlashCommand,
 } from "@codesymphony/shared-types";
+import { loadCursorAcpMcpServers } from "../acp/mcpServers.js";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
 import { appendRuntimeDebugLog } from "../routes/debug.js";
@@ -555,6 +556,32 @@ function isGenericTerminalTitle(title: string): boolean {
   return title.trim().toLowerCase() === "terminal";
 }
 
+function isGenericToolTitle(title: string): boolean {
+  const normalized = title.trim().toLowerCase();
+  return normalized === ""
+    || normalized === "tool"
+    || normalized === "other"
+    || normalized === "mcp"
+    || normalized === "mcp: tool";
+}
+
+function mergeToolTitle(currentTitle: string, incomingTitle: string | undefined): string {
+  const normalizedIncomingTitle = incomingTitle?.trim() ?? "";
+  if (normalizedIncomingTitle.length === 0) {
+    return currentTitle;
+  }
+
+  if (
+    currentTitle.trim().length > 0
+    && isGenericToolTitle(normalizedIncomingTitle)
+    && !isGenericToolTitle(currentTitle)
+  ) {
+    return currentTitle;
+  }
+
+  return normalizedIncomingTitle;
+}
+
 function isExecuteLikeTool(params: {
   kind: ToolKind | null;
   title: string;
@@ -1042,6 +1069,7 @@ async function listCursorCatalog(cwd: string): Promise<CursorCatalogSnapshot> {
   let availableCommands: AvailableCommand[] = [];
   let resolveCommands: (() => void) | null = null;
   let commandTimer: ReturnType<typeof setTimeout> | null = null;
+  const mcpServers = loadCursorAcpMcpServers();
 
   const commandsReady = new Promise<void>((resolve) => {
     resolveCommands = resolve;
@@ -1072,7 +1100,7 @@ async function listCursorCatalog(cwd: string): Promise<CursorCatalogSnapshot> {
   try {
     const session = await connection.newSession({
       cwd,
-      mcpServers: [],
+      mcpServers,
     });
     await commandsReady;
 
@@ -1138,6 +1166,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
     permissionMode,
     threadPermissionMode,
   });
+  const mcpServers = loadCursorAcpMcpServers();
   const resolvedModel = model?.trim() || DEFAULT_CHAT_MODEL_BY_AGENT.cursor;
   const toolStates = new Map<string, CursorToolState>();
   let output = "";
@@ -1197,7 +1226,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
       finishedEmitted: false,
     } satisfies CursorToolState;
 
-    current.title = incoming.title ?? current.title;
+    current.title = mergeToolTitle(current.title, incoming.title);
     current.kind = incoming.kind ?? current.kind;
     current.status = incoming.status ?? current.status;
     current.rawInput = incoming.rawInput ?? current.rawInput;
@@ -1464,11 +1493,11 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
         ? await connection.loadSession({
             sessionId,
             cwd,
-            mcpServers: [],
+            mcpServers,
           })
         : await connection.newSession({
             cwd,
-            mcpServers: [],
+            mcpServers,
           });
       logCursorDebug("session.load.completed", {
         hasExistingSessionId: sessionId != null,

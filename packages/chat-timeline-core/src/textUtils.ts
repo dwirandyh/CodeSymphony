@@ -86,6 +86,7 @@ export function hasSentenceBoundary(text: string): boolean {
 export function isSentenceAwareInlineInsertKind(kind: string | null): boolean {
   return kind === "edited"
     || kind === "bash"
+    || kind === "tool"
     || kind === "subagent-activity"
     || kind === "explore-activity"
     || kind === "ask-user-question";

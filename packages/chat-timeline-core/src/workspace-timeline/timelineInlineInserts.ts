@@ -12,10 +12,11 @@ import {
 import { parseTimestamp } from "../eventUtils.js";
 import { pushRenderDebug } from "../debug.js";
 import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry } from "./useWorkspaceTimeline.types.js";
-import type { AskUserQuestionGroup, BashRun, EditedRun, ExploreActivityGroup, SubagentGroup, TodoListGroup, TodoProgressGroup } from "../types.js";
+import type { AskUserQuestionGroup, BashRun, EditedRun, ExploreActivityGroup, GenericToolRun, SubagentGroup, TodoListGroup, TodoProgressGroup } from "../types.js";
 
 export function buildInlineInserts(
   bashRuns: BashRun[],
+  genericToolRuns: GenericToolRun[],
   editedRuns: EditedRun[],
   subagentGroups: SubagentGroup[],
   exploreActivityGroups: ExploreActivityGroup[],
@@ -30,6 +31,14 @@ export function buildInlineInserts(
     ...bashRuns.map((run, index) => ({
       kind: "bash" as const,
       id: `bash:${run.toolUseId}:${index}`,
+      startIdx: run.startIdx,
+      anchorIdx: run.anchorIdx,
+      createdAt: run.createdAt,
+      run,
+    })),
+    ...genericToolRuns.map((run, index) => ({
+      kind: "tool" as const,
+      id: `tool:${run.toolUseId}:${index}`,
       startIdx: run.startIdx,
       anchorIdx: run.anchorIdx,
       createdAt: run.createdAt,
@@ -635,6 +644,33 @@ function pushInlineInsert(
       },
       anchorIdx: forcedAnchorIdx ?? bucketAnchorIdx ?? run.anchorIdx,
       timestamp: bucketTimestamp ?? timestamp,
+      rank: 3,
+      stableOrder: message.seq + stableOffset.value,
+    });
+    stableOffset.value += 0.001;
+    return;
+  }
+
+  if (insert.kind === "tool") {
+    const run = insert.run;
+    const status = run.status === "running" && isCompleted ? "success" : run.status;
+    sortable.push({
+      item: {
+        kind: "tool",
+        id: `${message.id}:${run.toolUseId}:${insert.id}`,
+        event: run.event,
+        sourceEvents: run.sourceEvents,
+        toolUseId: run.toolUseId,
+        toolName: run.toolName,
+        summary: run.summary,
+        output: run.output,
+        error: run.error,
+        truncated: run.truncated,
+        durationSeconds: run.durationSeconds,
+        status,
+      },
+      anchorIdx: forcedAnchorIdx ?? bucketAnchorIdx ?? run.anchorIdx,
+      timestamp: parseTimestamp(run.createdAt) ?? bucketTimestamp ?? timestamp,
       rank: 3,
       stableOrder: message.seq + stableOffset.value,
     });
