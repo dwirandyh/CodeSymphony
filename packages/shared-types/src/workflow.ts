@@ -190,7 +190,7 @@ export const CliAgentSchema = z.enum(["claude", "codex", "cursor", "opencode"]);
 export type CliAgent = z.infer<typeof CliAgentSchema>;
 
 export const BUILTIN_CHAT_MODELS_BY_AGENT = {
-  claude: ["glm-4.7", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+  claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
   codex: [],
   cursor: [
     "default[]",
@@ -207,7 +207,7 @@ export const BUILTIN_CHAT_MODELS_BY_AGENT = {
 } as const satisfies Record<CliAgent, readonly string[]>;
 
 export const DEFAULT_CHAT_MODEL_BY_AGENT = {
-  claude: "glm-4.7",
+  claude: "claude-sonnet-4-6",
   codex: "",
   cursor: "default[]",
   opencode: "opencode/minimax-m2.5-free",

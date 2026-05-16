@@ -602,7 +602,7 @@ describe("useChatSession", () => {
     expect(api.getOrCreatePrMrThread).toHaveBeenCalledWith("wt-1", {
       permissionMode: "default",
       agent: "claude",
-      model: "glm-4.7",
+      model: "claude-sonnet-4-6",
       modelProviderId: null,
     });
     expect(api.sendMessage).toHaveBeenCalledWith(prMrThread.id, {
@@ -1578,7 +1578,7 @@ describe("useChatSession", () => {
       ...makeThread("thread-new"),
       title: "New Thread",
       agent: "claude",
-      model: "glm-4.7",
+      model: "claude-sonnet-4-6",
     });
     vi.mocked(api.updateThreadAgentSelection).mockResolvedValue({
       ...makeThread("thread-new"),

@@ -3,6 +3,7 @@ import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import {
   buildInitialWorkspaceLandingHoldState,
   deriveWorkingStatus,
+  resolveWorkspaceThreadlessFallbackSurface,
   shouldReturnToWorkspaceLandingAfterClosingContent,
   shouldShowThinkingPlaceholder,
   shouldShowWorkspaceEmptyState,
@@ -177,6 +178,7 @@ describe("shouldShowWorkspaceEmptyState", () => {
   it("shows the workspace landing when chat has no selected thread", () => {
     expect(shouldShowWorkspaceEmptyState({
       activeView: "chat",
+      hasOpenContentTabs: false,
       terminalViewActive: false,
       messageListEmptyState: "no-thread-selected",
     })).toBe(true);
@@ -185,20 +187,39 @@ describe("shouldShowWorkspaceEmptyState", () => {
   it("shows the workspace landing while the first thread is still being prepared", () => {
     expect(shouldShowWorkspaceEmptyState({
       activeView: "chat",
+      hasOpenContentTabs: false,
       terminalViewActive: false,
       messageListEmptyState: "creating-thread",
     })).toBe(true);
   });
 
+  it("keeps the workspace landing hidden when other worktree tabs still exist", () => {
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      hasOpenContentTabs: true,
+      terminalViewActive: false,
+      messageListEmptyState: "no-thread-selected",
+    })).toBe(false);
+
+    expect(shouldShowWorkspaceEmptyState({
+      activeView: "chat",
+      hasOpenContentTabs: true,
+      terminalViewActive: false,
+      messageListEmptyState: "creating-thread",
+    })).toBe(false);
+  });
+
   it("keeps thread-specific empty states in the regular chat surface", () => {
     expect(shouldShowWorkspaceEmptyState({
       activeView: "chat",
+      hasOpenContentTabs: false,
       terminalViewActive: false,
       messageListEmptyState: "new-thread-empty",
     })).toBe(false);
 
     expect(shouldShowWorkspaceEmptyState({
       activeView: "chat",
+      hasOpenContentTabs: false,
       terminalViewActive: false,
       messageListEmptyState: "existing-thread-empty",
     })).toBe(false);
@@ -207,21 +228,76 @@ describe("shouldShowWorkspaceEmptyState", () => {
   it("never shows the workspace landing over file, review, or terminal views", () => {
     expect(shouldShowWorkspaceEmptyState({
       activeView: "file",
+      hasOpenContentTabs: false,
       terminalViewActive: false,
       messageListEmptyState: "no-thread-selected",
     })).toBe(false);
 
     expect(shouldShowWorkspaceEmptyState({
       activeView: "review",
+      hasOpenContentTabs: false,
       terminalViewActive: false,
       messageListEmptyState: "no-thread-selected",
     })).toBe(false);
 
     expect(shouldShowWorkspaceEmptyState({
       activeView: "chat",
+      hasOpenContentTabs: false,
       terminalViewActive: true,
       messageListEmptyState: "no-thread-selected",
     })).toBe(false);
+  });
+});
+
+describe("resolveWorkspaceThreadlessFallbackSurface", () => {
+  it("prefers the most recent still-open file tab", () => {
+    expect(resolveWorkspaceThreadlessFallbackSurface({
+      activeTerminalTabId: "terminal-2",
+      openFilePaths: ["src/older.ts", "src/newer.ts"],
+      openTerminalTabIds: ["terminal-1", "terminal-2"],
+      recentFilePaths: ["src/newer.ts", "src/closed.ts", "src/older.ts"],
+      reviewOpen: true,
+    })).toEqual({
+      kind: "file",
+      filePath: "src/newer.ts",
+    });
+  });
+
+  it("falls back to a terminal tab when no file tabs remain", () => {
+    expect(resolveWorkspaceThreadlessFallbackSurface({
+      activeTerminalTabId: "terminal-2",
+      openFilePaths: [],
+      openTerminalTabIds: ["terminal-1", "terminal-2"],
+      recentFilePaths: ["src/closed.ts"],
+      reviewOpen: true,
+    })).toEqual({
+      kind: "terminal",
+      terminalTabId: "terminal-2",
+    });
+  });
+
+  it("falls back to review when it is the only remaining content surface", () => {
+    expect(resolveWorkspaceThreadlessFallbackSurface({
+      activeTerminalTabId: null,
+      openFilePaths: [],
+      openTerminalTabIds: [],
+      recentFilePaths: [],
+      reviewOpen: true,
+    })).toEqual({
+      kind: "review",
+    });
+  });
+
+  it("returns empty only when no content tabs remain", () => {
+    expect(resolveWorkspaceThreadlessFallbackSurface({
+      activeTerminalTabId: null,
+      openFilePaths: [],
+      openTerminalTabIds: [],
+      recentFilePaths: [],
+      reviewOpen: false,
+    })).toEqual({
+      kind: "empty",
+    });
   });
 });
 

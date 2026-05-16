@@ -154,6 +154,7 @@ import {
   deriveWorkingStatus,
   FilledPauseIcon,
   FilledPlayIcon,
+  resolveWorkspaceThreadlessFallbackSurface,
   shouldReturnToWorkspaceLandingAfterClosingContent,
   shouldShowThinkingPlaceholder,
   shouldShowWorkspaceEmptyState,
@@ -1292,6 +1293,17 @@ export function WorkspacePage() {
     selectedWorktreePath: repos.selectedWorktree?.path ?? null,
     updateSearch,
   });
+  const threadlessFallbackSurface = useMemo(
+    () => resolveWorkspaceThreadlessFallbackSurface({
+      activeTerminalTabId: selectedTerminalTabsState.activeTabId,
+      openFilePaths: workspaceFileTabs.map((tab) => tab.path),
+      openTerminalTabIds: selectedTerminalTabsState.tabs.map((tab) => tab.id),
+      recentFilePaths,
+      reviewOpen: activeView === "review",
+    }),
+    [activeView, recentFilePaths, selectedTerminalTabsState.activeTabId, selectedTerminalTabsState.tabs, workspaceFileTabs],
+  );
+  const hasOpenContentTabs = threadlessFallbackSurface.kind !== "empty";
   const handleCloseFileTab = useCallback((filePath: string) => {
     const shouldReturnToLanding =
       activeView === "file"
@@ -1543,11 +1555,92 @@ export function WorkspacePage() {
     timelineItems: chat.timelineItems,
     workingStatus,
   });
+  useEffect(() => {
+    if (
+      !repos.selectedWorktreeId
+      || !selectedWorktreeLandingHold
+      || chat.selectedThreadId != null
+      || threadlessFallbackSurface.kind === "empty"
+    ) {
+      return;
+    }
+
+    setWorkspaceLandingHold(repos.selectedWorktreeId, false);
+  }, [
+    chat.selectedThreadId,
+    repos.selectedWorktreeId,
+    selectedWorktreeLandingHold,
+    setWorkspaceLandingHold,
+    threadlessFallbackSurface.kind,
+  ]);
   const showWorkspaceEmptyState = shouldShowWorkspaceEmptyState({
     activeView,
+    hasOpenContentTabs,
     terminalViewActive,
     messageListEmptyState: chat.messageListEmptyState,
   });
+
+  useEffect(() => {
+    if (
+      !repos.selectedWorktreeId
+      || activeView !== "chat"
+      || terminalViewActive
+      || (
+        chat.messageListEmptyState !== "no-thread-selected"
+        && chat.messageListEmptyState !== "creating-thread"
+      )
+      || threadlessFallbackSurface.kind === "empty"
+    ) {
+      return;
+    }
+
+    setWorkspaceLandingHold(repos.selectedWorktreeId, false);
+
+    if (threadlessFallbackSurface.kind === "file") {
+      updateSearch({
+        view: "file",
+        file: threadlessFallbackSurface.filePath,
+        fileLine: undefined,
+        fileColumn: undefined,
+        threadId: undefined,
+      });
+      return;
+    }
+
+    if (threadlessFallbackSurface.kind === "terminal") {
+      updateTerminalTabsState(repos.selectedWorktreeId, (current) => ({
+        ...current,
+        activeTabId: current.tabs.some((tab) => tab.id === threadlessFallbackSurface.terminalTabId)
+          ? threadlessFallbackSurface.terminalTabId
+          : current.activeTabId,
+        visible: true,
+      }));
+      updateSearch({
+        view: undefined,
+        file: undefined,
+        fileLine: undefined,
+        fileColumn: undefined,
+        threadId: undefined,
+      });
+      return;
+    }
+
+    updateSearch({
+      view: "review",
+      file: selectedDiffFilePath ?? undefined,
+      threadId: undefined,
+    });
+  }, [
+    activeView,
+    chat.messageListEmptyState,
+    repos.selectedWorktreeId,
+    selectedDiffFilePath,
+    setWorkspaceLandingHold,
+    terminalViewActive,
+    threadlessFallbackSurface,
+    updateSearch,
+    updateTerminalTabsState,
+  ]);
 
   useEffect(() => {
     const lastTimelineItem = chat.timelineItems[chat.timelineItems.length - 1] ?? null;
@@ -1561,6 +1654,8 @@ export function WorkspacePage() {
       showStopAction: chat.showStopAction,
       waitingAssistantThreadId,
       messageListEmptyState: chat.messageListEmptyState,
+      hasOpenContentTabs,
+      threadlessFallbackSurface,
       timelineItemsCount: chat.timelineItems.length,
       messagesCount: chat.messages.length,
       eventsCount: chat.events.length,
@@ -1587,9 +1682,11 @@ export function WorkspacePage() {
     chat.showStopAction,
     chat.timelineItems,
     gates.isWaitingForUserGate,
+    hasOpenContentTabs,
     repos.selectedWorktreeId,
     showWorkspaceEmptyState,
     showThinkingPlaceholder,
+    threadlessFallbackSurface,
     workingStatus,
     waitingAssistantThreadId,
   ]);
