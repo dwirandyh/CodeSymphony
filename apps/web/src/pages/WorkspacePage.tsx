@@ -2882,6 +2882,7 @@ export function WorkspacePage() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         repositories={repos.repositories}
+        selectedRepositoryId={repos.selectedRepositoryId}
         codexModels={codexModels}
         runtimeLabel={runtimeLabel}
         runtimeTitle={runtimeTitle}

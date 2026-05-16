@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createMockCursorChild,
+  fakeCursorNewSessionRequests,
   fakeCursorSessions,
   resetFakeCursorAcpState,
 } from "./support/fakeCursorAcp";
@@ -13,6 +14,7 @@ describe("cursor session runner", () => {
     resetFakeCursorAcpState();
     vi.resetModules();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("lists slash commands and models from the Cursor ACP catalog", async () => {
@@ -51,6 +53,70 @@ describe("cursor session runner", () => {
     expect(spawnMock).toHaveBeenNthCalledWith(1, "cursor-agent", ["acp"], expect.objectContaining({
       cwd: "/tmp/project",
     }));
+  });
+
+  it("passes configured MCP servers into new Cursor ACP sessions", async () => {
+    const tempHome = await mkdtemp(join(tmpdir(), "cursor-mcp-home-"));
+    await mkdir(join(tempHome, ".cursor"), { recursive: true });
+    await writeFile(join(tempHome, ".cursor", "mcp.json"), JSON.stringify({
+      mcpServers: {
+        Context7: {
+          url: "https://mcp.context7.com/mcp",
+          headers: {},
+        },
+        maestro: {
+          command: "maestro",
+          args: ["mcp"],
+        },
+      },
+    }));
+    vi.stubEnv("HOME", tempHome);
+
+    vi.doMock("node:child_process", () => ({
+      spawn: vi.fn(() => createMockCursorChild({
+        onPrompt: async ({ agent, sessionId }) => {
+          await agent.emitText(sessionId, "Done.");
+        },
+      })),
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+
+    await expect(runCursorWithStreaming({
+      prompt: "Use configured MCP servers.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    })).resolves.toMatchObject({
+      output: "Done.",
+      sessionId: "cursor-session-1",
+    });
+
+    expect(fakeCursorNewSessionRequests).toHaveLength(1);
+    expect(fakeCursorNewSessionRequests[0]?.mcpServers).toEqual([
+      {
+        type: "http",
+        name: "Context7",
+        url: "https://mcp.context7.com/mcp",
+        headers: [],
+      },
+      {
+        name: "maestro",
+        command: "maestro",
+        args: ["mcp"],
+        env: [],
+      },
+    ]);
   });
 
   it("streams text, tools, permission requests, and plan events from Cursor ACP", async () => {
@@ -513,6 +579,63 @@ describe("cursor session runner", () => {
         output: "Resolved library id.",
       }),
     ]));
+  });
+
+  it("keeps specific Cursor MCP titles when later updates fall back to generic labels", async () => {
+    vi.doMock("node:child_process", () => ({
+      spawn: vi.fn(() => createMockCursorChild({
+        onPrompt: async ({ agent, sessionId }) => {
+          await agent.emitToolCall(sessionId, {
+            sessionUpdate: "tool_call",
+            toolCallId: "mcp_1",
+            title: "context7_resolve-library-id",
+            kind: "other",
+            rawInput: {},
+            content: [],
+            status: "pending",
+          });
+          await agent.emitToolCallUpdate(sessionId, {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "mcp_1",
+            title: "MCP: tool",
+            kind: "other",
+            status: "completed",
+            rawInput: {},
+            content: [],
+          });
+        },
+      })),
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const toolFinishes: Array<Record<string, unknown>> = [];
+
+    await runCursorWithStreaming({
+      prompt: "Use MCP.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: (event) => {
+        toolFinishes.push(event as unknown as Record<string, unknown>);
+      },
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(toolFinishes).toEqual([
+      expect.objectContaining({
+        toolName: "context7.resolve-library-id",
+        toolKind: "mcp",
+        summary: "Ran context7.resolve-library-id",
+      }),
+    ]);
   });
 
   it("normalizes Cursor ACP elicitation requests into runtime question callbacks", async () => {

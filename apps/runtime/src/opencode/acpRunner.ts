@@ -19,6 +19,7 @@ import {
   type ToolKind,
 } from "@agentclientprotocol/sdk";
 import type { AgentTodoItem, PermissionDecision } from "@codesymphony/shared-types";
+import { loadOpencodeAcpMcpServers } from "../acp/mcpServers.js";
 import { resolveHeuristicPlanContent } from "../codex/plan.js";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
@@ -321,6 +322,32 @@ function toolNameFromKind(kind: ToolKind | null, title: string): string {
     default:
       return title.trim() || "Tool";
   }
+}
+
+function isGenericToolTitle(title: string): boolean {
+  const normalized = title.trim().toLowerCase();
+  return normalized === ""
+    || normalized === "tool"
+    || normalized === "other"
+    || normalized === "mcp"
+    || normalized === "mcp: tool";
+}
+
+function mergeToolTitle(currentTitle: string, incomingTitle: string | undefined): string {
+  const normalizedIncomingTitle = incomingTitle?.trim() ?? "";
+  if (normalizedIncomingTitle.length === 0) {
+    return currentTitle;
+  }
+
+  if (
+    currentTitle.trim().length > 0
+    && isGenericToolTitle(normalizedIncomingTitle)
+    && !isGenericToolTitle(currentTitle)
+  ) {
+    return currentTitle;
+  }
+
+  return normalizedIncomingTitle;
 }
 
 function resolveOpencodeAcpToolPresentation(params: {
@@ -728,7 +755,7 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
       finishedEmitted: false,
     } satisfies OpencodeToolState;
 
-    current.title = incoming.title ?? current.title;
+    current.title = mergeToolTitle(current.title, incoming.title);
     current.kind = incoming.kind ?? current.kind;
     current.status = incoming.status ?? current.status;
     current.rawInput = incoming.rawInput ?? current.rawInput;
@@ -919,15 +946,16 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
       await onProcessSpawned?.(childPid);
     }
 
+    const mcpServers = loadOpencodeAcpMcpServers();
     const session = sessionId
       ? await connection.loadSession({
           sessionId,
           cwd,
-          mcpServers: [],
+          mcpServers,
         })
       : await connection.newSession({
           cwd,
-          mcpServers: [],
+          mcpServers,
         });
 
     currentSessionId = sessionId ?? ("sessionId" in session && typeof session.sessionId === "string" ? session.sessionId : null);
