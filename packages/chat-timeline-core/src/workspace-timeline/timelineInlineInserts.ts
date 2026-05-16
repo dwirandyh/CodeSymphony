@@ -12,7 +12,7 @@ import {
 import { parseTimestamp } from "../eventUtils.js";
 import { pushRenderDebug } from "../debug.js";
 import type { InlineInsert, PlanFileOutput, SegmentBucket, SortableEntry } from "./useWorkspaceTimeline.types.js";
-import type { AskUserQuestionGroup, BashRun, EditedRun, ExploreActivityGroup, SubagentGroup } from "../types.js";
+import type { AskUserQuestionGroup, BashRun, EditedRun, ExploreActivityGroup, SubagentGroup, TodoListGroup, TodoProgressGroup } from "../types.js";
 
 export function buildInlineInserts(
   bashRuns: BashRun[],
@@ -20,6 +20,8 @@ export function buildInlineInserts(
   subagentGroups: SubagentGroup[],
   exploreActivityGroups: ExploreActivityGroup[],
   askUserQuestionGroups: AskUserQuestionGroup[],
+  todoListGroups: TodoListGroup[],
+  todoProgressGroups: TodoProgressGroup[],
   planFileOutput: PlanFileOutput | undefined,
 ): InlineInsert[] {
   const hasInlineSubagentRuns = subagentGroups.length > 0;
@@ -62,6 +64,22 @@ export function buildInlineInserts(
     ...askUserQuestionGroups.map((group, index) => ({
       kind: "ask-user-question" as const,
       id: `ask-user-question:${group.id}:${index}`,
+      startIdx: group.startIdx,
+      anchorIdx: group.anchorIdx,
+      createdAt: group.createdAt,
+      group,
+    })),
+    ...todoListGroups.map((group, index) => ({
+      kind: "todo-list" as const,
+      id: `todo-list:${group.id}:${index}`,
+      startIdx: group.startIdx,
+      anchorIdx: group.anchorIdx,
+      createdAt: group.createdAt,
+      group,
+    })),
+    ...todoProgressGroups.map((group, index) => ({
+      kind: "todo-progress" as const,
+      id: `todo-progress:${group.id}:${index}`,
       startIdx: group.startIdx,
       anchorIdx: group.anchorIdx,
       createdAt: group.createdAt,
@@ -700,6 +718,51 @@ function pushInlineInsert(
       stableOrder: message.seq + stableOffset.value,
     });
     stableOffset.value += 0.001;
+    return;
+  }
+
+  if (insert.kind === "todo-list") {
+    const group = insert.group;
+    sortable.push({
+      item: {
+        kind: "todo-list",
+        id: `${message.id}:${group.id}`,
+        messageId: message.id,
+        agent: group.agent,
+        groupId: group.groupId,
+        explanation: group.explanation,
+        status: group.status,
+        items: group.items,
+        createdAt: group.createdAt,
+      },
+      anchorIdx: forcedAnchorIdx ?? bucketAnchorIdx ?? group.anchorIdx,
+      timestamp: bucketTimestamp ?? timestamp,
+      rank: 3,
+      stableOrder: message.seq + stableOffset.value,
+    });
+    stableOffset.value += 0.001;
+    return;
+  }
+
+  if (insert.kind === "todo-progress") {
+    const group = insert.group;
+    sortable.push({
+      item: {
+        kind: "todo-progress",
+        id: `${message.id}:${group.id}`,
+        messageId: message.id,
+        agent: group.agent,
+        groupId: group.groupId,
+        todoId: group.todoId,
+        content: group.content,
+        createdAt: group.createdAt,
+      },
+      anchorIdx: forcedAnchorIdx ?? bucketAnchorIdx ?? group.anchorIdx,
+      timestamp: bucketTimestamp ?? timestamp,
+      rank: 3,
+      stableOrder: message.seq + stableOffset.value,
+    });
+    stableOffset.value += 0.001;
   }
 }
 
@@ -795,7 +858,9 @@ export function processInlineInsertLoop(
     !hasLeadingText
     && hasAnyTrailingText
     && inlineInserts.length > 0
-    && !isSentenceAwareInlineInsertKind(firstInsertKind);
+    && !isSentenceAwareInlineInsertKind(firstInsertKind)
+    && firstInsertKind !== "todo-list"
+    && firstInsertKind !== "todo-progress";
   const delayFirstInlineInsert = shouldDelayFirstInlineInsert(
     firstInsertKind,
     segmentBuckets[0]?.content ?? "",

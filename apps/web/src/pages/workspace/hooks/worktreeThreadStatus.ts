@@ -127,6 +127,7 @@ export function hasRunningAssistantActivity(events: ChatEvent[]): boolean {
 
     if (
       event.type === "tool.output"
+      || event.type === "todo.updated"
       || event.type === "permission.requested"
       || event.type === "question.requested"
       || event.type === "plan.created"

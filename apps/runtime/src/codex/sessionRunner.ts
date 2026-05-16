@@ -630,6 +630,7 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
   onQuestionRequest,
   onPermissionRequest,
   onPlanFileDetected,
+  onTodoUpdate,
   onSubagentStarted,
   onSubagentStopped,
 }): Promise<ChatAgentRunnerResult> => {
@@ -997,6 +998,8 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
         }
 
         if (parsed.method === "turn/plan/updated") {
+          const turnId = asString(params?.turnId)?.trim();
+          const explanation = asString(params?.explanation)?.trim() ?? null;
           const steps = asArray(params?.plan)
             .map(asObject)
             .filter((entry): entry is Record<string, unknown> => entry !== undefined)
@@ -1013,11 +1016,24 @@ export const runCodexWithStreaming: ChatAgentRunner = async ({
             })
             .filter((entry): entry is CodexPlanStep => entry !== null);
 
-          if (steps.length > 0 || asString(params?.explanation)?.trim()) {
+          if (steps.length > 0 || explanation) {
             latestStructuredPlan = {
-              explanation: asString(params?.explanation)?.trim() ?? null,
+              explanation,
               steps,
             };
+          }
+
+          if (turnId && steps.length > 0) {
+            await onTodoUpdate?.({
+              agent: "codex",
+              groupId: turnId,
+              explanation,
+              items: steps.map((entry, index) => ({
+                id: `${turnId}:${index}`,
+                content: entry.step,
+                status: entry.status === "inProgress" ? "in_progress" : entry.status,
+              })),
+            });
           }
           return;
         }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import {
+  buildInitialWorkspaceLandingHoldState,
   deriveWorkingStatus,
   shouldReturnToWorkspaceLandingAfterClosingContent,
   shouldShowThinkingPlaceholder,
@@ -124,6 +125,37 @@ describe("deriveWorkingStatus", () => {
     });
   });
 
+  it("uses a generic Working label when the latest running item is a todo list", () => {
+    expect(deriveWorkingStatus({
+      selectedThreadUiStatus: "running",
+      timelineItems: [
+        makeMessageTimelineItem("user", "user-1"),
+        {
+          kind: "todo-list",
+          id: "todo-list-1",
+          messageId: "assistant-1",
+          agent: "claude",
+          groupId: "group-1",
+          explanation: null,
+          status: "running",
+          items: [
+            {
+              id: "todo-1",
+              content: "Cek status repo dan struktur file utama",
+              status: "in_progress",
+            },
+          ],
+          createdAt: "2026-01-01T00:00:03Z",
+        },
+      ],
+    })).toEqual({
+      label: "Working",
+      startedAt: "2026-01-01T00:00:00Z",
+      finishedAt: null,
+      state: "running",
+    });
+  });
+
   it("uses a completed Worked status with terminal duration", () => {
     expect(deriveWorkingStatus({
       events: [makeTerminalEvent("chat.completed", "2026-01-01T00:00:08Z")],
@@ -204,5 +236,30 @@ describe("shouldReturnToWorkspaceLandingAfterClosingContent", () => {
   it("keeps populated or loading threads on the chat surface", () => {
     expect(shouldReturnToWorkspaceLandingAfterClosingContent("loading-thread")).toBe(false);
     expect(shouldReturnToWorkspaceLandingAfterClosingContent(null)).toBe(false);
+  });
+});
+
+describe("buildInitialWorkspaceLandingHoldState", () => {
+  it("starts a worktree-only URL on the threadless landing state", () => {
+    expect(buildInitialWorkspaceLandingHoldState({
+      routeWorktreeId: "wt-1",
+      routeThreadId: null,
+    })).toEqual({
+      "wt-1": true,
+    });
+  });
+
+  it("does not seed a landing hold when the route already specifies a thread", () => {
+    expect(buildInitialWorkspaceLandingHoldState({
+      routeWorktreeId: "wt-1",
+      routeThreadId: "thread-1",
+    })).toEqual({});
+  });
+
+  it("does not seed a landing hold without a worktree id", () => {
+    expect(buildInitialWorkspaceLandingHoldState({
+      routeWorktreeId: null,
+      routeThreadId: null,
+    })).toEqual({});
   });
 });

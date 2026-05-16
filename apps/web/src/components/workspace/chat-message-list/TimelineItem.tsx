@@ -1,5 +1,5 @@
 import { memo, useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
-import { Bot, ChevronRight, Loader2, XCircle } from "lucide-react";
+import { Bot, ChevronRight, Circle, CircleCheckBig, ListTodo, Loader2, XCircle } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { isExploreLikeBashCommand } from "../../../pages/workspace/eventUtils";
 import { parsePatchFiles } from "@pierre/diffs";
@@ -189,6 +189,82 @@ function formatWorkingDuration(startedAt: string | null, nowMs: number): string 
   return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
 }
 
+const TodoListTimelineItem = memo(function TodoListTimelineItem({
+  item,
+}: {
+  item: Extract<ChatTimelineItem, { kind: "todo-list" }>;
+}) {
+  const [open, setOpen] = useState(item.status === "running");
+
+  const totalCount = item.items.length;
+
+  return (
+    <article className="px-1 text-xs" data-testid="timeline-todo-list">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-0 py-0 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+        data-testid="timeline-todo-list-trigger"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground/80">
+          <ListTodo className="h-3.5 w-3.5" />
+        </span>
+        <span className="inline-flex items-baseline gap-1.5">
+          <span className="font-medium text-foreground/85">To-Dos</span>
+          <span className="font-medium text-foreground/70">{totalCount}</span>
+        </span>
+        <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+      </button>
+
+      {open ? (
+        <div className="mt-1.5 flex flex-col gap-1 pl-0" data-testid="timeline-todo-list-steps">
+          {item.items.map((todo, index) => (
+            <div
+              key={todo.id ?? `${item.id}:${index}:${todo.content}:inline`}
+              className="flex items-start gap-2 text-sm"
+            >
+              {todo.status === "completed" ? (
+                <CircleCheckBig className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+              ) : todo.status === "cancelled" ? (
+                <XCircle className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+              ) : (
+                <Circle className="mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+              )}
+              <span className={cn(
+                "leading-6",
+                todo.status === "completed" || todo.status === "cancelled"
+                  ? "text-muted-foreground line-through"
+                  : todo.status === "in_progress"
+                    ? "font-medium text-foreground"
+                    : "text-muted-foreground",
+              )}
+              >
+                {todo.content}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+});
+
+const TodoProgressTimelineItem = memo(function TodoProgressTimelineItem({
+  item,
+}: {
+  item: Extract<ChatTimelineItem, { kind: "todo-progress" }>;
+}) {
+  return (
+    <article className="px-1 text-[12px]" data-testid="timeline-todo-progress">
+      <div className="flex items-center gap-2 text-[12px] leading-5">
+        <span className="text-muted-foreground">Started to-do</span>
+        <CircleCheckBig className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80" />
+        <span className="text-muted-foreground/70">{item.content}</span>
+      </div>
+    </article>
+  );
+});
+
 export const ThinkingPlaceholder = memo(function ThinkingPlaceholder({
   label = "Thinking",
   startedAt = null,
@@ -261,6 +337,14 @@ export const TimelineItem = memo(function TimelineItem({
         </div>
       </article>
     );
+  }
+
+  if (item.kind === "todo-list") {
+    return <TodoListTimelineItem item={item} />;
+  }
+
+  if (item.kind === "todo-progress") {
+    return <TodoProgressTimelineItem item={item} />;
   }
 
   if (item.kind === "tool") {

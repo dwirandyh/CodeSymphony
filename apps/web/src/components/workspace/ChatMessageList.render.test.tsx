@@ -123,6 +123,10 @@ vi.mock("react-markdown", () => ({
 
 vi.mock("rehype-sanitize", () => ({
   default: {},
+  defaultSchema: {
+    tagNames: [],
+    attributes: {},
+  },
 }));
 
 vi.mock("remark-gfm", () => ({
@@ -1357,6 +1361,95 @@ describe("ChatMessageList", () => {
       root.render(<ChatMessageList {...baseProps} items={items} />);
     });
     expect(container.textContent).toContain("Plan");
+  });
+
+  it("renders todo-list item inline in the timeline and keeps the checklist expanded by default while running", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "todo-list",
+        id: "todo-1",
+        messageId: "m1",
+        agent: "codex",
+        groupId: "turn-1",
+        explanation: "Implement todo timeline",
+        status: "running",
+        items: [
+          { id: "1", content: "Inspect current timeline", status: "completed" },
+          { id: "2", content: "Render todo row", status: "in_progress" },
+        ],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    const trigger = container.querySelector("[data-testid='timeline-todo-list-trigger']");
+    expect(trigger).toBeTruthy();
+    expect(container.textContent).toContain("To-Dos");
+    expect(container.textContent).toContain("2");
+    expect(container.textContent).toContain("Inspect current timeline");
+    expect(container.textContent).toContain("Render todo row");
+    expect(container.textContent).not.toContain("Codex to-do");
+    expect(container.textContent).not.toContain("1/2 done");
+    expect(container.textContent).not.toContain("Implement todo timeline");
+  });
+
+  it("renders todo-list item and toggles checklist visibility on click", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "todo-list",
+        id: "todo-1",
+        messageId: "m1",
+        agent: "codex",
+        groupId: "turn-1",
+        explanation: "Implement todo timeline",
+        status: "running",
+        items: [
+          { id: "1", content: "Inspect current timeline", status: "completed" },
+          { id: "2", content: "Render todo row", status: "in_progress" },
+        ],
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    const trigger = container.querySelector("[data-testid='timeline-todo-list-trigger']") as HTMLButtonElement | null;
+    expect(trigger).toBeTruthy();
+
+    act(() => {
+      trigger?.click();
+    });
+
+    expect(container.textContent).not.toContain("Inspect current timeline");
+    expect(container.textContent).not.toContain("Render todo row");
+  });
+
+  it("renders started todo progress item as a separate timeline component", () => {
+    const items: ChatTimelineItem[] = [
+      {
+        kind: "todo-progress",
+        id: "todo-progress-1",
+        messageId: "m1",
+        agent: "codex",
+        groupId: "turn-1",
+        todoId: "2",
+        content: "Render todo row",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    act(() => {
+      root.render(<ChatMessageList {...baseProps} items={items} />);
+    });
+
+    expect(container.textContent).toContain("Started to-do");
+    expect(container.textContent).toContain("Render todo row");
+    expect(container.textContent).not.toContain("Codex");
   });
 
   it("renders footer content after the timeline items", () => {

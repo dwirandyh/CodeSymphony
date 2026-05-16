@@ -169,6 +169,7 @@ describe("cursor session runner", () => {
     const toolFinishes: Array<Record<string, unknown>> = [];
     const permissionRequests: Array<Record<string, unknown>> = [];
     const plans: Array<Record<string, unknown>> = [];
+    const todoUpdates: Array<Record<string, unknown>> = [];
     const sessionIds: string[] = [];
 
     const result = await runCursorWithStreaming({
@@ -199,6 +200,9 @@ describe("cursor session runner", () => {
       },
       onPlanFileDetected: (event) => {
         plans.push(event as unknown as Record<string, unknown>);
+      },
+      onTodoUpdate: (event) => {
+        todoUpdates.push(event as unknown as Record<string, unknown>);
       },
       onSubagentStarted: () => {},
       onSubagentStopped: () => {},
@@ -239,10 +243,65 @@ describe("cursor session runner", () => {
         content: "1. Inspect the workspace\n2. Report the plan",
       },
     ]);
+    expect(todoUpdates).toEqual([]);
     expect(fakeCursorSessions.get("cursor-session-1")?.prompts[0]).toContain("This thread uses on-request approvals.");
     expect(fakeCursorSessions.get("cursor-session-1")?.prompts[0]).toContain("Approval-gated edits and command execution should go through the runtime approval flow");
     expect(fakeCursorSessions.get("cursor-session-1")?.prompts[0]).not.toContain("Do not edit files or execute commands.");
     expect(fakeCursorSessions.get("cursor-session-1")?.prompts[0]).toContain("User request:\nInspect this repo and propose a plan.");
+  });
+
+  it("keeps a stable todo group across repeated Cursor ACP plan snapshots", async () => {
+    const spawnMock = vi.fn(() => createMockCursorChild({
+      onPrompt: async ({ agent, sessionId }) => {
+        await agent.emitPlan(sessionId, [
+          { content: "Inspect the workspace", status: "in_progress" },
+          { content: "Render todo row", status: "pending" },
+        ]);
+        await agent.emitPlan(sessionId, [
+          { content: "Inspect the workspace", status: "completed" },
+          { content: "Render todo row", status: "in_progress" },
+        ]);
+        await agent.emitText(sessionId, "Done.");
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      spawn: spawnMock,
+    }));
+
+    const { runCursorWithStreaming } = await import("../src/cursor/sessionRunner");
+    const todoUpdates: Array<Record<string, unknown>> = [];
+
+    const result = await runCursorWithStreaming({
+      prompt: "Inspect this repo and propose a plan.",
+      sessionId: null,
+      cwd: "/tmp/project",
+      permissionMode: "default",
+      threadPermissionMode: "default",
+      onText: () => {},
+      onToolStarted: () => {},
+      onToolOutput: () => {},
+      onToolFinished: () => {},
+      onQuestionRequest: async () => ({ answers: {} }),
+      onPermissionRequest: async () => ({ decision: "allow" }),
+      onPlanFileDetected: () => {},
+      onTodoUpdate: (event) => {
+        todoUpdates.push(event as unknown as Record<string, unknown>);
+      },
+      onSubagentStarted: () => {},
+      onSubagentStopped: () => {},
+    });
+
+    expect(result.output).toBe("Done.");
+    expect(todoUpdates).toHaveLength(2);
+    expect(todoUpdates[0]?.groupId).toBe(todoUpdates[1]?.groupId);
+    expect(todoUpdates[1]).toMatchObject({
+      agent: "cursor",
+      explanation: null,
+      items: [
+        { content: "Inspect the workspace", status: "completed" },
+        { content: "Render todo row", status: "in_progress" },
+      ],
+    });
   });
 
   it("enriches Cursor terminal tool calls from rawOutput instead of the generic Terminal placeholder", async () => {

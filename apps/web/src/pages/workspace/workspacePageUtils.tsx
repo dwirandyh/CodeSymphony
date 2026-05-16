@@ -56,11 +56,24 @@ export function shouldReturnToWorkspaceLandingAfterClosingContent(
   );
 }
 
+export function buildInitialWorkspaceLandingHoldState(params: {
+  routeWorktreeId: string | null | undefined;
+  routeThreadId: string | null | undefined;
+}): Record<string, boolean> {
+  if (!params.routeWorktreeId || params.routeThreadId != null) {
+    return {};
+  }
+
+  return { [params.routeWorktreeId]: true };
+}
+
 function getTimelineItemCreatedAt(item: ChatTimelineItem): string | null {
   switch (item.kind) {
     case "message":
       return item.message.createdAt;
     case "plan-file-output":
+    case "todo-list":
+    case "todo-progress":
       return item.createdAt;
     case "edited-diff":
       return item.createdAt;
@@ -123,6 +136,10 @@ function workingLabelForItem(item: ChatTimelineItem | null): string {
       return "Exploring";
     case "subagent-activity":
       return "Delegating";
+    case "todo-list":
+      return "Working";
+    case "todo-progress":
+      return "Working";
     case "tool":
       if (item.shell === "bash") {
         return "Running command";

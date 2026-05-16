@@ -1,6 +1,7 @@
 import type { PermissionMode as ClaudeSdkPermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { PrismaClient } from "@prisma/client";
 import type {
+  AgentTodoItem,
   ChatEvent,
   ChatEventType,
   CliAgent,
@@ -253,6 +254,12 @@ export type ClaudeRunner = (args: {
     filePath: string;
     content: string;
     source?: PlanDetectionSource;
+  }) => Promise<void> | void;
+  onTodoUpdate?: (payload: {
+    agent: CliAgent;
+    groupId: string;
+    explanation: string | null;
+    items: AgentTodoItem[];
   }) => Promise<void> | void;
   onSubagentStarted: (payload: {
     agentId: string;

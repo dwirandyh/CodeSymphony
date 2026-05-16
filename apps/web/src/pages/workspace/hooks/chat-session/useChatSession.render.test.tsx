@@ -187,6 +187,7 @@ function HookHarness({
   selectedWorktreeStatus = "active",
   autoCreateInitialThread,
   allowUnselectedThread,
+  onThreadChange,
 }: {
   desiredThreadId?: string;
   desiredWorktreeId?: string | null;
@@ -195,6 +196,7 @@ function HookHarness({
   selectedWorktreeStatus?: "active" | "archived" | "creating" | "create_failed" | "deleting" | "delete_failed" | null;
   autoCreateInitialThread?: boolean;
   allowUnselectedThread?: boolean;
+  onThreadChange?: (threadId: string | null) => void;
 }) {
   hookResult = useChatSession(selectedWorktreeId, onErrorMock, undefined, {
     desiredThreadId,
@@ -203,6 +205,7 @@ function HookHarness({
     worktreeStatus: selectedWorktreeStatus,
     autoCreateInitialThread,
     allowUnselectedThread,
+    onThreadChange,
   });
   return null;
 }
@@ -216,6 +219,7 @@ function renderHook(
   hookOptions?: {
     autoCreateInitialThread?: boolean;
     allowUnselectedThread?: boolean;
+    onThreadChange?: (threadId: string | null) => void;
   },
 ) {
   act(() => {
@@ -229,6 +233,7 @@ function renderHook(
           selectedWorktreeStatus={selectedWorktreeStatus}
           autoCreateInitialThread={hookOptions?.autoCreateInitialThread}
           allowUnselectedThread={hookOptions?.allowUnselectedThread}
+          onThreadChange={hookOptions?.onThreadChange}
         />
       </QueryClientProvider>,
     );
@@ -242,6 +247,7 @@ function renderHookInStrictMode(
   hookOptions?: {
     autoCreateInitialThread?: boolean;
     allowUnselectedThread?: boolean;
+    onThreadChange?: (threadId: string | null) => void;
   },
 ) {
   act(() => {
@@ -254,6 +260,7 @@ function renderHookInStrictMode(
             selectedWorktreeStatus={selectedWorktreeStatus}
             autoCreateInitialThread={hookOptions?.autoCreateInitialThread}
             allowUnselectedThread={hookOptions?.allowUnselectedThread}
+            onThreadChange={hookOptions?.onThreadChange}
           />
         </QueryClientProvider>
       </StrictMode>,
@@ -1078,7 +1085,7 @@ describe("useChatSession", () => {
     });
 
     expect(api.createThread).not.toHaveBeenCalled();
-    expect(hookResult.selectedThreadId).toBe("thread-a");
+    expect(hookResult.selectedThreadId).toBe(null);
 
     threadsState.data = [makeThread("thread-a"), makeThread("thread-b", true)];
     threadsState.isLoading = false;
@@ -1298,19 +1305,72 @@ describe("useChatSession", () => {
     expect(hookResult.selectedThreadId).toBe("thread-target");
   });
 
-  it("still bootstraps remote thread data for an explicitly requested thread", () => {
-    threadsState.data = [];
+  it("waits for an explicitly requested thread to resolve before bootstrapping remote data", () => {
+    const onThreadChange = vi.fn();
+    threadsState.data = undefined;
+    threadsState.isLoading = true;
 
     renderHook("thread-target", null, "wt-2", "wt-2", "active", {
       autoCreateInitialThread: false,
       allowUnselectedThread: true,
+      onThreadChange,
     });
 
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(vi.mocked(useThreadSnapshot).mock.calls.map(([threadId]) => threadId)).not.toContain("thread-target");
+    expect(vi.mocked(useThreadStatusSnapshot).mock.calls.map(([threadId]) => threadId)).not.toContain("thread-target");
+    expect(
+      vi.mocked(useThreadEventStream).mock.calls.map(([params]) => params.selectedThreadId),
+    ).not.toContain("thread-target");
+    expect(onThreadChange).not.toHaveBeenCalled();
+
+    threadsState.data = [{ ...makeThread("thread-target"), worktreeId: "wt-2" }];
+    threadsState.isLoading = false;
+    renderHook("thread-target", null, "wt-2", "wt-2", "active", {
+      autoCreateInitialThread: false,
+      allowUnselectedThread: true,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe("thread-target");
     expect(vi.mocked(useThreadSnapshot).mock.calls.map(([threadId]) => threadId)).toContain("thread-target");
     expect(vi.mocked(useThreadStatusSnapshot).mock.calls.map(([threadId]) => threadId)).toContain("thread-target");
     expect(
       vi.mocked(useThreadEventStream).mock.calls.map(([params]) => params.selectedThreadId),
     ).toContain("thread-target");
+    expect(onThreadChange).toHaveBeenCalledWith("thread-target");
+  });
+
+  it("clears an invalid requested thread after the selected worktree resolves empty", () => {
+    const onThreadChange = vi.fn();
+    threadsState.data = undefined;
+    threadsState.isLoading = true;
+
+    renderHook("missing-thread", null, "wt-2", "wt-2", "active", {
+      autoCreateInitialThread: false,
+      allowUnselectedThread: true,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(vi.mocked(useThreadSnapshot).mock.calls.map(([threadId]) => threadId)).not.toContain("missing-thread");
+    expect(vi.mocked(useThreadStatusSnapshot).mock.calls.map(([threadId]) => threadId)).not.toContain("missing-thread");
+    expect(
+      vi.mocked(useThreadEventStream).mock.calls.map(([params]) => params.selectedThreadId),
+    ).not.toContain("missing-thread");
+    expect(onThreadChange).not.toHaveBeenCalled();
+
+    threadsState.data = [];
+    threadsState.isLoading = false;
+    renderHook("missing-thread", null, "wt-2", "wt-2", "active", {
+      autoCreateInitialThread: false,
+      allowUnselectedThread: true,
+      onThreadChange,
+    });
+
+    expect(hookResult.selectedThreadId).toBe(null);
+    expect(onThreadChange).toHaveBeenCalledWith(null);
+    expect(vi.mocked(api.listQueuedMessages)).not.toHaveBeenCalledWith("missing-thread");
   });
 
   it("reuses an existing titled thread instead of creating a duplicate", async () => {

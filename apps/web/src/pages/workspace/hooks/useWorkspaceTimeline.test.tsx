@@ -326,6 +326,137 @@ describe("useWorkspaceTimeline", () => {
     expect(assistantItem).toBeDefined();
   });
 
+  it("renders one persistent todo-list plus started todo progress items", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "do the task"),
+      makeMessage("m2", 2, "assistant", "Saya lanjut eksekusi task."),
+    ];
+    const events = [
+      makeEvent(0, "todo.updated", {
+        agent: "codex",
+        groupId: "turn-1",
+        explanation: "Implement timeline todo UI",
+        items: [
+          { id: "1", content: "Inspect current timeline", status: "in_progress" },
+          { id: "2", content: "Render todo row", status: "pending" },
+        ],
+        messageId: "m2",
+      }, "m2"),
+      makeEvent(1, "todo.updated", {
+        agent: "codex",
+        groupId: "turn-1",
+        explanation: "Implement timeline todo UI",
+        items: [
+          { id: "1", content: "Inspect current timeline", status: "completed" },
+          { id: "2", content: "Render todo row", status: "in_progress" },
+        ],
+        messageId: "m2",
+      }, "m2"),
+      makeEvent(2, "chat.completed", { messageId: "m2" }, "m2"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const todoItems = items.filter((item) => item.kind === "todo-list");
+    const todoProgressItems = items.filter((item) => item.kind === "todo-progress");
+
+    expect(todoItems).toHaveLength(1);
+    if (todoItems[0]?.kind !== "todo-list") {
+      throw new Error("Expected todo-list item");
+    }
+    expect(todoItems[0]).toMatchObject({
+      agent: "codex",
+      groupId: "turn-1",
+      status: "running",
+      items: [
+        { id: "1", content: "Inspect current timeline", status: "completed" },
+        { id: "2", content: "Render todo row", status: "in_progress" },
+      ],
+    });
+    expect(todoProgressItems).toHaveLength(2);
+    expect(todoProgressItems[0]).toMatchObject({
+      kind: "todo-progress",
+      agent: "codex",
+      groupId: "turn-1",
+      content: "Inspect current timeline",
+    });
+    expect(todoProgressItems[1]).toMatchObject({
+      kind: "todo-progress",
+      agent: "codex",
+      groupId: "turn-1",
+      content: "Render todo row",
+    });
+  });
+
+  it("collapses recreated todo-lists across turns into one persistent item", () => {
+    const messages = [
+      makeMessage("m1", 1, "user", "prepare the work"),
+      makeMessage("m2", 2, "assistant", "Saya siapkan daftar tugas."),
+      makeMessage("m3", 3, "user", "lanjutkan"),
+      makeMessage("m4", 4, "assistant", "Saya mulai kerjakan."),
+    ];
+    const events = [
+      makeEvent(0, "todo.updated", {
+        agent: "codex",
+        groupId: "turn-1",
+        items: [
+          { id: "1", content: "Inspect current timeline", status: "pending" },
+          { id: "2", content: "Render todo row", status: "pending" },
+        ],
+        messageId: "m2",
+      }, "m2"),
+      makeEvent(1, "todo.updated", {
+        agent: "codex",
+        groupId: "turn-2",
+        items: [
+          { id: "1", content: "Inspect current timeline", status: "in_progress" },
+          { id: "2", content: "Render todo row", status: "pending" },
+        ],
+        messageId: "m4",
+      }, "m4"),
+      makeEvent(2, "tool.started", {
+        toolName: "Bash",
+        toolUseId: "bash-1",
+        messageId: "m4",
+      }, "m4"),
+      makeEvent(3, "tool.finished", {
+        toolName: "Bash",
+        precedingToolUseIds: ["bash-1"],
+        summary: "Ran git status --short",
+        command: "git status --short",
+        messageId: "m4",
+      }, "m4"),
+    ];
+
+    const items = getTimelineItems(messages, events);
+    const todoItems = items.filter((item) => item.kind === "todo-list");
+    const todoProgressItems = items.filter((item) => item.kind === "todo-progress");
+    const todoProgressIndex = items.findIndex((item) => item.kind === "todo-progress");
+    const bashItemIndex = items.findIndex((item) => item.kind === "tool" && item.toolName === "Bash");
+
+    expect(todoItems).toHaveLength(1);
+    if (todoItems[0]?.kind !== "todo-list") {
+      throw new Error("Expected todo-list item");
+    }
+    expect(todoItems[0]).toMatchObject({
+      messageId: "m2",
+      agent: "codex",
+      status: "running",
+      items: [
+        { id: "1", content: "Inspect current timeline", status: "in_progress" },
+        { id: "2", content: "Render todo row", status: "pending" },
+      ],
+    });
+    expect(todoProgressItems).toHaveLength(1);
+    expect(todoProgressItems[0]).toMatchObject({
+      kind: "todo-progress",
+      messageId: "m4",
+      agent: "codex",
+      content: "Inspect current timeline",
+    });
+    expect(todoProgressIndex).toBeGreaterThan(-1);
+    expect(bashItemIndex).toBeGreaterThan(todoProgressIndex);
+  });
+
   it("coalesces orphan skill events into a single skill tool item", () => {
     const messages = [makeMessage("m1", 1, "user", "anything")];
     const events = [

@@ -459,6 +459,21 @@ describe("resolveWorktreeSwitchSeed", () => {
 
     expect(seed.selectedThreadId).toBe(null);
   });
+
+  it("does not seed a missing requested thread id before cached threads confirm it", () => {
+    const seed = resolveWorktreeSwitchSeed({
+      cachedThreads: [
+        makeThread("Thread A", "thread-a"),
+        { ...makeThread("Thread B", "thread-b"), active: true },
+      ],
+      requestedThreadId: "missing-thread",
+      optimisticCreatedThreadIds: new Set(),
+      locallyDeletedThreadIds: new Set(),
+      allowUnselectedThread: true,
+    });
+
+    expect(seed.selectedThreadId).toBe(null);
+  });
 });
 
 describe("deriveSelectedThreadUiState", () => {

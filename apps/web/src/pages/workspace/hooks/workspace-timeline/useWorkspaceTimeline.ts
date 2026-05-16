@@ -36,6 +36,10 @@ function getTimelineItemStableKey(item: { kind: string; [key: string]: unknown }
       return `message:${(item as unknown as { message: { id: string } }).message.id}`;
     case "plan-file-output":
       return `plan-file-output:${item.id}`;
+    case "todo-list":
+      return `todo-list:${item.id}`;
+    case "todo-progress":
+      return `todo-progress:${item.id}`;
     case "activity":
       return `activity:${item.messageId}`;
     case "tool":

@@ -1,6 +1,17 @@
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@codesymphony/chat-timeline-core": fileURLToPath(
+        new URL("../../packages/chat-timeline-core/src/index.ts", import.meta.url),
+      ),
+      "@codesymphony/shared-types": fileURLToPath(
+        new URL("../../packages/shared-types/src/index.ts", import.meta.url),
+      ),
+    },
+  },
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],

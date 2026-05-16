@@ -621,6 +621,10 @@ describe("shouldClearWaitingAssistantOnEvent", () => {
   it("returns true for tool.finished", () => {
     expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "tool.finished" }))).toBe(true);
   });
+
+  it("returns true for todo.updated", () => {
+    expect(shouldClearWaitingAssistantOnEvent(makeEvent({ type: "todo.updated" }))).toBe(true);
+  });
 });
 
 // ── Content helpers ──

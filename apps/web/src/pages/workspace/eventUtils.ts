@@ -656,6 +656,7 @@ export function shouldClearWaitingAssistantOnEvent(event: ChatEvent): boolean {
     event.type === "tool.started"
     || event.type === "tool.output"
     || event.type === "tool.finished"
+    || event.type === "todo.updated"
   ) {
     return true;
   }

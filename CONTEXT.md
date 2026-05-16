@@ -39,6 +39,7 @@ _Avoid_: implicit retry, background clone
 ## Relationships
 
 - A **Thread selection** chooses exactly one agent and one model
+- A **Thread selection** persists across turns until explicitly changed
 - A **Thread selection** may also choose one **Provider-backed model selection**
 - A **Provider-backed Claude selection** is a Claude-flavoured **Provider-backed model selection**
 - An **Alias-only model selection** and a **Provider-backed model selection** are distinct kinds of model selection
