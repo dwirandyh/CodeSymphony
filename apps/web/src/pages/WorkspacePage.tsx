@@ -150,6 +150,7 @@ import {
 } from "./workspace/repositoryPanelPreferences";
 import { resolveVisibleRepositorySelection } from "./workspace/visibleRepositorySelection";
 import {
+  buildInitialWorkspaceLandingHoldState,
   deriveWorkingStatus,
   FilledPauseIcon,
   FilledPlayIcon,
@@ -450,7 +451,12 @@ export function WorkspacePage() {
   const [leftSidebarVisible, setLeftSidebarVisible] = useState(() => loadStoredBoolean(LEFT_SIDEBAR_VISIBLE_STORAGE_KEY, true));
   const [scriptOutputs, setScriptOutputs] = useState<ScriptOutputEntry[]>([]);
   const [bottomPanelStateByWorktreeId, setBottomPanelStateByWorktreeId] = useState<Record<string, BottomPanelWorktreeState>>({});
-  const [workspaceLandingHoldByWorktreeId, setWorkspaceLandingHoldByWorktreeId] = useState<Record<string, boolean>>({});
+  const [workspaceLandingHoldByWorktreeId, setWorkspaceLandingHoldByWorktreeId] = useState<Record<string, boolean>>(() =>
+    buildInitialWorkspaceLandingHoldState({
+      routeWorktreeId: search.worktreeId ?? null,
+      routeThreadId: search.threadId ?? null,
+    }),
+  );
   const workspaceLandingHoldByWorktreeIdRef = useRef<Record<string, boolean>>({});
   const showMacDesktopTitleBar = isMacDesktopShell();
   const setWorkspaceLandingHold = useCallback((worktreeId: string | null, hold: boolean) => {
@@ -907,7 +913,7 @@ export function WorkspacePage() {
       (threadId: string | null) => {
         updateSearch({ threadId: threadId ?? undefined });
       },
-      [updateSearch],
+      [desiredChatThreadId, desiredChatWorktreeId, repos.selectedWorktreeId, updateSearch],
     ),
   });
 

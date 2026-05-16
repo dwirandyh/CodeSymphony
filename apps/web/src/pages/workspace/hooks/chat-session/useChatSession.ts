@@ -195,12 +195,17 @@ export function resolveWorktreeSwitchSeed(params: {
     optimisticCreatedThreadIds: params.optimisticCreatedThreadIds,
     locallyDeletedThreadIds: params.locallyDeletedThreadIds,
   });
+  const requestedThreadExists = params.requestedThreadId != null
+    && threads.some((thread) => thread.id === params.requestedThreadId);
 
   return {
     threads,
     selectedThreadId:
-      params.requestedThreadId
-      ?? (params.allowUnselectedThread ? null : resolvePreferredThreadId(threads)),
+      requestedThreadExists
+        ? params.requestedThreadId
+        : params.allowUnselectedThread
+          ? null
+          : resolvePreferredThreadId(threads),
   };
 }
 
@@ -799,7 +804,7 @@ export function useChatSession(
     : options?.desiredThreadId ?? null;
 
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(() => requestedThreadId);
+  const [selectedThreadIdState, setSelectedThreadIdState] = useState<string | null>(null);
 
   const [sendingMessage, setSendingMessage] = useState(false);
   const [stoppingThreadId, setStoppingThreadId] = useState<string | null>(null);
@@ -1236,12 +1241,15 @@ export function useChatSession(
     selectedThreadId != null
     && !isPendingWorktreePlaceholderThreadId(selectedThreadId)
     && !locallyDeletedThreadIdsRef.current.has(selectedThreadId)
-    && (
-      (selectedThreadForData != null && selectedThreadForData.worktreeId === selectedWorktreeId)
-      || (!requestedThreadSelectionDeferred && requestedThreadId != null && requestedThreadId === selectedThreadId)
-    )
+    && selectedThreadForData != null
+    && selectedThreadForData.worktreeId === selectedWorktreeId
       ? selectedThreadId
       : null;
+  const requestedThreadResolutionPending =
+    requestedThreadId != null
+    && !requestedThreadSelectionDeferred
+    && selectedThreadIdForData == null
+    && (queriedThreadsLoading || queriedThreads == null);
   const { data: liveMessages } = useLiveQuery(
     () => selectedThreadIdForData ? getThreadCollections(selectedThreadIdForData).messagesCollection : undefined,
     [selectedThreadIdForData],
@@ -2229,16 +2237,25 @@ export function useChatSession(
 
   useEffect(() => {
     const selectionBootstrapPending =
-      selectedThreadId == null
-      && requestedThreadId != null
-      && autoCreateInitialThread
-      && !allowUnselectedThread;
+      requestedThreadResolutionPending
+      || (
+        selectedThreadId == null
+        && requestedThreadId != null
+        && autoCreateInitialThread
+        && !allowUnselectedThread
+      );
     if (selectionBootstrapPending) {
       return;
     }
 
     const nextThreadIdForNavigation = selectedThreadIdForData ?? null;
-    const willNotify = prevThreadIdRef.current !== nextThreadIdForNavigation;
+    const shouldClearRequestedThreadFromNavigation =
+      requestedThreadId != null
+      && !requestedThreadResolutionPending
+      && nextThreadIdForNavigation == null;
+    const willNotify = shouldClearRequestedThreadFromNavigation
+      ? prevThreadIdRef.current !== requestedThreadId
+      : prevThreadIdRef.current !== nextThreadIdForNavigation;
     if (willNotify) {
       prevThreadIdRef.current = nextThreadIdForNavigation;
       options?.onThreadChange?.(nextThreadIdForNavigation);
@@ -2246,6 +2263,7 @@ export function useChatSession(
   }, [
     allowUnselectedThread,
     autoCreateInitialThread,
+    requestedThreadResolutionPending,
     requestedThreadId,
     selectedThreadId,
     selectedThreadIdForData,

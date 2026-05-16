@@ -56,6 +56,17 @@ export function shouldReturnToWorkspaceLandingAfterClosingContent(
   );
 }
 
+export function buildInitialWorkspaceLandingHoldState(params: {
+  routeWorktreeId: string | null | undefined;
+  routeThreadId: string | null | undefined;
+}): Record<string, boolean> {
+  if (!params.routeWorktreeId || params.routeThreadId != null) {
+    return {};
+  }
+
+  return { [params.routeWorktreeId]: true };
+}
+
 function getTimelineItemCreatedAt(item: ChatTimelineItem): string | null {
   switch (item.kind) {
     case "message":
