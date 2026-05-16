@@ -116,6 +116,8 @@ or:
 make dev
 ```
 
+The Makefile targets are convenience wrappers around the same pnpm scripts.
+
 - Web: `http://127.0.0.1:5173` (Vite proxies `/api` to the runtime)
 - Runtime: JSON API under `http://127.0.0.1:4331/api`; liveness at `http://127.0.0.1:4331/health` (not under `/api`)
 - Quick smoke check: open `http://127.0.0.1:4331/health` before debugging API or UI issues.
