@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatEvent, ChatTimelineItem } from "@codesymphony/shared-types";
 import {
+  buildInitialWorkspaceLandingHoldState,
   deriveWorkingStatus,
   shouldReturnToWorkspaceLandingAfterClosingContent,
   shouldShowThinkingPlaceholder,
@@ -235,5 +236,30 @@ describe("shouldReturnToWorkspaceLandingAfterClosingContent", () => {
   it("keeps populated or loading threads on the chat surface", () => {
     expect(shouldReturnToWorkspaceLandingAfterClosingContent("loading-thread")).toBe(false);
     expect(shouldReturnToWorkspaceLandingAfterClosingContent(null)).toBe(false);
+  });
+});
+
+describe("buildInitialWorkspaceLandingHoldState", () => {
+  it("starts a worktree-only URL on the threadless landing state", () => {
+    expect(buildInitialWorkspaceLandingHoldState({
+      routeWorktreeId: "wt-1",
+      routeThreadId: null,
+    })).toEqual({
+      "wt-1": true,
+    });
+  });
+
+  it("does not seed a landing hold when the route already specifies a thread", () => {
+    expect(buildInitialWorkspaceLandingHoldState({
+      routeWorktreeId: "wt-1",
+      routeThreadId: "thread-1",
+    })).toEqual({});
+  });
+
+  it("does not seed a landing hold without a worktree id", () => {
+    expect(buildInitialWorkspaceLandingHoldState({
+      routeWorktreeId: null,
+      routeThreadId: null,
+    })).toEqual({});
   });
 });
