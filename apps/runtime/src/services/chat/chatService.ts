@@ -1739,6 +1739,21 @@ export function createChatService(deps: RuntimeDeps) {
             },
           });
         },
+        onTodoUpdate: async (payload) => {
+          recordFirstRunnerSignal("todo.updated", {
+            assistantMessageId: assistantMessage.id,
+            agent: payload.agent,
+            groupId: payload.groupId,
+            itemCount: payload.items.length,
+          });
+          await deps.eventHub.emit(threadId, "todo.updated", {
+            messageId: assistantMessage.id,
+            agent: payload.agent,
+            groupId: payload.groupId,
+            explanation: payload.explanation,
+            items: payload.items,
+          });
+        },
         onPermissionRequest: async (payload) => {
           recordFirstRunnerSignal("permission.requested", {
             assistantMessageId: assistantMessage.id,

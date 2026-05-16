@@ -18,7 +18,7 @@ import {
   type ToolCallUpdate,
   type ToolKind,
 } from "@agentclientprotocol/sdk";
-import type { PermissionDecision } from "@codesymphony/shared-types";
+import type { AgentTodoItem, PermissionDecision } from "@codesymphony/shared-types";
 import { resolveHeuristicPlanContent } from "../codex/plan.js";
 import type { ChatAgentRunner, ChatAgentRunnerResult } from "../types.js";
 import { isImageAttachment, readAttachmentBase64 } from "../agentAttachments.js";
@@ -52,6 +52,12 @@ type OpencodeQuestionDefinition = {
   optionsByLabel: Map<string, string>;
 };
 
+type OpencodeTodoStatus = AgentTodoItem["status"];
+type OpencodeTodoEntry = {
+  content: string;
+  status: OpencodeTodoStatus;
+};
+
 function createAbortError(): Error {
   const error = new Error("Aborted");
   error.name = "AbortError";
@@ -66,13 +72,23 @@ function normalizeToolUseId(toolCallId: string): string {
   return toolCallId.replace(/\s+/g, "");
 }
 
-function buildOpencodePlanMarkdown(entries: Array<{ content: string; status: string }>): string | null {
-  const normalizedEntries = entries
+function normalizeOpencodeTodoStatus(status: string): OpencodeTodoStatus | null {
+  return status === "pending" || status === "in_progress" || status === "completed" || status === "cancelled"
+    ? status
+    : null;
+}
+
+function normalizeOpencodeTodoEntries(entries: Array<{ content: string; status: string }>): OpencodeTodoEntry[] {
+  return entries
     .map((entry) => ({
       content: entry.content.trim(),
-      status: entry.status,
+      status: normalizeOpencodeTodoStatus(entry.status),
     }))
-    .filter((entry) => entry.content.length > 0);
+    .filter((entry): entry is OpencodeTodoEntry => entry.content.length > 0 && entry.status !== null);
+}
+
+function buildOpencodePlanMarkdown(entries: Array<{ content: string; status: string }>): string | null {
+  const normalizedEntries = normalizeOpencodeTodoEntries(entries);
 
   if (normalizedEntries.length === 0) {
     return null;
@@ -84,6 +100,8 @@ function buildOpencodePlanMarkdown(entries: Array<{ content: string; status: str
         ? " (completed)"
         : entry.status === "in_progress"
           ? " (in progress)"
+          : entry.status === "cancelled"
+            ? " (cancelled)"
           : "";
       return `${index + 1}. ${entry.content}${suffix}`;
     })
@@ -597,6 +615,7 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
     onQuestionRequest,
     onPermissionRequest,
     onPlanFileDetected,
+    onTodoUpdate,
   } = params;
   const toolStates = new Map<string, OpencodeToolState>();
   let output = "";
@@ -607,6 +626,8 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
   let planExitCompleted = false;
   let sawQuestionRequest = false;
   let currentSessionId = sessionId;
+  const runnerStartedAtMs = Date.now();
+  const todoGroupId = `opencode:${runnerStartedAtMs}`;
 
   const emitPlanIfReady = async () => {
     if (planEmitted) {
@@ -784,7 +805,20 @@ export async function runOpencodePlanModeViaAcp(params: Parameters<ChatAgentRunn
               await handleToolState(update);
               return;
             case "plan": {
-              planMarkdown = buildOpencodePlanMarkdown(update.entries);
+              const normalizedEntries = normalizeOpencodeTodoEntries(update.entries);
+              planMarkdown = buildOpencodePlanMarkdown(normalizedEntries);
+              if (normalizedEntries.length > 0) {
+                await onTodoUpdate?.({
+                  agent: "opencode",
+                  groupId: todoGroupId,
+                  explanation: null,
+                  items: normalizedEntries.map((entry, index) => ({
+                    id: `${todoGroupId}:${index}`,
+                    content: entry.content,
+                    status: entry.status,
+                  })),
+                });
+              }
               return;
             }
             default:

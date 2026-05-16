@@ -184,13 +184,26 @@ function buildCursorPrompt(params: {
   return `${instructions.join("\n")}\n\nUser request:\n${cleanPrompt}`;
 }
 
-function buildCursorPlanMarkdown(entries: Array<{ content: string; status: string }>): string | null {
-  const normalizedEntries = entries
+function normalizeCursorPlanEntries(entries: Array<{ content: string; status: string }>): Array<{
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}> {
+  return entries
     .map((entry) => ({
       content: entry.content.trim(),
       status: entry.status,
     }))
-    .filter((entry) => entry.content.length > 0);
+    .filter((entry): entry is {
+      content: string;
+      status: "pending" | "in_progress" | "completed";
+    } => (
+      entry.content.length > 0
+      && (entry.status === "pending" || entry.status === "in_progress" || entry.status === "completed")
+    ));
+}
+
+function buildCursorPlanMarkdown(entries: Array<{ content: string; status: string }>): string | null {
+  const normalizedEntries = normalizeCursorPlanEntries(entries);
 
   if (normalizedEntries.length === 0) {
     return null;
@@ -1078,6 +1091,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
   onQuestionRequest,
   onPermissionRequest,
   onPlanFileDetected,
+  onTodoUpdate,
 }) => {
   if (providerApiKey?.trim() || providerBaseUrl?.trim()) {
     throw new Error("Cursor uses the authenticated Cursor account over ACP and does not support custom provider base URLs or API keys.");
@@ -1096,6 +1110,7 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
   let planEmitted = false;
   let currentSessionId = sessionId;
   const runnerStartedAtMs = Date.now();
+  const todoGroupId = `cursor:${runnerStartedAtMs}`;
   let firstSessionUpdateType: SessionUpdate["sessionUpdate"] | null = null;
   const seenNonTextChunkTypes = new Set<string>();
 
@@ -1292,7 +1307,20 @@ export const runCursorWithStreaming: ChatAgentRunner = async ({
             await handleToolState(update);
             return;
           case "plan": {
-            planMarkdown = buildCursorPlanMarkdown(update.entries);
+            const normalizedEntries = normalizeCursorPlanEntries(update.entries);
+            planMarkdown = buildCursorPlanMarkdown(normalizedEntries);
+            if (normalizedEntries.length > 0) {
+              await onTodoUpdate?.({
+                agent: "cursor",
+                groupId: todoGroupId,
+                explanation: null,
+                items: normalizedEntries.map((entry, index) => ({
+                  id: `${todoGroupId}:${index}`,
+                  content: entry.content,
+                  status: entry.status,
+                })),
+              });
+            }
             return;
           }
           default:

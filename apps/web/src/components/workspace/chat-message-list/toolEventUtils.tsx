@@ -359,6 +359,10 @@ export function getTimelineItemKey(item: ChatTimelineItem): string {
       return `message:${item.message.id}`;
     case "plan-file-output":
       return `plan-file-output:${item.id}`;
+    case "todo-list":
+      return `todo-list:${item.id}`;
+    case "todo-progress":
+      return `todo-progress:${item.id}`;
     case "activity":
       return `activity:${item.messageId}`;
     case "tool":

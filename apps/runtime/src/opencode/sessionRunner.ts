@@ -7,7 +7,7 @@ import {
   type Permission as OpencodePermission,
   type ToolPart as OpencodeToolPart,
 } from "@opencode-ai/sdk";
-import { DEFAULT_CHAT_MODEL_BY_AGENT, type PermissionDecision } from "@codesymphony/shared-types";
+import { DEFAULT_CHAT_MODEL_BY_AGENT, type AgentTodoItem, type PermissionDecision } from "@codesymphony/shared-types";
 import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import { createServer } from "node:net";
 import type { Readable } from "node:stream";
@@ -99,7 +99,28 @@ type ActiveSubtaskEntry = {
   stopped: boolean;
 };
 
+type OpencodeTodoStatus = AgentTodoItem["status"];
+type OpencodeTodoEntry = {
+  content: string;
+  status: OpencodeTodoStatus;
+};
+
 ensureConfiguredOpencodeBinaryOnPath();
+
+function normalizeOpencodeTodoStatus(status: string): OpencodeTodoStatus | null {
+  return status === "pending" || status === "in_progress" || status === "completed" || status === "cancelled"
+    ? status
+    : null;
+}
+
+function normalizeOpencodeTodoEntries(entries: Array<{ content: string; status: string }>): OpencodeTodoEntry[] {
+  return entries
+    .map((entry) => ({
+      content: entry.content.trim(),
+      status: normalizeOpencodeTodoStatus(entry.status),
+    }))
+    .filter((entry): entry is OpencodeTodoEntry => entry.content.length > 0 && entry.status !== null);
+}
 
 function createAbortError(): Error {
   const error = new Error("Aborted");
@@ -647,6 +668,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   onQuestionRequest,
   onPermissionRequest,
   onPlanFileDetected,
+  onTodoUpdate,
   onSubagentStarted,
   onSubagentStopped,
 }) => {
@@ -681,6 +703,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
       onQuestionRequest,
       onPermissionRequest,
       onPlanFileDetected,
+      onTodoUpdate,
       onSubagentStarted,
       onSubagentStopped,
     });
@@ -732,6 +755,8 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
   let lastLifecycleActivityAtMs = Date.now();
   let lifecycleTimerPaused = false;
+  const runnerStartedAtMs = Date.now();
+  const todoGroupId = `opencode:${runnerStartedAtMs}`;
 
   const existingMessageIds = new Set<string>();
   const assistantMessageIds = new Set<string>();
@@ -1138,6 +1163,26 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
 
     if (event.type === "permission.updated" || event.type === "permission.asked") {
       await processPermissionEvent(event.properties);
+      return;
+    }
+
+    if (event.type === "todo.updated") {
+      const normalizedTodos = normalizeOpencodeTodoEntries(event.properties.todos);
+      if (normalizedTodos.length === 0) {
+        return;
+      }
+
+      sawAssistantActivity = true;
+      await onTodoUpdate?.({
+        agent: "opencode",
+        groupId: todoGroupId,
+        explanation: null,
+        items: normalizedTodos.map((todo, index) => ({
+          id: `${todoGroupId}:${index}`,
+          content: todo.content,
+          status: todo.status,
+        })),
+      });
       return;
     }
 

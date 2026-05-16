@@ -11,6 +11,7 @@ const EVENT_TYPES = [
   "question.answered",
   "question.dismissed",
   "plan.created",
+  "todo.updated",
   "plan.approved",
   "plan.dismissed",
   "plan.revision_requested",

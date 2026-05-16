@@ -227,6 +227,8 @@ function getTimelineRowClassName(item: ChatTimelineItem, isFirst: boolean): stri
     (item.kind === "activity" && item.defaultExpanded) ||
     (item.kind === "subagent-activity" && item.status === "running") ||
     (item.kind === "explore-activity" && item.status === "running") ||
+    (item.kind === "todo-list" && item.status === "running") ||
+    item.kind === "todo-progress" ||
     (item.kind === "tool" && item.status === "running");
 
   return `mx-auto max-w-3xl px-3 ${isFirst ? "pt-3 " : ""}${isCompactRunningRow ? "pb-2" : "pb-4"}`;

@@ -1,8 +1,14 @@
 import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from "react";
-import type { ChatAttachment, ChatEvent, ChatMessage } from "@codesymphony/shared-types";
+import type { AgentTodoItem, ChatAttachment, ChatEvent, ChatMessage, CliAgent } from "@codesymphony/shared-types";
 import type { SubagentStep } from "../../../pages/workspace/types";
 
 export type AssistantRenderHint = "markdown" | "raw-file" | "raw-fallback" | "diff";
+
+export type TimelineTodoStatus = AgentTodoItem["status"] | "cancelled";
+
+export type TimelineTodoItem = Omit<AgentTodoItem, "status"> & {
+  status: TimelineTodoStatus;
+};
 
 type ReadFileTimelineEntry = {
   label: string;
@@ -38,6 +44,27 @@ export type ChatTimelineItem =
     messageId: string;
     content: string;
     filePath: string;
+    createdAt: string;
+  }
+  | {
+    kind: "todo-list";
+    id: string;
+    messageId: string;
+    agent: CliAgent;
+    groupId: string;
+    explanation: string | null;
+    status: "running" | "completed";
+    items: TimelineTodoItem[];
+    createdAt: string;
+  }
+  | {
+    kind: "todo-progress";
+    id: string;
+    messageId: string;
+    agent: CliAgent;
+    groupId: string;
+    todoId: string | null;
+    content: string;
     createdAt: string;
   }
   | {
