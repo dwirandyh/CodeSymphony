@@ -1,6 +1,10 @@
 import { useCallback, useRef } from "react";
 import type { Repository } from "@codesymphony/shared-types";
 import { playCompletionSound } from "../../../lib/completionSounds";
+import {
+  getDesktopNotificationPermission,
+  sendDesktopNotification,
+} from "../../../lib/desktopNotifications";
 import type { GeneralSettings } from "../../../lib/generalSettings";
 
 export type ThreadCompletionAttentionEvent = {
@@ -79,33 +83,32 @@ function buildNotificationCopy(params: {
   };
 }
 
-function showDesktopNotification(params: {
+async function showDesktopNotification(params: {
   generalSettings: GeneralSettings;
   repositories: Repository[];
   event: ThreadCompletionAttentionEvent;
-}) {
-  if (!params.generalSettings.desktopNotificationsEnabled || typeof Notification === "undefined") {
+}): Promise<void> {
+  if (!params.generalSettings.desktopNotificationsEnabled) {
     return;
   }
 
-  if (Notification.permission !== "granted") {
+  const permission = await getDesktopNotificationPermission();
+  if (permission !== "granted") {
     return;
   }
 
   const notificationCopy = buildNotificationCopy(params);
 
   try {
-    const notification = new Notification(notificationCopy.title, {
+    await sendDesktopNotification({
+      title: notificationCopy.title,
       body: notificationCopy.body,
-      tag: `codesymphony:${params.event.threadId}:${params.event.type}`,
-      silent: true,
+      onClick: () => {
+        if (typeof window !== "undefined" && typeof window.focus === "function") {
+          window.focus();
+        }
+      },
     });
-
-    notification.onclick = () => {
-      if (typeof window !== "undefined" && typeof window.focus === "function") {
-        window.focus();
-      }
-    };
   } catch {
     // Best-effort only. Ignore browser notification failures.
   }
@@ -140,11 +143,14 @@ export function useCompletionAttention(params: UseCompletionAttentionParams) {
     }
 
     if (shouldPlaySound) {
-      void playCompletionSound(latestParams.generalSettings.completionSound);
+      void playCompletionSound(
+        latestParams.generalSettings.completionSound,
+        latestParams.generalSettings.completionSoundVolume,
+      );
     }
 
     if (shouldShowNotification) {
-      showDesktopNotification({
+      void showDesktopNotification({
         generalSettings: latestParams.generalSettings,
         repositories: latestParams.repositories,
         event,

@@ -15,6 +15,8 @@ tauri = { version = "2.2.0", features = ["devtools"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
+notify-rust = "4.11"
+tauri-plugin-notification = "2.2.0"
 tauri-plugin-opener = "2.2.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Loader2, Pencil, Play, Plus, Trash2, X } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Slider } from "../ui/slider";
 import { api } from "../../lib/api";
+import {
+  getDesktopNotificationPermission,
+  openDesktopNotificationSettings,
+  requestDesktopNotificationPermission,
+  supportsDesktopNotifications,
+  usesSystemManagedDesktopNotificationPermissions,
+} from "../../lib/desktopNotifications";
 import { isTauriDesktop } from "../../lib/openExternalUrl";
 import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
@@ -29,6 +37,8 @@ import {
   type AgentDefaultSelection,
 } from "../../pages/workspace/agentDefaults";
 import {
+  COMPLETION_SOUND_VOLUME_MAX,
+  COMPLETION_SOUND_VOLUME_MIN,
   getModifierEnterHint,
   getModifierEnterLabel,
   getShiftEnterHint,
@@ -478,6 +488,9 @@ function isMacDesktopShell(): boolean {
   return /mac/i.test(platform) || /mac os x/i.test(navigator.userAgent);
 }
 
+const SYSTEM_MANAGED_DESKTOP_NOTIFICATIONS_MESSAGE =
+  "CodeSymphony uses native desktop notifications. If alerts do not appear, allow CodeSymphony in your OS notification settings.";
+
 export function SettingsDialog({
   open,
   onClose,
@@ -494,6 +507,7 @@ export function SettingsDialog({
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SettingsTab>("general");
   const [desktopNotificationsMessage, setDesktopNotificationsMessage] = useState<string | null>(null);
+  const [openingDesktopNotificationSettings, setOpeningDesktopNotificationSettings] = useState(false);
   const [testingCompletionSound, setTestingCompletionSound] = useState(false);
 
   // ── Workspace tab state ──
@@ -710,16 +724,44 @@ export function SettingsDialog({
   }, [open]);
 
   useEffect(() => {
-    if (!open || typeof Notification === "undefined") {
+    if (!open || !generalSettings.desktopNotificationsEnabled) {
+      setDesktopNotificationsMessage(null);
       return;
     }
 
-    if (generalSettings.desktopNotificationsEnabled && Notification.permission === "denied") {
-      setDesktopNotificationsMessage("Desktop notifications are blocked by the browser for this app.");
+    if (usesSystemManagedDesktopNotificationPermissions()) {
+      setDesktopNotificationsMessage(SYSTEM_MANAGED_DESKTOP_NOTIFICATIONS_MESSAGE);
       return;
     }
 
-    setDesktopNotificationsMessage(null);
+    if (!supportsDesktopNotifications()) {
+      setDesktopNotificationsMessage("This app does not support desktop notifications.");
+      return;
+    }
+
+    let cancelled = false;
+    void getDesktopNotificationPermission()
+      .then((permission) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (permission === "granted") {
+          setDesktopNotificationsMessage(null);
+          return;
+        }
+
+        setDesktopNotificationsMessage("Desktop notifications are not currently allowed for this app.");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDesktopNotificationsMessage("This app could not verify desktop notification permission.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [generalSettings.desktopNotificationsEnabled, open]);
 
   useEffect(() => {
@@ -948,20 +990,21 @@ export function SettingsDialog({
       return;
     }
 
-    if (typeof Notification === "undefined") {
-      setDesktopNotificationsMessage("This browser does not support desktop notifications.");
+    if (usesSystemManagedDesktopNotificationPermissions()) {
+      setDesktopNotificationsMessage(SYSTEM_MANAGED_DESKTOP_NOTIFICATIONS_MESSAGE);
+      onGeneralSettingsChange({
+        ...generalSettings,
+        desktopNotificationsEnabled: true,
+      });
       return;
     }
 
-    let permission = Notification.permission;
-    if (permission === "default") {
-      try {
-        permission = await Notification.requestPermission();
-      } catch {
-        permission = "denied";
-      }
+    if (!supportsDesktopNotifications()) {
+      setDesktopNotificationsMessage("This app does not support desktop notifications.");
+      return;
     }
 
+    const permission = await requestDesktopNotificationPermission();
     if (permission !== "granted") {
       setDesktopNotificationsMessage("Desktop notifications remain disabled because permission was not granted.");
       onGeneralSettingsChange({
@@ -978,6 +1021,18 @@ export function SettingsDialog({
     });
   }, [generalSettings, onGeneralSettingsChange]);
 
+  const handleOpenDesktopNotificationSettings = useCallback(async () => {
+    setOpeningDesktopNotificationSettings(true);
+    try {
+      const opened = await openDesktopNotificationSettings();
+      if (!opened) {
+        setDesktopNotificationsMessage("CodeSymphony could not open macOS Notification Settings automatically.");
+      }
+    } finally {
+      setOpeningDesktopNotificationSettings(false);
+    }
+  }, []);
+
   const handleTestCompletionSound = useCallback(async () => {
     if (generalSettings.completionSound === "off") {
       return;
@@ -985,11 +1040,11 @@ export function SettingsDialog({
 
     setTestingCompletionSound(true);
     try {
-      await playCompletionSound(generalSettings.completionSound);
+      await playCompletionSound(generalSettings.completionSound, generalSettings.completionSoundVolume);
     } finally {
       setTestingCompletionSound(false);
     }
-  }, [generalSettings.completionSound]);
+  }, [generalSettings.completionSound, generalSettings.completionSoundVolume]);
 
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId) ?? null;
   const macDesktopShell = isMacDesktopShell();
@@ -1139,22 +1194,35 @@ export function SettingsDialog({
                     hint={desktopNotificationsMessage ?? completionAttentionHint}
                     descriptionId="general-desktop-notifications-description"
                     control={(
-                      <PreferenceToggle
-                        checked={generalSettings.desktopNotificationsEnabled}
-                        ariaLabel="Desktop notifications"
-                        onCheckedChange={(checked) => {
-                          void handleDesktopNotificationsToggle(checked);
-                        }}
-                      />
+                      <div className="flex flex-col items-end gap-2">
+                        <PreferenceToggle
+                          checked={generalSettings.desktopNotificationsEnabled}
+                          ariaLabel="Desktop notifications"
+                          onCheckedChange={(checked) => {
+                            void handleDesktopNotificationsToggle(checked);
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-[11px] text-muted-foreground"
+                          onClick={() => {
+                            void handleOpenDesktopNotificationSettings();
+                          }}
+                          disabled={openingDesktopNotificationSettings}
+                        >
+                          {openingDesktopNotificationSettings ? "Opening…" : "Open Notification Settings"}
+                        </Button>
+                      </div>
                     )}
                   />
 
-                  <GeneralPreferenceRow
+                  <SettingsSection
                     title="Completion sound"
                     description="Choose what plays when AI finishes working in a chat."
-                    hint={completionAttentionHint}
                     descriptionId="general-completion-sound-description"
-                    control={(
+                    action={(
                       <div className="flex items-center gap-2.5">
                         <SettingsSelect
                           ariaLabel="Completion sound"
@@ -1178,18 +1246,45 @@ export function SettingsDialog({
                         <Button
                           type="button"
                           variant="ghost"
-                          size="sm"
-                          className="h-auto px-0 text-[13px]"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          aria-label="Test completion sound"
+                          title="Play completion sound"
                           disabled={generalSettings.completionSound === "off" || testingCompletionSound}
                           onClick={() => {
                             void handleTestCompletionSound();
                           }}
                         >
-                          Test
+                          {testingCompletionSound ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Play className="h-3.5 w-3.5 fill-current" />
+                          )}
                         </Button>
                       </div>
                     )}
-                  />
+                    actionClassName="md:max-w-[250px]"
+                  >
+                    <div className="flex w-full items-center gap-3 md:ml-auto md:w-[250px]">
+                      <Slider
+                        aria-label="Completion sound volume"
+                        aria-describedby="general-completion-sound-description"
+                        min={COMPLETION_SOUND_VOLUME_MIN}
+                        max={COMPLETION_SOUND_VOLUME_MAX}
+                        step={5}
+                        disabled={generalSettings.completionSound === "off"}
+                        value={[generalSettings.completionSoundVolume]}
+                        onValueChange={(values) => onGeneralSettingsChange({
+                          ...generalSettings,
+                          completionSoundVolume: values[0] ?? generalSettings.completionSoundVolume,
+                        })}
+                        className="flex-1"
+                      />
+                      <span className="w-11 text-right text-[13px] font-medium tabular-nums text-foreground">
+                        {generalSettings.completionSoundVolume}%
+                      </span>
+                    </div>
+                  </SettingsSection>
 
                   <GeneralPreferenceRow
                     title="Auto-convert long text"

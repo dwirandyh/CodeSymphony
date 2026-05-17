@@ -1,4 +1,7 @@
-import type { CompletionSound } from "./generalSettings";
+import {
+  DEFAULT_COMPLETION_SOUND_VOLUME,
+  type CompletionSound,
+} from "./generalSettings";
 
 export type CompletionSoundOption = {
   value: CompletionSound;
@@ -8,9 +11,9 @@ export type CompletionSoundOption = {
 type PlayableCompletionSound = Exclude<CompletionSound, "off">;
 
 const SOUND_URLS: Record<PlayableCompletionSound, string> = {
-  chime: "/sounds/chime.wav",
-  ding: "/sounds/ding.wav",
-  pop: "/sounds/pop.wav",
+  chime: "/sounds/chime.mp3",
+  ding: "/sounds/ding.mp3",
+  pop: "/sounds/pop.mp3",
 };
 
 export const COMPLETION_SOUND_OPTIONS: readonly CompletionSoundOption[] = [
@@ -20,46 +23,126 @@ export const COMPLETION_SOUND_OPTIONS: readonly CompletionSoundOption[] = [
   { value: "pop", label: "Pop" },
 ];
 
-const audioCache = new Map<PlayableCompletionSound, HTMLAudioElement>();
+const audioBufferCache = new Map<PlayableCompletionSound, Promise<AudioBuffer | null>>();
+const activePlaybackCache = new Map<PlayableCompletionSound, AudioBufferSourceNode>();
+let sharedAudioContext: AudioContext | null = null;
 
-function getAudioElement(sound: PlayableCompletionSound): HTMLAudioElement | null {
-  if (typeof Audio === "undefined") {
+function getAudioContext(): AudioContext | null {
+  if (typeof window === "undefined") {
     return null;
   }
 
-  const existing = audioCache.get(sound);
+  if (sharedAudioContext) {
+    return sharedAudioContext;
+  }
+
+  const AudioContextCtor = window.AudioContext
+    ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) {
+    return null;
+  }
+
+  sharedAudioContext = new AudioContextCtor();
+  return sharedAudioContext;
+}
+
+function cleanupPlayback(sound: PlayableCompletionSound, source: AudioBufferSourceNode, gainNode: GainNode): void {
+  if (activePlaybackCache.get(sound) === source) {
+    activePlaybackCache.delete(sound);
+  }
+
+  try {
+    source.disconnect();
+  } catch {
+    // Ignore disconnect failures during cleanup.
+  }
+
+  try {
+    gainNode.disconnect();
+  } catch {
+    // Ignore disconnect failures during cleanup.
+  }
+}
+
+function stopCompletionSound(sound: PlayableCompletionSound): void {
+  const activePlayback = activePlaybackCache.get(sound);
+  if (!activePlayback) {
+    return;
+  }
+
+  activePlaybackCache.delete(sound);
+
+  try {
+    activePlayback.stop();
+  } catch {
+    // Ignore stop failures when the source already ended.
+  }
+}
+
+async function loadAudioBuffer(sound: PlayableCompletionSound, audioContext: AudioContext): Promise<AudioBuffer | null> {
+  const existing = audioBufferCache.get(sound);
   if (existing) {
     return existing;
   }
 
-  const audio = new Audio(SOUND_URLS[sound]);
-  audio.preload = "auto";
-  audioCache.set(sound, audio);
-  return audio;
+  const nextBufferPromise = fetch(SOUND_URLS[sound])
+    .then(async (response) => {
+      if (!response.ok) {
+        return null;
+      }
+
+      const audioData = await response.arrayBuffer();
+      return audioContext.decodeAudioData(audioData);
+    })
+    .catch(() => null);
+
+  audioBufferCache.set(sound, nextBufferPromise);
+  return nextBufferPromise;
 }
 
-export async function playCompletionSound(sound: CompletionSound): Promise<boolean> {
+export async function playCompletionSound(
+  sound: CompletionSound,
+  volume = DEFAULT_COMPLETION_SOUND_VOLUME,
+): Promise<boolean> {
   if (sound === "off") {
     return false;
   }
 
-  const audio = getAudioElement(sound);
-  if (!audio) {
+  const audioContext = getAudioContext();
+  if (!audioContext) {
     return false;
   }
 
-  audio.pause();
   try {
-    audio.currentTime = 0;
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
   } catch {
-    // Ignore media reset failures and attempt playback anyway.
+    // Ignore resume failures and attempt playback anyway.
+  }
+
+  const buffer = await loadAudioBuffer(sound, audioContext);
+  if (!buffer) {
+    return false;
   }
 
   try {
-    const playResult = audio.play();
-    if (playResult && typeof playResult.then === "function") {
-      await playResult;
-    }
+    stopCompletionSound(sound);
+
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+
+    const gainNode = audioContext.createGain();
+    gainNode.gain.value = Math.max(0, volume) / 100;
+
+    source.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    source.onended = () => {
+      cleanupPlayback(sound, source, gainNode);
+    };
+
+    activePlaybackCache.set(sound, source);
+    source.start(0);
     return true;
   } catch {
     return false;
@@ -67,12 +150,7 @@ export async function playCompletionSound(sound: CompletionSound): Promise<boole
 }
 
 export function stopCompletionSoundPlayback(): void {
-  for (const audio of audioCache.values()) {
-    audio.pause();
-    try {
-      audio.currentTime = 0;
-    } catch {
-      // Ignore media reset failures during cleanup.
-    }
+  for (const sound of activePlaybackCache.keys()) {
+    stopCompletionSound(sound);
   }
 }

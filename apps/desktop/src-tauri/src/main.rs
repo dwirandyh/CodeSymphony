@@ -893,6 +893,56 @@ fn collect_resource_monitor_desktop_metrics(
     })
 }
 
+#[tauri::command]
+fn send_native_desktop_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    let identifier = app.config().identifier.clone();
+    let mut notification = notify_rust::Notification::new();
+    notification.summary(&title);
+    notification.body(&body);
+    notification.auto_icon();
+
+    #[cfg(target_os = "macos")]
+    notify_rust::set_application(&identifier)
+        .map_err(|error| format!("failed to set notification application: {error}"))?;
+
+    #[cfg(windows)]
+    notification.app_id(&identifier);
+
+    notification
+        .show()
+        .map(|_| ())
+        .map_err(|error| format!("failed to show desktop notification: {error}"))
+}
+
+#[tauri::command]
+fn open_native_notification_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        const NOTIFICATION_SETTINGS_URLS: [&str; 2] = [
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.codesymphony.app",
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+        ];
+
+        for url in NOTIFICATION_SETTINGS_URLS {
+            match Command::new("open").arg(url).status() {
+                Ok(status) if status.success() => return Ok(()),
+                Ok(_) | Err(_) => continue,
+            }
+        }
+
+        return Err("failed to open macOS Notification Settings".to_string());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("native notification settings are only supported on macOS".to_string())
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn macos_traffic_light_timestamp_ms() -> u128 {
     SystemTime::now()
@@ -1239,6 +1289,7 @@ fn main() {
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(true)
@@ -1246,7 +1297,9 @@ fn main() {
         )
         .append_invoke_initialization_script(desktop_runtime_init_script(runtime_port))
         .invoke_handler(tauri::generate_handler![
-            collect_resource_monitor_desktop_metrics
+            collect_resource_monitor_desktop_metrics,
+            send_native_desktop_notification,
+            open_native_notification_settings
         ])
         .setup(move |app| {
             app.manage(RuntimeProcess(Mutex::new(None)));

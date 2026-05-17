@@ -1,5 +1,8 @@
 export const GENERAL_SETTINGS_STORAGE_KEY = "codesymphony:workspace:general-settings";
 export const AUTO_CONVERT_LONG_TEXT_THRESHOLD = 5000;
+export const COMPLETION_SOUND_VOLUME_MIN = 0;
+export const COMPLETION_SOUND_VOLUME_MAX = 200;
+export const DEFAULT_COMPLETION_SOUND_VOLUME = 140;
 
 export type SendMessagesWith = "enter" | "mod_enter";
 export type CompletionSound = "off" | "chime" | "ding" | "pop";
@@ -8,6 +11,7 @@ export type GeneralSettings = {
   sendMessagesWith: SendMessagesWith;
   desktopNotificationsEnabled: boolean;
   completionSound: CompletionSound;
+  completionSoundVolume: number;
   autoConvertLongTextEnabled: boolean;
 };
 
@@ -15,6 +19,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   sendMessagesWith: "enter",
   desktopNotificationsEnabled: false,
   completionSound: "off",
+  completionSoundVolume: DEFAULT_COMPLETION_SOUND_VOLUME,
   autoConvertLongTextEnabled: true,
 };
 
@@ -24,6 +29,17 @@ function normalizeSendMessagesWith(value: unknown): SendMessagesWith {
 
 function normalizeCompletionSound(value: unknown): CompletionSound {
   return value === "chime" || value === "ding" || value === "pop" ? value : "off";
+}
+
+function normalizeCompletionSoundVolume(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_COMPLETION_SOUND_VOLUME;
+  }
+
+  return Math.max(
+    COMPLETION_SOUND_VOLUME_MIN,
+    Math.min(COMPLETION_SOUND_VOLUME_MAX, Math.round(value)),
+  );
 }
 
 export function normalizeGeneralSettings(input: unknown): GeneralSettings {
@@ -37,6 +53,7 @@ export function normalizeGeneralSettings(input: unknown): GeneralSettings {
     sendMessagesWith: normalizeSendMessagesWith(record.sendMessagesWith),
     desktopNotificationsEnabled: record.desktopNotificationsEnabled === true,
     completionSound: normalizeCompletionSound(record.completionSound),
+    completionSoundVolume: normalizeCompletionSoundVolume(record.completionSoundVolume),
     autoConvertLongTextEnabled: record.autoConvertLongTextEnabled !== false,
   };
 }

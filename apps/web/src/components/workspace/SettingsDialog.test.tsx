@@ -66,6 +66,13 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (typeof globalThis.ResizeObserver === "undefined") {
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
   if (!HTMLElement.prototype.hasPointerCapture) {
     HTMLElement.prototype.hasPointerCapture = () => false;
   }
@@ -410,6 +417,50 @@ describe("SettingsDialog", () => {
     expect(onGeneralSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
       sendMessagesWith: "mod_enter",
     }));
+  });
+
+  it("enables desktop notifications directly in the desktop shell", async () => {
+    const onGeneralSettingsChange = vi.fn();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {},
+      configurable: true,
+    });
+    Object.defineProperty(window.navigator, "userAgentData", {
+      value: { platform: "macOS" },
+      configurable: true,
+    });
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
+            onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={onGeneralSettingsChange}
+          />
+        </QueryClientProvider>
+      );
+    });
+    await openGeneralTab();
+
+    const toggle = document.body.querySelector('[aria-label="Desktop notifications"]');
+    if (!(toggle instanceof HTMLButtonElement)) {
+      throw new Error("Desktop notifications toggle not found");
+    }
+
+    await act(async () => {
+      toggle.click();
+    });
+    await flushEffects();
+
+    expect(onGeneralSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+      desktopNotificationsEnabled: true,
+    }));
+    expect(document.body.textContent).toContain("OS notification settings");
   });
 
   it("renders Default Agent controls in the Models tab", async () => {
