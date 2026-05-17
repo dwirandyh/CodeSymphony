@@ -38,6 +38,12 @@ import {
   generateAttachmentId,
   generateClipboardFilename,
 } from "../../../lib/attachments";
+import {
+  AUTO_CONVERT_LONG_TEXT_THRESHOLD,
+  DEFAULT_GENERAL_SETTINGS,
+  hasPrimarySubmitModifier,
+  type SendMessagesWith,
+} from "../../../lib/generalSettings";
 import { cn } from "../../../lib/utils";
 import { AttachmentPreviewPanel } from "../chat-message-list/AttachmentComponents";
 import { QueuedMessageList } from "../QueuedMessageList";
@@ -97,6 +103,8 @@ type ComposerProps = {
   threadKind?: ChatThreadKind | null;
   threadRunning?: boolean;
   permissionMode: ChatThreadPermissionMode;
+  sendMessagesWith?: SendMessagesWith;
+  autoConvertLongTextEnabled?: boolean;
   hasMessages: boolean;
   queuedMessages?: ChatQueuedMessage[];
   onSubmitMessage: (payload: ComposerSubmitPayload) => Promise<boolean>;
@@ -249,6 +257,8 @@ function ComposerContent({
   threadKind,
   threadRunning = false,
   permissionMode,
+  sendMessagesWith = DEFAULT_GENERAL_SETTINGS.sendMessagesWith,
+  autoConvertLongTextEnabled = DEFAULT_GENERAL_SETTINGS.autoConvertLongTextEnabled,
   hasMessages,
   queuedMessages = [],
   onSubmitMessage,
@@ -574,9 +584,9 @@ function ComposerContent({
 
     afterChipHTMLRef.current = null;
 
-    if (inserted > 300) {
+    if (autoConvertLongTextEnabled && inserted > AUTO_CONVERT_LONG_TEXT_THRESHOLD) {
       const pastedText = currentText.slice(prevLen).trim() || currentText.trim();
-      if (pastedText.length > 300) {
+      if (pastedText.length > AUTO_CONVERT_LONG_TEXT_THRESHOLD) {
         const filename = generateClipboardFilename(pastedText);
         const att: PendingAttachment = {
           id: generateAttachmentId(),
@@ -618,7 +628,7 @@ function ComposerContent({
     syncValueFromEditor();
     detectMention();
     detectSlashCommand();
-  }, [syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
+  }, [autoConvertLongTextEnabled, syncValueFromEditor, applyAttachmentsChange, detectMention, detectSlashCommand]);
 
   const buildFinalContent = useCallback((): string => {
     const editor = editorRef.current;
@@ -820,7 +830,7 @@ function ComposerContent({
         return;
       }
 
-      if (text.length > 300) {
+      if (autoConvertLongTextEnabled && text.length > AUTO_CONVERT_LONG_TEXT_THRESHOLD) {
         const editor = editorRef.current;
         const preHTML = editor?.innerHTML ?? "";
 
@@ -900,7 +910,7 @@ function ComposerContent({
       prevContentLenRef.current = (editorRef.current?.textContent ?? "").length;
       lastStableHTMLRef.current = editorRef.current?.innerHTML ?? "";
     },
-    [syncValueFromEditor, applyAttachmentsChange, handlePasteImages],
+    [autoConvertLongTextEnabled, syncValueFromEditor, applyAttachmentsChange, handlePasteImages],
   );
 
   const handleKeyDown = useCallback(
@@ -1025,7 +1035,7 @@ function ComposerContent({
         return;
       }
 
-      if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+      if (event.key !== "Enter" || event.nativeEvent.isComposing) {
         return;
       }
 
@@ -1037,10 +1047,21 @@ function ComposerContent({
         return;
       }
 
+      const submitWithModifier = sendMessagesWith === "mod_enter";
+      const hasSubmitModifier = hasPrimarySubmitModifier(event);
+
+      if (submitWithModifier && !hasSubmitModifier) {
+        return;
+      }
+
+      if (!submitWithModifier && event.shiftKey) {
+        return;
+      }
+
       event.preventDefault();
       handleSubmit();
     },
-    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, syncValueFromEditor, applyAttachmentsChange],
+    [mention.active, suggestions, selectedIndex, selectSuggestion, closeMention, slashCommand.active, slashCommandSuggestions, selectedSlashCommandIndex, selectSlashCommandSuggestion, closeSlashCommand, isPlan, modeLocked, onModeChange, showStop, isMobile, handleSubmit, sendMessagesWith, syncValueFromEditor, applyAttachmentsChange],
   );
 
   useEffect(() => {

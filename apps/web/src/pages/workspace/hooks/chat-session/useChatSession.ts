@@ -2286,6 +2286,7 @@ export function useChatSession(
     renderDecisionByMessageIdRef,
     onError,
     onBranchRenamed,
+    onCompletionAttentionEvent: options?.onCompletionAttentionEvent,
   });
 
   useEffect(() => {

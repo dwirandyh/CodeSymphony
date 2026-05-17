@@ -13,6 +13,7 @@ import { buildRepositoryWorktreeIndex } from "../../../collections/worktrees";
 import { patchThreadInCollection, refetchThreadsCollection } from "../../../collections/threads";
 import { refetchGitStatusCollection } from "../../../collections/gitStatus";
 import { useThreadsByWorktreeIds, type ThreadsByWorktreeSnapshot } from "../../../hooks/queries/useThreads";
+import type { ThreadCompletionAttentionEvent } from "./useCompletionAttention";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
@@ -117,6 +118,7 @@ export function useBackgroundWorktreeStatusStream(
   _selectedWorktreeId: string | null,
   selectedThreadId: string | null,
   threadSnapshot?: ThreadsByWorktreeSnapshot,
+  onCompletionAttentionEvent?: (event: ThreadCompletionAttentionEvent) => void,
 ) {
   const queryClient = useQueryClient();
   const streamsRef = useRef<Map<string, ThreadStreamState>>(new Map());
@@ -244,6 +246,13 @@ export function useBackgroundWorktreeStatusStream(
           }
 
           if (TERMINAL_EVENT_TYPES.has(payload.type)) {
+            onCompletionAttentionEvent?.({
+              eventId: payload.id,
+              threadId: thread.id,
+              worktreeId,
+              type: payload.type === "chat.failed" ? "chat.failed" : "chat.completed",
+              threadTitle: nextTitle ?? thread.title,
+            });
             patchThreadListCache({
               queryClient,
               worktreeId,

@@ -53,6 +53,7 @@ import { computeAssistantDeltaSuffix } from "./messageEventMerge";
 import { applyThreadModeUpdate, applyThreadTitleUpdate } from "./snapshotSeed";
 import { SNAPSHOT_INVALIDATION_EVENT_TYPES } from "../snapshotInvalidationEventTypes";
 import { reduceStatusSnapshotWithEvent } from "../threadStatusSnapshotCache";
+import type { ThreadCompletionAttentionEvent } from "../useCompletionAttention";
 
 const LIVE_ACTIVITY_EVENT_TYPES = new Set<ChatEvent["type"]>([
   "message.delta",
@@ -110,6 +111,7 @@ interface UseThreadEventStreamParams {
   renderDecisionByMessageIdRef: MutableRefObject<Map<string, string>>;
   onError: (msg: string | null) => void;
   onBranchRenamed?: (worktreeId: string, newBranch: string) => void;
+  onCompletionAttentionEvent?: (event: ThreadCompletionAttentionEvent) => void;
 }
 
 function syncThreadStreamCursorFromSnapshot(threadId: string, snapshot: ChatTimelineSnapshot) {
@@ -317,6 +319,7 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
     renderDecisionByMessageIdRef,
     onError,
     onBranchRenamed,
+    onCompletionAttentionEvent,
   } = params;
 
   const queryClient = useQueryClient();
@@ -668,6 +671,18 @@ export function useThreadEventStream(params: UseThreadEventStreamParams) {
       }
 
       if (payload.type === "chat.completed" || payload.type === "chat.failed") {
+        const completedThreadTitle = payload.type === "chat.completed"
+          ? payloadStringOrNull(payload.payload.threadTitle)
+          : null;
+        if (selectedWorktreeId) {
+          onCompletionAttentionEvent?.({
+            eventId: payload.id,
+            threadId: selectedThreadId,
+            worktreeId: selectedWorktreeId,
+            type: payload.type,
+            threadTitle: completedThreadTitle,
+          });
+        }
         void queryClient.invalidateQueries({ queryKey: queryKeys.threads.timelineSnapshot(selectedThreadId) });
         setThreads((current) => {
           const index = current.findIndex((thread) => thread.id === selectedThreadId);

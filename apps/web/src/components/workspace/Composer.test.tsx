@@ -476,6 +476,46 @@ describe("Composer", () => {
     });
   });
 
+  it("submits message on Ctrl+Enter when configured to require the modifier", async () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "Linux",
+      configurable: true,
+    });
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage, sendMessagesWith: "mod_enter" });
+    const editor = getEditor();
+    typeInEditor(editor, "hello");
+    await flushMicrotasks();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledWith({
+      content: "hello",
+      mode: "default",
+      attachments: [],
+    });
+  });
+
+  it("does not submit on plain Enter when Ctrl+Enter is required", async () => {
+    Object.defineProperty(window.navigator, "platform", {
+      value: "Linux",
+      configurable: true,
+    });
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({ onSubmitMessage, sendMessagesWith: "mod_enter" });
+    const editor = getEditor();
+    typeInEditor(editor, "hello");
+    await flushMicrotasks();
+
+    act(() => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onSubmitMessage).not.toHaveBeenCalled();
+  });
+
   it("prioritizes Stop run over Queue draft while the current submit is still sending", async () => {
     const onQueueDraft = vi.fn().mockResolvedValue(true);
     renderComposer({ onQueueDraft });
@@ -1351,14 +1391,14 @@ describe("Composer", () => {
     renderComposer({ onSubmitMessage });
 
     const editor = getEditor();
-    const longText = "alpha\nbeta\ngamma\n".repeat(120);
+    const longText = "alpha\nbeta\ngamma\n".repeat(320);
 
     act(() => {
       dispatchPasteWithText(editor, longText);
     });
     await flushMicrotasks();
 
-    expect(editor.textContent).toContain("Paste text 360 lines");
+    expect(editor.textContent).toContain("Paste text 960 lines");
 
     await act(async () => {
       editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -1373,6 +1413,34 @@ describe("Composer", () => {
     expect(payload.attachments).toHaveLength(1);
     expect(payload.attachments[0].source).toBe("clipboard_text");
     expect(payload.attachments[0].content).toBe(longText);
+  });
+
+  it("keeps very long inline text out of attachment conversion when auto-convert is disabled", async () => {
+    const onSubmitMessage = vi.fn().mockResolvedValue(true);
+    renderComposer({
+      onSubmitMessage,
+      autoConvertLongTextEnabled: false,
+    });
+
+    const editor = getEditor();
+    const longText = "alpha\nbeta\ngamma\n".repeat(320);
+
+    typeInEditor(editor, longText);
+    await flushMicrotasks();
+
+    expect(editor.querySelector("[data-attachment-id]")).toBeNull();
+
+    await act(async () => {
+      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onSubmitMessage).toHaveBeenCalledTimes(1);
+    const [payload] = onSubmitMessage.mock.calls[0] as [{
+      content: string;
+      attachments: Array<{ source: string }>;
+    }];
+    expect(payload.attachments).toHaveLength(0);
+    expect(payload.content).toContain("alpha");
   });
 
   it("handles native Tauri drag/drop attachments in desktop mode", async () => {
@@ -1532,7 +1600,7 @@ describe("Composer", () => {
     renderComposer();
 
     const editor = getEditor();
-    const longText = "first line\nsecond line\nthird line\n".repeat(120);
+    const longText = "first line\nsecond line\nthird line\n".repeat(320);
 
     act(() => {
       dispatchPasteWithText(editor, longText);
@@ -1541,13 +1609,13 @@ describe("Composer", () => {
 
     const attachmentChip = editor.querySelector("[data-attachment-id]") as HTMLElement | null;
     expect(attachmentChip).toBeTruthy();
-    expect(editor.textContent).toContain("Paste text 360 lines");
+    expect(editor.textContent).toContain("Paste text 960 lines");
 
     act(() => {
       attachmentChip?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(document.body.textContent).toContain("Paste text 360 lines");
+    expect(document.body.textContent).toContain("Paste text 960 lines");
     expect(document.body.textContent).toContain("first line");
     expect(document.body.textContent).toContain("pasted-");
   });

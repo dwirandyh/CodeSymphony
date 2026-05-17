@@ -39,6 +39,7 @@ import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { ScrollArea } from "../../components/ui/scroll-area";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
 import { api } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { queryKeys } from "../../lib/queryKeys";
@@ -125,6 +126,8 @@ const AUTOMATION_STATUS_FILTER_OPTIONS: Array<{
   { value: "all", label: "All" },
   { value: "paused", label: "Paused" },
 ];
+
+const ALL_PROJECTS_FILTER_VALUE = "__all_projects__";
 
 const rememberedAutomationListState: {
   repositoryFilter: string | null;
@@ -494,26 +497,84 @@ function AutomationPageShell({
   );
 }
 
-function SelectField(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
+type SelectFieldOption = {
+  value: string;
+  label: string;
+  disabled?: boolean;
+};
+
+type RadixSelectFieldProps = {
+  value: string;
+  onValueChange: (value: string) => void;
+  options: readonly SelectFieldOption[];
+  ariaLabel?: string;
+  className?: string;
+  itemClassName?: string;
+  placeholder?: string;
+  disabled?: boolean;
+};
+
+function SelectFieldControl({
+  value,
+  onValueChange,
+  options,
+  ariaLabel,
+  className,
+  itemClassName,
+  placeholder,
+  disabled = false,
+}: RadixSelectFieldProps) {
   return (
-    <select
-      {...props}
-      className={cn(
-        "w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50",
-        props.className,
-      )}
-    />
+    <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+      <SelectTrigger
+        aria-label={ariaLabel}
+        className={cn(
+          "h-9 w-full rounded-md border border-border/50 bg-secondary/30 px-2 text-xs text-foreground focus:ring-1 focus:ring-primary/30 focus:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50",
+          className,
+        )}
+      >
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((option) => (
+          <SelectItem
+            key={option.value}
+            value={option.value}
+            disabled={option.disabled}
+            className={cn("text-xs", itemClassName)}
+          >
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
 function CompactSelectControl({
   className,
   ...props
-}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+}: RadixSelectFieldProps) {
   return (
-    <SelectField
+    <SelectFieldControl
       {...props}
       className={cn("h-8", className)}
+    />
+  );
+}
+
+function InlineSelectControl({
+  className,
+  ...props
+}: RadixSelectFieldProps) {
+  return (
+    <SelectFieldControl
+      {...props}
+      className={cn(
+        "h-auto min-w-0 border-0 bg-transparent px-0 py-0 text-sm shadow-none focus:ring-0 focus:ring-offset-0",
+        className,
+      )}
+      itemClassName={cn("text-sm", props.itemClassName)}
     />
   );
 }
@@ -611,46 +672,32 @@ function ScheduleTimePicker({
       <Clock3 className="h-4 w-4 shrink-0 text-muted-foreground" />
       {minuteOnly ? (
         <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,4.25rem)_1fr] items-center gap-3">
-          <select
+          <InlineSelectControl
+            ariaLabel="Automation minute"
             value={String(minute)}
-            onChange={(event) => onChange({ minute: Number.parseInt(event.target.value, 10) })}
-            className="min-w-0 bg-transparent px-0 py-0 text-sm text-foreground outline-none"
-          >
-            {AUTOMATION_MINUTE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            onValueChange={(value) => onChange({ minute: Number.parseInt(value, 10) })}
+            options={AUTOMATION_MINUTE_OPTIONS}
+            className="w-[4.25rem]"
+          />
           <span className="whitespace-nowrap text-[11px] text-muted-foreground">
             past each hour
           </span>
         </div>
       ) : (
         <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
-          <select
+          <InlineSelectControl
+            ariaLabel="Automation hour"
             value={String(hour)}
-            onChange={(event) => onChange({ hour: Number.parseInt(event.target.value, 10) })}
-            className="min-w-0 bg-transparent px-0 py-0 text-sm text-foreground outline-none"
-          >
-            {AUTOMATION_HOUR_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            onValueChange={(value) => onChange({ hour: Number.parseInt(value, 10) })}
+            options={AUTOMATION_HOUR_OPTIONS}
+          />
           <span className="text-sm text-muted-foreground">:</span>
-          <select
+          <InlineSelectControl
+            ariaLabel="Automation minute"
             value={String(minute)}
-            onChange={(event) => onChange({ minute: Number.parseInt(event.target.value, 10) })}
-            className="min-w-0 bg-transparent px-0 py-0 text-sm text-foreground outline-none"
-          >
-            {AUTOMATION_MINUTE_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            onValueChange={(value) => onChange({ minute: Number.parseInt(value, 10) })}
+            options={AUTOMATION_MINUTE_OPTIONS}
+          />
         </div>
       )}
     </div>
@@ -913,10 +960,10 @@ function AutomationScheduleEditor({
   return (
     <div className="grid gap-3">
       <FieldShell label="Pattern">
-        <SelectField
+        <SelectFieldControl
           value={preset}
-          onChange={(event) => {
-            const nextPreset = event.target.value as AutomationSchedulePreset;
+          onValueChange={(value) => {
+            const nextPreset = value as AutomationSchedulePreset;
             if (nextPreset === "hourly") {
               onChange({ frequency: "hourly", daysOfWeek: [] });
               return;
@@ -935,13 +982,9 @@ function AutomationScheduleEditor({
             });
           }}
           className="h-10 rounded-xl px-4 text-sm shadow-none"
-        >
-          {AUTOMATION_REPEAT_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </SelectField>
+          itemClassName="text-sm"
+          options={AUTOMATION_REPEAT_OPTIONS}
+        />
       </FieldShell>
 
       {preset === "hourly" ? (
@@ -1527,23 +1570,26 @@ export function AutomationsListPage({
 
           <div className="flex flex-wrap items-end gap-4 border-b border-border/40 pb-3">
             <ComposerFooterField label="Project" className="min-w-[220px]">
-              <CompactSelectControl value={repositoryFilter} onChange={(event) => setRepositoryFilter(event.target.value)}>
-                <option value="">All projects</option>
-                {repositories.map((repository) => (
-                  <option key={repository.id} value={repository.id}>
-                    {repository.name}
-                  </option>
-                ))}
-              </CompactSelectControl>
+              <CompactSelectControl
+                ariaLabel="Project filter"
+                value={repositoryFilter || ALL_PROJECTS_FILTER_VALUE}
+                onValueChange={(value) => setRepositoryFilter(value === ALL_PROJECTS_FILTER_VALUE ? "" : value)}
+                options={[
+                  { value: ALL_PROJECTS_FILTER_VALUE, label: "All projects" },
+                  ...repositories.map((repository) => ({
+                    value: repository.id,
+                    label: repository.name,
+                  })),
+                ]}
+              />
             </ComposerFooterField>
             <ComposerFooterField label="Status" className="min-w-[180px]">
-              <CompactSelectControl value={enabledFilter} onChange={(event) => setEnabledFilter(event.target.value as AutomationEnabledFilter)}>
-                {AUTOMATION_STATUS_FILTER_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </CompactSelectControl>
+              <CompactSelectControl
+                ariaLabel="Automation status filter"
+                value={enabledFilter}
+                onValueChange={(value) => setEnabledFilter(value as AutomationEnabledFilter)}
+                options={AUTOMATION_STATUS_FILTER_OPTIONS}
+              />
             </ComposerFooterField>
           </div>
         </div>

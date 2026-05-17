@@ -79,6 +79,7 @@ const preloadDiffReviewPanel = () => import("../components/workspace/DiffReviewP
 import { api, type RuntimeInfo } from "../lib/api";
 import { FALLBACK_CODEX_MODELS } from "../lib/agentModelDefaults";
 import { debugLog } from "../lib/debugLog";
+import { loadGeneralSettings, saveGeneralSettings, type GeneralSettings } from "../lib/generalSettings";
 import { isTauriDesktop, openExternalUrl } from "../lib/openExternalUrl";
 import { cn } from "../lib/utils";
 import {
@@ -95,6 +96,7 @@ import { useGitChanges } from "./workspace/hooks/useGitChanges";
 import { useFileIndex } from "./workspace/hooks/useFileIndex";
 import { useSlashCommands } from "./workspace/hooks/useSlashCommands";
 import { useBackgroundWorktreeStatusStream } from "./workspace/hooks/useBackgroundWorktreeStatusStream";
+import { useCompletionAttention } from "./workspace/hooks/useCompletionAttention";
 import { useModelProviders } from "./workspace/hooks/useModelProviders";
 import { useWorkspaceSyncStream } from "./workspace/hooks/useWorkspaceSyncStream";
 import { useWorkspaceSearchParams } from "./workspace/hooks/useWorkspaceSearchParams";
@@ -403,13 +405,21 @@ function BackgroundWorktreeStatusStreamBridge({
   selectedWorktreeId,
   selectedThreadId,
   threadSnapshot,
+  onCompletionAttentionEvent,
 }: {
   repositories: ReturnType<typeof useRepositoryManager>["repositories"];
   selectedWorktreeId: string | null;
   selectedThreadId: string | null;
   threadSnapshot: ThreadsByWorktreeSnapshot;
+  onCompletionAttentionEvent?: Parameters<typeof useBackgroundWorktreeStatusStream>[4];
 }) {
-  useBackgroundWorktreeStatusStream(repositories, selectedWorktreeId, selectedThreadId, threadSnapshot);
+  useBackgroundWorktreeStatusStream(
+    repositories,
+    selectedWorktreeId,
+    selectedThreadId,
+    threadSnapshot,
+    onCompletionAttentionEvent,
+  );
   return null;
 }
 
@@ -420,6 +430,7 @@ function WorkspaceSyncStreamBridge() {
 
 export function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
+  const [generalSettings, setGeneralSettings] = useState<GeneralSettings>(() => loadGeneralSettings());
   const { search, updateSearch } = useWorkspaceSearchParams();
   const desktopApp = isTauriDesktop();
 
@@ -1579,6 +1590,49 @@ export function WorkspacePage() {
     terminalViewActive,
     messageListEmptyState: chat.messageListEmptyState,
   });
+  const selectedThreadIdForAttention = chat.selectedThreadIdForData ?? chat.selectedThreadId;
+  const chatVisibleForAttention =
+    activeView === "chat"
+    && !terminalViewActive
+    && !mobileInlinePanel
+    && !showWorkspaceEmptyState;
+  const handleCompletionAttentionEvent = useCompletionAttention({
+    generalSettings,
+    repositories: repos.repositories,
+    selectedThreadId: selectedThreadIdForAttention,
+    chatVisible: chatVisibleForAttention,
+  });
+  const updateGeneralSettings = useCallback((next: GeneralSettings | ((current: GeneralSettings) => GeneralSettings)) => {
+    setGeneralSettings((current) => {
+      const resolved = typeof next === "function" ? next(current) : next;
+      return saveGeneralSettings(resolved);
+    });
+  }, []);
+
+  useEffect(() => {
+    const latestEvent = chat.events[chat.events.length - 1];
+    if (
+      !latestEvent
+      || (latestEvent.type !== "chat.completed" && latestEvent.type !== "chat.failed")
+      || selectedThreadIdForAttention == null
+      || repos.selectedWorktreeId == null
+    ) {
+      return;
+    }
+
+    handleCompletionAttentionEvent({
+      eventId: latestEvent.id,
+      threadId: selectedThreadIdForAttention,
+      worktreeId: repos.selectedWorktreeId,
+      type: latestEvent.type,
+      threadTitle: typeof latestEvent.payload.threadTitle === "string" ? latestEvent.payload.threadTitle : null,
+    });
+  }, [
+    chat.events,
+    handleCompletionAttentionEvent,
+    repos.selectedWorktreeId,
+    selectedThreadIdForAttention,
+  ]);
 
   useEffect(() => {
     if (
@@ -2771,6 +2825,8 @@ export function WorkspacePage() {
                       threadKind={selectedChatThread?.kind ?? null}
                       threadRunning={chat.selectedThreadUiStatus === "running"}
                       permissionMode={chat.composerPermissionMode}
+                      sendMessagesWith={generalSettings.sendMessagesWith}
+                      autoConvertLongTextEnabled={generalSettings.autoConvertLongTextEnabled}
                       hasMessages={chat.messages.length > 0}
                       queuedMessages={chat.queuedMessages}
                       onSubmitMessage={({ content, mode, attachments }) => chat.submitMessage(content, mode, attachments)}
@@ -2981,12 +3037,14 @@ export function WorkspacePage() {
         repositories={repos.repositories}
         selectedRepositoryId={repos.selectedRepositoryId}
         codexModels={codexModels}
+        generalSettings={generalSettings}
         runtimeLabel={runtimeLabel}
         runtimeTitle={runtimeTitle}
         onRemoveRepository={(id) => {
           setSettingsOpen(false);
           void repos.removeRepository(id);
         }}
+        onGeneralSettingsChange={updateGeneralSettings}
       />
 
       {enableNonCriticalWorkspaceData ? (
@@ -2995,6 +3053,7 @@ export function WorkspacePage() {
           selectedWorktreeId={repos.selectedWorktreeId}
           selectedThreadId={chat.selectedThreadIdForData ?? chat.selectedThreadId}
           threadSnapshot={backgroundStatusThreadSnapshot}
+          onCompletionAttentionEvent={handleCompletionAttentionEvent}
         />
       ) : null}
 

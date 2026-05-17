@@ -1,10 +1,11 @@
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelProvider, Repository, SaveAutomationConfig } from "@codesymphony/shared-types";
 import { SettingsDialog } from "./SettingsDialog";
 import { AGENT_DEFAULTS_STORAGE_KEY } from "../../pages/workspace/agentDefaults";
+import { DEFAULT_GENERAL_SETTINGS, getModifierEnterLabel } from "../../lib/generalSettings";
 
 const apiMocks = vi.hoisted(() => ({
   updateRepositoryScripts: vi.fn(),
@@ -58,27 +59,25 @@ const codexModels = [
     isDefault: false,
   },
 ] as const;
-
-function act(callback: () => void): void;
-function act(callback: () => Promise<void>): Promise<void>;
-function act(callback: () => void | Promise<void>): void | Promise<void> {
-  let result: void | Promise<void> | undefined;
-  flushSync(() => {
-    result = callback();
-  });
-
-  if (result && typeof result.then === "function") {
-    return result.then(async () => {
-      await Promise.resolve();
-    });
-  }
-}
+const defaultGeneralSettings = DEFAULT_GENERAL_SETTINGS;
 
 beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (!HTMLElement.prototype.hasPointerCapture) {
+    HTMLElement.prototype.hasPointerCapture = () => false;
+  }
+  if (!HTMLElement.prototype.setPointerCapture) {
+    HTMLElement.prototype.setPointerCapture = () => {};
+  }
+  if (!HTMLElement.prototype.releasePointerCapture) {
+    HTMLElement.prototype.releasePointerCapture = () => {};
+  }
+  if (!HTMLElement.prototype.scrollIntoView) {
+    HTMLElement.prototype.scrollIntoView = () => {};
+  }
   apiMocks.updateRepositoryScripts.mockImplementation(async (_repoId: string, payload: Record<string, unknown>) => ({
     ...makeRepo(),
     ...(payload.runScript ? { runScript: payload.runScript as string[] } : {}),
@@ -147,9 +146,11 @@ function renderDialog(
           repositories={repositories}
           selectedRepositoryId={options?.selectedRepositoryId}
           codexModels={codexModels}
+          generalSettings={defaultGeneralSettings}
           runtimeLabel={options?.runtimeLabel}
           runtimeTitle={options?.runtimeTitle}
           onRemoveRepository={vi.fn()}
+          onGeneralSettingsChange={vi.fn()}
           onProvidersChanged={onProvidersChanged}
         />
       </QueryClientProvider>,
@@ -171,9 +172,42 @@ async function openModelsTab() {
   await flushEffects();
 }
 
+async function openGeneralTab() {
+  const generalButton = Array.from(document.body.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "General",
+  );
+  if (!generalButton) {
+    throw new Error("General tab not found");
+  }
+
+  await act(async () => {
+    generalButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
+async function openWorkspaceTab() {
+  const workspaceButton = Array.from(document.body.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Workspace",
+  );
+  if (!workspaceButton) {
+    throw new Error("Workspace tab not found");
+  }
+
+  await act(async () => {
+    workspaceButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushEffects();
+}
+
 async function flushEffects() {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (vi.isFakeTimers()) {
+      await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await Promise.resolve();
   });
 }
 
@@ -190,22 +224,87 @@ async function setInputValue(input: HTMLInputElement, value: string) {
   });
 }
 
-async function setSelectValue(select: HTMLSelectElement, value: string) {
-  const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-  if (!valueSetter) {
-    throw new Error("Select value setter not available");
+function normalizeText(value: string | null | undefined) {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function getRadixSelectTrigger(label: string) {
+  const trigger = document.body.querySelector(`[aria-label="${label}"]`);
+  if (!(trigger instanceof HTMLElement)) {
+    throw new Error(`${label} trigger not found`);
+  }
+
+  return trigger;
+}
+
+async function openRadixSelect(label: string) {
+  const trigger = getRadixSelectTrigger(label);
+
+  await act(async () => {
+    if (typeof PointerEvent === "function") {
+      trigger.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        pointerId: 1,
+        ctrlKey: false,
+      }));
+    } else {
+      trigger.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+    }
+  });
+  await flushEffects();
+
+  let options = Array.from(document.body.querySelectorAll('[role="option"]'));
+  if (options.length === 0) {
+    await act(async () => {
+      trigger.focus();
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    await flushEffects();
+    options = Array.from(document.body.querySelectorAll('[role="option"]'));
+  }
+
+  return options;
+}
+
+async function setRadixSelectValue(label: string, optionText: string) {
+  const options = await openRadixSelect(label);
+
+  const normalizedOptionText = optionText.replace(/\s+/g, "").toLowerCase();
+  const option = options.find((candidate) => {
+    const candidateText = candidate.textContent?.replace(/\s+/g, "").toLowerCase() ?? "";
+    return candidateText === normalizedOptionText || candidateText.includes(normalizedOptionText);
+  });
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`${optionText} option not found`);
   }
 
   await act(async () => {
-    valueSetter.call(select, value);
-    select.dispatchEvent(new Event("input", { bubbles: true }));
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    option.click();
   });
+  await flushEffects();
+}
+
+async function getRadixSelectOptions(label: string) {
+  const options = await openRadixSelect(label);
+  const labels = options.map((option) => normalizeText(option.textContent)).filter((value) => value.length > 0);
+
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  await flushEffects();
+
+  return labels;
+}
+
+function getRadixSelectTriggerText(label: string) {
+  return normalizeText(getRadixSelectTrigger(label).textContent);
 }
 
 describe("SettingsDialog", () => {
-  it("renders nothing when closed", () => {
-    act(() => {
+  it("renders nothing when closed", async () => {
+    await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <SettingsDialog
@@ -213,11 +312,14 @@ describe("SettingsDialog", () => {
             onClose={vi.fn()}
             repositories={[makeRepo()]}
             codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
             onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={vi.fn()}
           />
         </QueryClientProvider>
       );
     });
+    await flushEffects();
     expect(document.body.textContent).not.toContain("Settings");
   });
 
@@ -230,7 +332,9 @@ describe("SettingsDialog", () => {
             onClose={vi.fn()}
             repositories={[makeRepo()]}
             codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
             onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={vi.fn()}
           />
         </QueryClientProvider>
       );
@@ -238,7 +342,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Settings");
   });
 
-  it("shows Workspace and Models tabs", async () => {
+  it("shows General, Workspace, Models, and Licenses tabs", async () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -247,14 +351,65 @@ describe("SettingsDialog", () => {
             onClose={vi.fn()}
             repositories={[makeRepo()]}
             codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
             onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={vi.fn()}
           />
         </QueryClientProvider>
       );
     });
+    expect(document.body.textContent).toContain("General");
     expect(document.body.textContent).toContain("Workspace");
     expect(document.body.textContent).toContain("Models");
     expect(document.body.textContent).toContain("Licenses");
+  });
+
+  it("places the General tab first in the settings sidebar", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const sidebar = document.body.querySelector<HTMLElement>('[data-testid="settings-sidebar"]');
+    if (!sidebar) {
+      throw new Error("Settings sidebar not found");
+    }
+
+    const sidebarButtons = Array.from(sidebar.querySelectorAll("button"));
+    expect(sidebarButtons[1]?.textContent?.trim()).toBe("General");
+    expect(sidebarButtons[2]?.textContent?.trim()).toBe("Workspace");
+  });
+
+  it("opens on the General tab by default", async () => {
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    expect(document.body.textContent).toContain("Send messages with");
+    expect(document.body.textContent).not.toContain("Default Branch");
+  });
+
+  it("updates send-message preference from the General tab", async () => {
+    const onGeneralSettingsChange = vi.fn();
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SettingsDialog
+            open={true}
+            onClose={vi.fn()}
+            repositories={[makeRepo()]}
+            codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
+            onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={onGeneralSettingsChange}
+          />
+        </QueryClientProvider>
+      );
+    });
+    await openGeneralTab();
+
+    await setRadixSelectValue("Send messages with", getModifierEnterLabel());
+
+    expect(onGeneralSettingsChange).toHaveBeenCalledWith(expect.objectContaining({
+      sendMessagesWith: "mod_enter",
+    }));
   });
 
   it("renders Default Agent controls in the Models tab", async () => {
@@ -273,19 +428,8 @@ describe("SettingsDialog", () => {
     await flushEffects();
     await openModelsTab();
 
-    const newChatAgentSelect = document.body.querySelector('select[aria-label="Agent for new chats CLI Agent"]') as HTMLSelectElement | null;
-    if (!newChatAgentSelect) {
-      throw new Error("Agent for new chats select not found");
-    }
-
-    await setSelectValue(newChatAgentSelect, "codex");
-
-    const newChatModelSelect = document.body.querySelector('select[aria-label="Agent for new chats model"]') as HTMLSelectElement | null;
-    if (!newChatModelSelect) {
-      throw new Error("Agent for new chats model select not found");
-    }
-
-    await setSelectValue(newChatModelSelect, "builtin::gpt-5.3-codex");
+    await setRadixSelectValue("Agent for new chats CLI Agent", "Codex");
+    await setRadixSelectValue("Agent for new chats model", "GPT-5.3 Codex");
 
     expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"agent\":\"codex\"");
     expect(window.localStorage.getItem(AGENT_DEFAULTS_STORAGE_KEY)).toContain("\"model\":\"gpt-5.3-codex\"");
@@ -307,6 +451,25 @@ describe("SettingsDialog", () => {
     const sidebar = document.body.querySelector<HTMLElement>('[data-testid="settings-sidebar"]');
     expect(sidebar).not.toBeNull();
     expect(sidebar?.className).toContain("pt-[46px]");
+  });
+
+  it("renders a desktop top spacer in the settings content when running inside the desktop shell", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {},
+      configurable: true,
+    });
+    Object.defineProperty(window.navigator, "userAgentData", {
+      value: { platform: "macOS" },
+      configurable: true,
+    });
+
+    renderDialog([makeRepo()]);
+    await flushEffects();
+
+    const appBar = document.body.querySelector<HTMLElement>('[data-testid="settings-desktop-appbar"]');
+    expect(appBar).not.toBeNull();
+    expect(appBar?.className).toContain("bg-background");
+    expect(appBar?.textContent?.trim()).toBe("");
   });
 
   it("shows bundled open-source license details in the Licenses tab", async () => {
@@ -338,11 +501,14 @@ describe("SettingsDialog", () => {
             onClose={vi.fn()}
             repositories={[makeRepo()]}
             codexModels={codexModels}
+            generalSettings={defaultGeneralSettings}
             onRemoveRepository={vi.fn()}
+            onGeneralSettingsChange={vi.fn()}
           />
         </QueryClientProvider>
       );
     });
+    await openWorkspaceTab();
     expect(document.body.textContent).toContain("test-repo");
   });
 
@@ -361,14 +527,15 @@ describe("SettingsDialog", () => {
       { selectedRepositoryId: "r2" },
     );
     await flushEffects();
+    await openWorkspaceTab();
 
-    const repoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement | undefined;
-    expect(repoSelect?.value).toBe("r2");
+    expect(getRadixSelectTriggerText("Repository")).toBe("codesymphony");
   });
 
   it("shows script configuration fields in workspace settings", async () => {
     renderDialog([makeRepo()]);
     await flushEffects();
+    await openWorkspaceTab();
 
     expect(document.body.textContent).toContain("Default Branch");
     expect(document.body.textContent).toContain("Run Script");
@@ -400,6 +567,16 @@ describe("SettingsDialog", () => {
     try {
       renderDialog([makeRepo()]);
       await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const workspaceButton = Array.from(document.body.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Workspace",
+      );
+      if (!workspaceButton) {
+        throw new Error("Workspace tab not found");
+      }
+      await act(async () => {
+        workspaceButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         await vi.advanceTimersByTimeAsync(0);
       });
 
@@ -445,6 +622,16 @@ describe("SettingsDialog", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
+      const workspaceButton = Array.from(document.body.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Workspace",
+      );
+      if (!workspaceButton) {
+        throw new Error("Workspace tab not found");
+      }
+      await act(async () => {
+        workspaceButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await vi.advanceTimersByTimeAsync(0);
+      });
 
       const enabledCheckbox = document.body.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
       if (!enabledCheckbox) {
@@ -455,17 +642,7 @@ describe("SettingsDialog", () => {
         enabledCheckbox.click();
       });
 
-      const templateSelect = Array.from(document.body.querySelectorAll("select")).find((select) =>
-        Array.from(select.options).some((option) => option.value === "flutter_hot_reload"),
-      ) as HTMLSelectElement | undefined;
-      if (!templateSelect) {
-        throw new Error("Save automation template select not found");
-      }
-
-      await act(async () => {
-        templateSelect.value = "flutter_hot_reload";
-        templateSelect.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+      await setRadixSelectValue("Save automation preset", "Flutter hot reload");
 
       const payloadInput = document.body.querySelector('input[placeholder="reload"]') as HTMLInputElement | null;
       const filePatternsTextarea = Array.from(document.body.querySelectorAll("textarea")).find((textarea) =>
@@ -521,16 +698,13 @@ describe("SettingsDialog", () => {
   it("keeps dirty workspace form values when repositories refresh", async () => {
     renderDialog([makeRepo({ runScript: ["npm run dev"] })]);
     await flushEffects();
+    await openWorkspaceTab();
 
-    const defaultBranchSelect = document.body.querySelectorAll("select")[1] as HTMLSelectElement;
-    expect(defaultBranchSelect.value).toBe("main");
+    expect(getRadixSelectTriggerText("Default Branch")).toBe("main");
 
-    await act(async () => {
-      defaultBranchSelect.value = "dev";
-      defaultBranchSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setRadixSelectValue("Default Branch", "dev");
     await flushEffects();
-    expect((document.body.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("dev");
+    expect(getRadixSelectTriggerText("Default Branch")).toBe("dev");
 
     renderDialog([
       makeRepo({
@@ -540,7 +714,7 @@ describe("SettingsDialog", () => {
     ]);
     await flushEffects();
 
-    expect((document.body.querySelectorAll("select")[1] as HTMLSelectElement).value).toBe("dev");
+    expect(getRadixSelectTriggerText("Default Branch")).toBe("dev");
   });
 
 
@@ -555,21 +729,17 @@ describe("SettingsDialog", () => {
       }),
     ]);
     await flushEffects();
+    await openWorkspaceTab();
 
-    const repoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement;
-    await act(async () => {
-      repoSelect.value = "r2";
-      repoSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await setRadixSelectValue("Repository", "other-repo");
     await flushEffects();
 
     renderDialog([makeRepo()]);
     await flushEffects();
 
-    const nextRepoSelect = document.body.querySelectorAll("select")[0] as HTMLSelectElement;
     const runScriptTextarea = document.body.querySelector('textarea[rows="3"]') as HTMLTextAreaElement;
 
-    expect(nextRepoSelect.value).toBe("r1");
+    expect(getRadixSelectTriggerText("Repository")).toBe("test-repo");
     expect(runScriptTextarea.value).toBe("");
   });
 
@@ -633,16 +803,11 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
-    if (!agentSelect) {
-      throw new Error("Agent select not found");
-    }
-
     expect(document.body.textContent).toContain("Agent");
     expect(document.body.querySelector('input[placeholder=\'e.g. "claude-sonnet-4-6", "glm-4.7"\']')).not.toBeNull();
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
-    await setSelectValue(agentSelect, "codex");
+    await setRadixSelectValue("Provider CLI Agent", "Codex");
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "gpt-5.4", "gpt-5.3-codex"\']')).not.toBeNull();
@@ -652,7 +817,7 @@ describe("SettingsDialog", () => {
     expect(document.body.textContent).toContain("Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts.");
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Test")).toBe(true);
 
-    await setSelectValue(agentSelect, "opencode");
+    await setRadixSelectValue("Provider CLI Agent", "OpenCode");
     await flushEffects();
 
     expect(document.body.querySelector('input[placeholder=\'e.g. "openai/gpt-5" or "gpt-5-custom"\']')).not.toBeNull();
@@ -694,12 +859,7 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
-    if (!agentSelect) {
-      throw new Error("Agent select not found");
-    }
-
-    expect(Array.from(agentSelect.options).map((option) => option.value)).toEqual(["claude", "codex", "opencode"]);
+    expect(await getRadixSelectOptions("Provider CLI Agent")).toEqual(["Claude", "Codex", "OpenCode"]);
 
     const editButton = document.body.querySelector('button[aria-label="Edit Cursor provider Cursor Account (default[])"]') as HTMLButtonElement | null;
     if (!editButton) {
@@ -746,13 +906,12 @@ describe("SettingsDialog", () => {
     });
     await flushEffects();
 
-    const agentSelect = document.body.querySelector('select[aria-label="Provider CLI Agent"]') as HTMLSelectElement | null;
     const providerNameInput = document.body.querySelector('input[aria-label="Provider Name"]') as HTMLInputElement | null;
-    if (!agentSelect || !providerNameInput) {
+    if (!providerNameInput) {
       throw new Error("Provider form fields not found");
     }
 
-    await setSelectValue(agentSelect, "opencode");
+    await setRadixSelectValue("Provider CLI Agent", "OpenCode");
     await flushEffects();
 
     const modelIdInput = document.body.querySelector('input[aria-label="Provider Model ID"]') as HTMLInputElement | null;

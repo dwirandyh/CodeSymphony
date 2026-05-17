@@ -1,5 +1,6 @@
 import type { ChatMode } from "@codesymphony/shared-types";
 import type { WorktreeThreadUiStatus } from "../worktreeThreadStatus";
+import type { ThreadCompletionAttentionEvent } from "../useCompletionAttention";
 
 export type PendingMessageMutation =
   | { kind: "ensure-placeholder"; id: string; threadId: string }
@@ -43,6 +44,7 @@ export interface UseChatSessionOptions {
   allowUnselectedThread?: boolean;
   onThreadChange?: (threadId: string | null) => void;
   timelineEnabled?: boolean;
+  onCompletionAttentionEvent?: (event: ThreadCompletionAttentionEvent) => void;
 }
 
 type SelectedThreadUiState = {

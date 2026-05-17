@@ -1,9 +1,9 @@
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 #[cfg(target_os = "macos")]
 use std::fs::OpenOptions;
-#[cfg(target_os = "macos")]
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -16,7 +16,6 @@ use std::thread;
 use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::Serialize;
 use tauri::Manager;
 
 #[cfg(target_os = "macos")]
@@ -270,6 +269,29 @@ fn desktop_runtime_init_script(port: u16) -> String {
     )
 }
 
+fn read_runtime_http_response(port: u16, path: &str) -> Option<String> {
+    let mut stream = TcpStream::connect((LOCALHOST_RUNTIME_HOST, port)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(750)));
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {LOCALHOST_RUNTIME_HOST}:{port}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    Some(response)
+}
+
+fn is_codesymphony_runtime_available(port: u16) -> bool {
+    let health_response = match read_runtime_http_response(port, "/health") {
+        Some(response) => response,
+        None => return false,
+    };
+    health_response.starts_with("HTTP/1.1 200") && health_response.contains("{\"ok\":true}")
+}
+
 fn runtime_executable_dirs(home_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -368,8 +390,8 @@ fn spawn_runtime_dev(port: u16) -> Option<Child> {
         return None;
     }
 
-    let mut cmd = Command::new("pnpm");
-    cmd.args(["--filter", "@codesymphony/runtime", "dev"])
+    let mut cmd = Command::new("bash");
+    cmd.arg("apps/desktop/scripts/start-runtime-dev.sh")
         .env(
             "DATABASE_URL",
             format!("file:{}", runtime_db_path.display()),
@@ -508,7 +530,10 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         .env("DATABASE_URL", format!("file:{}", db_path.display()))
         .env("PRISMA_SCHEMA_PATH", prisma_dir.join("schema.prisma"))
         .env("PRISMA_MIGRATIONS_DIR", prisma_dir.join("migrations"))
-        .env("PRISMA_MIGRATION_MARKER_PATH", &prisma_migration_marker_path)
+        .env(
+            "PRISMA_MIGRATION_MARKER_PATH",
+            &prisma_migration_marker_path,
+        )
         .env("PRISMA_ENGINES_DIR", &prisma_engines_dir)
         .env("PRISMA_QUERY_ENGINE_LIBRARY", &prisma_query_engine_library)
         .env("PRISMA_SCHEMA_ENGINE_BINARY", &prisma_schema_engine_binary)
@@ -590,6 +615,11 @@ fn ensure_managed_runtime(app_handle: &tauri::AppHandle, port: u16, is_dev: bool
                 *guard = None;
             }
         }
+    }
+
+    if is_codesymphony_runtime_available(port) {
+        eprintln!("Reusing existing CodeSymphony runtime on port {port}");
+        return true;
     }
 
     let child = spawn_managed_runtime(app_handle, port, is_dev);
@@ -764,7 +794,10 @@ fn capture_desktop_process_snapshot() -> DesktopProcessSnapshot {
         by_pid.insert(process.pid, process);
     }
 
-    DesktopProcessSnapshot { by_pid, children_of }
+    DesktopProcessSnapshot {
+        by_pid,
+        children_of,
+    }
 }
 
 fn get_subtree_pids(snapshot: &DesktopProcessSnapshot, root_pid: u32) -> HashSet<u32> {
@@ -787,7 +820,10 @@ fn get_subtree_pids(snapshot: &DesktopProcessSnapshot, root_pid: u32) -> HashSet
     result
 }
 
-fn sum_desktop_resources(snapshot: &DesktopProcessSnapshot, pids: &HashSet<u32>) -> DesktopResourceUsage {
+fn sum_desktop_resources(
+    snapshot: &DesktopProcessSnapshot,
+    pids: &HashSet<u32>,
+) -> DesktopResourceUsage {
     let mut cpu = 0.0;
     let mut memory = 0_u64;
 
@@ -1203,9 +1239,15 @@ fn main() {
     };
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(true).build())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(true)
+                .build(),
+        )
         .append_invoke_initialization_script(desktop_runtime_init_script(runtime_port))
-        .invoke_handler(tauri::generate_handler![collect_resource_monitor_desktop_metrics])
+        .invoke_handler(tauri::generate_handler![
+            collect_resource_monitor_desktop_metrics
+        ])
         .setup(move |app| {
             app.manage(RuntimeProcess(Mutex::new(None)));
             app.manage(AppShutdown(AtomicBool::new(false)));
