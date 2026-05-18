@@ -59,6 +59,7 @@ export function PlanDecisionComposer({
 }: PlanDecisionComposerProps) {
   const [mode, setMode] = useState<DecisionMode>("accept");
   const [feedback, setFeedback] = useState("");
+  const [popoverHost, setPopoverHost] = useState<HTMLDivElement | null>(null);
   const normalizedCurrentSelection = normalizeSelection(currentSelection);
   const [selection, setSelection] = useState<AgentModelSelection>(normalizedCurrentSelection);
   const codexBuiltinModelOverride = runtimeInfo?.codexCliProviderOverride?.model ?? null;
@@ -136,7 +137,13 @@ export function PlanDecisionComposer({
   return (
     <section className="pb-2 pt-1" data-testid="plan-decision-composer-container">
       <div className="mx-auto w-full max-w-3xl">
-        <section className="rounded-lg border border-amber-500/30 bg-background/20 px-3 py-2.5 backdrop-blur-sm">
+        <section className="relative rounded-lg border border-amber-500/30 bg-background/20 px-3 py-2.5 backdrop-blur-sm">
+          <div
+            ref={setPopoverHost}
+            data-plan-decision-popover-host="true"
+            className="pointer-events-none absolute inset-0 z-[60] overflow-visible"
+          />
+
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2">
               <Lightbulb className="h-4 w-4 shrink-0 text-amber-400" />
@@ -253,6 +260,7 @@ export function PlanDecisionComposer({
                 codexBuiltinModelOverride={codexBuiltinModelOverride}
                 showAgentList={true}
                 ariaLabel="Select plan execution target"
+                popoverContainer={popoverHost}
                 onSelectionChange={(nextSelection) => setSelection(nextSelection)}
               />
             ) : null}

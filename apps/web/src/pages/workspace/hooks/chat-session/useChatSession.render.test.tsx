@@ -2128,6 +2128,45 @@ describe("useChatSession", () => {
     expect(hookResult.events.map((event) => event.type)).toEqual(["plan.created", "chat.completed", "plan.approved"]);
   });
 
+  it("prefers authoritative running status over a stale local review plan while implementation is underway", async () => {
+    threadsState.data = [{ ...makeThread("thread-a", true), title: "Plan thread" }];
+    snapshotState.data = makeSnapshot({
+      newestSeq: 1,
+      newestIdx: 2,
+      messages: [{
+        id: "assistant-plan",
+        threadId: "thread-a",
+        seq: 1,
+        role: "assistant",
+        content: "Canonical plan summary",
+        attachments: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      }],
+      events: [
+        makeEvent(1, "plan.created", {
+          content: "# Plan\n\n1. Ship it",
+          filePath: ".claude/plans/plan.md",
+        }),
+        makeEvent(2, "chat.completed", {}),
+      ],
+    });
+    statusSnapshotState.data = {
+      status: "running",
+      newestIdx: 4,
+    };
+
+    renderHook("thread-a");
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hookResult.events.map((event) => event.type)).toEqual(["plan.created", "chat.completed"]);
+    expect(hookResult.selectedThreadUiStatus).toBe("running");
+    expect(hookResult.composerDisabled).toBe(false);
+    expect(hookResult.authoritativeThreadStatus).toBe("running");
+  });
+
   it("replaces stale local messages and events when the latest snapshot for the same thread is empty", () => {
     snapshotState.data = makeSnapshot({
       newestSeq: 1,

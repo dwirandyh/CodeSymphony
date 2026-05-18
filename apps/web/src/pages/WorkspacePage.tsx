@@ -1096,6 +1096,7 @@ export function WorkspacePage() {
     onError: setError,
     startWaitingAssistant: chat.startWaitingAssistant,
     clearWaitingAssistantForThread: chat.clearWaitingAssistantForThread,
+    authoritativeThreadStatus: chat.authoritativeThreadStatus,
     onPlanApproved: (result) => {
       if (result.executionKind === "handoff") {
         chat.setSelectedThreadId(result.executionThreadId, { preserveWhileMissing: true });

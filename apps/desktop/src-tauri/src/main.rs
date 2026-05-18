@@ -124,10 +124,6 @@ fn prisma_query_engine_library_name() -> String {
     format!("libquery_engine-{}.dylib.node", prisma_engine_suffix())
 }
 
-fn prisma_schema_engine_name() -> String {
-    format!("schema-engine-{}", prisma_engine_suffix())
-}
-
 fn should_copy_prisma_engine(src: &Path, dst: &Path) -> std::io::Result<bool> {
     let src_metadata = std::fs::metadata(src)?;
     let dst_metadata = match std::fs::metadata(dst) {
@@ -162,22 +158,16 @@ fn sync_prisma_engine(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn prepare_prisma_engines(
-    resource_dir: &Path,
-    app_data_dir: &Path,
-) -> Option<(PathBuf, PathBuf, PathBuf)> {
-    let bundled_engines_dir = resource_dir
+fn prepare_prisma_query_engine(resource_dir: &Path, app_data_dir: &Path) -> Option<PathBuf> {
+    let bundled_query_engine = resource_dir
         .join("runtime-bundle")
         .join("node_modules")
-        .join("@prisma")
-        .join("engines");
+        .join(".prisma")
+        .join("client")
+        .join(prisma_query_engine_library_name());
     let writable_engines_dir = app_data_dir.join("prisma-engines");
-    let query_engine_name = prisma_query_engine_library_name();
-    let schema_engine_name = prisma_schema_engine_name();
-    let bundled_query_engine = bundled_engines_dir.join(&query_engine_name);
-    let bundled_schema_engine = bundled_engines_dir.join(&schema_engine_name);
-    let writable_query_engine = writable_engines_dir.join(&query_engine_name);
-    let writable_schema_engine = writable_engines_dir.join(&schema_engine_name);
+    let writable_query_engine =
+        writable_engines_dir.join(prisma_query_engine_library_name());
 
     if let Err(error) = std::fs::create_dir_all(&writable_engines_dir) {
         eprintln!(
@@ -187,33 +177,24 @@ fn prepare_prisma_engines(
         return None;
     }
 
-    for (src, dst) in [
-        (&bundled_query_engine, &writable_query_engine),
-        (&bundled_schema_engine, &writable_schema_engine),
-    ] {
-        if !src.is_file() {
-            eprintln!(
-                "Bundled Prisma engine not found at expected path: {}",
-                src.display()
-            );
-            return None;
-        }
-
-        if let Err(error) = sync_prisma_engine(src, dst) {
-            eprintln!(
-                "Failed to sync Prisma engine from {} to {}: {error}",
-                src.display(),
-                dst.display()
-            );
-            return None;
-        }
+    if !bundled_query_engine.is_file() {
+        eprintln!(
+            "Bundled Prisma engine not found at expected path: {}",
+            bundled_query_engine.display()
+        );
+        return None;
     }
 
-    Some((
-        writable_engines_dir,
-        writable_query_engine,
-        writable_schema_engine,
-    ))
+    if let Err(error) = sync_prisma_engine(&bundled_query_engine, &writable_query_engine) {
+        eprintln!(
+            "Failed to sync Prisma engine from {} to {}: {error}",
+            bundled_query_engine.display(),
+            writable_query_engine.display()
+        );
+        return None;
+    }
+
+    Some(writable_query_engine)
 }
 
 fn find_node_candidate(dir: &Path) -> Option<PathBuf> {
@@ -507,7 +488,6 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
     let prisma_dir = resource_dir.join("runtime-bundle").join("prisma");
     let db_path = app_data_dir.join("codesymphony.db");
     let debug_log_path = app_data_dir.join("debug.log");
-    let prisma_migration_marker_path = app_data_dir.join("prisma-migrations.sha1");
 
     if !runtime_entry.is_file() {
         eprintln!(
@@ -517,26 +497,19 @@ fn spawn_runtime_prod(app_handle: &tauri::AppHandle, port: u16) -> Option<Child>
         return None;
     }
 
-    let (prisma_engines_dir, prisma_query_engine_library, prisma_schema_engine_binary) =
-        match prepare_prisma_engines(&resource_dir, &app_data_dir) {
-            Some(paths) => paths,
-            None => return None,
-        };
+    let prisma_query_engine_library = match prepare_prisma_query_engine(&resource_dir, &app_data_dir)
+    {
+        Some(path) => path,
+        None => return None,
+    };
 
     let mut cmd = Command::new(&node_bin);
     cmd.arg(&runtime_entry)
         .current_dir(&runtime_bundle_dir)
         .env("NODE_ENV", "production")
         .env("DATABASE_URL", format!("file:{}", db_path.display()))
-        .env("PRISMA_SCHEMA_PATH", prisma_dir.join("schema.prisma"))
-        .env("PRISMA_MIGRATIONS_DIR", prisma_dir.join("migrations"))
-        .env(
-            "PRISMA_MIGRATION_MARKER_PATH",
-            &prisma_migration_marker_path,
-        )
-        .env("PRISMA_ENGINES_DIR", &prisma_engines_dir)
         .env("PRISMA_QUERY_ENGINE_LIBRARY", &prisma_query_engine_library)
-        .env("PRISMA_SCHEMA_ENGINE_BINARY", &prisma_schema_engine_binary)
+        .env("PRISMA_TEMPLATE_DB_PATH", prisma_dir.join("template.db"))
         .env("RUNTIME_HOST", desktop_runtime_host(false))
         .env("RUNTIME_PORT", port.to_string())
         .env("CODESYMPHONY_DEBUG_LOG_PATH", &debug_log_path)
