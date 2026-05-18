@@ -5,6 +5,7 @@ import { api } from "../../../lib/api";
 import { debugLog } from "../../../lib/debugLog";
 import { queryKeys } from "../../../lib/queryKeys";
 import { refetchRepositoriesCollection } from "../../../collections/repositories";
+import { invalidateWorktreeGitQueries } from "../../../hooks/mutations/invalidateWorktreeGitQueries";
 import {
   disposeThreadCollections,
   getThreadCollectionCounts,
@@ -86,15 +87,71 @@ async function refreshKnownThreadCaches(
 function revalidateWorkspaceState(queryClient: ReturnType<typeof useQueryClient>) {
   void refetchRepositoriesCollection(queryClient);
   void refetchAllThreadsCollections(queryClient);
+  void queryClient.invalidateQueries({ queryKey: ["automations"] });
   void queryClient.invalidateQueries({ queryKey: ["threads"] });
   void queryClient.invalidateQueries({ queryKey: ["worktrees"] });
+}
+
+function handleAutomationWorkspaceEvent(
+  queryClient: ReturnType<typeof useQueryClient>,
+  event: WorkspaceSyncEvent,
+) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.automations.lists });
+
+  if (!event.automationId) {
+    return;
+  }
+
+  if (event.type === "automation.deleted") {
+    queryClient.removeQueries({ queryKey: queryKeys.automations.detail(event.automationId) });
+    queryClient.removeQueries({ queryKey: queryKeys.automations.runs(event.automationId) });
+    queryClient.removeQueries({ queryKey: queryKeys.automations.versions(event.automationId) });
+    return;
+  }
+
+  void queryClient.invalidateQueries({ queryKey: queryKeys.automations.detail(event.automationId) });
+
+  if (event.type === "automation.updated") {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.automations.versions(event.automationId) });
+    return;
+  }
+
+  if (event.type === "automation.run.updated") {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.automations.runs(event.automationId) });
+  }
+}
+
+function shouldInvalidateRepositoryReviews(event: WorkspaceSyncEvent) {
+  if (!event.repositoryId) {
+    return false;
+  }
+
+  return event.type !== "worktree.files.updated" && event.type !== "worktree.git.updated";
+}
+
+function invalidateWorktreeFileQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  worktreeId: string,
+) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileIndex(worktreeId) });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileTreeScope(worktreeId) });
+  void queryClient.invalidateQueries({ queryKey: ["worktrees", worktreeId, "slashCommands"] });
 }
 
 function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, event: WorkspaceSyncEvent) {
   debugLog("thread.workspace.event", event.type, event);
 
-  if (event.repositoryId) {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(event.repositoryId) });
+  if (
+    event.type === "automation.created"
+    || event.type === "automation.updated"
+    || event.type === "automation.deleted"
+    || event.type === "automation.run.updated"
+  ) {
+    handleAutomationWorkspaceEvent(queryClient, event);
+  }
+
+  if (shouldInvalidateRepositoryReviews(event)) {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.repositories.reviews(event.repositoryId!) });
   }
 
   if (event.type === "repository.created" || event.type === "repository.updated" || event.type === "repository.deleted") {
@@ -118,15 +175,34 @@ function handleWorkspaceEvent(queryClient: ReturnType<typeof useQueryClient>, ev
   if (
     event.worktreeId
     && (
+      event.type === "worktree.git.updated"
+      || event.type === "worktree.files.updated"
+    )
+  ) {
+    invalidateWorktreeGitQueries(queryClient, event.worktreeId);
+  }
+
+  if (
+    event.worktreeId
+    && (
+      event.type === "worktree.updated"
+      || event.type === "worktree.files.updated"
+      || event.type === "worktree.deletion_started"
+      || event.type === "worktree.deletion_failed"
+    )
+  ) {
+    invalidateWorktreeFileQueries(queryClient, event.worktreeId);
+  }
+
+  if (
+    event.worktreeId
+    && (
       event.type === "worktree.updated"
       || event.type === "worktree.deletion_started"
       || event.type === "worktree.deletion_failed"
     )
   ) {
-    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.gitStatus(event.worktreeId) });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileIndex(event.worktreeId) });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.worktrees.fileTreeScope(event.worktreeId) });
-    void queryClient.invalidateQueries({ queryKey: ["worktrees", event.worktreeId, "slashCommands"] });
+    invalidateWorktreeGitQueries(queryClient, event.worktreeId);
   }
 
   if (!event.threadId) {

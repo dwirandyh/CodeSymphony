@@ -4,6 +4,7 @@ import {
   CreateAutomationInputSchema,
   UpdateAutomationInputSchema,
   type ChatEventType,
+  type WorkspaceSyncEventType,
 } from "@codesymphony/shared-types";
 import type { RuntimeEventHub, WorkspaceSyncEventHub } from "../types.js";
 import { buildAutomationBranchName } from "./worktreeService.js";
@@ -87,6 +88,11 @@ const AUTOMATION_CATCH_UP_GRACE_MS = 90_000;
 const AUTOMATION_DUE_OCCURRENCE_LIMIT = 100_000;
 const MISSED_DUE_TO_RUNTIME_SUMMARY = "Missed while the local automation runtime was unavailable. A newer slot will be replayed.";
 const MISSED_DUE_TO_ACTIVE_RUN_SUMMARY = "Missed because another automation run was still active at the scheduled time.";
+type AutomationWorkspaceSyncEventType =
+  Extract<
+    WorkspaceSyncEventType,
+    "automation.created" | "automation.updated" | "automation.deleted" | "automation.run.updated"
+  >;
 
 function ensureValidTimezone(timezone: string): string {
   try {
@@ -464,6 +470,12 @@ export function createAutomationService(deps: {
     });
   }
 
+  function emitAutomationRefresh(type: AutomationWorkspaceSyncEventType, automationId: string) {
+    deps.workspaceEventHub.emit(type, {
+      automationId,
+    });
+  }
+
   async function findAutomationWithSummary(id: string) {
     const automation = await deps.prisma.automation.findUnique({
       where: { id },
@@ -536,6 +548,7 @@ export function createAutomationService(deps: {
     });
 
     emitRepositoryRefresh(updated.repositoryId, updated.worktreeId, updated.threadId);
+    emitAutomationRefresh("automation.run.updated", updated.automationId);
     if (updated.status === "succeeded" || updated.status === "failed" || updated.status === "canceled") {
       clearThreadBinding(updated.id);
     }
@@ -641,6 +654,7 @@ export function createAutomationService(deps: {
             },
           });
           emitRepositoryRefresh(updatedRun.repositoryId, updatedRun.worktreeId, updatedRun.threadId);
+          emitAutomationRefresh("automation.run.updated", updatedRun.automationId);
           return updatedRun;
         } catch (error) {
           if (canRetryAutomationWorktreeCreate(error)) {
@@ -664,6 +678,7 @@ export function createAutomationService(deps: {
           },
         });
         emitRepositoryRefresh(currentRun.repositoryId, currentRun.worktreeId, currentRun.threadId);
+        emitAutomationRefresh("automation.run.updated", currentRun.automationId);
       }
 
       currentRun = await ensureAutomationWorktree(currentRun);
@@ -706,6 +721,7 @@ export function createAutomationService(deps: {
       });
 
       emitRepositoryRefresh(updatedRun.repositoryId, updatedRun.worktreeId, thread.id);
+      emitAutomationRefresh("automation.run.updated", updatedRun.automationId);
 
       await deps.chatService.sendMessage(thread.id, {
         content: automation.prompt,
@@ -731,6 +747,7 @@ export function createAutomationService(deps: {
         },
       });
       emitRepositoryRefresh(failedRun.repositoryId, failedRun.worktreeId, failedRun.threadId);
+      emitAutomationRefresh("automation.run.updated", failedRun.automationId);
       return mapRun(failedRun);
     }
   }
@@ -779,6 +796,7 @@ export function createAutomationService(deps: {
     ));
 
     emitRepositoryRefresh(createdRun.repositoryId, createdRun.worktreeId, createdRun.threadId);
+    emitAutomationRefresh("automation.run.updated", createdRun.automationId);
     return dispatchAutomationRun(automation, createdRun);
   }
 
@@ -932,6 +950,7 @@ export function createAutomationService(deps: {
       });
 
       emitRepositoryRefresh(created.repositoryId, created.targetWorktreeId);
+      emitAutomationRefresh("automation.created", created.id);
       return mapAutomation(created);
     },
 
@@ -1030,6 +1049,7 @@ export function createAutomationService(deps: {
       }
 
       emitRepositoryRefresh(updated.repositoryId, updated.targetWorktreeId);
+      emitAutomationRefresh("automation.updated", updated.id);
       return findAutomationWithSummary(updated.id);
     },
 
@@ -1045,6 +1065,7 @@ export function createAutomationService(deps: {
         where: { id: automationId },
       });
       emitRepositoryRefresh(automation.repositoryId, automation.targetWorktreeId);
+      emitAutomationRefresh("automation.deleted", automationId);
     },
 
     async setAutomationEnabled(automationId: string, enabled: boolean) {
@@ -1068,6 +1089,7 @@ export function createAutomationService(deps: {
       });
 
       emitRepositoryRefresh(updated.repositoryId, updated.targetWorktreeId);
+      emitAutomationRefresh("automation.updated", updated.id);
       return mapAutomation(updated);
     },
 
@@ -1114,6 +1136,7 @@ export function createAutomationService(deps: {
         }
         if (shouldRefresh) {
           emitRepositoryRefresh(dueAutomation.repositoryId, dueAutomation.targetWorktreeId);
+          emitAutomationRefresh("automation.run.updated", dueAutomation.id);
         }
 
         if (!runToDispatch) {
@@ -1187,6 +1210,7 @@ export function createAutomationService(deps: {
       ]);
 
       emitRepositoryRefresh(automation.repositoryId, automation.targetWorktreeId);
+      emitAutomationRefresh("automation.updated", automationId);
       return findAutomationWithSummary(automationId);
     },
 

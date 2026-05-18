@@ -30,6 +30,8 @@ import { createWorktreeDeletionService } from "./services/worktreeDeletionServic
 import { createAutomationService } from "./services/automationService.js";
 import { createResourceMonitorService } from "./services/resourceMonitorService.js";
 import { createResourceMonitorSessionTracker } from "./services/resourceMonitorSessionTracker.js";
+import { invalidateCachedWorktreeGitData } from "./services/worktreeGitQueryCache.js";
+import { createWorktreeWatchService } from "./services/worktreeWatchService.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerSystemRoutes } from "./routes/system.js";
@@ -113,6 +115,24 @@ function createApp() {
     worktreeService,
     chatService,
   });
+  const worktreeWatchService = createWorktreeWatchService({
+    workspaceEventHub,
+    listWorktrees: async () => prisma.worktree.findMany({
+      select: {
+        id: true,
+        repositoryId: true,
+        path: true,
+        status: true,
+      },
+    }),
+    onFilesChanged(worktree) {
+      fileService.invalidateCache(worktree.path);
+    },
+    onGitChanged(worktree) {
+      invalidateCachedWorktreeGitData(worktree.id);
+    },
+  });
+  worktreeWatchService.start();
 
   app.decorate("prisma", prisma);
   app.decorate("eventHub", eventHub);
@@ -178,6 +198,7 @@ function createApp() {
   app.register(registerResourceMonitorRoutes, { prefix: "/api" });
 
   app.addHook("onClose", async () => {
+    worktreeWatchService.dispose();
     automationService.dispose();
     await deviceService.stopAll();
   });

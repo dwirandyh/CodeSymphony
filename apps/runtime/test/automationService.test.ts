@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { WorkspaceSyncEvent } from "@codesymphony/shared-types";
 import { createEventHub } from "../src/events/eventHub";
 import { createWorkspaceEventHub } from "../src/events/workspaceEventHub";
 import { createAutomationService } from "../src/services/automationService";
@@ -359,6 +360,51 @@ describe("automationService", () => {
     expect(versions[0]?.source).toBe("update");
     expect(versions[1]?.content).toBe("Check the repo and summarize issues.");
     expect(versions[1]?.source).toBe("create");
+  });
+
+  it("emits automation workspace sync events for create, update, run, and delete transitions", async () => {
+    const { repository, worktree } = await createRepositoryFixture();
+    const { automationService, workspaceEventHub } = createAutomationHarness();
+    cleanupCallbacks.push(() => automationService.dispose());
+
+    const events: WorkspaceSyncEvent[] = [];
+    const unsubscribe = workspaceEventHub.subscribe((event) => {
+      events.push(event);
+    });
+    cleanupCallbacks.push(unsubscribe);
+
+    const created = await automationService.createAutomation({
+      repositoryId: repository.id,
+      targetWorktreeId: worktree.id,
+      name: "Daily audit",
+      prompt: "Check the repo and summarize issues.",
+      agent: "claude",
+      model: "claude-sonnet-4-6",
+      modelProviderId: null,
+      permissionMode: "default",
+      chatMode: "default",
+      rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      timezone: "UTC",
+    });
+
+    expect(events.some((event) => event.type === "automation.created" && event.automationId === created.id)).toBe(true);
+
+    events.length = 0;
+    await automationService.updateAutomation(created.id, {
+      prompt: "Check the repo, summarize issues, and propose fixes.",
+    });
+
+    expect(events.some((event) => event.type === "automation.updated" && event.automationId === created.id)).toBe(true);
+
+    events.length = 0;
+    await automationService.runAutomationNow(created.id);
+
+    expect(events.some((event) => event.type === "automation.run.updated" && event.automationId === created.id)).toBe(true);
+
+    events.length = 0;
+    await automationService.deleteAutomation(created.id);
+
+    expect(events.some((event) => event.type === "automation.deleted" && event.automationId === created.id)).toBe(true);
   });
 
   it("pauses and resumes an automation by toggling its enabled state", async () => {

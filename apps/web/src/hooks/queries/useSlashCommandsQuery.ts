@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 
+const SLASH_COMMANDS_FALLBACK_REFETCH_MS = 5 * 60_000;
+
 export function useSlashCommandsQuery(worktreeId: string | null, agent: CliAgent) {
   return useQuery({
     queryKey: queryKeys.worktrees.slashCommands(worktreeId!, agent),
@@ -17,7 +19,7 @@ export function useSlashCommandsQuery(worktreeId: string | null, agent: CliAgent
       }
     },
     enabled: !!worktreeId,
-    refetchInterval: 60_000,
-    staleTime: 55_000,
+    refetchInterval: SLASH_COMMANDS_FALLBACK_REFETCH_MS,
+    staleTime: SLASH_COMMANDS_FALLBACK_REFETCH_MS - 5_000,
   });
 }
