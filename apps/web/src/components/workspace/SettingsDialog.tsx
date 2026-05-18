@@ -1,24 +1,34 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, Loader2, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Button } from "../ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Slider } from "../ui/slider";
 import { api } from "../../lib/api";
+import {
+  getDesktopNotificationPermission,
+  openDesktopNotificationSettings,
+  requestDesktopNotificationPermission,
+  supportsDesktopNotifications,
+  usesSystemManagedDesktopNotificationPermissions,
+} from "../../lib/desktopNotifications";
 import { isTauriDesktop } from "../../lib/openExternalUrl";
 import { queryKeys } from "../../lib/queryKeys";
 import { THIRD_PARTY_LICENSES } from "../../lib/thirdPartyLicenses";
+import { cn } from "../../lib/utils";
 import {
-  BUILTIN_CHAT_MODELS_BY_AGENT,
+  MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY,
   type CliAgent,
   type CodexModelCatalogEntry,
+  type CursorModelCatalogEntry,
   type ModelProvider,
+  type ModelProviderCompatibility,
+  type OpencodeModelCatalogEntry,
   type Repository,
   type SaveAutomationConfig,
 } from "@codesymphony/shared-types";
-import {
-  FALLBACK_CODEX_MODELS,
-  resolveAgentDefaultModel,
-} from "../../lib/agentModelDefaults";
+import { resolveAgentDefaultModel } from "../../lib/agentModelDefaults";
 import { useModelProviders } from "../../pages/workspace/hooks/useModelProviders";
 import {
   loadAgentDefaults,
@@ -26,15 +36,27 @@ import {
   type AgentDefaults,
   type AgentDefaultSelection,
 } from "../../pages/workspace/agentDefaults";
+import {
+  COMPLETION_SOUND_VOLUME_MAX,
+  COMPLETION_SOUND_VOLUME_MIN,
+  getModifierEnterHint,
+  getModifierEnterLabel,
+  getShiftEnterHint,
+  type GeneralSettings,
+} from "../../lib/generalSettings";
+import { COMPLETION_SOUND_OPTIONS, playCompletionSound } from "../../lib/completionSounds";
+import {
+  buildAgentSelectionOptions,
+  type AgentSelectionOption,
+} from "./composer/AgentModelSelector";
 
-type SettingsTab = "workspace" | "models" | "licenses";
+type SettingsTab = "general" | "workspace" | "models" | "licenses";
 type SaveAutomationTemplate = "custom_generic" | "flutter_hot_reload";
 
 const DEFAULT_SAVE_AUTOMATION_TARGET = "active_run_session" as const;
 const DEFAULT_SAVE_AUTOMATION_DEBOUNCE_MS = 400;
 const FLUTTER_HOT_RELOAD_PATTERN = "lib/**/*.dart";
 const FLUTTER_HOT_RELOAD_PAYLOAD = "r";
-
 type RepositoryFormState = {
   runScriptText: string;
   setupText: string;
@@ -46,21 +68,38 @@ type RepositoryFormState = {
   saveAutomationPayload: string;
 };
 
-type ProviderProtocol = "anthropic" | "responses";
+type ProviderProtocol = "anthropic" | "openai";
 
-const PROVIDER_PROTOCOL_BY_AGENT: Record<CliAgent, ProviderProtocol> = {
-  claude: "anthropic",
-  codex: "responses",
-  cursor: "responses",
-  opencode: "responses",
+const PROVIDER_COMPATIBILITY_LABELS: Record<ModelProviderCompatibility, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
 };
 
-const PROVIDER_AGENT_LABELS: Record<CliAgent, string> = {
-  claude: "Claude",
+const PROVIDER_VISIBLE_AGENT_LABELS: Record<CliAgent, string> = {
+  claude: "Claude Code",
   codex: "Codex",
   cursor: "Cursor",
   opencode: "OpenCode",
 };
+
+function getProviderBaseUrlError(baseUrl: string): string | null {
+  if (baseUrl.length === 0) {
+    return null;
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(baseUrl);
+  } catch {
+    return "Enter a valid http:// or https:// URL.";
+  }
+
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    return "Enter a valid http:// or https:// URL.";
+  }
+
+  return null;
+}
 
 type AgentDefaultsKey = keyof AgentDefaults;
 
@@ -69,76 +108,277 @@ type AgentModelOption = {
   model: string;
   modelProviderId: string | null;
   label: string;
+  detail: string;
+  source: "builtin" | "custom";
 };
 
-function getProviderProtocol(agent: CliAgent | undefined | null): ProviderProtocol {
-  return PROVIDER_PROTOCOL_BY_AGENT[agent ?? "claude"];
+type PreferenceToggleProps = {
+  checked: boolean;
+  ariaLabel: string;
+  disabled?: boolean;
+  onCheckedChange: (checked: boolean) => void;
+};
+
+type GeneralPreferenceRowProps = {
+  title: string;
+  description: string;
+  hint?: string | null;
+  control: ReactNode;
+  descriptionId: string;
+};
+
+type SettingsSectionProps = {
+  title: string;
+  description: string;
+  hint?: string | null;
+  descriptionId: string;
+  action?: ReactNode;
+  actionClassName?: string;
+  children?: ReactNode;
+};
+
+type SettingsSelectOption = {
+  value: string;
+  label: string;
+  detail?: string;
+  source?: "builtin" | "custom";
+  disabled?: boolean;
+};
+
+type SettingsSelectProps = {
+  ariaLabel: string;
+  value: string;
+  onValueChange: (value: string) => void;
+  options: readonly SettingsSelectOption[];
+  className?: string;
+  describedBy?: string;
+  itemClassName?: string;
+  disabled?: boolean;
+  placeholder?: string;
+  visualVariant?: "default" | "model-detail";
+};
+
+function PreferenceToggle({
+  checked,
+  ariaLabel,
+  disabled = false,
+  onCheckedChange,
+}: PreferenceToggleProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={() => onCheckedChange(!checked)}
+      className={`inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
+        checked ? "border-foreground/30 bg-foreground/90" : "border-border/70 bg-secondary/20"
+      } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+    >
+      <span
+        className={`mx-0.5 h-6 w-6 rounded-full bg-background shadow-sm transition-transform ${
+          checked ? "translate-x-5" : "translate-x-0"
+        }`}
+      />
+    </button>
+  );
 }
 
-function getProviderAgentLabel(agent: CliAgent | undefined | null): string {
-  return PROVIDER_AGENT_LABELS[agent ?? "claude"];
+function GeneralPreferenceRow({
+  title,
+  description,
+  hint,
+  control,
+  descriptionId,
+}: GeneralPreferenceRowProps) {
+  return (
+    <section className="border-t border-border/30 py-5 first:border-t-0 first:pt-0">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          <p id={descriptionId} className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
+            {description}
+          </p>
+          {hint ? (
+            <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground/80">{hint}</p>
+          ) : null}
+        </div>
+        <div className="shrink-0">{control}</div>
+      </div>
+    </section>
+  );
 }
 
-function formatAgentModelLabel(agent: CliAgent, model: string): string {
-  if (agent === "cursor" && model === "default[]") {
-    return "Auto";
+const SETTINGS_INPUT_CLASS_NAME =
+  "w-full rounded-lg border border-border/60 bg-background/20 px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30";
+
+const SETTINGS_TEXTAREA_CLASS_NAME =
+  "w-full rounded-lg border border-border/60 bg-background/20 px-3 py-2 font-mono text-[12px] leading-5 text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30";
+
+function SettingsSection({
+  title,
+  description,
+  hint,
+  descriptionId,
+  action,
+  actionClassName,
+  children,
+}: SettingsSectionProps) {
+  return (
+    <section className="border-t border-border/30 py-5 first:border-t-0 first:pt-0">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between md:gap-6">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          <p id={descriptionId} className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
+            {description}
+          </p>
+          {hint ? (
+            <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground/80">{hint}</p>
+          ) : null}
+        </div>
+        {action ? (
+          <div className={cn("w-full md:max-w-[240px] md:shrink-0", actionClassName)}>
+            {action}
+          </div>
+        ) : null}
+      </div>
+      {children ? <div className="mt-3">{children}</div> : null}
+    </section>
+  );
+}
+
+function SettingsDesktopAppBar() {
+  return (
+    <div
+      className="sticky top-0 z-10 -mx-4 mb-4 h-[38px] bg-background"
+      data-testid="settings-desktop-appbar"
+      aria-hidden="true"
+    />
+  );
+}
+
+function renderSettingsSelectOptionContent(
+  option: SettingsSelectOption,
+  visualVariant: SettingsSelectProps["visualVariant"],
+) {
+  if (visualVariant !== "model-detail" || !option.detail) {
+    return option.label;
   }
 
-  if (agent === "opencode") {
-    return model;
+  return (
+    <div className="flex w-full min-w-0 items-center justify-between gap-2 text-left">
+      <span className="min-w-0 flex-1 truncate font-medium">{option.label}</span>
+      <span className="sr-only"> · </span>
+      <span className="max-w-[7rem] shrink-0 truncate text-right text-[10px] text-muted-foreground">
+        {option.detail}
+      </span>
+    </div>
+  );
+}
+
+function renderSettingsSelectTriggerContent(
+  option: SettingsSelectOption,
+  visualVariant: SettingsSelectProps["visualVariant"],
+) {
+  if (visualVariant !== "model-detail") {
+    return option.label;
   }
 
-  return model.replace(/\[[^\]]*]$/, "");
+  return (
+    <span className="min-w-0 flex-1 truncate text-left font-medium">
+      {option.label}
+    </span>
+  );
 }
 
-function buildAgentModelOptions(agent: CliAgent, providers: ModelProvider[]): AgentModelOption[] {
-  const builtins = agent === "codex"
-    ? []
-    : BUILTIN_CHAT_MODELS_BY_AGENT[agent].map((model) => ({
-      key: `${agent}:${model}:builtin`,
-      model,
-      modelProviderId: null,
-      label: formatAgentModelLabel(agent, model),
-    }));
-  const custom = providers
-    .filter((provider) => provider.agent === agent)
-    .map((provider) => ({
-      key: provider.id,
-      model: provider.modelId,
-      modelProviderId: provider.id,
-      label: `${provider.modelId} · ${provider.name}`,
-    }));
-
-  return [...builtins, ...custom];
+function isFirstCustomSettingsSelectOption(
+  options: readonly SettingsSelectOption[],
+  index: number,
+): boolean {
+  return options[index]?.source === "custom"
+    && (index === 0 || options[index - 1]?.source !== "custom");
 }
 
-function buildCodexAgentModelOptions(
-  providers: ModelProvider[],
-  codexModels: readonly CodexModelCatalogEntry[],
-): AgentModelOption[] {
-  const builtins = (codexModels.length > 0
-    ? codexModels.map((entry) => ({
-      key: `codex:${entry.id}:builtin`,
-      model: entry.id,
-      modelProviderId: null,
-      label: entry.name.trim() || formatAgentModelLabel("codex", entry.id),
-    }))
-    : FALLBACK_CODEX_MODELS.map((entry) => ({
-      key: `codex:${entry.id}:builtin`,
-      model: entry.id,
-      modelProviderId: null,
-      label: entry.name.trim() || formatAgentModelLabel("codex", entry.id),
-    })));
-  const custom = providers
-    .filter((provider) => provider.agent === "codex")
-    .map((provider) => ({
-      key: provider.id,
-      model: provider.modelId,
-      modelProviderId: provider.id,
-      label: `${provider.modelId} · ${provider.name}`,
-    }));
+function SettingsSelect({
+  ariaLabel,
+  value,
+  onValueChange,
+  options,
+  className,
+  describedBy,
+  itemClassName,
+  disabled = false,
+  placeholder,
+  visualVariant = "default",
+}: SettingsSelectProps) {
+  const selectedOption = options.find((option) => option.value === value);
 
-  return [...builtins, ...custom];
+  return (
+    <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+      <SelectTrigger
+        aria-label={ariaLabel}
+        aria-describedby={describedBy}
+        className={cn(
+          "h-8 w-full rounded-md border border-border/50 bg-secondary/30 px-2 text-xs text-foreground focus:ring-1 focus:ring-primary/30 focus:ring-offset-0",
+          className,
+        )}
+      >
+        {visualVariant === "model-detail" && selectedOption ? (
+          <div className="min-w-0 flex flex-1 items-center gap-2">
+            {renderSettingsSelectTriggerContent(selectedOption, visualVariant)}
+          </div>
+        ) : (
+          <SelectValue placeholder={placeholder} />
+        )}
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((option, index) => (
+          <div key={option.value}>
+            {visualVariant === "model-detail" && isFirstCustomSettingsSelectOption(options, index) ? (
+              <div
+                data-model-separator="custom"
+                className="mx-2.5 my-1 border-t border-border/60"
+              />
+            ) : null}
+            <SelectItem
+              value={option.value}
+              disabled={option.disabled}
+              className={cn("text-xs", itemClassName)}
+            >
+              {renderSettingsSelectOptionContent(option, visualVariant)}
+            </SelectItem>
+          </div>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function getProviderProtocol(compatibility: ModelProviderCompatibility | undefined | null): ProviderProtocol {
+  return compatibility ?? "anthropic";
+}
+
+function getProviderCompatibilityLabel(compatibility: ModelProviderCompatibility | undefined | null): string {
+  return PROVIDER_COMPATIBILITY_LABELS[compatibility ?? "anthropic"];
+}
+
+function formatSupportedAgentsForCompatibility(compatibility: ModelProviderCompatibility): string {
+  const supportedAgents = MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY[compatibility] ?? [];
+  return supportedAgents
+    .map((agent) => PROVIDER_VISIBLE_AGENT_LABELS[agent])
+    .join(" and ");
+}
+
+function mapAgentSelectionOptionsToAgentModelOptions(options: AgentSelectionOption[]): AgentModelOption[] {
+  return options.map((option) => ({
+    key: option.id,
+    model: option.model,
+    modelProviderId: option.modelProviderId,
+    label: option.label,
+    detail: option.detail,
+    source: option.source,
+  }));
 }
 
 function normalizeAgentDefaultSelection(
@@ -176,10 +416,6 @@ function normalizeAgentDefaultSelection(
     model: resolveAgentDefaultModel(selection.agent),
     modelProviderId: null,
   };
-}
-
-function isOpencodeBuiltinAlias(modelId: string): boolean {
-  return /^[^/\s]+\/[^/\s].+$/.test(modelId.trim());
 }
 
 function buildRepositoryFormState(
@@ -264,10 +500,14 @@ interface SettingsDialogProps {
   onClose: () => void;
   repositories: Repository[];
   selectedRepositoryId?: string | null;
-  codexModels: readonly CodexModelCatalogEntry[];
+  codexModels?: readonly CodexModelCatalogEntry[];
+  cursorModels?: readonly CursorModelCatalogEntry[];
+  opencodeModels?: readonly OpencodeModelCatalogEntry[];
+  generalSettings: GeneralSettings;
   runtimeLabel?: string | null;
   runtimeTitle?: string | null;
   onRemoveRepository: (id: string) => void;
+  onGeneralSettingsChange: (next: GeneralSettings) => void;
   onProvidersChanged?: (providers: ModelProvider[]) => void;
 }
 
@@ -286,19 +526,29 @@ function isMacDesktopShell(): boolean {
   return /mac/i.test(platform) || /mac os x/i.test(navigator.userAgent);
 }
 
+const SYSTEM_MANAGED_DESKTOP_NOTIFICATIONS_MESSAGE =
+  "CodeSymphony uses native desktop notifications. If alerts do not appear, allow CodeSymphony in your OS notification settings.";
+
 export function SettingsDialog({
   open,
   onClose,
   repositories,
   selectedRepositoryId,
-  codexModels,
+  codexModels = [],
+  cursorModels = [],
+  opencodeModels = [],
+  generalSettings,
   runtimeLabel,
   runtimeTitle,
   onRemoveRepository,
+  onGeneralSettingsChange,
   onProvidersChanged,
 }: SettingsDialogProps) {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<SettingsTab>("workspace");
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
+  const [desktopNotificationsMessage, setDesktopNotificationsMessage] = useState<string | null>(null);
+  const [openingDesktopNotificationSettings, setOpeningDesktopNotificationSettings] = useState(false);
+  const [testingCompletionSound, setTestingCompletionSound] = useState(false);
 
   // ── Workspace tab state ──
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
@@ -327,9 +577,9 @@ export function SettingsDialog({
   } = useModelProviders();
 
   // Provider form state
-  const [showProviderForm, setShowProviderForm] = useState(false);
+  const [showProviderDialog, setShowProviderDialog] = useState(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
-  const [providerAgent, setProviderAgent] = useState<CliAgent>("claude");
+  const [providerCompatibility, setProviderCompatibility] = useState<ModelProviderCompatibility>("anthropic");
   const [providerName, setProviderName] = useState("");
   const [providerModelId, setProviderModelId] = useState("");
   const [providerBaseUrl, setProviderBaseUrl] = useState("");
@@ -338,78 +588,55 @@ export function SettingsDialog({
   const [testingProvider, setTestingProvider] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
   const [agentDefaults, setAgentDefaults] = useState<AgentDefaults>(() => loadAgentDefaults());
-  const providerProtocol = getProviderProtocol(providerAgent);
+  const providerProtocol = getProviderProtocol(providerCompatibility);
   const trimmedProviderName = providerName.trim();
   const trimmedProviderModelId = providerModelId.trim();
   const trimmedProviderBaseUrl = providerBaseUrl.trim();
   const trimmedProviderApiKey = providerApiKey.trim();
-  const providerUsesCustomEndpoint = trimmedProviderBaseUrl.length > 0 || trimmedProviderApiKey.length > 0;
-  const opencodeUsesBuiltinAlias = providerAgent === "opencode"
-    && trimmedProviderBaseUrl.length === 0
-    && trimmedProviderApiKey.length === 0
-    && isOpencodeBuiltinAlias(trimmedProviderModelId);
+  const providerBaseUrlError = getProviderBaseUrlError(trimmedProviderBaseUrl);
+  const hasValidProviderBaseUrl = trimmedProviderBaseUrl.length > 0 && providerBaseUrlError === null;
   const canSaveProvider = trimmedProviderName.length > 0
     && trimmedProviderModelId.length > 0
-    && providerAgent !== "cursor"
+    && hasValidProviderBaseUrl
     && (
-      providerAgent === "codex"
-      || (providerAgent === "opencode"
-        ? trimmedProviderBaseUrl.length > 0 || opencodeUsesBuiltinAlias
-        : !providerUsesCustomEndpoint
-          || (trimmedProviderBaseUrl.length > 0 && (editingProviderId !== null || trimmedProviderApiKey.length > 0)))
+      editingProviderId !== null
+        ? true
+        : trimmedProviderApiKey.length > 0
     );
-  const canTestProvider = providerAgent !== "cursor"
-    && trimmedProviderBaseUrl.length > 0
+  const canTestProvider = hasValidProviderBaseUrl
     && trimmedProviderApiKey.length > 0
     && trimmedProviderModelId.length > 0;
-  const providerModelPlaceholder = providerAgent === "claude"
+  const providerModelPlaceholder = providerCompatibility === "anthropic"
     ? 'e.g. "claude-sonnet-4-6", "glm-4.7"'
-    : providerAgent === "codex"
-      ? 'e.g. "gpt-5.4", "gpt-5.3-codex"'
-      : providerAgent === "cursor"
-        ? "Cursor built-in models are managed via Cursor account settings"
-      : 'e.g. "openai/gpt-5" or "gpt-5-custom"';
-  const providerBaseUrlPlaceholder = providerAgent === "claude"
-    ? "e.g. https://api.z.ai/v1"
-    : providerAgent === "codex"
-      ? "Leave empty to use Codex CLI defaults"
-      : providerAgent === "cursor"
-        ? "Cursor custom endpoints are not supported"
-      : "Leave empty when Model ID already uses provider/model";
+    : 'e.g. "gpt-5.4", "gpt-5.3-codex"';
+  const providerBaseUrlPlaceholder = providerCompatibility === "anthropic"
+    ? "e.g. https://api.anthropic.com/v1"
+    : "e.g. https://api.openai.com/v1 or https://lb.jatevo.ai/v1";
   const providerApiKeyPlaceholder = editingProviderId
     ? "Leave empty to keep current"
-    : providerAgent === "claude"
-      ? "API Key"
-      : providerAgent === "codex"
-        ? "Only if your Codex setup needs it"
-        : providerAgent === "cursor"
-          ? "Cursor custom endpoints are not supported"
-        : "Only for custom OpenCode endpoints";
-  const providerInlineHelp = providerAgent === "claude"
-    ? "Use an empty Base URL and API key to register a Claude-side model alias that relies on local CLI auth. Provide both when targeting an Anthropic-compatible remote endpoint."
-    : providerAgent === "codex"
-      ? "Responses-compatible entries can be simple model aliases like gpt-5.4 or point to a custom endpoint if your Codex CLI setup needs it."
-      : providerAgent === "cursor"
-        ? "Cursor models come from the authenticated Cursor account over ACP. CodeSymphony does not register custom Cursor providers or custom endpoints."
-      : "For built-in OpenCode providers, enter Model ID as provider/model, for example openai/gpt-5. If you provide a Base URL, the runtime registers a custom Responses-compatible provider for the OpenCode SDK.";
-  const providerFootnote = providerAgent === "claude"
-    ? "Add Anthropic-compatible model entries here, then choose them per thread under Claude in the composer. Endpoint tests validate Anthropic Messages API compatible backends."
-    : providerAgent === "codex"
-      ? "Add Responses-compatible model entries here, then choose them per thread under Codex in the composer. Endpoint tests validate OpenAI Responses API compatible backends before the Codex CLI runtime starts."
-      : providerAgent === "cursor"
-        ? "Cursor uses built-in models discovered from the authenticated Cursor CLI. No custom provider rows or endpoint tests are available for Cursor."
-      : "Add OpenCode aliases or custom Responses-compatible providers here, then choose them per thread under OpenCode in the composer. Built-in OpenCode auth and /connect flows still work even if you never add an entry here.";
+    : "API Key";
+  const providerInlineHelp = providerCompatibility === "anthropic"
+    ? "Anthropic-compatible providers are available in Claude Code and OpenCode. Base URL and API key are required so the saved entry is runnable in both agents."
+    : "OpenAI-compatible providers are available in Codex and OpenCode. For Codex, the endpoint must implement the OpenAI Responses API. Chat-completions-only endpoints can still work in OpenCode.";
+  const providerFootnote = "Add compatibility-based provider entries here, then choose them per thread anywhere the matching agents are available.";
   const providerTestSuccessMessage = providerProtocol === "anthropic"
     ? "Connection successful — provider is Anthropic-compatible."
-    : providerAgent === "opencode"
-      ? "Connection successful — provider is Responses API compatible for OpenCode."
-      : "Connection successful — provider is Responses API compatible.";
+    : "Connection successful — provider supports the OpenAI Responses API.";
+  const agentSelectionOptions = useMemo(
+    () => buildAgentSelectionOptions({
+      providers,
+      codexModels,
+      cursorModels,
+      opencodeModels,
+    }),
+    [codexModels, cursorModels, opencodeModels, providers],
+  );
   const agentModelOptions = useMemo<Record<CliAgent, AgentModelOption[]>>(() => ({
-    claude: buildAgentModelOptions("claude", providers),
-    codex: buildCodexAgentModelOptions(providers, codexModels),
-    cursor: buildAgentModelOptions("cursor", providers),
-    opencode: buildAgentModelOptions("opencode", providers),
-  }), [codexModels, providers]);
+    claude: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.claude),
+    codex: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.codex),
+    cursor: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.cursor),
+    opencode: mapAgentSelectionOptionsToAgentModelOptions(agentSelectionOptions.opencode),
+  }), [agentSelectionOptions]);
 
   const resolvedAgentDefaults = useMemo<AgentDefaults>(() => ({
     newChat: normalizeAgentDefaultSelection(agentDefaults.newChat, agentModelOptions[agentDefaults.newChat.agent]),
@@ -431,7 +658,7 @@ export function SettingsDialog({
 
     wasOpenRef.current = true;
     hydratedRepoIdRef.current = null;
-    setActiveTab("workspace");
+    setActiveTab("general");
     setShowRemoveDialog(false);
     setSelectedRepoId(resolveInitialRepositoryId(repositories, selectedRepositoryId));
   }, [open, repositories, selectedRepositoryId]);
@@ -514,6 +741,47 @@ export function SettingsDialog({
   }, [open]);
 
   useEffect(() => {
+    if (!open || !generalSettings.desktopNotificationsEnabled) {
+      setDesktopNotificationsMessage(null);
+      return;
+    }
+
+    if (usesSystemManagedDesktopNotificationPermissions()) {
+      setDesktopNotificationsMessage(SYSTEM_MANAGED_DESKTOP_NOTIFICATIONS_MESSAGE);
+      return;
+    }
+
+    if (!supportsDesktopNotifications()) {
+      setDesktopNotificationsMessage("This app does not support desktop notifications.");
+      return;
+    }
+
+    let cancelled = false;
+    void getDesktopNotificationPermission()
+      .then((permission) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (permission === "granted") {
+          setDesktopNotificationsMessage(null);
+          return;
+        }
+
+        setDesktopNotificationsMessage("Desktop notifications are not currently allowed for this app.");
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDesktopNotificationsMessage("This app could not verify desktop notification permission.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [generalSettings.desktopNotificationsEnabled, open]);
+
+  useEffect(() => {
     setAgentDefaults((current) => {
       const next = {
         newChat: normalizeAgentDefaultSelection(current.newChat, agentModelOptions[current.newChat.agent]),
@@ -540,14 +808,14 @@ export function SettingsDialog({
     });
   }, [agentModelOptions]);
 
-  const resetProviderForm = useCallback((nextAgent: CliAgent = "claude") => {
+  const resetProviderForm = useCallback((nextCompatibility: ModelProviderCompatibility = "anthropic") => {
     setEditingProviderId(null);
-    setProviderAgent(nextAgent);
+    setProviderCompatibility(nextCompatibility);
     setProviderName("");
     setProviderModelId("");
     setProviderBaseUrl("");
     setProviderApiKey("");
-    setShowProviderForm(false);
+    setShowProviderDialog(false);
     setTestResult(null);
   }, []);
 
@@ -640,22 +908,22 @@ export function SettingsDialog({
       let nextProvider: ModelProvider;
       if (editingProviderId) {
         nextProvider = await api.updateModelProvider(editingProviderId, {
-          agent: providerAgent,
+          compatibility: providerCompatibility,
           name: trimmedProviderName,
           modelId: trimmedProviderModelId,
-          baseUrl: trimmedProviderBaseUrl || null,
-          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : trimmedProviderBaseUrl.length === 0 ? { apiKey: null } : {}),
+          baseUrl: trimmedProviderBaseUrl,
+          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : {}),
         });
       } else {
         nextProvider = await api.createModelProvider({
-          agent: providerAgent,
+          compatibility: providerCompatibility,
           name: trimmedProviderName,
           modelId: trimmedProviderModelId,
-          ...(trimmedProviderBaseUrl ? { baseUrl: trimmedProviderBaseUrl } : {}),
-          ...(trimmedProviderApiKey ? { apiKey: trimmedProviderApiKey } : {}),
+          baseUrl: trimmedProviderBaseUrl,
+          apiKey: trimmedProviderApiKey,
         });
       }
-      resetProviderForm(providerAgent);
+      resetProviderForm(providerCompatibility);
       replaceProviders([
         ...providers.filter((provider) => provider.id !== nextProvider.id),
         nextProvider,
@@ -668,7 +936,7 @@ export function SettingsDialog({
   }, [
     canSaveProvider,
     editingProviderId,
-    providerAgent,
+    providerCompatibility,
     providers,
     replaceProviders,
     resetProviderForm,
@@ -687,12 +955,12 @@ export function SettingsDialog({
 
   const handleEditProvider = useCallback((provider: ModelProvider) => {
     setEditingProviderId(provider.id);
-    setProviderAgent(provider.agent ?? "claude");
+    setProviderCompatibility(provider.compatibility);
     setProviderName(provider.name);
     setProviderModelId(provider.modelId);
     setProviderBaseUrl(provider.baseUrl ?? "");
     setProviderApiKey("");
-    setShowProviderForm(true);
+    setShowProviderDialog(true);
     setTestResult(null);
   }, []);
 
@@ -702,7 +970,7 @@ export function SettingsDialog({
     setTestResult(null);
     try {
       const result = await api.testModelProvider({
-        agent: providerAgent,
+        compatibility: providerCompatibility,
         baseUrl: trimmedProviderBaseUrl,
         apiKey: trimmedProviderApiKey,
         modelId: trimmedProviderModelId,
@@ -713,7 +981,7 @@ export function SettingsDialog({
     } finally {
       setTestingProvider(false);
     }
-  }, [canTestProvider, providerAgent, trimmedProviderApiKey, trimmedProviderBaseUrl, trimmedProviderModelId]);
+  }, [canTestProvider, providerCompatibility, trimmedProviderApiKey, trimmedProviderBaseUrl, trimmedProviderModelId]);
 
   const updateAgentDefault = useCallback((
     key: AgentDefaultsKey,
@@ -729,8 +997,86 @@ export function SettingsDialog({
     });
   }, []);
 
+  const handleDesktopNotificationsToggle = useCallback(async (checked: boolean) => {
+    if (!checked) {
+      setDesktopNotificationsMessage(null);
+      onGeneralSettingsChange({
+        ...generalSettings,
+        desktopNotificationsEnabled: false,
+      });
+      return;
+    }
+
+    if (usesSystemManagedDesktopNotificationPermissions()) {
+      setDesktopNotificationsMessage(SYSTEM_MANAGED_DESKTOP_NOTIFICATIONS_MESSAGE);
+      onGeneralSettingsChange({
+        ...generalSettings,
+        desktopNotificationsEnabled: true,
+      });
+      return;
+    }
+
+    if (!supportsDesktopNotifications()) {
+      setDesktopNotificationsMessage("This app does not support desktop notifications.");
+      return;
+    }
+
+    const permission = await requestDesktopNotificationPermission();
+    if (permission !== "granted") {
+      setDesktopNotificationsMessage("Desktop notifications remain disabled because permission was not granted.");
+      onGeneralSettingsChange({
+        ...generalSettings,
+        desktopNotificationsEnabled: false,
+      });
+      return;
+    }
+
+    setDesktopNotificationsMessage(null);
+    onGeneralSettingsChange({
+      ...generalSettings,
+      desktopNotificationsEnabled: true,
+    });
+  }, [generalSettings, onGeneralSettingsChange]);
+
+  const handleOpenDesktopNotificationSettings = useCallback(async () => {
+    setOpeningDesktopNotificationSettings(true);
+    try {
+      const opened = await openDesktopNotificationSettings();
+      if (!opened) {
+        setDesktopNotificationsMessage("CodeSymphony could not open macOS Notification Settings automatically.");
+      }
+    } finally {
+      setOpeningDesktopNotificationSettings(false);
+    }
+  }, []);
+
+  const handleTestCompletionSound = useCallback(async () => {
+    if (generalSettings.completionSound === "off") {
+      return;
+    }
+
+    setTestingCompletionSound(true);
+    try {
+      await playCompletionSound(generalSettings.completionSound, generalSettings.completionSoundVolume);
+    } finally {
+      setTestingCompletionSound(false);
+    }
+  }, [generalSettings.completionSound, generalSettings.completionSoundVolume]);
+
   const selectedRepo = repositories.find((r) => r.id === selectedRepoId) ?? null;
   const macDesktopShell = isMacDesktopShell();
+  const sendMessagesHint = generalSettings.sendMessagesWith === "enter"
+    ? `Use ${getShiftEnterHint()} for new lines.`
+    : `Use Enter for new lines. Send with ${getModifierEnterHint()}.`;
+  const completionAttentionHint = "Completion alerts are suppressed when the finished chat is already visible and focused.";
+  const primarySettingsTabs: Array<{ id: SettingsTab; label: string }> = [
+    { id: "general", label: "General" },
+    { id: "workspace", label: "Workspace" },
+    { id: "models", label: "Models" },
+  ];
+  const referenceSettingsTabs: Array<{ id: SettingsTab; label: string }> = [
+    { id: "licenses", label: "Licenses" },
+  ];
 
   if (!open) return null;
 
@@ -740,14 +1086,14 @@ export function SettingsDialog({
       <div className="fixed inset-0 z-50 flex overflow-hidden bg-background">
         {/* Left panel — sidebar style */}
         <aside
-          className={`flex w-[220px] shrink-0 flex-col bg-card/75 px-3 pb-3 ${
+          className={`flex w-[232px] shrink-0 flex-col border-r border-border/30 bg-card/60 px-4 pb-4 ${
             macDesktopShell ? "pt-[46px]" : "pt-3"
           }`}
           data-testid="settings-sidebar"
         >
           <button
             type="button"
-            className="mb-4 flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
+            className="mb-5 flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
             aria-label="Close settings"
             onClick={() => { void handleCloseSettings(); }}
           >
@@ -755,40 +1101,54 @@ export function SettingsDialog({
             <span className="text-sm font-semibold text-foreground">Settings</span>
           </button>
 
-          <div className="space-y-0.5">
-            <button
-              type="button"
-              className={`w-full rounded-md px-2 py-1.5 text-left text-xs ${
-                activeTab === "workspace"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-              }`}
-              onClick={() => setActiveTab("workspace")}
-            >
-              Workspace
-            </button>
-            <button
-              type="button"
-              className={`w-full rounded-md px-2 py-1.5 text-left text-xs ${
-                activeTab === "models"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-              }`}
-              onClick={() => setActiveTab("models")}
-            >
-              Models
-            </button>
-            <button
-              type="button"
-              className={`w-full rounded-md px-2 py-1.5 text-left text-xs ${
-                activeTab === "licenses"
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
-              }`}
-              onClick={() => setActiveTab("licenses")}
-            >
-              Licenses
-            </button>
+          <div className="space-y-5">
+            <div>
+              <div className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/65">
+                Preferences
+              </div>
+              <div className="space-y-1">
+                {primarySettingsTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    aria-current={activeTab === tab.id ? "page" : undefined}
+                    className={cn(
+                      "w-full rounded-lg px-3 py-2 text-left text-[13px] transition-colors",
+                      activeTab === tab.id
+                        ? "bg-secondary/40 font-medium text-foreground"
+                        : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",
+                    )}
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground/65">
+                Reference
+              </div>
+              <div className="space-y-1">
+                {referenceSettingsTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    aria-current={activeTab === tab.id ? "page" : undefined}
+                    className={cn(
+                      "w-full rounded-lg px-3 py-2 text-left text-[13px] transition-colors",
+                      activeTab === tab.id
+                        ? "bg-secondary/40 font-medium text-foreground"
+                        : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",
+                    )}
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {runtimeLabel ? (
@@ -811,193 +1171,377 @@ export function SettingsDialog({
 
         {/* Right panel */}
         <div className="flex flex-1 flex-col overflow-y-auto p-4">
-          <div className="mx-auto w-full max-w-xl">
-            {activeTab === "workspace" ? (
-              <>
+          {macDesktopShell ? <SettingsDesktopAppBar /> : null}
+
+          <div className={`mx-auto w-full ${activeTab === "licenses" ? "max-w-4xl" : "max-w-5xl"}`}>
+            {activeTab === "general" ? (
+              <div className="space-y-5">
+                <div>
+                  <h1 className="text-3xl font-semibold tracking-[-0.025em] text-foreground">General</h1>
+                </div>
+
+                <div className="space-y-0">
+                  <GeneralPreferenceRow
+                    title="Send messages with"
+                    description="Choose which key combination sends messages."
+                    hint={sendMessagesHint}
+                    descriptionId="general-send-messages-description"
+                    control={(
+                      <SettingsSelect
+                        ariaLabel="Send messages with"
+                        value={generalSettings.sendMessagesWith}
+                        onValueChange={(value) => onGeneralSettingsChange({
+                          ...generalSettings,
+                          sendMessagesWith: value === "mod_enter" ? "mod_enter" : "enter",
+                        })}
+                        describedBy="general-send-messages-description"
+                        className="min-w-[200px] rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
+                        itemClassName="text-[13px]"
+                        options={[
+                          { value: "enter", label: "Enter" },
+                          { value: "mod_enter", label: getModifierEnterLabel() },
+                        ]}
+                      />
+                    )}
+                  />
+
+                  <GeneralPreferenceRow
+                    title="Desktop notifications"
+                    description="Get notified when AI finishes working in a chat."
+                    hint={desktopNotificationsMessage ?? completionAttentionHint}
+                    descriptionId="general-desktop-notifications-description"
+                    control={(
+                      <div className="flex flex-col items-end gap-2">
+                        <PreferenceToggle
+                          checked={generalSettings.desktopNotificationsEnabled}
+                          ariaLabel="Desktop notifications"
+                          onCheckedChange={(checked) => {
+                            void handleDesktopNotificationsToggle(checked);
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-[11px] text-muted-foreground"
+                          onClick={() => {
+                            void handleOpenDesktopNotificationSettings();
+                          }}
+                          disabled={openingDesktopNotificationSettings}
+                        >
+                          {openingDesktopNotificationSettings ? "Opening…" : "Open Notification Settings"}
+                        </Button>
+                      </div>
+                    )}
+                  />
+
+                  <SettingsSection
+                    title="Completion sound"
+                    description="Choose what plays when AI finishes working in a chat."
+                    descriptionId="general-completion-sound-description"
+                    action={(
+                      <div className="flex items-center gap-2.5">
+                        <SettingsSelect
+                          ariaLabel="Completion sound"
+                          value={generalSettings.completionSound}
+                          onValueChange={(value) => onGeneralSettingsChange({
+                            ...generalSettings,
+                            completionSound: value === "chime"
+                              || value === "ding"
+                              || value === "pop"
+                              ? value
+                              : "off",
+                          })}
+                          describedBy="general-completion-sound-description"
+                          className="min-w-[200px] rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
+                          itemClassName="text-[13px]"
+                          options={COMPLETION_SOUND_OPTIONS.map((option) => ({
+                            value: option.value,
+                            label: option.label,
+                          }))}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          aria-label="Test completion sound"
+                          title="Play completion sound"
+                          disabled={generalSettings.completionSound === "off" || testingCompletionSound}
+                          onClick={() => {
+                            void handleTestCompletionSound();
+                          }}
+                        >
+                          {testingCompletionSound ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Play className="h-3.5 w-3.5 fill-current" />
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                    actionClassName="md:max-w-[250px]"
+                  >
+                    <div className="flex w-full items-center gap-3 md:ml-auto md:w-[250px]">
+                      <Slider
+                        aria-label="Completion sound volume"
+                        aria-describedby="general-completion-sound-description"
+                        min={COMPLETION_SOUND_VOLUME_MIN}
+                        max={COMPLETION_SOUND_VOLUME_MAX}
+                        step={5}
+                        disabled={generalSettings.completionSound === "off"}
+                        value={[generalSettings.completionSoundVolume]}
+                        onValueChange={(values) => onGeneralSettingsChange({
+                          ...generalSettings,
+                          completionSoundVolume: values[0] ?? generalSettings.completionSoundVolume,
+                        })}
+                        className="flex-1"
+                      />
+                      <span className="w-11 text-right text-[13px] font-medium tabular-nums text-foreground">
+                        {generalSettings.completionSoundVolume}%
+                      </span>
+                    </div>
+                  </SettingsSection>
+
+                  <GeneralPreferenceRow
+                    title="Auto-convert long text"
+                    description="Convert pasted text over 5000 characters into text attachments."
+                    descriptionId="general-auto-convert-description"
+                    control={(
+                      <PreferenceToggle
+                        checked={generalSettings.autoConvertLongTextEnabled}
+                        ariaLabel="Auto-convert long text"
+                        onCheckedChange={(checked) => onGeneralSettingsChange({
+                          ...generalSettings,
+                          autoConvertLongTextEnabled: checked,
+                        })}
+                      />
+                    )}
+                  />
+                </div>
+              </div>
+            ) : activeTab === "workspace" ? (
+              <div className="space-y-5">
+                <div>
+                  <h1 className="text-3xl font-semibold tracking-[-0.025em] text-foreground">Workspace</h1>
+                  <p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
+                    Configure repository defaults, save automation, and lifecycle scripts for your local workspace.
+                  </p>
+                </div>
+
                 {repositories.length > 0 ? (
                   <>
-                    <div className="mb-4">
-                      <label className="mb-1.5 block text-xs font-medium">Repository</label>
-                      <select
-                        className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                        value={selectedRepoId ?? ""}
-                        onChange={(e) => setSelectedRepoId(e.target.value)}
-                      >
-                        {repositories.map((repo) => (
-                          <option key={repo.id} value={repo.id}>{repo.name}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="mb-4">
-                      <label className="mb-1.5 block text-xs font-medium">Default Branch</label>
-                      {loadingBranches ? (
-                        <div className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-muted-foreground">
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                          Loading branches...
-                        </div>
-                      ) : (
-                        <select
-                          className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                          value={defaultBranchValue}
-                          onChange={(e) => { setDefaultBranchValue(e.target.value); setDirty(true); }}
-                        >
-                          {!branches.includes(defaultBranchValue) && defaultBranchValue && (
-                            <option value={defaultBranchValue}>{defaultBranchValue}</option>
-                          )}
-                          {branches.map((branch) => (
-                            <option key={branch} value={branch}>{branch}</option>
-                          ))}
-                        </select>
-                      )}
-                      <p className="mt-1 text-[10px] text-muted-foreground">
-                        New worktrees will be created from this branch.
-                      </p>
-                    </div>
-
-                    <div className="mb-4">
-                      <label className="mb-1.5 block text-xs font-medium">Run Script</label>
-                      <textarea
-                        className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                        rows={3}
-                        placeholder={"npm run dev\ndocker-compose up"}
-                        value={runScriptText}
-                        onChange={(e) => { setRunScriptText(e.target.value); setDirty(true); }}
-                      />
-                      <p className="mt-1 text-[10px] text-muted-foreground">
-                        One command per line. Executed when you tap the Run button in the chat panel.
-                      </p>
-                    </div>
-
-                    <div className="mb-4 rounded-xl border border-border/40 bg-secondary/10 p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <label className="mb-1 block text-xs font-medium">Save Automation</label>
-                          <p className="text-[10px] text-muted-foreground">
-                            When a saved file matches, send text to the active Run session or workspace terminal.
-                          </p>
-                        </div>
-                        <label className="mt-0.5 flex items-center gap-2 text-[11px] text-foreground">
-                          <input
-                            type="checkbox"
-                            className="h-3.5 w-3.5 rounded border-border/50"
-                            checked={saveAutomationEnabled}
-                            onChange={(e) => { setSaveAutomationEnabled(e.target.checked); setDirty(true); }}
+                    <div className="space-y-0">
+                      <SettingsSection
+                        title="Repository"
+                        description="Choose which repository settings to edit."
+                        descriptionId="workspace-repository-description"
+                        action={(
+                          <SettingsSelect
+                            ariaLabel="Repository"
+                            value={selectedRepoId ?? ""}
+                            onValueChange={(value) => setSelectedRepoId(value)}
+                            describedBy="workspace-repository-description"
+                            className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
+                            itemClassName="text-[13px]"
+                            options={repositories.map((repo) => ({
+                              value: repo.id,
+                              label: repo.name,
+                            }))}
                           />
-                          Enabled
-                        </label>
-                      </div>
+                        )}
+                      >
+                        {selectedRepo ? (
+                          <p className="text-[11px] leading-5 text-muted-foreground/80">
+                            Editing <span className="font-medium text-foreground">{selectedRepo.name}</span>
+                            <span className="mx-1.5 text-muted-foreground/50">·</span>
+                            <code className="rounded bg-secondary/40 px-1.5 py-0.5 text-[10px]">
+                              {selectedRepo.rootPath}
+                            </code>
+                          </p>
+                        ) : null}
+                      </SettingsSection>
 
-                      {saveAutomationEnabled ? (
-                        <>
-                          <div className="mt-3">
-                            <label className="mb-1.5 block text-[11px] font-medium">Preset</label>
-                            <select
-                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              value={saveAutomationTemplate}
-                              onChange={(e) => {
-                                const nextTemplate = e.target.value as SaveAutomationTemplate;
-                                setSaveAutomationTemplate(nextTemplate);
-                                if (nextTemplate === "flutter_hot_reload") {
-                                  setSaveAutomationFilePatternsText(FLUTTER_HOT_RELOAD_PATTERN);
-                                  setSaveAutomationPayload(FLUTTER_HOT_RELOAD_PAYLOAD);
-                                }
-                                setDirty(true);
-                              }}
-                            >
-                              <option value="custom_generic">No preset</option>
-                              <option value="flutter_hot_reload">Flutter hot reload</option>
-                            </select>
-                            <p className="mt-1 text-[10px] text-muted-foreground">
-                              Optional. Presets only fill the fields below.
-                            </p>
+                      <SettingsSection
+                        title="Default Branch"
+                        description="New worktrees will be created from this branch."
+                        descriptionId="workspace-default-branch-description"
+                        action={loadingBranches ? (
+                          <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-background/20 px-3 text-[13px] text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Loading branches...
                           </div>
+                        ) : (
+                          <SettingsSelect
+                            ariaLabel="Default Branch"
+                            value={defaultBranchValue}
+                            onValueChange={(value) => { setDefaultBranchValue(value); setDirty(true); }}
+                            describedBy="workspace-default-branch-description"
+                            className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
+                            itemClassName="text-[13px]"
+                            options={[
+                              ...(!branches.includes(defaultBranchValue) && defaultBranchValue
+                                ? [{ value: defaultBranchValue, label: defaultBranchValue }]
+                                : []),
+                              ...branches.map((branch) => ({
+                                value: branch,
+                                label: branch,
+                              })),
+                            ]}
+                          />
+                        )}
+                      />
 
-                          <div className="mt-3">
-                            <label className="mb-1.5 block text-[11px] font-medium">File Patterns</label>
-                            <textarea
-                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              rows={3}
-                              placeholder={"lib/**/*.dart\nsrc/**/*.tsx"}
-                              value={saveAutomationFilePatternsText}
-                              onChange={(e) => {
-                                const nextValue = e.target.value;
-                                setSaveAutomationFilePatternsText(nextValue);
-                                setSaveAutomationTemplate(inferSaveAutomationTemplate({
-                                  filePatternsText: nextValue,
-                                  payload: saveAutomationPayload,
-                                }));
-                                setDirty(true);
-                              }}
-                            />
-                            <p className="mt-1 text-[10px] text-muted-foreground">
-                              One glob per line. Only matching saved files will trigger the action.
-                            </p>
-                          </div>
+                      <SettingsSection
+                        title="Run Script"
+                        description="One command per line. Executed when you tap the Run button in the chat panel."
+                        descriptionId="workspace-run-script-description"
+                      >
+                        <textarea
+                          aria-label="Run Script"
+                          className={SETTINGS_TEXTAREA_CLASS_NAME}
+                          rows={3}
+                          placeholder={"npm run dev\ndocker-compose up"}
+                          value={runScriptText}
+                          onChange={(e) => { setRunScriptText(e.target.value); setDirty(true); }}
+                        />
+                      </SettingsSection>
 
-                          <div className="mt-3">
-                            <label className="mb-1.5 block text-[11px] font-medium">Text To Send</label>
+                      <SettingsSection
+                        title="Save Automation"
+                        description="When a saved file matches, send text to the active Run session or workspace terminal."
+                        descriptionId="workspace-save-automation-description"
+                        action={(
+                          <label className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/20 px-3 py-2 text-[13px] text-foreground">
+                            <span>Enabled</span>
                             <input
-                              type="text"
-                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder="reload"
-                              value={saveAutomationPayload}
-                              onChange={(e) => {
-                                const nextValue = e.target.value;
-                                setSaveAutomationPayload(nextValue);
-                                setSaveAutomationTemplate(inferSaveAutomationTemplate({
-                                  filePatternsText: saveAutomationFilePatternsText,
-                                  payload: nextValue,
-                                }));
-                                setDirty(true);
-                              }}
+                              type="checkbox"
+                              className="h-3.5 w-3.5 rounded border-border/50"
+                              checked={saveAutomationEnabled}
+                              onChange={(e) => { setSaveAutomationEnabled(e.target.checked); setDirty(true); }}
                             />
-                            <p className="mt-1 text-[10px] text-muted-foreground">
-                              Examples: `reload`, `rs`, or `r`. Sent to the active Run session first, then the workspace terminal.
-                            </p>
+                          </label>
+                        )}
+                        actionClassName="md:max-w-[170px]"
+                      >
+                        {saveAutomationEnabled ? (
+                          <div className="rounded-xl border border-border/40 bg-secondary/10 p-3">
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <div className="space-y-1.5">
+                                <label className="block text-[11px] font-medium text-foreground">Preset</label>
+                                <SettingsSelect
+                                  ariaLabel="Save automation preset"
+                                  value={saveAutomationTemplate}
+                                  onValueChange={(value) => {
+                                    const nextTemplate = value as SaveAutomationTemplate;
+                                    setSaveAutomationTemplate(nextTemplate);
+                                    if (nextTemplate === "flutter_hot_reload") {
+                                      setSaveAutomationFilePatternsText(FLUTTER_HOT_RELOAD_PATTERN);
+                                      setSaveAutomationPayload(FLUTTER_HOT_RELOAD_PAYLOAD);
+                                    }
+                                    setDirty(true);
+                                  }}
+                                  className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
+                                  itemClassName="text-[13px]"
+                                  options={[
+                                    { value: "custom_generic", label: "No preset" },
+                                    { value: "flutter_hot_reload", label: "Flutter hot reload" },
+                                  ]}
+                                />
+                                <p className="text-[10px] leading-5 text-muted-foreground">
+                                  Optional. Presets only fill the fields below.
+                                </p>
+                              </div>
+
+                              <div className="space-y-1.5">
+                                <label className="block text-[11px] font-medium text-foreground">Text To Send</label>
+                                <input
+                                  type="text"
+                                  className={cn(SETTINGS_INPUT_CLASS_NAME, "font-mono")}
+                                  placeholder="reload"
+                                  value={saveAutomationPayload}
+                                  onChange={(e) => {
+                                    const nextValue = e.target.value;
+                                    setSaveAutomationPayload(nextValue);
+                                    setSaveAutomationTemplate(inferSaveAutomationTemplate({
+                                      filePatternsText: saveAutomationFilePatternsText,
+                                      payload: nextValue,
+                                    }));
+                                    setDirty(true);
+                                  }}
+                                />
+                                <p className="text-[10px] leading-5 text-muted-foreground">
+                                  Examples: `reload`, `rs`, or `r`. Sent to the active Run session first, then the workspace terminal.
+                                </p>
+                              </div>
+
+                              <div className="space-y-1.5 md:col-span-2">
+                                <label className="block text-[11px] font-medium text-foreground">File Patterns</label>
+                                <textarea
+                                  className={SETTINGS_TEXTAREA_CLASS_NAME}
+                                  rows={3}
+                                  placeholder={"lib/**/*.dart\nsrc/**/*.tsx"}
+                                  value={saveAutomationFilePatternsText}
+                                  onChange={(e) => {
+                                    const nextValue = e.target.value;
+                                    setSaveAutomationFilePatternsText(nextValue);
+                                    setSaveAutomationTemplate(inferSaveAutomationTemplate({
+                                      filePatternsText: nextValue,
+                                      payload: saveAutomationPayload,
+                                    }));
+                                    setDirty(true);
+                                  }}
+                                />
+                                <p className="text-[10px] leading-5 text-muted-foreground">
+                                  One glob per line. Only matching saved files will trigger the action.
+                                </p>
+                              </div>
+                            </div>
                           </div>
-                        </>
-                      ) : (
-                        <p className="mt-3 text-[10px] text-muted-foreground">
-                          Example pairs: `src/**/*.tsx` + `rs`, or `lib/**/*.dart` + `r`.
-                        </p>
-                      )}
+                        ) : (
+                          <p className="text-[11px] leading-5 text-muted-foreground/80">
+                            Example pairs: `src/**/*.tsx` + `rs`, or `lib/**/*.dart` + `r`.
+                          </p>
+                        )}
+                      </SettingsSection>
+
+                      <SettingsSection
+                        title="Setup Scripts"
+                        description="One command per line. Runs sequentially after worktree creation."
+                        descriptionId="workspace-setup-scripts-description"
+                      >
+                        <textarea
+                          aria-label="Setup Scripts"
+                          className={SETTINGS_TEXTAREA_CLASS_NAME}
+                          rows={5}
+                          placeholder={"bun install\ncp .env.example .env"}
+                          value={setupText}
+                          onChange={(e) => { setSetupText(e.target.value); setDirty(true); }}
+                        />
+                      </SettingsSection>
+
+                      <SettingsSection
+                        title="Teardown Scripts"
+                        description="One command per line. Runs sequentially before worktree deletion."
+                        descriptionId="workspace-teardown-scripts-description"
+                      >
+                        <textarea
+                          aria-label="Teardown Scripts"
+                          className={SETTINGS_TEXTAREA_CLASS_NAME}
+                          rows={5}
+                          placeholder="docker-compose down"
+                          value={teardownText}
+                          onChange={(e) => { setTeardownText(e.target.value); setDirty(true); }}
+                        />
+                      </SettingsSection>
                     </div>
 
-                    <div className="mb-4">
-                      <label className="mb-1.5 block text-xs font-medium">Setup Scripts</label>
-                      <textarea
-                        className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                        rows={5}
-                        placeholder={"bun install\ncp .env.example .env"}
-                        value={setupText}
-                        onChange={(e) => { setSetupText(e.target.value); setDirty(true); }}
-                      />
-                      <p className="mt-1 text-[10px] text-muted-foreground">
-                        One command per line. Runs sequentially after worktree creation.
-                      </p>
-                    </div>
-
-                    <div className="mb-4">
-                      <label className="mb-1.5 block text-xs font-medium">Teardown Scripts</label>
-                      <textarea
-                        className="w-full rounded-md border border-border/50 bg-secondary/30 px-3 py-2 font-mono text-xs leading-relaxed text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                        rows={5}
-                        placeholder="docker-compose down"
-                        value={teardownText}
-                        onChange={(e) => { setTeardownText(e.target.value); setDirty(true); }}
-                      />
-                      <p className="mt-1 text-[10px] text-muted-foreground">
-                        One command per line. Runs sequentially before worktree deletion.
-                      </p>
-                    </div>
-
-                    <div className="mt-auto flex items-center justify-between border-t border-border/30 pt-4">
+                    <div className="flex items-center justify-between border-t border-border/30 pt-4">
                       {selectedRepo ? (
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="text-destructive hover:bg-destructive/10 hover:text-destructive -ml-2"
+                          className="-ml-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
                           onClick={() => setShowRemoveDialog(true)}
                         >
                           Remove Repository
@@ -1005,38 +1549,45 @@ export function SettingsDialog({
                       ) : <div />}
 
                       <div className="flex h-5 items-center text-xs text-muted-foreground">
-                        {saving && (
+                        {saving ? (
                           <span className="flex items-center gap-1.5">
                             <Loader2 className="h-3 w-3 animate-spin" />
                             Saving
                           </span>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   </>
                 ) : (
-                  <div className="flex flex-1 items-center justify-center">
-                    <p className="text-xs text-muted-foreground">No repositories available</p>
+                  <div className="flex min-h-[240px] items-center justify-center rounded-xl border border-dashed border-border/40 bg-secondary/10">
+                    <p className="text-sm text-muted-foreground">No repositories available</p>
                   </div>
                 )}
-              </>
+              </div>
             ) : activeTab === "models" ? (
-              /* ── Models Tab ── */
-              <>
+              <div className="space-y-5">
+                <div>
+                  <h1 className="text-3xl font-semibold tracking-[-0.025em] text-foreground">Models</h1>
+                  <p className="mt-1 max-w-2xl text-[13px] leading-5 text-muted-foreground">
+                    Choose default agents for common flows and manage custom provider entries used by the app.
+                  </p>
+                </div>
+
                 {loadingModels ? (
-                  <div className="flex items-center gap-2 py-8 text-xs text-muted-foreground">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Loading...
+                  <div className="flex min-h-[240px] items-center justify-center rounded-xl border border-dashed border-border/40 bg-secondary/10">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Loading...
+                    </div>
                   </div>
                 ) : (
-                  <div>
-                    <div className="mb-6">
-                      <div className="mb-1 text-xs font-medium">Default Agent</div>
-                      <p className="mb-4 text-[10px] leading-relaxed text-muted-foreground">
-                        Saved default CLI agent and model selections for each flow.
-                      </p>
-
-                      <div className="space-y-4">
+                  <div className="space-y-0">
+                    <SettingsSection
+                      title="Default Agent"
+                      description="Saved default CLI agent and model selections for each flow."
+                      descriptionId="models-default-agent-description"
+                    >
+                      <div className="space-y-0">
                         {([
                           ["newChat", "Agent for new chats", "Default agent for newly created chat threads."],
                           ["commit", "Agent for commit", "Used when generating commit-related flows."],
@@ -1048,269 +1599,312 @@ export function SettingsDialog({
                           return (
                             <div
                               key={key}
-                              className="grid items-center gap-3 md:grid-cols-[minmax(0,1fr)_160px_1fr]"
+                              className="border-t border-border/30 py-4 first:border-t-0 first:pt-0 last:pb-0"
                             >
-                              <div>
-                                <label className="text-xs text-foreground">
-                                  {label}
-                                </label>
-                                <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-                                  {description}
-                                </p>
+                              <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                                <div className="min-w-0 xl:max-w-sm">
+                                  <h3 className="text-[13px] font-medium text-foreground">{label}</h3>
+                                  <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
+                                    {description}
+                                  </p>
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-2 xl:w-[440px] xl:shrink-0">
+                                  <SettingsSelect
+                                    ariaLabel={`${label} CLI Agent`}
+                                    value={selection.agent}
+                                    onValueChange={(value) => {
+                                      const nextAgent = value as CliAgent;
+                                      const nextOptions = agentModelOptions[nextAgent];
+                                      const fallbackOption = nextOptions[0];
+
+                                      updateAgentDefault(key, () => ({
+                                        agent: nextAgent,
+                                        model: fallbackOption?.model ?? resolveAgentDefaultModel(nextAgent),
+                                        modelProviderId: fallbackOption?.modelProviderId ?? null,
+                                      }));
+                                    }}
+                                    className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
+                                    itemClassName="text-[13px]"
+                                    options={[
+                                      { value: "claude", label: "Claude" },
+                                      { value: "codex", label: "Codex" },
+                                      { value: "cursor", label: "Cursor" },
+                                      { value: "opencode", label: "OpenCode" },
+                                    ]}
+                                  />
+                                  <SettingsSelect
+                                    ariaLabel={`${label} model`}
+                                    value={`${selection.modelProviderId ?? "builtin"}::${selection.model}`}
+                                    onValueChange={(value) => {
+                                      const nextOption = options.find(
+                                        (option) => `${option.modelProviderId ?? "builtin"}::${option.model}` === value,
+                                      );
+                                      if (!nextOption) {
+                                        return;
+                                      }
+
+                                      updateAgentDefault(key, (current) => ({
+                                        ...current,
+                                        model: nextOption.model,
+                                        modelProviderId: nextOption.modelProviderId,
+                                      }));
+                                    }}
+                                    visualVariant="model-detail"
+                                    className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
+                                    itemClassName="text-[13px]"
+                                    options={options.map((option) => ({
+                                      value: `${option.modelProviderId ?? "builtin"}::${option.model}`,
+                                      label: option.label,
+                                      detail: option.detail,
+                                      source: option.source,
+                                    }))}
+                                  />
+                                </div>
                               </div>
-                              <select
-                                aria-label={`${label} CLI Agent`}
-                                className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                                value={selection.agent}
-                                onChange={(e) => {
-                                  const nextAgent = e.target.value as CliAgent;
-                                  const nextOptions = agentModelOptions[nextAgent];
-                                  const fallbackOption = nextOptions[0];
-
-                                  updateAgentDefault(key, () => ({
-                                    agent: nextAgent,
-                                    model: fallbackOption?.model ?? resolveAgentDefaultModel(nextAgent),
-                                    modelProviderId: fallbackOption?.modelProviderId ?? null,
-                                  }));
-                                }}
-                              >
-                                <option value="claude">Claude</option>
-                                <option value="codex">Codex</option>
-                                <option value="cursor">Cursor</option>
-                                <option value="opencode">OpenCode</option>
-                              </select>
-                              <select
-                                aria-label={`${label} model`}
-                                className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                                value={`${selection.modelProviderId ?? "builtin"}::${selection.model}`}
-                                onChange={(e) => {
-                                  const nextOption = options.find(
-                                    (option) => `${option.modelProviderId ?? "builtin"}::${option.model}` === e.target.value,
-                                  );
-                                  if (!nextOption) {
-                                    return;
-                                  }
-
-                                  updateAgentDefault(key, (current) => ({
-                                    ...current,
-                                    model: nextOption.model,
-                                    modelProviderId: nextOption.modelProviderId,
-                                  }));
-                                }}
-                              >
-                                {options.map((option) => (
-                                  <option key={option.key} value={`${option.modelProviderId ?? "builtin"}::${option.model}`}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
                             </div>
                           );
                         })}
                       </div>
-                    </div>
+                    </SettingsSection>
 
-                    <div className="mb-5 border-t border-border/40 pt-5" />
+                    <SettingsSection
+                      title="Model Providers"
+                      description="Add compatibility-based model providers and keep them available everywhere the matching agents are supported."
+                      descriptionId="models-providers-description"
+                      action={(
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 gap-1.5 px-3 text-[13px]"
+                          onClick={() => {
+                            resetProviderForm("anthropic");
+                            setShowProviderDialog(true);
+                          }}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Add
+                        </Button>
+                      )}
+                      actionClassName="md:w-auto md:max-w-none"
+                    >
+                      {providers.length === 0 ? (
+                        <p className="text-[11px] leading-5 text-muted-foreground">
+                          No compatibility-based providers configured yet. Add OpenAI or Anthropic entries here.
+                        </p>
+                      ) : null}
 
-                    <div className="mb-2 flex items-center justify-between">
-                      <label className="text-xs font-medium">Model Providers</label>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 gap-1 px-2 text-xs"
-                        onClick={() => {
-                          resetProviderForm("claude");
-                          setShowProviderForm(true);
+                      {providers.length > 0 ? (
+                        <div className="space-y-0">
+                          {providers.map((provider) => (
+                            <div
+                              key={provider.id}
+                              className="border-t border-border/30 py-4 first:border-t-0 first:pt-0 last:pb-0"
+                            >
+                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded-full border border-border/50 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                                      {getProviderCompatibilityLabel(provider.compatibility)}
+                                    </span>
+                                    <span className="text-[13px] font-medium text-foreground">{provider.name}</span>
+                                    <span className="text-muted-foreground/50">·</span>
+                                    <span className="font-mono text-[11px] text-muted-foreground">{provider.modelId}</span>
+                                  </div>
+                                  <div className="mt-2 space-y-1 text-[11px] leading-5 text-muted-foreground">
+                                    <div>Works with: {formatSupportedAgentsForCompatibility(provider.compatibility)}</div>
+                                    <div>
+                                      Endpoint:{" "}
+                                      {provider.baseUrl ? (
+                                        <span className="break-all">{provider.baseUrl}</span>
+                                      ) : (
+                                        <span>Not stored</span>
+                                      )}
+                                    </div>
+                                    <div>
+                                      API Key:{" "}
+                                      {provider.apiKeyMasked ? (
+                                        <span className="font-mono">{provider.apiKeyMasked}</span>
+                                      ) : (
+                                        <span>Not stored</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 self-start">
+                                  <button
+                                    type="button"
+                                    className="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                                    aria-label={`Edit ${getProviderCompatibilityLabel(provider.compatibility)} provider ${provider.name} (${provider.modelId})`}
+                                    title={`Edit ${provider.name}`}
+                                    onClick={() => handleEditProvider(provider)}
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                    aria-label={`Delete ${getProviderCompatibilityLabel(provider.compatibility)} provider ${provider.name} (${provider.modelId})`}
+                                    title={`Delete ${provider.name}`}
+                                    onClick={() => void handleDeleteProvider(provider.id)}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+
+                      <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
+                        {providerFootnote}
+                      </p>
+
+                      <Dialog
+                        open={showProviderDialog}
+                        onOpenChange={(nextOpen) => {
+                          if (!nextOpen) {
+                            resetProviderForm(providerCompatibility);
+                            return;
+                          }
+
+                          setShowProviderDialog(true);
                         }}
                       >
-                        <Plus className="h-3 w-3" />
-                        Add
-                      </Button>
-                    </div>
+                        <DialogContent className="sm:max-w-[560px]">
+                          <DialogHeader>
+                            <DialogTitle>{editingProviderId ? "Edit Provider" : "Add Provider"}</DialogTitle>
+                            <DialogDescription>
+                              Configure a compatibility-based model provider with a stored endpoint and credentials.
+                            </DialogDescription>
+                          </DialogHeader>
 
-                    {providers.length === 0 && !showProviderForm && (
-                      <p className="text-[10px] text-muted-foreground">
-                        No custom models configured yet. Add Claude, Codex, or OpenCode entries here.
-                        Claude uses Anthropic-compatible backends; Codex and OpenCode custom endpoints use the Responses API.
-                      </p>
-                    )}
-
-                    {providers.length > 0 && (
-                      <div className="space-y-2">
-                        {providers.map((provider) => (
-                          <div
-                            key={provider.id}
-                            className="rounded-lg border border-border/50 bg-secondary/20 p-2.5 text-xs"
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                                  {getProviderAgentLabel(provider.agent)}
-                                </span>
-                                <span className="font-medium">{provider.modelId}</span>
-                                <span className="text-muted-foreground">·</span>
-                                <span className="text-muted-foreground">{provider.name}</span>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  className="rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                                  aria-label={`Edit ${getProviderAgentLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
-                                  title={`Edit ${provider.name}`}
-                                  onClick={() => handleEditProvider(provider)}
-                                >
-                                  <Pencil className="h-3 w-3" />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="rounded-md p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                                  aria-label={`Delete ${getProviderAgentLabel(provider.agent)} provider ${provider.name} (${provider.modelId})`}
-                                  title={`Delete ${provider.name}`}
-                                  onClick={() => void handleDeleteProvider(provider.id)}
-                                >
-                                  <Trash2 className="h-3 w-3" />
-                                </button>
-                              </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="space-y-1.5">
+                              <label className="block text-[11px] font-medium text-foreground">API Compatibility</label>
+                              <SettingsSelect
+                                ariaLabel="Provider API Compatibility"
+                                value={providerCompatibility}
+                                onValueChange={(value) => {
+                                  setProviderCompatibility(value as ModelProviderCompatibility);
+                                  setTestResult(null);
+                                }}
+                                className="rounded-lg border-border/60 bg-background/20 px-3 text-[13px]"
+                                itemClassName="text-[13px]"
+                                options={[
+                                  { value: "openai", label: "OpenAI" },
+                                  { value: "anthropic", label: "Anthropic" },
+                                ]}
+                              />
                             </div>
-                            <div className="mt-1 text-muted-foreground">
-                              {provider.baseUrl ? (
-                                <>
-                                  <span className="break-all">{provider.baseUrl}</span>
-                                  <span className="mx-1.5">·</span>
-                                </>
+                            <div className="space-y-1.5">
+                              <label className="block text-[11px] font-medium text-foreground">Provider Name</label>
+                              <input
+                                aria-label="Provider Name"
+                                type="text"
+                                className={SETTINGS_INPUT_CLASS_NAME}
+                                placeholder='e.g. "OpenAI", "OpenRouter", "Anthropic Proxy"'
+                                value={providerName}
+                                onChange={(e) => {
+                                  setProviderName(e.target.value);
+                                  setTestResult(null);
+                                }}
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <label className="block text-[11px] font-medium text-foreground">Model ID</label>
+                              <input
+                                aria-label="Provider Model ID"
+                                type="text"
+                                className={SETTINGS_INPUT_CLASS_NAME}
+                                placeholder={providerModelPlaceholder}
+                                value={providerModelId}
+                                onChange={(e) => {
+                                  setProviderModelId(e.target.value);
+                                  setTestResult(null);
+                                }}
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <label className="block text-[11px] font-medium text-foreground">Base URL</label>
+                              <input
+                                aria-label="Provider Base URL"
+                                type="url"
+                                aria-invalid={providerBaseUrlError ? "true" : "false"}
+                                className={SETTINGS_INPUT_CLASS_NAME}
+                                placeholder={providerBaseUrlPlaceholder}
+                                value={providerBaseUrl}
+                                onChange={(e) => {
+                                  setProviderBaseUrl(e.target.value);
+                                  setTestResult(null);
+                                }}
+                              />
+                              {providerBaseUrlError ? (
+                                <p className="text-[11px] leading-5 text-destructive">{providerBaseUrlError}</p>
                               ) : null}
-                              {provider.apiKeyMasked ? (
-                                <span className="font-mono">{provider.apiKeyMasked}</span>
-                              ) : (
-                                <span>No endpoint override</span>
-                              )}
+                            </div>
+                            <div className="space-y-1.5 md:col-span-2">
+                              <label className="block text-[11px] font-medium text-foreground">API Key</label>
+                              <input
+                                aria-label="Provider API Key"
+                                type="password"
+                                className={SETTINGS_INPUT_CLASS_NAME}
+                                placeholder={providerApiKeyPlaceholder}
+                                value={providerApiKey}
+                                onChange={(e) => {
+                                  setProviderApiKey(e.target.value);
+                                  setTestResult(null);
+                                }}
+                              />
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    )}
 
-                    {/* Provider form */}
-                    {showProviderForm && (
-                      <div className="mt-3 rounded-lg border border-border/50 bg-secondary/10 p-3">
-                        <div className="mb-2 flex items-center justify-between">
-                          <span className="text-xs font-medium">
-                            {editingProviderId ? "Edit Provider" : "Add Provider"}
-                          </span>
-                          <button
-                            type="button"
-                            className="rounded-md p-0.5 text-muted-foreground hover:text-foreground"
-                            onClick={() => resetProviderForm(providerAgent)}
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                        <div className="space-y-2">
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Agent</label>
-                            <select
-                              aria-label="Provider CLI Agent"
-                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              value={providerAgent}
-                              onChange={(e) => {
-                                setProviderAgent(e.target.value as CliAgent);
-                                setTestResult(null);
-                              }}
-                            >
-                              <option value="claude">Claude</option>
-                              <option value="codex">Codex</option>
-                              <option value="opencode">OpenCode</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Provider Name</label>
-                            <input
-                              aria-label="Provider Name"
-                              type="text"
-                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder='e.g. "z.ai", "OpenRouter"'
-                              value={providerName}
-                              onChange={(e) => setProviderName(e.target.value)}
-                            />
-                          </div>
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Model ID</label>
-                            <input
-                              aria-label="Provider Model ID"
-                              type="text"
-                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder={providerModelPlaceholder}
-                              value={providerModelId}
-                              onChange={(e) => setProviderModelId(e.target.value)}
-                            />
-                          </div>
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-muted-foreground">Base URL (optional)</label>
-                            <input
-                              aria-label="Provider Base URL"
-                              type="text"
-                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder={providerBaseUrlPlaceholder}
-                              value={providerBaseUrl}
-                              onChange={(e) => setProviderBaseUrl(e.target.value)}
-                            />
-                          </div>
-                          <div>
-                            <label className="mb-0.5 block text-[10px] text-muted-foreground">API Key (optional)</label>
-                            <input
-                              aria-label="Provider API Key"
-                              type="password"
-                              className="w-full rounded-md border border-border/50 bg-secondary/30 px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/50 focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                              placeholder={providerApiKeyPlaceholder}
-                              value={providerApiKey}
-                              onChange={(e) => setProviderApiKey(e.target.value)}
-                            />
-                          </div>
-                          <p className="text-[10px] leading-relaxed text-muted-foreground">
+                          <p className="text-[11px] leading-5 text-muted-foreground">
                             {providerInlineHelp}
                           </p>
-                          {testResult && (
-                            <div className={`rounded-md px-2.5 py-1.5 text-xs ${testResult.success ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
+                          <p className="text-[11px] leading-5 text-muted-foreground">
+                            Works with {formatSupportedAgentsForCompatibility(providerCompatibility)}.
+                          </p>
+
+                          {testResult ? (
+                            <div className={`rounded-lg px-3 py-2 text-[13px] ${testResult.success ? "bg-emerald-500/10 text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
                               {testResult.success ? providerTestSuccessMessage : testResult.error}
                             </div>
-                          )}
-                          <div className="flex justify-end gap-2 pt-1">
+                          ) : null}
+
+                          <div className="flex justify-end gap-2">
                             <Button
                               size="sm"
                               variant="ghost"
-                              className="h-7 text-xs"
-                              onClick={() => resetProviderForm(providerAgent)}
+                              className="h-8 text-[13px]"
+                              onClick={() => resetProviderForm(providerCompatibility)}
                             >
                               Cancel
                             </Button>
                             <Button
                               size="sm"
                               variant="outline"
-                              className="h-7 text-xs"
+                              className="h-8 text-[13px]"
                               disabled={!canTestProvider || testingProvider}
                               onClick={() => void handleTestProvider()}
                             >
-                              {testingProvider ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test"}
+                              {testingProvider ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Test"}
                             </Button>
                             <Button
                               size="sm"
-                              className="h-7 text-xs"
+                              className="h-8 text-[13px]"
                               disabled={!canSaveProvider || savingProvider}
                               onClick={() => void handleSaveProvider()}
                             >
-                              {savingProvider ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
+                              {savingProvider ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
                             </Button>
                           </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <p className="mt-3 text-[10px] text-muted-foreground">
-                      {providerFootnote}
-                    </p>
+                        </DialogContent>
+                      </Dialog>
+                    </SettingsSection>
                   </div>
                 )}
-              </>
+              </div>
             ) : (
               <div className="space-y-4">
                 <div>

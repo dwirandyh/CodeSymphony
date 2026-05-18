@@ -2,8 +2,10 @@ import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
   hasSameThreadSelection,
   shouldPreserveThreadSelectionSessionIds,
+  supportsModelProviderCompatibility,
   type ChatThreadKind,
   type CliAgent,
+  type ModelProviderCompatibility,
   type ThreadSelectionLike,
 } from "@codesymphony/shared-types";
 import {
@@ -77,7 +79,7 @@ function resolveBuiltinModelSelection(agent: CliAgent, model: string): string {
 
 function toActiveModelProvider(provider: {
   id: string;
-  agent: CliAgent;
+  compatibility: ModelProviderCompatibility;
   apiKey: string | null;
   baseUrl: string | null;
   name: string;
@@ -85,7 +87,7 @@ function toActiveModelProvider(provider: {
 }): ActiveModelProvider {
   return {
     id: provider.id,
-    agent: provider.agent,
+    compatibility: provider.compatibility,
     apiKey: provider.apiKey,
     baseUrl: provider.baseUrl,
     name: provider.name,
@@ -125,11 +127,8 @@ export async function resolveThreadSelection(
     if (!provider) {
       throw new Error("Selected model provider not found");
     }
-    if (provider.agent === "cursor") {
-      throw new Error("Cursor does not support custom model providers");
-    }
-    if (provider.agent !== agent) {
-      throw new Error(`Selected model provider belongs to ${provider.agent}, not ${agent}`);
+    if (!supportsModelProviderCompatibility(agent, provider.compatibility)) {
+      throw new Error(`Selected model provider is ${provider.compatibility}-compatible and cannot be used with ${agent}`);
     }
 
     return {

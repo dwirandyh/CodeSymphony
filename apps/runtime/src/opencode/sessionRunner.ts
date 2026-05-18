@@ -7,7 +7,12 @@ import {
   type Permission as OpencodePermission,
   type ToolPart as OpencodeToolPart,
 } from "@opencode-ai/sdk";
-import { DEFAULT_CHAT_MODEL_BY_AGENT, type AgentTodoItem, type PermissionDecision } from "@codesymphony/shared-types";
+import {
+  DEFAULT_CHAT_MODEL_BY_AGENT,
+  type AgentTodoItem,
+  type ModelProviderCompatibility,
+  type PermissionDecision,
+} from "@codesymphony/shared-types";
 import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import { createServer } from "node:net";
 import type { Readable } from "node:stream";
@@ -105,6 +110,13 @@ type OpencodeTodoStatus = AgentTodoItem["status"];
 type OpencodeTodoEntry = {
   content: string;
   status: OpencodeTodoStatus;
+};
+type OpencodeSessionMessage = {
+  info: {
+    id: string;
+    role: "user" | "assistant";
+  };
+  parts: OpencodePart[];
 };
 
 ensureConfiguredOpencodeBinaryOnPath();
@@ -383,6 +395,7 @@ function buildOpencodeRuntimeConfig(params: {
   permissionMode: "default" | "plan" | undefined;
   threadPermissionMode: "default" | "full_access" | undefined;
   model: string;
+  providerCompatibility?: ModelProviderCompatibility;
   providerApiKey?: string;
   providerBaseUrl?: string;
 }): {
@@ -396,6 +409,7 @@ function buildOpencodeRuntimeConfig(params: {
   const normalizedModel = params.model.trim() || DEFAULT_CHAT_MODEL_BY_AGENT.opencode;
   const trimmedBaseUrl = params.providerBaseUrl?.trim();
   const trimmedApiKey = params.providerApiKey?.trim();
+  const providerCompatibility = params.providerCompatibility ?? "openai";
   const agent = params.permissionMode === "plan" ? "plan" : "build";
   const permission = buildOpencodePermissionConfig(params.threadPermissionMode);
   const config: OpencodeConfig = {
@@ -418,8 +432,12 @@ function buildOpencodeRuntimeConfig(params: {
   if (trimmedBaseUrl) {
     config.provider = {
       [OPENCODE_CUSTOM_PROVIDER_ID]: {
-        name: "CodeSymphony Custom",
-        npm: "@ai-sdk/openai",
+        name: providerCompatibility === "anthropic"
+          ? "CodeSymphony Anthropic"
+          : "CodeSymphony OpenAI",
+        npm: providerCompatibility === "anthropic"
+          ? "@ai-sdk/anthropic"
+          : "@ai-sdk/openai",
         options: {
           baseURL: trimmedBaseUrl,
           ...(trimmedApiKey ? { apiKey: trimmedApiKey } : {}),
@@ -621,6 +639,27 @@ function summarizeStalledOpencodeSession(params: {
   return "OpenCode session stalled before producing any output. The upstream provider did not stream any events or completion signal.";
 }
 
+function extractTextOutputFromSessionMessages(params: {
+  messages: OpencodeSessionMessage[];
+  existingMessageIds: Set<string>;
+}): string {
+  const chunks: string[] = [];
+
+  for (const message of params.messages) {
+    if (message.info.role !== "assistant" || params.existingMessageIds.has(message.info.id)) {
+      continue;
+    }
+
+    for (const part of message.parts) {
+      if (part.type === "text" && part.text.length > 0) {
+        chunks.push(part.text);
+      }
+    }
+  }
+
+  return chunks.join("");
+}
+
 async function buildOpencodePromptParts(params: {
   prompt: string;
   promptWithAttachments?: string;
@@ -673,6 +712,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
   threadPermissionMode,
   autoAcceptTools,
   model,
+  providerCompatibility,
   providerApiKey,
   providerBaseUrl,
   onText,
@@ -729,6 +769,7 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
     permissionMode,
     threadPermissionMode,
     model: model?.trim() || DEFAULT_CHAT_MODEL_BY_AGENT.opencode,
+    providerCompatibility,
     providerApiKey,
     providerBaseUrl,
   });
@@ -1360,6 +1401,22 @@ export const runOpencodeWithStreaming: ChatAgentRunner = async ({
       }
     }
 
+    if (fullOutput.trim().length === 0) {
+      const finalMessagesResponse = await client.session.messages({
+        path: { id: currentSessionId },
+        throwOnError: true,
+      }).catch(() => null);
+      const fallbackOutput = extractTextOutputFromSessionMessages({
+        messages: (finalMessagesResponse?.data ?? []) as OpencodeSessionMessage[],
+        existingMessageIds,
+      });
+
+      if (fallbackOutput.length > 0) {
+        fullOutput = fallbackOutput;
+        await onText(fallbackOutput);
+      }
+    }
+
     return {
       output: fullOutput,
       sessionId: activeSessionId,
@@ -1396,6 +1453,7 @@ export const __testing = {
   buildOpencodePermissionConfig,
   buildOpencodeRuntimeConfig,
   derivePermissionBlockedPath,
+  extractTextOutputFromSessionMessages,
   getEventSessionId,
   normalizePermissionRequest,
 };

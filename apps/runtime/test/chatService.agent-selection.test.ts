@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CliAgent, ChatThreadKind } from "@codesymphony/shared-types";
+import type { ChatThreadKind, ModelProviderCompatibility } from "@codesymphony/shared-types";
 import * as cursorSessionRunner from "../src/cursor/sessionRunner.js";
 import { createEventHub } from "../src/events/eventHub";
 import { createChatService } from "../src/services/chat";
@@ -32,7 +32,7 @@ let originalCodexHome: string | undefined;
 function createStubModelProviderService(
   providersById: Record<string, {
     id: string;
-    agent: CliAgent;
+    compatibility: ModelProviderCompatibility;
     apiKey: string | null;
     baseUrl: string | null;
     name: string;
@@ -1023,7 +1023,7 @@ describe("chatService agent selection", () => {
     const modelProviderService = createStubModelProviderService({
       "provider-claude-remote": {
         id: "provider-claude-remote",
-        agent: "claude",
+        compatibility: "anthropic",
         apiKey: "provider-key",
         baseUrl: "https://provider.example.com/v1",
         name: "Remote Claude",
@@ -1049,7 +1049,7 @@ describe("chatService agent selection", () => {
     await prisma.modelProvider.create({
       data: {
         id: "provider-claude-remote",
-        agent: "claude",
+        compatibility: "anthropic",
         name: "Remote Claude",
         modelId: "glm-4.7",
         baseUrl: "https://provider.example.com/v1",
@@ -1182,7 +1182,7 @@ describe("chatService agent selection", () => {
     const modelProviderService = createStubModelProviderService({
       "provider-claude-remote": {
         id: "provider-claude-remote",
-        agent: "claude",
+        compatibility: "anthropic",
         apiKey: "provider-key",
         baseUrl: "https://provider.example.com/v1",
         name: "Remote Claude",
@@ -1208,7 +1208,7 @@ describe("chatService agent selection", () => {
     await prisma.modelProvider.create({
       data: {
         id: "provider-claude-remote",
-        agent: "claude",
+        compatibility: "anthropic",
         name: "Remote Claude",
         modelId: "glm-4.7",
         baseUrl: "https://provider.example.com/v1",
@@ -1301,7 +1301,7 @@ describe("chatService agent selection", () => {
     const modelProviderService = createStubModelProviderService({
       "provider-codex-1": {
         id: "provider-codex-1",
-        agent: "codex",
+        compatibility: "openai",
         apiKey: "sk-test",
         baseUrl: "https://example.invalid/v1",
         name: "Team Codex",
@@ -1378,7 +1378,7 @@ describe("chatService agent selection", () => {
     const modelProviderService = createStubModelProviderService({
       "provider-claude-remote": {
         id: "provider-claude-remote",
-        agent: "claude",
+        compatibility: "anthropic",
         apiKey: "provider-key",
         baseUrl: "https://provider.example.com/v1",
         name: "Remote Claude",
@@ -1398,7 +1398,7 @@ describe("chatService agent selection", () => {
     await prisma.modelProvider.create({
       data: {
         id: "provider-claude-remote",
-        agent: "claude",
+        compatibility: "anthropic",
         name: "Remote Claude",
         modelId: "glm-4.7",
         baseUrl: "https://provider.example.com/v1",

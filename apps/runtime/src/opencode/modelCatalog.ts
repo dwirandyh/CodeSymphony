@@ -8,6 +8,7 @@ const execFileAsync = promisify(execFile);
 const OPENCODE_MODELS_TIMEOUT_MS = 20_000;
 const OPENCODE_MODELS_CACHE_TTL_MS = 5 * 60_000;
 const OPENCODE_MODELS_MAX_BUFFER_BYTES = 1024 * 1024;
+const OPENCODE_MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
 
 type OpencodeVerboseModelRecord = {
   id?: string;
@@ -44,6 +45,29 @@ function buildOpencodeModelCatalogEntry(
     name: metadata?.name?.trim() || fullModelId,
     providerId,
   };
+}
+
+function isLikelyOpencodeModelId(value: string): boolean {
+  return OPENCODE_MODEL_ID_PATTERN.test(value.trim());
+}
+
+function resolveOpencodeModelCandidate(
+  candidate: string,
+  metadata?: OpencodeVerboseModelRecord,
+): string | null {
+  const normalizedCandidate = candidate.trim();
+  if (isLikelyOpencodeModelId(normalizedCandidate)) {
+    return normalizedCandidate;
+  }
+
+  const providerId = metadata?.providerID?.trim();
+  const modelId = metadata?.id?.trim();
+  if (!providerId || !modelId) {
+    return null;
+  }
+
+  const metadataCandidate = `${providerId}/${modelId}`;
+  return isLikelyOpencodeModelId(metadataCandidate) ? metadataCandidate : null;
 }
 
 function readJsonBlock(lines: string[], startIndex: number): { endIndex: number; text: string } | null {
@@ -99,20 +123,29 @@ export function parseOpencodeModelCatalog(stdout: string): OpencodeModelCatalogE
     if (nextLine?.startsWith("{")) {
       const jsonBlock = readJsonBlock(lines, index + 1);
       if (jsonBlock) {
+        let metadata: OpencodeVerboseModelRecord | undefined;
         try {
-          const metadata = JSON.parse(jsonBlock.text) as OpencodeVerboseModelRecord;
-          pushModel(buildOpencodeModelCatalogEntry(candidate, metadata));
-          index = jsonBlock.endIndex;
-          continue;
+          metadata = JSON.parse(jsonBlock.text) as OpencodeVerboseModelRecord;
         } catch {
-          pushModel(buildOpencodeModelCatalogEntry(candidate));
-          index = jsonBlock.endIndex;
-          continue;
+          metadata = undefined;
         }
+
+        const resolvedCandidate = resolveOpencodeModelCandidate(candidate, metadata);
+        if (resolvedCandidate) {
+          pushModel(buildOpencodeModelCatalogEntry(resolvedCandidate, metadata));
+        }
+
+        index = jsonBlock.endIndex;
+        continue;
       }
     }
 
-    pushModel(buildOpencodeModelCatalogEntry(candidate));
+    const resolvedCandidate = resolveOpencodeModelCandidate(candidate);
+    if (!resolvedCandidate) {
+      continue;
+    }
+
+    pushModel(buildOpencodeModelCatalogEntry(resolvedCandidate));
   }
 
   return models;

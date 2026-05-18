@@ -1,4 +1,4 @@
-import type { CliAgent } from "@codesymphony/shared-types";
+import type { CliAgent, ModelProviderCompatibility } from "@codesymphony/shared-types";
 import type { ClaudeOwnershipReason } from "../../types.js";
 
 export type WorktreeStateSnapshot = {
@@ -25,7 +25,7 @@ export type WorktreeMutationTracker = {
 
 export type ActiveModelProvider = {
   id: string;
-  agent: CliAgent;
+  compatibility: ModelProviderCompatibility;
   apiKey: string | null;
   baseUrl: string | null;
   name: string;
@@ -35,6 +35,7 @@ export type ActiveModelProvider = {
 export type ProviderOptions = {
   agent?: CliAgent;
   model?: string;
+  providerCompatibility?: ModelProviderCompatibility;
   providerApiKey?: string;
   providerBaseUrl?: string;
 };

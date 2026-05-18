@@ -189,6 +189,28 @@ export type ChatQueuedMessageStatus = z.infer<typeof ChatQueuedMessageStatusSche
 export const CliAgentSchema = z.enum(["claude", "codex", "cursor", "opencode"]);
 export type CliAgent = z.infer<typeof CliAgentSchema>;
 
+export const ModelProviderCompatibilitySchema = z.enum(["anthropic", "openai"]);
+export type ModelProviderCompatibility = z.infer<typeof ModelProviderCompatibilitySchema>;
+
+export const MODEL_PROVIDER_COMPATIBILITIES_BY_AGENT = {
+  claude: ["anthropic"],
+  codex: ["openai"],
+  cursor: [],
+  opencode: ["anthropic", "openai"],
+} as const satisfies Record<CliAgent, readonly ModelProviderCompatibility[]>;
+
+export const MODEL_PROVIDER_AGENTS_BY_COMPATIBILITY = {
+  anthropic: ["claude", "opencode"],
+  openai: ["codex", "opencode"],
+} as const satisfies Record<ModelProviderCompatibility, readonly CliAgent[]>;
+
+export function supportsModelProviderCompatibility(
+  agent: CliAgent,
+  compatibility: ModelProviderCompatibility,
+): boolean {
+  return MODEL_PROVIDER_COMPATIBILITIES_BY_AGENT[agent].some((entry) => entry === compatibility);
+}
+
 export const BUILTIN_CHAT_MODELS_BY_AGENT = {
   claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
   codex: [],
@@ -1171,7 +1193,7 @@ export type OpenInAppInput = z.infer<typeof OpenInAppInputSchema>;
 
 export const ModelProviderSchema = z.object({
   id: z.string(),
-  agent: CliAgentSchema.optional(),
+  compatibility: ModelProviderCompatibilitySchema,
   name: z.string(),
   modelId: z.string(),
   baseUrl: z.string().nullable().optional(),
@@ -1183,25 +1205,25 @@ export const ModelProviderSchema = z.object({
 export type ModelProvider = z.infer<typeof ModelProviderSchema>;
 
 export const CreateModelProviderInputSchema = z.object({
-  agent: CliAgentSchema.optional().default("claude"),
+  compatibility: ModelProviderCompatibilitySchema,
   name: z.string().trim().min(1),
   modelId: z.string().trim().min(1),
-  baseUrl: z.string().trim().optional(),
-  apiKey: z.string().trim().optional(),
+  baseUrl: z.string().trim().min(1),
+  apiKey: z.string().trim().min(1),
 });
 export type CreateModelProviderInput = z.input<typeof CreateModelProviderInputSchema>;
 
 export const UpdateModelProviderInputSchema = z.object({
-  agent: CliAgentSchema.optional(),
+  compatibility: ModelProviderCompatibilitySchema.optional(),
   name: z.string().trim().min(1).optional(),
   modelId: z.string().trim().min(1).optional(),
-  baseUrl: z.string().trim().nullable().optional(),
-  apiKey: z.string().trim().nullable().optional(),
+  baseUrl: z.string().trim().min(1).optional(),
+  apiKey: z.string().trim().min(1).optional(),
 });
 export type UpdateModelProviderInput = z.input<typeof UpdateModelProviderInputSchema>;
 
 export const TestModelProviderInputSchema = z.object({
-  agent: CliAgentSchema.optional().default("claude"),
+  compatibility: ModelProviderCompatibilitySchema,
   baseUrl: z.string().trim().min(1),
   apiKey: z.string().trim().min(1),
   modelId: z.string().trim().min(1),

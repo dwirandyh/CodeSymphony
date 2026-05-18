@@ -23,6 +23,7 @@ vi.mock("../../../lib/api", () => ({
 function makeProvider(overrides: Partial<ModelProvider> = {}): ModelProvider {
   return {
     id: "provider-1",
+    compatibility: "anthropic",
     name: "Custom",
     modelId: "claude-custom",
     baseUrl: "https://example.com",

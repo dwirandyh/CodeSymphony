@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 import {
   BUILTIN_CHAT_MODELS_BY_AGENT,
+  supportsModelProviderCompatibility,
   type CliAgent,
   type CodexModelCatalogEntry,
   type CursorModelCatalogEntry,
@@ -246,7 +247,7 @@ export function buildAgentSelectionOptions(params: {
         source: "builtin" as const,
       })),
       ...params.providers
-        .filter((provider) => provider.agent === "claude")
+        .filter((provider) => supportsModelProviderCompatibility("claude", provider.compatibility))
         .map((provider) => ({
           id: provider.id,
           agent: "claude" as const,
@@ -268,7 +269,7 @@ export function buildAgentSelectionOptions(params: {
         source: "builtin" as const,
       })),
       ...params.providers
-        .filter((provider) => provider.agent === "codex")
+        .filter((provider) => supportsModelProviderCompatibility("codex", provider.compatibility))
         .map((provider) => ({
           id: provider.id,
           agent: "codex" as const,
@@ -299,7 +300,7 @@ export function buildAgentSelectionOptions(params: {
         source: "builtin" as const,
       })),
       ...params.providers
-        .filter((provider) => provider.agent === "opencode")
+        .filter((provider) => supportsModelProviderCompatibility("opencode", provider.compatibility))
         .map((provider) => ({
           id: provider.id,
           agent: "opencode" as const,
@@ -392,16 +393,82 @@ const MODEL_LIST_PANEL_WIDTH = 250;
 const MODEL_PANEL_GAP = 8;
 const MODEL_POPOVER_GAP = 6;
 const MODEL_POPOVER_VIEWPORT_MARGIN = 16;
+const AGENT_POPOVER_ESTIMATED_HEIGHT = 220;
 const MODEL_POPOVER_ESTIMATED_HEIGHT = 320;
+const MODEL_POPOVER_DEFAULT_SCROLLER_HEIGHT = 288;
+const MODEL_POPOVER_MIN_SCROLLER_HEIGHT = 96;
+const MODEL_VISIBLE_OPTION_LIMIT = 10;
+const MODEL_OPTION_ROW_HEIGHT = 28;
+const MODEL_OPTION_SEPARATOR_HEIGHT = 10;
 
 type PopoverPosition = {
   top: number;
   left: number;
-  placement: "above" | "below";
+};
+
+type DesktopPopoverLayout = {
+  left: number;
+  agentTop: number;
+  modelTop: number;
+  modelScrollerMaxHeight: number;
 };
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function calculateModelScrollerVisibleMaxHeight(options: AgentSelectionOption[]): number {
+  const visibleCount = Math.min(options.length, MODEL_VISIBLE_OPTION_LIMIT);
+  let separatorCount = 0;
+
+  for (let index = 0; index < visibleCount; index += 1) {
+    if (isFirstCustomModelOption(options, index)) {
+      separatorCount += 1;
+    }
+  }
+
+  return (visibleCount * MODEL_OPTION_ROW_HEIGHT) + (separatorCount * MODEL_OPTION_SEPARATOR_HEIGHT);
+}
+
+type RectLike = Pick<DOMRect, "bottom" | "left" | "top">;
+
+export function calculateAgentModelPopoverPosition(params: {
+  triggerRect: RectLike;
+  containerRect: RectLike;
+  viewportWidth: number;
+  viewportHeight: number;
+  popoverWidth: number;
+  popoverHeight: number;
+}): PopoverPosition {
+  const {
+    triggerRect,
+    containerRect,
+    viewportWidth,
+    viewportHeight,
+    popoverWidth,
+    popoverHeight,
+  } = params;
+  const minLeft = MODEL_POPOVER_VIEWPORT_MARGIN - containerRect.left;
+  const maxLeft = viewportWidth - MODEL_POPOVER_VIEWPORT_MARGIN - popoverWidth - containerRect.left;
+  const left = clamp(
+    triggerRect.left - containerRect.left,
+    minLeft,
+    Math.max(minLeft, maxLeft),
+  );
+  const availableAbove = triggerRect.top - MODEL_POPOVER_VIEWPORT_MARGIN;
+  const availableBelow = viewportHeight - triggerRect.bottom - MODEL_POPOVER_VIEWPORT_MARGIN;
+  const placeAbove = availableAbove >= popoverHeight || availableAbove >= availableBelow;
+  const rawTop = placeAbove
+    ? triggerRect.top - containerRect.top - MODEL_POPOVER_GAP - popoverHeight
+    : triggerRect.bottom - containerRect.top + MODEL_POPOVER_GAP;
+  const minTop = MODEL_POPOVER_VIEWPORT_MARGIN - containerRect.top;
+  const maxTop = viewportHeight - MODEL_POPOVER_VIEWPORT_MARGIN - popoverHeight - containerRect.top;
+  const top = clamp(rawTop, minTop, Math.max(minTop, maxTop));
+
+  return {
+    top: Math.round(top),
+    left: Math.round(left),
+  };
 }
 
 export function AgentIcon({
@@ -440,8 +507,12 @@ export function AgentModelSelector({
   const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
   const [modelPreviewAgent, setModelPreviewAgent] = useState<CliAgent>(selection.agent);
   const [popoverPosition, setPopoverPosition] = useState<PopoverPosition | null>(null);
+  const [desktopPopoverLayout, setDesktopPopoverLayout] = useState<DesktopPopoverLayout | null>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
+  const agentPanelRef = useRef<HTMLDivElement>(null);
+  const modelPanelRef = useRef<HTMLDivElement>(null);
+  const modelScrollerRef = useRef<HTMLDivElement>(null);
   const popoverWidth = showAgentList
     ? AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP + MODEL_LIST_PANEL_WIDTH
     : MODEL_LIST_PANEL_WIDTH;
@@ -454,7 +525,9 @@ export function AgentModelSelector({
     const handleClick = (event: MouseEvent) => {
       const target = event.target as Node;
       const clickedInsideTrigger = modelSelectorRef.current?.contains(target) ?? false;
-      const clickedInsidePopover = modelPopoverRef.current?.contains(target) ?? false;
+      const clickedInsidePopover = (modelPopoverRef.current?.contains(target) ?? false)
+        || (agentPanelRef.current?.contains(target) ?? false)
+        || (modelPanelRef.current?.contains(target) ?? false);
 
       if (!clickedInsideTrigger && !clickedInsidePopover) {
         setModelPopoverOpen(false);
@@ -468,49 +541,6 @@ export function AgentModelSelector({
   useEffect(() => {
     setModelPreviewAgent(selection.agent);
   }, [selection.agent]);
-
-  useLayoutEffect(() => {
-    if (!modelPopoverOpen || !popoverContainer) {
-      setPopoverPosition(null);
-      return;
-    }
-
-    const updatePosition = () => {
-      const trigger = modelSelectorRef.current;
-      if (!trigger) {
-        setPopoverPosition(null);
-        return;
-      }
-
-      const triggerRect = trigger.getBoundingClientRect();
-      const containerRect = popoverContainer.getBoundingClientRect();
-      const minLeft = MODEL_POPOVER_VIEWPORT_MARGIN - containerRect.left;
-      const maxLeft = window.innerWidth - MODEL_POPOVER_VIEWPORT_MARGIN - popoverWidth - containerRect.left;
-      const left = clamp(triggerRect.left - containerRect.left, minLeft, Math.max(minLeft, maxLeft));
-      const availableAbove = triggerRect.top - MODEL_POPOVER_VIEWPORT_MARGIN;
-      const availableBelow = window.innerHeight - triggerRect.bottom - MODEL_POPOVER_VIEWPORT_MARGIN;
-      const placement = availableAbove >= MODEL_POPOVER_ESTIMATED_HEIGHT || availableAbove >= availableBelow
-        ? "above"
-        : "below";
-      const top = placement === "above"
-        ? triggerRect.top - containerRect.top - MODEL_POPOVER_GAP
-        : triggerRect.bottom - containerRect.top + MODEL_POPOVER_GAP;
-
-      setPopoverPosition({
-        top: Math.round(top),
-        left: Math.round(left),
-        placement,
-      });
-    };
-
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [modelPopoverOpen, modelPreviewAgent, popoverContainer, popoverWidth, showAgentList]);
 
   const agentOptions = useMemo(() => buildAgentSelectionOptions({
     providers,
@@ -533,6 +563,10 @@ export function AgentModelSelector({
     return options.filter((option) => option.modelProviderId === selection.modelProviderId);
   }, [agentOptions, modelPreviewTargetAgent, selection.modelProviderId, showAgentList]);
   const modelLabel = `${AGENT_LABELS[selection.agent]} · ${currentSelection.label}`;
+  const modelScrollerVisibleMaxHeight = useMemo(
+    () => calculateModelScrollerVisibleMaxHeight(modelPreviewOptions),
+    [modelPreviewOptions],
+  );
   const resolvedAriaLabel = ariaLabel ?? (
     showAgentList
       ? "Select CLI agent and model"
@@ -556,8 +590,93 @@ export function AgentModelSelector({
   const labelClassName = triggerVariant === "picker" ? "min-w-0 flex-1 truncate text-left" : "max-w-[160px] truncate";
   const triggerTextColorClassName = triggerVariant === "picker" ? "" : "text-muted-foreground";
 
-  const renderModelOptionList = () => (
-    <div className="max-h-[min(18rem,calc(100vh-10rem))] overflow-y-auto">
+  useLayoutEffect(() => {
+    if (!modelPopoverOpen || !popoverContainer) {
+      setPopoverPosition(null);
+      setDesktopPopoverLayout(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const trigger = modelSelectorRef.current;
+      if (!trigger) {
+        setPopoverPosition(null);
+        return;
+      }
+
+      const triggerRect = trigger.getBoundingClientRect();
+      const containerRect = popoverContainer.getBoundingClientRect();
+      if (showAgentList) {
+        const minLeft = MODEL_POPOVER_VIEWPORT_MARGIN - containerRect.left;
+        const maxLeft = window.innerWidth - MODEL_POPOVER_VIEWPORT_MARGIN - popoverWidth - containerRect.left;
+        const left = clamp(
+          triggerRect.left - containerRect.left,
+          minLeft,
+          Math.max(minLeft, maxLeft),
+        );
+        const availableAbove = triggerRect.top - MODEL_POPOVER_VIEWPORT_MARGIN - MODEL_POPOVER_GAP;
+        const minTop = MODEL_POPOVER_VIEWPORT_MARGIN - containerRect.top;
+        const agentHeight = agentPanelRef.current?.getBoundingClientRect().height ?? AGENT_POPOVER_ESTIMATED_HEIGHT;
+        const modelPanelHeight = modelPanelRef.current?.getBoundingClientRect().height ?? MODEL_POPOVER_ESTIMATED_HEIGHT;
+        const modelScrollerHeight = modelScrollerRef.current?.getBoundingClientRect().height ?? MODEL_POPOVER_DEFAULT_SCROLLER_HEIGHT;
+        const modelScrollerScrollHeight = modelScrollerRef.current?.scrollHeight ?? MODEL_POPOVER_DEFAULT_SCROLLER_HEIGHT;
+        const modelPanelChromeHeight = Math.max(0, modelPanelHeight - modelScrollerHeight);
+        const modelScrollerMaxHeight = Math.min(
+          modelScrollerScrollHeight,
+          modelScrollerVisibleMaxHeight,
+          Math.max(MODEL_POPOVER_MIN_SCROLLER_HEIGHT, Math.floor(availableAbove - modelPanelChromeHeight)),
+        );
+        const effectiveModelHeight = modelPanelChromeHeight + modelScrollerMaxHeight;
+
+        setDesktopPopoverLayout({
+          left: Math.round(left),
+          agentTop: Math.max(
+            Math.round(triggerRect.top - containerRect.top - MODEL_POPOVER_GAP - agentHeight),
+            Math.round(minTop),
+          ),
+          modelTop: Math.max(
+            Math.round(triggerRect.top - containerRect.top - MODEL_POPOVER_GAP - effectiveModelHeight),
+            Math.round(minTop),
+          ),
+          modelScrollerMaxHeight,
+        });
+        setPopoverPosition(null);
+        return;
+      }
+
+      setDesktopPopoverLayout(null);
+      const popoverHeight = modelPopoverRef.current?.getBoundingClientRect().height ?? MODEL_POPOVER_ESTIMATED_HEIGHT;
+      setPopoverPosition(calculateAgentModelPopoverPosition({
+        triggerRect,
+        containerRect,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        popoverWidth,
+        popoverHeight,
+      }));
+    };
+
+    updatePosition();
+    const animationFrameId = window.requestAnimationFrame(updatePosition);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.cancelAnimationFrame(animationFrameId);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [modelPopoverOpen, modelPreviewAgent, modelScrollerVisibleMaxHeight, popoverContainer, popoverWidth, showAgentList]);
+
+  const renderModelOptionList = (maxHeight?: number) => (
+    <div
+      ref={maxHeight !== undefined ? modelScrollerRef : undefined}
+      className="overflow-y-auto"
+      style={{
+        maxHeight: maxHeight !== undefined
+          ? `${maxHeight}px`
+          : `${modelScrollerVisibleMaxHeight}px`,
+      }}
+    >
       {modelPreviewOptions.map((option, index) => {
         const selected = option.agent === selection.agent
           && option.model === selection.model
@@ -575,7 +694,6 @@ export function AgentModelSelector({
             <button
               type="button"
               disabled={interactionLocked}
-              title={option.model}
               className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
                 selected
                   ? "bg-accent text-accent-foreground"
@@ -606,63 +724,72 @@ export function AgentModelSelector({
     </div>
   );
 
+  const agentPanelContent = (
+    <div
+      data-agent-model-panel="agent"
+      className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+      style={{ width: `${AGENT_LIST_PANEL_WIDTH}px` }}
+    >
+      <div className="space-y-1" data-cli-agent-list="true">
+        {CLI_AGENTS.map((entryAgent) => {
+          const selectedAgent = modelPreviewAgent === entryAgent;
+          const currentAgent = selection.agent === entryAgent;
+
+          return (
+            <button
+              key={entryAgent}
+              type="button"
+              className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
+                selectedAgent
+                  ? "bg-accent text-accent-foreground"
+                  : "text-foreground hover:bg-accent/50"
+              }`}
+              aria-current={currentAgent ? "true" : undefined}
+              onMouseEnter={() => {
+                if (modelPreviewAgent !== entryAgent) {
+                  setModelPreviewAgent(entryAgent);
+                }
+              }}
+              onFocus={() => {
+                if (modelPreviewAgent !== entryAgent) {
+                  setModelPreviewAgent(entryAgent);
+                }
+              }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                if (modelPreviewAgent !== entryAgent) {
+                  setModelPreviewAgent(entryAgent);
+                }
+              }}
+            >
+              <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
+              <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
+              {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  const modelPanelContent = (maxHeight?: number) => (
+    <div
+      data-agent-model-panel="overlay"
+      className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
+      style={{ width: `${MODEL_LIST_PANEL_WIDTH}px` }}
+    >
+      {renderModelOptionList(maxHeight)}
+    </div>
+  );
+
   const popoverContent = showAgentList ? (
-    <div className="relative">
-      <div
-        className="rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
-        style={{ width: `${AGENT_LIST_PANEL_WIDTH}px` }}
-      >
-        <div className="space-y-1" data-cli-agent-list="true">
-          {CLI_AGENTS.map((entryAgent) => {
-            const selectedAgent = modelPreviewAgent === entryAgent;
-            const currentAgent = selection.agent === entryAgent;
-
-            return (
-              <button
-                key={entryAgent}
-                type="button"
-                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
-                  selectedAgent
-                    ? "bg-accent text-accent-foreground"
-                    : "text-foreground hover:bg-accent/50"
-                }`}
-                aria-current={currentAgent ? "true" : undefined}
-                onMouseEnter={() => {
-                  if (modelPreviewAgent !== entryAgent) {
-                    setModelPreviewAgent(entryAgent);
-                  }
-                }}
-                onFocus={() => {
-                  if (modelPreviewAgent !== entryAgent) {
-                    setModelPreviewAgent(entryAgent);
-                  }
-                }}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  if (modelPreviewAgent !== entryAgent) {
-                    setModelPreviewAgent(entryAgent);
-                  }
-                }}
-              >
-                <AgentIcon agent={entryAgent} aria-hidden="true" className="h-4 w-4" />
-                <span className="min-w-0 flex-1 truncate">{AGENT_LABELS[entryAgent]}</span>
-                {currentAgent ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div
-        data-agent-model-panel="overlay"
-        className="absolute left-full top-0 z-10 rounded-xl border border-border/60 bg-popover p-1 shadow-lg"
-        style={{
-          width: `${MODEL_LIST_PANEL_WIDTH}px`,
-          marginLeft: `${MODEL_PANEL_GAP}px`,
-        }}
-      >
-        {renderModelOptionList()}
-      </div>
+    <div
+      data-agent-model-layout="side-by-side"
+      className="flex items-start"
+      style={{ columnGap: `${MODEL_PANEL_GAP}px` }}
+    >
+      {agentPanelContent}
+      {modelPanelContent()}
     </div>
   ) : (
     <div
@@ -691,7 +818,7 @@ export function AgentModelSelector({
           setModelPopoverOpen(!modelPopoverOpen);
         }}
         disabled={interactionLocked}
-        title={selectionLockedReason ?? currentSelection.model}
+        title={selectionLockedReason ?? undefined}
         className={cn(
           "flex items-center transition-colors",
           triggerTextColorClassName,
@@ -707,13 +834,36 @@ export function AgentModelSelector({
         <ChevronDown className="h-3 w-3 shrink-0" />
       </button>
 
-      {modelPopoverOpen && popoverContainer && popoverPosition ? createPortal(
+      {modelPopoverOpen && popoverContainer && showAgentList && desktopPopoverLayout ? createPortal(
+        <>
+          <div
+            ref={agentPanelRef}
+            className="pointer-events-auto absolute z-[80]"
+            style={{
+              top: desktopPopoverLayout.agentTop,
+              left: desktopPopoverLayout.left,
+            }}
+          >
+            {agentPanelContent}
+          </div>
+          <div
+            ref={modelPanelRef}
+            className="pointer-events-auto absolute z-[80]"
+            style={{
+              top: desktopPopoverLayout.modelTop,
+              left: desktopPopoverLayout.left + AGENT_LIST_PANEL_WIDTH + MODEL_PANEL_GAP,
+            }}
+          >
+            {modelPanelContent(desktopPopoverLayout.modelScrollerMaxHeight)}
+          </div>
+        </>,
+        popoverContainer,
+      ) : null}
+
+      {modelPopoverOpen && popoverContainer && !showAgentList && popoverPosition ? createPortal(
         <div
           ref={modelPopoverRef}
-          className={cn(
-            "pointer-events-auto absolute z-[80]",
-            popoverPosition.placement === "above" ? "-translate-y-full" : "",
-          )}
+          className="pointer-events-auto absolute z-[80]"
           style={{
             top: popoverPosition.top,
             left: popoverPosition.left,

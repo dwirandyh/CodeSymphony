@@ -6,6 +6,7 @@ import type {
   ChatEventType,
   CliAgent,
   ChatMode,
+  ModelProviderCompatibility,
   ResourceMonitorSessionKind,
   ChatThreadPermissionMode,
   ChatThreadPermissionProfile,
@@ -176,6 +177,7 @@ export type ClaudeRunner = (args: {
   permissionProfile?: ChatThreadPermissionProfile;
   autoAcceptTools?: boolean;
   model?: string;
+  providerCompatibility?: ModelProviderCompatibility;
   providerApiKey?: string;
   providerBaseUrl?: string;
   onProcessSpawned?: (pid: number) => Promise<void> | void;
@@ -304,7 +306,7 @@ export type RuntimeDeps = {
   modelProviderService: {
     getActiveProvider: (agent?: CliAgent) => Promise<{
       id: string;
-      agent: CliAgent;
+      compatibility: ModelProviderCompatibility;
       apiKey: string | null;
       baseUrl: string | null;
       name: string;
@@ -312,7 +314,7 @@ export type RuntimeDeps = {
     } | null>;
     getProviderById: (id: string) => Promise<{
       id: string;
-      agent: CliAgent;
+      compatibility: ModelProviderCompatibility;
       apiKey: string | null;
       baseUrl: string | null;
       name: string;

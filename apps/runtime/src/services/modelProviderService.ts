@@ -1,5 +1,12 @@
 import type { PrismaClient } from "@prisma/client";
-import type { CliAgent, CreateModelProviderInput, UpdateModelProviderInput, ModelProvider } from "@codesymphony/shared-types";
+import {
+  MODEL_PROVIDER_COMPATIBILITIES_BY_AGENT,
+  type CliAgent,
+  type CreateModelProviderInput,
+  type UpdateModelProviderInput,
+  type ModelProvider,
+  type ModelProviderCompatibility,
+} from "@codesymphony/shared-types";
 
 function maskApiKey(apiKey: string): string {
   if (apiKey.length <= 11) return "••••";
@@ -14,15 +21,9 @@ function normalizeOptionalSecret(value: string | null | undefined): string | nul
   return normalized.length > 0 ? normalized : null;
 }
 
-function assertCustomProviderSupported(agent: CliAgent): void {
-  if (agent === "cursor") {
-    throw new Error("Cursor does not support custom model providers");
-  }
-}
-
 function mapProvider(provider: {
   id: string;
-  agent: CliAgent;
+  compatibility: ModelProviderCompatibility;
   name: string;
   modelId: string;
   baseUrl: string | null;
@@ -33,7 +34,7 @@ function mapProvider(provider: {
 }): ModelProvider {
   return {
     id: provider.id,
-    agent: provider.agent,
+    compatibility: provider.compatibility,
     name: provider.name,
     modelId: provider.modelId,
     baseUrl: provider.baseUrl,
@@ -54,10 +55,9 @@ export function createModelProviderService(prisma: PrismaClient) {
     },
 
     async createProvider(input: CreateModelProviderInput): Promise<ModelProvider> {
-      assertCustomProviderSupported(input.agent ?? "claude");
       const provider = await prisma.modelProvider.create({
         data: {
-          agent: input.agent ?? "claude",
+          compatibility: input.compatibility,
           name: input.name,
           modelId: input.modelId,
           baseUrl: normalizeOptionalSecret(input.baseUrl),
@@ -68,15 +68,10 @@ export function createModelProviderService(prisma: PrismaClient) {
     },
 
     async updateProvider(id: string, input: UpdateModelProviderInput): Promise<ModelProvider> {
-      const targetAgent = input.agent ?? (await prisma.modelProvider.findUnique({
-        where: { id },
-        select: { agent: true },
-      }))?.agent;
-      assertCustomProviderSupported(targetAgent ?? "claude");
       const provider = await prisma.modelProvider.update({
         where: { id },
         data: {
-          ...(input.agent !== undefined ? { agent: input.agent } : {}),
+          ...(input.compatibility !== undefined ? { compatibility: input.compatibility } : {}),
           ...(input.name !== undefined ? { name: input.name } : {}),
           ...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
           ...(input.baseUrl !== undefined ? { baseUrl: normalizeOptionalSecret(input.baseUrl) } : {}),
@@ -94,13 +89,12 @@ export function createModelProviderService(prisma: PrismaClient) {
       return await prisma.$transaction(async (tx) => {
         const selected = await tx.modelProvider.findUniqueOrThrow({
           where: { id },
-          select: { agent: true },
+          select: { compatibility: true },
         });
-        assertCustomProviderSupported(selected.agent);
         await tx.modelProvider.updateMany({
           where: {
             isActive: true,
-            agent: selected.agent,
+            compatibility: selected.compatibility,
           },
           data: { isActive: false },
         });
@@ -121,25 +115,42 @@ export function createModelProviderService(prisma: PrismaClient) {
 
     async getActiveProvider(agent: CliAgent = "claude"): Promise<{
       id: string;
-      agent: CliAgent;
+      compatibility: ModelProviderCompatibility;
       apiKey: string | null;
       baseUrl: string | null;
       name: string;
       modelId: string;
     } | null> {
-      if (agent === "cursor") {
+      const compatibilities = MODEL_PROVIDER_COMPATIBILITIES_BY_AGENT[agent];
+      if (compatibilities.length === 0) {
         return null;
       }
-      const provider = await prisma.modelProvider.findFirst({
+
+      const providers = await prisma.modelProvider.findMany({
         where: {
           isActive: true,
-          agent,
+          compatibility: {
+            in: [...compatibilities],
+          },
         },
+        orderBy: [
+          { createdAt: "asc" },
+          { id: "asc" },
+        ],
       });
-      if (!provider) return null;
+
+      if (providers.length === 0) {
+        return null;
+      }
+
+      if (compatibilities.length > 1 && providers.length !== 1) {
+        return null;
+      }
+
+      const provider = providers[0]!;
       return {
         id: provider.id,
-        agent: provider.agent,
+        compatibility: provider.compatibility,
         apiKey: provider.apiKey,
         baseUrl: provider.baseUrl,
         name: provider.name,
@@ -149,7 +160,7 @@ export function createModelProviderService(prisma: PrismaClient) {
 
     async getProviderById(id: string): Promise<{
       id: string;
-      agent: CliAgent;
+      compatibility: ModelProviderCompatibility;
       apiKey: string | null;
       baseUrl: string | null;
       name: string;
@@ -164,7 +175,7 @@ export function createModelProviderService(prisma: PrismaClient) {
       }
       return {
         id: provider.id,
-        agent: provider.agent,
+        compatibility: provider.compatibility,
         apiKey: provider.apiKey,
         baseUrl: provider.baseUrl,
         name: provider.name,
